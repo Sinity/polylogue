@@ -5,8 +5,9 @@ fn equal_matches_deduplicate_but_overlaps_and_patch_order_remain_distinct() {
     let plan = Plan::new().unwrap();
     plan.matches("input", 1, &vec![(3, 6), (2, 5), (2, 5)])
         .unwrap();
-    plan.patches("input", 1, &[(4, b"Q".to_vec()), (0, b"AA".to_vec())])
-        .unwrap();
+    plan.patch("input", 1, 0, 4, b"Q").unwrap();
+    plan.patch("input", 1, 1, 0, b"AA").unwrap();
+    plan.normalize("input", 1).unwrap();
     assert_eq!(plan.counts().unwrap().get("input"), Some(&2));
     let mut changed = Vec::new();
     plan.changed(|input, chain, from, to| {
@@ -24,11 +25,16 @@ fn equal_matches_deduplicate_but_overlaps_and_patch_order_remain_distinct() {
         ]
     );
     let mut bytes = *b"abcdefgh";
-    plan.rewrite(&("input".into(), 1), 0, &mut bytes, b'*')
+    let key = ("input".into(), 1);
+    plan.edits(&key, 0)
+        .unwrap()
+        .rewrite(0, &mut bytes, b'*')
         .unwrap();
     assert_eq!(&bytes, b"AA**Q*gh");
     let mut part = *b"def";
-    plan.rewrite(&("input".into(), 1), 3, &mut part, b'*')
+    plan.edits(&key, 3)
+        .unwrap()
+        .rewrite(3, &mut part, b'*')
         .unwrap();
     assert_eq!(&part, b"*Q*");
 }
@@ -103,7 +109,7 @@ fn affected_observations_preserve_overlap_and_patch_order_before_extent_changes(
         .unwrap();
     let plan = Plan::new().unwrap();
     plan.matches("input", 1, &vec![(2, 4), (3, 5)]).unwrap();
-    plan.patches("input", 1, &[(0, b"XY".to_vec())]).unwrap();
+    plan.patch("input", 1, 0, 0, b"XY").unwrap();
     plan.stage_affected(&archive).unwrap();
     let mut blobs = Vec::new();
     plan.visit_blobs(|hash| {
@@ -151,8 +157,33 @@ fn position_overflow_refuses_without_recording_a_placement() {
     let hash = BlobHash([3; 32]);
     assert!(plan.remember(&hash, u64::MAX, 1).is_err());
     assert!(plan.placement(&hash).unwrap().is_none());
-    assert!(
-        plan.patches("input", 1, &[(u64::MAX, b"x".to_vec())])
-            .is_err()
-    );
+    assert!(plan.patch("input", 1, 0, u64::MAX, b"x").is_err());
+}
+
+#[test]
+fn tentative_raw_rows_are_resolved_by_later_json_plain_or_eof_selection() {
+    use crate::excise::text_matches::TextMatches;
+    for tail in [b"{}".as_slice(), b"plain", b""] {
+        let plan = Plan::new().unwrap();
+        let mut scanner = TextMatches::new(" ").unwrap();
+        for _ in 0..100 {
+            scanner.feed(&[b' '; 100]).unwrap();
+            plan.collect("input", 1, scanner.drain()).unwrap();
+        }
+        scanner.feed(tail).unwrap();
+        plan.collect("input", 1, scanner.drain()).unwrap();
+        plan.collect("input", 1, scanner.complete().unwrap())
+            .unwrap();
+        assert_eq!(
+            plan.counts().unwrap().get("input").copied().unwrap_or(0),
+            if tail == b"{}" { 0 } else { 10000 }
+        );
+        assert_eq!(
+            plan.conn
+                .query_row("SELECT count(*) FROM raw_matches", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 }

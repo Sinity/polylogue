@@ -189,3 +189,121 @@ fn failed_verified_copy_publishes_no_placement_and_can_retry_exact_bytes() {
     assert_eq!(plan.placement(&extent.blob).unwrap(), Some((0, 6)));
     assert_eq!(cache.length, 6);
 }
+
+#[test]
+fn many_snapshot_headers_share_one_verified_decode_and_rewrite_exact_payloads() {
+    use crate::excise::stored_text::framing;
+    use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+    let payload = br#"{"v":"secret"}"#;
+    let count = 5000;
+    let mut original = MAGIC.to_vec();
+    for _ in 0..count {
+        original.extend(Header::of(payload).encode());
+        original.extend(payload);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600)
+        .unwrap()
+        .with_frame_size(original.len());
+    store.put(original.as_slice(), 1).unwrap();
+    let archive = Connection::open_in_memory().unwrap();
+    schema::create_archive(&archive).unwrap();
+    let e = row(&archive, &original, "file", None);
+    archive.execute("INSERT INTO revision(input,number,produced,chain,length,blake3,commit_seq) VALUES ('test',1,'first',1,?1,?2,1)",
+        rusqlite::params![original.len() as i64,&e.blob.0[..]]).unwrap();
+    archive.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('test',1,0,?1,?2,0)",
+        rusqlite::params![original.len() as i64,&e.blob.0[..]]).unwrap();
+    let plan = Plan::new().unwrap();
+    let mut cache = PlainBytes::new().unwrap();
+    let key = ("test".into(), 1);
+    framing::scan(
+        &archive,
+        &store,
+        &mut cache,
+        &plan,
+        &key,
+        original.len() as u64,
+        "secret",
+    )
+    .unwrap();
+    assert_eq!(plan.counts().unwrap()["test"], count);
+    let mut frames = 0;
+    plan.visit_frames(&key, |_, _, _| {
+        frames += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(frames, count);
+    framing::rewrite(&archive, &store, &mut cache, &plan, &key, b' ').unwrap();
+    let mut reader = cache
+        .reader(&plan, &archive, &store, &key, 0..original.len() as u64)
+        .unwrap();
+    let mut edits = plan.edits(&key, 0).unwrap();
+    let mut actual = Vec::new();
+    let mut buffer = [0; READ_CHUNK];
+    loop {
+        let at = reader.position();
+        let n = reader.read(&mut buffer).unwrap();
+        if n == 0 {
+            break;
+        }
+        edits.rewrite(at, &mut buffer[..n], b' ').unwrap();
+        actual.extend_from_slice(&buffer[..n]);
+    }
+    assert_eq!(cache.decoded, 2 * original.len() as u64);
+    assert_eq!(&actual[..MAGIC.len()], MAGIC);
+    let mut at = MAGIC.len();
+    for _ in 0..count {
+        let header = Header::decode(&actual[at..at + HEADER_LEN]).unwrap();
+        assert_eq!(header.observed_digest, Header::of(payload).observed_digest);
+        at += HEADER_LEN;
+        let body = &actual[at..at + payload.len()];
+        assert!(header.verifies(body));
+        assert_eq!(body, br#"{"v":"      "}"#);
+        at += payload.len();
+    }
+}
+
+#[test]
+fn whitespace_matches_never_include_structural_snapshot_headers() {
+    use crate::excise::stored_text::framing;
+    use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+    let payload = b"x y";
+    let mut original = MAGIC.to_vec();
+    original.extend(Header::of(payload).encode());
+    original.extend(payload);
+    let dir = tempfile::tempdir().unwrap();
+    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
+    store.put(original.as_slice(), 1).unwrap();
+    let archive = Connection::open_in_memory().unwrap();
+    schema::create_archive(&archive).unwrap();
+    let e = row(&archive, &original, "file", None);
+    archive.execute("INSERT INTO revision(input,number,produced,chain,length,blake3,commit_seq) VALUES ('test',1,'first',1,?1,?2,1)",
+        rusqlite::params![original.len() as i64,&e.blob.0[..]]).unwrap();
+    archive.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('test',1,0,?1,?2,0)",
+        rusqlite::params![original.len() as i64,&e.blob.0[..]]).unwrap();
+    let plan = Plan::new().unwrap();
+    let mut cache = PlainBytes::new().unwrap();
+    let key = ("test".into(), 1);
+    framing::scan(
+        &archive,
+        &store,
+        &mut cache,
+        &plan,
+        &key,
+        original.len() as u64,
+        " ",
+    )
+    .unwrap();
+    assert_eq!(plan.counts().unwrap()["test"], 1);
+    framing::rewrite(&archive, &store, &mut cache, &plan, &key, b'*').unwrap();
+    let mut output = original.clone();
+    plan.edits(&key, 0)
+        .unwrap()
+        .rewrite(0, &mut output, b'*')
+        .unwrap();
+    assert_eq!(&output[..MAGIC.len()], MAGIC);
+    let header = Header::decode(&output[MAGIC.len()..MAGIC.len() + HEADER_LEN]).unwrap();
+    assert!(header.verifies(b"x*y"));
+    assert_eq!(&output[MAGIC.len() + HEADER_LEN..], b"x*y");
+}

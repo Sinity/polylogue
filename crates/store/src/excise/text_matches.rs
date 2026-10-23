@@ -86,6 +86,14 @@ pub(super) struct TextMatches {
     unhandled_key: bool,
 }
 
+/// Raw hits before the first non-whitespace byte remain tentative: later JSON
+/// selection discards them. JSON batches contain only completed value hits.
+pub(super) enum Matches {
+    Undecided(Vec<(u64, u64)>),
+    Plain(Vec<(u64, u64)>),
+    Json(Vec<(u64, u64)>),
+}
+
 impl TextMatches {
     pub(super) fn new(needle: &str) -> Result<Self> {
         if needle.is_empty() {
@@ -264,7 +272,29 @@ impl TextMatches {
         Ok(())
     }
 
-    pub(super) fn finish(self) -> Result<Vec<(u64, u64)>> {
+    /// Release irrevocable hits without retaining all earlier values. A current
+    /// string and its nested JSON stay tentative until value/key classification.
+    pub(super) fn drain(&mut self) -> Matches {
+        match self.json {
+            None => Matches::Undecided(std::mem::take(&mut self.raw_ranges)),
+            Some(false) => Matches::Plain(std::mem::take(&mut self.raw_ranges)),
+            Some(true) => {
+                let ready = if self.quoted {
+                    self.string_ranges_start
+                } else {
+                    self.pending_key.unwrap_or(self.decoded_ranges.len())
+                };
+                let ranges = self.decoded_ranges.drain(..ready).collect();
+                self.string_ranges_start = self.string_ranges_start.saturating_sub(ready);
+                if let Some(start) = &mut self.pending_key {
+                    *start -= ready;
+                }
+                Matches::Json(ranges)
+            }
+        }
+    }
+
+    pub(super) fn complete(self) -> Result<Matches> {
         self.check_key()?;
         if self.depth_limited {
             return Err(StoreError::Invalid(
@@ -281,10 +311,18 @@ impl TextMatches {
                 "retained JSON ends inside a string value".into(),
             ));
         }
-        let mut ranges = if self.json == Some(true) {
-            self.decoded_ranges
+        Ok(if self.json == Some(true) {
+            Matches::Json(self.decoded_ranges)
         } else {
-            self.raw_ranges
+            Matches::Plain(self.raw_ranges)
+        })
+    }
+
+    /// Whole-value users already own the value, and need its final hit list.
+    pub(super) fn finish(self) -> Result<Vec<(u64, u64)>> {
+        let mut ranges = match self.complete()? {
+            Matches::Undecided(_) => unreachable!("EOF chooses plain text"),
+            Matches::Plain(ranges) | Matches::Json(ranges) => ranges,
         };
         ranges.sort_unstable();
         ranges.dedup();

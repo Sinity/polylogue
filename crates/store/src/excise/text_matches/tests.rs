@@ -161,3 +161,5 @@ fn generated_escape_spellings_agree_with_serde_in_plain_and_embedded_values() {
         }
     }
 }
+
+mod streaming;

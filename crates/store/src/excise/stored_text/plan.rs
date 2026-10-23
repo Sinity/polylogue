@@ -6,6 +6,10 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod edits;
+mod frames;
+mod matching;
+pub(super) use edits::Edits;
 mod rewrite;
 
 pub(super) struct Plan {
@@ -25,8 +29,18 @@ impl Plan {
              PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
              CREATE TABLE matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
                 PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
+             CREATE TABLE raw_matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
+                PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
+             CREATE TABLE write_ranges(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
+                PRIMARY KEY(input,chain,start)) WITHOUT ROWID;
              CREATE TABLE patches(input TEXT,chain INTEGER,ordinal INTEGER,start INTEGER,
                 end INTEGER,bytes BLOB,PRIMARY KEY(input,chain,ordinal)) WITHOUT ROWID;
+             CREATE INDEX patches_start ON patches(input,chain,start);
+             CREATE TABLE frames(input TEXT,chain INTEGER,ordinal INTEGER,start INTEGER,
+                header BLOB,PRIMARY KEY(input,chain,ordinal)) WITHOUT ROWID;
+             CREATE INDEX frames_start ON frames(input,chain,start);
+             CREATE TABLE chains(input TEXT,chain INTEGER,framed INTEGER NOT NULL DEFAULT 0,
+                patch_width INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(input,chain)) WITHOUT ROWID;
              CREATE TABLE places(hash BLOB PRIMARY KEY,start INTEGER,length INTEGER) WITHOUT ROWID;
              CREATE TABLE affected(hash BLOB PRIMARY KEY) WITHOUT ROWID;
              CREATE TABLE observations(ordinal INTEGER PRIMARY KEY,input TEXT,span TEXT);
@@ -48,28 +62,21 @@ impl Plan {
         Ok(())
     }
 
-    pub(super) fn patches(
+    pub(super) fn patch(
         &self,
         input: &str,
         chain: i64,
-        patches: &[(u64, Vec<u8>)],
+        ordinal: i64,
+        start: u64,
+        bytes: &[u8],
     ) -> Result<()> {
-        let mut insert = self.conn.prepare_cached(
-            "INSERT INTO patches(input,chain,ordinal,start,end,bytes) VALUES (?1,?2,?3,?4,?5,?6)",
-        )?;
-        for (ordinal, (start, bytes)) in patches.iter().enumerate() {
-            let end = start
-                .checked_add(bytes.len() as u64)
-                .ok_or_else(|| StoreError::Invalid("text-excision patch end overflow".into()))?;
-            insert.execute(params![
-                input,
-                chain,
-                ordinal as i64,
-                position(*start)?,
-                position(end)?,
-                bytes
-            ])?;
-        }
+        let end = start
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| StoreError::Invalid("text-excision patch end overflow".into()))?;
+        self.conn.prepare_cached("INSERT INTO patches(input,chain,ordinal,start,end,bytes) VALUES (?1,?2,?3,?4,?5,?6)")?
+            .execute(params![input,chain,ordinal,position(start)?,position(end)?,bytes])?;
+        self.conn.execute("INSERT INTO chains(input,chain,patch_width) VALUES (?1,?2,?3)
+            ON CONFLICT(input,chain) DO UPDATE SET patch_width=max(patch_width,excluded.patch_width)",params![input,chain,bytes.len() as i64])?;
         Ok(())
     }
 
@@ -130,49 +137,8 @@ impl Plan {
         Ok(())
     }
 
-    pub(super) fn blank(&self, key: &Chain, at: u64, bytes: &mut [u8], fill: u8) -> Result<()> {
-        let end = at
-            .checked_add(bytes.len() as u64)
-            .ok_or_else(|| StoreError::Invalid("text-excision chunk end overflow".into()))?;
-        let mut statement = self.conn.prepare_cached(
-            "SELECT start,end FROM matches WHERE input=?1 AND chain=?2 AND start<?4 AND end>?3
-             ORDER BY start,end",
-        )?;
-        let mut rows = statement.query(params![key.0, key.1, position(at)?, position(end)?])?;
-        while let Some(row) = rows.next()? {
-            let start = (row.get::<_, i64>(0)? as u64).max(at);
-            let end = (row.get::<_, i64>(1)? as u64).min(end);
-            for byte in &mut bytes[(start - at) as usize..(end - at) as usize] {
-                if *byte != b'\n' {
-                    *byte = fill;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn rewrite(&self, key: &Chain, at: u64, bytes: &mut [u8], fill: u8) -> Result<()> {
-        self.blank(key, at, bytes, fill)?;
-        let end = at
-            .checked_add(bytes.len() as u64)
-            .ok_or_else(|| StoreError::Invalid("text-excision chunk end overflow".into()))?;
-        let mut statement = self.conn.prepare_cached(
-            "SELECT start,bytes FROM patches WHERE input=?1 AND chain=?2 AND start<?4 AND end>?3
-             ORDER BY ordinal",
-        )?;
-        let mut rows = statement.query(params![key.0, key.1, position(at)?, position(end)?])?;
-        while let Some(row) = rows.next()? {
-            let start = row.get::<_, i64>(0)? as u64;
-            let value = row.get_ref(1)?;
-            let patch = value
-                .as_blob()
-                .map_err(|e| StoreError::Invalid(e.to_string()))?;
-            let from = start.max(at);
-            let end = (start + patch.len() as u64).min(end);
-            bytes[(from - at) as usize..(end - at) as usize]
-                .copy_from_slice(&patch[(from - start) as usize..(end - start) as usize]);
-        }
-        Ok(())
+    pub(super) fn edits<'a>(&'a self, key: &'a Chain, from: u64) -> Result<Edits<'a>> {
+        Edits::new(self, key, from)
     }
 }
 
