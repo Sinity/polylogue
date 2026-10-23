@@ -24,8 +24,8 @@ use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{Disposition, Records};
 use polylogue_model::{
-    ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
-    Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
+    ApiError, Attribution, Block, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId,
+    NativeId, Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
     SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
@@ -413,6 +413,71 @@ impl ClaudeCode {
             data: v.clone(),
         });
         Disposition::Materialized
+    }
+
+    fn hook_summary(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        out: &mut Output,
+    ) -> Disposition {
+        let disposition = self.event(carry, record, v, "stop_hook_summary", out);
+        if disposition != Disposition::Materialized {
+            return disposition;
+        }
+        let Some(context) = v.get("hookAdditionalContext") else {
+            return disposition;
+        };
+        let Some(context) = context.as_array() else {
+            return Disposition::refused("hookAdditionalContext is not an array of strings");
+        };
+        let blocks: Vec<_> = context
+            .iter()
+            .filter_map(Json::as_str)
+            .map(|text| Block::Text {
+                text: text.to_owned(),
+            })
+            .collect();
+        if !blocks.is_empty() {
+            let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
+                return Disposition::refused("session ID is empty");
+            };
+            let native = str_field(v, "uuid")
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
+            let Some(id) = message_id(&native) else {
+                return Disposition::refused("message ID is empty");
+            };
+            // The summary records supplied feedback, including when the
+            // hook prevented continuation. It is not a delivery receipt.
+            close(carry, out);
+            out.messages.push(MessageRow {
+                offset: record.offset,
+                end: range(record).1,
+                message: Message {
+                    id: id.clone(),
+                    session,
+                    parent: carry.parent(v),
+                    role: Role::System,
+                    at: v.get("timestamp").and_then(time::rfc3339),
+                    model: None,
+                    prompt_kind: Some(PromptKind::Harness),
+                    blocks,
+                    usage: Usage::default(),
+                    stop_reason: None,
+                    reported_cost_usd: None,
+                    duration_ms: None,
+                    production: Production::default(),
+                },
+            });
+            carry.last = Some(id);
+        }
+        if context.iter().any(|item| !item.is_string()) {
+            Disposition::refused("hookAdditionalContext contains a non-string value")
+        } else {
+            disposition
+        }
     }
 
     fn message(
@@ -886,8 +951,13 @@ impl Parser for ClaudeCode {
         if let File::Journal { .. } = self.file {
             return self.journal(carry, record, v, ty, out);
         }
-        let message_record = matches!(ty, "user" | "assistant")
-            && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true);
+        let message_record = (matches!(ty, "user" | "assistant")
+            && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true))
+            || (ty == "system"
+                && str_field(v, "subtype") == Some("stop_hook_summary")
+                && v.get("hookAdditionalContext")
+                    .and_then(Json::as_array)
+                    .is_some_and(|items| items.iter().any(Json::is_string)));
         if !message_record && let Some(uuid) = str_field(v, "uuid") {
             // A child naming this record as its parent belongs under the
             // nearest message above it; a compaction boundary points there
@@ -905,6 +975,7 @@ impl Parser for ClaudeCode {
             "user" => self.message(carry, record, v, Role::User, out, records),
             "assistant" => self.message(carry, record, v, Role::Assistant, out, records),
             "system" => match str_field(v, "subtype") {
+                Some("stop_hook_summary") => self.hook_summary(carry, record, v, out),
                 Some("compact_boundary") => self.event(carry, record, v, "compaction", out),
                 Some("microcompact_boundary") => {
                     self.event(carry, record, v, "microcompaction", out)
