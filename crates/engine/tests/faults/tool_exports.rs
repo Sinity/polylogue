@@ -178,7 +178,9 @@ fn capture_worker_errors_and_panics_release_the_attempt_for_retry() {
                 .unwrap();
             let mut captures = Captures::default();
             fault::arm(point, "", action, 0, 1);
-            let mut turn = captures.turn(vec![(db.clone(), out.clone())], 1).unwrap();
+            let mut turn = captures
+                .turn(vec![(db.clone(), out.clone(), None)], 1)
+                .unwrap();
             let mut errors = Vec::new();
             loop {
                 errors.extend(turn.errors);
@@ -190,7 +192,7 @@ fn capture_worker_errors_and_panics_release_the_attempt_for_retry() {
             fault::clear();
             assert_eq!(errors.len(), 1, "{point}/{action:?}");
             assert!(captures.paths().next().is_none());
-            let mut turn = captures.turn(vec![(db, out.clone())], 1).unwrap();
+            let mut turn = captures.turn(vec![(db, out.clone(), None)], 1).unwrap();
             loop {
                 assert!(
                     turn.errors.is_empty(),
