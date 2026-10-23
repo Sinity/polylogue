@@ -76,7 +76,12 @@ fn add_note(e: &Engine, id: &str, target: &str) {
 
 #[test]
 fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild() {
-    for (remove_provider, replace_generation) in [(false, false), (true, false), (true, true)] {
+    for (remove_provider, replace_generation, truncate) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
         let w = ClaudeHome::new();
         let file = path(&w);
         let historic = line(
@@ -113,6 +118,11 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
             fs::write(&file, header() + &message("current-v2")).unwrap();
             assert!(e.converge().unwrap().errors.is_empty());
             assert_eq!(messages(&w).len(), 2);
+            if truncate {
+                fs::write(&file, "").unwrap();
+                assert!(e.converge().unwrap().errors.is_empty());
+                assert_eq!(messages(&w).len(), 2);
+            }
             before = (
                 versions(&w, "codex:historic-r1"),
                 versions(&w, "codex:current-m1"),
