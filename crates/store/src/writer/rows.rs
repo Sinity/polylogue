@@ -590,8 +590,8 @@ impl Ctx<'_, '_> {
         order: (i64, i64),
     ) -> Result<i64> {
         let written_by = match (m.role, m.prompt_kind) {
+            (_, Some(PromptKind::Harness)) | (Role::System, _) => "harness",
             (Role::Assistant, _) | (Role::User, Some(PromptKind::Model)) => "model",
-            (Role::System, _) | (Role::User, Some(PromptKind::Harness)) => "harness",
             (Role::User, Some(_)) => "human",
             (Role::User, None) => "unknown",
         };

@@ -15,8 +15,9 @@ stored_names!(Role {
     System => "system",
 });
 
-/// What kind of user message this is, so counts of "what the operator
-/// typed" exclude what the harness wrote in the user's name.
+/// A user prompt's category. `Harness` also marks runtime-written notices
+/// carried under another native role; the other kinds remain user categories.
+/// This keeps harness material out of counts of what a person or model wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptKind {
@@ -26,7 +27,7 @@ pub enum PromptKind {
     /// A slash command, shell escape or memory line.
     Command,
     /// Text the harness wrote: tool results, interruption notices, local
-    /// command output, injected reminders.
+    /// command output, injected reminders or assistant-shaped runtime notices.
     Harness,
     /// Text another model wrote as this session's prompt: a subagent's
     /// task, a coordinator's follow-up, a peer agent's message.

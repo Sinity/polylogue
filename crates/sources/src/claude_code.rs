@@ -440,7 +440,10 @@ impl ClaudeCode {
         let blocks = blocks::blocks(v, content, &mut out.blobs);
         let usage = msg.get("usage").map(usage).unwrap_or_default();
         let stop_reason = str_field(msg, "stop_reason").map(str::to_owned);
-        let model = str_field(msg, "model").map(str::to_owned);
+        let model = str_field(msg, "model");
+        // This reserved value marks a runtime-authored notice.
+        let harness = role == Role::Assistant && model == Some("<synthetic>");
+        let model = model.filter(|_| !harness).map(str::to_owned);
         let cost = v.get("costUSD").and_then(Json::as_number).cloned();
         let duration = v.get("durationMs").and_then(Json::as_u64);
         let production = production(v, msg);
@@ -493,7 +496,7 @@ impl ClaudeCode {
             );
         }
 
-        if role == Role::Assistant {
+        if role == Role::Assistant && !harness {
             let key = str_field(msg, "id")
                 .or_else(|| str_field(v, "requestId"))
                 .unwrap_or(&native)
@@ -554,6 +557,10 @@ impl ClaudeCode {
                 }
             }
         } else {
+            if harness {
+                // Runtime notices keep their own record identity.
+                close(carry, out);
+            }
             let message = Message {
                 id: id.clone(),
                 session,
@@ -561,7 +568,11 @@ impl ClaudeCode {
                 role,
                 at: v.get("timestamp").and_then(time::rfc3339),
                 model,
-                prompt_kind: Some(self.prompt_kind(v, content)),
+                prompt_kind: Some(if harness {
+                    PromptKind::Harness
+                } else {
+                    self.prompt_kind(v, content)
+                }),
                 blocks,
                 usage,
                 stop_reason,
