@@ -323,7 +323,9 @@ impl Restoring {
             .pragma_update(None, "synchronous", previous.max(2))?;
         let result = (|| {
             let inserted = restore::install(&mut self.conn, units, Some(archive_id), fetch)?;
+            crate::fault::check("restore.after_canonical_commit", "")?;
             self.archive.reconcile_vectors(&mut self.conn)?;
+            crate::fault::check("restore.after_vector_reconciliation", "")?;
             self.archive.prepare_index()?;
             Ok(inserted)
         })();
