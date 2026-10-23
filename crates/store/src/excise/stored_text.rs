@@ -12,7 +12,6 @@ use plan::Plan;
 const READ_CHUNK: usize = 64 * 1024;
 const WRITE_CHUNK: usize = 1024 * 1024;
 type Chain = (String, i64);
-type Ranges = Vec<(u64, u64)>;
 
 pub(super) struct StoredText {
     plan: Plan,

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn forward_chunks_fetch_each_normalized_interval_once() {
     let plan = Plan::new().unwrap();
-    let ranges = (0..10000).map(|n| (n * 2, n * 2 + 1)).collect();
+    let ranges: Vec<_> = (0..10000).map(|n| (n * 2, n * 2 + 1)).collect();
     plan.matches("input", 1, &ranges).unwrap();
     plan.normalize("input", 1).unwrap();
     let key = ("input".into(), 1);
@@ -22,8 +22,7 @@ fn forward_chunks_fetch_each_normalized_interval_once() {
 #[test]
 fn one_normalized_overlap_carries_across_chunks_without_losing_hit_counts() {
     let plan = Plan::new().unwrap();
-    plan.matches("input", 1, &vec![(1, 5), (3, 8), (3, 8)])
-        .unwrap();
+    plan.matches("input", 1, &[(1, 5), (3, 8), (3, 8)]).unwrap();
     plan.normalize("input", 1).unwrap();
     assert_eq!(plan.counts().unwrap()["input"], 2);
     let key = ("input".into(), 1);

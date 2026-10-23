@@ -1,27 +1,11 @@
 use super::*;
-use std::collections::BTreeSet;
 
 fn streamed(bytes: &[u8], needle: &str, chunk: usize) -> Result<Vec<(u64, u64)>> {
     let mut scan = TextMatches::new(needle)?;
-    let mut raw = BTreeSet::new();
-    let mut accepted = BTreeSet::new();
-    let mut collect = |batch| match batch {
-        Matches::Undecided(ranges) => raw.extend(ranges),
-        Matches::Plain(ranges) => {
-            accepted.append(&mut raw);
-            accepted.extend(ranges);
-        }
-        Matches::Json(ranges) => {
-            raw.clear();
-            accepted.extend(ranges);
-        }
-    };
     for part in bytes.chunks(chunk) {
         scan.feed(part)?;
-        collect(scan.drain());
     }
-    collect(scan.complete()?);
-    Ok(accepted.into_iter().collect())
+    scan.finish()
 }
 
 #[test]
@@ -62,28 +46,6 @@ fn streaming_preserves_keys_incomplete_values_nested_json_and_overlaps() {
             }
         }
     }
-}
-
-#[test]
-fn completed_values_do_not_accumulate_with_chain_length() {
-    let mut scan = TextMatches::new("secret").unwrap();
-    scan.feed(b"[").unwrap();
-    let mut count = 0;
-    for _ in 0..20000 {
-        scan.feed(br#""secret","#).unwrap();
-        let Matches::Json(ranges) = scan.drain() else {
-            panic!("JSON selected")
-        };
-        count += ranges.len();
-        assert!(scan.decoded_ranges.is_empty());
-        assert!(scan.raw_ranges.is_empty());
-    }
-    scan.feed(b"]").unwrap();
-    let Matches::Json(ranges) = scan.complete().unwrap() else {
-        panic!("JSON selected")
-    };
-    count += ranges.len();
-    assert_eq!(count, 20000);
 }
 
 #[test]

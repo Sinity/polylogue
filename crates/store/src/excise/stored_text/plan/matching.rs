@@ -1,34 +1,75 @@
 use super::{Plan, position};
-use crate::Result;
-use crate::excise::text_matches::Matches;
+use crate::excise::text_matches::{HitSink, Scope};
+use crate::{Result, StoreError};
 use rusqlite::params;
 
+pub(in super::super) struct Hits<'a> {
+    plan: &'a Plan,
+    input: &'a str,
+    chain: i64,
+}
+
+impl HitSink for Hits<'_> {
+    fn scope(&mut self) -> Result<Scope> {
+        let next = self
+            .plan
+            .next_scope
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Invalid("match scope overflow".into()))?;
+        position(next)?;
+        self.plan.next_scope.set(next);
+        Ok(next)
+    }
+
+    fn hit(&mut self, scope: Scope, start: u64, end: u64) -> Result<()> {
+        self.plan
+            .conn
+            .prepare_cached("INSERT OR IGNORE INTO candidate_matches VALUES (?1,?2,?3)")?
+            .execute(params![position(scope)?, position(start)?, position(end)?])?;
+        Ok(())
+    }
+
+    fn accept(&mut self, scope: Scope, parent: Scope) -> Result<()> {
+        self.plan
+            .conn
+            .prepare_cached(
+                "INSERT OR IGNORE INTO candidate_matches
+            SELECT ?1,start,end FROM candidate_matches WHERE scope=?2",
+            )?
+            .execute(params![position(parent)?, position(scope)?])?;
+        self.discard(scope)
+    }
+
+    fn discard(&mut self, scope: Scope) -> Result<()> {
+        self.plan
+            .conn
+            .prepare_cached("DELETE FROM candidate_matches WHERE scope=?1")?
+            .execute([position(scope)?])?;
+        Ok(())
+    }
+}
+
+impl Hits<'_> {
+    pub(in super::super) fn finish(mut self, scope: Scope) -> Result<()> {
+        self.plan
+            .conn
+            .prepare_cached(
+                "INSERT OR IGNORE INTO matches
+            SELECT ?1,?2,start,end FROM candidate_matches WHERE scope=?3",
+            )?
+            .execute(params![self.input, self.chain, position(scope)?])?;
+        self.discard(scope)
+    }
+}
+
 impl Plan {
-    pub(in super::super) fn collect(&self, input: &str, chain: i64, batch: Matches) -> Result<()> {
-        let ranges = match batch {
-            Matches::Undecided(ranges) => {
-                let mut insert = self
-                    .conn
-                    .prepare_cached("INSERT OR IGNORE INTO raw_matches VALUES (?1,?2,?3,?4)")?;
-                for (start, end) in ranges {
-                    insert.execute(params![input, chain, position(start)?, position(end)?])?;
-                }
-                return Ok(());
-            }
-            Matches::Plain(ranges) => {
-                self.conn.execute(
-                    "INSERT OR IGNORE INTO matches SELECT * FROM raw_matches WHERE input=?1 AND chain=?2",
-                    params![input, chain],
-                )?;
-                ranges
-            }
-            Matches::Json(ranges) => ranges,
-        };
-        self.conn.execute(
-            "DELETE FROM raw_matches WHERE input=?1 AND chain=?2",
-            params![input, chain],
-        )?;
-        self.matches(input, chain, &ranges)
+    pub(in super::super) fn hits<'a>(&'a self, input: &'a str, chain: i64) -> Hits<'a> {
+        Hits {
+            plan: self,
+            input,
+            chain,
+        }
     }
 
     /// Counts and observations keep exact hits. Writes use a separate ordered,

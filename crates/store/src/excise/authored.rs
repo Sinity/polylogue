@@ -4,9 +4,9 @@ use super::*;
 
 fn redact_value(value: &str, needle: &str, json: bool) -> Result<Option<String>> {
     let mut scan = if json && serde_json::from_str::<serde_json::Value>(value).is_ok() {
-        text_matches::TextMatches::new(needle)?
+        text_matches::Collected::new(needle)?
     } else {
-        text_matches::TextMatches::plain(needle)?
+        text_matches::Collected::plain(needle)?
     };
     scan.feed(value.as_bytes())?;
     let ranges = scan.finish()?;

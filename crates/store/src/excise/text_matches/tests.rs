@@ -1,3 +1,4 @@
+use super::Collected as TextMatches;
 use super::*;
 
 fn blanked(bytes: &[u8], ranges: &[(u64, u64)]) -> Vec<u8> {
