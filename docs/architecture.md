@@ -87,8 +87,24 @@ arrays are output data, not scalar predicates, sort keys or aggregates. Notes an
 excisions use the archive counter, sessions and removals the index counter; their
 combined presentation order is not a total causal order. `view.cursor` describes
 the query's view, not acknowledgement that all change pages were consumed. The
-CLI still uses ordinary query pages; automatic JSON-lines replay and per-entry
-resume acknowledgement are not implemented.
+`changes --since POSITION` command instead prepares one finite batch. Its
+fixed relation is visited one row at a time through Store's query owner, shaped,
+validated and masked into an unnamed temporary file. No bytes escape until
+all rows pass. The Reader is then dropped before socket delivery, so a slow
+receiver holds file bytes rather than a WAL snapshot. File space scales with the
+batch; the largest decoded row and SQLite ordering remain separate costs.
+
+The feed emits `begin`, `change` and `complete` JSON lines. Event lines retain the
+previous completed position (null initially). Only `complete` offers the new
+position, after every reference was written. The receiver must apply or stage all
+preceding records before persisting it; that line proves neither receiver durability
+nor a server acknowledgement. Disconnects and unknown outcomes may replay references.
+Archive notes/excisions come in their local order, followed by independent index
+session/removal references. Initial or changed-generation batches mark replacement:
+replace current session and note reference membership and replay every note and canonical
+excision before accepting completion. These are references and removal selections,
+not session payload replication. Arbitrary `changes` queries retain ordinary
+composition and page semantics; they cannot be used as delivery acknowledgement.
 
 `polylogue-engine` discovers changes, retains input bytes and coordinates
 parsing. Existing input directories are watched recursively. A missing location

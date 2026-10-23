@@ -18,6 +18,10 @@ pub enum Request {
         bytes: Vec<u8>,
     },
     Status,
+    /// Finite JSON-lines change-reference batch over the existing socket.
+    Changes {
+        since: Option<String>,
+    },
     /// A query in the query language. `cursor` continues a previous page;
     /// `page_size` overrides the unit's default page; `why` explains an
     /// empty result clause by clause.
@@ -150,6 +154,7 @@ impl Request {
         match self {
             Self::Status
             | Self::Query { .. }
+            | Self::Changes { .. }
             | Self::Read { .. }
             | Self::Export { .. }
             | Self::Notes { .. }

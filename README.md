@@ -70,7 +70,8 @@ binary through the HTTP adapter, and neither operation is offered through CLI or
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
 | `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
-| `live`, `notices`, `changes`, `work` | Sessions running now, signal notices, what changed since a cursor, the work graph. |
+| `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. |
+| `changes [--since POSITION]` | A finite JSON-lines batch of session/note/removal references and excision selections. Apply the complete batch before persisting its final position. |
 | `sql STATEMENT` | Read-only SQL over the stable views. |
 | `excise TARGET` | Remove a session, input or text. [Text excision and supported representations](docs/excision.md). |
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |

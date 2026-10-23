@@ -39,6 +39,7 @@ impl From<QueryError> for Failure {
     }
 }
 
+pub(crate) mod feed;
 mod page;
 use page::Cursor;
 

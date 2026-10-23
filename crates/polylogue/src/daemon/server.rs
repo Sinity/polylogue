@@ -27,6 +27,15 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
+            Ok(Request::Changes { since }) => match service::change_feed(d, since.as_deref()) {
+                Ok(mut file) => {
+                    if std::io::copy(&mut file, &mut out).is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                Err(response) => response,
+            },
             Ok(r) => handle(r, d),
             Err(e) => error("bad_request", e),
         };

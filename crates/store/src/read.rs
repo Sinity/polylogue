@@ -15,6 +15,8 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
+mod rows;
+
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
     archive: Archive,
@@ -941,46 +943,6 @@ impl Reader<'_> {
             parsed_upto: parsed_upto as u64,
             parser_version: parser_version.map(|v| v as u32),
         }))
-    }
-
-    /// Runs read-only SQL and returns each row as a JSON object. Parameters
-    /// bind by number (`?1`, `?2`, …); those past the highest number the
-    /// statement uses are not bound, so one parameter list serves several
-    /// statements of one compiled query.
-    pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {
-        crate::fault::check("read.query", sql)?;
-        let mut stmt = self.conn()?.prepare_cached(sql)?;
-        let names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
-        let wanted = stmt.parameter_count();
-        for (i, p) in params.iter().take(wanted).enumerate() {
-            stmt.raw_bind_parameter(i + 1, p)?;
-        }
-        let mut rows = stmt.raw_query();
-        let mut out = vec![];
-        while let Some(r) = rows.next()? {
-            let mut obj = serde_json::Map::new();
-            for (i, name) in names.iter().enumerate() {
-                use rusqlite::types::ValueRef;
-                let v = match r.get_ref(i)? {
-                    ValueRef::Null => serde_json::Value::Null,
-                    ValueRef::Integer(n) => n.into(),
-                    ValueRef::Real(f) => serde_json::json!(f),
-                    ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
-                    ValueRef::Blob(b) => b
-                        .iter()
-                        .map(|x| format!("{x:02x}"))
-                        .collect::<String>()
-                        .into(),
-                };
-                obj.insert(name.clone(), v);
-            }
-            out.push(serde_json::Value::Object(obj));
-        }
-        Ok(out)
     }
 }
 

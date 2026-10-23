@@ -1,0 +1,150 @@
+//! Finite feed delivery. A completion line is forwarded only after every
+//! preceding line has been validated and written, then stdout is flushed.
+use super::{Archive, Request, Response, when_ready};
+use crate::daemon::query::feed::Line;
+use polylogue_model::ChangePosition;
+use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+pub(super) fn send(
+    archive: &Archive,
+    request: &Request,
+    output: &mut impl Write,
+) -> io::Result<bool> {
+    let Request::Changes { since } = request else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a change-feed request is required",
+        ));
+    };
+    let previous = since
+        .as_deref()
+        .map(|s| {
+            ChangePosition::parse(s)
+                .map(|p| p.to_string())
+                .ok_or_else(|| invalid("the change position is invalid"))
+        })
+        .transpose()?;
+    // Only connection admission is retried. A partial stream is never resent
+    // within this output attempt; the caller retains its prior checkpoint.
+    let mut socket = when_ready(archive, || UnixStream::connect(archive.socket()))?;
+    serde_json::to_writer(&mut socket, request)?;
+    socket.write_all(b"\n")?;
+    receive(BufReader::new(socket), output, previous.as_deref())
+}
+
+fn receive(
+    mut input: impl BufRead,
+    output: &mut impl Write,
+    previous: Option<&str>,
+) -> io::Result<bool> {
+    let mut begun = None;
+    let mut seen = 0_u64;
+    let mut text = String::new();
+    loop {
+        text.clear();
+        if input.read_line(&mut text)? == 0 || !text.ends_with('\n') {
+            return Err(invalid(
+                "the change feed stopped before its completion line",
+            ));
+        }
+        let response: Response = serde_json::from_str(&text).map_err(io::Error::other)?;
+        let value = match response {
+            Response::Ok { data } => data,
+            response @ Response::Error { .. } => {
+                serde_json::to_writer(&mut *output, &response)?;
+                output.write_all(b"\n")?;
+                output.flush()?;
+                return Ok(false);
+            }
+            Response::Accepted { .. } => {
+                return Err(invalid("the change feed cannot accept a write"));
+            }
+        };
+        let line: Line = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
+        let complete = match line {
+            Line::Begin {
+                position,
+                generation,
+                replacement,
+                generation_changed,
+            } => {
+                if begun.is_some() {
+                    return Err(invalid("the change feed repeated its header"));
+                }
+                let old = previous.and_then(ChangePosition::parse);
+                let changed = old.as_ref().is_some_and(|p| p.generation != generation);
+                if position.as_deref() != previous
+                    || generation.is_empty()
+                    || generation_changed != changed
+                    || replacement != (old.is_none() || changed)
+                {
+                    return Err(invalid(
+                        "the feed header does not continue the requested position",
+                    ));
+                }
+                begun = Some((position, generation, replacement));
+                false
+            }
+            Line::Change { position, .. } => {
+                let Some((previous, _, _)) = &begun else {
+                    return Err(invalid("the change feed omitted its header"));
+                };
+                if &position != previous {
+                    return Err(invalid("an event advanced the completed change position"));
+                }
+                seen = seen
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("the change count is too large"))?;
+                false
+            }
+            Line::Complete {
+                position,
+                count,
+                replacement,
+            } => {
+                let Some((previous, generation, expected_replacement)) = &begun else {
+                    return Err(invalid("the change feed omitted its header"));
+                };
+                let target = ChangePosition::parse(&position)
+                    .ok_or_else(|| invalid("the completed change position is invalid"))?;
+                if &target.generation != generation
+                    || count != seen
+                    || &replacement != expected_replacement
+                {
+                    return Err(invalid(
+                        "the change feed completion does not describe its delivered batch",
+                    ));
+                }
+                if !replacement
+                    && previous
+                        .as_ref()
+                        .and_then(|p| ChangePosition::parse(p))
+                        .is_some_and(|p| {
+                            p.generation != target.generation
+                                || p.index > target.index
+                                || p.archive > target.archive
+                        })
+                {
+                    return Err(invalid(
+                        "the change feed completion moved its checkpoint backwards",
+                    ));
+                }
+                true
+            }
+        };
+        serde_json::to_writer(&mut *output, &value)?;
+        output.write_all(b"\n")?;
+        if complete {
+            output.flush()?;
+            return Ok(true);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
