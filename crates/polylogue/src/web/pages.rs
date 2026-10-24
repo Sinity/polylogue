@@ -22,6 +22,7 @@ pub fn layout(title: &str, query: &str, cli: &str, body: &str) -> String {
 <script type="module" src="/assets/reader.js"></script>
 </head><body>
 <header class="top"><a class="home" href="/">Polylogue</a>
+<a href="/cost">Cost and usage</a>
 <form class="search" action="/search" method="get" role="search">
 <label for="q" class="visually-hidden">Query</label>
 <input id="q" name="q" type="search" value="{query}" placeholder="Search or query (/)" autocomplete="off" spellcheck="false">
@@ -115,13 +116,25 @@ fn link_sessions(html: &str, data: &Value) -> String {
 
 /// `/s/SESSION`: the session in the chosen view; tool calls collapsed to
 /// one line, outcome first, expandable.
-pub fn session(session: &Session, messages: &[Message], view: View, view_name: &str) -> String {
+pub fn session(
+    session: &Session,
+    messages: &[Message],
+    view: View,
+    view_name: &str,
+    data: &Value,
+    links: &Value,
+) -> String {
     let id = session.id.to_string();
     let title = polylogue_render::mask(
-        &session
-            .title
-            .as_ref()
-            .map_or_else(|| id.clone(), |t| t.text.clone()),
+        &data["display_title"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                session
+                    .title
+                    .as_ref()
+                    .map_or_else(|| id.clone(), |t| t.text.clone())
+            }),
     );
     let mut body = format!(
         "<article class=\"session\"><h1>{}</h1><p class=\"meta\"><code>{}</code>",
@@ -148,13 +161,122 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         );
     }
     body.push_str("</nav>");
+    let scope = format!(
+        "sessions where id:{}",
+        serde_json::to_string(&id).expect("string")
+    );
+    let _ = write!(
+        body,
+        "<p><a href=\"/cost?q={}\">Session cost and usage</a></p>",
+        encode_id(&scope)
+    );
+    body.push_str(&lineage(&data["lineage"], links));
     let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
     let mut body = body.into_bytes();
     html::fragment(&items, view, &mut body).expect("writing UTF-8 HTML to a Vec cannot fail");
     body.extend_from_slice(b"</article>");
     let body = String::from_utf8(body).expect("HTML is rendered from UTF-8 strings");
-    let cli = format!("polylogue read {} --view {view_name}", shell_quote(&id));
+    let cli = format!(
+        "polylogue read {} --logical --view {view_name}",
+        shell_quote(&id)
+    );
     layout(&title, "", &cli, &body)
+}
+
+/// Usage text is shared with the CLI, including unknown and partial totals.
+pub fn cost(scope: &str, data: &Value) -> String {
+    let report = polylogue_render::measures::usage(data);
+    let count = |key: &str| {
+        data[key]
+            .as_u64()
+            .map_or_else(|| "unknown".to_owned(), |n| n.to_string())
+    };
+    let body = format!(
+        "<h1>Cost and usage</h1><form action=\"/cost\" method=\"get\"><label for=\"scope\">Session query</label> <input id=\"scope\" name=\"q\" value=\"{}\"> <button>Measure</button></form>\
+         <p>Physical response records at source record time. API-equivalent figures use catalog list prices; tool-reported figures remain separate. Known sums exclude unreported usage and unpriced responses shown below.</p>\
+         <p>{} known response records; {} model items excluded because response boundaries are unknown. Independent usage observations are reported separately below.</p><pre>{}</pre><p><a href=\"/search?q={}\">Browse selected sessions</a></p>",
+        esc(scope),
+        count("known_response_messages"),
+        count("unknown_boundary_items"),
+        esc(&report),
+        encode_id(scope)
+    );
+    layout(
+        "Cost and usage",
+        "",
+        &format!("polylogue measure usage {}", shell_quote(scope)),
+        &body,
+    )
+}
+
+fn lineage(status: &Value, links: &Value) -> String {
+    let mut body = String::from("<section aria-label=\"Session lineage\"><h2>Session lineage</h2>");
+    match status["complete"].as_bool() {
+        Some(true) => body.push_str("<p>Logical ancestry complete.</p>"),
+        Some(false) => body.push_str("<p role=\"status\">Incomplete logical ancestry. Only available proven history is shown.</p>"),
+        None => body.push_str("<p>Logical ancestry status unknown.</p>"),
+    }
+    if let Some(issues) = status["issues"].as_array().filter(|v| !v.is_empty()) {
+        body.push_str("<ul>");
+        for issue in issues {
+            let _ = write!(body, "<li><code>{}</code></li>", esc(&issue.to_string()));
+        }
+        body.push_str("</ul>");
+    }
+    if let Some(error) = links["error"].as_str() {
+        let _ = write!(
+            body,
+            "<p role=\"status\">Links unavailable: {}</p>",
+            esc(error)
+        );
+    } else {
+        body.push_str("<div class=\"lineage-table\"><table class=\"results\"><caption>Recorded session relationships</caption><thead><tr>");
+        let columns = [
+            "parent",
+            "child",
+            "kind",
+            "how",
+            "evidence",
+            "pending",
+            "branch_point",
+        ];
+        for column in columns {
+            let _ = write!(
+                body,
+                "<th scope=\"col\">{}</th>",
+                esc(&column.replace('_', " "))
+            );
+        }
+        body.push_str("</tr></thead><tbody>");
+        for row in links["rows"].as_array().into_iter().flatten() {
+            body.push_str("<tr>");
+            for column in columns {
+                let value = &row[column];
+                let shown = match value {
+                    Value::Null => "unknown".into(),
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                if matches!(column, "parent" | "child") && value.as_str().is_some() {
+                    let _ = write!(
+                        body,
+                        "<td><a href=\"/s/{}\">{}</a></td>",
+                        encode_id(&shown),
+                        esc(&shown)
+                    );
+                } else {
+                    let _ = write!(body, "<td>{}</td>", esc(&shown));
+                }
+            }
+            body.push_str("</tr>");
+        }
+        body.push_str("</tbody></table></div>");
+        if links["next"].as_str().is_some() {
+            body.push_str("<p>Only the first 100 links are shown.</p>");
+        }
+    }
+    body.push_str("</section>");
+    body
 }
 
 /// A page for an error: a typed kind and a message, never a local path or
@@ -182,3 +304,6 @@ pub fn auth() -> String {
         "<div class=\"auth\" id=\"auth\"><p>Opening the reader… If this page stays, run <code>polylogue web</code> again.</p></div>",
     )
 }
+
+#[cfg(test)]
+mod tests;

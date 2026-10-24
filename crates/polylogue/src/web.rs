@@ -154,6 +154,7 @@ pub fn router(web: Arc<Web>) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/search", get(search))
+        .route("/cost", get(cost))
         .route("/s/{id}", get(session))
         .route("/auth", get(auth_page).post(auth_exchange))
         .route("/assets/reader.css", get(css))
@@ -329,6 +330,51 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     }
 }
 
+/// Cost uses the query owner's accounting and scope validation.
+async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
+    let scope = if p.q.trim().is_empty() {
+        "sessions"
+    } else {
+        p.q.trim()
+    };
+    let text = format!("{scope} | measure usage");
+    match ask(
+        &web,
+        Request::Query {
+            text,
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            fields: vec![],
+        },
+    )
+    .await
+    {
+        Response::Ok { data } => page(pages::cost(scope, &scrubbed(&web, data)["data"])),
+        Response::Error { kind, message, .. } => failed(
+            if matches!(
+                kind.as_str(),
+                "bad_request"
+                    | "query"
+                    | "invalid_query"
+                    | "unknown_field"
+                    | "bad_value"
+                    | "not_a_query"
+            ) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
+            &kind,
+            &access::scrub(&message, &web.daemon.archive.root),
+        ),
+        Response::Accepted { .. } => {
+            failed(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no data")
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ReadQuery {
     view: Option<String>,
@@ -362,7 +408,37 @@ async fn session(
             match (session, messages) {
                 (Ok(s), Ok(m)) => {
                     let m: Vec<polylogue_model::Message> = m;
-                    page(pages::session(&s, &m, view, &view_name))
+                    let links = ask(
+                        &web,
+                        Request::Query {
+                            text: "self | links".into(),
+                            cursor: None,
+                            page_size: Some(100),
+                            why: false,
+                            session: Some(id.clone()),
+                            fields: [
+                                "parent",
+                                "child",
+                                "kind",
+                                "how",
+                                "evidence",
+                                "pending",
+                                "branch_point",
+                            ]
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect(),
+                        },
+                    )
+                    .await;
+                    let links = match links {
+                        Response::Ok { data } => scrubbed(&web, data),
+                        Response::Error { message, .. } => {
+                            serde_json::json!({"error": access::scrub(&message, &web.daemon.archive.root)})
+                        }
+                        Response::Accepted { .. } => serde_json::json!({"error": "no link data"}),
+                    };
+                    page(pages::session(&s, &m, view, &view_name, &data, &links))
                 }
                 _ => failed(
                     StatusCode::INTERNAL_SERVER_ERROR,

@@ -116,6 +116,19 @@ when present, otherwise the derived first-prompt title. JSON reads carry this
 as `display_title`, separate from the recorded `session` metadata. Importable
 exports retain source fields.
 
+The web reader's `/cost` page runs the same physical usage report as
+`measure usage`, including unknown usage, unpriced responses, independent
+recorded observations and the price catalog. Enter a session query to narrow
+its scope, or follow **Session cost and usage** from a session. **Browse selected
+sessions** returns to the query reader. API-equivalent cost and tool-reported
+cost are separate figures.
+
+Session pages show logical ancestry completeness, unresolved ancestry issues,
+and links to related sessions with the retained relationship evidence and branch
+point when available. Missing ancestry remains explicit. These are session
+relationships; the reader does not yet expose exact retained input versions and
+raw source ranges.
+
 ## Repository layout
 
 - `crates/model`: shared types (identities, sessions, messages, blocks,
