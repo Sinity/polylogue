@@ -644,3 +644,11 @@ pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
         position: x.span.start,
     })
 }
+
+pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let parts = x.values().into_iter().map(|value| {
+        let parameter = c.text_param(&value);
+        format!("EXISTS(SELECT 1 FROM json_tree(pl_block({}.data)) event_text_value WHERE event_text_value.type='text' AND instr(pl_key(event_text_value.atom),pl_key({parameter}))>0)",x.row())
+    }).collect();
+    any_of(x, parts)
+}

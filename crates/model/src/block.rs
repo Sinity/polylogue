@@ -195,6 +195,8 @@ pub struct Attachment {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentDirection {
+    /// The source records the media without establishing model delivery or authorship.
+    Unknown,
     #[default]
     Input,
     Output,

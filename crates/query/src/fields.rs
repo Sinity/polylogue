@@ -621,6 +621,7 @@ pub static FIELDS: &[Field] = &[
     f(Files, "first_at", Time, "").sql("{r}.first_at"),
     f(Files, "last_at", Time, "").sql("{r}.last_at"),
     // events
+    sp(Events, "text", "a substring in one textual observation value", custom::event_text),
     f(Events, "input", Match, "the retained input owning this observation").sql("{r}i.id"),
     f(Events, "source", Match, "the input's source parser").sql("{r}i.format"),
     f(Events, "origin", Match, "conversation origin, or source format when unbound").sql("COALESCE({s}.origin,{r}i.format)"),

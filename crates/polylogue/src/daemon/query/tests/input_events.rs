@@ -48,6 +48,24 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
     projection.fields = &fields;
     let projected = run(&reader, projection).unwrap();
     assert_eq!(projected["rows"][0]["data"], data);
+    assert_eq!(
+        run(&reader, ask("events where text:λ.rs")).unwrap()["count"],
+        2
+    );
+    assert_eq!(
+        run(&reader, ask("events where text:missing")).unwrap()["count"],
+        0
+    );
+    assert_eq!(
+        run(&reader, ask("events where text:0")).unwrap()["count"],
+        0,
+        "numbers do not become text evidence"
+    );
+    assert_eq!(
+        run(&reader, ask("events where text:approved")).unwrap()["count"],
+        0,
+        "field labels are not supplied textual values"
+    );
     let kept = keep(&reader, ask("events")).unwrap();
     assert_eq!(kept["rows"][0]["data"], data);
 }
