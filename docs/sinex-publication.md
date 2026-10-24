@@ -1,17 +1,19 @@
 # Publishing bytes to Sinex
 
 The [Sinex caller](../crates/sinex/src/producer_bytes.rs) stages byte-bearing
-publications under the shared protocol's private producer spool. It sends an
+publications under the shared transport's private producer spool. It sends an
 explicit class and a reservation for the producer and final frame before the
 receiver can install bytes in public CAS. The receiver independently copies and
 verifies the private roles under its durable ownership. Polylogue's current
 archive publication uses `Open`; sealed byte publication refuses before reading
 or staging plaintext. Receivers without the versioned reservation response refuse.
 
-This caller uses same-host private placement. Native qualification runs the
-publisher and receiver under the same UID. Cross-UID spool access and Nix
-integration remain separate work (`sxnext-9zw.14.2.4.4`); remote byte upload
-belongs to the shared protocol's Source drivers.
+This caller uses same-host private placement. Its native qualification runs the
+publisher and receiver under the same UID. The shared transport and store support
+declared group roots (2770 directories and 0640 files); upstream distinct-UID
+controls cover that handoff and plain readback. Installed Polylogue cross-UID
+operation needs separate qualification. Remote byte upload belongs to the Source
+drivers.
 
 [Store](../crates/store/src/sinex_rows.rs) exports source blobs as anonymous,
 hash-verified plain snapshots. Publication never writes public Sinex CAS directly.
