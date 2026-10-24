@@ -141,7 +141,7 @@ impl ExportParser for OtelGenAi {
             sink.out.sessions.push(s);
         }
         sink.out.events.push(Event {
-            session: sid.clone(),
+            session: Some(sid.clone()),
             kind: "otel_span".into(),
             at: span.start,
             after: None,
@@ -299,7 +299,7 @@ fn model_span(
 /// carried them, as an event on the conversation.
 fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>) {
     sink.out.events.push(Event {
-        session: sid.clone(),
+        session: Some(sid.clone()),
         kind: "tool_execution".into(),
         at: span.start,
         after: None,

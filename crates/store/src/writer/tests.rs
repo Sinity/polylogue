@@ -2,6 +2,8 @@ use super::*;
 use crate::ReadPool;
 use polylogue_model::{Disposition, Json, LinkKind, MessageId, SessionKind, TitleSource, Usage};
 
+mod input_events;
+
 struct World {
     _dir: tempfile::TempDir,
     archive: Archive,

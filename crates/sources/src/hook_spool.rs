@@ -154,7 +154,7 @@ impl Parser for HookSpool {
             map.insert("event_id".into(), id.clone());
         }
         out.events.push(Event {
-            session: sid,
+            session: Some(sid),
             kind: event_kind(event_type),
             at,
             after: None,

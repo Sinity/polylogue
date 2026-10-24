@@ -156,7 +156,7 @@ fn omitted_hooks_retire_with_the_session_and_links_wait_for_both_endpoints() {
     let w = world();
     let mut first = input_parse("a", 1, "old a", true);
     first.parse[0].output.events.push(Event {
-        session: sid("s"),
+        session: Some(sid("s")),
         kind: "hook_permission_request".into(),
         at: Timestamp::from_unix_ms(1000),
         after: None,

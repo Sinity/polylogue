@@ -182,7 +182,7 @@ impl DocumentParser for Capture {
         if let Some(session) = session {
             let provenance = capture.get("provenance").cloned().unwrap_or(Json::Null);
             sink.out.events.push(Event {
-                session,
+                session: Some(session),
                 kind: "browser_capture".into(),
                 at: provenance.get("captured_at").and_then(time_of),
                 after: None,

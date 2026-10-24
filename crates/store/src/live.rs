@@ -127,7 +127,7 @@ pub(crate) fn rebuild(tx: &Transaction<'_>, session_pk: i64, counter: i64) -> Re
     let mut rows = statement.query([session_pk])?;
     while let Some(row) = rows.next()? {
         let event = Event {
-            session: session.clone(),
+            session: Some(session.clone()),
             kind: row.get(0)?,
             at: row
                 .get::<_, Option<i64>>(1)?

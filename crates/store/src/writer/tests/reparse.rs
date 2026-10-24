@@ -154,7 +154,7 @@ fn omitted_hook_and_link_leave_neither_live_wait_nor_legacy_link() {
     let w = world();
     let mut old = batch("input", 0, 0, vec![], &["s"]);
     old.parse[0].output.events.push(Event {
-        session: sid("s"),
+        session: Some(sid("s")),
         kind: "hook_permission_request".into(),
         at: Timestamp::from_unix_ms(1000),
         after: None,

@@ -7,7 +7,7 @@ use polylogue_model::{
 
 fn event(kind: &str, at: i64, data: impl serde::Serialize) -> Event {
     Event {
-        session: sid("observed"),
+        session: Some(sid("observed")),
         kind: kind.into(),
         at: Timestamp::from_unix_ms(at),
         after: None,
@@ -204,7 +204,7 @@ fn boundary_scope_is_not_discarded_by_a_later_time_window_with_no_recorded_items
     let mut world = WriterWorld::new();
     let unknown_id = polylogue_model::SessionId::parse("codex:observed").unwrap();
     let mut fact = event("response_boundaries_unknown", T0, json!({}));
-    fact.session = unknown_id.clone();
+    fact.session = Some(unknown_id.clone());
     world.write_output(
         "unknown",
         "codex",
@@ -259,7 +259,7 @@ fn an_unrelated_provider_scope_does_not_taint_known_boundary_counts() {
     let mut world = WriterWorld::new();
     let unknown_id = polylogue_model::SessionId::parse("codex:unrelated").unwrap();
     let mut fact = event("response_boundaries_unknown", T0, json!({}));
-    fact.session = unknown_id.clone();
+    fact.session = Some(unknown_id.clone());
     world.write_output(
         "unknown",
         "codex",

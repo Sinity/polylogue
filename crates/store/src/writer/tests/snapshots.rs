@@ -57,7 +57,7 @@ fn repeated_active_leaf_uses_snapshot_order_in_both_replay_orders() {
             b.change = Change::Reparse { chain: 1 };
             b.length = 300;
             b.parse[0].output.events.push(polylogue_model::Event {
-                session: sid("s"),
+                session: Some(sid("s")),
                 kind: "active_leaf".into(),
                 at: None,
                 after: Some(MessageId::parse(&format!("claude-code:{leaf}")).unwrap()),
@@ -102,7 +102,7 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
             for (input, leaf, at) in observations {
                 let mut b = snapshot(input, 0, false, &[("a", "A"), ("b", "B")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
-                    session: sid("s"),
+                    session: Some(sid("s")),
                     kind: "active_leaf".into(),
                     at: timed.then(|| Timestamp::from_unix_ms(at).unwrap()),
                     after: Some(MessageId::parse(&format!("claude-code:{leaf}")).unwrap()),

@@ -127,7 +127,7 @@ struct DocumentEvent;
 impl DocumentParser for DocumentEvent {
     fn document(&self, _: &[u8], out: &mut Output, records: &mut Records) {
         out.events.push(polylogue_model::Event {
-            session: polylogue_model::SessionId::parse("example:session").unwrap(),
+            session: Some(polylogue_model::SessionId::parse("example:session").unwrap()),
             kind: "metadata".into(),
             at: None,
             after: None,

@@ -119,7 +119,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     let select: Vec<String> = columns
         .iter()
         .map(|col| {
-            if col.kind == ColKind::Ids {
+            if matches!(col.kind, ColKind::Ids | ColKind::Json) {
                 format!("(j.value -> '$.\"{0}\"') AS \"{0}\"", col.name)
             } else {
                 format!("json_extract(j.value, '$.\"{0}\"') AS \"{0}\"", col.name)

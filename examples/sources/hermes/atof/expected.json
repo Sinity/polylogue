@@ -1,0 +1,103 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "atof": 3
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-01-02T03:04:05Z",
+        "data": {
+          "atof_version": "0.1",
+          "category": "tool",
+          "data": {
+            "command": "printf synthetic"
+          },
+          "kind": "scope",
+          "metadata": {
+            "session_id": "run-alpha",
+            "tool_call_id": "call-one"
+          },
+          "name": "terminal",
+          "scope_category": "start",
+          "timestamp": "2026-01-02T03:04:05Z",
+          "uuid": "00000000-0000-4000-8000-000000000001"
+        },
+        "kind": "hermes_tool_start",
+        "range": [
+          0,
+          282
+        ]
+      },
+      {
+        "at": "2026-01-02T03:04:06Z",
+        "data": {
+          "atof_version": "0.1",
+          "category": "tool",
+          "data": {
+            "duration_ms": 1000,
+            "stdout": "synthetic result\n"
+          },
+          "kind": "scope",
+          "metadata": {
+            "session_id": "run-alpha",
+            "status": "success",
+            "tool_call_id": "call-one"
+          },
+          "name": "terminal",
+          "scope_category": "end",
+          "timestamp": "2026-01-02T03:04:06Z",
+          "uuid": "00000000-0000-4000-8000-000000000001"
+        },
+        "kind": "hermes_tool_end",
+        "range": [
+          282,
+          601
+        ]
+      },
+      {
+        "data": {
+          "field": "timestamp",
+          "interpretation": "ATOF RFC3339 time unreadable; time remains unknown"
+        },
+        "kind": "hermes_import_diagnostic",
+        "range": [
+          601,
+          857
+        ]
+      },
+      {
+        "data": {
+          "atof_version": "0.1",
+          "category": "agent",
+          "data": {
+            "approved": false,
+            "reason": " synthetic reason λ "
+          },
+          "kind": "mark",
+          "metadata": {
+            "session_id": "default"
+          },
+          "name": "hermes.approval.response",
+          "timestamp": "not-a-time",
+          "uuid": "00000000-0000-4000-8000-000000000002"
+        },
+        "kind": "hermes_approval_response",
+        "range": [
+          601,
+          857
+        ]
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": []
+  }
+}

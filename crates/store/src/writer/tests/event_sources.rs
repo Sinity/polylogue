@@ -6,7 +6,7 @@ fn send_event(w: &World, input: &str, change: Change, version: u32, order: u64, 
     b.parse[0].parser_version = version;
     b.parse[0].order_from = Some(order);
     b.parse[0].output.events.push(polylogue_model::Event {
-        session: sid("s"),
+        session: Some(sid("s")),
         kind: "notice".into(),
         at: None,
         after: None,

@@ -120,6 +120,11 @@ impl Field {
         self.sql.map(|e| e.render(a, now))
     }
 
+    const fn json(mut self) -> Self {
+        self.value_kind = Some(ColKind::Json);
+        self
+    }
+
     /// The kind of the field's value as a column.
     pub fn column_kind(&self) -> ColKind {
         if let Some(k) = self.value_kind {
@@ -616,6 +621,13 @@ pub static FIELDS: &[Field] = &[
     f(Files, "first_at", Time, "").sql("{r}.first_at"),
     f(Files, "last_at", Time, "").sql("{r}.last_at"),
     // events
+    f(Events, "input", Match, "the retained input owning this observation").sql("{r}i.id"),
+    f(Events, "source", Match, "the input's source parser").sql("{r}i.format"),
+    f(Events, "origin", Match, "conversation origin, or source format when unbound").sql("COALESCE({s}.origin,{r}i.format)"),
+    f(Events, "data", Substring, "the retained observation payload").sql("pl_block({r}.data)").json(),
+    f(Events, "source_chain", Number, "the retained source revision").sql("{r}.source_chain"),
+    f(Events, "source_start", Number, "record byte start").sql("{r}.source_start"),
+    f(Events, "source_end", Number, "record byte end").sql("{r}.source_end"),
     f(
         Events,
         "kind",

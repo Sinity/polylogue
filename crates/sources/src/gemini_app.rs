@@ -100,7 +100,7 @@ impl ExportParser for GeminiApp {
         }
         if e.verb != "Prompted" {
             sink.out.events.push(Event {
-                session: sid.clone(),
+                session: Some(sid.clone()),
                 kind: "activity".into(),
                 at: e.at,
                 after: state.last_message(&sid)?,

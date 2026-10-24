@@ -162,6 +162,7 @@ pub(super) fn remove_input(
             t.index
                 .execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
         }
+        t.index.execute("DELETE FROM event WHERE NOT EXISTS(SELECT 1 FROM event_source WHERE event_id=event.id)", [])?;
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
         crate::writer::promote_current(t.index, messages.into_iter().map(Ok), t.counter)?;

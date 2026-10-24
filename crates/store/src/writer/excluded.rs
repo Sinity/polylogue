@@ -23,7 +23,12 @@ pub(super) fn matching(
                 sessions.insert(m.message.session.to_string());
                 messages.insert(m.message.id.to_string());
             }
-            sessions.extend(o.events.iter().map(|e| e.session.to_string()));
+            sessions.extend(
+                o.events
+                    .iter()
+                    .filter_map(|e| e.session.as_ref())
+                    .map(ToString::to_string),
+            );
             for link in &o.links {
                 sessions.insert(link.parent.to_string());
                 sessions.insert(link.child.to_string());
@@ -74,7 +79,11 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch
             .output
             .events
             .iter()
-            .map(|e| !r.sessions.contains(&e.session.to_string()))
+            .map(|e| {
+                e.session
+                    .as_ref()
+                    .is_none_or(|id| !r.sessions.contains(&id.to_string()))
+            })
             .collect();
         let mut i = 0;
         p.output.messages.retain(|_| {

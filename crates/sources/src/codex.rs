@@ -278,7 +278,7 @@ fn unwrap(v: &Json) -> Rec<'_> {
 impl Rollout {
     fn unknown_boundaries(session: SessionId, out: &mut Output) {
         out.events.push(Event {
-            session,
+            session: Some(session),
             kind: "response_boundaries_unknown".into(),
             at: None,
             after: None,
@@ -410,7 +410,7 @@ impl Rollout {
             return Disposition::refused("no thread ID in the file name or its header");
         };
         out.events.push(Event {
-            session,
+            session: Some(session),
             kind: kind.to_owned(),
             at,
             after: carry.last.clone(),
@@ -433,7 +433,7 @@ impl Rollout {
             let event = out.events.last_mut().expect("new event");
             event.after = None;
             if let Some(parent) = &carry.copied_observation {
-                event.session = parent.clone();
+                event.session = Some(parent.clone());
             }
         }
         disposition

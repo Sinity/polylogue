@@ -30,7 +30,7 @@ fn doc() -> Document {
             message("claude-code:m2", "hi", Role::Assistant),
         ],
         events: vec![Event {
-            session: sid.clone(),
+            session: Some(sid.clone()),
             kind: "compaction".into(),
             at: None,
             after: Some(MessageId::parse("claude-code:m1").unwrap()),

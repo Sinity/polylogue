@@ -379,7 +379,7 @@ impl ClaudeCode {
         carry.names.insert(key, name.to_owned());
         if let Some(session) = session_id(stem) {
             out.events.push(Event {
-                session,
+                session: Some(session),
                 kind: kind.to_owned(),
                 at: v.get("timestamp").and_then(time::rfc3339),
                 after: carry.last.clone(),
@@ -405,7 +405,7 @@ impl ClaudeCode {
             return Disposition::refused("session ID is empty");
         };
         out.events.push(Event {
-            session,
+            session: Some(session),
             kind: kind.to_owned(),
             at: v.get("timestamp").and_then(time::rfc3339),
             after: carry.last.clone(),
