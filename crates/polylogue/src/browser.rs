@@ -15,6 +15,7 @@
 pub mod actions;
 mod captures;
 pub mod native;
+mod notes;
 pub mod routes;
 
 use crate::daemon::{Request, Response};

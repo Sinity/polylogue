@@ -165,13 +165,13 @@ describe("ambient capture status surface", () => {
     expect(text).toContain("Native host online");
     expect(text).toContain("Observed; no action needed");
     expect(text).toContain("Archive was already current");
-    expect(text).toContain("Save assertion — receiver API unavailable");
+    expect(text).toContain("Save note");
 
     const chip = api.shadow.querySelector(".chip");
     expect(chip.getAttribute("aria-label")).toContain("Safe / current");
     expect(api.shadow.querySelector(".count").textContent).toBe("");
     const assertion = [...api.shadow.querySelectorAll("button")]
-      .find((button) => button.textContent.includes("Save assertion"));
+      .find((button) => button.textContent.includes("Save note"));
     expect(assertion.disabled).toBe(true);
   });
 
@@ -241,7 +241,7 @@ describe("ambient capture status surface", () => {
     expect(runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ include_intelligence: true }));
   });
 
-  it("creates an ephemeral assertion candidate only for text selected inside a supported message", async () => {
+  it("prepares a note only for text selected inside one supported message", async () => {
     const dom = freshDom(`<!doctype html><html><body>
       <article data-message-author-role="assistant"><span id="inside">A supported message selection</span></article>
       <p id="outside">Page chrome selection</p>
@@ -260,27 +260,23 @@ describe("ambient capture status surface", () => {
     };
 
     const insideSelection = selectNode(dom.window.document.getElementById("inside"));
-    expect(api.getSelectionCandidate()).toEqual({
-      kind: "selection_assertion_candidate",
+    expect(api.getSelection()).toEqual({
+      kind: "selection_note",
       provider: "chatgpt",
       source_url: "https://chatgpt.com/c/conversation-1",
       captured_at: expect.any(String),
       text: "A supported message selection",
       truncated: false,
       persistence: "not_supported",
-      // Set by the mounted surface once identity is resolved; both stay null
-      // while the receiver has accepted no native identity for this message.
-      message_ref: null,
-      evidence_ref: null,
     });
-    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(insideSelection)?.text)
+    expect(dom.window.PolylogueAmbientSurface.deriveSelection(insideSelection)?.text)
       .toBe("A supported message selection");
 
     const outsideSelection = selectNode(dom.window.document.getElementById("outside"));
-    expect(api.getSelectionCandidate()).toBeNull();
+    expect(api.getSelection()).toBeNull();
     expect(api.shadow.querySelector(".editor").hidden).toBe(true);
     expect(api.shadow.querySelector("button.disabled").disabled).toBe(true);
-    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(outsideSelection)).toBeNull();
+    expect(dom.window.PolylogueAmbientSurface.deriveSelection(outsideSelection)).toBeNull();
 
     const crossMessageRange = dom.window.document.createRange();
     crossMessageRange.setStart(dom.window.document.getElementById("inside").firstChild, 2);
@@ -289,35 +285,44 @@ describe("ambient capture status surface", () => {
     crossMessageSelection.removeAllRanges();
     crossMessageSelection.addRange(crossMessageRange);
     dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
-    expect(api.getSelectionCandidate()).toBeNull();
-    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(crossMessageSelection)).toBeNull();
+    expect(api.getSelection()).toBeNull();
+    expect(dom.window.PolylogueAmbientSurface.deriveSelection(crossMessageSelection)).toBeNull();
   });
 
-  it("enables saving for every accepted native message identity in the conversation", async () => {
-    const messageRef = "chatgpt:conversation-1:n:message-2";
-    const evidenceRef = "browser-capture:artifact#message:message-2";
-    const dom = freshDom(`<!doctype html><html><body>
-      <article data-message-author-role="assistant" data-message-id="message-2"><span id="inside">Accepted turn</span></article>
-    </body></html>`);
-    const observation = {
-      origin: "chatgpt",
-      provider_conversation_id: "conversation-1",
-      provider_message_id: "message-2",
-      adapter_name: "ambient-selection",
-      fidelity: "native",
-    };
-    const { api } = mount(dom, missionFixture({ assertions: {
-      selection_candidate_supported: true,
-      persistence_supported: true,
-      accepted_identities: { [messageRef]: { message_ref: messageRef, evidence_ref: evidenceRef, fidelity: "native" } },
-    } }), { identityForNode: () => observation });
+  it("saves edited notes with an unchanged quote and retains the draft ID after uncertain replies", async () => {
+    const dom = freshDom('<article data-message-author-role="assistant"><span id="inside">Exact  quote\nfrom provider</span></article>');
+    const observation = { provider_conversation_id: "conversation-1", provider_message_id: "message-2", fidelity: "native" };
+    const { api, runtime } = mount(dom, missionFixture({ notes: { persistence_supported: true } }), { identityForNode: () => observation });
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
     const range = dom.window.document.createRange();
     range.selectNodeContents(dom.window.document.getElementById("inside"));
     dom.window.getSelection().addRange(range);
     dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
-
-    expect(api.getSelectionCandidate().evidence_ref).toBe(evidenceRef);
+    const body = api.shadow.querySelector("textarea");
+    body.value = "My own interpretation";
+    const writes = [];
+    runtime.sendMessage.mockImplementation(async (message) => {
+      if (message.type === "polylogue.missionControl.status") return missionFixture({ notes: { persistence_supported: true } });
+      writes.push(structuredClone(message.note));
+      if (writes.length === 1) throw new Error("reply lost");
+      return { ok: true, note: { id: message.note.request_id, repeat: true } };
+    });
+    const button = [...api.shadow.querySelectorAll("button")].find(b => b.textContent === "Save note");
+    button.click();
+    expect(writes).toHaveLength(0);
+    trustedClick(button);
+    await vi.waitFor(() => expect(api.shadow.textContent).toContain("Save not acknowledged"));
+    trustedClick(button);
+    await vi.waitFor(() => expect(api.shadow.textContent).toContain("Note already saved"));
+    expect(writes[0]).toEqual(writes[1]);
+    expect(writes[0].quote).toBe("Exact  quote\nfrom provider");
+    expect(writes[0].body).toBe("My own interpretation");
+    expect(writes[0].source.message_id).toBe("message-2");
+    body.value = "Changed after uncertain save";
+    trustedClick(button);
+    await vi.waitFor(() => expect(writes).toHaveLength(3));
+    expect(writes[2].request_id).not.toBe(writes[0].request_id);
+    expect(writes[2].quote).toBe(writes[0].quote);
   });
 
   it.each([
@@ -358,30 +363,6 @@ describe("ambient capture status surface", () => {
     panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
     expect(panel.hidden).toBe(true);
     expect(api.shadow.activeElement).toBe(chip);
-  });
-
-  it("bounds the selection idempotency key below the receiver limit", async () => {
-    // `_archive_capture_assertion_candidate` refuses a key over 240
-    // characters, and the previous `selection:<ref>:<kind>:<body>` template
-    // exceeded that for an ordinary paragraph selection, so every save
-    // returned `idempotency_key exceeds 240 characters`.
-    //
-    // Anti-vacuity: restore the raw concatenation and the length assertion
-    // fails at 2,000+ characters; a key that ignored the body would fail the
-    // "different drafts differ" assertion.
-    const dom = freshDom();
-    const { selectionIdempotencyKey } = dom.window.PolylogueAmbientSurface;
-    const evidenceRef = `browser-capture/chatgpt/${"c".repeat(200)}.json#message:msg-1`;
-    const body = "paragraph ".repeat(200);
-
-    const key = selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body);
-
-    expect(body.length).toBeGreaterThan(240);
-    expect(key.length).toBeLessThanOrEqual(240);
-    expect(key).toMatch(/^selection:[0-9a-f]{16}$/);
-    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body)).toBe(key);
-    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", `${body}!`)).not.toBe(key);
-    expect(selectionIdempotencyKey(`${evidenceRef}x`, "selection_assertion_candidate", body)).not.toBe(key);
   });
 
   it("removes itself calmly when globally disabled or hidden for the current site", async () => {

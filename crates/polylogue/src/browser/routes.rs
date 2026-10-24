@@ -30,6 +30,10 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         .route("/v1/browser-captures", post(capture))
         .route("/v1/browser-captures/inspect", post(inspect_capture))
         .route("/v1/archive-state", get(archive_state))
+        .route(
+            "/v1/notes/selection",
+            post(selection_note).layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
+        )
         .route("/v1/capture-health", get(health_list).post(health_report))
         .route("/v1/browser-actions/capabilities", get(action_capabilities))
         .route(
@@ -128,8 +132,32 @@ async fn capture_capabilities() -> HttpResponse {
         "outcomes": ["accepted", "noop"],
         "capture_jobs": false,
         "inspect": true,
+        "selection_notes": true,
     }))
     .into_response()
+}
+
+async fn selection_note(
+    State(ctx): State<Arc<Ctx>>,
+    Json(input): Json<super::notes::SelectionNote>,
+) -> HttpResponse {
+    match blocking(move || super::notes::save(&ctx, input)).await {
+        Some(Response::Ok { data }) => Json(json!({"ok":true,"note":data})).into_response(),
+        Some(Response::Error { kind, message, .. }) => {
+            let status = match kind.as_str() {
+                "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
+                "conflict" => StatusCode::CONFLICT,
+                "daemon_required" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (
+                status,
+                Json(json!({"ok":false,"error":kind,"message":message})),
+            )
+                .into_response()
+        }
+        _ => bad(StatusCode::SERVICE_UNAVAILABLE, "save_outcome_unknown"),
+    }
 }
 
 async fn inspect_capture(body: Bytes) -> HttpResponse {

@@ -16,6 +16,7 @@
       if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) return "chatgpt";
       if (hostname === "claude.ai" || hostname.endsWith(".claude.ai")) return "claude-ai";
       if (hostname === "gemini.google.com" || hostname.endsWith(".gemini.google.com")) return "gemini";
+      if (hostname === "grok.com") return "grok";
     } catch {
       return null;
     }
@@ -39,37 +40,19 @@
     return anchorMessage && anchorMessage === focusMessage ? anchorMessage : null;
   }
 
-  function selectionIdempotencyKey(evidenceRef, kind, body) {
-    // The receiver bounds an idempotency key at 240 characters
-    // (`_archive_capture_assertion_candidate`), and the editor accepts up to
-    // 10,000 while a derived selection reaches 2,000, so embedding the body
-    // made an ordinary paragraph selection fail every save with
-    // `idempotency_key exceeds 240 characters`. Carry a fixed-width digest of
-    // the same three fields: identical drafts still collapse to one candidate,
-    // and the key can no longer grow with the selection.
-    const material = `${evidenceRef}\u0000${kind}\u0000${body}`;
-    let hash = 0xcbf29ce484222325n;
-    for (let index = 0; index < material.length; index += 1) {
-      const code = material.charCodeAt(index);
-      hash = BigInt.asUintN(64, (hash ^ BigInt(code & 0xff)) * 0x100000001b3n);
-      hash = BigInt.asUintN(64, (hash ^ BigInt(code >>> 8)) * 0x100000001b3n);
-    }
-    return `selection:${hash.toString(16).padStart(16, "0")}`;
-  }
-
-  function deriveSelectionCandidate(selection, {
+  function deriveSelection(selection, {
     url = root.location?.href || "",
     provider = providerForUrl(url),
     capturedAt = new Date().toISOString(),
     identityForNode = null,
   } = {}) {
-    const text = String(selection?.toString?.() || "").replace(/\s+/g, " ").trim();
+    const text = String(selection?.toString?.() || "");
     const message = selectedMessageElement(selection);
-    if (!text || !provider || !message) return null;
+    if (!text.trim() || !provider || !message) return null;
     let identity = null;
     try { identity = identityForNode?.(message) || null; } catch { identity = null; }
     const candidate = {
-      kind: "selection_assertion_candidate",
+      kind: "selection_note",
       provider,
       source_url: url,
       captured_at: capturedAt,
@@ -282,35 +265,27 @@
     panel.appendChild(timelineSection);
 
     const selectionSection = createElement(doc, "section", "section");
-    selectionSection.appendChild(createElement(doc, "h3", "", "Selection to assertion"));
-    const selectionText = createElement(doc, "div", "selection", "Select text inside a conversation message to prepare an assertion candidate.");
+    selectionSection.appendChild(createElement(doc, "h3", "", "Save selected passage as a note"));
+    const selectionText = createElement(doc, "div", "selection", "Select text inside one conversation message to prepare a note.");
     selectionText.setAttribute("aria-live", "polite");
     const editor = createElement(doc, "div", "editor");
-    const kindLabel = createElement(doc, "label", "field", "Kind");
-    const kindSelect = doc.createElement("select");
-    for (const [value, label] of [["note", "Note"], ["claim", "Claim"], ["correction", "Correction"]]) {
-      const option = createElement(doc, "option", "", label);
-      option.value = value;
-      kindSelect.appendChild(option);
-    }
-    kindLabel.appendChild(kindSelect);
     const bodyLabel = createElement(doc, "label", "field", "Body");
     const bodyInput = doc.createElement("textarea");
     bodyInput.rows = 4;
     bodyInput.maxLength = 10000;
-    bodyInput.setAttribute("aria-label", "Assertion body");
+    bodyInput.setAttribute("aria-label", "Note body");
     bodyLabel.appendChild(bodyInput);
     const editorActions = createElement(doc, "div", "actions");
-    const assertionButton = createElement(doc, "button", "disabled", "Save assertion — receiver API unavailable");
-    assertionButton.type = "button";
-    assertionButton.disabled = true;
+    const saveButton = createElement(doc, "button", "disabled", "Save note");
+    saveButton.type = "button";
+    saveButton.disabled = true;
     const cancelButton = createElement(doc, "button", "secondary", "Cancel");
     cancelButton.type = "button";
-    editorActions.append(assertionButton, cancelButton);
-    editor.append(kindLabel, bodyLabel, editorActions);
+    editorActions.append(saveButton, cancelButton);
+    editor.append(bodyLabel, editorActions);
     editor.hidden = true;
-    const assertionDetail = createElement(doc, "p", "meta", "Candidates stay in this page only; nothing is persisted or sent.");
-    selectionSection.append(selectionText, editor, assertionDetail);
+    const noteDetail = createElement(doc, "p", "meta", "Select a passage, edit the note body and choose Save note.");
+    selectionSection.append(selectionText, editor, noteDetail);
     panel.appendChild(selectionSection);
 
     const actionSection = createElement(doc, "section", "section");
@@ -341,7 +316,9 @@
 
     let stopped = false;
     let snapshot = null;
-    let selectionCandidate = null;
+    let selectionDraft = null;
+    let draft = null;
+    let saving = false;
     let timer = null;
 
     function setTone(node, tone) {
@@ -451,14 +428,7 @@
 
       renderTimeline(nextSnapshot?.timeline);
       renderIntelligence(nextSnapshot?.intelligence);
-      const assertionRouteAdvertised = Boolean(nextSnapshot?.assertions?.persistence_supported);
-      assertionButton.disabled = true;
-      assertionButton.textContent = assertionRouteAdvertised
-        ? "Save assertion"
-        : "Save assertion — receiver API unavailable";
-      assertionDetail.textContent = assertionRouteAdvertised
-        ? "Saved items are candidates only and await explicit judgment; injection is disabled."
-        : "Candidate is ephemeral; the authenticated receiver exposes no assertion route, so nothing is sent.";
+      saveButton.disabled = saving || !nextSnapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || selectionDraft?.truncated === true;
 
       if (nextSnapshot?.ambient?.enabled === false || nextSnapshot?.ambient?.site_enabled === false) {
         stop();
@@ -509,7 +479,8 @@
     }
 
     function updateSelection() {
-      selectionCandidate = deriveSelectionCandidate(selectionSource.getSelection?.(), {
+      if (saving || editor.contains(shadow.activeElement)) return;
+      const nextSelection = deriveSelection(selectionSource.getSelection?.(), {
         url: locationSource?.href || "",
         identityForNode: identityForNode || ((node) => root.polylogueCapture?.identityObservation?.({
           provider: providerForUrl(locationSource?.href || ""),
@@ -522,60 +493,71 @@
           degradedReason: node?.getAttribute?.("data-message-id") ? null : "missing_message_id",
         }) || null),
       });
-      if (!selectionCandidate) {
+      const identity = (selection) => selection ? JSON.stringify([
+        selection.provider, selection.source_url, selection.text, selection.truncated,
+        selection.identity_observation?.provider_conversation_id,
+        selection.identity_observation?.provider_message_id, selection.identity_observation?.fidelity,
+      ]) : null;
+      if (selectionDraft && identity(selectionDraft) === identity(nextSelection)) return;
+      selectionDraft = nextSelection;
+      if (!selectionDraft) {
         editor.hidden = true;
-        assertionButton.disabled = true;
-        selectionText.textContent = "Select text inside a conversation message to prepare an assertion candidate.";
+        saveButton.disabled = true;
+        selectionText.textContent = "Select text inside one conversation message to prepare a note.";
         return;
       }
-      selectionText.textContent = selectionCandidate.text;
-      if (selectionCandidate.truncated) selectionText.textContent += "…";
-      bodyInput.value = selectionCandidate.text;
+      selectionText.textContent = selectionDraft.text;
+      if (selectionDraft.truncated) selectionText.textContent += "…";
+      bodyInput.value = selectionDraft.text;
       editor.hidden = false;
-      const observation = selectionCandidate.identity_observation;
-      const expectedMessageRef = observation?.origin && observation?.provider_conversation_id && observation?.provider_message_id
-        ? `${observation.origin}:${observation.provider_conversation_id}:n:${observation.provider_message_id}` : null;
-      const accepted = expectedMessageRef ? snapshot?.assertions?.accepted_identities?.[expectedMessageRef] : null;
-      selectionCandidate.message_ref = expectedMessageRef;
-      selectionCandidate.evidence_ref = accepted?.message_ref === expectedMessageRef ? accepted.evidence_ref : null;
-      assertionButton.disabled = !snapshot?.assertions?.persistence_supported || !selectionCandidate.evidence_ref;
-      assertionDetail.textContent = selectionCandidate.evidence_ref
-        ? "Exact message evidence attached. This remains a candidate until judged; injection is disabled."
-        : "Message identity is not yet accepted by the receiver. Draft is preserved, but saving is unavailable.";
+      draft = null;
+      const observation = selectionDraft.identity_observation;
+      const identified = observation?.fidelity === "native" && observation.provider_conversation_id && observation.provider_message_id;
+      saveButton.disabled = !snapshot?.notes?.persistence_supported || !identified || selectionDraft.truncated;
+      noteDetail.textContent = selectionDraft.truncated
+        ? "Select at most 2,000 characters; this passage is too long to save."
+        : identified
+          ? `Source: ${selectionDraft.provider}, conversation ${observation.provider_conversation_id}, message ${observation.provider_message_id}. The daemon will verify the archive target when saving.`
+          : "The page supplies no exact native conversation and message identity. Capture the conversation or choose an identified message.";
     }
 
-    async function saveAssertion() {
-      if (!selectionCandidate?.evidence_ref) return;
-      assertionButton.disabled = true;
-      assertionDetail.textContent = "Saving candidate…";
+    async function saveNote() {
+      if (!bodyInput.value.trim()) { noteDetail.textContent = "Write a note body before saving."; return; }
+      const selected = selectionDraft;
+      const observation = selected?.identity_observation;
+      if (saving || selected?.truncated || observation?.fidelity !== "native" || !observation.provider_conversation_id || !observation.provider_message_id || !bodyInput.value.trim()) return;
+      const payload = { body: bodyInput.value, quote: selected.text, source: {
+        provider: selected.provider, conversation_id: observation.provider_conversation_id,
+        message_id: observation.provider_message_id, page_url: selected.source_url, selected_at: selected.captured_at,
+      } };
+      const identity = JSON.stringify(payload);
+      if (draft?.identity !== identity) draft = { identity, note: { request_id: root.crypto.randomUUID(), ...payload } };
+      const pending = draft;
+      saving = true;
+      saveButton.disabled = true;
+      bodyInput.disabled = true;
+      cancelButton.disabled = true;
+      noteDetail.textContent = "Saving note…";
       try {
-        const response = await runtime.sendMessage({
-          type: "polylogue.assertion.capture",
-          candidate: {
-            kind: kindSelect.value,
-            body: bodyInput.value,
-            evidence_ref: selectionCandidate.evidence_ref,
-            message_ref: selectionCandidate.message_ref,
-            source_observation: selectionCandidate.identity_observation,
-            idempotency_key: selectionIdempotencyKey(selectionCandidate.evidence_ref, kindSelect.value, bodyInput.value),
-            context_policy: { inject: false },
-          },
-        });
-        if (!response?.ok) throw new Error(response?.error || "assertion_save_failed");
-        assertionDetail.textContent = response.idempotent
-          ? "Candidate already saved; no duplicate was created."
-          : "Candidate saved for judgment; injection remains disabled.";
+        const response = await runtime.sendMessage({ type: "polylogue.note.saveSelection", note: pending.note });
+        if (response?.ok !== true || response?.note?.id !== pending.note.request_id) throw new Error(response?.error || "acknowledgement missing");
+        noteDetail.textContent = response.note.repeat ? `Note already saved (${response.note.id}).` : `Note saved (${response.note.id}).`;
       } catch (error) {
-        assertionDetail.textContent = `Candidate not saved (${String(error?.message || error)}). Draft preserved.`;
+        noteDetail.textContent = `Save not acknowledged (${String(error?.message || error)}). Retry this draft to check the same note ID. Editing creates a new note.`;
       } finally {
-        assertionButton.disabled = !snapshot?.assertions?.persistence_supported || !selectionCandidate?.evidence_ref;
+        saving = false;
+        bodyInput.disabled = false;
+        cancelButton.disabled = false;
+        saveButton.disabled = !snapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || selectionDraft?.truncated === true;
       }
     }
 
-    function cancelAssertion() {
+    function cancelNote() {
+      selectionDraft = null;
+      draft = null;
       editor.hidden = true;
       bodyInput.value = "";
-      assertionDetail.textContent = "Draft canceled; transcript content was not changed.";
+      noteDetail.textContent = "Draft canceled; transcript content was not changed.";
     }
 
     async function hideOnSite() {
@@ -593,7 +575,7 @@
       // after the panel, so a shadow-root query made it the wrap target and
       // Shift+Tab from the first control moved focus OUT of an aria-modal
       // dialog -- the trap wrapped to the one element it exists to exclude.
-      return [...panel.querySelectorAll("button:not([disabled]), a[href]")]
+      return [...panel.querySelectorAll("button:not([disabled]), a[href], textarea:not([disabled]), input:not([disabled]), select:not([disabled])")]
         .filter((node) => !node.hidden && !node.closest("[hidden]"));
     }
 
@@ -624,8 +606,8 @@
     close.addEventListener("click", onGesture(closePanel));
     refreshButton.addEventListener("click", onGesture(() => { void refresh(); }));
     hideButton.addEventListener("click", onGesture(() => { void hideOnSite(); }));
-    assertionButton.addEventListener("click", onGesture(() => { void saveAssertion(); }));
-    cancelButton.addEventListener("click", onGesture(cancelAssertion));
+    saveButton.addEventListener("click", onGesture(() => { void saveNote(); }));
+    cancelButton.addEventListener("click", onGesture(cancelNote));
     doc.addEventListener("keydown", keyboardToggle);
     shadow.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !panel.hidden) {
@@ -658,19 +640,16 @@
       open: openPanel,
       close: closePanel,
       getSnapshot: () => snapshot,
-      getSelectionCandidate: () => selectionCandidate,
-      saveAssertion,
-      cancelAssertion,
+      getSelection: () => selectionDraft,
     };
     root.polylogueAmbientSurfaceMounted = api;
     return api;
   }
 
   root.PolylogueAmbientSurface = Object.freeze({
-    deriveSelectionCandidate,
+    deriveSelection,
     mount,
     providerForUrl,
-    selectionIdempotencyKey,
   });
 
   if (root.top === root.self && !root.polylogueAmbientSurfaceMounted) {

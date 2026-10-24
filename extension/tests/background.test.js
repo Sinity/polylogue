@@ -3855,3 +3855,25 @@ describe("accepted message identity storage", () => {
     expect(snapshot.assertions.accepted_identities).toEqual({});
   });
 });
+
+describe("selection note native bridge", () => {
+  it("requires an originating document and an exact note acknowledgement", async () => {
+    await loadBackground();
+    const source = { provider: "chatgpt", conversation_id: "note-conversation", message_id: "native-message", page_url: "https://chatgpt.com/c/note-conversation", selected_at: "2026-10-24T00:00:00Z" };
+    const note = { request_id: "019c6e27-e55b-73d1-87d8-4e01f1f75043", body: "Edited body", quote: "Exact quote", source };
+    const sender = { tab: { id: 7, url: source.page_url }, frameId: 0, url: source.page_url };
+    const writes = [];
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      writes.push(JSON.parse(options.body));
+      return responseJson({ ok: true, note: { id: note.request_id, repeat: true } });
+    });
+    expect(await sendRuntimeMessage({ type: "polylogue.note.saveSelection", note }, {})).toMatchObject({ ok: false, error: "provider_document_required" });
+    expect(writes).toHaveLength(0);
+    expect(await sendRuntimeMessage({ type: "polylogue.note.saveSelection", note }, sender)).toEqual({ ok: true, note: { id: note.request_id, repeat: true } });
+    expect(writes).toEqual([note]);
+    globalThis.fetch = vi.fn(async () => responseJson({ ok: true, note: { id: "another-note", repeat: false } }));
+    expect(await sendRuntimeMessage({ type: "polylogue.note.saveSelection", note }, sender)).toMatchObject({ ok: false, error: expect.stringContaining("note_acknowledgement_missing") });
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "conflict", message: "Capture the conversation and retry" }, { ok: false, status: 409 }));
+    expect(await sendRuntimeMessage({ type: "polylogue.note.saveSelection", note }, sender)).toMatchObject({ ok: false, error: expect.stringContaining("Capture the conversation") });
+  });
+});

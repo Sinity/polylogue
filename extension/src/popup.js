@@ -431,7 +431,7 @@ function ambientFallback(raw, tabUrl) {
   };
 }
 
-function renderAmbient(ambient, tabUrl = "", assertions = null) {
+function renderAmbient(ambient, tabUrl = "") {
   const enabledNode = document.getElementById("backfill-import")?.addEventListener("change", async event => {
   const file = event.target.files?.[0]; if (!file) return;
   const status = document.getElementById("backup-status");
@@ -475,9 +475,7 @@ document.getElementById("ambient-enabled");
   if (automaticCaptureNode) automaticCaptureNode.checked = ambient?.automatic_capture_enabled !== false;
   if (siteLabel) siteLabel.textContent = ambient?.site || hostLabel(tabUrl || "") || "Current site";
   if (assertionNode) {
-    assertionNode.textContent = assertions?.persistence_supported
-      ? "The receiver advertises assertion persistence, but this extension build has no authenticated write handler. Save remains disabled."
-      : "Text selections form a local assertion candidate only. Save stays disabled because the authenticated receiver advertises no assertion route.";
+    assertionNode.textContent = "Select a passage inside a provider message, open the in-page Polylogue panel and choose Save note. The daemon must acknowledge the note before it is shown as saved.";
   }
 }
 
