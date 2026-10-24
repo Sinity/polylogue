@@ -630,7 +630,7 @@ impl Engine {
         let unfinished_inputs = self
             .writer
             .reconcile_retained_bytes(Arc::clone(&self.blobs))?
-            .missing;
+            .unfinished;
         self.load()?;
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
@@ -730,7 +730,11 @@ impl Engine {
                     },
                 );
             }
-            if let Some(plan) = self.plan(&f.path, now)? {
+            let unfinished = pass
+                .unfinished_inputs
+                .iter()
+                .any(|u| u.input == self.inputs[&f.path].input_id);
+            if let Some(plan) = self.plan(&f.path, now, unfinished)? {
                 plans.push(plan);
             }
         }
@@ -800,7 +804,12 @@ impl Engine {
     }
 
     /// Decides what to read for one tracked path.
-    fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
+    fn plan(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        unfinished: bool,
+    ) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
         if st.failed == Some((now, st.origin.parser_version)) {
@@ -811,6 +820,22 @@ impl Engine {
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
+        }
+        if unfinished && let Some(chain) = st.chain {
+            match self
+                .reads
+                .reader()?
+                .check_retained_range(&st.input_id, chain, 0..st.stored)
+            {
+                Ok(()) => {}
+                Err(polylogue_store::StoreError::InputUnfinished { .. }) => {
+                    // A new full capture never substitutes current provider
+                    // bytes into the older reservation. Exact bytes can dedup;
+                    // edited bytes acquire a separate retained chain.
+                    change = Change::Rewritten;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         if let Change::Appended { from } = &mut change {
             // The source observation may describe a larger file than the
@@ -943,11 +968,12 @@ impl Engine {
                 } else {
                     0
                 };
-                let source = pool::Bytes::Stored(Arc::new(self.reads.reader()?.stored_chain(
-                    &id,
-                    chain,
-                    state.length,
-                )?));
+                let retained = match self.reads.reader()?.stored_chain(&id, chain, state.length) {
+                    Ok(retained) => retained,
+                    Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                let source = pool::Bytes::Stored(Arc::new(retained));
                 let plan = Plan {
                     path: path.clone(),
                     origin,
@@ -1114,6 +1140,8 @@ impl Engine {
             self.config.bytes_in_flight,
             self.writer.sender()?,
             Arc::clone(&self.blobs),
+            self.archive.clone(),
+            self.config.blob_roots.clone(),
             done_tx,
         );
         let mut running: HashMap<PathBuf, Plan> = HashMap::new();

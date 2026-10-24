@@ -117,6 +117,7 @@ pub(super) fn find_all(hay: &[u8], needles: &[Vec<u8>]) -> Vec<(usize, usize)> {
 pub(super) struct Gone {
     pub(super) hash: [u8; 32],
     pub(super) file: Option<BlobHash>,
+    pub(super) extracted: Vec<BlobHash>,
 }
 
 fn record_replacement(
@@ -128,11 +129,13 @@ fn record_replacement(
         return Ok(None);
     }
     super::blob_cleanup::require_no_delta_base(t.archive, old)?;
+    let sources = crate::retention::extracted::candidates(t.archive, None, Some(old))?;
     record_piece(t, &piece)?;
     t.archive.execute(
         "UPDATE extent SET blob = ?2 WHERE blob = ?1",
         params![&old.0[..], &piece.hash.0[..]],
     )?;
+    let extracted = crate::retention::extracted::invalidate(t.archive, t.store, sources)?;
     let old_place: Option<String> = t
         .archive
         .query_row(
@@ -141,11 +144,14 @@ fn record_replacement(
             |r| r.get(0),
         )
         .optional()?;
-    t.archive
-        .execute("DELETE FROM blob WHERE hash = ?1", [&old.0[..]])?;
+    let deleted = t.archive.execute(
+        "DELETE FROM blob WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)",
+        [&old.0[..]],
+    )?;
     Ok(Some(Gone {
         hash: old.0,
-        file: (old_place.as_deref() == Some("file")).then_some(*old),
+        file: (deleted > 0 && old_place.as_deref() == Some("file")).then_some(*old),
+        extracted,
     }))
 }
 
@@ -195,6 +201,9 @@ pub(super) fn overwrite(
         })?;
         if let Some(gone) = bytes.replace(t, &old, |blank| erasures.visit_ranges(hash, blank))? {
             refused.blobs.push(hex(&gone.hash));
+            refused
+                .blobs
+                .extend(gone.extracted.iter().map(|hash| hex(&hash.0)));
             if let Some(hash) = gone.file {
                 blob_cleanup::record(t.archive, &req.id, &hash)?;
             }
@@ -284,6 +293,9 @@ pub(super) fn blank_document(
         })?;
         if let Some(gone) = bytes.replace(t, &old, |blank| ranges.ranges(blank))? {
             refused.blobs.push(hex(&gone.hash));
+            refused
+                .blobs
+                .extend(gone.extracted.iter().map(|hash| hex(&hash.0)));
             if let Some(hash) = gone.file {
                 blob_cleanup::record(t.archive, &req.id, &hash)?;
             }

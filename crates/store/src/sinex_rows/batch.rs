@@ -111,6 +111,42 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 &args,
             )?;
         }
+        "extracted_blob" => {
+            use crate::retention::extracted::{Key, MATCH};
+            let source = Key::parse(&unit.key)?;
+            let args = source.args();
+            let state:Option<(String,String)>=archive.query_row(&format!("SELECT x.state,b.state FROM extracted_blob x JOIN blob b ON b.hash=x.blob WHERE {}",MATCH.split(" AND ").map(|c|format!("x.{c}")).collect::<Vec<_>>().join(" AND ")),params_from_iter(args.iter()),|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let Some((association, blob)) = state else {
+                return Ok(out);
+            };
+            if association != "present" || blob != "present" {
+                return Err(crate::StoreError::InputUnfinished {
+                    input: source.input.clone(),
+                    reason: "decoded source association is unfinished".into(),
+                });
+            }
+            crate::retention::require_range(
+                archive,
+                "",
+                &source.input,
+                source.chain,
+                source.start as u64..source.end as u64,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "extracted_blob",
+                &format!("SELECT * FROM extracted_blob WHERE {MATCH}"),
+                &args,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "blob",
+                "SELECT hash,size,size AS stored_size,'file' AS place,'plain' AS encoding,NULL AS base,'present' AS state,NULL AS data FROM blob WHERE hash=?1",
+                &args[6..],
+            )?;
+        }
         "observation" => {
             let exists: bool = archive.query_row(
                 "SELECT EXISTS(SELECT 1 FROM observation WHERE id=?1)",

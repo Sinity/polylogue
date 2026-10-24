@@ -49,6 +49,11 @@ enum Msg {
         Box<Batch>,
         SyncSender<Result<crate::retention::Retained>>,
     ),
+    RetainGroup(
+        Vec<crate::retention::PreparedBatch>,
+        std::sync::Arc<hashed_blobs::Store>,
+        SyncSender<Vec<Result<crate::retention::Retained>>>,
+    ),
     ReconcileRetained(
         std::sync::Arc<hashed_blobs::Store>,
         SyncSender<Result<crate::retention::Reconciled>>,
@@ -360,6 +365,18 @@ impl Drop for Writer {
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
+    pub fn retain_group(
+        &self,
+        group: Vec<crate::retention::PreparedBatch>,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> Result<Vec<Result<crate::retention::Retained>>> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::RetainGroup(group, store, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)
+    }
+
     pub fn send(&self, batch: Batch) -> Result<()> {
         self.0
             .send(Msg::Batch(Box::new(batch)))
@@ -421,6 +438,7 @@ impl Inner {
         let mut derives = Vec::new();
         let mut parsers = Vec::new();
         let mut retentions = Vec::new();
+        let mut retention_groups = Vec::new();
         let mut reconciliations = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
@@ -431,6 +449,10 @@ impl Inner {
                 |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
                     Msg::Retain(prepared, batch, reply) => {
                         retentions.push((prepared, batch, reply));
+                        false
+                    }
+                    Msg::RetainGroup(group, store, reply) => {
+                        retention_groups.push((group, store, reply));
                         false
                     }
                     Msg::ReconcileRetained(store, reply) => {
@@ -498,6 +520,9 @@ impl Inner {
             drop(group);
             for (prepared, batch, reply) in retentions.drain(..) {
                 let _ = reply.send(self.retain_bytes(*prepared, *batch));
+            }
+            for (group, store, reply) in retention_groups.drain(..) {
+                let _ = reply.send(self.retain_group(group, store));
             }
             for (store, reply) in reconciliations.drain(..) {
                 let _ = reply.send(self.reconcile_retained_bytes(&store));

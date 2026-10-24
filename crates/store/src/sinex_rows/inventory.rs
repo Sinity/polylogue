@@ -47,6 +47,7 @@ impl<'a> Inventory<'a> {
                 UNION ALL SELECT commit_seq,'excision',id FROM excision WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'setting',id FROM setting WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'delivery',id FROM delivery WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'extracted_blob',json_array(input,chain,source_start,source_end,lower(hex(source_hash)),parser_version,lower(hex(blob))) FROM extracted_blob WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0",
             )?;

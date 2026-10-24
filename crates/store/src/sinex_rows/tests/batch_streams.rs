@@ -104,7 +104,7 @@ fn a_stored_legacy_batch_keeps_its_original_bytes_and_restores_them() {
         .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
         .unwrap();
     assert_eq!(
-        restore::install(&mut target, &selected, None, |_| Ok(Some(
+        restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(
             published.replacement(&name)?
         )))
         .unwrap(),

@@ -188,7 +188,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         })
         .collect();
     assert!(
-        restore::install(&mut restored, &selected, None, |u| Ok(payloads
+        restore::install_fixture(&mut restored, &selected, None, |u| Ok(payloads
             [current.iter().position(|x| x == u).unwrap()]
         .clone()
         .map(std::io::Cursor::new)))
@@ -196,7 +196,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
             > 0
     );
     assert_eq!(
-        restore::install(&mut restored, &selected, None, |u| Ok(payloads
+        restore::install_fixture(&mut restored, &selected, None, |u| Ok(payloads
             [current.iter().position(|x| x == u).unwrap()]
         .clone()
         .map(std::io::Cursor::new)))
@@ -225,7 +225,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
             include_str!("../schema/migrations/006-vector-deletion-policy.sql")
         ))
         .unwrap();
-    restore::install(&mut fresh, &selected, None, |u| {
+    restore::install_fixture(&mut fresh, &selected, None, |u| {
         Ok(payloads[current.iter().position(|x| x == u).unwrap()]
             .clone()
             .map(std::io::Cursor::new))
@@ -242,7 +242,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         ))
         .unwrap();
     assert!(
-        restore::install(&mut empty, &selected, None, |u| Ok(missing
+        restore::install_fixture(&mut empty, &selected, None, |u| Ok(missing
             [current.iter().position(|x| x == u).unwrap()]
         .clone()
         .map(std::io::Cursor::new)))
@@ -257,7 +257,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     let mut corrupt = payloads.clone();
     corrupt[0].as_mut().unwrap().push(b' ');
     assert!(
-        restore::install(&mut empty, &selected, None, |u| Ok(corrupt
+        restore::install_fixture(&mut empty, &selected, None, |u| Ok(corrupt
             [current.iter().position(|x| x == u).unwrap()]
         .clone()
         .map(std::io::Cursor::new)))
@@ -296,7 +296,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     wrong_owner.unit.key = "other-note".into();
     let wrong_owner = select(&[wrong_owner]).unwrap();
     assert!(
-        restore::install(&mut empty, &wrong_owner, None, |u| Ok(payloads
+        restore::install_fixture(&mut empty, &wrong_owner, None, |u| Ok(payloads
             [selected_units(&wrong_owner)
                 .iter()
                 .position(|x| x == u)
@@ -308,7 +308,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     let mut corrupt_repeat = payloads.clone();
     corrupt_repeat[0].as_mut().unwrap().push(b' ');
     assert!(
-        restore::install(&mut restored, &selected, None, |u| Ok(corrupt_repeat
+        restore::install_fixture(&mut restored, &selected, None, |u| Ok(corrupt_repeat
             [current.iter().position(|x| x == u).unwrap()]
         .clone()
         .map(std::io::Cursor::new)))
@@ -402,7 +402,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
             })
             .collect();
         let selected = select(&originals).unwrap();
-        restore::install(&mut restored, &selected, None, |u| {
+        restore::install_fixture(&mut restored, &selected, None, |u| {
             Ok(u.batch
                 .as_ref()
                 .map(|_| std::io::Cursor::new(read(&source, &u.unit).unwrap().contents())))
@@ -544,7 +544,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     }])
     .unwrap();
     let called = std::cell::Cell::new(false);
-    let error = restore::install(&mut target, &selected, Some("source-archive"), |_| {
+    let error = restore::install_fixture(&mut target, &selected, Some("source-archive"), |_| {
         called.set(true);
         Ok(Some(std::io::Cursor::new(batch.contents())))
     })
@@ -587,7 +587,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
         ))
         .unwrap();
     assert_eq!(
-        restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
+        restore::install_fixture(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
             std::io::Cursor::new(batch.contents())
         )))
         .unwrap(),
@@ -595,7 +595,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     );
     empty.execute("INSERT INTO client_request(id,content_hash,created_at) VALUES ('local-request',x'0304',2)",[]).unwrap();
     assert_eq!(
-        restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
+        restore::install_fixture(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
             std::io::Cursor::new(batch.contents())
         )))
         .unwrap(),

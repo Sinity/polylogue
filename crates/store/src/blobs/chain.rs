@@ -57,6 +57,28 @@ impl StoredChain {
         self.single
     }
 
+    pub fn range_hash(
+        &self,
+        store: &hashed_blobs::Store,
+        start: u64,
+        end: u64,
+    ) -> Result<BlobHash> {
+        if start > end || end > self.length {
+            return Err(StoreError::Invalid("invalid retained hash range".into()));
+        }
+        let mut cursor = Cursor::forward_range(start, end);
+        let mut hash = blake3::Hasher::new();
+        let mut bytes = [0u8; 64 * 1024];
+        loop {
+            let n = cursor.read(&mut bytes, self.snapshot.as_deref(), store)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&bytes[..n]);
+        }
+        Ok(BlobHash(*hash.finalize().as_bytes()))
+    }
+
     /// Read a range-sized result; missing or corrupt selected bytes are errors.
     pub fn read_range(&self, store: &hashed_blobs::Store, start: u64, end: u64) -> Result<Vec<u8>> {
         let end = end.min(self.length);

@@ -55,7 +55,7 @@ fn require_unreferenced(
     current: &crate::sinex_rows::CurrentBatches,
     hash: &BlobHash,
 ) -> Result<()> {
-    let retained: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 OR base=?1) OR EXISTS(SELECT 1 FROM extent WHERE blob=?1)", [&hash.0[..]], |row| row.get(0))?;
+    let retained: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 OR base=?1) OR EXISTS(SELECT 1 FROM extent WHERE blob=?1) OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)", [&hash.0[..]], |row| row.get(0))?;
     if retained || current.contains(hash)? {
         return Err(StoreError::ExcisionBlobReferenced(*hash));
     }

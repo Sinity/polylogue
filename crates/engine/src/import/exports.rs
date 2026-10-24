@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::{Accounting, Output};
 use polylogue_sources::export::{self, ExportParser, ExportState};
-use polylogue_store::{Batch, ParseStep, Piece, export_items::ExportItems};
+use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
 
 struct Counted<F, R> {
     open: F,
@@ -117,7 +117,16 @@ impl Engine {
                 return Err(std::io::Error::other(error).into());
             };
             let step = export::refused(error.to_string(), plan.size);
-            self.write_export_step(plan, step.output, step.accounting, 0, true, true, pass)?;
+            self.write_export_step(
+                plan,
+                step.output,
+                step.accounting,
+                0,
+                true,
+                true,
+                None,
+                pass,
+            )?;
             plan.parse_pos = plan.size;
             return Ok(());
         }
@@ -132,13 +141,27 @@ impl Engine {
             .map_err(std::io::Error::other)?
         {
             order_from = (step.output.messages.len() as u64).max(1);
-            self.write_export_step(plan, step.output, step.accounting, 0, true, false, pass)?;
+            self.write_export_step(
+                plan,
+                step.output,
+                step.accounting,
+                0,
+                true,
+                false,
+                None,
+                pass,
+            )?;
             first = false;
         }
         while let Some(ExportRecord { range, bytes }) = next {
             polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
-            let step = export::parse_item(parser, &bytes, range, &mut StateLookup(&mut scratch))
-                .map_err(std::io::Error::other)?;
+            let step = export::parse_item(
+                parser,
+                &bytes,
+                range.clone(),
+                &mut StateLookup(&mut scratch),
+            )
+            .map_err(std::io::Error::other)?;
             let count = step.output.messages.len() as u64;
             // Flush is a commit acknowledgement. A second conversation is not
             // decoded while the writer still holds the preceding one's output.
@@ -149,6 +172,7 @@ impl Engine {
                 order_from,
                 first,
                 false,
+                Some((range, polylogue_model::BlobHash::of(&bytes))),
                 pass,
             )?;
             first = false;
@@ -162,6 +186,7 @@ impl Engine {
             order_from,
             first,
             true,
+            None,
             pass,
         )?;
         plan.parse_pos = plan.size;
@@ -240,11 +265,44 @@ impl Engine {
         order_from: u64,
         reset: bool,
         done: bool,
+        source: Option<(std::ops::Range<u64>, polylogue_model::BlobHash)>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
-        for blob in std::mem::take(&mut output.blobs) {
-            blobs.push(Piece::prepare(&self.blobs, &blob.bytes)?);
+        let mut files = Vec::new();
+        let mut extracted = Vec::new();
+        if !output.blobs.is_empty() {
+            let (range, source_hash) = match source {
+                Some(source) => source,
+                None => {
+                    let pool::Bytes::Stored(chain) = &plan.source else {
+                        return Err(std::io::Error::other(
+                            "decoded export metadata needs a retained source",
+                        )
+                        .into());
+                    };
+                    (0..plan.size, chain.range_hash(&self.blobs, 0, plan.size)?)
+                }
+            };
+            for blob in std::mem::take(&mut output.blobs) {
+                let (piece, file) = self
+                    .archive
+                    .prepare_piece(&self.config.blob_roots, &blob.bytes)?;
+                if piece.hash != blob.hash || piece.size != blob.size {
+                    return Err(std::io::Error::other(
+                        "decoded export bytes differ from their declared hash or length",
+                    )
+                    .into());
+                }
+                extracted.push(polylogue_store::retention::Extraction {
+                    range: range.clone(),
+                    source_hash,
+                    parser_version: plan.origin.parser_version,
+                    blob: piece.hash,
+                });
+                files.extend(file);
+                blobs.push(piece);
+            }
         }
         let mut parse = ParseStep::new(
             output,
@@ -256,7 +314,7 @@ impl Engine {
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.prepare();
-        self.writer.send(Batch {
+        let batch = Batch {
             input: plan.input.clone(),
             change: plan.change.clone(),
             observation: None,
@@ -266,7 +324,21 @@ impl Engine {
             length: plan.size,
             parse: vec![parse],
             release: Default::default(),
-        })?;
+        };
+        if files.is_empty() && extracted.is_empty() {
+            self.writer.send(batch)?;
+        } else {
+            for result in self.writer.sender()?.retain_group(
+                vec![polylogue_store::retention::PreparedBatch {
+                    batch,
+                    files,
+                    extracted,
+                }],
+                Arc::clone(&self.blobs),
+            )? {
+                result?;
+            }
+        }
         let written = self.flush_writes()?;
         pass.messages_written += written.messages;
         if !written.errors.is_empty() {

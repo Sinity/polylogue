@@ -34,6 +34,7 @@ pub(super) fn install<R: Read>(
     conn: &mut Connection,
     units: &Selection,
     identity: Option<&str>,
+    sources: &hashed_blobs::Store,
     mut fetch: impl FnMut(&RestoreUnit) -> Result<Option<R>>,
 ) -> Result<u64> {
     units.begin_install()?;
@@ -58,7 +59,8 @@ pub(super) fn install<R: Read>(
         // A confirmed prefix cannot discard accepted facts that have not yet
         // been published. Refuse before removing any parent closure.
         let mut facts=tx.prepare("SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>0
-            UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0")?;
+            UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0
+            UNION ALL SELECT commit_seq,'extracted_blob',json_array(input,chain,source_start,source_end,lower(hex(source_hash)),parser_version,lower(hex(blob))) FROM extracted_blob WHERE commit_seq>0")?;
         for fact in facts.query_map([], |r| {
             Ok(Unit {
                 commit_seq: r.get(0)?,
@@ -121,6 +123,7 @@ pub(super) fn install<R: Read>(
         inserted += batch::install(unit, payload, (!repeated).then_some(&tx), &units.catalog.db)?;
         Ok(())
     })?;
+    crate::retention::extracted::verify_all(&tx, sources)?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {
             return Err(invalid("restored archive has no identity"));
@@ -178,6 +181,16 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
         }
         "observation" => {
             conn.execute("DELETE FROM observation WHERE id=?1", key)?;
+        }
+        "extracted_blob" => {
+            let key = crate::retention::extracted::Key::parse(&unit.key)?;
+            conn.execute(
+                &format!(
+                    "DELETE FROM extracted_blob WHERE {}",
+                    crate::retention::extracted::MATCH
+                ),
+                rusqlite::params_from_iter(key.args().iter()),
+            )?;
         }
         "delivery_event" => {
             let (delivery, what, at) = super::delivery_event_key(unit)?;
@@ -254,4 +267,16 @@ fn populated(conn: &Connection) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(seq > 0)
+}
+
+#[cfg(test)]
+pub(super) fn install_fixture<R: Read>(
+    conn: &mut Connection,
+    units: &Selection,
+    identity: Option<&str>,
+    fetch: impl FnMut(&RestoreUnit) -> Result<Option<R>>,
+) -> Result<u64> {
+    let dir = tempfile::tempdir()?;
+    let sources = hashed_blobs::Store::open(dir.path(), Vec::new(), 0o600)?;
+    install(conn, units, identity, &sources, fetch)
 }

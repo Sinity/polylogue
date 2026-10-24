@@ -157,6 +157,16 @@ fn triggers() -> Vec<(&'static str, &'static str, String)> {
             )));
         }
     }
+    for event in ["AFTER UPDATE", "BEFORE DELETE"] {
+        out.push((
+            "extracted_blob",
+            event,
+            format!(
+                "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq,'extracted_blob',{};",
+                crate::retention::extracted::key_sql("OLD")
+            ),
+        ));
+    }
     for table in ["note_target", "note_relation"] {
         for event in ["AFTER UPDATE", "BEFORE DELETE", "AFTER INSERT"] {
             let row = if event == "AFTER INSERT" {
@@ -230,6 +240,7 @@ impl Replacement {
                 "delivery",
                 "observation",
                 "delivery_event",
+                "extracted_blob",
             ]
             .contains(&unit.kind.as_str())
             || previous.is_some_and(|previous| previous >= unit)

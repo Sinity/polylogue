@@ -81,7 +81,7 @@ fn install(rows: &[Value], blobs: Vec<String>, target: &mut Connection) -> crate
             ))
         }
     })?;
-    restore::install(target, &selected, None, |_| {
+    restore::install_fixture(target, &selected, None, |_| {
         Ok(Some(Cursor::new(bytes.clone())))
     })
 }
@@ -308,7 +308,7 @@ fn verified_source_bytes_must_match_the_catalog_size() {
         .unwrap();
     let mut target = target();
     assert!(
-        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+        restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
             bytes.clone()
         ))))
         .is_err(),
@@ -328,21 +328,21 @@ fn each_install_requires_fresh_completed_source_verification() {
     let checkpoint = serde_json::to_vec(&selected).unwrap();
     let mut target = target();
     assert!(
-        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+        restore::install_fixture::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
             "unverified payload opened"
         ))
         .is_err()
     );
     selected.verify_source_blobs(|_| Ok(3)).unwrap();
     assert!(
-        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+        restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
             bytes.clone()
         ))))
         .unwrap()
             > 0
     );
     assert!(
-        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+        restore::install_fixture::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
             "verification reused"
         ))
         .is_err()
@@ -354,14 +354,14 @@ fn each_install_requires_fresh_completed_source_verification() {
             .is_err()
     );
     assert!(
-        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+        restore::install_fixture::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
             "failed verification reused"
         ))
         .is_err()
     );
     selected.verify_source_blobs(|_| Ok(3)).unwrap();
     assert_eq!(
-        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+        restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
             bytes.clone()
         ))))
         .unwrap(),

@@ -56,6 +56,7 @@ fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
          UNION ALL SELECT commit_seq, 'excision', id FROM excision WHERE commit_seq > ?1
          UNION ALL SELECT commit_seq, 'setting', id FROM setting WHERE commit_seq > ?1
          UNION ALL SELECT commit_seq, 'delivery', id FROM delivery WHERE commit_seq > ?1
+                UNION ALL SELECT commit_seq,'extracted_blob',json_array(input,chain,source_start,source_end,lower(hex(source_hash)),parser_version,lower(hex(blob))) FROM extracted_blob WHERE commit_seq>?1
                 UNION ALL SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>?1
                 UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>?1
          ORDER BY 1, 2, 3",
@@ -154,6 +155,7 @@ const TABLES: &[&str] = &[
     "revision",
     "blob",
     "extent",
+    "extracted_blob",
     "machine",
     "observation",
     "note",
@@ -306,12 +308,21 @@ impl Published {
 pub struct Restoring {
     conn: Connection,
     archive: crate::Archive,
+    sources: hashed_blobs::Store,
 }
 
 impl Restoring {
     pub fn open(archive: &crate::Archive) -> crate::Result<Self> {
+        Self::with_roots(archive, Vec::new())
+    }
+
+    pub fn with_roots(
+        archive: &crate::Archive,
+        roots: Vec<std::path::PathBuf>,
+    ) -> crate::Result<Self> {
         Ok(Self {
             archive: archive.clone(),
+            sources: hashed_blobs::Store::open(archive.root.clone(), roots, 0o600)?,
             conn: crate::archive::open_write(
                 &archive.archive_db(),
                 crate::archive::cache::ARCHIVE_WRITER,
@@ -339,7 +350,13 @@ impl Restoring {
         self.conn
             .pragma_update(None, "synchronous", previous.max(2))?;
         let result = (|| {
-            let inserted = restore::install(&mut self.conn, units, Some(archive_id), fetch)?;
+            let inserted = restore::install(
+                &mut self.conn,
+                units,
+                Some(archive_id),
+                &self.sources,
+                fetch,
+            )?;
             crate::fault::check("restore.after_canonical_commit", "")?;
             self.archive.reconcile_vectors(&mut self.conn)?;
             crate::fault::check("restore.after_vector_reconciliation", "")?;

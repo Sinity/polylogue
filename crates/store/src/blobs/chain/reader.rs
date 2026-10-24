@@ -43,9 +43,13 @@ pub(super) struct Cursor {
 
 impl Cursor {
     pub fn forward(end: u64) -> Self {
+        Self::forward_range(0, end)
+    }
+
+    pub fn forward_range(start: u64, end: u64) -> Self {
         Self {
             access: Access::Forward,
-            ..Self::range(0, end)
+            ..Self::range(start, end)
         }
     }
 

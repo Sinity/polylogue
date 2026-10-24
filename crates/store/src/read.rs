@@ -700,13 +700,23 @@ impl Reader<'_> {
     /// the files now.
     /// The stored bytes of an input's revision chain, for parsing them
     /// again without the file.
+    /// Check canonical completion without copying the selected extent catalog.
+    pub fn check_retained_range(
+        &self,
+        input: &str,
+        chain: i64,
+        range: std::ops::Range<u64>,
+    ) -> Result<()> {
+        crate::retention::require_range(self.conn()?, "a.", input, chain, range)
+    }
+
     pub fn stored_chain(
         &self,
         input: &str,
         chain: i64,
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
-        crate::retention::require_range(self.conn()?, "a.", input, chain, 0..length)?;
+        self.check_retained_range(input, chain, 0..length)?;
         crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
@@ -719,7 +729,7 @@ impl Reader<'_> {
         end: u64,
         store: &hashed_blobs::Store,
     ) -> Result<Vec<u8>> {
-        crate::retention::require_range(self.conn()?, "a.", input, chain, start..end)?;
+        self.check_retained_range(input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
             .read_range(store, start, end)
     }

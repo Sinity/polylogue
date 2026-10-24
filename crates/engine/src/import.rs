@@ -21,7 +21,7 @@ impl Engine {
         let reconciled = self
             .writer
             .reconcile_retained_bytes(Arc::clone(&self.blobs))?;
-        report.pass.unfinished_inputs = reconciled.missing;
+        report.pass.unfinished_inputs = reconciled.unfinished;
         if reconciled.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
         }
