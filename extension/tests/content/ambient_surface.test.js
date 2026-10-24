@@ -275,7 +275,7 @@ describe("ambient capture status surface", () => {
     const outsideSelection = selectNode(dom.window.document.getElementById("outside"));
     expect(api.getSelection()).toBeNull();
     expect(api.shadow.querySelector(".editor").hidden).toBe(true);
-    expect(api.shadow.querySelector("button.disabled").disabled).toBe(true);
+    expect(api.shadow.querySelector("button.save-note").disabled).toBe(true);
     expect(dom.window.PolylogueAmbientSurface.deriveSelection(outsideSelection)).toBeNull();
 
     const crossMessageRange = dom.window.document.createRange();

@@ -163,7 +163,8 @@
       .editor { display: grid; gap: 8px; }
       .field { display: grid; gap: 4px; color: var(--pl-muted); font-size: 12px; font-weight: 650; }
       select, textarea { width: 100%; border: 1px solid var(--pl-line); border-radius: 8px; padding: 8px; color: var(--pl-ink); background: var(--pl-bg); font: inherit; }
-      .disabled { width: 100%; min-height: 38px; border: 1px dashed var(--pl-line); border-radius: 8px; color: var(--pl-muted); background: transparent; cursor: not-allowed; }
+      .save-note { width: 100%; min-height: 38px; border: 1px solid var(--pl-accent); border-radius: 8px; color: var(--pl-bg); background: var(--pl-accent); cursor: pointer; }
+      .save-note:disabled { border-color: var(--pl-line); color: var(--pl-muted); background: transparent; cursor: not-allowed; }
       .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       @media (prefers-color-scheme: dark) {
         .root {
@@ -276,7 +277,7 @@
     bodyInput.setAttribute("aria-label", "Note body");
     bodyLabel.appendChild(bodyInput);
     const editorActions = createElement(doc, "div", "actions");
-    const saveButton = createElement(doc, "button", "disabled", "Save note");
+    const saveButton = createElement(doc, "button", "save-note", "Save note");
     saveButton.type = "button";
     saveButton.disabled = true;
     const cancelButton = createElement(doc, "button", "secondary", "Cancel");
@@ -285,6 +286,7 @@
     editor.append(bodyLabel, editorActions);
     editor.hidden = true;
     const noteDetail = createElement(doc, "p", "meta", "Select a passage, edit the note body and choose Save note.");
+    noteDetail.setAttribute("role", "status");
     selectionSection.append(selectionText, editor, noteDetail);
     panel.appendChild(selectionSection);
 
@@ -514,7 +516,9 @@
       const observation = selectionDraft.identity_observation;
       const identified = observation?.fidelity === "native" && observation.provider_conversation_id && observation.provider_message_id;
       saveButton.disabled = !snapshot?.notes?.persistence_supported || !identified || selectionDraft.truncated;
-      noteDetail.textContent = selectionDraft.truncated
+      noteDetail.textContent = !snapshot?.notes?.persistence_supported
+        ? "Note saving is unavailable from the native host. This draft stays on this page."
+        : selectionDraft.truncated
         ? "Select at most 2,000 characters; this passage is too long to save."
         : identified
           ? `Source: ${selectionDraft.provider}, conversation ${observation.provider_conversation_id}, message ${observation.provider_message_id}. The daemon will verify the archive target when saving.`
@@ -557,7 +561,7 @@
       draft = null;
       editor.hidden = true;
       bodyInput.value = "";
-      noteDetail.textContent = "Draft canceled; transcript content was not changed.";
+      noteDetail.textContent = "Draft canceled.";
     }
 
     async function hideOnSite() {
