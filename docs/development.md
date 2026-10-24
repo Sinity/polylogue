@@ -118,6 +118,13 @@ waiting for hosted review does not need the build slot.
 
 ## AgentCTL operations
 
+AgentCTL snapshots an explicit `CARGO_TARGET_DIR` from the caller when queuing a job. Select an absolute target with exclusive writer ownership; omitting it keeps the existing Cargo default.
+
+```sh
+CARGO_TARGET_DIR=/realm/worktree/leased-build/target \
+  agentctl job start polylogue focused --workspace /realm/worktree/polylogue-edit -- -p polylogue-store
+```
+
 Long runs go through AgentCTL so they queue and keep their logs:
 
 ```sh
