@@ -81,6 +81,15 @@ owners retain shared bytes. Recovery does not sweep unregistered historical CAS
 files. [Extracted ownership tests](../crates/store/src/sinex_rows/tests/extracted.rs)
 cover publication and restore.
 
+[Export attachments](attachments.md) resolve through acquisition/member facts in
+retained observations and the [derived asset lookup](../crates/store/src/assets.rs).
+Resolution uses the admitted current message and byte basis; descriptors and
+masked display labels do not rewrite source attachments. Exact byte delivery is
+an interactive CLI operation with verified temporary-file installation. ZIP
+import currently retains member bytes, not the original container; container
+custody and coordinated removal remain separate work. [Public controls](../crates/polylogue/tests/e2e/cli/attachments.rs)
+cover paging, transport privacy, stale delivery and directory/ZIP imports.
+
 Parsers account for supplied records and fields, retain unknown source material,
 and distinguish unknown values from zero or empty collections. Native compaction
 history is context evidence, not newly authored messages. Provider-specific

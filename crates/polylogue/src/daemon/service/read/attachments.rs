@@ -48,7 +48,7 @@ pub(super) fn labels(
                     "{} retained candidates, explicit selection required",
                     resolution.candidates.len()
                 ),
-                AttachmentState::Unavailable => "bytes not retained in the observed imports".into(),
+                AttachmentState::Unavailable => "no current retained candidate resolved".into(),
                 AttachmentState::Unknown => "byte availability unknown".into(),
             };
             labels.push(AttachmentLabel {

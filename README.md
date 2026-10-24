@@ -73,7 +73,7 @@ binary through the HTTP adapter, and neither operation is offered through CLI or
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). |
 | `read document:ID` | Read retained instructions, supplied context or memory without conversation roles. `full` and `dialogue` views, all formats and budgeted pages are available. |
 | `import PATH` | Bring in an export or a directory of them. |
-| `attachment MESSAGE BLOCK` | Describe a message attachment and retained export candidates. The interactive CLI can install verified bytes with `--reveal --out FILE`. |
+| `attachment MESSAGE BLOCK` | Describe a message attachment and retained export candidates. The [interactive CLI](docs/attachments.md) can install verified bytes with `--reveal --out FILE`. |
 | `export SESSION…` | Write sessions or `document:ID` references as JSON (read back by `import`), Markdown, HTML or terminal text. |
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions. |
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
@@ -120,7 +120,7 @@ exports retain version 1. Both can be imported. Document removals use
 `excise document:ID --yes`, keep unaffected sibling values readable and retain a
 standing exclusion through rebuild and Sinex restore. Archive format 7 stores
 that policy; older local readers refuse it. The derived index rebuilds at
-version 31 without changing existing message hashes or authored references.
+version 34 without changing existing message hashes or authored references.
 
 Logical reads (`read SESSION --logical`) include only proven inherited prefixes.
 A fork's anchor is resolved in its parent's composed history, including that

@@ -440,12 +440,16 @@ const WRITTEN: &[Command] = &[
                 Kind::Integer,
                 "Zero-based attachment within a tool result (default 0)",
             ),
-            opt(
-                "asset",
-                Kind::Text,
-                "Select a retained input ID from an ambiguous descriptor",
-            ),
             Arg {
+                cli_only: true,
+                ..opt(
+                    "asset",
+                    Kind::Text,
+                    "Select a retained input ID for exact retrieval",
+                )
+            },
+            Arg {
+                cli_only: true,
                 default: Some("65536"),
                 ..opt("length", Kind::Integer, "Bytes per exact retrieval range")
             },

@@ -58,7 +58,10 @@ enum Msg {
         std::sync::Arc<hashed_blobs::Store>,
         SyncSender<Result<crate::retention::Reconciled>>,
     ),
-    Assets(crate::export_items::ExportItems, SyncSender<Result<()>>),
+    Assets(
+        Box<crate::export_items::ExportItems>,
+        SyncSender<Result<()>>,
+    ),
     Parsers(Vec<(String, u32)>, SyncSender<Result<()>>),
     Stop,
     Batch(Box<Batch>),
@@ -342,7 +345,7 @@ impl Writer {
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Assets(staged, reply))
+            .send(Msg::Assets(Box::new(staged), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -603,7 +606,7 @@ impl Inner {
             for (staged, reply) in assets.drain(..) {
                 let result = self
                     .settle()
-                    .and_then(|()| crate::assets::install(&mut self.index, &self.archive, staged));
+                    .and_then(|()| crate::assets::install(&mut self.index, &self.archive, *staged));
                 let _ = reply.send(result);
             }
             // Whatever a flush reports written is also searchable.

@@ -63,8 +63,8 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
             return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
         }
         crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() {
-        return Err("--out requires --reveal".into());
+    } else if v.text("out").is_some() || v.text("asset").is_some() {
+        return Err("--out and --asset require --reveal".into());
     }
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))

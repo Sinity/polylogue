@@ -107,7 +107,8 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut candidates = std::collections::BTreeMap::<String, AssetCandidate>::new();
         let mut known = std::collections::HashMap::<String, Option<AssetBasis>>::new();
-        if let Some(source_id) = source.source_id.as_deref() {
+        let identity = source.source_id.as_deref().filter(|id| !id.is_empty());
+        if let Some(source_id) = identity {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT m.input,m.member FROM import_member m
                 WHERE m.acquisition=?1 AND m.source_id=?2
@@ -184,7 +185,7 @@ impl Reader<'_> {
         }
         let state = match candidates.len() {
             1 => AttachmentState::Available,
-            0 if scopes.is_empty() || source.source_id.is_none() => AttachmentState::Unknown,
+            0 if scopes.is_empty() || identity.is_none() => AttachmentState::Unknown,
             0 => AttachmentState::Unavailable,
             _ => AttachmentState::Ambiguous,
         };
