@@ -680,3 +680,92 @@ fn cost_is_served_through_the_owned_loopback_http_listener() {
     assert!(response.contains("Browse selected sessions"), "{response}");
     server.shutdown().unwrap();
 }
+
+#[test]
+fn priced_native_usage_and_drilldown_keep_the_selected_session_population() {
+    use std::io::Write;
+    let r = reader();
+    let assistant = |session: &str, input: u64| {
+        let mut record: serde_json::Value =
+            serde_json::from_str(&polylogue_testkit::claude_assistant(
+                &format!("a-{session}"),
+                session,
+                "Synthetic priced response",
+            ))
+            .unwrap();
+        record["message"]["model"] = "claude-opus-4-1".into();
+        record["message"]["usage"] = serde_json::json!({
+            "input_tokens": input, "output_tokens": 0,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        });
+        format!("{record}\n")
+    };
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(r.w.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap()
+        .write_all(assistant("s1", 1_000_000).as_bytes())
+        .unwrap();
+    std::fs::write(
+        r.w.home.join(".claude/projects/-p/other.jsonl"),
+        assistant("other", 2_000_000),
+    )
+    .unwrap();
+    r.w.wait_for(|status| status["store"]["messages"] == 3);
+    rt().block_on(async {
+        let (status, _, page) = send(
+            &r,
+            authed(get("/cost?q=id%3Aclaude-code%3As1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let (status, _, api) = send(
+            &r,
+            authed(get(
+                "/api/v1/query?query=id%3Aclaude-code%3As1%20%7C%20measure%20usage",
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{api}");
+        let api: serde_json::Value = serde_json::from_str(&api).unwrap();
+        let usage = &api["data"];
+        assert_eq!(usage["sessions"], 1);
+        assert_eq!(usage["messages"], 1);
+        assert_eq!(usage["tokens"]["input"]["tokens"], 1_000_000);
+        assert_eq!(usage["api_cost"]["known_usd"], 15.0);
+        assert_eq!(usage["api_cost"]["priced_messages"], 1);
+        assert_eq!(usage["api_cost"]["unpriced_messages"], 0);
+        assert_eq!(usage["by_model"][0]["model"], "claude-opus-4-1");
+        assert_eq!(usage["by_model"][0]["messages"], 1);
+        assert_eq!(usage["by_model"][0]["api_cost"]["known_usd"], 15.0);
+        assert!(page.contains("API-equivalent $15.00"), "{page}");
+        assert!(page.contains("1 known response records"), "{page}");
+        assert!(
+            page.contains(&polylogue_render::html::escape(
+                &polylogue_render::measures::usage(usage)
+            )),
+            "{page}"
+        );
+        assert!(
+            page.contains("href=\"/search?q=id%3Aclaude-code%3As1\">Browse selected sessions"),
+            "{page}"
+        );
+        let (status, _, selected) = send(
+            &r,
+            authed(get("/search?q=id%3Aclaude-code%3As1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{selected}");
+        assert!(
+            selected.contains("href=\"/s/claude-code%3As1\""),
+            "{selected}"
+        );
+        assert!(!selected.contains("claude-code:other"), "{selected}");
+    });
+}
