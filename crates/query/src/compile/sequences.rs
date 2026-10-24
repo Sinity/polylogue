@@ -122,12 +122,12 @@ impl<'a> Compiler<'a> {
         let (child_pk, child_cols) = row_columns(unit, &child.a, self.opts.clock.now);
         let mut columns = vec![];
         let mut select = vec![format!("{child_pk} AS _pk")];
-        let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _)| n.as_str()).collect();
+        let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _, _)| n.as_str()).collect();
         if !(owner.unit == Unit::Sessions && child_names.contains(&"session")) {
             let id = owner_cols
                 .iter()
-                .find(|(n, _, _)| n == "id")
-                .map_or_else(|| owner_pk.clone(), |(_, e, _)| e.clone());
+                .find(|(n, _, _, _)| n == "id")
+                .map_or_else(|| owner_pk.clone(), |(_, e, _, _)| e.clone());
             select.push(format!("{id} AS owner"));
             columns.push(("owner".to_owned(), ColKind::Text));
         }
@@ -138,7 +138,7 @@ impl<'a> Compiler<'a> {
             child_order.join(", ")
         ));
         columns.push(("match".to_owned(), ColKind::Number));
-        for (n, e, k) in &child_cols {
+        for (n, e, k, _) in &child_cols {
             select.push(format!("{e} AS {n}"));
             columns.push((n.clone(), *k));
         }

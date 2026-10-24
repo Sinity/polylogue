@@ -364,19 +364,30 @@ impl<'a> Compiler<'a> {
             .expr(&a, self.opts.clock.now)
             .expect("non-special fields have SQL");
         if top && matches!(op, FieldOp::Compare(..) | FieldOp::Between(..)) {
-            self.show(def.name, &expr, def.column_kind());
+            self.show(
+                def.name,
+                &expr,
+                def.column_kind(),
+                def.sql.and_then(|e| e.reference()),
+            );
         }
         self.typed(def, &expr, op, span)
     }
 
-    pub(super) fn show(&mut self, name: &str, expr: &str, kind: ColKind) {
+    pub(super) fn show(
+        &mut self,
+        name: &str,
+        expr: &str,
+        kind: ColKind,
+        reference: Option<ColumnReference>,
+    ) {
         let n = flat(name);
-        if !self.shown.iter().any(|(x, _, _)| *x == n) {
+        if !self.shown.iter().any(|(x, _, _, _)| *x == n) {
             let e = match kind {
                 ColKind::Money => format!("({expr}) / 1e9"),
                 _ => expr.to_owned(),
             };
-            self.shown.push((n, e, kind));
+            self.shown.push((n, e, kind, reference));
         }
     }
 

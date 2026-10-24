@@ -20,7 +20,7 @@ impl<'a> Compiler<'a> {
             SortKey::Field { field } => {
                 let (expr, kind) = self.expr(field, scope, at)?;
                 scalar(kind, field, at)?;
-                self.show(field, &expr, kind);
+                self.show(field, &expr, kind, Self::field_reference(field, scope));
                 let dir = if desc { " DESC" } else { "" };
                 vec![
                     format!("({expr}) IS NULL"),
@@ -29,6 +29,32 @@ impl<'a> Compiler<'a> {
                 ]
             }
         })
+    }
+
+    /// Follows the field owner before its name is flattened into an alias.
+    pub(super) fn field_reference(field: &str, scope: &Scope) -> Option<ColumnReference> {
+        let lower = field.to_ascii_lowercase();
+        if lower == "session" && fields::has_session(scope.unit) {
+            return Some(ColumnReference::Session);
+        }
+        if let Some((prefix, rest)) = lower.split_once('.')
+            && let Some(rel) = units::spec(scope.unit).relation(prefix)
+        {
+            return match rel.via {
+                Via::Same | Via::Session(_) => {
+                    Self::field_reference(rest, &Scope::plain(rel.target))
+                }
+                Via::Exists { .. } => None,
+            };
+        }
+        fields::lookup(scope.unit, &lower)
+            .or_else(|| {
+                fields::has_session(scope.unit)
+                    .then(|| fields::lookup(Unit::Sessions, &lower))
+                    .flatten()
+            })
+            .and_then(|def| def.sql)
+            .and_then(|e| e.reference())
     }
 
     /// The value of a field, for sorting and grouping.
@@ -313,6 +339,7 @@ impl<'a> Compiler<'a> {
             columns.push(Column {
                 name: flat(f),
                 kind,
+                reference: Self::field_reference(f, &sc),
             });
         }
         let session = if parent.unit == Unit::Sessions {

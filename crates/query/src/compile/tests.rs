@@ -212,3 +212,98 @@ fn change_selections_are_output_arrays_not_scalar_operands() {
 }
 
 mod documents;
+
+#[test]
+fn column_references_follow_fields_and_projection_owners() {
+    let kinds = |program: Program| {
+        program
+            .columns
+            .into_iter()
+            .map(|c| (c.name, c.reference))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    assert_eq!(kinds(c("sessions"))["id"], Some(ColumnReference::Session));
+    assert_eq!(kinds(c("documents"))["id"], Some(ColumnReference::Document));
+    assert_eq!(kinds(c("messages"))["id"], Some(ColumnReference::Message));
+    assert_eq!(
+        kinds(c("messages"))["session"],
+        Some(ColumnReference::Session)
+    );
+    assert_eq!(kinds(c("notes"))["id"], Some(ColumnReference::Note));
+    let mut options = opts(&[]);
+    options.fields = vec!["id".into(), "session.id".into(), "session.title".into()];
+    let projected = kinds(compile("messages", &options).unwrap());
+    assert_eq!(projected["id"], Some(ColumnReference::Message));
+    assert_eq!(projected["session_id"], Some(ColumnReference::Session));
+    assert_eq!(projected["session_title"], None);
+    for query in [
+        "sessions | group by id",
+        "documents | group by id",
+        "sessions | agg min:id",
+    ] {
+        assert!(
+            c(query).columns.iter().all(|c| c.reference.is_none()),
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn kept_rows_preserve_only_recorded_reference_metadata() {
+    let mut options = opts(&[]);
+    options.kept.insert(
+        "docs".into(),
+        Kept {
+            unit: "documents".into(),
+            columns: c("documents").columns,
+            match_columns: vec![],
+        },
+    );
+    assert_eq!(
+        compile("result:docs | sort by title", &options)
+            .unwrap()
+            .columns[0]
+            .reference,
+        Some(ColumnReference::Document)
+    );
+    assert!(
+        compile("result:docs | group by id", &options)
+            .unwrap()
+            .columns
+            .iter()
+            .all(|c| c.reference.is_none())
+    );
+    let fields = [("name", "id"), ("kind", "text")].into_iter();
+    let legacy: Column = serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
+        _,
+        serde::de::value::Error,
+    >::new(fields))
+    .unwrap();
+    options.kept.insert(
+        "legacy".into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: vec![legacy],
+            match_columns: vec![],
+        },
+    );
+    assert_eq!(
+        compile("result:legacy", &options).unwrap().columns[0].reference,
+        None
+    );
+    options.kept.insert(
+        "group".into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: c("sessions | group by id").columns,
+            match_columns: vec![],
+        },
+    );
+    assert!(
+        compile("result:group", &options)
+            .unwrap()
+            .columns
+            .iter()
+            .all(|c| c.reference.is_none())
+    );
+}

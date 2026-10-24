@@ -139,6 +139,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     if part == "rows" && program.shape == Shape::Matches {
         program.shape = Shape::Rows;
         program.unit = unit;
+        program.columns = columns.clone();
     }
     Ok(Some(program))
 }

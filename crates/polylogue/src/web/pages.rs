@@ -6,7 +6,7 @@
 
 use polylogue_model::{Message, Session};
 use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
-use polylogue_render::{Format, Rendered, View, html, results, shell_quote};
+use polylogue_render::{Rendered, View, html, results, shell_quote};
 use serde_json::Value;
 use std::fmt::Write as _;
 
@@ -86,32 +86,87 @@ pub fn search(query: &str, data: Option<&Value>, error: Option<&Value>) -> Strin
     layout(&format!("Search: {query}"), query, &cli, &body)
 }
 
-/// A query's answer as a table, each session ID linked to its page.
+/// Navigation follows compiler-owned column reference metadata.
 fn results_table(data: &Value) -> String {
+    if !data["rows"].is_array() || !data["columns"].is_array() {
+        return "<p>This result has no table view. Use copy as CLI to read the report.</p>".into();
+    }
     let mut table = Vec::new();
-    let _ = results::render(data, Format::Html, &mut table);
-    link_sessions(&String::from_utf8_lossy(&table), data)
+    let _ = results::linked_html(data, &mut table, &|column, value| {
+        let id = value.as_str()?;
+        let route = match column["reference"].as_str()? {
+            "session" => "s",
+            "document" => "d",
+            _ => return None,
+        };
+        Some(format!("/{route}/{}", encode_id(id)))
+    });
+    let mut html = String::from_utf8_lossy(&table).into_owned();
+    if data["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|c| matches!(c["reference"].as_str(), Some("message" | "note")))
+    {
+        html.push_str("<p>Message and note references are shown as text; their dedicated readers are unavailable.</p>");
+    }
+    html
 }
 
-/// Wraps each session ID that appears as a table cell in a link to its
-/// reader page.
-fn link_sessions(html: &str, data: &Value) -> String {
-    let mut out = html.to_owned();
-    let mut seen = std::collections::HashSet::new();
-    for row in data["rows"].as_array().into_iter().flatten() {
-        for key in ["session", "id"] {
-            let Some(id) = row[key].as_str() else {
-                continue;
-            };
-            if !id.contains(':') || !seen.insert(id.to_owned()) {
-                continue;
+pub fn document(
+    document: &polylogue_model::Document,
+    sources: &Value,
+    view: View,
+    view_name: &str,
+) -> String {
+    let id = document.id.to_string();
+    let title = document.title.as_deref().unwrap_or(&id);
+    let mut body = String::from("<nav class=\"views\" aria-label=\"Document view\">");
+    for v in ["full", "dialogue"] {
+        let _ = write!(
+            body,
+            "<a href=\"/d/{}?view={v}\"{}>{v}</a> ",
+            encode_id(&id),
+            if v == view_name {
+                " aria-current=\"page\""
+            } else {
+                ""
             }
-            let cell = format!("<td>{}</td>", esc(id));
-            let link = format!("<td><a href=\"/s/{}\">{}</a></td>", encode_id(id), esc(id));
-            out = out.replace(&cell, &link);
-        }
+        );
     }
-    out
+    body.push_str("</nav>");
+    let mut content = Vec::new();
+    html::fragment(&[Rendered::Document(document)], view, &mut content).expect("UTF-8 HTML");
+    body.push_str(&String::from_utf8(content).expect("UTF-8 HTML"));
+    let time = document
+        .source_time
+        .map_or_else(|| "unknown".into(), |t| t.to_string());
+    let _ = write!(
+        body,
+        "<p class=\"meta\">Source record time: {}</p>",
+        esc(&time)
+    );
+    if !document.metadata.is_null() {
+        let _ = write!(
+            body,
+            "<details><summary>Source metadata</summary><pre>{}</pre></details>",
+            esc(&serde_json::to_string_pretty(&document.metadata).expect("JSON"))
+        );
+    }
+    let _ = write!(
+        body,
+        "<details><summary>Retained source records</summary><pre>{}</pre></details>",
+        esc(&serde_json::to_string_pretty(sources).expect("JSON"))
+    );
+    layout(
+        title,
+        "",
+        &format!(
+            "polylogue read {} --view {view_name}",
+            shell_quote(&format!("document:{id}"))
+        ),
+        &body,
+    )
 }
 
 /// `/s/SESSION`: the session in the chosen view; tool calls collapsed to
