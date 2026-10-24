@@ -29,6 +29,7 @@ mod bytes;
 mod excluded;
 mod rows;
 pub(crate) use rows::promote_current;
+mod retention;
 mod search;
 
 #[cfg(test)]
@@ -43,6 +44,15 @@ use rows::*;
 use search::*;
 
 enum Msg {
+    Retain(
+        Box<crate::retention::PreparedBytes>,
+        Box<Batch>,
+        SyncSender<Result<crate::retention::Retained>>,
+    ),
+    ReconcileRetained(
+        std::sync::Arc<hashed_blobs::Store>,
+        SyncSender<Result<crate::retention::Reconciled>>,
+    ),
     Parsers(Vec<(String, u32)>, SyncSender<Result<()>>),
     Stop,
     Batch(Box<Batch>),
@@ -291,6 +301,36 @@ impl Writer {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
 
+    /// Reserve byte ownership durably before publishing the prepared object.
+    /// The batch contains only acquisition metadata, never parsed rows.
+    pub fn retain_bytes(
+        &self,
+        prepared: crate::retention::PreparedBytes,
+        batch: Batch,
+    ) -> Result<crate::retention::Retained> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Retain(Box::new(prepared), Box::new(batch), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Reconcile only canonically reserved hashes, using the configured blob roots.
+    pub fn reconcile_retained_bytes(
+        &self,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> Result<crate::retention::Reconciled> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::ReconcileRetained(store, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Waits until earlier batches are committed and their memory reservations
     /// are released, then returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
@@ -380,6 +420,8 @@ impl Inner {
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
         let mut parsers = Vec::new();
+        let mut retentions = Vec::new();
+        let mut reconciliations = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
             let mut group = Vec::new();
@@ -387,6 +429,14 @@ impl Inner {
             let mut bytes = 0;
             let mut push =
                 |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
+                    Msg::Retain(prepared, batch, reply) => {
+                        retentions.push((prepared, batch, reply));
+                        false
+                    }
+                    Msg::ReconcileRetained(store, reply) => {
+                        reconciliations.push((store, reply));
+                        false
+                    }
                     Msg::Parsers(versions, reply) => {
                         parsers.push((versions, reply));
                         false
@@ -446,6 +496,12 @@ impl Inner {
             // Later queue replies also observe release of the parsed batches'
             // memory reservations, not only their committed database rows.
             drop(group);
+            for (prepared, batch, reply) in retentions.drain(..) {
+                let _ = reply.send(self.retain_bytes(*prepared, *batch));
+            }
+            for (store, reply) in reconciliations.drain(..) {
+                let _ = reply.send(self.reconcile_retained_bytes(&store));
+            }
             for (versions, reply) in parsers.drain(..) {
                 let result = (|| {
                     let tx = crate::publication::transaction(

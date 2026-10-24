@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "faults")]
+#[path = "proof/retention.rs"]
+mod retention;
+
 const EXAMPLES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/sources/claude-code"
@@ -233,6 +237,15 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     let second = sinex.publish(&a).await.unwrap();
     assert_eq!((second.units, second.held), (0, first.units), "{second:?}");
 
+    #[cfg(feature = "faults")]
+    retention::verify(&mut sinex, &a, &home, dir.path()).await;
+    let expected = answers(&a);
+    let total = polylogue_store::sinex_rows::Published::open(&a)
+        .unwrap()
+        .inventory()
+        .unwrap()
+        .len();
+
     // 4. Restore into an empty archive once every unit is confirmed.
     let id = polylogue_store::sinex_rows::Published::open(&a)
         .unwrap()
@@ -244,7 +257,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
         let (archive, lock) = Archive::open_or_create(&b).unwrap();
         let r = sinex.restore(&archive, &id).await.unwrap();
         drop(lock);
-        if r.units == first.units {
+        if r.units == total {
             break r;
         }
         assert!(
@@ -253,7 +266,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
         );
         tokio::time::sleep(Duration::from_millis(300)).await;
     };
-    assert_eq!(restored.units, first.units);
+    assert_eq!(restored.units, total);
 
     // 5. Converge with no provider files: every byte comes from Sinex's store.
     let empty = dir.path().join("empty-home");

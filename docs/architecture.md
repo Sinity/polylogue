@@ -184,6 +184,29 @@ a missing in-memory tail is read from the retained range before append
 classification; a changed prefix starts a new chain. The comparison uses the
 committed byte length even when its source observation described a larger file.
 
+Manual imports and watched whole-export captures prepare bytes privately. The
+Store Writer checks standing input, content and location refusals, then durably
+reserves the input, revision, extent and a `writing` blob row before installing
+the CAS object. It admits the blob as `present` only after installation. Both
+commits use SQLite FULL synchronization; excision and publication share the
+Writer's publication guard. Rejected first admissions discard their private
+stage without creating a public CAS name. A duplicate already retained inline
+stays inline.
+
+An interruption after reservation retains that exact hash and length. Readers
+refuse unfinished ranges; status reports `unfinished_inputs`, and convergence
+verifies installed bytes before admitting them. Missing bytes remain explicitly
+unavailable, even if the provider now contains another version. An exact manual
+retry may supply the reserved bytes. Sinex refuses an unfinished source unit,
+and an older confirmed restore cannot discard its local observation. These
+rules do not register CAS files left unowned by earlier software.
+
+Whole-export recognition must inspect the same bytes that will be admitted.
+Store uses one private decoded scratch file for this inspection, then prepares
+those bytes with the shared blob encoder. This adds a streamed decoded disk
+copy; it does not retain the export in memory or reopen the provider. The normal
+parse pool remains a separate retention caller until its migration is complete.
+
 Retained-chain replay captures ordered extents and deduplicated compressed
 inline bytes from that same SQLite view into a private temporary database.
 Construction uses a 1 MiB page cache, then shrinks it to 64 KiB. Clones share

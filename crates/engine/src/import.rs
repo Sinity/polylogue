@@ -11,13 +11,20 @@ mod replay;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
-    /// bytes. Acquisition streams into the blob store before the writer
-    /// records a complete revision; parsing reads ranges of that same blob.
+    /// bytes. Acquisition prepares private bytes; the writer durably reserves
+    /// their ownership before installation, then admits them for parsing.
     /// Document-framed origins still parse a whole document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
         let mut report = ImportReport::default();
+        let reconciled = self
+            .writer
+            .reconcile_retained_bytes(Arc::clone(&self.blobs))?;
+        report.pass.unfinished_inputs = reconciled.missing;
+        if reconciled.completed > 0 {
+            self.replay_imports(None, &mut report.pass)?;
+        }
         let mut files = Vec::new();
         for path in paths {
             files_under(path, &mut files)?;
@@ -48,9 +55,10 @@ impl Engine {
                     }
                     let at = PathBuf::from(format!("{}!/{}", path.display(), member.name()));
                     let declared = member.size();
-                    let captured = Captured::read(&self.blobs, &mut member)?;
+                    let captured =
+                        Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
                     unchanged(&generation, facts, facts.size)?;
-                    if captured.piece.size != declared {
+                    if captured.prepared.len() != declared {
                         return Err(std::io::Error::other(
                             "ZIP member length changed during import",
                         )
@@ -62,8 +70,8 @@ impl Engine {
                     self.import_captured(&at, origin, captured, None, &mut report)?;
                 }
             } else if whole.is_some() {
-                let captured = Captured::read(&self.blobs, &mut file)?;
-                unchanged(&file, facts, captured.piece.size)?;
+                let captured = Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
+                unchanged(&file, facts, captured.prepared.len())?;
                 // Recognition uses retained bytes, so a concurrent rewrite
                 // cannot pair one version's identity with another's parser.
                 if let Some(origin) = self.recognize_captured(path, &captured)? {
@@ -76,6 +84,16 @@ impl Engine {
             }
         }
         self.restore_failed_writes()?;
+        for pending in self.reads.reader()?.status()?.unfinished_inputs {
+            if !report
+                .pass
+                .unfinished_inputs
+                .iter()
+                .any(|known| known.input == pending.input && known.blob == pending.blob)
+            {
+                report.pass.unfinished_inputs.push(pending);
+            }
+        }
         report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
@@ -86,15 +104,8 @@ impl Engine {
         path: &Path,
         captured: &Captured,
     ) -> Result<Option<&'static OriginSpec>, EngineError> {
-        {
-            let reader = self.blobs.read_plain(
-                &hashed_blobs::Hash(captured.piece.hash.0),
-                Some(captured.piece.size),
-                || Ok(()),
-            )?;
-            if polylogue_sources::polylogue_export::recognize_reader(reader)? {
-                return Ok(polylogue_sources::origin::by_name("polylogue-export"));
-            }
+        if captured.polylogue_export {
+            return Ok(polylogue_sources::origin::by_name("polylogue-export"));
         }
         Ok(recognize_import(path, &captured.head))
     }
@@ -123,69 +134,61 @@ impl Engine {
         facts: Option<FileFacts>,
         report: &mut ImportReport,
     ) -> Result<Option<Plan>, EngineError> {
-        let piece = captured.piece;
-        let id = piece.hash.to_string();
-        let retained = self.reads.reader()?.retained_input(&id)?;
-        let complete = retained.as_ref().is_some_and(|r| r.length == piece.size);
-        if complete {
-            report.already_stored.push(path.to_path_buf());
-            if origin.support != Support::Parsed
-                || retained.as_ref().is_some_and(|r| {
-                    (r.parsed_upto == piece.size || r.waiting)
-                        && r.parser_version == Some(origin.parser_version)
-                })
-            {
-                return Ok(None);
-            }
-        } else {
-            report.imported.push(path.to_path_buf());
-        }
+        let size = captured.prepared.len();
+        let id = captured.prepared.hash().to_string();
         let input = InputKey {
             id,
             format: origin.name.into(),
             route_rank: 2,
         };
-        if !complete {
-            self.writer.send(polylogue_store::Batch {
+        let admitted = match self.writer.retain_bytes(
+            captured.prepared,
+            polylogue_store::Batch {
                 input: input.clone(),
-                change: if retained.is_some() {
-                    Change::Rewritten
-                } else {
-                    Change::First
-                },
+                change: Change::First,
                 observation: Some(self.observation(path, facts)),
                 continues: false,
-                piece: Some(piece.clone()),
+                piece: None,
                 blobs: Vec::new(),
-                length: piece.size,
+                length: size,
                 parse: Vec::new(),
                 release: Default::default(),
-            })?;
-            let written = self.flush_writes()?;
-            if !written.errors.is_empty() {
-                report.pass.errors.extend(written.errors);
+            },
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                report.pass.errors.push(error.to_string());
                 return Ok(None);
             }
-            report.pass.bytes_stored += piece.size;
+        };
+        if admitted.already_stored {
+            report.already_stored.push(path.to_path_buf());
+        } else {
+            report.imported.push(path.to_path_buf());
+            report.pass.bytes_stored += size;
         }
+        if origin.support != Support::Parsed {
+            return Ok(None);
+        }
+        let reader = self.reads.reader()?;
+        let retained = reader
+            .retained_input(&input.id)?
+            .ok_or_else(|| std::io::Error::other("admitted import has no retained revision"))?;
+        if (retained.parsed_upto == size || retained.waiting)
+            && retained.parser_version == Some(origin.parser_version)
+        {
+            return Ok(None);
+        }
+        let chain = reader.stored_chain(&input.id, admitted.chain, size)?;
         let source = if matches!(
             (origin.open)(path),
             Some(polylogue_sources::Parse::Export(_))
         ) {
-            let reader = self.reads.reader()?;
-            let retained = reader
-                .retained_input(&input.id)?
-                .ok_or_else(|| std::io::Error::other("import has no retained revision"))?;
-            pool::Bytes::Stored(Arc::new(reader.stored_chain(
-                &input.id,
-                retained.chain,
-                retained.length,
-            )?))
+            pool::Bytes::Stored(Arc::new(chain))
         } else {
-            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
-                &self.blobs,
-                piece.hash,
-                piece.size,
+            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                chain,
+                Arc::clone(&self.blobs),
             )?)))
         };
         Ok(Some(Plan {
@@ -195,8 +198,8 @@ impl Engine {
             change: Change::Unchanged,
             observation: None,
             facts,
-            size: piece.size,
-            piece_pos: piece.size,
+            size,
+            piece_pos: size,
             parse_pos: 0,
             piece_started: true,
             carry: None,
@@ -223,31 +226,32 @@ fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::R
 /// A completed acquisition. The blob store hashes and compresses bounded
 /// frames while this reader counts original bytes and remembers the prefix.
 struct Captured {
-    piece: polylogue_store::Piece,
+    prepared: polylogue_store::retention::PreparedBytes,
     head: Vec<u8>,
+    polylogue_export: bool,
 }
 
 impl Captured {
-    fn read(store: &hashed_blobs::Store, reader: impl std::io::Read) -> Result<Self, EngineError> {
+    fn read(
+        archive: &Archive,
+        roots: &[PathBuf],
+        reader: impl std::io::Read,
+    ) -> Result<Self, EngineError> {
         let mut reader = CaptureReader {
             reader,
             size: 0,
             head: Vec::new(),
         };
-        let hash = store.put_plain_checked::<hashed_blobs::Error>(
-            &mut reader,
-            polylogue_store::blobs::LEVEL,
-            || Ok(()),
-        )?;
+        let (prepared, polylogue_export) =
+            archive.inspect_and_prepare_bytes(roots, &mut reader, |scratch| {
+                Ok(polylogue_sources::polylogue_export::recognize_reader(
+                    scratch,
+                )?)
+            })?;
         Ok(Self {
-            piece: polylogue_store::Piece {
-                hash: polylogue_model::BlobHash(hash.0),
-                size: reader.size,
-                stored: polylogue_store::blobs::Stored::File {
-                    stored_size: store.stored_size(&hash)?,
-                },
-            },
+            prepared,
             head: reader.head,
+            polylogue_export,
         })
     }
 }

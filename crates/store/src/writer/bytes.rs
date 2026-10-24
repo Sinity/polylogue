@@ -80,6 +80,7 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
             Change::First => "first",
             Change::Appended { .. } => "appended",
             Change::Rewritten => "rewritten",
+            Change::Unchanged if b.input.route_rank == 2 => "imported",
             Change::Unchanged => "back",
             Change::Reparse { .. } => unreachable!(),
             Change::Disappeared => "deleted",

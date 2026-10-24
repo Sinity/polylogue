@@ -126,7 +126,14 @@ fn selected_sessions_are_canonical_and_malformed_policies_refuse_loading() {
     );
     conn.execute("UPDATE excision SET refused_json='{\"sessions\":[]}'", [])
         .unwrap();
-    assert!(Refused::load(&conn).unwrap().is_empty());
+    let policy = Refused::load(&conn).unwrap();
+    assert!(!policy.is_empty()); // The raw input scope remains refused.
+    assert!(
+        policy
+            .matching(&["codex:opaque:session".into()], &[])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[cfg(feature = "faults")]

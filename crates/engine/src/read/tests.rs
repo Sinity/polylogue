@@ -1,5 +1,12 @@
 use super::*;
 
+fn stats(source: &Imported) -> hashed_blobs::VerificationStats {
+    match &source.reader {
+        Decoder::Plain(reader) => reader.stats(),
+        Decoder::Chain(_) => panic!("plain-reader counter control"),
+    }
+}
+
 #[test]
 fn detects_a_changed_tail() {
     let dir = tempfile::tempdir().unwrap();
@@ -23,7 +30,7 @@ fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
         .put(std::io::repeat(b'x').take(size as u64), 1)
         .unwrap();
     let mut source = Imported::open(&store, BlobHash(hash.0), size as u64).unwrap();
-    let verified = source.reader.stats();
+    let verified = stats(&source);
     assert_eq!(verified.decoded_bytes, size as u64);
     let chunk = 1024;
     for start in (0..size).step_by(chunk) {
@@ -36,7 +43,7 @@ fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
         assert!(source.pending.is_empty());
         assert!(source.pending.capacity() <= chunk);
     }
-    let stats = source.reader.stats();
+    let stats = stats(&source);
     assert_eq!(stats.decoded_bytes, 2 * size as u64);
     assert_eq!(stats.frames, verified.frames + 1);
     assert!(stats.compressed_bytes <= 2 * verified.compressed_bytes);
@@ -55,7 +62,7 @@ fn imported_ranges_keep_only_the_incomplete_record_overlap() {
     assert_eq!(source.read_range(9, 17).unwrap(), b"partial\n");
     source.consume(17);
     assert!(source.pending.is_empty());
-    assert_eq!(source.reader.stats().decoded_bytes, 34);
+    assert_eq!(stats(&source).decoded_bytes, 34);
 }
 
 #[test]
@@ -69,7 +76,7 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
     assert_eq!(source.read_range(4, 8).unwrap(), b"4567");
     source.consume(8);
     assert_eq!(source.read_range(8, 16).unwrap(), b"89abcdef");
-    assert_eq!(source.reader.stats().decoded_bytes, 32);
+    assert_eq!(stats(&source).decoded_bytes, 32);
 }
 
 #[test]

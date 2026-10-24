@@ -27,5 +27,8 @@ polylogue-model.workspace = true
 tempfile.workspace = true
 devkit = { workspace = true, features = ["pg", "nats"] }
 
+[features]
+faults = ["polylogue-engine/faults"]
+
 [lints]
 workspace = true

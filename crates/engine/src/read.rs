@@ -38,7 +38,7 @@ pub fn tail_of(bytes: &[u8]) -> Vec<u8> {
 /// One imported blob, verified once and decoded forward. Only an incomplete
 /// record overlaps parser jobs; consuming a prefix releases that buffer.
 pub struct Imported {
-    reader: hashed_blobs::PlainReader,
+    reader: Decoder,
     start: u64,
     pending: Vec<u8>,
 }
@@ -51,6 +51,20 @@ impl std::fmt::Debug for Imported {
     }
 }
 
+enum Decoder {
+    Plain(Box<hashed_blobs::PlainReader>),
+    Chain(Box<polylogue_store::blobs::ChainReader>),
+}
+
+impl Read for Decoder {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain(reader) => reader.read(out),
+            Self::Chain(reader) => reader.read(out),
+        }
+    }
+}
+
 impl Imported {
     pub fn open(
         store: &hashed_blobs::Store,
@@ -58,7 +72,25 @@ impl Imported {
         length: u64,
     ) -> hashed_blobs::Result<Self> {
         Ok(Self {
-            reader: store.read_plain(&hashed_blobs::Hash(hash.0), Some(length), || Ok(()))?,
+            reader: Decoder::Plain(Box::new(store.read_plain(
+                &hashed_blobs::Hash(hash.0),
+                Some(length),
+                || Ok(()),
+            )?)),
+            start: 0,
+            pending: Vec::new(),
+        })
+    }
+
+    pub fn from_chain(
+        chain: polylogue_store::blobs::StoredChain,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> polylogue_store::Result<Self> {
+        if let Some(hash) = chain.single_file_blob() {
+            return Ok(Self::open(&store, hash, chain.length)?);
+        }
+        Ok(Self {
+            reader: Decoder::Chain(Box::new(chain.reader(store))),
             start: 0,
             pending: Vec::new(),
         })
