@@ -24,6 +24,15 @@
       checks.${system}.polylogue = polylogue;
       devShells.${system}.default = pkgs.mkShell {
         packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server ];
+        shellHook = ''
+          # Optional host placement; explicit targets retain their current lease.
+          if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
+            if cargo_target="$(sinnix-cargo-target)"; then
+              export CARGO_TARGET_DIR="$cargo_target"
+            fi
+          fi
+          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/target}"
+        '';
       };
     };
 }
