@@ -96,48 +96,110 @@ fn text_reparse_freezes_all_input_routes_in_pk_order_before_deletion() {
 
 #[test]
 fn text_reparse_preserves_text_owned_only_by_a_retained_version() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
-    let mut a = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let mut i = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let tid = crate::text_rows::intern(&i, "historical synthetic marker", 0, None, false).unwrap();
-    i.execute(
-        "INSERT INTO content_version(pk,hash,attrs) VALUES(1,?1,x'00')",
-        [&[1u8; 32][..]],
-    )
-    .unwrap();
-    i.execute(
-        "INSERT INTO version_block(version_pk,idx,body,text_id) VALUES(1,0,x'00',?1)",
-        [tid],
-    )
-    .unwrap();
-    let at = a.transaction().unwrap();
-    let it = i.transaction().unwrap();
-    let t = Transactions {
-        archive: &at,
-        index: &it,
-        embeddings: None,
-        store: &store,
-        seq: 1,
-        counter: 1,
-    };
-    let hashes = RemovalHashes::new(&it).unwrap();
-    let inputs =
-        clear_for_reparse(&t, "synthetic marker", &BTreeSet::new(), false, &hashes).unwrap();
-    assert!(inputs.is_empty());
-    assert_eq!(hashes.text_count().unwrap(), 1);
-    let n: i64 = it
-        .query_row("SELECT count(*) FROM text WHERE id=?1", [tid], |r| r.get(0))
-        .unwrap();
-    assert_eq!(n, 1);
-    assert_eq!(
-        it.query_row(
-            "SELECT count(*) FROM version_block WHERE text_id=?1",
-            [tid],
-            |r| r.get::<_, i64>(0)
+    use crate::encoding::PreparedMessage;
+    use crate::fixture::{Fixture, MessageFacts, SessionFacts, writer::message};
+    use polylogue_model::{Block, Role};
+
+    for retained in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        let session = fixture
+            .session(SessionFacts {
+                id: "claude-code:retained",
+                ..Default::default()
+            })
+            .unwrap();
+        let message_pk = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: "claude-code:retained-m",
+                    role: "assistant",
+                    written_by: "model",
+                    text: Some("Unrelated current text"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let archive = &fixture.archive;
+        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+        let mut a = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+        let mut i = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        let historical = message(
+            "m",
+            "retained",
+            Role::Assistant,
+            1,
+            vec![Block::Text {
+                text: "historical synthetic marker".into(),
+            }],
+        );
+        let prepared = PreparedMessage::new(&historical).unwrap();
+        let at = a.transaction().unwrap();
+        let it = i.transaction().unwrap();
+        let version = crate::versions::retain(
+            &it,
+            &prepared,
+            &historical,
+            &std::collections::HashMap::new(),
+            false,
         )
-        .unwrap(),
-        1
-    );
+        .unwrap();
+        let tid: i64 = it
+            .query_row(
+                "SELECT text_id FROM version_block WHERE version_pk=?1",
+                [version],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // A source association owns retained history; a bare version may be pruned.
+        if retained {
+            it.execute(
+                "INSERT INTO message_source(message_pk,input_pk,chain,session_pk,
+                parser_version,source_start,source_end,preferred,current,version_hash)
+                SELECT pk,input_pk,1,session_pk,1,0,1,0,0,?2 FROM message WHERE pk=?1",
+                params![message_pk, &prepared.hash[..]],
+            )
+            .unwrap();
+        }
+        let t = Transactions {
+            archive: &at,
+            index: &it,
+            embeddings: None,
+            store: &store,
+            seq: 1,
+            counter: 1,
+        };
+        let hashes = RemovalHashes::new(&it).unwrap();
+        let inputs =
+            clear_for_reparse(&t, "synthetic marker", &BTreeSet::new(), false, &hashes).unwrap();
+        assert!(inputs.is_empty());
+        assert_eq!(hashes.text_count().unwrap(), 1);
+        let texts: i64 = it
+            .query_row("SELECT count(*) FROM text WHERE id=?1", [tid], |r| r.get(0))
+            .unwrap();
+        let blocks: i64 = it
+            .query_row(
+                "SELECT count(*) FROM version_block WHERE text_id=?1",
+                [tid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((texts, blocks), (i64::from(retained), i64::from(retained)));
+        assert_eq!(
+            it.query_row(
+                "SELECT count(*) FROM block WHERE message_pk=?1",
+                [message_pk],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        if retained {
+            assert_eq!(
+                crate::versions::load(&it, &prepared.hash).unwrap(),
+                (version, historical)
+            );
+        }
+    }
 }
