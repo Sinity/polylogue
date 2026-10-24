@@ -346,4 +346,19 @@ pub(super) async fn cached_comparison(sinex: &mut Sinex, root: &Path) {
     );
     sinex.store_root = read_root;
     assert_eq!(sinex.publish(&root).await.unwrap().units, 1);
+    // The new candidate acknowledgment requires a fresh binding even though
+    // the alias state itself did not change after the preceding publication.
+    let start = Instant::now();
+    loop {
+        match sinex.publish(&root).await {
+            Ok(done) if done.units == 0 => break,
+            Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message)))
+                if message.contains("no confirmed descriptor")
+                    && start.elapsed() < Duration::from_secs(10) =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            other => panic!("new candidate acknowledgment comparison: {other:?}"),
+        }
+    }
 }
