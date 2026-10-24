@@ -8,6 +8,7 @@
 //! - [`writer::WriterWorld`]: the real writer over a temporary archive, for
 //!   tests of what the writer and the derive step make of parsed records.
 
+pub mod archive4;
 pub mod writer;
 
 use crate::archive::{Archive, ArchiveLock, open_write};

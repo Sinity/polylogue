@@ -1,73 +1,27 @@
 use super::*;
 
 pub(super) async fn parent_retirement(sinex: &mut Sinex, store: &Path, root: &Path) {
-    use polylogue_store::{Delivery, DeliveryOutcome, UserRequest, UserWrite};
-    let (archive, _lock) = Archive::open_or_create(&root.join("legacy-source")).unwrap();
-    let writer = polylogue_store::Writer::start(&archive).unwrap();
-    writer
-        .user(UserRequest::now(
-            "legacy:[opaque]".into(),
-            UserWrite::Deliver(Delivery {
-                recipient_kind: "operator".into(),
-                recipient_id: None,
-                sender: "cli".into(),
-                event: "advisory".into(),
-                cwd: None,
-                text: "Synthetic legacy body".into(),
-                refs: vec![],
-                left_out: vec![],
-            }),
-        ))
-        .unwrap();
-    writer
-        .user(UserRequest::now(
-            "legacy-event".into(),
-            UserWrite::DeliveryEvent {
-                delivery: "legacy:[opaque]".into(),
-                what: DeliveryOutcome::Failed,
-                detail: Some("legacy private evidence".into()),
-            },
-        ))
-        .unwrap();
-    drop(writer);
+    let archive = polylogue_store::fixture::archive4::create(&root.join("legacy-source")).unwrap();
     let mut db = polylogue_store::archive::open_write(
         &archive.archive_db(),
         polylogue_store::archive::cache::SETUP,
     )
     .unwrap();
-    db.execute("UPDATE delivery_event SET commit_seq=0", [])
+    let legacy = polylogue_store::fixture::archive4::delivery(&db).unwrap();
+    let id: String = db
+        .query_row("SELECT value FROM meta WHERE key='archive_id'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
-    let source = crate::ArchiveRows::open(&archive.root).unwrap();
-    let id = source.archive_id().unwrap();
-    let unit = inventory_units(&source)
-        .into_iter()
-        .find(|u| u.kind == "delivery")
-        .unwrap();
-    let batch = source.read(&unit).unwrap();
-    let row_count = batch.rows;
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut &batch.file, &mut bytes).unwrap();
-    let mut legacy = Vec::new();
-    for line in bytes.split(|b| *b == b'\n').filter(|b| !b.is_empty()) {
-        let mut value: serde_json::Value = serde_json::from_slice(line).unwrap();
-        if value["table"] == "delivery_event" {
-            value["row"].as_object_mut().unwrap().remove("commit_seq");
-        }
-        serde_json::to_writer(&mut legacy, &value).unwrap();
-        legacy.push(b'\n');
-    }
-    drop(source);
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM vector_deletion_policy", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    db.execute_batch("ALTER TABLE machine DROP COLUMN first_commit_seq; DROP TABLE extracted_blob; DROP TABLE excision_document; DROP TABLE vector_deletion_policy;
-        DELETE FROM meta WHERE key='vector_policy_revision';
-        DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
-        ALTER TABLE observation DROP COLUMN commit_seq; ALTER TABLE delivery_event DROP COLUMN commit_seq;
-        PRAGMA user_version=4;").unwrap();
+    let unit = polylogue_store::sinex_rows::Unit {
+        commit_seq: 1,
+        kind: "delivery".into(),
+        key: "legacy:[opaque]".into(),
+    };
+    let row_count = legacy
+        .split(|b| *b == b'\n')
+        .filter(|b| !b.is_empty())
+        .count() as u64;
     // Publish the exact schema-4 closure, keeping its original frame and hash.
     let mut legacy_file = tempfile::tempfile().unwrap();
     std::io::Write::write_all(&mut legacy_file, &legacy).unwrap();
@@ -104,6 +58,11 @@ pub(super) async fn parent_retirement(sinex: &mut Sinex, store: &Path, root: &Pa
         .await
         .unwrap();
     polylogue_store::schema::migrate_archive(&mut db).unwrap();
+    drop(db);
+    let (archive, _lock) = Archive::open_or_create(&archive.root).unwrap();
+    let source = crate::ArchiveRows::open(&archive.root).unwrap();
+    assert_eq!(source.archive_id().unwrap(), id);
+    drop(source);
     let sent = sinex.publish(&archive.root).await.unwrap();
     assert_eq!(
         (sent.units, sent.held),
