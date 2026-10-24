@@ -351,6 +351,7 @@ impl Sinex {
     /// an interrupted suffix remains explicitly incomplete.
     pub async fn publish(&mut self, root: &Path) -> Result<Published> {
         let archive = ArchiveRows::open(root)?;
+        self.cleanup_completed().await?;
         let id = archive
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;

@@ -74,7 +74,6 @@ pub(super) async fn proof(sinex: &mut Sinex, root: &Path) {
     };
     fs::write(&input, line("first")).unwrap();
     fs::create_dir_all(cfg.join("polylogue")).unwrap();
-    fs::write(cfg.join("polylogue/sinex.toml"), "mode=\"standalone\"\n").unwrap();
     let spawn = |host: &str| {
         let mut command = Command::new("unshare");
         command
@@ -223,11 +222,11 @@ pub(super) async fn proof(sinex: &mut Sinex, root: &Path) {
     let start = Instant::now();
     loop {
         let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
-        if db
-            .query_row("SELECT COUNT(*) FROM machine", [], |r| r.get::<_, i64>(0))
-            .unwrap()
-            == 2
-        {
+        let complete: bool = db.query_row(
+            "SELECT (SELECT COUNT(*) FROM machine)=2 AND (SELECT COUNT(*) FROM observation)+(SELECT COUNT(*) FROM revision)>2 AND NOT EXISTS(SELECT 1 FROM blob WHERE state!='present')",
+            [], |r|r.get(0),
+        ).unwrap();
+        if complete {
             break;
         }
         assert!(start.elapsed() < Duration::from_secs(15));
@@ -241,9 +240,15 @@ pub(super) async fn proof(sinex: &mut Sinex, root: &Path) {
             .unwrap(),
         old_ack
     );
+    let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 8);
+    let drifted = archive8_observation(&db, &unit.key);
+    assert_ne!(drifted, original);
+    drop(db);
     let (archive, _lock) = Archive::open_or_create(&source).unwrap();
     let current = Published::open(&archive.root).unwrap();
     let changed = bytes(&current, &unit);
+    assert_eq!(changed, drifted);
     fs::write(root.join("current-observation.jsonl"), &changed).unwrap();
     assert_ne!(original, changed);
     let positions = (1..=current.inventory().unwrap().len())

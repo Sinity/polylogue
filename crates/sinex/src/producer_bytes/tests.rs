@@ -428,7 +428,8 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
         failures: vec![],
         events: vec![ProducerEvent {
             event_type: "polylogue.rows".into(),
-            payload: serde_json::json!({"synthetic":"x".repeat(16000)}),
+            payload: serde_json::from_str(&format!(r#"{{"z":"{}","a":1}}"#, "x".repeat(16000)))
+                .unwrap(),
             location: None,
             ordinal: 0,
             parents: vec![],
@@ -437,6 +438,7 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
         }],
     };
     let expected = frame.clone();
+    assert_eq!(encode_frame(&frame), serde_json::to_vec(&frame).unwrap());
     let root = dir.path().to_owned();
     let client = sinex.client.clone();
     let subject = sinex.subjects.ack(&sinex.producer);
@@ -461,6 +463,10 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut body, &mut bytes).unwrap();
         assert_eq!(bytes, encode_frame(&expected));
+        let loaded = spool::load(&root, "polylogue", expected.frame())
+            .unwrap()
+            .unwrap();
+        assert_eq!(encode_frame(&loaded.frame), bytes);
         ack(
             &client,
             &subject,
@@ -488,4 +494,148 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
             .unwrap()
             .is_none()
     );
+}
+
+fn frozen_material(sinex: &Sinex, name: &str) -> Frozen {
+    let body = b"synthetic pending body";
+    let mut bytes = source(body);
+    sinex
+        .freeze_bytes(
+            Ingress::Material {
+                frame: name.into(),
+                material: Box::new(MaterialFrame {
+                    id: MaterialId::new(),
+                    input: InputRef {
+                        kind: "polylogue".into(),
+                        locator: name.into(),
+                        host: String::new(),
+                    },
+                    blob: format!("blake3:{}", blake3::hash(body)),
+                    length: body.len() as u64,
+                    parser: "polylogue".into(),
+                    parser_version: 1,
+                    part_index: 0,
+                    previous_part: None,
+                    manifest: serde_json::json!({}),
+                }),
+            },
+            Class::Open,
+            Some(&mut bytes.file),
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pending_cleanup_checks_only_own_artifacts_and_never_resends_unconfirmed_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let nats = devkit::nats::Server::start().unwrap();
+    let (_, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
+    let done = frozen_material(&sinex, "done");
+    let waiting = frozen_material(&sinex, "waiting");
+    let mut unrelated = waiting.clone();
+    unrelated.publication.frame = "another-producer".into();
+    if let Ingress::Material { frame, .. } = &mut unrelated.frame {
+        *frame = "another-producer".into();
+    }
+    spool::freeze(dir.path(), "other-producer", &unrelated).unwrap();
+    // A terminal ACK must permit cleanup even after receiver byte cleanup.
+    spool::discard_bytes(dir.path(), "polylogue", &done.publication).unwrap();
+    let mut requests = sinex
+        .client
+        .subscribe(sinex.subjects.have(&sinex.producer))
+        .await
+        .unwrap();
+    sinex.client.flush().await.unwrap();
+    let client = sinex.client.clone();
+    let id = done.publication.material.as_ref().unwrap().id;
+    let worker = tokio::spawn(async move {
+        let message = requests.next().await.unwrap();
+        let mut request: Have = serde_json::from_slice(&message.payload).unwrap();
+        request.frames.sort();
+        assert_eq!(request.frames, ["done", "waiting"]);
+        let held = vec![acknowledgment(
+            "done".into(),
+            Some(id),
+            serde_json::json!({}),
+        )];
+        client
+            .publish(
+                message.reply.unwrap(),
+                serde_json::to_vec(&held).unwrap().into(),
+            )
+            .await
+            .unwrap();
+        client.flush().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), ingress.next())
+                .await
+                .is_err()
+        );
+    });
+    sinex.cleanup_completed().await.unwrap();
+    worker.await.unwrap();
+    assert!(
+        spool::load(dir.path(), "polylogue", "done")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        spool::load(dir.path(), "polylogue", "waiting").unwrap(),
+        Some(waiting)
+    );
+    assert_eq!(
+        spool::load(dir.path(), "other-producer", "another-producer").unwrap(),
+        Some(unrelated)
+    );
+}
+
+#[tokio::test]
+async fn pending_cleanup_preserves_identity_on_refused_or_different_final_ack() {
+    let dir = tempfile::tempdir().unwrap();
+    let nats = devkit::nats::Server::start().unwrap();
+    let (_, mut sinex, _) = setup(dir.path(), &nats).await;
+    let frozen = frozen_material(&sinex, "pending");
+    let mut requests = sinex
+        .client
+        .subscribe(sinex.subjects.have(&sinex.producer))
+        .await
+        .unwrap();
+    sinex.client.flush().await.unwrap();
+    let client = sinex.client.clone();
+    let worker = tokio::spawn(async move {
+        for refused in [true, false] {
+            let message = requests.next().await.unwrap();
+            let request: Have = serde_json::from_slice(&message.payload).unwrap();
+            assert_eq!(request.frames, ["pending"]);
+            let mut result = acknowledgment(
+                "pending".into(),
+                Some(MaterialId::new()),
+                serde_json::json!({}),
+            );
+            result.refusal = refused.then(|| "synthetic refusal".into());
+            client
+                .publish(
+                    message.reply.unwrap(),
+                    serde_json::to_vec(&vec![result]).unwrap().into(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    assert!(matches!(
+        sinex.cleanup_completed().await,
+        Err(Error::Refused { .. })
+    ));
+    assert_eq!(
+        spool::load(dir.path(), "polylogue", "pending").unwrap(),
+        Some(frozen.clone())
+    );
+    assert!(
+        matches!(sinex.cleanup_completed().await,Err(Error::Invalid(message)) if message.contains("differs from frozen"))
+    );
+    assert_eq!(
+        spool::load(dir.path(), "polylogue", "pending").unwrap(),
+        Some(frozen)
+    );
+    worker.await.unwrap();
 }

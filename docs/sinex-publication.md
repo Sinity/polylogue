@@ -15,7 +15,7 @@ A large material owns both its body and its exact typed JSON envelope;
 no extra material is created just to carry the envelope.
 
 Before reservation, the shared spool freezes the exact typed request and its
-random material ID. Retry loads this request before minting another ID or reading
+UUIDv7 material ID. Retry loads this request before minting another ID or reading
 the source. New reserve attempts have fresh names; the final frame and descriptor
 stay fixed. A completed reservation returns the original final acknowledgment,
 which permits retry after receiver role cleanup without opening the source again.
@@ -30,8 +30,8 @@ under `incoming/producers`. Both paths are scoped by the shared protocol's
 producer/final-frame key. They are durable retry state, so preserve them while a
 publication is incomplete. Each publish pass streams only this producer's frozen
 artifacts and asks batched `have` which final frames completed. It cleans checked
-successes without resending other pending frames. Public CAS availability remains independently checked
-by the ordinary verified restore path.
+successes without resending other pending frames. Public CAS availability remains
+independently checked by the ordinary verified restore path.
 
 [Caller controls](../crates/sinex/src/producer_bytes/tests.rs) exercise reservation,
 cancellation, exact identity reuse, private envelopes and missing evidence through

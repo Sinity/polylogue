@@ -73,6 +73,51 @@ impl Sinex {
         Ok(frozen)
     }
 
+    fn final_ack(publication: &Publication, ack: Acknowledgment) -> Result<Acknowledgment> {
+        let ack = checked(ack)?;
+        if ack.frame != publication.frame
+            || ack.material != publication.material.as_ref().map(|m| m.id)
+        {
+            return Err(Error::Invalid(
+                "final acknowledgment differs from frozen producer ownership".into(),
+            ));
+        }
+        Ok(ack)
+    }
+
+    /// Recover sender cleanup after an unobserved final ACK. The iterator reads
+    /// only this producer's actual artifacts, independent of held archive size.
+    pub(super) async fn cleanup_completed(&mut self) -> Result<()> {
+        let mut pending =
+            spool::pending(&self.store_root, &self.producer).map_err(Error::Invalid)?;
+        loop {
+            let mut publications = Vec::with_capacity(500);
+            for artifact in pending.by_ref().take(500) {
+                // Drop the potentially large typed frame before loading another.
+                publications.push(artifact.map_err(Error::Invalid)?.publication);
+            }
+            if publications.is_empty() {
+                return Ok(());
+            }
+            let frames = publications
+                .iter()
+                .map(|p| p.frame.clone())
+                .collect::<Vec<_>>();
+            let held = self.have(&frames).await?;
+            for publication in &publications {
+                if let Some(ack) = held.get(&publication.frame) {
+                    Self::final_ack(publication, ack.clone())?;
+                }
+            }
+            for publication in publications {
+                if held.contains_key(&publication.frame) {
+                    spool::discard(&self.store_root, &self.producer, &publication)
+                        .map_err(Error::Invalid)?;
+                }
+            }
+        }
+    }
+
     async fn deliver_frozen(&mut self, frozen: Frozen) -> Result<Acknowledgment> {
         let reservation = Ingress::Reserve {
             frame: format!(
@@ -109,13 +154,7 @@ impl Sinex {
                 reserved.outcome["complete"].clone(),
             )?)?
         };
-        if done.frame != frozen.publication.frame
-            || done.material != frozen.publication.material.as_ref().map(|m| m.id)
-        {
-            return Err(Error::Invalid(
-                "final acknowledgment differs from frozen producer ownership".into(),
-            ));
-        }
+        let done = Self::final_ack(&frozen.publication, done)?;
         spool::discard(&self.store_root, &self.producer, &frozen.publication)
             .map_err(Error::Invalid)?;
         Ok(done)
@@ -171,11 +210,7 @@ impl Sinex {
                 return Err(Error::Invalid("held acknowledgment frame differs".into()));
             }
             if let Some(frozen) = frozen {
-                if done.material != frozen.publication.material.as_ref().map(|m| m.id) {
-                    return Err(Error::Invalid(
-                        "held material differs from frozen identity".into(),
-                    ));
-                }
+                Self::final_ack(&frozen.publication, done.clone())?;
                 spool::discard(&self.store_root, &self.producer, &frozen.publication)
                     .map_err(Error::Invalid)?;
             }
