@@ -110,6 +110,8 @@ pub struct RetainedInput {
 /// not be read is an error, not a 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
+    /// Canonically reserved byte extents that have not been admitted as present.
+    pub unfinished_inputs: Vec<crate::retention::Unfinished>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -677,6 +679,7 @@ impl Reader<'_> {
             unrecognized.push((w, n as u64));
         }
         Ok(Status {
+            unfinished_inputs: crate::retention::unfinished(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM current_message")?,
             documents: count("SELECT COUNT(*) FROM current_document")?,
@@ -685,7 +688,7 @@ impl Reader<'_> {
             )?,
             inputs: count("SELECT COUNT(*) FROM a.input")?,
             revisions: count("SELECT COUNT(*) FROM a.revision")?,
-            stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob")?,
+            stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob WHERE state='present'")?,
             parse_states,
             unrecognized,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,
@@ -703,6 +706,7 @@ impl Reader<'_> {
         chain: i64,
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
+        crate::retention::require_range(self.conn()?, "a.", input, chain, 0..length)?;
         crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
@@ -715,6 +719,7 @@ impl Reader<'_> {
         end: u64,
         store: &hashed_blobs::Store,
     ) -> Result<Vec<u8>> {
+        crate::retention::require_range(self.conn()?, "a.", input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
             .read_range(store, start, end)
     }

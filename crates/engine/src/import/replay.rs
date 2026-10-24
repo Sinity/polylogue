@@ -37,11 +37,17 @@ impl Engine {
                 ))
                 .into());
             }
-            let source = pool::Bytes::Stored(Arc::new(self.reads.reader()?.stored_chain(
-                &input.id,
-                state.chain,
-                state.length,
-            )?));
+            let retained_chain =
+                match self
+                    .reads
+                    .reader()?
+                    .stored_chain(&input.id, state.chain, state.length)
+                {
+                    Ok(chain) => chain,
+                    Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                    Err(error) => return Err(error.into()),
+                };
+            let source = pool::Bytes::Stored(Arc::new(retained_chain));
             self.execute(
                 vec![Plan {
                     path: path.clone(),

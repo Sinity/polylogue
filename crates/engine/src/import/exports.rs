@@ -182,24 +182,35 @@ impl Engine {
         file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
         file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.piece_pos))?;
-        let captured = Captured::read(&self.blobs, (&mut file).take(plan.size - plan.piece_pos))?;
+        let captured = Captured::read(
+            &self.archive,
+            &self.config.blob_roots,
+            (&mut file).take(plan.size - plan.piece_pos),
+        )?;
         if FileFacts::of(&file.metadata()?) != before
-            || captured.piece.size != plan.size - plan.piece_pos
+            || captured.prepared.len() != plan.size - plan.piece_pos
         {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
-        let bytes = captured.piece.size;
-        self.writer.send(Batch {
-            input: plan.input.clone(),
-            change: plan.change.clone(),
-            observation: plan.observation.take(),
-            continues: false,
-            piece: Some(captured.piece),
-            blobs: Vec::new(),
-            length: plan.size,
-            parse: Vec::new(),
-            release: Default::default(),
-        })?;
+        let bytes = captured.prepared.len();
+        self.writer.retain_bytes(
+            captured.prepared,
+            Batch {
+                input: plan.input.clone(),
+                change: plan.change.clone(),
+                observation: Some(
+                    plan.observation
+                        .take()
+                        .unwrap_or_else(|| self.observation(&plan.path, plan.facts)),
+                ),
+                continues: false,
+                piece: None,
+                blobs: Vec::new(),
+                length: plan.size,
+                parse: Vec::new(),
+                release: Default::default(),
+            },
+        )?;
         let written = self.flush_writes()?;
         if !written.errors.is_empty() {
             return Err(std::io::Error::other(written.errors.join("; ")).into());

@@ -172,6 +172,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unfinished_inputs: Vec<polylogue_store::retention::Unfinished>,
     /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -611,6 +613,7 @@ impl Engine {
             total.sessions_derived += next.sessions_derived;
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
+            total.unfinished_inputs = next.unfinished_inputs;
             total.errors.extend(next.errors);
             total.capture_pending = next.capture_pending;
         }
@@ -624,6 +627,10 @@ impl Engine {
 
     fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
+        let unfinished_inputs = self
+            .writer
+            .reconcile_retained_bytes(Arc::clone(&self.blobs))?
+            .missing;
         self.load()?;
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
@@ -639,6 +646,7 @@ impl Engine {
             (Vec::new(), Vec::new(), Vec::new())
         };
         let mut pass = Pass {
+            unfinished_inputs,
             unreadable_roots: unreadable,
             errors,
             ..Pass::default()
@@ -986,10 +994,11 @@ impl Engine {
         }
         let (input_id, origin, stored, facts) =
             (st.input_id.clone(), st.origin, st.stored, st.facts);
-        let bytes = self
-            .reads
-            .reader()?
-            .stored_chain(&input_id, chain, stored)?;
+        let bytes = match self.reads.reader()?.stored_chain(&input_id, chain, stored) {
+            Ok(bytes) => bytes,
+            Err(polylogue_store::StoreError::InputUnfinished { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         let route_rank = self
             .reads
             .reader()?

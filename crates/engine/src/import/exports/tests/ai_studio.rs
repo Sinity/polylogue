@@ -19,7 +19,12 @@ fn retained_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
     fs::write(&path, &bytes).unwrap();
     {
         let (mut e, _lock) = engine(&w, 8);
-        let captured = Captured::read(&e.blobs, fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &e.archive,
+            &e.config.blob_roots,
+            fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
         // Stop after durable acquisition. The first parse must use retained bytes.
         e.import_plan(&path, origin, captured, None, &mut ImportReport::default())

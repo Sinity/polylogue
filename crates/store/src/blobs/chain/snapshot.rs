@@ -71,7 +71,7 @@ impl Snapshot {
         &self,
         at: u64,
         store: &hashed_blobs::Store,
-    ) -> Result<(Extent, Option<Box<dyn std::io::Read>>)> {
+    ) -> Result<(Extent, Option<Box<dyn std::io::Read + Send>>)> {
         let conn = self
             .conn
             .lock()

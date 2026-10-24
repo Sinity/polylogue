@@ -50,7 +50,12 @@ fn a_parser_upgrade_from_retained_bytes_matches_a_fresh_index_rebuild() {
     std::fs::write(&path, &raw).unwrap();
     {
         let (mut e, _lock) = engine(&w, 64);
-        let captured = Captured::read(&e.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &e.archive,
+            &e.config.blob_roots,
+            std::fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         e.import_captured(
             &path,
             &PREVIOUS,
@@ -106,7 +111,12 @@ fn two_retained_inputs_upgrade_together_and_match_a_fresh_rebuild() {
                 claude_user(&format!("u{n}"), "s1", &format!("current message {n}")),
             )
             .unwrap();
-            let captured = Captured::read(&e.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+            let captured = Captured::read(
+                &e.archive,
+                &e.config.blob_roots,
+                std::fs::File::open(&path).unwrap(),
+            )
+            .unwrap();
             e.import_captured(
                 &path,
                 &PREVIOUS,

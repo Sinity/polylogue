@@ -1,5 +1,6 @@
 //! File-backed JSONL batches of one archive unit's rows.
 use super::{Unit, hex};
+use rusqlite::OptionalExtension;
 use rusqlite::{
     Connection, params_from_iter,
     types::{Value as Sql, ValueRef},
@@ -57,6 +58,12 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
             if !exists {
                 return Ok(out);
             }
+            let (chain, length): (i64, i64) = archive.query_row(
+                "SELECT chain,length FROM revision WHERE input=?1 AND number=?2",
+                params_from_iter(args.iter()),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            crate::retention::require_range(archive, "", input, chain, 0..length as u64)?;
 
             add(
                 archive,
@@ -112,6 +119,10 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
             )?;
             if !exists {
                 return Ok(out);
+            }
+            let revision:Option<(String,i64,i64)>=archive.query_row("SELECT r.input,r.chain,r.length FROM observation o JOIN revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&unit.key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            if let Some((input, chain, length)) = revision {
+                crate::retention::require_range(archive, "", &input, chain, 0..length as u64)?;
             }
             add(
                 archive,

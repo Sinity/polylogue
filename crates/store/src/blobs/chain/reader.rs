@@ -37,7 +37,7 @@ pub(super) struct Cursor {
     access: Access,
     position: u64,
     end: u64,
-    current: Option<Box<dyn Read>>,
+    current: Option<Box<dyn Read + Send>>,
     left: u64,
 }
 
@@ -80,7 +80,7 @@ impl Cursor {
                 self.position += want as u64;
                 return Ok(want);
             }
-            let mut reader: Box<dyn Read> = match inline {
+            let mut reader: Box<dyn Read + Send> = match inline {
                 Some(reader) => reader,
                 None => Box::new(store.read_plain(
                     &hashed_blobs::Hash(extent.hash.0),
@@ -112,7 +112,7 @@ pub(super) fn inline(
     conn: &Connection,
     store: &hashed_blobs::Store,
     extent: &Extent,
-) -> Result<Box<dyn Read>> {
+) -> Result<Box<dyn Read + Send>> {
     if extent.size < super::super::INLINE_LIMIT as u64 {
         let mut bytes = Vec::with_capacity(extent.size as usize);
         super::super::copy_plain(conn, store, extent.hash, &mut bytes)?;

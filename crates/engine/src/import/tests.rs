@@ -20,7 +20,12 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         let original = claude_user("u1", "s1", "captured");
         std::fs::write(&path, &original).unwrap();
         let (mut engine, _lock) = engine(&w, 64);
-        let captured = Captured::read(&engine.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &engine.archive,
+            &engine.config.blob_roots,
+            std::fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         if delete {
             std::fs::remove_file(&path).unwrap();
         } else {
@@ -54,7 +59,12 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
     std::fs::write(&path, &original).unwrap();
     {
         let (mut engine, _lock) = engine(&w, 64);
-        let captured = Captured::read(&engine.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &engine.archive,
+            &engine.config.blob_roots,
+            std::fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         let origin = recognize_import(&path, &captured.head).unwrap();
         let mut report = ImportReport::default();
         // Simulate a stop after committing the source and before the parse job.
@@ -97,7 +107,7 @@ fn capture_failure_leaves_no_catalog_input() {
     }
     let w = polylogue_testkit::ClaudeHome::new();
     let (engine, _lock) = engine(&w, 64);
-    assert!(Captured::read(&engine.blobs, Failed).is_err());
+    assert!(Captured::read(&engine.archive, &engine.config.blob_roots, Failed).is_err());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 0);
 }
@@ -207,8 +217,9 @@ fn acquisition_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
         left: size,
         max_request: 0,
     };
-    let captured = Captured::read(&engine.blobs, &mut generated).unwrap();
-    assert_eq!(captured.piece.size, size);
+    let captured =
+        Captured::read(&engine.archive, &engine.config.blob_roots, &mut generated).unwrap();
+    assert_eq!(captured.prepared.len(), size);
     assert_eq!(captured.head, vec![b'x'; 64]);
     assert_eq!(generated.left, 0);
     assert!(generated.max_request <= hashed_blobs::DEFAULT_FRAME);
@@ -223,7 +234,12 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
     std::fs::write(&path, &original).unwrap();
     {
         let (mut engine, _lock) = engine(&w, 64);
-        let captured = Captured::read(&engine.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &engine.archive,
+            &engine.config.blob_roots,
+            std::fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         let origin = recognize_import(&path, &captured.head).unwrap();
         engine
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
@@ -250,7 +266,12 @@ fn replayed_import_does_not_replace_the_native_winner() {
     {
         let (mut engine, _lock) = engine(&w, 64);
         engine.converge().unwrap();
-        let captured = Captured::read(&engine.blobs, std::fs::File::open(&path).unwrap()).unwrap();
+        let captured = Captured::read(
+            &engine.archive,
+            &engine.config.blob_roots,
+            std::fs::File::open(&path).unwrap(),
+        )
+        .unwrap();
         let origin = recognize_import(&path, &captured.head).unwrap();
         engine
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
@@ -302,3 +323,5 @@ fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
 }
 
 mod replay;
+
+mod custody;

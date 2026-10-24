@@ -26,6 +26,7 @@ mod ordered_blocks;
 mod publication;
 pub mod read;
 mod repo_lookup;
+pub mod retention;
 pub mod schema;
 pub mod search;
 pub mod session_export;
@@ -52,6 +53,10 @@ pub use writer::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("input {input} is excluded by the archive's removal policy")]
+    InputRefused { input: String },
+    #[error("input {input} has unfinished retained bytes: {reason}")]
+    InputUnfinished { input: String, reason: String },
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]

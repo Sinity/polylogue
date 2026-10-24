@@ -275,6 +275,17 @@ impl Published {
         target: &hashed_blobs::Store,
     ) -> crate::Result<u64> {
         use std::io::Seek;
+        let state: String = self.conn.query_row(
+            "SELECT state FROM blob WHERE hash=?1",
+            [hash.as_slice()],
+            |row| row.get(0),
+        )?;
+        if state != "present" {
+            return Err(crate::StoreError::InputUnfinished {
+                input: hex(hash),
+                reason: format!("source blob is {state}"),
+            });
+        }
         let expected = polylogue_model::BlobHash(*hash);
         let mut file = tempfile::tempfile()?;
         let copied = crate::blobs::copy_plain(&self.conn, &self.blobs, expected, &mut file)?;

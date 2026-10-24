@@ -51,6 +51,9 @@ impl Refused {
             if let Some(id) = scope.strip_prefix("session:") {
                 out.insert("sessions", id)?;
             }
+            if let Some(id) = scope.strip_prefix("input:") {
+                out.insert("inputs", id)?;
+            }
             let policy = row.get_ref(2)?;
             let policy = policy
                 .as_str()
@@ -91,6 +94,22 @@ impl Refused {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_none()
+    }
+
+    pub(crate) fn raw_import(
+        &self,
+        input: &str,
+        hash: &polylogue_model::BlobHash,
+        observation: &crate::Observation,
+    ) -> Result<bool> {
+        let Some(conn) = &self.0 else {
+            return Ok(false);
+        };
+        let location = serde_json::to_string(&(&observation.machine, &observation.path))?;
+        let hash = hash.to_string();
+        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM inputs WHERE id=?1)
+            OR EXISTS(SELECT 1 FROM blobs WHERE id=?2) OR EXISTS(SELECT 1 FROM revisions WHERE id=?2)
+            OR EXISTS(SELECT 1 FROM locations WHERE id=?3)",rusqlite::params![input,hash,location],|row|row.get(0))?)
     }
 
     pub(crate) fn matching(&self, sessions: &[String], messages: &[String]) -> Result<RefusedIds> {
@@ -142,6 +161,10 @@ impl Refused {
                  CREATE TABLE sessions(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  CREATE TABLE messages(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  CREATE TABLE documents(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE inputs(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE blobs(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE revisions(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE locations(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  BEGIN;",
             )?;
             self.0 = Some(conn);
