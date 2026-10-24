@@ -194,61 +194,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
 }
 
 #[test]
-fn later_kept_hint_does_not_hide_untyped_legacy_recognition_paths() {
-    let w = ClaudeHome::new();
-    let bytes = format!(
-        r#"{{"metadata":"{}","conversations":[{{"conversation":{{"id":"legacy-recognized"}},"responses":[{{"responseId":"one","sender":"human","message":"legacy interpretation"}}]}}]}}"#,
-        "synthetic ".repeat(12)
-    );
-    let opaque = w.dir.path().join("opaque.json");
-    let standard = w.dir.path().join("prod-grok-backend.json");
-    let (mut e, lock) = engine(&w, 1024);
-    for path in [&opaque, &standard] {
-        std::fs::write(path, &bytes).unwrap();
-        let captured = Captured::read(
-            &e.archive,
-            &e.config.blob_roots,
-            std::fs::File::open(path).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            captured.member.is_none(),
-            "this models the older acquisition API without typed hints"
-        );
-        let origin = e
-            .recognize_captured(path, &captured)
-            .unwrap()
-            .unwrap_or_else(|| polylogue_sources::origin::by_name(KEPT).unwrap());
-        let mut report = ImportReport::default();
-        e.import_captured(path, origin, captured, None, &mut report)
-            .unwrap();
-        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-    }
-    assert!(
-        e.import(std::slice::from_ref(&opaque))
-            .unwrap()
-            .pass
-            .errors
-            .is_empty()
-    );
-    drop(e);
-    drop(lock);
-    std::fs::remove_file(opaque).unwrap();
-    std::fs::remove_file(standard).unwrap();
-    delete_index(&w.root);
-    let (mut e, _lock) = engine(&w, 1024);
-    let pass = e.converge().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(pass.legacy_imports.len(), 1);
-    assert_eq!(pass.legacy_imports[0].candidates[0].format, "grok");
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM session WHERE id='grok:legacy-recognized'"),
-        1
-    );
-}
-
-#[test]
-fn explicit_kept_only_acquisitions_do_not_need_legacy_recognition() {
+fn explicit_kept_only_acquisitions_replay_without_errors() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("opaque.dat");
     std::fs::write(&path, b"synthetic uninterpreted binary\0\xff").unwrap();
@@ -266,63 +212,6 @@ fn explicit_kept_only_acquisitions_do_not_need_legacy_recognition() {
     let (mut e, _lock) = engine(&w, 1024);
     let pass = e.converge().unwrap();
     assert!(pass.errors.is_empty());
-    assert!(pass.legacy_imports.is_empty());
-}
-
-#[test]
-fn legacy_recognition_reports_unknown_and_competing_origins_without_inventing_a_choice() {
-    for ambiguous in [false, true] {
-        let w = ClaudeHome::new();
-        let paths = if ambiguous {
-            vec![
-                w.dir.path().join("prod-grok-backend.json"),
-                w.dir.path().join("projects/project.json"),
-            ]
-        } else {
-            vec![w.dir.path().join("unknown.bin")]
-        };
-        let bytes = if ambiguous {
-            b"{}".as_slice()
-        } else {
-            b"uninterpreted legacy bytes".as_slice()
-        };
-        let (mut e, lock) = engine(&w, 1024);
-        for path in &paths {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, bytes).unwrap();
-            let captured = Captured::read(
-                &e.archive,
-                &e.config.blob_roots,
-                std::fs::File::open(path).unwrap(),
-            )
-            .unwrap();
-            let mut report = ImportReport::default();
-            e.import_captured(
-                path,
-                polylogue_sources::origin::by_name(KEPT).unwrap(),
-                captured,
-                None,
-                &mut report,
-            )
-            .unwrap();
-            assert!(report.pass.errors.is_empty());
-        }
-        drop(e);
-        drop(lock);
-        for path in paths {
-            std::fs::remove_file(path).unwrap();
-        }
-        delete_index(&w.root);
-        let (mut e, _lock) = engine(&w, 1024);
-        let pass = e.converge().unwrap();
-        assert_eq!(pass.legacy_imports.len(), 1);
-        assert_eq!(
-            pass.legacy_imports[0].candidates.len(),
-            if ambiguous { 2 } else { 0 }
-        );
-        assert_eq!(pass.errors.is_empty(), !ambiguous);
-        assert_eq!(w.count("SELECT count(*) AS n FROM session"), 0);
-    }
 }
 
 #[test]

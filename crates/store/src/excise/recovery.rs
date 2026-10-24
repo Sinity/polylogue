@@ -157,10 +157,8 @@ pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
             "SELECT
         COALESCE((SELECT value FROM main.meta WHERE key='excision_version'),'0'),
         COALESCE((SELECT value FROM main.meta WHERE key='excision_revision'),''),
-        COALESCE((SELECT value FROM a.meta WHERE key='excision_version'),
-            CASE WHEN EXISTS(SELECT 1 FROM a.excision) THEN '1' ELSE '0' END),
-        COALESCE((SELECT value FROM a.meta WHERE key='excision_revision'),
-            CASE WHEN EXISTS(SELECT 1 FROM a.excision) THEN 'legacy' ELSE '' END)",
+        (SELECT value FROM a.meta WHERE key='excision_version'),
+        (SELECT value FROM a.meta WHERE key='excision_revision')",
         )?
         .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
     let applied = Revision::decode(applied_version, applied_id)?;
@@ -168,21 +166,13 @@ pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
     if applied != current {
         return Err(StoreError::ExcisionPending);
     }
-    // The statement above pins both databases. Older read-only archives may
-    // predate the cleanup table; the daemon migrates before serving writes.
+    // The statement above pins both databases.
     for table in ["pending_vector_excision", "pending_blob_excision"] {
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM a.sqlite_master WHERE type='table' AND name=?1)",
-            [table],
-            |r| r.get(0),
-        )?;
-        if exists
-            && conn.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM a.{table})"),
-                [],
-                |r| r.get::<_, bool>(0),
-            )?
-        {
+        if conn.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM a.{table})"),
+            [],
+            |r| r.get::<_, bool>(0),
+        )? {
             return Err(StoreError::ExcisionPending);
         }
     }

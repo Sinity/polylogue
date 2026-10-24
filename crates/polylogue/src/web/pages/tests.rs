@@ -50,6 +50,6 @@ fn identical_cell_text_links_only_by_its_column_reference() {
     let old = json!({"unit":"sessions","shape":"rows","columns":[{"name":"id","kind":"text"}],"rows":[{"id":id}],"count":1});
     assert!(
         !results_table(&old).contains("href="),
-        "legacy metadata must not be guessed"
+        "columns without references must not be guessed"
     );
 }

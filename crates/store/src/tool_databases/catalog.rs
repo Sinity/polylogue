@@ -47,7 +47,7 @@ impl Catalog {
                         break;
                     }
                     if bytes.last() != Some(&b'\n') {
-                        return Err(invalid("unfinished legacy SQLite export line"));
+                        return Err(invalid("unfinished SQLite export line"));
                     }
                     let value: Value =
                         serde_json::from_slice(&bytes).map_err(std::io::Error::from)?;
@@ -74,7 +74,7 @@ impl Catalog {
                 Ok(())
             }
             _ => Err(invalid(
-                "logical export source binding differs or is historically unbound",
+                "logical export source binding differs or is missing",
             )),
         }
     }
@@ -98,33 +98,15 @@ impl Catalog {
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("SQLite export row has no table"))?;
         if v.get("gone") == Some(&Value::Bool(true)) {
-            if let Some(k) = v.get("k") {
-                self.conn
-                    .execute(
-                        "DELETE FROM row_state WHERE t=?1 AND k=?2",
-                        params![t, k.to_string()],
-                    )
-                    .map_err(sql_err)?;
-            } else {
-                let kh = v
-                    .get("kh")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid("SQLite removal has no key"))?;
-                let n: i64 = self
-                    .conn
-                    .query_row(
-                        "SELECT count(*) FROM row_state WHERE t=?1 AND kh=?2",
-                        params![t, kh],
-                        |r| r.get(0),
-                    )
-                    .map_err(sql_err)?;
-                if n > 1 {
-                    return Err(invalid("ambiguous legacy SQLite removal key"));
-                }
-                self.conn
-                    .execute("DELETE FROM row_state WHERE t=?1 AND kh=?2", params![t, kh])
-                    .map_err(sql_err)?;
-            }
+            let k = v
+                .get("k")
+                .ok_or_else(|| invalid("SQLite removal has no key"))?;
+            self.conn
+                .execute(
+                    "DELETE FROM row_state WHERE t=?1 AND k=?2",
+                    params![t, k.to_string()],
+                )
+                .map_err(sql_err)?;
         } else {
             let k = v
                 .get("k")

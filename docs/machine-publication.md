@@ -38,9 +38,5 @@ physical retirement retains its separate confirmation.
 
 The implementation owners are `store::sinex_rows` for snapshot, selection and
 verified row comparison, and `polylogue-sinex` for frame acknowledgments and
-confirmed metadata. Native controls in `crates/sinex/src/tests/historical_machine.rs`
-use the retained actual Archive8 frontend named by `POLYLOGUE_OLD8`; they run
-inside the existing ignored excision publication control when that variable is
-set. Its ordinary cache controls also run without the old frontend. The Store
-admission/counter-floor controls remain in
+confirmed metadata. The Store tests are in
 `crates/store/src/sinex_rows/tests/machine_alias/history.rs`.

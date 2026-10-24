@@ -106,9 +106,9 @@ fn profiles_are_retained_bindings_and_unbound_or_conflicting_exports_do_not_gues
     );
     let mut unbound = header("a");
     unbound.as_object_mut().unwrap().remove("source");
-    let legacy = parse([vec![unbound], records.clone()].concat());
-    assert!(legacy.output.sessions.is_empty());
-    assert!(!legacy.accounting.unknown.is_empty());
+    let without_source = parse([vec![unbound], records.clone()].concat());
+    assert!(without_source.output.sessions.is_empty());
+    assert!(!without_source.accounting.unknown.is_empty());
     let conflicting = parse([vec![header("a"), header("b")], records].concat());
     assert!(conflicting.output.messages.is_empty());
     assert!(!conflicting.accounting.unknown.is_empty());

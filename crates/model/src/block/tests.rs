@@ -50,7 +50,7 @@ fn text_covers_prose_and_thinking_only() {
 }
 
 #[test]
-fn explicit_unknown_attachment_direction_preserves_legacy_known_wire_values() {
+fn explicit_unknown_attachment_direction_keeps_known_wire_values() {
     for (direction, wire) in [
         (AttachmentDirection::Input, "input"),
         (AttachmentDirection::Output, "output"),

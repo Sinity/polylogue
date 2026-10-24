@@ -77,7 +77,7 @@ fn wrong_or_missing_binding_never_changes_a_bound_export() {
 }
 
 #[test]
-fn legacy_unbound_export_is_retained_without_guessing_its_native_profile() {
+fn an_unbound_export_is_kept_without_guessing_its_native_profile() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.db");
     Connection::open(&db)

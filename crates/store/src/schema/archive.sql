@@ -9,6 +9,7 @@ CREATE TABLE machine (
   id            TEXT NOT NULL,           -- /etc/machine-id
   host          TEXT NOT NULL,           -- host name: a label for display, never a key
   first_seen    INTEGER NOT NULL,
+  first_commit_seq INTEGER NOT NULL DEFAULT 0 CHECK(first_commit_seq>=0),
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
@@ -117,9 +118,11 @@ CREATE TABLE observation (
   provider_version TEXT,                 -- when the content states it
   polylogue_version TEXT NOT NULL,
   zone          TEXT,                    -- the collecting machine's IANA zone (model.md, Time: offsetless times)
-  seen_at       INTEGER NOT NULL         -- Polylogue's clock
+  seen_at       INTEGER NOT NULL,        -- Polylogue's clock
+  commit_seq    INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE INDEX observation_input ON observation(input, seen_at);
+CREATE INDEX observation_commit_seq ON observation(commit_seq);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
 
 -- Notes, tags, titles, saved queries, withdrawals and everything else people
@@ -303,5 +306,101 @@ CREATE TABLE delivery_event (
   what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
+  commit_seq        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
+
+INSERT INTO meta(key,value) VALUES ('excision_revision','');
+INSERT INTO meta(key,value) VALUES ('excision_version','0');
+CREATE TRIGGER excision_revision_insert AFTER INSERT ON excision BEGIN
+    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER excision_revision_update AFTER UPDATE ON excision BEGIN
+    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER excision_revision_delete AFTER DELETE ON excision BEGIN
+    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+
+-- Exact local cleanup intent survives separate archive/index/vector commits.
+CREATE TABLE pending_vector_excision (
+    text_hash BLOB PRIMARY KEY CHECK(length(text_hash)=32),
+    excision_id TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+
+-- Only exact deletion intents of committed local excisions are replayed.
+CREATE TABLE pending_blob_excision (
+    hash BLOB PRIMARY KEY CHECK(length(hash)=32),
+    excision_id TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE vector_deletion_policy (
+ excision_id TEXT PRIMARY KEY REFERENCES excision(id),
+ version INTEGER NOT NULL,
+ hashes_json TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+INSERT INTO meta(key,value) VALUES ('vector_policy_revision','');
+CREATE TRIGGER vector_policy_insert AFTER INSERT ON vector_deletion_policy BEGIN
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER vector_policy_update AFTER UPDATE ON vector_deletion_policy BEGIN
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER vector_policy_delete AFTER DELETE ON vector_deletion_policy BEGIN
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+
+-- Document excisions: the documents each one selected.
+CREATE TABLE excision_document (
+  excision_id TEXT NOT NULL REFERENCES excision(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL,
+  PRIMARY KEY(excision_id,document_id)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER document_policy_insert AFTER INSERT ON excision_document BEGIN
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER document_policy_update AFTER UPDATE ON excision_document BEGIN
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+CREATE TRIGGER document_policy_delete AFTER DELETE ON excision_document BEGIN
+ UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
+ UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
+END;
+
+-- Decoded bytes belong to their actual retained source envelope, separately
+-- from raw byte extents. Late extraction owns an independent publication unit.
+CREATE TABLE extracted_blob (
+  input TEXT NOT NULL REFERENCES input(id),
+  chain INTEGER NOT NULL,
+  source_start INTEGER NOT NULL CHECK(source_start>=0),
+  source_end INTEGER NOT NULL CHECK(source_end>source_start),
+  source_hash BLOB NOT NULL CHECK(length(source_hash)=32),
+  parser_version INTEGER NOT NULL CHECK(parser_version>=0),
+  blob BLOB NOT NULL REFERENCES blob(hash),
+  state TEXT NOT NULL CHECK(state IN ('writing','present')),
+  commit_seq INTEGER NOT NULL CHECK(commit_seq>0),
+  PRIMARY KEY(input,chain,source_start,source_end,source_hash,parser_version,blob)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX extracted_blob_hash ON extracted_blob(blob);
+CREATE INDEX extracted_blob_sequence ON extracted_blob(commit_seq);
+
+-- A physical member interpretation belongs to this exact original container.
+-- The member observation owns the relationship in its publication unit.
+CREATE TABLE observation_container (
+    observation_id TEXT PRIMARY KEY REFERENCES observation(id),
+    container_input TEXT NOT NULL REFERENCES input(id),
+    member_index INTEGER NOT NULL CHECK(member_index>=0)
+) STRICT;
+CREATE INDEX observation_container_input ON observation_container(container_input);

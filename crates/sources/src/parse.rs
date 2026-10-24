@@ -248,7 +248,7 @@ fn snapshots(
         if bytes.starts_with(MAGIC) {
             position = MAGIC.len();
         } else {
-            // Existing single-envelope spools keep their original input identity.
+            // An unframed file (an imported capture) is one snapshot.
             match serde_json::from_slice::<serde::de::IgnoredAny>(bytes) {
                 Err(error) if error.is_eof() => return empty_steps(),
                 _ => {}

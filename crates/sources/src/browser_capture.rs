@@ -1,6 +1,6 @@
 //! The browser extension's capture spool: one framed append log per conversation
 //! (`$XDG_STATE_HOME/polylogue/browser-capture/<provider>/*.json`). Each distinct
-//! envelope is interpreted once. Existing unframed envelopes remain readable.
+//! envelope is interpreted once. An unframed envelope is read as one snapshot.
 //!
 //! A capture carries the provider's own conversation JSON
 //! (`raw_provider_payload`) where the provider page exposes it. That JSON

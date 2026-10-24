@@ -37,11 +37,7 @@ leaves an existing destination untouched.
 Import results separate byte retention (`imported` / `already_stored`) from
 interpretation (`unrecognized`), so those lists can overlap. Each new acquisition
 records its selected format beside its captured path. Rebuild reuses that pair
-without changing the original Input format. For legacy acquisitions without
-format hints, current recognition uses retained bytes and recorded paths;
-`legacy_imports` reports its current candidates. Unknown or competing origins
-remain uninterpreted, and this result does not become a historical source claim.
-A later opaque acquisition keeps earlier recognized context. Switching between
+without changing the original Input format. A later opaque acquisition keeps earlier recognized context. Switching between
 competing parsed origins for one immutable input is unsupported. Text excision
 still refuses Inputs originally captured as opaque, including ones interpreted
 later; it does not infer a safe decoder from a later format hint.
@@ -54,9 +50,7 @@ retained. Native file-ID matching can still resolve bytes without a filename.
 ZIP import retains the exact original container, including its metadata, and
 separate uncompressed file-member Inputs. Member observations record their
 original container and native member index. Equal bytes share storage while
-keeping every physical observation. Archive10 stores this relationship; older
-writers and row decoders refuse it. Older member-only captures do not acquire
-missing original bytes during rebuild.
+keeping every physical observation.
 
 A ZIP's file members are decoded, hashed and staged privately before any bytes
 are published. A refused member refuses the linked acquisition. Corrupt,

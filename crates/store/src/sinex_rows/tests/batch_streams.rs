@@ -60,9 +60,6 @@ fn row_batch_bytes_keep_the_existing_jsonl_representation() {
 fn an_unknown_unit_kind_refuses_instead_of_becoming_an_empty_delivery() {
     let source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
-    source
-        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
-        .unwrap();
     assert!(
         matches!(read(&source,&Unit{commit_seq:1,kind:"unknown".into(),key:"one".into()}),
         Err(crate::StoreError::Invalid(message)) if message.contains("unknown publication unit kind"))
@@ -100,7 +97,6 @@ fn a_stored_legacy_batch_keeps_its_original_bytes_and_restores_them() {
     .unwrap();
     let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    crate::schema::migrate_archive(&mut target).unwrap();
     assert_eq!(
         restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(
             published.replacement(&name)?

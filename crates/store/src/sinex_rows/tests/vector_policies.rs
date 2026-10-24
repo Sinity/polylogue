@@ -106,51 +106,36 @@ fn canonical_restore_reconciles_exact_policies_and_preserves_repurchase_on_repea
 }
 
 #[test]
-fn a_new_owned_policy_refuses_an_old_target_and_cannot_be_dropped_by_restore() {
+fn a_policy_cannot_be_dropped_by_restore() {
     let (_dir, _source, _lock, descriptor, bytes, id) = published();
     let selected = select(std::slice::from_ref(&descriptor)).unwrap();
-    let mut old = Connection::open_in_memory().unwrap();
-    crate::schema::create_archive(&old).unwrap();
-    for migration in crate::schema::ARCHIVE_MIGRATIONS.iter().take(4) {
-        old.execute_batch(migration).unwrap();
-    }
-    old.pragma_update(None, "user_version", 5).unwrap();
-    assert!(
-        restore::install_fixture(&mut old, &selected, None, |_| Ok(Some(Cursor::new(
-            bytes.clone()
-        ))))
-        .is_err()
-    );
-    assert_eq!(
-        old.query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let mut restoring = Restoring::open(&archive).unwrap();
     restoring
         .install(&id, &selected, |_| Ok(Some(Cursor::new(bytes.clone()))))
         .unwrap();
-    let mut legacy = Vec::new();
+    let mut without_policy = Vec::new();
     let mut count = 0;
     for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
         let value: Value = serde_json::from_slice(line).unwrap();
         if value["table"] == "vector_deletion_policy" {
             continue;
         }
-        legacy.extend_from_slice(line);
-        legacy.push(b'\n');
+        without_policy.extend_from_slice(line);
+        without_policy.push(b'\n');
         count += 1;
     }
     let mut omitted = descriptor;
     omitted.rows = count;
-    omitted.bytes = Some(legacy.len() as u64);
-    omitted.batch = Some(format!("blake3:{}", blake3::hash(&legacy)));
+    omitted.bytes = Some(without_policy.len() as u64);
+    omitted.batch = Some(format!("blake3:{}", blake3::hash(&without_policy)));
     let selected = select(&[omitted]).unwrap();
     assert!(
         restoring
-            .install(&id, &selected, |_| Ok(Some(Cursor::new(legacy.clone()))))
+            .install(&id, &selected, |_| Ok(Some(Cursor::new(
+                without_policy.clone()
+            ))))
             .is_err()
     );
     assert_eq!(

@@ -68,9 +68,8 @@ fn batch(targets: usize, tail: Option<Value>) -> (File, RestoreUnit) {
 }
 
 fn target() -> Connection {
-    let mut target = Connection::open_in_memory().unwrap();
+    let target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    crate::schema::migrate_archive(&mut target).unwrap();
     target.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note1','note1','note','old body','operator','test',1,1)", []).unwrap();
     target
 }

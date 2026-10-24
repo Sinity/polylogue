@@ -1,9 +1,8 @@
 use super::*;
 
 fn applied() -> (Connection, Connection) {
-    let mut archive = Connection::open_in_memory().unwrap();
+    let archive = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&archive).unwrap();
-    crate::schema::migrate_archive(&mut archive).unwrap();
     archive.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('a','session:claude-code:gone',1,1)", []).unwrap();
     let index = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&index).unwrap();

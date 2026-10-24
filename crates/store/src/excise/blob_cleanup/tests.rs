@@ -61,10 +61,6 @@ fn recording_retirement_preserves_files_until_commit_and_replay() {
 fn a_later_retirement_visit_error_rolls_back_staged_intent_and_retries() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&conn).unwrap();
-    conn.execute_batch(include_str!(
-        "../../schema/migrations/004-local-blob-excision.sql"
-    ))
-    .unwrap();
     let mut publication = crate::sinex_rows::ExcisionPublication {
         version: 1,
         replacements: vec![],

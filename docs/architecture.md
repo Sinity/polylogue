@@ -36,9 +36,9 @@ recovery and preservation rules:
 
 | Store | Contents and recovery boundary |
 |---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. Additive [archive migrations](../crates/store/src/schema.rs) preserve this state and reject unsupported newer formats. |
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. [`schema.rs`](../crates/store/src/schema.rs) creates it at version 1, the only version, and refuses any other. |
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents, source associations and retained content versions; search and derived products. It rebuilds from canonical retained inputs when its format changes or recovery requires replacement. |
-| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Additive migrations and exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
+| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes and published replacement batches. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
 
 Index rebuilds use retained source versions, including immutable manual imports
@@ -237,12 +237,8 @@ own this distinction.
 [Store's Sinex row interface](../crates/store/src/sinex_rows.rs) publishes
 commit-ordered units, each with checked identity, row count and content hash.
 Observations, delivery events and extracted blobs are independent units, so
-later facts do not mutate acknowledged parent batches. Historical embedded facts
-remain compatible with verified legacy closures. Machine alias dependencies
-include only aliases eligible at the unit's recorded commit position. Migration
-preserves current legacy closures but cannot reconstruct acknowledged bytes
-already changed by older software; those conflicts require the original verified
-batches. [Machine alias tests](../crates/store/src/sinex_rows/tests/machine_alias.rs)
+later facts do not mutate acknowledged parent batches. Machine alias dependencies
+include only aliases eligible at the unit's recorded commit position. [Machine alias tests](../crates/store/src/sinex_rows/tests/machine_alias.rs)
 and [append-fact tests](../crates/store/src/sinex_rows/tests/append_facts.rs)
 cover ordering and closure preservation. The
 [machine publication contract](machine-publication.md) owns legacy held-frame

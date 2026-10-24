@@ -194,10 +194,6 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
             other => panic!("producer have endpoint did not become ready: {other:?}"),
         }
     }
-    if std::env::var_os("POLYLOGUE_OLD8").is_some() {
-        historical_machine::proof(&mut sinex, dir.path()).await;
-    }
-    historical_machine::cached_comparison(&mut sinex, dir.path()).await;
     let first = sinex.publish(&a).await.unwrap();
     assert!(first.units > 0 && first.held == 0, "{first:?}");
     let second = sinex.publish(&a).await.unwrap();
@@ -536,7 +532,6 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert_eq!(sinex.restore(&event_fresh, &id).await.unwrap().rows, 0);
     let machine_alias = machine_alias::rename(&mut sinex, dir.path()).await;
     session_policy::input_removal(&mut sinex, &store, dir.path()).await;
-    legacy::parent_retirement(&mut sinex, &store, dir.path()).await;
     // Rebuild the stream from durable descriptors after all before-images go.
     drop(daemon);
     js.delete_stream("PROOF_CONFIRMED").await.unwrap();
@@ -575,9 +570,6 @@ fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex
 
 mod placement;
 
-mod legacy;
 mod session_policy;
 
 mod machine_alias;
-
-mod historical_machine;

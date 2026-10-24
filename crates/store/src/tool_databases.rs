@@ -11,9 +11,8 @@
 //! - `{"db", "at_ms", "schema": {table: sql}}` when the schema changes;
 //! - `{"t": table, "k": key, "r": row, "h": digest}` for a row that is new
 //!   or changed since the last export;
-//! - `{"t": table, "kh": key digest, "gone": true}` for a row no longer
-//!   there; `kh` is the hex digest of its table and key, as the row line
-//!   that last held it names it (older exports wrote the key as `k`).
+//! - `{"t": table, "k": key, "kh": key digest, "gone": true}` for a row no
+//!   longer there; `kh` is the hex digest of its table and key.
 //!
 //! The file is an ordinary input: the loop stores its appended bytes and
 //! the origin's parser reads the lines. A row the tool deletes stays in

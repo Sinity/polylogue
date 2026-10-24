@@ -1,6 +1,4 @@
-//! Durable append-only capture snapshots. The lock names the stable location,
-//! including while a legacy single-envelope file is atomically converted.
-use super::write_durable;
+//! Durable append-only capture snapshots. The lock names the stable location.
 use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -35,19 +33,8 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     } else if read < MAGIC.len() && MAGIC.starts_with(&prefix[..read]) {
         complete_tail(&mut file, 0, &[MAGIC, &encoded, bytes])?;
         return synced(&file, dir);
-    } else if read > 0 && &prefix[..read] != MAGIC {
-        file.rewind()?;
-        let mut old = Vec::new();
-        file.read_to_end(&mut old)?;
-        serde_json::from_slice::<serde_json::Value>(&old).map_err(invalid)?;
-        if old == bytes {
-            return Ok(false);
-        }
-        let mut converted = MAGIC.to_vec();
-        converted.extend(Header::of(&old).encode());
-        converted.extend(old);
-        write_durable(path, &converted)?;
-        file = open(path)?;
+    } else if &prefix[..read] != MAGIC {
+        return Err(invalid("capture file is not a snapshot log"));
     }
     let length = file.metadata()?.len();
     let mut position = MAGIC.len() as u64;

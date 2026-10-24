@@ -468,8 +468,8 @@ fn declared_plan_items_keep_their_states_without_command_text() {
 }
 
 #[test]
-fn compound_artifact_commands_keep_text_and_legacy_packed_result_provenance() {
-    for legacy_body in [false, true] {
+fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
+    for output_in_body in [false, true] {
         let mut w = WriterWorld::new();
         let output = "[work 1a2b3c4] store: improve work reads\nhttps://github.com/Sinity/polylogue/pull/6300\n";
         w.write(
@@ -484,7 +484,7 @@ fn compound_artifact_commands_keep_text_and_legacy_packed_result_provenance() {
             ),
         );
         let mut index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-        if legacy_body {
+        if output_in_body {
             let body = crate::encoding::pack_json(
                 &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
             )

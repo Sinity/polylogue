@@ -127,7 +127,6 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .unwrap();
     let mut restored = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&restored).unwrap();
-    crate::schema::migrate_archive(&mut restored).unwrap();
     let first = read(
         &source,
         &Unit {
@@ -219,7 +218,6 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     );
     let mut fresh = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&fresh).unwrap();
-    crate::schema::migrate_archive(&mut fresh).unwrap();
     restore::install_fixture(&mut fresh, &selected, None, |u| {
         Ok(payloads[current.iter().position(|x| x == u).unwrap()]
             .clone()
@@ -230,7 +228,6 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     missing[0] = None;
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
-    crate::schema::migrate_archive(&mut empty).unwrap();
     assert!(
         restore::install_fixture(&mut empty, &selected, None, |u| Ok(missing
             [current.iter().position(|x| x == u).unwrap()]
@@ -339,7 +336,6 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         let before = units(&source, 0).unwrap();
         let mut restored = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&restored).unwrap();
-        crate::schema::migrate_archive(&mut restored).unwrap();
         restored.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         for unit in &before {
             apply(&restored, &read(&source, unit).unwrap().contents()).unwrap();
@@ -445,11 +441,6 @@ fn retiring_a_pending_batch_preserves_identical_cataloged_file_or_inline_bytes()
         let hash = store.put(bytes.as_slice(), 3).unwrap();
         let conn = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&conn).unwrap();
-        conn.execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
         let manifest = ExcisionPublication {
             version: 1,
             replacements: vec![],
@@ -484,7 +475,6 @@ fn retiring_a_pending_batch_preserves_identical_cataloged_file_or_inline_bytes()
 fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change() {
     let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    crate::schema::migrate_archive(&mut target).unwrap();
     target
         .execute(
             "INSERT INTO meta(key,value) VALUES ('archive_id','unrelated-archive')",
@@ -499,9 +489,8 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
             [],
         )
         .unwrap();
-    let mut source = Connection::open_in_memory().unwrap();
+    let source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
-    crate::schema::migrate_archive(&mut source).unwrap();
     source.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note1','note1','note','source body','operator','test',1,1)",[]).unwrap();
     let unit = Unit {
         commit_seq: 1,
@@ -555,7 +544,6 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     // which preserves a locally retained row outside the publication catalog.
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
-    crate::schema::migrate_archive(&mut empty).unwrap();
     assert_eq!(
         restore::install_fixture(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
             std::io::Cursor::new(batch.contents())
@@ -688,12 +676,6 @@ fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
     if add_remote_unit {
         let remote = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&remote).unwrap();
-        remote
-            .execute_batch(concat!(
-                include_str!("../schema/migrations/005-append-facts.sql"),
-                include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-            ))
-            .unwrap();
         remote.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('remote-note','remote-note','note','unrelated remote addition','operator','test',2,2)",[]).unwrap();
         let unit = Unit {
             commit_seq: 2,

@@ -123,7 +123,7 @@ fn dropped_tables_publish_exact_removals_and_can_reappear() {
 }
 
 #[test]
-fn malformed_legacy_exports_are_preserved_and_refused() {
+fn malformed_exports_without_a_marker_are_preserved_and_refused() {
     for suffix in ["broken\n", "{\"t\":\"t\"}\n", "{\"schema\":{}}"] {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("old.jsonl");
@@ -158,7 +158,7 @@ fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
 }
 
 #[test]
-fn valid_legacy_rows_and_hash_only_removals_replay_without_repeating_rows() {
+fn exports_without_a_marker_replay_rows_and_removals_without_repeating_them() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.sqlite");
     let out = dir.path().join("state.jsonl");
@@ -169,9 +169,14 @@ fn valid_legacy_rows_and_hash_only_removals_replay_without_repeating_rows() {
         )
         .unwrap();
     Exporter::default().export(&db, &out, None).unwrap();
-    let mut legacy = lines(&out);
-    legacy.push(json!({"t":"t","kh":format!("{:016x}",row_key("t",&json!([2]))),"gone":true}));
-    let bytes = legacy.iter().map(|v| format!("{v}\n")).collect::<String>();
+    let mut existing = lines(&out);
+    existing.push(
+        json!({"t":"t","k":[2],"kh":format!("{:016x}",row_key("t",&json!([2]))),"gone":true}),
+    );
+    let bytes = existing
+        .iter()
+        .map(|v| format!("{v}\n"))
+        .collect::<String>();
     fs::write(&out, &bytes).unwrap();
     fs::remove_file(publication::checkpoint(&out)).unwrap();
     source.execute("DELETE FROM t WHERE id=2", []).unwrap();

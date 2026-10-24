@@ -244,5 +244,3 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
         "synthetic prefix control"
     );
 }
-
-mod legacy;
