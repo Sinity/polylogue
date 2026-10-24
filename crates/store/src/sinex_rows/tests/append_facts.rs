@@ -383,12 +383,9 @@ fn excision_redacts_independent_events_and_publishes_excised_observations_before
 #[test]
 fn migration_and_restore_keep_observation_insertion_order_when_ids_and_times_disagree() {
     let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let archive = crate::fixture::archive4::create(dir.path()).unwrap();
     let mut db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    db.execute_batch("ALTER TABLE machine DROP COLUMN first_commit_seq; DROP TABLE extracted_blob; DROP TABLE excision_document; DROP TRIGGER vector_policy_insert; DROP TRIGGER vector_policy_update; DROP TRIGGER vector_policy_delete; DROP TABLE vector_deletion_policy; DELETE FROM meta WHERE key='vector_policy_revision'; DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
-        ALTER TABLE observation DROP COLUMN commit_seq; ALTER TABLE delivery_event DROP COLUMN commit_seq;
-        PRAGMA user_version=4;
-        INSERT INTO input VALUES ('input','synthetic-text');
+    db.execute_batch("INSERT INTO input VALUES ('input','synthetic-text');
         INSERT INTO machine(id,host,first_seen) VALUES ('machine','host',1);
         INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('z','input','machine','first','deleted','test',900);
         INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('a','input','machine','last','deleted','test',1);").unwrap();
