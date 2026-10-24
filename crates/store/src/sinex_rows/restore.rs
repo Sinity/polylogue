@@ -30,6 +30,47 @@ pub(super) fn select(units: &[RestoreUnit]) -> Result<Selection> {
     catalog.finish()
 }
 
+pub(super) fn verify_machine_frame(
+    conn: &Connection,
+    selected: &Selection,
+    unit: &RestoreUnit,
+    payload: impl Read,
+) -> Result<()> {
+    if unit.unit.kind != "observation" {
+        return Err(invalid(
+            "machine history comparison requires an observation",
+        ));
+    }
+    selected
+        .catalog
+        .db
+        .execute("DELETE FROM expected_machine", [])?;
+    batch::install(unit, Some(payload), None, &selected.catalog.db)?;
+    let machine: Option<String> = conn
+        .query_row(
+            "SELECT machine FROM observation WHERE id=?1 AND commit_seq=?2",
+            rusqlite::params![unit.unit.key, unit.unit.commit_seq],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(machine) = machine else {
+        return Err(invalid(
+            "held machine observation is unavailable in the local snapshot",
+        ));
+    };
+    let changed: bool = selected.catalog.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM expected_machine WHERE id<>?1)",
+        [machine],
+        |r| r.get(0),
+    )?;
+    if changed {
+        return Err(invalid(
+            "verified observation machine differs from its local dependency",
+        ));
+    }
+    batch::verify_machines(conn, &selected.catalog.db)
+}
+
 pub(super) fn install<R: Read>(
     conn: &mut Connection,
     units: &Selection,

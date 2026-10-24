@@ -18,6 +18,8 @@ impl Catalog {
             "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
             PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE confirmed(position INTEGER PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE machine_frame(position INTEGER PRIMARY KEY,seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,found INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE machine_event(position INTEGER NOT NULL,event TEXT NOT NULL,PRIMARY KEY(position,event)) WITHOUT ROWID;
             CREATE TABLE selected(seq INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
                 data TEXT NOT NULL, tombstone INTEGER NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
@@ -33,6 +35,69 @@ impl Catalog {
             BEGIN;",
         )?;
         Ok(Self { db, failed: false })
+    }
+
+    /// Bind an existing held frame to its acknowledged event identities.
+    pub fn expect_machine_frame(
+        &self,
+        position: u64,
+        unit: &Unit,
+        events: &[String],
+    ) -> Result<()> {
+        if events.is_empty() || unit.kind != "observation" {
+            return Err(invalid(
+                "held machine frame lacks acknowledged observation evidence",
+            ));
+        }
+        let position =
+            i64::try_from(position).map_err(|_| invalid("held frame position out of range"))?;
+        self.db.execute(
+            "INSERT INTO machine_frame(position,seq,kind,key) VALUES (?1,?2,?3,?4)",
+            params![position, unit.commit_seq, unit.kind, unit.key],
+        )?;
+        for event in events {
+            self.db.execute(
+                "INSERT OR IGNORE INTO machine_event VALUES (?1,?2)",
+                params![position, event],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn push_evidence(&mut self, position: u64, unit: &RestoreUnit, event: &str) -> Result<()> {
+        let result = (|| {
+            let expected: Option<(i64, String, String)> = self
+                .db
+                .query_row(
+                    "SELECT seq,kind,key FROM machine_frame WHERE position=?1",
+                    [position as i64],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            if let Some((seq, kind, key)) = expected {
+                let bound: bool = self.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM machine_event WHERE position=?1 AND event=?2)",
+                    params![position as i64, event],
+                    |r| r.get(0),
+                )?;
+                if seq != unit.unit.commit_seq
+                    || kind != unit.unit.kind
+                    || key != unit.unit.key
+                    || !bound
+                {
+                    return Err(invalid(
+                        "confirmed machine descriptor differs from the acknowledged frame",
+                    ));
+                }
+                self.db.execute(
+                    "UPDATE machine_frame SET found=1 WHERE position=?1",
+                    [position as i64],
+                )?;
+            }
+            self.push(position, unit)
+        })();
+        self.failed |= result.is_err();
+        result
     }
 
     /// Confirmations may arrive out of order. Exact repeats are harmless;
@@ -74,6 +139,16 @@ impl Catalog {
         if self.failed {
             return Err(invalid(
                 "a refused confirmation invalidated this restore catalog",
+            ));
+        }
+        let missing: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM machine_frame WHERE found=0)",
+            [],
+            |r| r.get(0),
+        )?;
+        if missing {
+            return Err(invalid(
+                "acknowledged machine frame has no confirmed descriptor evidence",
             ));
         }
         let mut count = 0;
@@ -206,6 +281,22 @@ pub struct Selection {
     sources_verified: Cell<bool>,
 }
 impl Selection {
+    /// Current selected payloads for the explicitly acknowledged machine frames.
+    pub fn each_machine_frame(
+        &self,
+        mut visit: impl FnMut(u64, &RestoreUnit) -> Result<()>,
+    ) -> Result<()> {
+        let mut rows=self.catalog.db.prepare("SELECT m.position,s.data FROM machine_frame m JOIN selected s ON (s.seq,s.kind,s.key)=(m.seq,m.kind,m.key) ORDER BY m.position")?;
+        let mut rows = rows.query([])?;
+        while let Some(row) = rows.next()? {
+            visit(
+                row.get::<_, i64>(0)? as u64,
+                &serde_json::from_str(&row.get::<_, String>(1)?)?,
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }

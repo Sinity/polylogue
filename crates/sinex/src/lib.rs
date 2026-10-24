@@ -172,9 +172,13 @@ pub struct Sinex {
     store: hashed_blobs::Store,
     store_root: PathBuf,
     acks: async_nats::Subscriber,
+    machine_memo: Option<machine_history::Memo>,
 }
 
 const ACK_WAIT: Duration = Duration::from_secs(120);
+
+mod confirmed;
+mod machine_history;
 
 impl Sinex {
     pub async fn connect(config: &Config) -> Result<Self> {
@@ -197,6 +201,7 @@ impl Sinex {
             store: hashed_blobs::Store::open(config.store.clone(), vec![], 0o640)?,
             store_root: config.store.clone(),
             acks,
+            machine_memo: None,
         })
     }
 
@@ -381,7 +386,28 @@ impl Sinex {
         let id = archive
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
+        let machine_identity = archive
+            .machine_history_state()?
+            .map(|state| self.machine_identity(&id, state))
+            .transpose()?;
         let mut inventory = archive.inventory()?;
+        let machine_catalog = if let Some(identity) = machine_identity {
+            inventory.enable_machine_history()?;
+            if self
+                .machine_memo
+                .as_ref()
+                .is_some_and(|memo| memo.identity == identity)
+            {
+                None
+            } else {
+                Some(sinex_rows::Catalog::new()?)
+            }
+        } else {
+            None
+        };
+        let mut machine_acks = blake3::Hasher::new();
+        let mut machine_frames = 0;
+
         let mut after = 0;
         while after < inventory.len() {
             let end = (after + 500).min(inventory.len());
@@ -396,8 +422,30 @@ impl Sinex {
                     held.push(after + offset as u64 + 1);
                 }
             }
+            if machine_identity.is_some() {
+                machine_frames += machine_history::record(
+                    &id,
+                    machine_catalog.as_ref(),
+                    &mut machine_acks,
+                    inventory.machine_candidates(after, end)?,
+                    &known,
+                )?;
+            }
             inventory.mark_held(&held)?;
             after = end;
+        }
+        if let Some(identity) = machine_identity
+            && machine_frames > 0
+        {
+            self.check_machine_history(
+                &archive,
+                &id,
+                identity,
+                *machine_acks.finalize().as_bytes(),
+                machine_catalog,
+                &inventory,
+            )
+            .await?;
         }
         let mut done = Published {
             held: inventory.held(),
@@ -583,77 +631,7 @@ impl Sinex {
         archive: &str,
     ) -> Result<Restored> {
         let mut restoring = Restoring::with_roots(store_archive, vec![self.store_root.clone()])?;
-        let js = jetstream::new(self.client.clone());
-        let stream = js
-            .get_stream(self.subjects.confirmed_stream())
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let consumer = stream
-            .create_consumer(jetstream::consumer::pull::OrderedConfig {
-                filter_subject: self.subjects.confirmed_event("polylogue.rows"),
-                deliver_policy: jetstream::consumer::DeliverPolicy::All,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let mut catalog = sinex_rows::Catalog::new()?;
-        // Read up to the last unit on the stream now; later ones arrive with
-        // the next pass.
-        let last = match stream
-            .get_last_raw_message_by_subject(&self.subjects.confirmed_event("polylogue.rows"))
-            .await
-        {
-            Ok(m) => m.sequence,
-            Err(e) if e.kind() == jetstream::stream::LastRawMessageErrorKind::NoMessageFound => 0,
-            Err(e) => return Err(Error::Unreachable(e.to_string())),
-        };
-        let mut messages = consumer
-            .messages()
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let mut done = last == 0;
-        while !done {
-            let message = tokio::time::timeout(ACK_WAIT, messages.next())
-                .await
-                .map_err(|_| Error::Unreachable("the confirmed stream stopped".into()))?
-                .ok_or_else(|| Error::Unreachable("the confirmed stream closed".into()))?
-                .map_err(|e| Error::Unreachable(e.to_string()))?;
-            let at = message
-                .info()
-                .map_err(|e| Error::Unreachable(e.to_string()))?
-                .stream_sequence;
-            done = at >= last;
-            let confirmed: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
-            let sinex_protocol::Confirmed::Event(event) = confirmed else {
-                continue;
-            };
-            let mut payload = event.payload.ok_or_else(|| {
-                Error::Invalid(format!("{} arrived without its payload", event.id))
-            })?;
-            let excision = payload
-                .as_object_mut()
-                .and_then(|object| object.remove("excision"));
-            let unit: PolylogueRows = serde_json::from_value(payload)?;
-            if unit.archive == archive {
-                let excision = excision.map(serde_json::from_value).transpose()?;
-                catalog.push(
-                    unit.position,
-                    &RestoreUnit {
-                        unit: Unit {
-                            commit_seq: unit.local_seq,
-                            kind: unit.unit,
-                            key: unit.key,
-                        },
-                        batch: Some(unit.batch),
-                        bytes: None,
-                        rows: unit.rows,
-                        blobs: unit.blobs,
-                        excision,
-                    },
-                )?;
-            }
-        }
-        let selected = catalog.finish()?;
+        let selected = self.confirmed(archive, sinex_rows::Catalog::new()?).await?;
         let mut done = Restored {
             commit_seq: selected.commit_seq(),
             ..Restored::default()

@@ -234,7 +234,9 @@ preserves current legacy closures but cannot reconstruct acknowledged bytes
 already changed by older software; those conflicts require the original verified
 batches. [Machine alias tests](../crates/store/src/sinex_rows/tests/machine_alias.rs)
 and [append-fact tests](../crates/store/src/sinex_rows/tests/append_facts.rs)
-cover ordering and closure preservation.
+cover ordering and closure preservation. The
+[machine publication contract](machine-publication.md) owns legacy held-frame
+reporting and its cached-comparison limits.
 
 [Restore](../crates/store/src/sinex_rows/restore.rs) validates confirmations,
 gaps, replacements, source bytes and row ownership before atomically installing
