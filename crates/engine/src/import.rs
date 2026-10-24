@@ -9,6 +9,7 @@ use polylogue_sources::origin::Route;
 mod assets;
 mod exports;
 mod replay;
+mod zip_import;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
@@ -49,6 +50,7 @@ impl Engine {
                         acquisition: acquisition.clone(),
                         member,
                         format: None,
+                        container: None,
                     },
                 ));
             }
@@ -67,39 +69,7 @@ impl Engine {
             };
             file.seek(SeekFrom::Start(0))?;
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
-                let generation = file.try_clone()?;
-                let mut archive = zip::ZipArchive::new(file)
-                    .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
-                let acquisition = uuid::Uuid::now_v7().to_string();
-                for i in 0..archive.len() {
-                    let mut member = archive
-                        .by_index(i)
-                        .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
-                    if !member.is_file() {
-                        continue;
-                    }
-                    let at = PathBuf::from(format!("{}!/{}", path.display(), member.name()));
-                    let declared = member.size();
-                    let mut captured =
-                        Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
-                    captured.member = Some(polylogue_store::ImportMember {
-                        version: 1,
-                        acquisition: acquisition.clone(),
-                        member: member.name().to_owned(),
-                        format: None,
-                    });
-                    unchanged(&generation, facts, facts.size)?;
-                    if captured.prepared.len() != declared {
-                        return Err(std::io::Error::other(
-                            "ZIP member length changed during import",
-                        )
-                        .into());
-                    }
-                    let origin = self.recognize_captured(&at, &captured)?.unwrap_or_else(|| {
-                        polylogue_sources::origin::by_name(KEPT).expect("declared origin")
-                    });
-                    self.import_captured(&at, origin, captured, None, &mut report)?;
-                }
+                self.import_zip(path, file, facts, membership, &mut report)?;
             } else {
                 let mut captured =
                     Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
@@ -170,30 +140,9 @@ impl Engine {
         }
         let size = captured.prepared.len();
         let id = captured.prepared.hash().to_string();
-        let mut observation = self.observation(path, facts);
-        observation.import = captured.member.map(|mut member| {
-            member.format = Some(origin.name.into());
-            member
-        });
-        let input = InputKey {
-            id,
-            format: origin.name.into(),
-            route_rank: 2,
-        };
-        let admitted = match self.writer.retain_bytes(
-            captured.prepared,
-            polylogue_store::Batch {
-                input: input.clone(),
-                change: Change::First,
-                observation: Some(observation),
-                continues: false,
-                piece: None,
-                blobs: Vec::new(),
-                length: size,
-                parse: Vec::new(),
-                release: Default::default(),
-            },
-        ) {
+        let batch = self.import_batch(path, origin, captured.member, facts, id, size);
+        let input = batch.input.clone();
+        let admitted = match self.writer.retain_bytes(captured.prepared, batch) {
             Ok(admitted) => admitted,
             Err(error) => {
                 report.pass.errors.push(error.to_string());
@@ -206,6 +155,49 @@ impl Engine {
             report.imported.push(path.to_path_buf());
             report.pass.bytes_stored += size;
         }
+        self.admitted_import_plan(path, origin, input, &admitted, facts)
+    }
+
+    fn import_batch(
+        &self,
+        path: &Path,
+        origin: &'static OriginSpec,
+        member: Option<polylogue_store::ImportMember>,
+        facts: Option<FileFacts>,
+        id: String,
+        size: u64,
+    ) -> polylogue_store::Batch {
+        let mut observation = self.observation(path, facts);
+        observation.import = member.map(|mut member| {
+            member.format = Some(origin.name.into());
+            member
+        });
+        polylogue_store::Batch {
+            input: InputKey {
+                id,
+                format: origin.name.into(),
+                route_rank: 2,
+            },
+            change: Change::First,
+            observation: Some(observation),
+            continues: false,
+            piece: None,
+            blobs: Vec::new(),
+            length: size,
+            parse: Vec::new(),
+            release: Default::default(),
+        }
+    }
+
+    fn admitted_import_plan(
+        &self,
+        path: &Path,
+        origin: &'static OriginSpec,
+        input: InputKey,
+        admitted: &polylogue_store::retention::Retained,
+        facts: Option<FileFacts>,
+    ) -> Result<Option<Plan>, EngineError> {
+        let size = admitted.length;
         if origin.support != Support::Parsed {
             return Ok(None);
         }
@@ -276,7 +268,7 @@ impl Captured {
         archive: &Archive,
         roots: &[PathBuf],
         reader: impl std::io::Read,
-    ) -> Result<Self, EngineError> {
+    ) -> polylogue_store::Result<Self> {
         let mut reader = CaptureReader {
             reader,
             size: 0,

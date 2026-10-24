@@ -184,6 +184,28 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 "SELECT * FROM observation WHERE id=?1",
                 &key,
             )?;
+            let has_containers:bool=archive.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='observation_container')",[],|r|r.get(0))?;
+            let container: Option<String> = if has_containers {
+                archive
+                    .query_row(
+                        "SELECT container_input FROM observation_container WHERE observation_id=?1",
+                        [&unit.key],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+            } else {
+                None
+            };
+            if let Some(container) = container {
+                crate::containers::original(archive, &container, true)?;
+                add(
+                    archive,
+                    &mut out,
+                    "observation_container",
+                    "SELECT * FROM observation_container WHERE observation_id=?1",
+                    &key,
+                )?;
+            }
         }
         "delivery_event" => {
             let (delivery, what, at) = super::delivery_event_key(unit)?;

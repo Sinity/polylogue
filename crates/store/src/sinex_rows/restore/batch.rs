@@ -278,6 +278,15 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     ))? == unit.unit.key
             }
             "observation" => match table {
+                "observation_container" => {
+                    let container=row["container_input"].as_str().ok_or_else(||invalid("container relationship has no input"))?;
+                    polylogue_model::BlobHash::parse(container).map_err(|_|invalid("container relationship has no immutable input identity"))?;
+                    if row["observation_id"]!=unit.unit.key || row["member_index"].as_i64().is_none_or(|index|index<0)
+                        || row.as_object().is_none_or(|object|object.len()!=3) { return Err(invalid("invalid container member relationship")); }
+                    let selected:bool=scratch.query_row("SELECT EXISTS(SELECT 1 FROM selected WHERE kind='revision' AND key=?1)",[format!("{container}/1")],|r|r.get(0))?;
+                    if !selected { return Err(invalid("container relationship has no selected original revision")); }
+                    true
+                }
                 "observation" => {
                     owning += 1;
                     row["id"] == unit.unit.key && row["commit_seq"] == unit.unit.commit_seq

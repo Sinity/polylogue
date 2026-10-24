@@ -1,10 +1,10 @@
-//! An actual archive7 producer, followed by source-free archive9/index33 replay.
+//! An actual archive7 producer, followed by source-free archive10/index34 replay.
 use super::*;
 use polylogue_store::sinex_rows::Published;
 use rusqlite::{Connection, types::Value};
 use std::io::Read;
 
-fn command(bin: &Path, root: &Path, home: &Path, config: &Path) -> Command {
+pub(super) fn command(bin: &Path, root: &Path, home: &Path, config: &Path) -> Command {
     let mut command = Command::new(bin);
     command
         .env("POLYLOGUE_ARCHIVE", root)
@@ -12,7 +12,13 @@ fn command(bin: &Path, root: &Path, home: &Path, config: &Path) -> Command {
         .env("XDG_CONFIG_HOME", config);
     command
 }
-fn cli(bin: &Path, root: &Path, home: &Path, config: &Path, args: &[&str]) -> serde_json::Value {
+pub(super) fn cli(
+    bin: &Path,
+    root: &Path,
+    home: &Path,
+    config: &Path,
+    args: &[&str],
+) -> serde_json::Value {
     let output = command(bin, root, home, config)
         .args(args)
         .output()
@@ -26,7 +32,7 @@ fn cli(bin: &Path, root: &Path, home: &Path, config: &Path, args: &[&str]) -> se
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
-fn rows(path: &Path, sql: &str) -> Vec<Vec<Value>> {
+pub(super) fn rows(path: &Path, sql: &str) -> Vec<Vec<Value>> {
     let db = Connection::open(path).unwrap();
     let mut statement = db.prepare(sql).unwrap();
     let count = statement.column_count();
@@ -40,13 +46,13 @@ fn rows(path: &Path, sql: &str) -> Vec<Vec<Value>> {
         .map(Result::unwrap)
         .collect()
 }
-fn versions(root: &Path) -> Vec<Vec<Value>> {
+pub(super) fn versions(root: &Path) -> Vec<Vec<Value>> {
     rows(
         &root.join("index.db"),
         "SELECT r.id,s.chain,s.source_start,s.source_end,s.parser_version,hex(s.version_hash) FROM message_source s JOIN input_ref r ON r.pk=s.input_pk ORDER BY r.id,s.chain,s.source_start,hex(s.version_hash)",
     )
 }
-fn notes(root: &Path) -> (Vec<Vec<Value>>, Vec<Vec<Value>>) {
+pub(super) fn notes(root: &Path) -> (Vec<Vec<Value>>, Vec<Vec<Value>>) {
     (
         rows(&root.join("archive.db"), "SELECT * FROM note ORDER BY id"),
         rows(
@@ -103,7 +109,7 @@ fn replay(root: &Path, home: &Path, machine: &str, host: &str, roots: Vec<PathBu
     let pass = engine.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 }
-fn fingerprint(root: &Path) -> Vec<(polylogue_store::sinex_rows::Unit, String)> {
+pub(super) fn fingerprint(root: &Path) -> Vec<(polylogue_store::sinex_rows::Unit, String)> {
     let published = Published::open(root).unwrap();
     let inventory = published.inventory().unwrap();
     (1..=inventory.len())
@@ -116,7 +122,7 @@ fn fingerprint(root: &Path) -> Vec<(polylogue_store::sinex_rows::Unit, String)> 
         })
         .collect()
 }
-fn assert_refused(mut command: Command, needle: &str, dir: &Path) {
+pub(super) fn assert_refused(mut command: Command, needle: &str, dir: &Path) {
     let error = dir.join(format!("old-refusal-{}.log", needle.len()));
     command
         .stdout(std::process::Stdio::null())
@@ -235,7 +241,7 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
     drop(lock);
     assert_eq!(
         rows(&root.join("archive.db"), "PRAGMA user_version"),
-        vec![vec![Value::Integer(9)]]
+        vec![vec![Value::Integer(10)]]
     );
     assert_eq!(
         rows(&root.join("index.db"), "PRAGMA user_version"),
@@ -341,7 +347,7 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
 
     let mut old_writer = command(&old, &root, &empty, &cfg);
     old_writer.arg("daemon");
-    assert_refused(old_writer, "archive format 9", dir);
+    assert_refused(old_writer, "archive format 10", dir);
     let decoder_cfg = dir.join("old-decoder-config");
     fs::create_dir_all(decoder_cfg.join("polylogue")).unwrap();
     fs::write(

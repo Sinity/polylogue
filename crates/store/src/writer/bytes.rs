@@ -180,13 +180,14 @@ pub(super) fn insert_observation(
     tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen, first_commit_seq) VALUES (?1, ?2, ?3, ?4)")?
         .execute(params![o.machine, o.host, o.seen_at_ms, seq])?;
     let f = o.facts;
+    let id = observation_id(tx, seq, &b.input.id)?;
     tx.prepare_cached(
         "INSERT INTO observation(id, input, machine, path, class, revision, length, device, inode,
              size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq, details_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )?
     .execute(params![
-        observation_id(tx, seq, &b.input.id)?,
+        id,
         b.input.id,
         o.machine,
         o.path,
@@ -208,5 +209,8 @@ pub(super) fn insert_observation(
             ))
             .transpose()?,
     ])?;
+    if let Some(member) = &o.import {
+        crate::containers::record(tx, &id, member)?;
+    }
     Ok(())
 }

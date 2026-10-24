@@ -200,7 +200,7 @@ fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
     assert!(!refused.status.success());
     assert!(
         String::from_utf8_lossy(&refused.stderr)
-            .contains("archive format 9 is newer than this Polylogue (8)")
+            .contains("archive format 10 is newer than this Polylogue (8)")
     );
     assert_eq!(
         blake3::hash(&fs::read(archive.archive_db()).unwrap()),

@@ -22,6 +22,9 @@ mod upgrade;
 
 #[path = "proof/assets.rs"]
 mod assets;
+#[cfg(feature = "faults")]
+#[path = "proof/containers.rs"]
+mod containers;
 
 const EXAMPLES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -241,6 +244,8 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     }
     #[cfg(feature = "faults")]
     upgrade::verify(&mut sinex, &config, dir.path()).await;
+    #[cfg(feature = "faults")]
+    containers::verify(&mut sinex, &config, dir.path()).await;
     let first = sinex.publish(&a).await.unwrap();
     assert!(first.units > 0 && first.held == 0, "{first:?}");
     let second = sinex.publish(&a).await.unwrap();

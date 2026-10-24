@@ -166,6 +166,7 @@ pub(super) fn install<R: Read>(
     })?;
     batch::verify_machines(&tx, &units.catalog.db)?;
     crate::retention::extracted::verify_all(&tx, sources)?;
+    crate::containers::verify_all(&tx)?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {
             return Err(invalid("restored archive has no identity"));
@@ -222,6 +223,10 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
             conn.execute("DELETE FROM note WHERE id=?1", key)?;
         }
         "observation" => {
+            conn.execute(
+                "DELETE FROM observation_container WHERE observation_id=?1",
+                key,
+            )?;
             conn.execute("DELETE FROM observation WHERE id=?1", key)?;
         }
         "extracted_blob" => {

@@ -441,6 +441,11 @@ impl<'a> Plan<'a> {
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
+        for input in self.whole.iter().chain(&self.kept) {
+            crate::containers::refuse_excision(t.archive, input)?;
+        }
+        self.spans
+            .visit_inputs(|input, _| crate::containers::refuse_excision(t.archive, input))?;
         let mut text_matches = self
             .text
             .as_ref()

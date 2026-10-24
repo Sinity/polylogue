@@ -48,7 +48,7 @@ fn excision_revision_migration_preserves_rows_and_runs_once() {
     create_archive(&conn).unwrap();
     conn.execute("INSERT INTO excision(id,scope,reason,created_at,commit_seq) VALUES ('old','session:claude-code:gone','retained reason',1,7)",[]).unwrap();
     migrate_archive(&mut conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 9);
+    assert_eq!(version(&conn).unwrap(), 10);
     let before = crate::excise::recovery::current(&conn).unwrap();
     assert!(before.version > 0);
     migrate_archive(&mut conn).unwrap();

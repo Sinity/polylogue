@@ -39,6 +39,15 @@ pub struct ImportMember {
     /// Interpretation selected for this acquisition, separate from immutable Input metadata.
     #[serde(skip)]
     pub format: Option<String>,
+    /// Persisted by the Writer in observation_container, not ignorable JSON metadata.
+    #[serde(skip)]
+    pub container: Option<ImportContainer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportContainer {
+    pub input: String,
+    pub member_index: u64,
 }
 
 /// One parse step's rows and where they sit in the input's chain.

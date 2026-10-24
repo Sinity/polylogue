@@ -158,6 +158,7 @@ const TABLES: &[&str] = &[
     "extracted_blob",
     "machine",
     "observation",
+    "observation_container",
     "note",
     "note_target",
     "note_relation",
@@ -232,6 +233,7 @@ impl Published {
         conn.pragma_update(None, "temp_store", "FILE")?;
         // One publication pass keeps the same view across its table queries.
         conn.execute_batch("BEGIN")?;
+        crate::containers::require_authority(&conn)?;
         Ok(Self {
             conn,
             blobs: hashed_blobs::Store::open(root.to_path_buf(), vec![], 0o600)?,
