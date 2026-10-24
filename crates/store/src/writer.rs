@@ -45,7 +45,7 @@ use search::*;
 
 enum Msg {
     Retain(
-        crate::retention::PreparedBytes,
+        Box<crate::retention::PreparedBytes>,
         Box<Batch>,
         SyncSender<Result<crate::retention::Retained>>,
     ),
@@ -312,7 +312,7 @@ impl Writer {
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Retain(prepared, Box::new(batch), reply))
+            .send(Msg::Retain(Box::new(prepared), Box::new(batch), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -497,7 +497,7 @@ impl Inner {
             // memory reservations, not only their committed database rows.
             drop(group);
             for (prepared, batch, reply) in retentions.drain(..) {
-                let _ = reply.send(self.retain_bytes(prepared, *batch));
+                let _ = reply.send(self.retain_bytes(*prepared, *batch));
             }
             for (store, reply) in reconciliations.drain(..) {
                 let _ = reply.send(self.reconcile_retained_bytes(&store));
