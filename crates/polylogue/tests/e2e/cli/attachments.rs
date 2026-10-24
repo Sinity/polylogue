@@ -355,3 +355,5 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
     assert!(result.0.success(), "{result:?}");
     assert!(std::fs::read(destination).unwrap().is_empty());
 }
+
+mod promoted;

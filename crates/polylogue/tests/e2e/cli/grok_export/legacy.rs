@@ -101,6 +101,7 @@ fn actual_archive9_legacy_imports_rebuild_after_a_new_kept_observation() {
         let status = wait_status(&env, |status| {
             assert!(started.elapsed() < Duration::from_secs(10), "{status}");
             status["store"]["messages"] == 1
+                && status["last_pass"]["legacy_imports"][0]["candidates"][0]["format"] == "grok"
         });
         assert!(status["last_pass"]["errors"].as_array().unwrap().is_empty());
         assert_eq!(

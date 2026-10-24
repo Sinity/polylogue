@@ -22,12 +22,18 @@ impl Engine {
                         Err(error) => return Err(error.into()),
                     };
                 drop(reader);
-                let mut bytes = CaptureReader { reader: chain.reader(Arc::clone(&self.blobs)), size: 0, head: Vec::new() };
+                let mut bytes = CaptureReader {
+                    reader: chain.reader(Arc::clone(&self.blobs)),
+                    size: 0,
+                    head: Vec::new(),
+                };
                 let normalized = polylogue_sources::polylogue_export::recognize_reader(&mut bytes)?;
                 let mut tail = [0; 64];
                 while bytes.head.len() < 64 {
                     let remaining = 64 - bytes.head.len();
-                    if std::io::Read::read(&mut bytes, &mut tail[..remaining])? == 0 { break; }
+                    if std::io::Read::read(&mut bytes, &mut tail[..remaining])? == 0 {
+                        break;
+                    }
                 }
                 pass.bytes_read += bytes.size;
                 let mut choices = std::collections::BTreeMap::new();
@@ -42,7 +48,10 @@ impl Engine {
                         choices.entry(origin.name.to_owned()).or_insert(path);
                     }
                 }
-                let candidates: Vec<_> = choices.into_iter().map(|(format,path)| LegacyImportCandidate { format,path }).collect();
+                let candidates: Vec<_> = choices
+                    .into_iter()
+                    .map(|(format, path)| LegacyImportCandidate { format, path })
+                    .collect();
                 if candidates.len() == 1 {
                     input.format = candidates[0].format.clone();
                     input.path = Some(candidates[0].path.to_string_lossy().into_owned());

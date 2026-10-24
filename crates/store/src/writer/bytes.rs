@@ -158,7 +158,7 @@ pub(super) fn check_import_format(
     };
     let competing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM input WHERE id=?1 AND format NOT IN ('export-file',?2))
         OR EXISTS(SELECT 1 FROM observation WHERE input=?1 AND class='imported' AND json_valid(details_json)
-            AND json_type(details_json,'$.import.format')='text' AND json_extract(details_json,'$.import.format') NOT IN ('export-file',?2))",
+            AND json_type(details_json,'$.import_format')='text' AND json_extract(details_json,'$.import_format') NOT IN ('export-file',?2))",
         params![input,format], |r|r.get(0))?;
     if competing {
         return Err(StoreError::Conflict("immutable import has a competing parsed origin; switching interpretations is unsupported".into()));
@@ -203,7 +203,9 @@ pub(super) fn insert_observation(
         seq,
         o.import
             .as_ref()
-            .map(|member| serde_json::to_string(&serde_json::json!({"import": member})))
+            .map(|member| serde_json::to_string(
+                &serde_json::json!({"import": member, "import_format": member.format})
+            ))
             .transpose()?,
     ])?;
     Ok(())

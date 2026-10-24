@@ -19,15 +19,15 @@ impl Reader<'_> {
     /// were captured on another machine. Only metadata is decoded here.
     pub fn retained_imports(&self) -> Result<Vec<RetainedImport>> {
         let mut stmt=self.conn()?.prepare("WITH interpreted AS (
-            SELECT o.input,o.path,json_extract(o.details_json,'$.import.format') AS format,
-                row_number() OVER (PARTITION BY o.input ORDER BY (json_extract(o.details_json,'$.import.format')='export-file'),o.rowid DESC) AS choice
+            SELECT o.input,o.path,json_extract(o.details_json,'$.import_format') AS format,
+                row_number() OVER (PARTITION BY o.input ORDER BY (json_extract(o.details_json,'$.import_format')='export-file'),o.rowid DESC) AS choice
             FROM a.observation o WHERE o.class='imported' AND json_valid(o.details_json)
-                AND json_type(o.details_json,'$.import.format')='text'
+                AND json_type(o.details_json,'$.import_format')='text'
             ) SELECT i.id,COALESCE(selected.format,i.format),
             COALESCE(selected.path,(SELECT o.path FROM a.observation o WHERE o.input=i.id AND o.class<>'excised' ORDER BY o.rowid LIMIT 1)),
             r.chain,r.length,COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),selected.input IS NOT NULL,
             EXISTS(SELECT 1 FROM a.observation legacy WHERE legacy.input=i.id AND legacy.class='imported'
-                AND CASE WHEN json_valid(legacy.details_json) THEN json_type(legacy.details_json,'$.import.format') END IS NULL)
+                AND CASE WHEN json_valid(legacy.details_json) THEN json_type(legacy.details_json,'$.import_format') END IS NULL)
             FROM a.input i JOIN a.revision r ON r.input=i.id
             LEFT JOIN interpreted selected ON selected.input=i.id AND selected.choice=1
             LEFT JOIN input_ref ir ON ir.id=i.id LEFT JOIN parse_state p ON p.input_pk=ir.pk AND p.chain=r.chain
@@ -56,7 +56,7 @@ impl Reader<'_> {
     }
     /// Captured legacy acquisition paths, without probing the current filesystem.
     pub fn retained_import_paths(&self, input: &str) -> Result<Vec<String>> {
-        Ok(self.conn()?.prepare("SELECT path FROM a.observation WHERE input=?1 AND class='imported' AND CASE WHEN json_valid(details_json) THEN json_type(details_json,'$.import.format') END IS NULL GROUP BY path ORDER BY min(rowid)")?
+        Ok(self.conn()?.prepare("SELECT path FROM a.observation WHERE input=?1 AND class='imported' AND CASE WHEN json_valid(details_json) THEN json_type(details_json,'$.import_format') END IS NULL GROUP BY path ORDER BY min(rowid)")?
             .query_map([input], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
     }
 }

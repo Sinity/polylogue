@@ -37,7 +37,7 @@ pub struct ImportMember {
     pub acquisition: String,
     pub member: String,
     /// Interpretation selected for this acquisition, separate from immutable Input metadata.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub format: Option<String>,
 }
 

@@ -42,7 +42,9 @@ format hints, current recognition uses retained bytes and recorded paths;
 `legacy_imports` reports its current candidates. Unknown or competing origins
 remain uninterpreted, and this result does not become a historical source claim.
 A later opaque acquisition keeps earlier recognized context. Switching between
-competing parsed origins for one immutable input is unsupported.
+competing parsed origins for one immutable input is unsupported. Text excision
+still refuses Inputs originally captured as opaque, including ones interpreted
+later; it does not infer a safe decoder from a later format hint.
 
 Parsing and reading use retained bytes, without reopening provider files or
 fetching URLs. Whole-input excision removes an asset's retained Input and

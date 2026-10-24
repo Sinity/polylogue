@@ -338,7 +338,7 @@ impl MessageSelection<'_, '_> {
         let mut scopes = std::collections::BTreeSet::new();
         let mut selected=conn.prepare_cached("SELECT DISTINCT own.acquisition FROM message_source ms
             JOIN message_source preferred ON preferred.message_pk=ms.message_pk AND preferred.preferred=1
-            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id AND i.format='chatgpt'
+            JOIN input_ref ir ON ir.pk=ms.input_pk AND ir.format='chatgpt' JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
             WHERE ms.message_pk=?1 AND ms.current=1 AND ms.version_hash=preferred.version_hash")?;
         for pk in self.keys()? {

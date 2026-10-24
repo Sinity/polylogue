@@ -108,7 +108,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let id = blake3::hash(bytes.as_bytes()).to_hex().to_string();
     let (mut e, lock) = engine(&w, 1024);
     let opaque = e.import(std::slice::from_ref(&unknown)).unwrap();
-    assert_eq!(opaque.imported, [unknown.clone()]);
+    assert_eq!(opaque.imported.as_slice(), std::slice::from_ref(&unknown));
     let published = polylogue_store::sinex_rows::Published::open(&w.root).unwrap();
     let inventory = published.inventory().unwrap();
     let prior: Vec<_> = (1..=inventory.len())
@@ -124,7 +124,10 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     drop(published);
     let parsed = e.import(std::slice::from_ref(&standard)).unwrap();
     assert!(parsed.pass.errors.is_empty(), "{:?}", parsed.pass.errors);
-    assert_eq!(parsed.already_stored, [standard.clone()]);
+    assert_eq!(
+        parsed.already_stored.as_slice(),
+        std::slice::from_ref(&standard)
+    );
     assert_eq!(
         w.count("SELECT count(*) AS n FROM session WHERE id='grok:recognized-later'"),
         1
@@ -151,6 +154,18 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
         );
     }
     drop(published);
+    let refused = e
+        .excise(ExciseRequest {
+            id: "promoted-text".into(),
+            scope: ExciseScope::Text("retained later interpretation".into()),
+            reason: None,
+            dry_run: false,
+        })
+        .unwrap_err();
+    assert!(
+        matches!(refused, EngineError::Store(polylogue_store::StoreError::ExcisionFormat { input, .. }) if input == id)
+    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
     // A later opaque acquisition must not discard the captured parser path.
     e.import(std::slice::from_ref(&unknown)).unwrap();
     drop(e);
@@ -239,11 +254,11 @@ fn explicit_kept_only_acquisitions_do_not_need_legacy_recognition() {
     std::fs::write(&path, b"synthetic uninterpreted binary\0\xff").unwrap();
     let (mut e, lock) = engine(&w, 1024);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
-    assert_eq!(report.unrecognized, [path.clone()]);
-    assert_eq!(report.imported, [path.clone()]);
+    assert_eq!(report.unrecognized.as_slice(), std::slice::from_ref(&path));
+    assert_eq!(report.imported.as_slice(), std::slice::from_ref(&path));
     let again = e.import(std::slice::from_ref(&path)).unwrap();
-    assert_eq!(again.unrecognized, [path.clone()]);
-    assert_eq!(again.already_stored, [path.clone()]);
+    assert_eq!(again.unrecognized.as_slice(), std::slice::from_ref(&path));
+    assert_eq!(again.already_stored.as_slice(), std::slice::from_ref(&path));
     drop(e);
     drop(lock);
     std::fs::remove_file(path).unwrap();
