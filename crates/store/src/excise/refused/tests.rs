@@ -128,7 +128,12 @@ fn selected_sessions_are_canonical_and_malformed_policies_refuse_loading() {
         .unwrap();
     let policy = Refused::load(&conn).unwrap();
     assert!(!policy.is_empty()); // The raw input scope remains refused.
-    assert!(policy.matching(&["codex:opaque:session".into()], &[]).unwrap().is_empty());
+    assert!(
+        policy
+            .matching(&["codex:opaque:session".into()], &[])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[cfg(feature = "faults")]

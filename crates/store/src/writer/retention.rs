@@ -24,6 +24,15 @@ impl Inner {
         let size = i64::try_from(length).map_err(|_| {
             StoreError::Invalid("captured extent exceeds the archive address space".into())
         })?;
+        let offset = batch.length.checked_sub(length).ok_or_else(|| {
+            StoreError::Invalid("captured bytes exceed the retained input length".into())
+        })?;
+        let offset = i64::try_from(offset).map_err(|_| {
+            StoreError::Invalid("captured offset exceeds the archive address space".into())
+        })?;
+        i64::try_from(batch.length).map_err(|_| {
+            StoreError::Invalid("retained input exceeds the archive address space".into())
+        })?;
         let input = batch.input.id.clone();
         if batch.input.route_rank == 2
             && (input != hash.to_string() || batch.length != length || batch.continues)
@@ -129,7 +138,7 @@ impl Inner {
             let chain = write_bytes(&tx, &batch, seq)?.ok_or_else(|| {
                 StoreError::Invalid("byte retention produced no revision chain".into())
             })?;
-            let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM extent WHERE input=?1 AND chain=?2 AND blob=?3 AND blob_offset=0 AND length=?4)",params![input,chain,&hash.0[..],size],|row|row.get(0))?;
+            let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM extent WHERE input=?1 AND chain=?2 AND blob=?3 AND blob_offset=0 AND length=?4 AND offset=?5)",params![input,chain,&hash.0[..],size,offset],|row|row.get(0))?;
             if !owned {
                 return Err(StoreError::Invalid(
                     "acquisition does not retain its prepared bytes".into(),

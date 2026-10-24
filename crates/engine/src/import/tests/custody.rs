@@ -3,6 +3,8 @@ use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[cfg(feature = "faults")]
 mod pending;
+#[cfg(feature = "faults")]
+mod watched;
 
 #[test]
 fn first_admission_refusal_does_not_publish_unowned_import_bytes() {

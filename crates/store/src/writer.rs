@@ -49,7 +49,7 @@ enum Msg {
         Box<Batch>,
         SyncSender<Result<crate::retention::Retained>>,
     ),
-    ReconcileImports(
+    ReconcileRetained(
         std::sync::Arc<hashed_blobs::Store>,
         SyncSender<Result<crate::retention::Reconciled>>,
     ),
@@ -326,7 +326,7 @@ impl Writer {
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::ReconcileImports(store, reply))
+            .send(Msg::ReconcileRetained(store, reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -433,7 +433,7 @@ impl Inner {
                         retentions.push((prepared, batch, reply));
                         false
                     }
-                    Msg::ReconcileImports(store, reply) => {
+                    Msg::ReconcileRetained(store, reply) => {
                         reconciliations.push((store, reply));
                         false
                     }

@@ -104,15 +104,8 @@ impl Engine {
         path: &Path,
         captured: &Captured,
     ) -> Result<Option<&'static OriginSpec>, EngineError> {
-        {
-            let reader = self.blobs.read_plain(
-                &hashed_blobs::Hash(captured.piece.hash.0),
-                Some(captured.piece.size),
-                || Ok(()),
-            )?;
-            if polylogue_sources::polylogue_export::recognize_reader(reader)? {
-                return Ok(polylogue_sources::origin::by_name("polylogue-export"));
-            }
+        if captured.polylogue_export {
+            return Ok(polylogue_sources::origin::by_name("polylogue-export"));
         }
         Ok(recognize_import(path, &captured.head))
     }
@@ -235,6 +228,7 @@ fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::R
 struct Captured {
     prepared: polylogue_store::retention::PreparedBytes,
     head: Vec<u8>,
+    polylogue_export: bool,
 }
 
 impl Captured {
@@ -248,10 +242,16 @@ impl Captured {
             size: 0,
             head: Vec::new(),
         };
-        let prepared = archive.prepare_bytes(roots, &mut reader)?;
+        let (prepared, polylogue_export) =
+            archive.inspect_and_prepare_bytes(roots, &mut reader, |scratch| {
+                Ok(polylogue_sources::polylogue_export::recognize_reader(
+                    scratch,
+                )?)
+            })?;
         Ok(Self {
             prepared,
             head: reader.head,
+            polylogue_export,
         })
     }
 }
