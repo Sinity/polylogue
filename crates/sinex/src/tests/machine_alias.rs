@@ -87,3 +87,95 @@ pub(super) async fn rename(sinex: &mut Sinex, root: &Path) {
     assert_eq!(hosts, ["host-a", "host-b"]);
     assert_eq!(sinex.publish(&target).await.unwrap().units, 0);
 }
+
+#[test]
+#[ignore = "needs the retained actual archive8 frontend in POLYLOGUE_OLD8"]
+fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
+    let old = std::env::var_os("POLYLOGUE_OLD8")
+        .expect("POLYLOGUE_OLD8 names the retained archive8 frontend");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let home = dir.path().join("home");
+    let config = dir.path().join("config");
+    let input = home.join(".claude/projects/synthetic/machine-upgrade.jsonl");
+    fs::create_dir_all(input.parent().unwrap()).unwrap();
+    fs::write(&input,"{\"type\":\"user\",\"uuid\":\"machine-upgrade\",\"sessionId\":\"machine-upgrade\",\"message\":{\"role\":\"user\",\"content\":\"Synthetic machine migration\"}}\n").unwrap();
+    let command = || {
+        let mut command = Command::new(&old);
+        command
+            .env("POLYLOGUE_ARCHIVE", &root)
+            .env("POLYLOGUE_HOME", &home)
+            .env("XDG_CONFIG_HOME", &config);
+        command
+    };
+    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(command().arg("daemon")).unwrap());
+    let started = Instant::now();
+    loop {
+        if root.join("archive.db").exists() {
+            let db = polylogue_store::archive::open_read(&root.join("archive.db")).unwrap();
+            let count = db
+                .query_row("SELECT count(*) FROM observation", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap_or(0);
+            if count > 0 {
+                break;
+            }
+        }
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "old8 frontend exited during collection"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "old8 frontend did not commit its synthetic observation"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(daemon);
+    let machine_rows = |archive: &Archive| {
+        let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+        db.prepare("SELECT id,host,first_seen FROM machine ORDER BY id,host")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let archive = Archive::at(&root);
+    let before = machine_rows(&archive);
+    assert_eq!(before.len(), 1);
+    let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 8);
+    drop(db);
+    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    assert_eq!(machine_rows(&archive), before);
+    let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 9);
+    let published = Published::open(&root).unwrap();
+    let units = inventory_units(&published);
+    let batches: Vec<_> = units.iter().map(|unit| payload(&published, unit)).collect();
+    drop(published);
+    drop(db);
+    drop(lock);
+    let refused = command().arg("daemon").output().unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("archive format 9 is newer than this Polylogue (8)")
+    );
+    assert_eq!(machine_rows(&archive), before);
+    let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 9);
+    let published = Published::open(&root).unwrap();
+    assert_eq!(inventory_units(&published), units);
+    for (unit, bytes) in units.iter().zip(batches) {
+        assert_eq!(payload(&published, unit), bytes);
+    }
+}
