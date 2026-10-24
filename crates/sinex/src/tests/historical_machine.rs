@@ -278,6 +278,7 @@ pub(super) async fn cached_comparison(sinex: &mut Sinex, root: &Path) {
                     path: "synthetic".into(),
                     facts: None,
                     seen_at_ms: 1,
+                    import: None,
                 }),
                 continues: false,
                 piece: None,
