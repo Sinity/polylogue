@@ -10,7 +10,13 @@ fn payload(source: &Published, unit: &Unit) -> Vec<u8> {
     bytes
 }
 
-pub(super) async fn rename(sinex: &mut Sinex, root: &Path) {
+pub(super) struct Proof {
+    id: String,
+    unit: Unit,
+    bytes: Vec<u8>,
+}
+
+pub(super) async fn rename(sinex: &mut Sinex, root: &Path) -> Proof {
     let path = root.join("machine-alias-source");
     let (source, lock) = Archive::open_or_create(&path).unwrap();
     let writer = Writer::start(&source).unwrap();
@@ -86,6 +92,30 @@ pub(super) async fn rename(sinex: &mut Sinex, root: &Path) {
         .unwrap();
     assert_eq!(hosts, ["host-a", "host-b"]);
     assert_eq!(sinex.publish(&target).await.unwrap().units, 0);
+    Proof {
+        id,
+        unit,
+        bytes: before,
+    }
+}
+
+pub(super) async fn after_restart(sinex: &mut Sinex, root: &Path, proof: Proof) {
+    let target = root.join("machine-alias-after-stream-reconstruction");
+    let (archive, _lock) = Archive::open_or_create(&target).unwrap();
+    assert_eq!(sinex.restore(&archive, &proof.id).await.unwrap().units, 3);
+    let published = Published::open(&target).unwrap();
+    let bytes = payload(&published, &proof.unit);
+    assert_eq!(blake3::hash(&bytes), blake3::hash(&proof.bytes));
+    assert_eq!(bytes, proof.bytes);
+    let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+    let hosts: Vec<String> = db
+        .prepare("SELECT host FROM machine WHERE id='synthetic-machine' ORDER BY host")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(hosts, ["host-a", "host-b"]);
 }
 
 #[test]
