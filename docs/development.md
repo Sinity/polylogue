@@ -163,6 +163,31 @@ separately. I/O deltas exclude corpus generation; peak memory covers the whole
 child process. Logical bytes read and newly stored are reported separately from
 physical I/O. Older records used a narrower ingestion interval.
 
+`agentctl job start polylogue bench -- reads --repetitions 3` records native
+interactive measurements through the existing CLI end-to-end test owner.
+It generates one 16 MiB session and eight small sessions with the testkit's
+Claude Code builders, then checks exact session/search answers. A complete
+native reference read must contain every source message body once in order.
+Two-page windows at the first, middle and final positions must exactly match
+that reference, using real native continuation cursors. Repeated windows must
+retain the same rendered digest. The scenario is ignored
+by routine suites and has no elapsed-time pass/fail assertions.
+
+Build, corpus generation, archive ingestion/search readiness and daemon starts
+are recorded separately from request latency. The first request after each
+daemon restart and subsequent requests are reported with samples, median and
+p95; filesystem caches are not flushed, and each CLI call starts a new client
+process. Read results include page counts, source coverage and daemon current
+and peak RSS before and after each repeated window. The report explicitly
+marks these as bounded windows, not complete session traversals. Add
+`--full-walk` to keep the repeated whole-session traversal runnable with its
+answer checks and the existing test-runner timeout. A native client is killed
+after output begins, then verified status and read requests check recovery.
+This checks abandoned client output, not cancellation of work already done by
+the server. The normal benchmark load monitor and devkit history retain the
+result; synthetic input, archive and child processes use the existing test
+lifecycle. These measurements do not qualify the real archive's speed targets.
+
 The full-corpus estimate explicitly assumes linear time per input byte and is
 uncalibrated. Missing times or scale leave it unknown. `bench validate` compares
 that estimate with a supplied full-run result; matching input/candidate identity,

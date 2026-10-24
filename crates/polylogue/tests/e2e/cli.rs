@@ -429,3 +429,6 @@ mod hermes_events;
 
 #[cfg(target_os = "linux")]
 mod attachments;
+
+#[cfg(target_os = "linux")]
+mod read_bench;
