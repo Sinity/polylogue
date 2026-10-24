@@ -236,7 +236,26 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    pub fn visit(&self, mut visit: impl FnMut(Message) -> ControlFlow<()>) -> Result<()> {
+    pub fn visit(&self, visit: impl FnMut(Message) -> ControlFlow<()>) -> Result<()> {
+        self.visit_from(0, visit)
+    }
+
+    /// Skip source messages before hydrating their blocks. Rendering callers must
+    /// restore masking state validated against this exact selected snapshot.
+    pub fn visit_from(
+        &self,
+        from: usize,
+        mut visit: impl FnMut(Message) -> ControlFlow<()>,
+    ) -> Result<()> {
+        let mut remaining = from;
+        let mut after_prefix = |_| {
+            if remaining == 0 {
+                true
+            } else {
+                remaining -= 1;
+                false
+            }
+        };
         if let Some(keys) = &self.logical {
             let mut start = 0;
             while start < keys.len() {
@@ -252,7 +271,7 @@ impl MessageSelection<'_, '_> {
                     .visit_messages_where(
                         key.session_pk,
                         &key.session,
-                        |m| set.contains(&m),
+                        |m| set.contains(&m) && after_prefix(m),
                         &mut visit,
                     )?
                     .is_break()
@@ -264,7 +283,7 @@ impl MessageSelection<'_, '_> {
         } else if let Some((pk, id)) = &self.own {
             let _ = self
                 .reader
-                .visit_messages_where(*pk, id, |_| true, &mut visit)?;
+                .visit_messages_where(*pk, id, after_prefix, &mut visit)?;
         }
         Ok(())
     }

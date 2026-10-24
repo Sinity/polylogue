@@ -166,6 +166,8 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                     budget: Some(2),
                     cursor: cursor.as_deref(),
                 },
+                &super::super::read::checkpoints::Cache::default(),
+                0,
             );
             let Response::Ok { data } = response else {
                 panic!("{response:?}")
@@ -190,4 +192,196 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
             "{text}"
         );
     }
+}
+
+#[test]
+fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
+    let world = test_daemon::start("temporary synthetic prompt");
+    let lines = [
+        "λ🙂 prefix -----BEGIN VENDOR PRIVATE KEY-----private-one-----END VEND",
+        "OR PRIVATE KEY----- visible tail λ🙂",
+        "third ordinary source message with enough text for continuation",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(n, text)| polylogue_testkit::claude_user(&format!("u{n}"), "s1", text))
+    .collect::<String>();
+    std::fs::write(world.home.join(".claude/projects/-p/s1.jsonl"), lines).unwrap();
+    world.wait_for(|data| data["store"]["messages"] == 3 && data["store"]["search_pending"] == 0);
+    for logical in [false, true] {
+        for view in ["full", "dialogue", "prompts", "actions"] {
+            world.daemon.read_checkpoints.clear();
+            let mut cursor: Option<String> = None;
+            let mut joined = String::new();
+            for _ in 0..500 {
+                let cached = page(
+                    &world.daemon,
+                    "claude-code:s1",
+                    logical,
+                    view,
+                    cursor.as_deref(),
+                );
+                world.daemon.read_checkpoints.clear();
+                let replayed = page(
+                    &world.daemon,
+                    "claude-code:s1",
+                    logical,
+                    view,
+                    cursor.as_deref(),
+                );
+                let (Response::Ok { data: cached }, Response::Ok { data: replayed }) =
+                    (cached, replayed)
+                else {
+                    panic!("page failed");
+                };
+                assert_eq!(cached, replayed, "private cache changed a page or citation");
+                joined.push_str(cached["text"].as_str().unwrap());
+                cursor = cached["next"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert!(cursor.is_none());
+            assert!(!joined.contains("private-one"));
+        }
+    }
+    assert!(
+        world.daemon.read_checkpoints.test_counts().1 > 0,
+        "control must exercise actual cache hits"
+    );
+    let token = next(page(&world.daemon, "claude-code:s1", false, "full", None));
+    assert!(world.daemon.read_checkpoints.test_counts().0 > 0);
+    world.set("day_start", "06:00");
+    assert_eq!(
+        world.daemon.read_checkpoints.test_counts().0,
+        0,
+        "service writes clear private carry"
+    );
+    // A forged position must fail without populating a new checkpoint.
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token)
+        .unwrap();
+    let mut token: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    token["position"] = serde_json::json!([999, 0, 0]);
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&token).unwrap());
+    assert!(
+        matches!(page(&world.daemon, "claude-code:s1", false, "full", Some(&forged)), Response::Error { kind, .. } if kind == "bad_request")
+    );
+    assert_eq!(world.daemon.read_checkpoints.test_counts().0, 0);
+    let _ = page(&world.daemon, "claude-code:s1", false, "full", None);
+    assert!(world.daemon.read_checkpoints.test_counts().0 > 0);
+    let excised = handle(
+        Request::Excise {
+            request_id: "private-checkpoint-excision".into(),
+            target: "session:claude-code:s1".into(),
+            reason: None,
+            dry_run: false,
+        },
+        &world.daemon,
+    );
+    assert!(matches!(excised, Response::Ok { .. }), "{excised:?}");
+    assert_eq!(world.daemon.read_checkpoints.test_counts().0, 0);
+}
+
+#[test]
+fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    for (session_id, messages) in [
+        (
+            "claude-code:parent",
+            vec![(
+                "claude-code:parent-0",
+                "inherited -----BEGIN VENDOR PRIVATE KEY-----hidden-----END VEND",
+            )],
+        ),
+        (
+            "claude-code:child",
+            vec![
+                ("claude-code:child-0", "OR PRIVATE KEY----- visible λ🙂"),
+                ("claude-code:child-1", "another child message"),
+            ],
+        ),
+    ] {
+        let session = fixture
+            .session(SessionFacts {
+                id: session_id,
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+        for (id, text) in messages {
+            fixture
+                .message(
+                    session,
+                    MessageFacts {
+                        id,
+                        role: "user",
+                        written_by: "human",
+                        text: Some(text),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    fixture
+        .link(
+            "claude-code:parent",
+            "claude-code:child",
+            "continuation",
+            "fork",
+        )
+        .unwrap();
+    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
+    conn.execute("UPDATE link SET branch_point='claude-code:parent-0'", [])
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let cache = super::super::read::checkpoints::Cache::default();
+    let id = polylogue_model::SessionId::parse("claude-code:child").unwrap();
+    for logical in [false, true] {
+        let mut cursor: Option<String> = None;
+        let mut joined = String::new();
+        for _ in 0..500 {
+            let render = |cursor: Option<&str>| {
+                super::super::read::run(
+                    &pool.reader().unwrap(),
+                    &id,
+                    super::super::read::Options {
+                        view: "full",
+                        format: "json",
+                        logical,
+                        budget: Some(2),
+                        cursor,
+                    },
+                    &cache,
+                    cache.epoch(),
+                )
+            };
+            let cached = render(cursor.as_deref());
+            cache.clear();
+            let replayed = render(cursor.as_deref());
+            let (Response::Ok { data: cached }, Response::Ok { data: replayed }) =
+                (cached, replayed)
+            else {
+                panic!("inherited page failed");
+            };
+            assert_eq!(cached, replayed);
+            joined.push_str(cached["text"].as_str().unwrap());
+            cursor = cached["next"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none());
+        assert!(joined.contains("visible λ🙂"));
+        if logical {
+            assert!(!joined.contains("hidden"));
+        } else {
+            assert!(joined.contains("OR PRIVATE KEY"));
+        }
+    }
+    assert!(cache.test_counts().1 > 0);
 }

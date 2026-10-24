@@ -71,6 +71,32 @@ fn joined(messages: &[Message], view: View, budget: usize) -> String {
     panic!("pages made no progress");
 }
 
+fn joined_with_checkpoints(messages: &[Message], view: View, budget: usize) -> String {
+    let mut position = None;
+    let mut checkpoint: Option<Checkpoint> = None;
+    let mut out = String::new();
+    for _ in 0..10000 {
+        let from = checkpoint.as_ref().map_or(0, Checkpoint::message);
+        let mut pager = match (position, checkpoint.take()) {
+            (Some(at), Some(saved)) => Pager::resume(view, budget, at, saved),
+            _ => Pager::new(view, budget, position),
+        };
+        for message in &messages[from..] {
+            if pager.push(message.clone()).unwrap().is_break() {
+                break;
+            }
+        }
+        checkpoint = pager.checkpoint();
+        let page = pager.finish().unwrap();
+        out.push_str(&page.text);
+        position = page.next;
+        if position.is_none() {
+            return out;
+        }
+    }
+    panic!("checkpoint pages made no progress");
+}
+
 #[test]
 fn pages_preserve_utf8_authorship_views_and_mask_pem_across_blocks_and_messages() {
     use crate::tests::message;
@@ -111,6 +137,7 @@ fn pages_preserve_utf8_authorship_views_and_mask_pem_across_blocks_and_messages(
         let expected = joined(&messages, view, usize::MAX);
         for budget in [0, 1, 2, 5, 19] {
             assert_eq!(joined(&messages, view, budget), expected);
+            assert_eq!(joined_with_checkpoints(&messages, view, budget), expected);
         }
     }
 }

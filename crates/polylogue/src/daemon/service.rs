@@ -19,6 +19,7 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    read_checkpoints: read::checkpoints::Cache,
     /// The loop's settings: where the browser host spools captures for
     /// the loop to read.
     pub config: Config,
@@ -108,6 +109,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Ok(writes) => writes,
             Err(response) => return response,
         };
+        let _invalidation = d.read_checkpoints.mutation();
         match writes.user(UserRequest::now(request_id, write)) {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
@@ -140,6 +142,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
         Ok(writes) => writes,
         Err(response) => return response,
     };
+    let _invalidation = d.read_checkpoints.mutation();
     match writes.user(UserRequest::now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
@@ -206,6 +209,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if matches!(d.backing, BackingState::Blocked { .. }) && !request.read_only() {
         return writes_paused(d);
     }
+    let read_epoch = d.read_checkpoints.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
@@ -345,6 +349,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 budget,
                 cursor: cursor.as_deref(),
             },
+            &d.read_checkpoints,
+            read_epoch,
         ),
 
         Request::ReadDocument {
@@ -427,6 +433,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 reason,
                 dry_run,
             };
+            let _invalidation = d.read_checkpoints.mutation();
             let (reply, wait) = sync_channel(1);
             let sent = d
                 .loop_tx
@@ -644,6 +651,7 @@ impl Runtime {
     /// Admitted readers and writes keep their existing completion semantics.
     pub fn stop_admission(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
+        self.daemon.read_checkpoints.clear();
         self.daemon.reads.close();
     }
 
@@ -680,6 +688,7 @@ impl Runtime {
         {
             failure.get_or_insert(error);
         }
+        self.daemon.read_checkpoints.clear();
         self.daemon.reads.close();
         self.lock.take();
         failure.map_or(Ok(()), Err)
@@ -771,6 +780,7 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
     let daemon = Arc::new(Daemon {
         archive,
         reads,
+        read_checkpoints: read::checkpoints::Cache::default(),
         config: paths,
         writes,
         backing,

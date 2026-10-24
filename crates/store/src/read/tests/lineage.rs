@@ -201,3 +201,44 @@ fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
     assert!(selected.lineage().complete);
     assert_eq!(texts(&selected), ["p", "a", "b", "child"]);
 }
+
+#[test]
+fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(&mut fixture, "prefix", &["prefix one", "prefix two"]);
+    session(&mut fixture, "tail", &["tail visible"]);
+    fork(&mut fixture, "prefix", "tail", Some("claude-code:prefix-1"));
+    let conn =
+        crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
+            .unwrap();
+    conn.execute("UPDATE block SET body=X'00' WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:prefix-0')", []).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (id, logical, from, expected) in [
+        ("claude-code:prefix", false, 1, vec!["prefix two"]),
+        (
+            "claude-code:tail",
+            true,
+            1,
+            vec!["prefix two", "tail visible"],
+        ),
+        ("claude-code:tail", true, 2, vec!["tail visible"]),
+    ] {
+        let selected = reader
+            .select_messages(&SessionId::parse(id).unwrap(), logical)
+            .unwrap();
+        assert!(
+            selected.visit(|_| ControlFlow::Continue(())).is_err(),
+            "control must try the corrupt prefix body"
+        );
+        let mut actual = Vec::new();
+        selected
+            .visit_from(from, |message| {
+                actual.push(message.text());
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+}

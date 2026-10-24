@@ -23,6 +23,20 @@ pub struct Position {
     pub character: usize,
 }
 
+/// Private source-stream state before one message. It can contain source
+/// characters from an open PEM block; never serialize it into a read cursor.
+#[derive(Clone)]
+pub struct Checkpoint {
+    message: usize,
+    masker: MessageMasker,
+}
+
+impl Checkpoint {
+    pub fn message(&self) -> usize {
+        self.message
+    }
+}
+
 pub struct Pager {
     view: View,
     budget: usize,
@@ -30,6 +44,7 @@ pub struct Pager {
     resumed: bool,
     message: usize,
     masker: MessageMasker,
+    checkpoint: Option<Checkpoint>,
     validated: bool,
     used: usize,
     text: String,
@@ -47,6 +62,7 @@ impl Pager {
             resumed: position.is_some(),
             message: 0,
             masker: MessageMasker::default(),
+            checkpoint: None,
             validated: position.is_none(),
             used: 0,
             text: String::new(),
@@ -54,6 +70,18 @@ impl Pager {
             attachments: Vec::new(),
             seen_attachments: std::collections::HashSet::new(),
         }
+    }
+
+    /// Restore private state only after the caller validates the content binding.
+    pub fn resume(view: View, budget: usize, position: Position, checkpoint: Checkpoint) -> Self {
+        let mut pager = Self::new(view, budget, Some(position));
+        pager.message = checkpoint.message;
+        pager.masker = checkpoint.masker;
+        pager
+    }
+
+    pub fn checkpoint(&self) -> Option<Checkpoint> {
+        self.next.and(self.checkpoint.clone())
     }
 
     /// Consume the message at the requested position, then following messages.
@@ -67,6 +95,10 @@ impl Pager {
         mut message: Message,
         labels: impl FnOnce(&Message) -> Vec<crate::AttachmentLabel>,
     ) -> Result<ControlFlow<()>, &'static str> {
+        self.checkpoint = Some(Checkpoint {
+            message: self.message,
+            masker: self.masker.clone(),
+        });
         // Replay prior source messages on resume. Hidden blocks establish the
         // same context ordinary and structured outputs use before projection.
         self.masker.message(&mut message);

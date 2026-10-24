@@ -1,4 +1,4 @@
-//! Stateless continuation of a session read on one admitted Reader.
+//! Session continuation on one admitted Reader, with private replay checkpoints.
 use super::{Response, error, ok, store_error};
 use base64::Engine as _;
 use polylogue_model::SessionId;
@@ -10,6 +10,7 @@ use std::ops::ControlFlow;
 const CURSOR_VERSION: u8 = 3;
 
 mod attachments;
+pub(crate) mod checkpoints;
 
 pub(super) struct Options<'a> {
     pub view: &'a str,
@@ -29,7 +30,13 @@ struct Cursor {
     position: [usize; 3],
 }
 
-pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> Response {
+pub(super) fn run(
+    reader: &Reader<'_>,
+    id: &SessionId,
+    options: Options<'_>,
+    cache: &checkpoints::Cache,
+    epoch: u64,
+) -> Response {
     let Some(view) = polylogue_render::View::parse(options.view) else {
         return error("bad_request", format!("unknown view {:?}", options.view));
     };
@@ -158,11 +165,30 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     } else {
         None
     };
-    let mut pager = Pager::new(view, budget, position);
+    let index = match reader.index_identity() {
+        Ok(index) => index,
+        Err(error) => return store_error(&error),
+    };
+    let key = checkpoints::Key {
+        binding: binding.clone(),
+        content: content.clone(),
+        generation: generation.clone(),
+        index,
+    };
+    // The captured admission epoch prevents a read that overlaps a mutation
+    // from restoring or publishing private state after that mutation clears it.
+    let checkpoint = cache.get(&key, epoch, position.map_or(0, |at| at.message));
+    let from = checkpoint
+        .as_ref()
+        .map_or(0, |checkpoint| checkpoint.message());
+    let mut pager = match (position, checkpoint) {
+        (Some(at), Some(checkpoint)) => Pager::resume(view, budget, at, checkpoint),
+        _ => Pager::new(view, budget, position),
+    };
     let mut failure = None;
     let mut attachment_error = None;
     let mut shown = std::collections::HashMap::new();
-    let result = selected.visit(|message| {
+    let result = selected.visit_from(from, |message| {
         let mut found = Vec::new();
         let result = pager.push_with_attachments(message, |message| {
             match attachments::labels(reader, message, view) {
@@ -206,10 +232,14 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     if let Some(e) = failure {
         return error("bad_request", e);
     }
+    let checkpoint = pager.checkpoint();
     let page = match pager.finish() {
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
     };
+    if let Some(checkpoint) = checkpoint {
+        cache.put(key, epoch, checkpoint);
+    }
     let mut descriptors = Vec::new();
     for reference in &page.attachments {
         if let Some(descriptor) = shown.remove(reference) {
