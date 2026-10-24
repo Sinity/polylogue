@@ -19,7 +19,9 @@ fn cli(bin: &Path, root: &Path, home: &Path, config: &Path, args: &[&str]) -> se
         .unwrap();
     assert!(
         output.status.success(),
-        "old CLI {args:?}: {}",
+        "old CLI {args:?}: {}: stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
@@ -357,7 +359,19 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
     let decoder_root = dir.join("old-decoder-target");
     let mut old_decoder = command(&old, &decoder_root, &empty, &decoder_cfg);
     old_decoder.arg("daemon");
-    let daemon = Daemon(polylogue_testkit::spawn_daemon(&mut old_decoder).unwrap());
+    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut old_decoder).unwrap());
+    let start = Instant::now();
+    while !decoder_root.join("daemon.sock").exists() {
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "old decoder exited before serving status"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "old decoder did not bind its socket"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let status = cli(
         &old,
         &decoder_root,
