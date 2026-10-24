@@ -219,7 +219,11 @@ fn html(
         .flatten()
         .filter(|column| column["name"].is_string())
         .collect();
-    writeln!(out, "<table>")?;
+    if target.is_some() {
+        writeln!(out, "<table class=\"results\">")?;
+    } else {
+        writeln!(out, "<table>")?;
+    }
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     write!(out, "<thead><tr>")?;
     for c in columns {
@@ -230,7 +234,11 @@ fn html(
     }
     writeln!(out, "</tr></thead><tbody>")?;
     for (r, row) in cells.iter().zip(rows) {
-        write!(out, "<tr>")?;
+        if target.is_some() {
+            write!(out, "<tr class=\"hit\" tabindex=\"-1\">")?;
+        } else {
+            write!(out, "<tr>")?;
+        }
         for (i, v) in r.iter().enumerate() {
             let column = descriptors[i];
             let value = &row[columns[i].as_str()];
