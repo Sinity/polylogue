@@ -84,7 +84,7 @@ fn a_many_row_batch_restores_from_small_fragments_and_repeats_exactly() {
     let mut target = target();
     for expected in [10_001, 0] {
         file.rewind().unwrap();
-        let inserted = restore::install(&mut target, &selected, None, |_| {
+        let inserted = restore::install_fixture(&mut target, &selected, None, |_| {
             Ok(Some(Input {
                 file: file.try_clone()?,
                 remaining: None,
@@ -117,7 +117,7 @@ fn interrupted_stream_and_late_foreign_row_leave_the_previous_view_unchanged() {
         })));
         let selected = select(&[unit]).unwrap();
         let mut target = target();
-        let result = restore::install(&mut target, &selected, None, |_| {
+        let result = restore::install_fixture(&mut target, &selected, None, |_| {
             Ok(Some(Input {
                 file: file.try_clone()?,
                 remaining: (!bad_tail).then_some(300),

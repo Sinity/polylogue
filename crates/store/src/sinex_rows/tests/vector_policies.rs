@@ -116,7 +116,7 @@ fn a_new_owned_policy_refuses_an_old_target_and_cannot_be_dropped_by_restore() {
     }
     old.pragma_update(None, "user_version", 5).unwrap();
     assert!(
-        restore::install(&mut old, &selected, None, |_| Ok(Some(Cursor::new(
+        restore::install_fixture(&mut old, &selected, None, |_| Ok(Some(Cursor::new(
             bytes.clone()
         ))))
         .is_err()

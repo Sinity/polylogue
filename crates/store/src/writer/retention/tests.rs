@@ -114,3 +114,49 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
     ));
     assert!(!store.contains(&hashed_blobs::Hash(hash.0)));
 }
+
+#[test]
+fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let store = Arc::new(hashed_blobs::Store::open(dir.path(), Vec::new(), 0o600).unwrap());
+    let source = archive
+        .prepare_bytes(&[], b"synthetic retained source".as_slice())
+        .unwrap();
+    let stray = archive
+        .prepare_bytes(&[], b"synthetic unreferenced stage".as_slice())
+        .unwrap();
+    let source_hash = source.hash();
+    let stray_hash = stray.hash();
+    let mut batch = batch(&source_hash.to_string(), source.len());
+    batch.piece = Some(Piece {
+        hash: source_hash,
+        size: source.len(),
+        stored: Stored::File { stored_size: 0 },
+    });
+    let result = writer
+        .sender()
+        .unwrap()
+        .retain_group(
+            vec![crate::retention::PreparedBatch {
+                batch,
+                files: vec![source, stray],
+                extracted: Vec::new(),
+            }],
+            Arc::clone(&store),
+        )
+        .unwrap();
+    assert!(
+        result[0].is_err(),
+        "a private stage without a source owner was admitted"
+    );
+    assert!(!store.contains(&hashed_blobs::Hash(source_hash.0)));
+    assert!(!store.contains(&hashed_blobs::Hash(stray_hash.0)));
+    let db = crate::archive::open_read(&archive.archive_db()).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}

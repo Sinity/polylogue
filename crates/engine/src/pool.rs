@@ -5,10 +5,11 @@
 //! most one job in flight, so its parser state passes from job to job.
 
 use crate::read;
-use polylogue_model::Json;
+use polylogue_model::{BlobHash, Json};
 use polylogue_sources::OriginSpec;
+use polylogue_store::retention::{Extraction, PreparedBatch};
 use polylogue_store::writer::WriterSender;
-use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep, Piece};
+use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -105,6 +106,8 @@ impl Pool {
         bytes_in_flight: u64,
         writer: WriterSender,
         blobs: Arc<hashed_blobs::Store>,
+        archive: polylogue_store::Archive,
+        roots: Vec<PathBuf>,
         done: Sender<Done>,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -124,9 +127,11 @@ impl Pool {
                 let writer = writer.clone();
                 let blobs = Arc::clone(&blobs);
                 let done = done.clone();
+                let archive = archive.clone();
+                let roots = roots.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &done))
+                    .spawn(move || work(&shared, &writer, &blobs, &archive, &roots, &done))
                     .expect("spawn a parse worker")
             })
             .collect();
@@ -164,17 +169,9 @@ impl Drop for Pool {
 /// Jobs a worker groups under one blob commit, by bytes read.
 const GROUP_BYTES: u64 = 64 << 20;
 
-/// How a group's blobs become durable: each file synced, then each
-/// directory the group touched once. `syncfs` would flush every dirty page
-/// on the filesystem, other programs' included, which on a shared busy
-/// drive took far longer than syncing only our files.
-const DURABILITY: hashed_blobs::Durability = hashed_blobs::Durability::PerFile;
-
-/// A worker's finished jobs whose large blobs are not yet durable, each
-/// with the bytes its job holds in flight.
-struct Group<'s> {
-    blobs: hashed_blobs::Batch<'s>,
-    held: Vec<(Option<Batch>, Done, u64)>,
+/// A bounded worker group whose file stages remain private until Writer admission.
+struct Group {
+    held: Vec<(Option<PreparedBatch>, Done, u64)>,
     bytes: u64,
 }
 
@@ -192,11 +189,12 @@ fn release(shared: &Shared, bytes: u64) {
 fn work(
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &hashed_blobs::Store,
+    store: &Arc<hashed_blobs::Store>,
+    archive: &polylogue_store::Archive,
+    roots: &[PathBuf],
     done: &Sender<Done>,
 ) {
     let mut group = Group {
-        blobs: store.batch(DURABILITY),
         held: Vec::new(),
         bytes: 0,
     };
@@ -226,7 +224,7 @@ fn work(
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, &mut group.blobs, store);
+        let (batch, result) = run(job, archive, roots, store);
         group.held.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
@@ -235,61 +233,80 @@ fn work(
     }
 }
 
-/// Commits the group's blobs (two filesystem syncs for all of them), then
-/// sends its batches to the writer and its results to the loop. Returns
-/// false when the loop has gone away.
-fn flush<'s>(
-    group: &mut Group<'s>,
+/// Retention acknowledgements keep each job charged until the Writer commits.
+fn flush(
+    group: &mut Group,
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &'s hashed_blobs::Store,
+    store: &Arc<hashed_blobs::Store>,
     done: &Sender<Done>,
 ) -> bool {
-    let blobs = std::mem::replace(&mut group.blobs, store.batch(DURABILITY));
-    let committed = if blobs.is_empty() {
-        Ok(())
-    } else {
-        blobs.commit().map(drop)
-    };
-    for (batch, mut result, size) in group.held.drain(..) {
-        match (&committed, batch) {
-            (Err(e), _) => {
-                result.error = Some(format!("store blobs: {e}"));
-                release(shared, size);
-            }
-            (Ok(()), Some(mut batch)) => {
-                // The job's bytes stay counted until the writer commits the
-                // batch (or drops it unsent).
+    let mut held = std::mem::take(&mut group.held);
+    let durable = held.iter().any(|(batch, _, _)| {
+        batch
+            .as_ref()
+            .is_some_and(|b| !b.files.is_empty() || !b.extracted.is_empty())
+    });
+    if durable {
+        let queued: Vec<bool> = held.iter().map(|(batch, _, _)| batch.is_some()).collect();
+        let mut batches = Vec::new();
+        for (batch, _, size) in &mut held {
+            if let Some(mut batch) = batch.take() {
                 let owner = Arc::clone(shared);
-                batch.release = InFlight::new(move || release(&owner, size));
-                let settled = batch
-                    .piece
-                    .iter_mut()
-                    .chain(batch.blobs.iter_mut())
-                    .try_for_each(|p| p.settle(store));
-                match settled
-                    .map_err(|e| e.to_string())
-                    .and_then(|()| writer.send(batch).map_err(|e| e.to_string()))
-                {
-                    Ok(()) => {}
-                    Err(e) => result.error = Some(e),
+                let bytes = *size;
+                batch.batch.release = InFlight::new(move || release(&owner, bytes));
+                batches.push(batch);
+            } else {
+                release(shared, *size);
+            }
+        }
+        let results = writer.retain_group(batches, Arc::clone(store));
+        match results {
+            Ok(results) => {
+                let mut results = results.into_iter();
+                for ((_, result, _), queued) in held.iter_mut().zip(queued) {
+                    if queued {
+                        match results.next() {
+                            Some(Err(error)) => result.error = Some(error.to_string()),
+                            Some(Ok(_)) => {}
+                            None => {
+                                result.error = Some("retention group returned no result".into())
+                            }
+                        }
+                    }
                 }
             }
-            (Ok(()), None) => release(shared, size),
+            Err(error) => {
+                for (_, result, _) in &mut held {
+                    result.error.get_or_insert_with(|| error.to_string());
+                }
+            }
         }
-        if done.send(result).is_err() {
-            return false;
+    } else {
+        for (batch, result, size) in &mut held {
+            if let Some(mut batch) = batch.take() {
+                let owner = Arc::clone(shared);
+                let bytes = *size;
+                batch.batch.release = InFlight::new(move || release(&owner, bytes));
+                if let Err(error) = writer.send(batch.batch) {
+                    result.error = Some(error.to_string());
+                }
+            } else {
+                release(shared, *size);
+            }
         }
     }
     group.bytes = 0;
-    true
+    held.into_iter()
+        .all(|(_, result, _)| done.send(result).is_ok())
 }
 
 fn run(
     mut job: Job,
-    blobs: &mut hashed_blobs::Batch<'_>,
+    archive: &polylogue_store::Archive,
+    roots: &[PathBuf],
     store: &hashed_blobs::Store,
-) -> (Option<Batch>, Done) {
+) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
         path: job.path.clone(),
@@ -321,11 +338,14 @@ fn run(
         }
     };
     out.tail = read::tail_of(&bytes);
+    let mut files = Vec::new();
+    let mut extracted = Vec::new();
     let piece = match job.piece_from {
         Some(from) => match time(Stage::Store, || {
-            Piece::prepare_in(blobs, &bytes[(from - job.start) as usize..])
+            archive.prepare_piece(roots, &bytes[(from - job.start) as usize..])
         }) {
-            Ok(p) => {
+            Ok((p, file)) => {
+                files.extend(file);
                 out.stored = p.size;
                 Some(p)
             }
@@ -362,9 +382,25 @@ fn run(
                     out.carry = Some(carry);
                     let mut parsed = Vec::new();
                     for mut step in steps {
+                        let range = job.start + step.start..job.start + step.consumed;
+                        let source_hash =
+                            BlobHash::of(&bytes[step.start as usize..step.consumed as usize]);
                         for blob in std::mem::take(&mut step.output.blobs) {
-                            match time(Stage::Store, || Piece::prepare_in(blobs, &blob.bytes)) {
-                                Ok(p) => extra.push(p),
+                            match time(Stage::Store, || archive.prepare_piece(roots, &blob.bytes)) {
+                                Ok((p, file)) => {
+                                    if p.hash!=blob.hash || p.size!=blob.size {
+                                        out.error=Some("decoded bytes differ from their declared hash or length".into());
+                                        return Vec::new();
+                                    }
+                                    files.extend(file);
+                                    extracted.push(Extraction {
+                                        range: range.clone(),
+                                        source_hash,
+                                        parser_version: job.origin.parser_version,
+                                        blob: p.hash,
+                                    });
+                                    extra.push(p);
+                                }
                                 Err(e) => out.error = Some(format!("store inline bytes: {e}")),
                             }
                         }
@@ -412,5 +448,12 @@ fn run(
         parse,
         release: InFlight::default(),
     };
-    (Some(batch), out)
+    (
+        Some(PreparedBatch {
+            batch,
+            files,
+            extracted,
+        }),
+        out,
+    )
 }

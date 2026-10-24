@@ -123,10 +123,18 @@ pub(super) fn remove_input(
         .query_map([input], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     refused.blobs.extend(blobs.iter().map(|b| hex(b)));
+    let decoded: Vec<Vec<u8>> = t
+        .archive
+        .prepare("SELECT DISTINCT blob FROM extracted_blob WHERE input=?1")?
+        .query_map([input], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    refused.blobs.extend(decoded.iter().map(|b| hex(b)));
     if req.dry_run {
         return Ok(());
     }
     insert_excised_observations(t, input, req, None)?;
+    t.archive
+        .execute("DELETE FROM extracted_blob WHERE input=?1", [input])?;
     t.archive
         .execute("DELETE FROM extent WHERE input = ?1", [input])?;
     t.archive

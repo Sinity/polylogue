@@ -1,8 +1,8 @@
 //! The blob layer: inputs, revisions and extents over `hashed-blobs`
 //! (architecture 4.2). A blob under 128 KiB lives inline in `archive.db`,
 //! zstd-compressed; larger ones are files of seekable zstd frames. Hashing
-//! and compression run on the parse pool ([`Piece::prepare`]); the writer
-//! only records rows, after the bytes are durable.
+//! and compression run before Writer admission. The Writer reserves canonical
+//! ownership before installing private file stages, then finalizes completion.
 
 use crate::Result;
 use polylogue_model::BlobHash;
@@ -144,7 +144,7 @@ impl Piece {
     /// Hashes `bytes`; compresses small ones for an inline row and writes
     /// large ones to the blob store, durable before this returns, so any row
     /// the writer adds later refers to bytes that exist.
-    pub fn prepare(store: &hashed_blobs::Store, bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn prepare(store: &hashed_blobs::Store, bytes: &[u8]) -> Result<Self> {
         let hash = BlobHash::of(bytes);
         let size = bytes.len() as u64;
         let stored = if bytes.len() < INLINE_LIMIT {
@@ -157,33 +157,6 @@ impl Piece {
             }
         };
         Ok(Self { hash, size, stored })
-    }
-}
-
-impl Piece {
-    /// Like [`Piece::prepare`], but a large blob goes into `batch` and is
-    /// durable only once the batch commits. The caller commits before any
-    /// row referring to the piece is sent, then calls [`Piece::settle`].
-    /// One commit for many blobs costs two filesystem syncs instead of
-    /// three per blob, which on a busy QLC drive is most of the cost.
-    pub fn prepare_in(batch: &mut hashed_blobs::Batch<'_>, bytes: &[u8]) -> Result<Self> {
-        let hash = BlobHash::of(bytes);
-        let size = bytes.len() as u64;
-        let stored = if bytes.len() < INLINE_LIMIT {
-            Stored::Inline(zstd::bulk::compress(bytes, LEVEL)?)
-        } else {
-            batch.put(bytes, LEVEL)?;
-            Stored::File { stored_size: 0 }
-        };
-        Ok(Self { hash, size, stored })
-    }
-
-    /// Records a committed file blob's stored size.
-    pub fn settle(&mut self, store: &hashed_blobs::Store) -> Result<()> {
-        if let Stored::File { stored_size } = &mut self.stored {
-            *stored_size = store.stored_size(&hashed_blobs::Hash(self.hash.0))?;
-        }
-        Ok(())
     }
 }
 

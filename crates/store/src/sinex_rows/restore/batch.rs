@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek};
 
+mod extracted;
 mod revision;
 
 pub(super) fn install<R: Read>(
@@ -93,6 +94,9 @@ impl Rows {
 }
 
 fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result<()> {
+    if unit.unit.kind == "extracted_blob" {
+        return extracted::validate(unit, rows, scratch);
+    }
     scratch.execute("DELETE FROM allowed", [])?;
     let revision = if unit.unit.kind == "revision" {
         Some(revision::Revision::prepare(unit, rows, scratch)?)

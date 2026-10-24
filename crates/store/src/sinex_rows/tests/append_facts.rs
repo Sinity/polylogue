@@ -385,7 +385,7 @@ fn migration_and_restore_keep_observation_insertion_order_when_ids_and_times_dis
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let mut db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    db.execute_batch("DROP TABLE excision_document; DROP TRIGGER vector_policy_insert; DROP TRIGGER vector_policy_update; DROP TRIGGER vector_policy_delete; DROP TABLE vector_deletion_policy; DELETE FROM meta WHERE key='vector_policy_revision'; DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
+    db.execute_batch("DROP TABLE extracted_blob; DROP TABLE excision_document; DROP TRIGGER vector_policy_insert; DROP TRIGGER vector_policy_update; DROP TRIGGER vector_policy_delete; DROP TABLE vector_deletion_policy; DELETE FROM meta WHERE key='vector_policy_revision'; DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
         ALTER TABLE observation DROP COLUMN commit_seq; ALTER TABLE delivery_event DROP COLUMN commit_seq;
         PRAGMA user_version=4;
         INSERT INTO input VALUES ('input','synthetic-text');

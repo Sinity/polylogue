@@ -100,6 +100,7 @@ impl Catalog {
                         "delivery",
                         "observation",
                         "delivery_event",
+                        "extracted_blob",
                     ]
                     .contains(&unit.kind.as_str())
                     || previous.as_ref().is_some_and(|p: &Unit| p >= unit)

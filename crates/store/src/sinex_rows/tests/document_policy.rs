@@ -124,7 +124,7 @@ fn document_policy_round_trips_as_owned_excision_rows_and_old_decoder_refuses() 
         excision: Some(publication),
     };
     let selection = select(&[descriptor]).unwrap();
-    restore::install(&mut target, &selection, None, |_| {
+    restore::install_fixture(&mut target, &selection, None, |_| {
         Ok(Some(std::io::Cursor::new(bytes.clone())))
     })
     .unwrap();

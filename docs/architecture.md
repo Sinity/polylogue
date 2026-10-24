@@ -184,7 +184,7 @@ a missing in-memory tail is read from the retained range before append
 classification; a changed prefix starts a new chain. The comparison uses the
 committed byte length even when its source observation described a larger file.
 
-Manual imports and watched whole-export captures prepare bytes privately. The
+Manual imports, watched whole-export captures and parse-pool groups prepare file bytes privately. The
 Store Writer checks standing input, content and location refusals, then durably
 reserves the input, revision, extent and a `writing` blob row before installing
 the CAS object. It admits the blob as `present` only after installation. Both
@@ -204,8 +204,26 @@ rules do not register CAS files left unowned by earlier software.
 Whole-export recognition must inspect the same bytes that will be admitted.
 Store uses one private decoded scratch file for this inspection, then prepares
 those bytes with the shared blob encoder. This adds a streamed decoded disk
-copy; it does not retain the export in memory or reopen the provider. The normal
-parse pool remains a separate retention caller until its migration is complete.
+copy; it does not retain the export in memory or reopen the provider.
+
+The parse pool retains its 64 MiB groups through the same Writer operation. One
+FULL reservation covers the group before file installation; one FULL finalization
+admits completed sources and decoded values. Inline-only work keeps the ordinary
+transactional path. In-flight admission remains held through parsed-row commit.
+The shared installer synchronizes each installed file and its directory, so file
+installation no longer shares one directory synchronization across a group.
+
+Decoded values have canonical `extracted_blob` owners in archive format 8. Each
+association cites an input, retained chain, exact enclosing source range and hash,
+parser version and decoded blob. The Writer installs raw stages first and checks
+the retained source before installing decoded stages. Associations have their own
+completion state even when another source already owns the same decoded bytes.
+Each association has an independent commit-sequenced Sinex unit; later decoding
+cannot alter an acknowledged raw revision. Index generation 33 replays retained
+source versions to recover these owners from older archives without provider
+files. Source edits invalidate associations whose cited bytes changed, including
+when the derived index is absent. Independent surviving references retain shared
+bytes. No legacy unregistered CAS sweep is performed.
 
 Retained-chain replay captures ordered extents and deduplicated compressed
 inline bytes from that same SQLite view into a private temporary database.

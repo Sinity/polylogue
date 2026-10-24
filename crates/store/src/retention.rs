@@ -4,6 +4,25 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
+pub(crate) mod extracted;
+
+/// One decoded value's actual enclosing source record. The hash binds the
+/// exact retained bytes, including same-length source rewrites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extraction {
+    pub range: std::ops::Range<u64>,
+    pub source_hash: BlobHash,
+    pub parser_version: u32,
+    pub blob: BlobHash,
+}
+
+/// One pool batch and its private file stages. Inline pieces remain in Batch.
+pub struct PreparedBatch {
+    pub batch: crate::Batch,
+    pub files: Vec<PreparedBytes>,
+    pub extracted: Vec<Extraction>,
+}
+
 /// Private staging tied to one archive and its configured read roots. Only
 /// the Writer can publish it after reserving canonical ownership.
 pub struct PreparedBytes {
@@ -25,6 +44,36 @@ impl PreparedBytes {
 }
 
 impl crate::Archive {
+    /// Preserve inline storage while preparing file pieces privately.
+    pub fn prepare_piece(
+        &self,
+        roots: &[std::path::PathBuf],
+        bytes: &[u8],
+    ) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+        if bytes.len() < crate::blobs::INLINE_LIMIT {
+            return Ok((
+                crate::Piece {
+                    hash: BlobHash::of(bytes),
+                    size: bytes.len() as u64,
+                    stored: crate::blobs::Stored::Inline(zstd::bulk::compress(
+                        bytes,
+                        crate::blobs::LEVEL,
+                    )?),
+                },
+                None,
+            ));
+        }
+        let prepared = self.prepare_bytes(roots, bytes)?;
+        Ok((
+            crate::Piece {
+                hash: prepared.hash(),
+                size: prepared.len(),
+                stored: crate::blobs::Stored::File { stored_size: 0 },
+            },
+            Some(prepared),
+        ))
+    }
+
     /// Inspect the same private bytes that will be prepared, without reopening
     /// a mutable provider or installing a public CAS name. The decoded scratch
     /// file costs one streamed copy and is dropped after preparation.
@@ -91,7 +140,7 @@ pub struct Unfinished {
 #[derive(Debug, Default)]
 pub struct Reconciled {
     pub completed: u64,
-    pub missing: Vec<Unfinished>,
+    pub unfinished: Vec<Unfinished>,
 }
 
 pub(crate) fn require_present(
@@ -150,9 +199,10 @@ fn check(
 }
 
 pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<Unfinished>> {
-    let sql=format!("SELECT DISTINCT i.id,b.hash,b.size FROM {schema}input i JOIN {schema}revision r ON r.input=i.id
-        JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob
-        WHERE b.state='writing' ORDER BY i.id,b.hash");
+    let sql=format!("SELECT input,hash,size FROM (
+        SELECT DISTINCT i.id AS input,b.hash,b.size FROM {schema}input i JOIN {schema}revision r ON r.input=i.id
+        JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob WHERE b.state='writing'
+        UNION SELECT x.input,b.hash,b.size FROM {schema}extracted_blob x JOIN {schema}blob b ON b.hash=x.blob WHERE x.state='writing' OR b.state='writing') ORDER BY input,hash");
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();

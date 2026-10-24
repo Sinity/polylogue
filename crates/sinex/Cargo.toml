@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "6dd654669a7419981543e983ac87bb81cb5c4bd6" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "6dd654669a7419981543e983ac87bb81cb5c4bd6" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "de3fe0241ba3d113dac1f4f0404f3fd136e2eb64" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "de3fe0241ba3d113dac1f4f0404f3fd136e2eb64" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
@@ -20,6 +20,7 @@ thiserror.workspace = true
 toml = "0.9"
 
 [dev-dependencies]
+rusqlite.workspace = true
 polylogue-testkit.workspace = true
 blake3.workspace = true
 polylogue-engine.workspace = true

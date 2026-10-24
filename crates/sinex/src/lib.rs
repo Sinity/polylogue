@@ -582,7 +582,7 @@ impl Sinex {
         store_archive: &polylogue_store::Archive,
         archive: &str,
     ) -> Result<Restored> {
-        let mut restoring = Restoring::open(store_archive)?;
+        let mut restoring = Restoring::with_roots(store_archive, vec![self.store_root.clone()])?;
         let js = jetstream::new(self.client.clone());
         let stream = js
             .get_stream(self.subjects.confirmed_stream())

@@ -34,7 +34,7 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            32,
+            33,
             "b221e3e315fb6de49606f8a68645dc5c6e7b95a7a377b3083c111c3c54efa462".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
@@ -48,7 +48,7 @@ fn excision_revision_migration_preserves_rows_and_runs_once() {
     create_archive(&conn).unwrap();
     conn.execute("INSERT INTO excision(id,scope,reason,created_at,commit_seq) VALUES ('old','session:claude-code:gone','retained reason',1,7)",[]).unwrap();
     migrate_archive(&mut conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 7);
+    assert_eq!(version(&conn).unwrap(), 8);
     let before = crate::excise::recovery::current(&conn).unwrap();
     assert!(before.version > 0);
     migrate_archive(&mut conn).unwrap();
