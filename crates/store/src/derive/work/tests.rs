@@ -376,3 +376,134 @@ fn orphan_goals_are_removed_even_when_no_sessions_remain() {
         0
     );
 }
+
+#[test]
+fn command_only_work_does_not_read_tool_result_bodies() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let mut w = WriterWorld::new();
+    let mut messages = bash(
+        "s",
+        1,
+        1_000,
+        "cargo test",
+        true,
+        "large test output".repeat(4096).as_str(),
+    );
+    messages.extend(bash(
+        "s",
+        2,
+        2_000,
+        "git commit -m failed",
+        false,
+        "failed commit output",
+    ));
+    messages.extend(bash(
+        "s",
+        3,
+        3_000,
+        "gh pr view",
+        true,
+        "unrelated pull request output",
+    ));
+    messages.extend(bash(
+        "s",
+        4,
+        4_000,
+        "bd update plnext-9 --claim",
+        true,
+        "claimed",
+    ));
+    w.write("s", messages);
+    let mut index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let session_pk: i64 = index
+        .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    index
+        .authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "text" | "block",
+                column_name: "body",
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))
+        .unwrap();
+    let tx = index.transaction().unwrap();
+    super::derive_session(&tx, session_pk, "claude-code:s").unwrap();
+    tx.commit().unwrap();
+    index
+        .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
+    assert_eq!(w.live_task("s")["live_task"], "plnext-9");
+    assert_eq!(
+        w.rows("SELECT count(*) AS n FROM work_node WHERE kind='verification'"),
+        vec![json!({"n":1})]
+    );
+    assert_eq!(
+        w.rows("SELECT count(*) AS n FROM commit_link"),
+        vec![json!({"n":0})]
+    );
+}
+
+#[test]
+fn declared_plan_items_keep_their_states_without_command_text() {
+    let mut w = WriterWorld::new();
+    w.write(
+        "s",
+        call(
+            "s",
+            1,
+            1_000,
+            "update_plan",
+            None,
+            json!({"plan":[{"step":"inspect the writer", "status":"completed"},
+                       {"step":"remove unused reads", "status":"in_progress"}]}),
+            Ok("updated"),
+        ),
+    );
+    assert_eq!(w.rows("SELECT g.title, a.state FROM work_node g JOIN work_edge e ON e.to_pk=g.pk JOIN work_node a ON a.pk=e.from_pk WHERE g.kind='goal' ORDER BY g.title"),
+        vec![json!({"title":"inspect the writer", "state":"completed"}),json!({"title":"remove unused reads", "state":"open"})]);
+}
+
+#[test]
+fn compound_artifact_commands_keep_text_and_legacy_packed_result_provenance() {
+    for legacy_body in [false, true] {
+        let mut w = WriterWorld::new();
+        let output = "[work 1a2b3c4] store: improve work reads\nhttps://github.com/Sinity/polylogue/pull/6300\n";
+        w.write(
+            "s",
+            bash(
+                "s",
+                1,
+                1_000,
+                "git commit -m 'store: improve work reads' && gh pr create --fill",
+                true,
+                output,
+            ),
+        );
+        let mut index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+        if legacy_body {
+            let body = crate::encoding::pack_json(
+                &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
+            )
+            .unwrap();
+            index.execute("UPDATE block SET text_id=NULL, body=?1 WHERE pk IN (SELECT result_block_pk FROM tool_call)", [body]).unwrap();
+        }
+        let session_pk = index
+            .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let tx = index.transaction().unwrap();
+        super::derive_session(&tx, session_pk, "claude-code:s").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(w.rows("SELECT c.commit_hash, c.evidence, c.evidence_block_pk=t.call_block_pk AS original_call FROM commit_link c JOIN tool_call t ON t.session_pk=c.session_pk"),
+            vec![json!({"commit_hash":"1a2b3c4", "evidence":"commit-output", "original_call":1})]);
+        assert_eq!(
+            w.rows("SELECT repo, number, evidence FROM pr_link"),
+            vec![json!({"repo":"Sinity/polylogue", "number":6300, "evidence":"gh-output"})]
+        );
+    }
+}
