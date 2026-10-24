@@ -136,13 +136,13 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         {
             if let Some(payload) = event.payload {
                 if payload["archive"] == id && payload["key"] == unit.key {
-                    descriptor = Some(payload);
+                    descriptor = Some((payload, event.id));
                     break;
                 }
             }
         }
     }
-    let descriptor = descriptor.expect("original held observation descriptor");
+    let (descriptor, event_id) = descriptor.expect("original held observation descriptor");
     assert_eq!(
         descriptor["batch"],
         format!("blake3:{}", blake3::hash(&original))
@@ -156,6 +156,20 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         .have(&[format!("rows:{id}:1"), format!("rows:{id}:2")])
         .await
         .unwrap();
+    let frame = format!("rows:{id}:{}", descriptor["position"].as_u64().unwrap());
+    let ack = old_ack
+        .get(&frame)
+        .expect("actual acknowledged observation frame");
+    assert_eq!(ack.frame, frame);
+    assert!(ack.admitted.contains(&event_id));
+    fs::write(
+        root.join("original-acknowledged-evidence.json"),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"ack":ack,"confirmed_event":event_id,"descriptor":descriptor}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     fs::write(&input, line("first") + &line("second")).unwrap();
     let second = spawn("host-b");
     let start = Instant::now();
