@@ -57,6 +57,7 @@ struct Database {
     profile: Option<String>,
     refusal: Option<String>,
     unbound: bool,
+    view: Option<Range<u64>>,
     sessions: BTreeMap<String, Facts>,
     selected: HashMap<String, Selected>,
     superseded: BTreeMap<String, u64>,
@@ -265,7 +266,8 @@ impl ExportParser for Database {
         items: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         *self = Self::default();
-        let stats = lines(reader, |_, value, _| {
+        let stats = lines(reader, |range, value, _| {
+            self.view = Some(range);
             if value.get("schema").is_some() {
                 self.header(value);
                 return Ok(());
@@ -399,7 +401,19 @@ impl ExportParser for Database {
             accounting: records.finish().map_err(|error| error.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: None,
+            // The final genuine record identifies the folded retained prefix.
+            // Selected messages/events keep their original row ranges.
+            snapshot: self
+                .refusal
+                .is_none()
+                .then(|| self.view.clone())
+                .flatten()
+                .map(|view| polylogue_model::Snapshot {
+                    start: view.start,
+                    end: view.end,
+                    covered: Vec::new(),
+                    complete: false,
+                }),
         }))
     }
     fn item(
@@ -466,8 +480,20 @@ impl ExportParser for Database {
                 session.started = row.get("started_at").and_then(crate::time::epoch_seconds);
                 sink.out.sessions.push(session);
                 let mut limits = Vec::new();
-                if facts.messages && facts.activity_known && facts.leaf.is_none() {
-                    limits.push("all supplied message activity flags are inactive; no active leaf can be named");
+                if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
+                    sink.out.events.push(Event {
+                        session: Some(id.clone()),
+                        kind: if facts.activity_known {
+                            "active_path_empty"
+                        } else {
+                            "active_path_unknown"
+                        }
+                        .into(),
+                        at: None,
+                        after: None,
+                        range: None,
+                        data: Json::Null,
+                    });
                 }
                 if row.get("source").is_some_and(|value| {
                     !matches!(value.as_str(), Some("cli" | "subagent" | "tool"))

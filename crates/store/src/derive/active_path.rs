@@ -1,7 +1,7 @@
 //! Which of a branched session's messages lie on the path from its newest
 //! active leaf to the root (`on_active_path` 1) and which on an abandoned
-//! branch (0). A session whose source names no leaf keeps NULL: unknown,
-//! read as on the path.
+//! branch (0). An explicit empty-path marker puts every message off the path.
+//! Without a valid path marker activity stays NULL: unknown, read as on the path.
 //!
 //! Repeated markers share an event row. Revision, snapshot and record order
 //! choose each input's latest marker; known event time and content identity
@@ -13,7 +13,7 @@ use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
-    version: Version::Rules(4),
+    version: Version::Rules(5),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -23,27 +23,29 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "WITH RECURSIVE
            observations AS (
-             SELECT m.id, e.at, e.id AS event_id, r.id AS input_id,
+             SELECT m.id, e.kind, e.at, e.id AS event_id, r.id AS input_id,
                     row_number() OVER (
                       PARTITION BY r.id ORDER BY
                         es.chain DESC,
                         es.source_snapshot DESC,
                         es.source_order DESC, e.id
                     ) AS newest
-             FROM current_event e JOIN current_message m ON m.pk = e.after_message_pk
+             FROM current_event e LEFT JOIN current_message m ON m.pk = e.after_message_pk
              JOIN event_source es ON es.event_id = e.id AND es.current = 1
              JOIN input_ref r ON r.pk = es.input_pk
-             WHERE e.session_pk = ?1 AND e.kind = 'active_leaf' AND r.excised=0),
-           leaf(id) AS (
-             SELECT id FROM observations WHERE newest = 1
+             WHERE e.session_pk = ?1 AND r.excised=0
+               AND ((e.kind = 'active_leaf' AND m.pk IS NOT NULL)
+                 OR (e.kind IN ('active_path_empty','active_path_unknown') AND e.after_message_pk IS NULL))),
+           marker(id, kind) AS (
+             SELECT id, kind FROM observations WHERE newest = 1
              ORDER BY at DESC, event_id, input_id LIMIT 1),
            path(id) AS (
-             SELECT id FROM leaf
+             SELECT id FROM marker WHERE kind = 'active_leaf' AND id IS NOT NULL
              UNION
              SELECT m.parent_id FROM current_message m JOIN path ON m.id = path.id
              WHERE m.parent_id IS NOT NULL),
            marked(pk, v) AS (
-             SELECT pk, CASE WHEN EXISTS (SELECT 1 FROM leaf)
+             SELECT pk, CASE WHEN EXISTS (SELECT 1 FROM marker WHERE kind <> 'active_path_unknown')
                              THEN (id IN (SELECT id FROM path)) END
              FROM current_message WHERE session_pk = ?1)
          UPDATE message SET on_active_path = marked.v FROM marked

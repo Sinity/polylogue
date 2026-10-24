@@ -309,7 +309,9 @@ pub trait ExportParser: Send {
         })
     }
     /// File-level output after validation and ordering, before its items. `first`
-    /// is the selected first record after any keyed replacements.
+    /// is the selected first record after any keyed replacements. A partial
+    /// Snapshot identifies a folded retained-prefix view; owning Session facts
+    /// must precede message-only frames, whose original ranges stay unchanged.
     fn begin(
         &mut self,
         _length: u64,

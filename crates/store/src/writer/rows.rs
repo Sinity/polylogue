@@ -604,11 +604,20 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
+    // Source placement uses this input's declared kind before the merged
+    // session is derived; another input's kind cannot classify these rows.
     fn session_kind(&self, session_pk: i64) -> Result<String> {
         Ok(self
             .tx
-            .prepare_cached("SELECT kind FROM session WHERE pk = ?1")?
-            .query_row([session_pk], |r| r.get(0))?)
+            .prepare_cached(
+                "SELECT COALESCE((SELECT json_extract(facts,'$.kind') FROM session_record
+                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND parser_version=?4),kind)
+                 FROM session WHERE pk=?1",
+            )?
+            .query_row(
+                params![session_pk, self.input_pk, self.chain, self.parser_version],
+                |r| r.get(0),
+            )?)
     }
 
     fn insert_message(

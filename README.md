@@ -204,3 +204,11 @@ markers remain observations, not chat turns or run counts. Native run IDs do
 not create conversations. `read event:ID` and `export event:ID` use the ordinary
 reader/export paths. Transcript documents and input events require export
 wire version 3; ordinary text documents retain version 2.
+
+Hermes native activity flags distinguish an explicitly empty active path from
+unknown activity. When every positive message is explicitly inactive and not
+compacted, its messages stay readable and active-path queries return none.
+Missing flags remain unknown.
+The last complete logical record identifies each folded retained-prefix view;
+message and event citations keep their original row ranges. A later view with
+unreadable activity marks it unknown instead of reusing an older known leaf.

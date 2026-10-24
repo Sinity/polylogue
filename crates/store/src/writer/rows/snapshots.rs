@@ -15,6 +15,12 @@ impl Ctx<'_, '_> {
         let Some(snapshot) = &p.snapshot else {
             return Ok(Vec::new());
         };
+        if !snapshot.complete
+            && snapshot.covered.is_empty()
+            && !p.output.events.iter().any(|event| event.session.is_none())
+        {
+            return Ok(Vec::new());
+        }
         self.tx.execute("INSERT INTO snapshot(input_pk,chain,source_start,source_end,accounting,parser_version,complete) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,source_start) DO UPDATE SET source_end=excluded.source_end,accounting=excluded.accounting,parser_version=excluded.parser_version,complete=excluded.complete",
             params![self.input_pk,self.chain,snapshot.start as i64,snapshot.end as i64,pack_json(&p.accounting)?,self.parser_version,snapshot.complete as i64])?;
         let snapshot_pk: i64 = self.tx.query_row(
@@ -71,7 +77,9 @@ impl Ctx<'_, '_> {
         for pk in affected {
             self.promote_current(pk)?;
         }
-        self.refresh_input_events()?;
+        if snapshot.complete || p.output.events.iter().any(|event| event.session.is_none()) {
+            self.refresh_input_events()?;
+        }
         for id in &snapshot.covered {
             let links: Vec<i64> = self
                 .tx
