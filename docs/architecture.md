@@ -739,7 +739,10 @@ Machine dependencies include only aliases recorded by the enclosing unit's
 position. Their serialized rows retain the original `id`, `host` and
 `first_seen` fields; the cutoff is internal ordering knowledge, not event time.
 Restore derives the earliest supported cutoff from verified enclosing units,
-independent of arrival order. Older local writers refuse archive 9; existing
+independent of arrival order. Before committing, restore compares each received
+machine dependency set with the target's final eligible aliases. Extra baseline
+aliases or changed fields refuse the restore and preserve its rows and checkpoint.
+Older local writers refuse archive 9; existing
 row decoders can consume its unchanged machine payloads.
 Migration assigns position zero to every existing alias, preserving the current
 serialized closures, including machines with several hostnames. It cannot

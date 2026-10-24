@@ -123,6 +123,7 @@ pub(super) fn install<R: Read>(
         inserted += batch::install(unit, payload, (!repeated).then_some(&tx), &units.catalog.db)?;
         Ok(())
     })?;
+    batch::verify_machines(&tx, &units.catalog.db)?;
     crate::retention::extracted::verify_all(&tx, sources)?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {

@@ -76,6 +76,7 @@ fn reversed_batches_reconstruct_alias_cutoffs_for_legacy_embedded_observations()
         )
         .unwrap();
     }
+    verify_machines(&target_db, &selected.catalog.db).unwrap();
     let restored = Published::open(&target.root).unwrap();
     for (unit, bytes) in units.iter().zip(&payloads) {
         assert_eq!(restored.read(&unit.unit).unwrap().contents(), *bytes);

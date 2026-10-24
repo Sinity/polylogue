@@ -25,6 +25,23 @@ pub(super) fn install<R: Read>(
         }
     };
     validate(unit, &mut rows, scratch)?;
+    rows.each(|value| {
+        if value["table"] == "machine" {
+            let row = &value["row"];
+            scratch.execute(
+                "INSERT OR IGNORE INTO expected_machine VALUES (?1,?2,?3,?4,?5,?6)",
+                rusqlite::params![
+                    unit.unit.commit_seq,
+                    unit.unit.kind,
+                    unit.unit.key,
+                    row["id"].as_str().unwrap(),
+                    row["host"].as_str().unwrap(),
+                    row["first_seen"].as_i64().unwrap()
+                ],
+            )?;
+        }
+        Ok(())
+    })?;
     let mut inserted = 0;
     if let Some(target) = target {
         rows.each(|value| {
@@ -70,6 +87,39 @@ pub(super) fn install<R: Read>(
         })?;
     }
     Ok(inserted)
+}
+
+/// Compare after every selected batch has established its supported cutoff.
+/// A legacy baseline alias must not silently widen an older verified closure.
+pub(super) fn verify_machines(target: &Connection, scratch: &Connection) -> Result<()> {
+    let mut units = scratch.prepare(
+        "SELECT DISTINCT seq,kind,key,id FROM expected_machine ORDER BY seq,kind,key,id",
+    )?;
+    let mut units = units.query([])?;
+    while let Some(unit) = units.next()? {
+        let seq: i64 = unit.get(0)?;
+        let kind: String = unit.get(1)?;
+        let key: String = unit.get(2)?;
+        let id: String = unit.get(3)?;
+        let mut expected = scratch.prepare("SELECT host,first_seen FROM expected_machine WHERE seq=?1 AND kind=?2 AND key=?3 AND id=?4 ORDER BY host,first_seen")?;
+        let mut expected = expected.query(rusqlite::params![seq, kind, key, id])?;
+        let mut actual = target.prepare("SELECT host,first_seen FROM machine WHERE id=?1 AND first_commit_seq<=?2 ORDER BY host,first_seen")?;
+        let mut actual = actual.query(rusqlite::params![id, seq])?;
+        loop {
+            match (expected.next()?, actual.next()?) {
+                (None, None) => break,
+                (Some(expected), Some(actual))
+                    if expected.get::<_, String>(0)? == actual.get::<_, String>(0)?
+                        && expected.get::<_, i64>(1)? == actual.get::<_, i64>(1)? => {}
+                _ => {
+                    return Err(invalid(
+                        "verified machine dependencies conflict with the target alias closure; preserve the target and original publication batches",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 struct Rows(File);
