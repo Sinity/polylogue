@@ -114,3 +114,60 @@ fn hermes_verification_requires_the_native_schema_and_never_opens_marker_paths()
         marker
     ));
 }
+
+#[test]
+fn hermes_verification_retained_history_keeps_row_occurrences_under_their_observed_schema() {
+    let first = json!({"t":"verification_events","k":[1],"r":{"id":1,"created_at":"2026-01-02T03:04:05Z","session_id":"default","status":"passed","exit_code":0}});
+    let state = |at: &str, paths: &str| json!({"t":"verification_state","k":["default","/neutral"],"r":{"session_id":"default","root":"/neutral","last_event_id":1,"last_edit_at":at,"changed_paths_json":paths}});
+    let states = [
+        state("2026-01-02T03:04:06Z", "[]"),
+        state("2026-01-02T03:04:07Z", "[\"neutral.rs\"]"),
+    ];
+    let mut rows = vec![
+        json!({"schema":{"meta":"synthetic","verification_events":"synthetic","verification_state":"synthetic"}}),
+        json!({"t":"meta","k":["schema_version"],"r":{"key":"schema_version","value":"1"}}),
+        first.clone(),
+        states[0].clone(),
+        states[1].clone(),
+    ];
+    for phase in 0..3 {
+        if phase == 1 {
+            rows.push(
+                json!({"t":"meta","k":["schema_version"],"r":{"key":"schema_version","value":"2"}}),
+            );
+            rows.push(json!({"t":"verification_events","k":[2],"r":{"id":2,"created_at":"2026-01-02T03:04:08Z","session_id":"default","status":"future"}}));
+        }
+        if phase == 2 {
+            rows.push(
+                json!({"t":"meta","k":["schema_version"],"r":{"key":"schema_version","value":"1"}}),
+            );
+            rows.push(json!({"t":"verification_events","k":[3],"r":{"id":3,"created_at":"2026-01-02T03:04:09Z","session_id":"default","status":"passed","exit_code":0}}));
+            rows.push(json!({"t":"verification_events","kh":"synthetic-key-digest","gone":true}));
+        }
+        let raw = crate::support::jsonl(&rows);
+        let parsed = parse("hermes", "verification_evidence.db.jsonl", &raw);
+        let facts = events(&parsed, "hermes_verification_event");
+        assert_eq!(
+            facts.len(),
+            if phase == 2 { 2 } else { 1 },
+            "schema evidence applies at each original row occurrence"
+        );
+        if phase == 2 {
+            assert_eq!(facts[1]["data"]["r"]["id"], 3);
+            let deleted = events(&parsed, "hermes_verification_row_deleted");
+            assert_eq!(deleted.len(), 1);
+            assert_eq!(deleted[0]["data"], rows.last().unwrap().clone());
+        }
+        assert_eq!(facts[0]["data"], first);
+        let observed = events(&parsed, "hermes_verification_state");
+        assert_eq!(
+            observed.len(),
+            2,
+            "row versions are recorded observations, not a guessed latest-only ledger"
+        );
+        assert_eq!(observed[0]["data"], states[0]);
+        assert_eq!(observed[1]["data"], states[1]);
+        assert!(sessions(&parsed).is_empty());
+        assert!(messages(&parsed).is_empty());
+    }
+}

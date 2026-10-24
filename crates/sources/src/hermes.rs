@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
-pub const LOCATIONS: &[&str] = &[".hermes/state.db"];
+pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evidence.db"];
 pub const ORIGIN: &str = "hermes";
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {

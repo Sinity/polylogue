@@ -425,3 +425,4 @@ mod lineage;
 mod hermes_state;
 
 mod claude_account_text;
+mod hermes_events;
