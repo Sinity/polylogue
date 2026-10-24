@@ -145,11 +145,14 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         .unwrap(),
         2
     );
-    assert!(matches!(
-        remove(&writer, store, "refused-linked-member"),
-        Err(StoreError::ExcisionFormat { .. })
-    ));
-    assert_eq!(count("excision"), 0);
+    let removed = remove(&writer, store, "linked-member").unwrap();
+    assert_eq!(
+        removed.containers_retired,
+        [BlobHash::of(ORIGINAL).to_string()]
+    );
+    assert_eq!(count("excision"), 1);
+    assert_eq!(count("extent"), 0);
+    assert_eq!(count("observation_container"), 0);
 }
 
 #[test]
@@ -201,19 +204,13 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
         };
         barrier.wait();
         let outcomes = admit.join().unwrap();
-        match exclusion.join().unwrap() {
-            Ok(_) => {
-                assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
-                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
-            }
-            Err(StoreError::ExcisionFormat { .. }) => {
-                assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
-                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
-            }
-            other => panic!("{other:?}"),
-        }
+        exclusion.join().unwrap().unwrap();
+        assert!(
+            outcomes.iter().all(Result::is_ok) || outcomes.iter().all(Result::is_err),
+            "{outcomes:?}"
+        );
+        assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+        assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
     }
 }
 
@@ -293,3 +290,5 @@ fn a_container_in_one_acquisition_can_be_a_real_member_in_another() {
     names.sort();
     assert_eq!(names, ["file-Native.dat", "first.dat"]);
 }
+
+mod excision;

@@ -65,10 +65,26 @@ the original does not fall back to opaque retention. After reservation, an I/O
 failure can leave accountable unfinished bytes, reported as unavailable until
 verified or supplied by an exact retry.
 
-Coordinated ZIP rewriting is unsupported. Member, container, session and
-document removals refuse before mutation while linked representations remain.
-Unrelated independent Inputs remain removable. The original container is
-material-only data, so its path can appear in both `imported` and `unrecognized`.
+Removing a member, or rewriting its records for session/document removal,
+retires every containing original ZIP representation, including nested containers.
+Unrelated decoded member Inputs survive. Removing only an original ZIP preserves
+its independently retained members. `containers_retired` identifies originals
+removed (or that would be removed in a dry run); their raw metadata and exact
+container bytes become unavailable. Polylogue never substitutes a regenerated
+ZIP for the original. Acquisition observations remain; retired container links
+are removed through the existing excision publication.
+
+If another retained raw Input, decoded association, attachment or delta depends
+on the original bytes outside the removal set, the operation refuses before
+mutation. Direct attachment or delta-base references to original bytes currently refuse
+even when their owners are also selected. Selective ZIP regeneration and text
+removal from opaque member formats remain unsupported. A selected immutable member Input is shared by content across
+its acquisitions, so every containing original for that Input is retired; this
+does not extend removal to unrelated location-owned Inputs. Standing refusal
+blocks recapturing the selected member and retired originals.
+
+The original container is material-only data, so its path can appear in both
+`imported` and `unrecognized`.
 
 Staging holds metadata for all entries and private compressed stages for all
 member bodies. The complete acquisition uses a synchronous Writer turn; this

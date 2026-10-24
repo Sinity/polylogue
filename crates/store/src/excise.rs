@@ -126,6 +126,9 @@ pub struct Excised {
     pub texts: u64,
     /// Inputs removed whole.
     pub inputs_removed: Vec<String>,
+    /// Original ZIP representations retired while independent member bytes survive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub containers_retired: Vec<String>,
     /// Inputs whose bytes were overwritten in place, and how many spans.
     pub inputs_overwritten: BTreeMap<String, u64>,
     /// Shared whole documents (exports) where some of the session's texts
@@ -438,14 +441,30 @@ impl<'a> Plan<'a> {
         done: &mut Excised,
     ) -> Result<Excised> {
         self.collect_texts(t)?;
+        let mut selected = self.whole.clone();
+        selected.extend(self.kept.iter().cloned());
+        self.spans.visit_inputs(|input, _| {
+            selected.insert(input.into());
+            Ok(())
+        })?;
+        let mut originals = crate::containers::containing(t.archive, &selected)?;
+        // Direct original-only removal keeps its independent member Inputs.
+        for input in &self.whole {
+            let original: bool = t.archive.query_row(
+                "SELECT EXISTS(SELECT 1 FROM observation_container WHERE container_input=?1)",
+                [input],
+                |r| r.get(0),
+            )?;
+            if original {
+                originals.insert(input.clone());
+            }
+        }
+        self.whole.extend(originals.iter().cloned());
+        crate::containers::require_removable(t.archive, t.index, &originals, &self.whole)?;
+        done.containers_retired = originals.iter().cloned().collect();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
-        for input in self.whole.iter().chain(&self.kept) {
-            crate::containers::refuse_excision(t.archive, input)?;
-        }
-        self.spans
-            .visit_inputs(|input, _| crate::containers::refuse_excision(t.archive, input))?;
         let mut text_matches = self
             .text
             .as_ref()
@@ -466,6 +485,10 @@ impl<'a> Plan<'a> {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![req.id, req.scope.label(), req.reason, now_ms(), t.seq],
             )?;
+        }
+
+        if !req.dry_run {
+            crate::containers::detach(t.archive, &originals)?;
         }
 
         if let Some(text) = self.text.take() {

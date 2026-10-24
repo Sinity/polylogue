@@ -362,7 +362,7 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
 mod promoted;
 
 #[test]
-fn retained_zip_member_and_container_excision_refuse_without_changing_public_reads() {
+fn retained_zip_container_removal_preserves_members_then_member_removal_succeeds() {
     let world = World::new(true);
     let before = cli(&world.env(), &["--json", "read", SESSION]);
     assert!(before.status.success(), "{before:?}");
@@ -378,28 +378,29 @@ fn retained_zip_member_and_container_excision_refuse_without_changing_public_rea
         .unwrap();
     assert_eq!(origins.len(), 1);
     let original = origins[0]["container_input"].as_str().unwrap();
+    let removed = cli(
+        &world.env(),
+        &["--json", "excise", &format!("input:{original}"), "--yes"],
+    );
+    assert!(removed.status.success(), "{removed:?}");
+    assert_eq!(
+        json(&removed)["containers_retired"],
+        serde_json::json!([original])
+    );
+    let after = cli(&world.env(), &["--json", "read", SESSION]);
+    assert!(after.status.success(), "{after:?}");
+    assert_eq!(json(&after), json(&before));
     for target in [
-        format!("input:{original}"),
         format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
         format!("session:{SESSION}"),
     ] {
         let result = cli(&world.env(), &["--json", "excise", &target, "--yes"]);
-        assert!(!result.status.success(), "{result:?}");
-        assert!(
-            json(&result)["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("coordinated ZIP removal"),
-            "{result:?}"
-        );
+        assert!(result.status.success(), "{result:?}");
     }
-    let after = cli(&world.env(), &["--json", "read", SESSION]);
-    assert!(after.status.success(), "{after:?}");
-    assert_eq!(json(&after), json(&before));
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT count(*) AS n FROM a.excision", &[])
+            .query("SELECT count(*) AS n FROM a.observation_container", &[])
             .unwrap()[0]["n"],
         0
     );
@@ -414,4 +415,42 @@ fn original_container_name_is_not_a_member_attachment_identity() {
         descriptor["candidates"][0]["blob"],
         json!(polylogue_model::BlobHash::of(SECRET))
     );
+}
+
+#[test]
+fn retained_zip_member_removal_retires_original_and_marks_attachment_unavailable() {
+    let world = World::new(true);
+    let original = {
+        let pool =
+            polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
+        pool.reader()
+            .unwrap()
+            .query(
+                "SELECT DISTINCT container_input FROM a.observation_container",
+                &[],
+            )
+            .unwrap()[0]["container_input"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let result = cli(
+        &world.env(),
+        &[
+            "--json",
+            "excise",
+            &format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
+            "--yes",
+        ],
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        json(&result)["containers_retired"],
+        serde_json::json!([original])
+    );
+    let descriptor = world.descriptor();
+    assert_eq!(descriptor["state"], "unavailable", "{descriptor}");
+    assert!(descriptor["candidates"].as_array().unwrap().is_empty());
+    let read = cli(&world.env(), &["--json", "read", SESSION]);
+    assert!(read.status.success(), "{read:?}");
 }
