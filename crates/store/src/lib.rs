@@ -43,7 +43,7 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use notes::NoteFilter;
-pub use read::{KnownInput, MessageVersion, ReadPool, Reader, SqlValue, Status};
+pub use read::{KnownInput, MessageVersion, ReadPool, Reader, RetainedImport, SqlValue, Status};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, InFlight, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender,

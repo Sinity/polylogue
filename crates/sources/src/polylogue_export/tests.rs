@@ -177,3 +177,19 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     assert!(stats.peak_element_bytes < one.len() * 3);
     assert!(parser.begin(bytes.len() as u64, None).unwrap().is_none());
 }
+
+#[test]
+fn typed_export_collections_refuse_null_instead_of_becoming_empty_arrays() {
+    for raw in [
+        r#"{"format":"polylogue-export","version":2,"sessions":null,"documents":[]}"#,
+        r#"{"format":"polylogue-export","version":2,"sessions":[],"documents":null}"#,
+    ] {
+        let steps = steps(raw.as_bytes());
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.output.documents.is_empty() && s.output.sessions.is_empty())
+        );
+        assert!(steps.iter().any(|s| !s.accounting.refused.is_empty()));
+    }
+}

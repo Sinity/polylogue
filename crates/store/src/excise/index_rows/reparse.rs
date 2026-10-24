@@ -21,6 +21,7 @@ pub(in crate::excise) fn clear_for_reparse(
     i.execute_batch(
         "CREATE TEMP TABLE excision_reparse_text(id INTEGER PRIMARY KEY);
          CREATE TEMP TABLE excision_reparse_session(pk INTEGER PRIMARY KEY,id TEXT NOT NULL);
+         CREATE TEMP TABLE excision_reparse_document(pk INTEGER PRIMARY KEY,id TEXT NOT NULL);
          CREATE TEMP TABLE excision_reparse_input(pk INTEGER PRIMARY KEY,id TEXT NOT NULL);",
     )?;
     // Start with matching current texts. Freed texts join this table only
@@ -80,6 +81,11 @@ pub(in crate::excise) fn clear_for_reparse(
             "INSERT OR IGNORE INTO temp.excision_reparse_input SELECT pk,id FROM input_ref WHERE id=?1",
         )?.execute([input])?;
     }
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT d.pk,d.id FROM document d JOIN document_source s ON s.document_pk=d.pk JOIN content_version c ON c.hash=s.version_hash JOIN version_block b ON b.version_pk=c.pk WHERE b.text_id IN(SELECT id FROM temp.excision_reparse_text)",[])?;
+    for input in holding {
+        i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT d.pk,d.id FROM document d JOIN document_source s ON s.document_pk=d.pk JOIN input_ref r ON r.pk=s.input_pk WHERE r.id=?1",[input])?;
+    }
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_input SELECT r.pk,r.id FROM input_ref r JOIN document_source s ON s.input_pk=r.pk WHERE s.document_pk IN(SELECT pk FROM temp.excision_reparse_document)",[])?;
     crate::fault::check("excision_reparse.after_selection", "")?;
     if dry_run {
         return finish(i);
@@ -101,10 +107,17 @@ pub(in crate::excise) fn clear_for_reparse(
     }
     drop(rows);
     drop(selected);
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_text SELECT b.text_id FROM version_block b JOIN content_version c ON c.pk=b.version_pk JOIN document_source s ON s.version_hash=c.hash WHERE s.document_pk IN(SELECT pk FROM temp.excision_reparse_document) AND b.text_id IS NOT NULL",[])?;
+    i.execute(
+        "DELETE FROM document WHERE pk IN(SELECT pk FROM temp.excision_reparse_document)",
+        [],
+    )?;
+    let documents=i.prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk IN(SELECT pk FROM temp.excision_reparse_input)")?.query_map([],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     // Clear input-owned rows and their dependents through the same frozen set.
     let tables = crate::schema::index_columns(i)?;
     for (table, cols) in &tables {
-        if table == "input_ref"
+        if table == "document"
+            || table == "input_ref"
             || !cols.contains("input_pk")
             || cols.contains("session_pk")
             || cols.contains("message_pk")
@@ -133,6 +146,10 @@ pub(in crate::excise) fn clear_for_reparse(
             [],
         )?;
     }
+    for document in documents {
+        crate::documents::project(i, document, t.counter, false)?;
+    }
+    crate::versions::prune(i)?;
     let mut texts = i.prepare("SELECT id FROM temp.excision_reparse_text ORDER BY id")?;
     let mut rows = texts.query([])?;
     while let Some(row) = rows.next()? {
@@ -141,7 +158,8 @@ pub(in crate::excise) fn clear_for_reparse(
             .query_row(
                 "SELECT indexed FROM text WHERE id=?1
              AND NOT EXISTS (SELECT 1 FROM block WHERE text_id=?1)
-             AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id=?1)",
+             AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id=?1)
+             AND NOT EXISTS (SELECT 1 FROM document_block WHERE text_id=?1)",
                 [tid],
                 |r| r.get(0),
             )
@@ -163,6 +181,7 @@ fn finish(i: &rusqlite::Connection) -> Result<Vec<String>> {
     i.execute_batch(
         "DROP TABLE temp.excision_reparse_text;
          DROP TABLE temp.excision_reparse_session;
+         DROP TABLE temp.excision_reparse_document;
          DROP TABLE temp.excision_reparse_input;",
     )?;
     Ok(inputs)

@@ -225,6 +225,19 @@ pub(crate) fn fingerprint(conn: &Connection) -> Result<blake3::Hash> {
         }
     }
     hash.update(super::vector_policy::fingerprint(conn)?.as_bytes());
+    let has_documents:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='excision_document' AND type='table')",[],|r|r.get(0))?;
+    if has_documents {
+        let mut stmt=conn.prepare("SELECT excision_id,document_id FROM excision_document ORDER BY excision_id,document_id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            hash.update(b"document_exclusion_v1");
+            for column in 0..2 {
+                let text: String = row.get(column)?;
+                hash.update(&(text.len() as u64).to_be_bytes());
+                hash.update(text.as_bytes());
+            }
+        }
+    }
     Ok(hash.finalize())
 }
 

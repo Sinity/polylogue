@@ -285,3 +285,5 @@ fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
         "claude-code"
     );
 }
+
+mod replay;

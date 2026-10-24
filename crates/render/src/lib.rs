@@ -3,6 +3,7 @@
 //! Source content is masked before views or formatting; response metadata is
 //! also masked at the application boundary.
 
+pub mod documents;
 pub mod html;
 pub mod measures;
 pub use polylogue_model::masking::{mask, mask_json};
@@ -90,6 +91,7 @@ pub enum Rendered<'a> {
         title: Option<&'a str>,
     },
     Message(&'a Message),
+    Document(&'a polylogue_model::Document),
     Event(&'a Event),
     Notice(&'a str),
 }
@@ -245,6 +247,9 @@ pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io:
             masker.message(message);
         }
     }
+    for document in &mut doc.documents {
+        documents::mask(document);
+    }
     if format == Format::Json {
         return serde_json::to_value(&doc).map_err(io::Error::other);
     }
@@ -257,6 +262,7 @@ pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io:
         items.extend(session.messages.iter().map(Rendered::Message));
         items.extend(session.events.iter().map(Rendered::Event));
     }
+    items.extend(doc.documents.iter().map(Rendered::Document));
     formatted(&items, format, View::Full)
 }
 
@@ -343,6 +349,7 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 }
                 writeln!(out)?;
             }
+            Rendered::Document(doc) => documents::terminal(doc, view, out)?,
             Rendered::Event(e) if view == View::Full => {
                 writeln!(
                     out,
@@ -413,6 +420,7 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                     }
                 }
             }
+            Rendered::Document(doc) => documents::markdown(doc, view, out)?,
             Rendered::Event(e) if view == View::Full => writeln!(out, "*· {}*\n", e.kind)?,
             Rendered::Event(_) => {}
             Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,

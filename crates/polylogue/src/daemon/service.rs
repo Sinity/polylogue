@@ -323,6 +323,23 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             },
         ),
 
+        Request::ReadDocument {
+            document,
+            view,
+            format,
+            budget,
+            cursor,
+        } => read::document(
+            &reader,
+            &document,
+            read::Options {
+                view: &view,
+                format: &format,
+                logical: false,
+                budget,
+                cursor: cursor.as_deref(),
+            },
+        ),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -340,7 +357,11 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
-        Request::Export { sessions, format } => export(&reader, &sessions, &format),
+        Request::Export {
+            sessions,
+            documents,
+            format,
+        } => export(&reader, &sessions, &documents, &format),
         Request::Embed {
             what,
             query,
@@ -524,6 +545,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 fn export(
     reader: &polylogue_store::Reader<'_>,
     ids: &[polylogue_model::SessionId],
+    document_ids: &[polylogue_model::DocumentId],
     format: &str,
 ) -> Response {
     let mut sessions = Vec::new();
@@ -534,7 +556,15 @@ fn export(
             Err(e) => return store_error(&e),
         }
     }
-    let doc = polylogue_model::export::Document::new(sessions);
+    let mut documents = Vec::new();
+    for id in document_ids {
+        match reader.document(id) {
+            Ok(Some(doc)) => documents.push(doc),
+            Ok(None) => return error("not_found", format!("no document {id}")),
+            Err(e) => return store_error(&e),
+        }
+    }
+    let doc = polylogue_model::export::Document::new(sessions).with_documents(documents);
     let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown export format {format:?}"));
     };

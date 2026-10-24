@@ -13,6 +13,7 @@ use std::fmt;
 pub enum Target {
     Session(SessionId),
     Message(MessageId),
+    Document(crate::DocumentId),
     /// A tool call, by its session and the call ID the harness gave it.
     ToolCall(SessionId, String),
     /// A work-graph node.
@@ -31,7 +32,7 @@ pub enum Target {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TargetError {
     #[error(
-        "reference {0:?} has no kind prefix (session:, message:, tool:, work:, result:, note:, repo:, cwd:)"
+        "reference {0:?} has no kind prefix (session:, message:, document:, tool:, work:, result:, note:, repo:, cwd:)"
     )]
     NoKind(String),
     #[error("reference {0:?} has an unknown kind")]
@@ -60,6 +61,7 @@ impl Target {
         };
         Ok(match kind {
             "session" => Self::Session(SessionId::parse(rest).map_err(id_err)?),
+            "document" => Self::Document(crate::DocumentId::parse(rest).map_err(id_err)?),
             "message" => Self::Message(MessageId::parse(rest).map_err(id_err)?),
             "tool" => {
                 let (session, call) = rest
@@ -92,6 +94,7 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Session(s) => write!(f, "session:{s}"),
+            Self::Document(d) => write!(f, "document:{d}"),
             Self::Message(m) => write!(f, "message:{m}"),
             Self::ToolCall(s, c) => write!(f, "tool:{s}#{c}"),
             Self::Work(n) => write!(f, "work:{n}"),

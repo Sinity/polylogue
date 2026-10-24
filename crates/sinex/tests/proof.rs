@@ -31,7 +31,7 @@ fn home_with_examples(home: &Path) {
     }
 }
 
-fn converge(root: &Path, home: &Path, blob_roots: Vec<PathBuf>) {
+fn converge(root: &Path, home: &Path, blob_roots: Vec<PathBuf>, prepare: impl FnOnce(&mut Engine)) {
     let (archive, _lock) = Archive::open_or_create(root).unwrap();
     let config = Config {
         home: home.to_path_buf(),
@@ -45,6 +45,7 @@ fn converge(root: &Path, home: &Path, blob_roots: Vec<PathBuf>) {
         blob_roots,
     };
     let mut engine = Engine::new(config, archive).unwrap();
+    prepare(&mut engine);
     let pass = engine.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 }
@@ -68,7 +69,21 @@ fn answers(root: &Path) -> String {
             out.push_str(&format!("  {m:?}\n"));
         }
     }
+    for row in reader
+        .query("SELECT id FROM current_document ORDER BY id", &[])
+        .unwrap()
+    {
+        let id = polylogue_model::DocumentId::parse(row["id"].as_str().unwrap()).unwrap();
+        let document = reader.document(&id).unwrap().unwrap();
+        out.push_str(&format!("document {document:?}\n"));
+    }
     out
+}
+
+fn document_sources(root: &Path) -> Vec<serde_json::Value> {
+    let pool = ReadPool::open(&Archive::at(root)).unwrap();
+    let reader = pool.reader().unwrap();
+    reader.query("SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,s.parser_version,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 struct Daemon(Child);
@@ -91,8 +106,51 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     let home = dir.path().join("home");
     home_with_examples(&home);
     let a = dir.path().join("a");
-    converge(&a, &home, vec![]);
+    let source = dir.path().join("projects/native-project.json");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    let project = serde_json::json!({"uuid":"native-project","updated_at":"2026-01-01T00:00:00Z","prompt_template":"Supplied instructions","docs":[{"uuid":"gone","content":"Remove this supplied text"},{"uuid":"kept","filename":"manual.txt","content":"Exact supplied document λ🙂\nsecond line"}]});
+    fs::write(&source, serde_json::to_vec(&project).unwrap()).unwrap();
+    converge(&a, &home, vec![], |engine| {
+        for revision in [0, 1, 2] {
+            let mut value = project.clone();
+            if revision > 0 {
+                value["updated_at"] =
+                    serde_json::json!(format!("2026-01-0{}T00:00:00Z", revision + 1));
+                value["prompt_template"] =
+                    serde_json::json!(format!("Instruction revision {revision}"));
+                value["docs"] = if revision == 1 {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!([])
+                };
+            }
+            fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(
+                engine
+                    .import(std::slice::from_ref(&source))
+                    .unwrap()
+                    .pass
+                    .errors
+                    .is_empty()
+            );
+        }
+        engine
+            .excise(polylogue_store::excise::ExciseRequest {
+                id: "remove-document".into(),
+                scope: polylogue_store::excise::Scope::parse(
+                    "document:claude-ai:project:native-project:doc:gone",
+                )
+                .unwrap(),
+                reason: None,
+                dry_run: false,
+            })
+            .unwrap();
+    });
+    fs::remove_file(&source).unwrap();
     let expected = answers(&a);
+    let source_basis = document_sources(&a);
+    assert!(expected.contains("Exact supplied document λ🙂"));
+    assert!(!expected.contains("Remove this supplied text"));
     assert!(
         expected.contains("session {"),
         "the examples produced sessions"
@@ -200,6 +258,22 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     // 5. Converge with no provider files: every byte comes from Sinex's store.
     let empty = dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
-    converge(&b, &empty, vec![store]);
+    converge(&b, &empty, vec![store.clone()], |_| {});
+    assert_eq!(answers(&b), expected);
+    assert_eq!(document_sources(&b), source_basis);
+    // A restored standing document selection refuses an original export again.
+    let mut reimport = project.clone();
+    reimport["docs"][0]["content"] = serde_json::json!("Attempt from a different immutable input");
+    fs::write(&source, serde_json::to_vec(&reimport).unwrap()).unwrap();
+    converge(&b, &empty, vec![store], |engine| {
+        assert!(
+            engine
+                .import(std::slice::from_ref(&source))
+                .unwrap()
+                .pass
+                .errors
+                .is_empty()
+        );
+    });
     assert_eq!(answers(&b), expected);
 }

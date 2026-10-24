@@ -5,13 +5,15 @@ use crate::{Event, Link, Message, Session};
 use serde::{Deserialize, Serialize};
 
 pub const FORMAT: &str = "polylogue-export";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub format: String,
     pub version: u32,
     pub sessions: Vec<SessionExport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<crate::Document>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +32,8 @@ pub enum ExportError {
     NotAnExport(String),
     #[error("export version {found} is newer than this Polylogue reads ({VERSION})")]
     TooNew { found: u32 },
+    #[error("document content requires export version 2")]
+    DocumentsNeedVersion2,
     #[error("malformed export: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -38,9 +42,18 @@ impl Document {
     pub fn new(sessions: Vec<SessionExport>) -> Self {
         Self {
             format: FORMAT.to_owned(),
-            version: VERSION,
+            version: 1,
             sessions,
+            documents: Vec::new(),
         }
+    }
+
+    pub fn with_documents(mut self, documents: Vec<crate::Document>) -> Self {
+        if !documents.is_empty() {
+            self.version = VERSION;
+        }
+        self.documents = documents;
+        self
     }
 
     pub fn to_json(&self) -> Result<String, ExportError> {
@@ -64,7 +77,11 @@ impl Document {
                 found: head.version,
             });
         }
-        Ok(serde_json::from_str(text)?)
+        let document: Self = serde_json::from_str(text)?;
+        if document.version < 2 && !document.documents.is_empty() {
+            return Err(ExportError::DocumentsNeedVersion2);
+        }
+        Ok(document)
     }
 }
 

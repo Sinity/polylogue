@@ -58,15 +58,18 @@ pub(crate) fn project(tx: &Transaction<'_>, pk: i64, counter: i64, bulk: bool) -
     let preferred:Option<(Vec<u8>,i64,i64,i64,i64)>=tx.query_row("SELECT s.version_hash,s.input_pk,s.chain,s.source_start,s.source_end FROM document_source s JOIN input_ref r ON r.pk=s.input_pk
         WHERE s.document_pk=?1 AND s.current=1 AND r.excised=0
         ORDER BY (s.source_time IS NOT NULL) DESC,s.source_time DESC,s.route_rank,s.version_hash DESC,r.id,s.chain DESC,s.source_start LIMIT 1",[pk],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+    let old:Vec<i64>=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let Some((hash, input, chain, start, end)) = preferred else {
         tx.execute(
             "UPDATE document SET present=0,changed=?2 WHERE pk=?1",
             params![pk, counter],
         )?;
         tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
+        for text in old {
+            crate::text_rows::unindex_unused(tx, text, bulk)?;
+        }
         return Ok(());
     };
-    let old:Vec<i64>=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let (version, document) = crate::versions::load_document(tx, &hash)?;
     tx.execute("UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,source_chain=?8,source_start=?9,source_end=?10,present=1,changed=?11 WHERE pk=?1",params![pk,document.purpose.as_str(),document.title,document.source_time.map(|t|t.unix_ms()),document.authorship.as_str(),hash,input,chain,start,end,counter])?;
     tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
@@ -102,9 +105,9 @@ pub(crate) fn project(tx: &Transaction<'_>, pk: i64, counter: i64, bulk: bool) -
 
 /// Publish a parser replacement only after it reaches the captured source EOF.
 pub(crate) fn retire_previous_parser(tx: &Transaction<'_>, source: &Source<'_>) -> Result<()> {
-    let affected:Vec<i64>=tx.prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk=?1 AND chain=?2 AND parser_version<?3 AND current=1")?.query_map(params![source.input_pk,source.chain,source.parser_version],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let affected:Vec<i64>=tx.prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk=?1 AND (chain<?2 OR (chain=?2 AND parser_version<?3)) AND current=1")?.query_map(params![source.input_pk,source.chain,source.parser_version],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     tx.execute(
-        "UPDATE document_source SET current=0 WHERE input_pk=?1 AND chain=?2 AND parser_version<?3",
+        "UPDATE document_source SET current=0 WHERE input_pk=?1 AND (chain<?2 OR (chain=?2 AND parser_version<?3))",
         params![source.input_pk, source.chain, source.parser_version],
     )?;
     for pk in affected {

@@ -251,6 +251,13 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     && row["commit_seq"] == unit.unit.commit_seq
             }
             "excision" => match table {
+                "excision_document" => {
+                    let id = row["document_id"]
+                        .as_str()
+                        .ok_or_else(|| invalid("document exclusion has no identity"))?;
+                    polylogue_model::DocumentId::parse(id).map_err(|e| invalid(&e.to_string()))?;
+                    row["excision_id"] == unit.unit.key
+                }
                 "vector_deletion_policy" => {
                     crate::excise::vector_policy::digest(
                         row["version"]

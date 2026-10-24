@@ -81,14 +81,8 @@ fn nested_arrays_and_jsonl_keep_exact_unaffected_bytes() {
 }
 
 #[test]
-fn partial_scalars_object_members_and_bad_ranges_are_refused() {
-    for (bytes, needle) in [
-        (br#"[{"text":"1234"}]"#.as_slice(), b"23".as_slice()),
-        (
-            br#"{"keep":1,"drop":{"x":2}}"#.as_slice(),
-            br#"{"x":2}"#.as_slice(),
-        ),
-    ] {
+fn partial_scalars_and_bad_ranges_are_refused() {
+    for (bytes, needle) in [(br#"[{"text":"1234"}]"#.as_slice(), b"23".as_slice())] {
         let at = bytes
             .windows(needle.len())
             .position(|v| v == needle)
@@ -98,4 +92,39 @@ fn partial_scalars_object_members_and_bad_ranges_are_refused() {
     assert!(plan(b"[1]", &[(0, 10)]).is_err());
     assert!(plan(b"[1] trailing", &[]).is_err());
     assert!(plan(b"{", &[]).is_err());
+}
+
+#[test]
+fn every_subset_of_object_values_preserves_other_members_and_original_coordinates() {
+    use std::collections::BTreeMap;
+    let bytes=r#"{"first":"","escaped\"\\key":"λ🙂\n\"quoted\"","nested":[{"inside":[1,2]},3],"object":{"child":false},"last":null}"#.as_bytes();
+    let fields: BTreeMap<String, &serde_json::value::RawValue> =
+        serde_json::from_slice(bytes).unwrap();
+    let keys: Vec<_> = fields.keys().cloned().collect();
+    for mask in 0..1usize << keys.len() {
+        let mut ranges = Vec::new();
+        let mut expected: Value = serde_json::from_slice(bytes).unwrap();
+        for (i, key) in keys.iter().enumerate() {
+            if mask & (1 << i) == 0 {
+                continue;
+            }
+            let raw = fields[key];
+            let start = (raw.get().as_ptr() as usize) - (bytes.as_ptr() as usize);
+            ranges.push((start, start + raw.get().len()));
+            expected.as_object_mut().unwrap().remove(key);
+        }
+        let after = rewritten(bytes, &ranges);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&after).unwrap(),
+            expected,
+            "mask={mask}"
+        );
+        for (key, raw) in &fields {
+            if expected.get(key).is_none() {
+                continue;
+            }
+            let start = (raw.get().as_ptr() as usize) - (bytes.as_ptr() as usize);
+            assert_eq!(&after[start..start + raw.get().len()], raw.get().as_bytes());
+        }
+    }
 }

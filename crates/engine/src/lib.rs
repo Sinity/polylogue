@@ -432,7 +432,9 @@ impl Engine {
         let known = if done.inputs_reparsed.is_empty() {
             Vec::new()
         } else {
-            self.reads.reader()?.known_inputs(&self.config.machine)?
+            self.reads
+                .reader()?
+                .known_watched_inputs(&self.config.machine)?
         };
         for k in known {
             if !done.inputs_reparsed.contains(&k.input_id) {
@@ -455,7 +457,12 @@ impl Engine {
         }
         // An input that fails here stays behind its stored bytes, so the
         // next pass parses it again.
-        self.execute(plans, &mut Pass::default())?;
+        let mut pass = Pass::default();
+        self.execute(plans, &mut pass)?;
+        self.replay_imports(Some(&done.inputs_reparsed), &mut pass)?;
+        if !pass.errors.is_empty() {
+            return Err(std::io::Error::other(pass.errors.join("; ")).into());
+        }
         self.writer.derive()?;
         let prefix = format!("{}:", self.config.machine);
         for p in &done.refused_paths {
@@ -487,7 +494,7 @@ impl Engine {
                 self.refused.insert(PathBuf::from(path));
             }
         }
-        let known: Vec<KnownInput> = reader.known_inputs(&self.config.machine)?;
+        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {
@@ -637,6 +644,7 @@ impl Engine {
             ..Pass::default()
         };
         if discover {
+            self.replay_imports(None, &mut pass)?;
             self.restore_history(&mut pass)?;
         }
         let databases = found
@@ -1150,6 +1158,7 @@ impl Engine {
         if !plan.tracked {
             if let Change::Reparse { chain } = plan.change
                 && let Some(st) = self.inputs.get_mut(&plan.path)
+                && st.input_id == plan.input.id
             {
                 if plan.failed {
                     st.failed_history.insert(

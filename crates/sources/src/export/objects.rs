@@ -116,20 +116,20 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             }
             if let Some((_, shape)) = self.frames.iter().find(|(name, _)| *name == key) {
                 let mut emit = |range, raw: &RawValue| (self.item)(start, &key, None, range, raw);
-                match shape {
-                    FieldShape::Value => map_value(&mut map, self.tap, &mut emit)?,
-                    FieldShape::Array => map.next_value_seed(ArraySeed {
+                let marker = match shape {
+                    FieldShape::Value => {
+                        map_value(&mut map, self.tap, &mut emit)?;
+                        Json::Null
+                    }
+                    FieldShape::Array | FieldShape::Map => map.next_value_seed(Collection {
                         tap: self.tap,
-                        item: &mut emit,
-                    })?,
-                    FieldShape::Map => map.next_value_seed(MapItems {
-                        tap: self.tap,
+                        shape: *shape,
                         parent: start,
                         field: &key,
                         item: &mut *self.item,
                     })?,
-                }
-                fields.insert(key, Json::Null);
+                };
+                fields.insert(key, marker);
             } else if self.keep.contains(&key.as_str()) {
                 let before = self.tap.borrow().position;
                 let value = map.next_value::<Json>()?;
@@ -150,28 +150,64 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
         })
     }
 }
-struct MapItems<'a, F> {
+struct Collection<'a, F> {
     tap: &'a Rc<RefCell<Tap>>,
+    shape: FieldShape,
     parent: u64,
     field: &'a str,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>>
-    DeserializeSeed<'de> for MapItems<'_, F>
+    DeserializeSeed<'de> for Collection<'_, F>
 {
-    type Value = ();
-    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
-        de.deserialize_map(self)
+    type Value = Json;
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Json, D::Error> {
+        de.deserialize_any(self)
     }
 }
 impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>>
-    Visitor<'de> for MapItems<'_, F>
+    Visitor<'de> for Collection<'_, F>
 {
-    type Value = ();
+    type Value = Json;
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("an export field map")
+        f.write_str("an export collection or explicit null")
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Json, E> {
+        // Serde has consumed the literal null. Its four bytes are an exact
+        // scalar record, distinct from an absent or empty collection.
+        let end = self.tap.borrow().position;
+        if self.tap.borrow().last != Some((end - 1, b'l')) {
+            return Err(E::custom("missing null source boundary"));
+        }
+        let raw: &RawValue = serde_json::from_str("null").expect("static JSON null");
+        (self.item)(self.parent, self.field, None, end - 4..end, raw).map_err(|error| {
+            self.tap.borrow_mut().failure = Some(ScanError::Callback(error));
+            E::custom("export callback failed")
+        })?;
+        let mut tap = self.tap.borrow_mut();
+        tap.stats.elements += 1;
+        tap.stats.peak_element_bytes = tap.stats.peak_element_bytes.max(4);
+        Ok(Json::Null)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
+        if !matches!(self.shape, FieldShape::Array) {
+            return Err(A::Error::custom("expected export field map"));
+        }
+        let mut emit =
+            |range, raw: &RawValue| (self.item)(self.parent, self.field, None, range, raw);
+        while seq
+            .next_element_seed(ItemSeed {
+                tap: self.tap,
+                item: &mut emit,
+            })?
+            .is_some()
+        {}
+        Ok(Json::Array(Vec::new()))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
+        if !matches!(self.shape, FieldShape::Map) {
+            return Err(A::Error::custom("expected export field array"));
+        }
         let mut seen = HashSet::new();
         while let Some(key) = map.next_key::<String>()? {
             if !seen.insert(key.clone()) {
@@ -181,6 +217,6 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 (self.item)(self.parent, self.field, Some(&key), range, raw)
             })?;
         }
-        Ok(())
+        Ok(Json::Object(serde_json::Map::new()))
     }
 }

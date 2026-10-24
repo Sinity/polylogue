@@ -163,3 +163,16 @@ fn project_arrays_frame_one_document_and_resolve_metadata_that_follows_them() {
     assert!(stats.peak_element_bytes <= largest * 2 + 2);
     assert!(stats.peak_element_bytes < bytes.len() / 32);
 }
+
+#[test]
+fn explicit_null_collections_keep_sibling_text_and_interpretation_diagnostics() {
+    for (path,raw,text) in [
+        ("projects/p.json",br#"{"uuid":"p","prompt_template":"Keep instructions","docs":null}"#.as_slice(),"Keep instructions"),
+        ("memories.json",br#"[{"account_uuid":"a","conversations_memory":"Keep memory","project_memories":null}]"#.as_slice(),"Keep memory"),
+    ] {
+        let mut parser=open(Path::new(path)).unwrap();let step=parse_bound(&mut parser,"input",raw);
+        assert_eq!(step.output.documents.len(),1);assert_eq!(step.output.documents[0].document.blocks,[Block::Text{text:text.into()}]);
+        assert!(!step.accounting.unknown.is_empty());
+        assert_eq!(&raw[step.output.documents[0].offset as usize..step.output.documents[0].end as usize],serde_json::to_string(text).unwrap().as_bytes());
+    }
+}

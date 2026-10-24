@@ -1,3 +1,4 @@
+use super::Document;
 use super::*;
 use crate::*;
 
@@ -58,4 +59,30 @@ fn large_numbers_in_opaque_json_are_lossless() {
         serde_json::to_string(&v).unwrap(),
         r#"{"n":123456789012345678901234567890}"#
     );
+}
+
+#[test]
+fn document_exports_require_wire_two_and_keep_empty_text_and_unknown_authorship() {
+    let mut document = crate::Document::new(
+        crate::DocumentId::parse("claude-ai:project:a:doc:b").unwrap(),
+        crate::DocumentPurpose::Instruction,
+    );
+    document.blocks.push(crate::Block::Text {
+        text: String::new(),
+    });
+    let export = Document::new(Vec::new()).with_documents(vec![document.clone()]);
+    assert_eq!(export.version, 2);
+    assert_eq!(
+        Document::from_json(&export.to_json().unwrap())
+            .unwrap()
+            .documents,
+        [document]
+    );
+    let mut old = export;
+    old.version = 1;
+    assert!(matches!(
+        Document::from_json(&old.to_json().unwrap()),
+        Err(ExportError::DocumentsNeedVersion2)
+    ));
+    assert_eq!(sample().version, 1);
 }

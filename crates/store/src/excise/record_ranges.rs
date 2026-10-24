@@ -39,6 +39,40 @@ impl<R: Ranges> Plan<'_, '_, R> {
             .map(|at| start + at)
             .ok_or_else(|| "array separator is missing".into())
     }
+    fn member_start(&self, value_start: usize) -> Result<usize, String> {
+        let mut at = value_start
+            .checked_sub(self.base)
+            .ok_or("object value precedes source")?;
+        while at > 0 && self.bytes[at - 1].is_ascii_whitespace() {
+            at -= 1;
+        }
+        if at == 0 || self.bytes[at - 1] != b':' {
+            return Err("object value has no colon".into());
+        }
+        at -= 1;
+        while at > 0 && self.bytes[at - 1].is_ascii_whitespace() {
+            at -= 1;
+        }
+        if at == 0 || self.bytes[at - 1] != b'"' {
+            return Err("object member has no quoted key".into());
+        }
+        at -= 1;
+        while at > 0 {
+            at -= 1;
+            if self.bytes[at] != b'"' {
+                continue;
+            }
+            let mut before = at;
+            while before > 0 && self.bytes[before - 1] == b'\\' {
+                before -= 1;
+            }
+            if (at - before) % 2 == 0 {
+                return Ok(self.base + at);
+            }
+        }
+        Err("object member key has no opening quote".into())
+    }
+
     fn descend(&mut self, raw: &RawValue) -> Result<(), String> {
         if !matches!(raw.get().as_bytes().first(), Some(b'{' | b'[')) {
             return Err("source citation cuts through a JSON scalar".into());
@@ -62,17 +96,40 @@ impl<'de, R: Ranges> Visitor<'de> for &mut Plan<'_, '_, R> {
         f.write_str("a JSON container")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let mut previous_end = None;
+        let mut run: Option<(usize, usize, Option<usize>)> = None;
         while map.next_key::<IgnoredAny>()?.is_some() {
             let raw = map.next_value::<&RawValue>()?;
             let range = self.range(raw).map_err(A::Error::custom)?;
+            let start = self.member_start(range.0).map_err(A::Error::custom)?;
             if self.ranges.covered(range).map_err(A::Error::custom)? {
-                return Err(A::Error::custom(
-                    "object-member removal needs complete key and value boundaries",
-                ));
+                self.ranges.mark(range);
+                if let Some(run) = &mut run {
+                    run.1 = range.1;
+                } else {
+                    let left = previous_end
+                        .map(|end| self.comma(end, start))
+                        .transpose()
+                        .map_err(A::Error::custom)?;
+                    run = Some((start, range.1, left));
+                }
+            } else {
+                if let Some((start, end, _)) = run.take() {
+                    let comma = self.comma(end, range.0).map_err(A::Error::custom)?;
+                    self.ranges
+                        .push((start, comma + 1))
+                        .map_err(A::Error::custom)?;
+                }
+                if self.ranges.touched(range).map_err(A::Error::custom)? {
+                    self.descend(raw).map_err(A::Error::custom)?;
+                }
             }
-            if self.ranges.touched(range).map_err(A::Error::custom)? {
-                self.descend(raw).map_err(A::Error::custom)?;
-            }
+            previous_end = Some(range.1);
+        }
+        if let Some((start, end, left)) = run {
+            self.ranges
+                .push((left.unwrap_or(start), end))
+                .map_err(A::Error::custom)?;
         }
         Ok(())
     }

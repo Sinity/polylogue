@@ -31,6 +31,7 @@ pub enum Source {
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
     Sessions,
+    Documents,
     Messages,
     Blocks,
     ToolCalls,

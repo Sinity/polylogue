@@ -935,3 +935,60 @@ provider through the origin and parser framework, a command through the
 command table, and a measurement through its declaration. Tests exercise the
 behavior through these interfaces. Follow [development.md](development.md) for
 focused checks and batch regression runs.
+
+## Text documents
+
+A model `Document` holds non-conversation text with a stable ID, purpose,
+optional source title/time, authorship and ordered blocks. `Output.documents`
+travels through the existing export scanner, staging and writer. Claude.ai
+sidecars stream individual scalar values and uploaded-document objects; they
+retain project/account descriptors without collecting every body in a project.
+The scanner receives the retained input identity explicitly. Native account,
+project and document IDs establish scope; missing identities use that input and
+the acquired record byte position. Same-length JSON removals preserve sibling
+coordinates. Independently imported inputs with no native identity remain
+independent records.
+
+Store owns shared `content_version` and `version_block` codecs for messages and
+documents, and separate current projections/source associations for each.
+Message version hashes retain their existing canonical bytes. Document hashes
+have their own domain tag. Index 31 rebuilds this derived representation;
+archive migration 7 adds only the canonical standing document-exclusion child
+rows in the existing excision unit. It does not rewrite authored targets,
+legacy seen hashes, anchors, vector bytes or existing removal policy.
+
+The `documents` query relation searches current text blocks and exposes purpose,
+authorship, source time and version count. Read/export dispatch accepts typed
+`document:ID` references. Rendering masks ordered source blocks before view
+projection and uses the existing block pieces and character splitter without
+constructing Messages. Budgeted document reads hold metadata, one decoded block
+and the output page; ordinary reads/exports may assemble the selected document.
+Cursor tokens contain hashes and numeric positions, bound to document ID,
+preferred content version, view and index generation. Prefix replay stays on one
+admitted Reader and reconstructs masking state. Changed selected content refuses
+a stale cursor; unrelated archive writes do not invalidate it. This bounds the
+decoded input unit, not process RSS or arbitrary record size.
+
+Importable exports with documents use `polylogue-export` version 2, with separate
+`sessions` and `documents` arrays. Session-only exports continue to use version 1.
+A new import cites its acquired export records, not fabricated original provider
+locations. Sinex publishes retained inputs and normal archive row units; it needs
+no durable Document table. Document exclusion rows travel in their owning
+excision unit, so an older row decoder refuses the unknown table instead of
+silently losing policy. Restoring the raw sources rebuilds document values and
+preserves that refusal on later reimport.
+
+Immutable manual imports replay by retained Input ID, separately from mutable
+watched-path state. Several imports from one filename each keep their own
+revision, parser path and progress; the latest physical-path observation cannot
+remove an earlier input from the rebuild population. Replay enumerates retained
+import metadata and decodes only inputs whose parser progress is behind. It
+opens retained chains, never source files, and does not register imports as live
+watchers. Text-excision reparse uses the same selection. Captured watched paths
+continue to resolve their latest non-import acquisition independently.
+
+A later imported Claude.ai sidecar with a null or empty document collection is
+another immutable input. Null has an interpretation diagnostic and does not hide
+valid sibling instructions; an empty array is known empty in that input. Older
+supplied text remains evidenced by the earlier input. Neither shape retracts
+another export's account records or claims a complete account snapshot.

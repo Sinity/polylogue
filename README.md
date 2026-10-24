@@ -67,13 +67,14 @@ binary through the HTTP adapter, and neither operation is offered through CLI or
 
 | Command | What it does |
 |---|---|
-| `QUERY` | Run a query: sessions, messages, blocks, tool calls, files, events, notes, links, turns, runs, deliveries, processes, work and changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `QUERY` | Run a query: sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, runs, deliveries, processes, work and changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
 | `status` | What the archive holds and what the daemon is doing. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). |
+| `read document:ID` | Read retained instructions, supplied context or memory without conversation roles. `full` and `dialogue` views, all formats and budgeted pages are available. |
 | `import PATH` | Bring in an export or a directory of them. |
-| `export SESSION…` | Write sessions out as JSON (read back by `import`), Markdown, HTML or terminal text. |
-| `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, tool calls, repositories and directories, with revisions. |
+| `export SESSION…` | Write sessions or `document:ID` references as JSON (read back by `import`), Markdown, HTML or terminal text. |
+| `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions. |
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
@@ -101,6 +102,24 @@ Budgeted session reads (`read SESSION --budget N`) return a continuation in `nex
 Pass it as `--cursor`; the budget may change between pages. Changed selected
 content returns `stale_cursor` and requires starting again. See
 [session paging](docs/architecture.md) for cursor binding, masking and memory costs.
+
+Claude.ai account `memories.json`, project `projects/*.json` and older
+`projects.json` exports retain textual memories, instructions and supplied
+project documents as `documents`. Search them with
+`polylogue 'documents where origin:claude-ai "phrase"'`, then use
+`polylogue read document:ID` (or `document:@N` after a terminal list).
+Their authorship stays unknown unless the source establishes it; they add no
+conversation turns or model usage. Missing document IDs are scoped to the
+retained input and physical record position. A different input cannot prove
+continuity for these records. Binary and unresolved references remain in raw
+inputs with interpretation diagnostics.
+
+JSON exports containing documents use `polylogue-export` version 2; session-only
+exports retain version 1. Both can be imported. Document removals use
+`excise document:ID --yes`, keep unaffected sibling values readable and retain a
+standing exclusion through rebuild and Sinex restore. Archive format 7 stores
+that policy; older local readers refuse it. The derived index rebuilds at
+version 31 without changing existing message hashes or authored references.
 
 Logical reads (`read SESSION --logical`) include only proven inherited prefixes.
 A fork's anchor is resolved in its parent's composed history, including that

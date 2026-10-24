@@ -269,6 +269,12 @@ impl<'a> Compiler<'a> {
         sessions: &str,
     ) -> Result<String, QueryError> {
         let Some(t) = units::spec(scope.unit).session_scope else {
+            if scope.unit == Unit::Documents {
+                return Err(QueryError::Invalid {
+                    message: "documents have no implicit session association".into(),
+                    position: 0,
+                });
+            }
             return Err(not_built(
                 &format!("scoping {} to sessions", scope.unit.name()),
                 "architecture 7",

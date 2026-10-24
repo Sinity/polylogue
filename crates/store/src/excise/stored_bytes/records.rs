@@ -114,7 +114,10 @@ pub(super) fn preflight(
                       AND s.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions)
                     UNION ALL SELECT 1 FROM event_source s JOIN input_ref r ON r.pk=s.input_pk JOIN event e ON e.id=s.event_id
                     WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
-                      AND e.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions))",params![input,chain,a,b],|r|r.get(0))?;
+                      AND e.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions)
+                    UNION ALL SELECT 1 FROM document_source s JOIN input_ref r ON r.pk=s.input_pk
+                    WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
+                      AND s.document_pk NOT IN(SELECT document_pk FROM temp.excision_documents))",params![input,chain,a,b],|r|r.get(0))?;
                 if overlaps {
                     return Err(refuse(
                         "source removal overlaps a surviving session record".into(),
