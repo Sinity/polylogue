@@ -70,3 +70,7 @@ details.tool > summary code { color: var(--muted); }
 details.thinking > summary { color: var(--muted); cursor: pointer; }
 .error[role=alert] { border-left: 3px solid var(--error); padding: .2em .8em; }
 .empty { color: var(--muted); }
+
+.lineage-table { overflow-x: auto; }
+.lineage-table caption { text-align: left; }
+.lineage-table td { overflow-wrap: anywhere; min-width: 7em; }

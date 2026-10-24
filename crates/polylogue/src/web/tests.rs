@@ -164,7 +164,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         );
         assert!(!page.contains("<script>alert"));
         assert!(
-            page.contains("data-cli=\"polylogue read claude-code:s1 --view full\""),
+            page.contains("data-cli=\"polylogue read claude-code:s1 --logical --view full\""),
             "{page}"
         );
         // The same read through the API is the socket's answer.
@@ -557,4 +557,126 @@ fn enqueue_response_masks_credentials_without_changing_the_queued_draft() {
     let queued = crate::browser::actions::list(&ctx);
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].text, text);
+}
+
+#[test]
+fn cost_uses_public_accounting_and_session_scope() {
+    let r = reader();
+    rt().block_on(async {
+        let (status, _, _) = send(&r, get("/cost").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        for (path, scope) in [
+            ("/cost", "sessions"),
+            ("/cost?q=id%3Aclaude-code%3As1", "id:claude-code:s1"),
+        ] {
+            let (status, headers, html) =
+                send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{html}");
+            assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+            let Response::Ok { data } = handle(
+                Request::Query {
+                    text: format!("{scope} | measure usage"),
+                    cursor: None,
+                    page_size: None,
+                    why: false,
+                    session: None,
+                    fields: vec![],
+                },
+                &r.web.daemon,
+            ) else {
+                panic!("usage failed")
+            };
+            let report =
+                polylogue_render::html::escape(&polylogue_render::measures::usage(&data["data"]));
+            assert!(html.contains(&report), "{html}");
+            assert!(html.contains("API-equivalent unknown"), "{html}");
+            assert!(html.contains("Browse selected sessions"));
+            assert!(
+                html.contains("data-cli=\"polylogue measure usage "),
+                "{html}"
+            );
+        }
+        let (status, _, html) = send(
+            &r,
+            authed(get("/cost?q=messages")).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+        let (status, _, html) = send(
+            &r,
+            authed(get("/s/claude-code:s1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("Logical ancestry complete."), "{html}");
+        assert!(!html.contains("Links unavailable"), "{html}");
+        assert!(html.contains("Session cost and usage"));
+    });
+}
+
+#[test]
+fn session_lineage_links_are_scoped_and_missing_parent_stays_incomplete() {
+    let r = reader();
+    for (child, parent) in [
+        ("child", "s1"),
+        ("orphan", "missing"),
+        ("other", "unrelated"),
+    ] {
+        let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+            &format!("u-{child}"),
+            child,
+            "synthetic child",
+        ))
+        .unwrap();
+        record["forkedFrom"] = serde_json::json!({"sessionId": parent, "messageUuid": "u1"});
+        std::fs::write(
+            r.w.home.join(format!(".claude/projects/-p/{child}.jsonl")),
+            format!("{record}\n"),
+        )
+        .unwrap();
+    }
+    r.w.wait_for(|status| status["store"]["messages"] == 4);
+    rt().block_on(async {
+        let (status, _, html) = send(
+            &r,
+            authed(get("/s/claude-code:child"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("href=\"/s/claude-code%3As1\""), "{html}");
+        assert!(html.contains("forkedFrom"), "{html}");
+        assert!(html.contains("claude-code:u1"), "{html}");
+        assert!(!html.contains("claude-code:other"), "{html}");
+        let (status, _, html) = send(
+            &r,
+            authed(get("/s/claude-code:orphan"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("Incomplete logical ancestry"), "{html}");
+        assert!(html.contains("missing_parent"), "{html}");
+        assert!(html.contains("href=\"/s/claude-code%3Amissing\""), "{html}");
+    });
+}
+
+#[test]
+fn cost_is_served_through_the_owned_loopback_http_listener() {
+    use std::io::{Read, Write};
+    let r = reader();
+    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    write!(peer, "GET /cost?q=id%3Aclaude-code%3As1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n", server.port, server.token).unwrap();
+    let mut response = String::new();
+    peer.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("0 known response records"), "{response}");
+    assert!(response.contains("API-equivalent unknown"), "{response}");
+    assert!(response.contains("Browse selected sessions"), "{response}");
+    server.shutdown().unwrap();
 }
