@@ -15,6 +15,7 @@ fn batch(id: &str, length: u64) -> Batch {
             path: "/synthetic/export.bin".into(),
             facts: None,
             seen_at_ms: 1,
+            import: None,
         }),
         continues: false,
         piece: None,

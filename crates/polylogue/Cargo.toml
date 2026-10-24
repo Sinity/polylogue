@@ -41,6 +41,8 @@ unicode-normalization.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+zip.workspace = true
+rustix = { workspace = true, features = ["pty"] }
 rusqlite.workspace = true
 
 polylogue-store = { workspace = true, features = ["fixture"] }

@@ -31,10 +31,25 @@ impl Engine {
             let mut selected = Vec::new();
             files_under(path, &mut selected)?;
             let acquisition = uuid::Uuid::now_v7().to_string();
-            let root = if path.is_dir() { path.as_path() } else { path.parent().unwrap_or(Path::new("")) };
+            let root = if path.is_dir() {
+                path.as_path()
+            } else {
+                path.parent().unwrap_or(Path::new(""))
+            };
             for selected in selected {
-                let member = selected.strip_prefix(root).map_err(std::io::Error::other)?.to_string_lossy().into_owned();
-                files.push((selected, polylogue_store::ImportMember { version:1, acquisition:acquisition.clone(), member }));
+                let member = selected
+                    .strip_prefix(root)
+                    .map_err(std::io::Error::other)?
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((
+                    selected,
+                    polylogue_store::ImportMember {
+                        version: 1,
+                        acquisition: acquisition.clone(),
+                        member,
+                    },
+                ));
             }
         }
         for (path, membership) in &files {
@@ -64,8 +79,13 @@ impl Engine {
                     }
                     let at = PathBuf::from(format!("{}!/{}", path.display(), member.name()));
                     let declared = member.size();
-                    let mut captured = Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
-                    captured.member = Some(polylogue_store::ImportMember { version:1, acquisition:acquisition.clone(), member:member.name().to_owned() });
+                    let mut captured =
+                        Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
+                    captured.member = Some(polylogue_store::ImportMember {
+                        version: 1,
+                        acquisition: acquisition.clone(),
+                        member: member.name().to_owned(),
+                    });
                     unchanged(&generation, facts, facts.size)?;
                     if captured.prepared.len() != declared {
                         return Err(std::io::Error::other(
@@ -79,10 +99,15 @@ impl Engine {
                     self.import_captured(&at, origin, captured, None, &mut report)?;
                 }
             } else {
-                let mut captured = Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
+                let mut captured =
+                    Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
                 captured.member = Some(membership.clone());
                 unchanged(&file, facts, captured.prepared.len())?;
-                let origin = self.recognize_captured(path, &captured)?.unwrap_or_else(|| polylogue_sources::origin::by_name(KEPT).expect("declared origin"));
+                let origin = self
+                    .recognize_captured(path, &captured)?
+                    .unwrap_or_else(|| {
+                        polylogue_sources::origin::by_name(KEPT).expect("declared origin")
+                    });
                 self.import_captured(path, origin, captured, Some(facts), &mut report)?;
             }
         }

@@ -2520,8 +2520,8 @@ dependencies = [
  "polylogue-store",
  "polylogue-testkit",
  "rmcp",
- "rustix 1.1.5",
  "rusqlite",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "sha2",
@@ -2532,6 +2532,7 @@ dependencies = [
  "unicode-normalization",
  "ureq",
  "uuid",
+ "zip",
 ]
 
 [[package]]
