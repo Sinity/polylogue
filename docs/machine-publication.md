@@ -26,7 +26,7 @@ The first check folds the confirmed stream's metadata into the existing
 disk-backed Catalog and reads only selected candidate observation batches,
 not raw source blobs. The connection caches successful historical comparisons
 bound to archive/producer identity, all relevant alias fields and cutoffs,
-restore/excision state, and candidate acknowledgments and selected batch
+local restore/excision state, and candidate acknowledgments and selected batch
 proofs. Unchanged polls and newly held unrelated frames do not refold that
 history. Newly held candidate observations, relevant state changes and a new
 connection require another fold. Failed checks are not cached.
