@@ -59,7 +59,14 @@ fn decoded_units_restore_atomically_and_refuse_forged_source_or_blob_claims() {
         let unit = inventory.unit(position).unwrap();
         let batch = published.read(&unit).unwrap();
         for hash in &batch.blobs {
-            published.copy_blob_to(hash, &material).unwrap();
+            let mut snapshot = published.blob_snapshot(hash).unwrap();
+            assert_eq!(
+                material
+                    .put_plain_checked::<crate::StoreError>(&mut snapshot.file, 3, || Ok(()))
+                    .unwrap()
+                    .0,
+                *hash
+            );
         }
         let bytes = batch.contents();
         descriptors.push(RestoreUnit {

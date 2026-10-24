@@ -314,14 +314,9 @@ impl Published {
         Ok(file)
     }
 
-    /// Verify a source blob in private scratch, then place it in the target store.
-    /// The returned length describes verified bytes, never an incomplete copy.
-    pub fn copy_blob_to(
-        &self,
-        hash: &[u8; 32],
-        target: &hashed_blobs::Store,
-    ) -> crate::Result<u64> {
-        use std::io::Seek;
+    /// Decode and hash-verify a present source blob into private scratch.
+    /// The snapshot is independent of subsequent source changes.
+    pub fn blob_snapshot(&self, hash: &[u8; 32]) -> crate::Result<BlobSnapshot> {
         let state: String = self.conn.query_row(
             "SELECT state FROM blob WHERE hash=?1",
             [hash.as_slice()],
@@ -337,16 +332,18 @@ impl Published {
         let mut file = tempfile::tempfile()?;
         let copied = crate::blobs::copy_plain(&self.conn, &self.blobs, expected, &mut file)?;
         file.rewind()?;
-        let installed = target.put_plain_checked::<crate::StoreError>(
-            &mut file,
-            crate::blobs::LEVEL,
-            || Ok(()),
-        )?;
-        if installed.0 != *hash {
-            return Err(crate::StoreError::BlobCorrupt(expected));
-        }
-        Ok(copied.bytes)
+        Ok(BlobSnapshot {
+            file,
+            length: copied.bytes,
+        })
     }
+}
+
+/// A complete verified plain blob, held privately until its receiver owns it.
+#[derive(Debug)]
+pub struct BlobSnapshot {
+    pub file: std::fs::File,
+    pub length: u64,
 }
 
 /// `archive.db` opened for restoring rows into it.

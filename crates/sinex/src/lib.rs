@@ -67,8 +67,8 @@ pub struct Config {
     /// This producer's name on the ingress.
     #[serde(default = "default_producer")]
     pub producer: String,
-    /// Sinex's content store directory, written by placement and read
-    /// directly (same host).
+    /// Sinex's store root. Publications stage private producer bytes here;
+    /// verified restore payloads are read from its public CAS (same host).
     pub store: PathBuf,
     /// The archive Sinex holds for this machine: restored from Sinex when
     /// the local archive is empty.
@@ -169,7 +169,7 @@ pub struct Sinex {
     client: async_nats::Client,
     subjects: Subjects,
     producer: String,
-    store: hashed_blobs::Store,
+    max_message: usize,
     store_root: PathBuf,
     acks: async_nats::Subscriber,
     machine_memo: Option<machine_history::Memo>,
@@ -179,6 +179,7 @@ const ACK_WAIT: Duration = Duration::from_secs(120);
 
 mod confirmed;
 mod machine_history;
+mod producer_bytes;
 
 impl Sinex {
     pub async fn connect(config: &Config) -> Result<Self> {
@@ -194,11 +195,13 @@ impl Sinex {
             .flush()
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
+        let max_message = client.server_info().max_payload;
+        std::fs::create_dir_all(&config.store)?;
         Ok(Self {
             client,
             subjects,
             producer: config.producer.clone(),
-            store: hashed_blobs::Store::open(config.store.clone(), vec![], 0o640)?,
+            max_message,
             store_root: config.store.clone(),
             acks,
             machine_memo: None,
@@ -234,11 +237,12 @@ impl Sinex {
     /// Sends one frame and waits for its acknowledgment. Accepted by NATS is
     /// not confirmed: only the acknowledgment, which Sinex commits with the
     /// frame's events, is.
-    async fn send(&mut self, frame: &Ingress) -> Result<Acknowledgment> {
+    async fn transmit(&mut self, frame: &Ingress) -> Result<Acknowledgment> {
+        self.check_message(frame)?;
         let js = jetstream::new(self.client.clone());
         js.publish(
             self.subjects.ingress(&self.producer),
-            serde_json::to_vec(frame)?.into(),
+            sinex_protocol::producer_bytes::encode_frame(frame).into(),
         )
         .await
         .map_err(|e| Error::Unreachable(e.to_string()))?
@@ -257,45 +261,6 @@ impl Sinex {
         }
     }
 
-    /// Registers bytes already placed in the store; returns the material.
-    async fn material(
-        &mut self,
-        frame: String,
-        known: Option<&Acknowledgment>,
-        blob: &hashed_blobs::Hash,
-        length: u64,
-        locator: String,
-        manifest: serde_json::Value,
-    ) -> Result<MaterialId> {
-        let ack = match known {
-            Some(a) => checked(a.clone())?,
-            None => {
-                let m = MaterialFrame {
-                    id: MaterialId::new(),
-                    input: InputRef {
-                        kind: "polylogue".into(),
-                        locator,
-                        host: String::new(),
-                    },
-                    blob: format!("blake3:{}", blob.hex()),
-                    length,
-                    parser: "polylogue".into(),
-                    parser_version: 1,
-                    part_index: 0,
-                    previous_part: None,
-                    manifest,
-                };
-                self.send(&Ingress::Material {
-                    frame,
-                    material: Box::new(m),
-                })
-                .await?
-            }
-        };
-        ack.material
-            .ok_or_else(|| Error::Invalid(format!("{} registered no material", ack.frame)))
-    }
-
     async fn place_blobs(
         &mut self,
         archive: &ArchiveRows,
@@ -310,22 +275,19 @@ impl Sinex {
                 .collect();
             let known = self.have(&frames).await?;
             for (hash, frame) in hashes.iter().zip(frames) {
-                if let Some(ack) = known.get(&frame) {
-                    checked(ack.clone())?;
-                    continue;
-                }
-                let length = archive.copy_blob_to(hash, &self.store)?;
                 let expected = hashed_blobs::Hash(*hash);
                 self.material(
-                    frame,
-                    None,
+                    frame.clone(),
+                    known.get(&frame),
                     &expected,
-                    length,
-                    format!("blob:{}", expected.hex()),
+                    || Ok(archive.blob_snapshot(hash)?),
                     serde_json::json!({"archive":id}),
+                    Class::Open,
                 )
                 .await?;
-                done.blobs += 1;
+                if !known.contains_key(&frame) {
+                    done.blobs += 1;
+                }
             }
         }
         Ok(())
@@ -360,9 +322,10 @@ impl Sinex {
         use std::io::Seek;
         bytes.rewind()?;
         let length = bytes.metadata()?.len();
-        let hash = self.store.put_plain_checked::<Error>(bytes, 3, || Ok(()))?;
-        // A material acknowledgment is keyed by frame, not by incoming bytes.
-        // Include the content address so an unknown outcome can be retried safely.
+        let mut digest = blake3::Hasher::new();
+        std::io::copy(&mut *bytes, &mut digest)?;
+        let hash = hashed_blobs::Hash(*digest.finalize().as_bytes());
+        bytes.rewind()?;
         let frame = format!("batch:{id}:{}", hash.hex());
         let known = self.have(std::slice::from_ref(&frame)).await?;
         let material = self
@@ -370,9 +333,14 @@ impl Sinex {
                 frame.clone(),
                 known.get(&frame),
                 &hash,
-                length,
-                frame,
+                || {
+                    Ok(polylogue_store::sinex_rows::BlobSnapshot {
+                        file: bytes.try_clone()?,
+                        length,
+                    })
+                },
                 serde_json::json!({"archive":id,"media_type":"application/jsonl"}),
+                Class::Open,
             )
             .await?;
         Ok((material, hash))
