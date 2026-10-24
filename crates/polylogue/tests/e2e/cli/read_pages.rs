@@ -20,7 +20,11 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_cursors() {
     ];
     let daemon = start_daemon(&env);
     wait_status(&env, |status| {
-        status["store"]["messages"] == 1 && status["store"]["search_pending"] == 0
+        status["store"]["messages"] == 1
+            && status["store"]["search_pending"] == 0
+            && status["last_pass"]["seconds"]
+                .as_f64()
+                .is_some_and(|seconds| seconds > 0.0)
     });
     let whole = cli(
         &env,

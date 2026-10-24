@@ -72,7 +72,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// `session:<id>`, `input:<id>`, `text:<string>`, or a bare session ID.
+    /// `session:<id>`, `document:<id>`, `input:<id>`, `text:<string>`, or a bare session ID.
     pub fn parse(target: &str) -> std::result::Result<Self, String> {
         let (kind, value) = target.split_once(':').unwrap_or(("", target));
         match kind {
@@ -86,7 +86,7 @@ impl Scope {
                 .map_err(|e| e.to_string()),
             _ => SessionId::parse(target).map(Self::Session).map_err(|_| {
                 format!(
-                    "not an excision target: {target:?} (session:<id>, input:<id>, text:<string>)"
+                    "not an excision target: {target:?} (session:<id>, document:<id>, input:<id>, text:<string>)"
                 )
             }),
         }
