@@ -8,6 +8,7 @@ pub mod batch;
 mod block;
 mod change_position;
 pub mod command;
+mod document;
 mod event;
 pub mod export;
 mod id;
@@ -23,16 +24,17 @@ mod usage;
 mod work;
 
 pub use batch::{
-    Accounting, BackgroundUpdate, CountMismatch, Disposition, InlineBlob, MessageRow, OrderKey,
-    Output, RepoLookup, Snapshot,
+    Accounting, BackgroundUpdate, CountMismatch, Disposition, DocumentRow, InlineBlob, MessageRow,
+    OrderKey, Output, RepoLookup, Snapshot,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,
     UnknownReason,
 };
 pub use change_position::ChangePosition;
+pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
-pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};
+pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod observations;
 pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role};
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};

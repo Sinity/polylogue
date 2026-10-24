@@ -9,9 +9,9 @@ impl<'a> References<'a> {
              CREATE TEMP TABLE IF NOT EXISTS session_remove_blob(hash BLOB PRIMARY KEY) WITHOUT ROWID;",
         )?;
         i.execute("INSERT INTO temp.session_remove_text SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL
-             UNION SELECT v.text_id FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL", [pk])?;
+             UNION SELECT v.text_id FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL", [pk])?;
         i.execute("INSERT INTO temp.session_remove_blob SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL
-             UNION SELECT v.blob_hash FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL", [pk])?;
+             UNION SELECT v.blob_hash FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL", [pk])?;
         Ok(Self(i))
     }
 

@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,
+    pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
     released: bool,
@@ -13,12 +14,19 @@ pub(crate) struct PreparedRows {
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
         if !self.released
-            && (!self.messages.is_empty() || !self.events.is_empty() || !self.texts.is_empty())
+            && (!self.messages.is_empty()
+                || !self.documents.is_empty()
+                || !self.events.is_empty()
+                || !self.texts.is_empty())
         {
             return Err(StoreError::Invalid("prepared rows are incomplete".into()));
         }
         if self.released
             && (self.messages.len() != output.messages.len()
+                || self.documents.len() != output.documents.len()
+                || self.documents.iter().zip(&output.documents).any(|(p, r)| {
+                    p.id != r.document.id || p.blocks.len() != r.document.blocks.len()
+                })
                 || self.events.len() != output.events.len()
                 || self
                     .messages
@@ -35,6 +43,10 @@ impl PreparedRows {
 
     pub(in crate::writer) fn retain_messages(&mut self, keep: &[bool]) {
         retain(&mut self.messages, keep);
+    }
+
+    pub(in crate::writer) fn retain_documents(&mut self, keep: &[bool]) {
+        retain(&mut self.documents, keep);
     }
 
     pub(in crate::writer) fn retain_events(&mut self, keep: &[bool]) {
@@ -70,6 +82,15 @@ impl ParseStep {
         else {
             return;
         };
+        let Ok(documents) = self
+            .output
+            .documents
+            .iter()
+            .map(|r| packer.pack_document(&r.document))
+            .collect::<Result<Vec<_>>>()
+        else {
+            return;
+        };
         let Ok(events) = self
             .output
             .events
@@ -80,8 +101,19 @@ impl ParseStep {
             return;
         };
         let mut texts = HashMap::new();
-        for row in &self.output.messages {
-            for block in &row.message.blocks {
+        for blocks in self
+            .output
+            .messages
+            .iter()
+            .map(|r| r.message.blocks.as_slice())
+            .chain(
+                self.output
+                    .documents
+                    .iter()
+                    .map(|r| r.document.blocks.as_slice()),
+            )
+        {
+            for block in blocks {
                 let Some(text) = block_text(block) else {
                     continue;
                 };
@@ -95,12 +127,24 @@ impl ParseStep {
         }
         self.prepared = PreparedRows {
             messages,
+            documents,
             texts,
             events,
             released: true,
         };
-        for row in &mut self.output.messages {
-            for block in &mut row.message.blocks {
+        for blocks in self
+            .output
+            .messages
+            .iter_mut()
+            .map(|r| r.message.blocks.as_mut_slice())
+            .chain(
+                self.output
+                    .documents
+                    .iter_mut()
+                    .map(|r| r.document.blocks.as_mut_slice()),
+            )
+        {
+            for block in blocks {
                 match block {
                     Block::ToolCall { input, .. } => *input = Json::Null,
                     Block::ToolResult { data, .. } => *data = None,
@@ -108,6 +152,9 @@ impl ParseStep {
                     _ => {}
                 }
             }
+        }
+        for row in &mut self.output.documents {
+            row.document.metadata = Json::Null;
         }
         for event in &mut self.output.events {
             event.data = Json::Null;

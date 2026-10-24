@@ -328,6 +328,10 @@ pub fn parse_item(
         row.offset = range.start;
         row.end = range.end;
     }
+    for row in &mut output.documents {
+        row.offset = range.start;
+        row.end = range.end;
+    }
     for event in &mut output.events {
         event.range = Some((range.start, range.end));
     }

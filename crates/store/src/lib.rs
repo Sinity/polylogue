@@ -11,6 +11,7 @@ pub mod archive;
 pub mod blobs;
 pub mod context;
 pub mod derive;
+pub mod documents;
 mod encoding;
 pub mod excise;
 pub mod export_items;

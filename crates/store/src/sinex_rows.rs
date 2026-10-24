@@ -161,6 +161,7 @@ const TABLES: &[&str] = &[
     "note_relation",
     "excision",
     "vector_deletion_policy",
+    "excision_document",
     "setting",
     "delivery",
     "delivery_event",

@@ -16,7 +16,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "message_version",
+                table_name: "content_version",
                 column_name: "hash"
             }
         ) {

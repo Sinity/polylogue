@@ -13,9 +13,11 @@ pub(super) fn matching(
     use std::collections::BTreeSet;
     let mut sessions = BTreeSet::new();
     let mut messages = BTreeSet::new();
+    let mut documents = BTreeSet::new();
     for b in group {
         for p in &b.parse {
             let o = &p.output;
+            documents.extend(o.documents.iter().map(|row| row.document.id.to_string()));
             sessions.extend(o.sessions.iter().map(|s| s.id.to_string()));
             for m in &o.messages {
                 sessions.insert(m.message.session.to_string());
@@ -32,10 +34,12 @@ pub(super) fn matching(
             }
         }
     }
-    cache.matching(
+    let mut selected = cache.matching(
         &sessions.into_iter().collect::<Vec<_>>(),
         &messages.into_iter().collect::<Vec<_>>(),
-    )
+    )?;
+    selected.documents = cache.matching_documents(&documents.into_iter().collect::<Vec<_>>())?;
+    Ok(selected)
 }
 
 pub(super) fn refused_message(m: &Message, r: &crate::excise::RefusedIds) -> bool {
@@ -55,6 +59,17 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch
             .iter()
             .map(|m| !refused_message(&m.message, r))
             .collect();
+        let keep_documents: Vec<bool> = p
+            .output
+            .documents
+            .iter()
+            .map(|row| !r.documents.contains(&row.document.id.to_string()))
+            .collect();
+        let mut documents = keep_documents.iter();
+        p.output
+            .documents
+            .retain(|_| *documents.next().expect("one decision per Document"));
+        p.prepared.retain_documents(&keep_documents);
         let keep_events: Vec<bool> = p
             .output
             .events

@@ -180,7 +180,7 @@ pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> 
         (1, "b.kind<>'tool_result'", "text_fts"),
         (2, "b.kind='tool_result'", "output_fts"),
     ] {
-        let used:bool=i.query_row(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN current_message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind})"),[id],|r|r.get(0))?;
+        let used:bool=i.query_row(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN current_message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN current_document d ON d.pk=b.document_pk WHERE b.text_id=?1))"),params![id,bit],|r|r.get(0))?;
         if !used {
             if !bulk {
                 i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;

@@ -89,7 +89,7 @@ fn canonical_message_hash_generation_preserves_authored_scope_exclusions_and_vec
 
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(schema::version(&index).unwrap(), 30);
+    assert_eq!(schema::version(&index).unwrap(), 31);
     assert_eq!(
         index
             .query_row(

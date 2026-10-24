@@ -45,7 +45,7 @@ fn structured_message(reverse: bool) -> Message {
 }
 
 #[test]
-fn message_version_identity_ignores_nested_json_member_order() {
+fn content_version_identity_ignores_nested_json_member_order() {
     let first = structured_message(false);
     let second = structured_message(true);
     assert_eq!(
@@ -93,7 +93,7 @@ fn message_version_identity_ignores_nested_json_member_order() {
             "exact structured values survive both read paths"
         );
         let rows = reader
-            .query("SELECT count(*) AS n FROM message_version", &[])
+            .query("SELECT count(*) AS n FROM content_version", &[])
             .unwrap();
         let count = rows[0]["n"].as_u64().unwrap();
         let hashes = reader
@@ -140,7 +140,7 @@ fn distinct_structured_values_remain_inspectable_versions() {
         assert!(versions.iter().any(|version| version.message == different));
         assert_eq!(
             reader
-                .query("SELECT count(*) AS n FROM message_version", &[])
+                .query("SELECT count(*) AS n FROM content_version", &[])
                 .unwrap()[0]["n"],
             2
         );

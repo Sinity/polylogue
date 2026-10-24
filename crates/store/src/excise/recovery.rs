@@ -50,6 +50,23 @@ fn policy_hash(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<blake3::Has
         hash.update(b"vector_deletion_policy");
         hash.update(policy.as_bytes());
     }
+    let has_documents:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='excision_document')",[],|r|r.get(0))?;
+    if has_documents {
+        let mut statement = conn.prepare(
+            "SELECT document_id FROM excision_document WHERE excision_id=?1 ORDER BY document_id",
+        )?;
+        let mut rows = statement.query([row.get::<_, String>(3)?])?;
+        let mut first = true;
+        while let Some(row) = rows.next()? {
+            if first {
+                hash.update(b"document_exclusion_v1");
+                first = false;
+            }
+            let id: String = row.get(0)?;
+            hash.update(&(id.len() as u64).to_be_bytes());
+            hash.update(id.as_bytes());
+        }
+    }
     Ok(hash.finalize())
 }
 

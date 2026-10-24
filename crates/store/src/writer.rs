@@ -31,9 +31,9 @@ mod rows;
 pub(crate) use rows::promote_current;
 mod search;
 
-use crate::encoding::PreparedMessage;
 #[cfg(test)]
 use crate::encoding::pack_block;
+use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, pack_event, unpack_block};
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
 pub(crate) use bytes::observation_id;
@@ -800,7 +800,12 @@ fn weight(b: &Batch) -> usize {
     1 + b
         .parse
         .iter()
-        .map(|p| p.output.messages.len() + p.output.events.len() + p.output.links.len())
+        .map(|p| {
+            p.output.messages.len()
+                + p.output.documents.len()
+                + p.output.events.len()
+                + p.output.links.len()
+        })
         .sum::<usize>()
 }
 

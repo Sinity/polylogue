@@ -2,7 +2,7 @@
 //! and the accounting that proves every record was dealt with. One type for
 //! the parser and the writer, so neither restates the other.
 
-use crate::{BlobHash, Event, Link, Message, Session, SessionId, ToolOutcome};
+use crate::{BlobHash, Document, Event, Link, Message, Session, SessionId, ToolOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -15,6 +15,9 @@ pub struct Output {
     /// into what it already holds ([`Session::merge`]).
     pub sessions: Vec<Session>,
     pub messages: Vec<MessageRow>,
+    /// Textual provider records without conversation roles or usage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<DocumentRow>,
     pub events: Vec<Event>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
@@ -59,6 +62,14 @@ pub struct Snapshot {
     pub covered: Vec<SessionId>,
     /// Absence is authoritative only for explicitly complete observations.
     pub complete: bool,
+}
+
+/// A document as one input holds it, with the acquired record's byte range.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DocumentRow {
+    pub offset: u64,
+    pub end: u64,
+    pub document: Document,
 }
 
 /// A message as one input holds it. `offset` is where its first record

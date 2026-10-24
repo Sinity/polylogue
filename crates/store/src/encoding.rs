@@ -1,7 +1,7 @@
 //! Encoding of database row bodies. Original-input blob encoding belongs to `blobs`.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Block, Event, Message, MessageId, Timestamp};
+use polylogue_model::{Block, Document, DocumentId, Event, Message, MessageId, Timestamp};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::Read;
 use std::sync::LazyLock;
@@ -48,9 +48,48 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    content: PreparedContent,
+}
+
+/// Encoded content rows shared by role-bearing messages and textual documents.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) attrs: Vec<u8>,
     pub(crate) blocks: Vec<Vec<u8>>,
+}
+
+impl std::ops::Deref for PreparedMessage {
+    type Target = PreparedContent;
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for PreparedMessage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.content
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedDocument {
+    pub(crate) id: DocumentId,
+    content: PreparedContent,
+}
+
+impl std::ops::Deref for PreparedDocument {
+    type Target = PreparedContent;
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+
+impl PreparedDocument {
+    pub(crate) fn new(document: &Document) -> Result<Self> {
+        RowPacker::new()?.pack_document(document)
+    }
 }
 
 impl PreparedMessage {
@@ -105,13 +144,6 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        // Only the derived identity is canonicalized; encoded row values stay
-        // unchanged. Release the one-message Value before preparing rows.
-        let hash = {
-            let mut canonical = serde_json::to_value(message)?;
-            canonical.sort_all_objects();
-            *blake3::hash(&serde_json::to_vec(&canonical)?).as_bytes()
-        };
         let attrs = Message {
             id: message.id.clone(),
             session: message.session.clone(),
@@ -129,10 +161,54 @@ impl RowPacker {
         };
         Ok(PreparedMessage {
             id: message.id.clone(),
+            content: self.pack_content(message, &attrs, &message.blocks, None)?,
+        })
+    }
+
+    pub(crate) fn pack_document(&mut self, document: &Document) -> Result<PreparedDocument> {
+        let attrs = Document {
+            id: document.id.clone(),
+            purpose: document.purpose,
+            title: document.title.clone(),
+            source_time: document.source_time,
+            authorship: document.authorship,
+            blocks: Vec::new(),
+            metadata: document.metadata.clone(),
+        };
+        Ok(PreparedDocument {
+            id: document.id.clone(),
+            content: self.pack_content(
+                document,
+                &attrs,
+                &document.blocks,
+                Some(b"polylogue-document-v1\0"),
+            )?,
+        })
+    }
+
+    fn pack_content(
+        &mut self,
+        value: &impl Serialize,
+        attrs: &impl Serialize,
+        blocks: &[Block],
+        domain: Option<&[u8]>,
+    ) -> Result<PreparedContent> {
+        // Canonicalization changes derived identity only. Message hashes retain
+        // their existing byte domain; Documents have a separate explicit tag.
+        let hash = {
+            let mut canonical = serde_json::to_value(value)?;
+            canonical.sort_all_objects();
+            let mut hasher = blake3::Hasher::new();
+            if let Some(domain) = domain {
+                hasher.update(domain);
+            }
+            hasher.update(&serde_json::to_vec(&canonical)?);
+            *hasher.finalize().as_bytes()
+        };
+        Ok(PreparedContent {
             hash,
-            attrs: self.pack_json(&attrs)?,
-            blocks: message
-                .blocks
+            attrs: self.pack_json(attrs)?,
+            blocks: blocks
                 .iter()
                 .map(|block| self.pack_block(block))
                 .collect::<Result<_>>()?,

@@ -103,7 +103,7 @@ fn text_reparse_preserves_text_owned_only_by_a_retained_version() {
     let mut i = open_write(&archive.index_db(), cache::SETUP).unwrap();
     let tid = crate::text_rows::intern(&i, "historical synthetic marker", 0, None, false).unwrap();
     i.execute(
-        "INSERT INTO message_version(pk,hash,attrs) VALUES(1,?1,x'00')",
+        "INSERT INTO content_version(pk,hash,attrs) VALUES(1,?1,x'00')",
         [&[1u8; 32][..]],
     )
     .unwrap();
