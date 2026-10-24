@@ -1,1051 +1,258 @@
 # Architecture
 
-This describes the current Rust module boundaries. The specification and Beads
-also contain intended behavior that is not implemented or qualified yet.
-
-## Inputs and stored records
-
-`polylogue-sources` interprets source formats. An origin declaration owns
-recognition, paths, framing, parser version and tool capabilities. Opening
-an input selects line, export or document parsing; callers do not maintain a second
-framing flag. Parsers produce model values, record ranges and accounting. The
-shared `Records` sink owns disposition and wire-field counts. Each static
-`Fields` declaration builds a lookup of declared paths and their parents once,
-shared across parsing threads. Traversal preserves literal dotted keys and
-array occurrences; it does not rescan every declaration for each wire field.
-Line parsing supplies an independent framed total; document parsers submit the items they
-discover. Finishing either path checks the same accounting invariant.
-
-Codex compaction events retain the native payload, including replacement
-history and supplied unknown shapes. These entries provide context evidence;
-they do not create authored messages or populate subsequent message settings.
-An identified replacement item can still anchor an existing fork link.
-Changed turn-context settings retain their native payload as events; consecutive
-settings that differ only in turn identifiers share one event. Returning to an
-earlier setting after a change emits it again. Parsing and serializing these
-events requires the whole native record and resulting event in memory, including
-a large replacement history.
-
-ChatGPT's optional `finished_duration_sec` is a nonnegative JSON number in
-seconds, converted to milliseconds by rounding. Missing, nonnumeric or
-unrepresentable durations stay unknown while the authored message survives.
-Google token counters accept integer JSON numbers; numeric text remains
-unknown. Native input bytes retain the supplied representation in either case.
-
-Each message-source occurrence records its parser version. Within the same
-input, revision chain and capture, a newer parser may replace an older
-interpretation even if the logical position moves later. Same-version
-duplicates keep their earliest occurrence; older-parser replay cannot overwrite
-newer coordinates or content. Parser numbers from different inputs do not
-compete, and newer revision/capture scopes keep their precedence. Promoting a
-remaining source retains that source's parser version.
-
-A completed newer parse retires the previous parser's contributions to that
-revision chain, including omitted messages, events, links and session metadata.
-Completion requires source EOF and accounting through the selected length; a
-fully consumed captured prefix is insufficient. Until then, old contributions
-remain available alongside the new rows. Session facts merge within each
-input/chain/parser interpretation, then across inputs; obsolete interpretations
-cannot supply omitted fields after completion. The writer recomputes affected
-source selection and hook-derived live state. A disposable SQLite file holds
-affected IDs with a 1 MiB cache and mmap disabled. Derived session-row removal
-is shared with excision; it does not change raw bytes, authored rows or embeddings.
-
-A fresh derived index stays in WAL while it is built, including while readers
-retain earlier snapshots. Its `unsynced` rebuild marker commits with FULL
-synchronization before build writes disable syncing. Deferred secondary indexes
-and search entries are completed as before. A final FULL WAL commit clears the
-marker and synchronizes earlier build frames, then ordinary NORMAL syncing
-resumes. No journal-mode change or blocking checkpoint is needed to finish or
-stop the writer. An unfinished marked index is rebuilt when reopened. WAL and
-later checkpoints retain their normal write I/O cost.
-
-Queries read an index generation together with the independent index and archive
-write counters. Their change cursor is `GEN:COUNTER:ARCHIVE`. A new index gets a
-random generation. Archive startup also changes it whenever the operating-system
-boot ID differs, including after a clean reboot. This conservative extra resync
-avoids trusting a stale clean-stop marker after counter writes may have been lost.
-Generation and boot metadata commit together with full SQLite synchronization.
-Same-boot restarts preserve the generation.
-
-Ordinary query pages bind their index generation, index/archive counters and
-resolved question. Compiled defaults, fields, caller, zone/day boundary and
-ranking settings are hashed; query text and ranking carry are not stored in the
-cursor. The first query clock and a nonsecret random seed continue across pages.
-Page size may change, while semantic selection remains part of the question.
-Any intervening publication refuses continuation with `stale_cursor`, including
-derivation and full-text publication. This can require frequent restarts on an
-active archive. No reader transaction survives between requests; mutable keyset
-continuation is not implemented. Semantic ranking currently returns only complete
-single-page answers; it cannot be continued against a changing vector set.
-
-Budgeted session reads use a separate stateless cursor. It binds the session,
-logical mode and view to a fingerprint of the selected stored message facts and
-packed block/text values, plus the index generation and returned session metadata.
-Unrelated writes leave this cursor usable. Replaced indexes and changed selected
-content refuse with `stale_cursor`; malformed and out-of-range positions refuse
-with `bad_request`. Each attempt uses one admitted Reader throughout. The current
-wire version is 2; version 1 offsets refuse because source masking changed their
-rendered coordinates.
-
-`polylogue-model::masking` owns pure value masking for Store and Render. One
-request-local masker processes source Message/Block content before view filtering,
-HTML result pairing or structured encoding. Text, thinking and displayed tool
-label/body fragments advance it once. Exact command/output aliases in the same
-block's input/data reuse their masked result. Other structured values remain
-independent complete values; object key order does not establish source chronology.
-Arbitrary split secrets across independently authored unordered fields cannot be
-inferred from these model values. Recorded source content remains unchanged.
-
-The derived display title uses the same masker over ordered physical source blocks
-through the selected first human/prose Text, then selects its first nonblank line
-and truncates it. The original recorded title stays separate and is exported as
-recorded. A title rule-version change rederives older display products. Read,
-QUERY and context share this display fallback.
-
-The store visits one decoded message at a time and stops when the renderer has a
-continuation. Fingerprinting scans packed values without decompressing them.
-Paging replays the earlier source prefix through the same masker, including blocks
-hidden by a view. The token carries numeric positions and hashes only. Each page
-therefore scans selected packed content and replays earlier messages; it does not
-retain a transaction between requests. Memory includes identifier metadata, the
-largest decoded and rendered message, and the requested output. The output budget
-does not bound input memory or process RSS. Unbudgeted formats retain their existing
-complete-output allocation.
-
-Search snippet selection keeps its raw FTS scope, ranking and source citations.
-The chosen blocks are grouped by actual source session; one ordered prefix pass per
-chosen session feeds the same masker before shortening and computing highlight
-byte ranges. Duplicate row scopes retain separate answers while sharing the masked
-chosen block. Terms absent from the masked text have no surviving highlight. The
-source pass reuses the same admitted Reader and stops after its last chosen block;
-corrupt required context refuses, while later or unselected bodies are not decoded.
-
-This costs the existing per-row FTS selections plus linear prefix decoding for each
-chosen source session, one block at a time. Short snippets do not bound this I/O or
-process memory. The shared private Connection-level block visitor also supplies
-title derivation, keeping source order and decoding in one place.
-
-Derived publication advances the session's public change value and forwards only
-already-current cache markers. Raw writes still leave stale products to derive,
-and rule/dependency versions remain checked. Idle derivation/indexing does not
-advance the view. Full-text publication changes availability, not session content.
-
-A change query validates its cursor generation before filters, grouping or limits
-run. A mismatch returns `resync_required`, with no replacement cursor; consumers
-must reread their current state and every canonical excision. The `changes` unit
-includes each excision's scope and retained session/message selection. An unknown
-session selection stays null; an empty array means no selected IDs. Selection
-arrays are output data, not scalar predicates, sort keys or aggregates. Notes and
-excisions use the archive counter, sessions and removals the index counter; their
-combined presentation order is not a total causal order. `view.cursor` describes
-the query's view, not acknowledgement that all change pages were consumed. The
-`changes --since POSITION` command instead prepares one finite batch. Its
-fixed relation is visited one row at a time through Store's query owner, shaped,
-validated and masked into an unnamed temporary file. No bytes escape until
-all rows pass. The Reader is then dropped before socket delivery, so a slow
-receiver holds file bytes rather than a WAL snapshot. File space scales with the
-batch; the largest decoded row and SQLite ordering remain separate costs.
-
-The feed emits `begin`, `change` and `complete` JSON lines. Event lines retain the
-previous completed position (null initially). Only `complete` offers the new
-position, after every reference was written. The receiver must apply or stage all
-preceding records before persisting it. The completion line identifies the entire
-batch; persistence remains the receiver's responsibility. A disconnect can leave
-the outcome unknown, and a later attempt may replay references.
-Archive notes/excisions come in their local order, followed by independent index
-session/removal references. Initial or changed-generation batches mark replacement:
-replace current session and note reference membership and replay every note and
-canonical excision before accepting completion. These are references and removal selections,
-not session payload replication. Arbitrary `changes` queries retain ordinary
-composition and page semantics; they cannot be used as delivery acknowledgement.
-
-`polylogue-engine` discovers changes, retains input bytes and coordinates
-parsing. Existing input directories are watched recursively. A missing location
-keeps a nonrecursive watch on its nearest existing ancestor; directory creation
-advances that watch before collection, so a new source appears without waiting
-for the periodic fallback. Read-access events do not trigger collection. Its
-worker pool feeds one bounded writer. Source interpretation stays
-in sources; SQLite access stays in store. Rebuilding a derived index must not
-replace the retained observations with a claim that a provider file is still
-available.
-Recognized empty live inputs still publish a zero-length revision and file
-observation. They create no empty extent or conversation. The same path handles
-truncation to empty and later growth; pending file facts are work even when
-there are no bytes to parse.
-
-A writer flush reports rejected input IDs separately from diagnostic text.
-Later queued batches for those inputs cannot advance across a failed batch;
-unrelated inputs still commit. After plans finish, the Engine reloads the
-rejected paths’ committed observations and archive/index checkpoints, discarding
-their uncommitted parser state. Unchanged inputs can retry on the next pass.
-Parser failures retain their separate source/parser-change retry rule. On growth,
-a missing in-memory tail is read from the retained range before append
-classification; a changed prefix starts a new chain. The comparison uses the
-committed byte length even when its source observation described a larger file.
-
-Manual imports, watched whole-export captures and parse-pool groups prepare file bytes privately. The
-Store Writer checks standing input, content and location refusals, then durably
-reserves the input, revision, extent and a `writing` blob row before installing
-the CAS object. It admits the blob as `present` only after installation. Both
-commits use SQLite FULL synchronization; excision and publication share the
-Writer's publication guard. Rejected first admissions discard their private
-stage without creating a public CAS name. A duplicate already retained inline
-stays inline.
-
-An interruption after reservation retains that exact hash and length. Readers
-refuse unfinished ranges; status reports `unfinished_inputs`, and convergence
-verifies installed bytes before admitting them. Missing bytes remain explicitly
-unavailable, even if the provider now contains another version. An exact manual
-retry may supply the reserved bytes. Sinex refuses an unfinished source unit,
-and an older confirmed restore cannot discard its local observation. These
-rules do not register CAS files left unowned by earlier software.
-
-Whole-export recognition must inspect the same bytes that will be admitted.
-Store uses one private decoded scratch file for this inspection, then prepares
-those bytes with the shared blob encoder. This adds a streamed decoded disk
-copy; it does not retain the export in memory or reopen the provider.
-
-The parse pool retains its 64 MiB groups through the same Writer operation. One
-FULL reservation covers the group before file installation; one FULL finalization
-admits completed sources and decoded values. Inline-only work keeps the ordinary
-transactional path. In-flight admission remains held through parsed-row commit.
-The shared installer synchronizes each installed file and its directory, so file
-installation no longer shares one directory synchronization across a group.
-
-Decoded values have canonical `extracted_blob` owners in archive format 8. Each
-association cites an input, retained chain, exact enclosing source range and hash,
-parser version and decoded blob. The Writer installs raw stages first and checks
-the retained source before installing decoded stages. Associations have their own
-completion state even when another source already owns the same decoded bytes.
-Each association has an independent commit-sequenced Sinex unit; later decoding
-cannot alter an acknowledged raw revision. Index generation 33 replays retained
-source versions to recover these owners from older archives without provider
-files. Source edits invalidate associations whose cited bytes changed, including
-when the derived index is absent. Independent surviving references retain shared
-bytes. No legacy unregistered CAS sweep is performed.
-
-Retained-chain replay captures ordered extents and deduplicated compressed
-inline bytes from that same SQLite view into a private temporary database.
-Construction uses a 1 MiB page cache, then shrinks it to 64 KiB. Clones share
-one SQLite-owned unnamed temporary database and synchronized connection;
-readers keep independent positions and owned decoded pieces. The connection
-lock covers extent lookup and inline materialization, never file-blob reads. Random file ranges select bytes during their
-whole-hash verification pass; repeated range calls verify again. Sequential
-scans keep a forward reader. Historical oversized inline pieces are verified
-through a temporary file. File blobs stay in the blob store, with the complete
-single-file streaming path preserved. Replay releases the archive view after
-capture. SQLite unlinks spilled scratch on Linux when opened, so process death
-also releases its file; normal closure follows the last owner. The Engine finishes and drops
-replay work before servicing excision. Requested range output and an individual
-parser record can still require large allocations; this bounds retained replay
-ownership rather than every caller’s output.
-
-Tool SQLite databases are read through one source transaction, including WAL
-contents. A disposable disk-backed comparison catalog keeps exact table/key
-pairs and complete row hashes, with a 1 MiB SQLite cache and mmap disabled.
-Changed rows and removals, including dropped tables, are staged in a temporary
-file. Only a successful complete scan appends this batch to the retained JSONL
-export. The bytes are synced before `atomicwrites` replaces its adjacent
-`.completed` length/hash checkpoint. Before collection, restart recovery checks
-the completed prefix and removes only an unpublished suffix. Altered completed
-bytes and malformed legacy exports refuse collection while preserving evidence.
-The Engine skips an export call that fails, even if its output file exists.
-Runtime captures bind the retained header to the first observed machine and
-lexically normalized native database path. Capture clocks and host names are
-not identity fields. Per-location output directories separate equal database
-basenames. Catalog replay validates this binding before append; legacy unbound
-exports remain retained without an inferred native profile.
-
-Hermes interprets these bound logical rows through the shared export parser.
-It stages latest positive rows in session/native insertion order and records
-`gone` without erasing the retained value. A changed export requires a linear
-prefix scan; memory includes session/row identifier metadata and a decoded row,
-not a session's message bodies. Native call/platform IDs and canonical content
-fallbacks survive rowid reinsertion; repeated equal turns retain occurrences.
-Native compression links retain supplied ancestry and its parent leaf. Copy
-accounting, steers, companion session documents and observer/verification
-interpretation remain separate source work.
-
-One capture worker keeps its source transaction, statements and row cursor on
-its stack. Permits bound cooperative turns across rows, replayed lines and
-64 KiB prefix-verification blocks. The worker pauses before returning control;
-it cannot append output while the Engine collects ordinary inputs. A finite
-discovery batch completes before a new batch starts, with one source snapshot
-active at a time. Accepted exports remain inputs if their provider disappears.
-Revalidation withholds the physical output until it succeeds; existing indexed
-and retained content stays readable. Dropping the driver closes permits and
-joins the worker, discarding unpublished work.
-
-Daemon convergence services controls and ordinary inputs between capture
-turns, then immediately continues pending capture without a filesystem event
-or minute timer. `last_pass.capture_pending` distinguishes unfinished capture
-from an idle pass. Synchronous convergence drives the same turns to completion.
-Idle continuations advance capture and collect its accepted exports; they do
-not rescan every provider directory. Source events, imports, excision and the
-periodic fallback request ordinary discovery.
-A single SQLite call, schema enumeration, record, final append/sync or error
-recovery can exceed the cooperative turn budget. Pausing also extends the
-source snapshot's WAL retention; this is not durable snapshot continuation.
-
-Hook settings and reader credentials are replaced using
-`atomicwrites`, which owns temporary-file cleanup, file synchronization,
-rename and directory synchronization. Each caller still owns its path and
-permissions; hook installation refuses managed symlinks. Hook settings must be
-JSON objects with valid hook containers and unique object keys; a refusal leaves
-the file unchanged. Install and removal edit only the exact command hooks the
-installer writes, preserving other hooks and metadata in mixed matcher entries.
-Unknown hook kinds and settings remain uninterpreted and retain their values.
-
-Browser captures use the provider's existing ChatGPT or Claude parser; Grok
-endpoint bundles adapt native responses and attachment metadata to the shared
-message model. `POST /v1/browser-captures/inspect` accepts the final capture
-envelope and returns its summary and attachment descriptors without a write.
-Acquired files travel by value in `session.attachments[].content_base64`;
-Claude inline media stays in the raw payload and is linked to retained blobs.
-`POST /v1/browser-captures` acknowledges the durable spool write. Each
-conversation has one length/digest framed append log; the host syncs its
-new envelope before acknowledgement. Exact envelope bytes identify retries: an
-older retry is a no-op; a new observation, including a reversion, carries new
-observation provenance. Existing single-envelope spools convert on the next
-distinct capture. An interrupted append can complete only when every existing
-tail byte matches the submitted frame prefix; it appends only the missing
-suffix. Constant-only prefixes contain no observation identity. Differing or
-otherwise ambiguous tails are preserved and refuse appends.
-Appending scans headers for identity without rereading other payloads; the
-parser verifies every interpreted payload. Text excision recomputes active
-digests while preserving observed digests and source offsets.
-
-Each complete envelope is interpreted once into an ordered source snapshot.
-The rebuildable index retains normalized message versions with exact source
-ranges, sharing prose in the text store. Ordinary reads, queries and
-derivations use current projections. Only explicit complete-session coverage
-can retire absent members; current browser acquisitions supply partial
-coverage, including native payloads. Session facts merge with earlier supplied
-facts; complete population coverage does not clear omitted metadata. Historical
-chains replay through the same parser and writer, with chain and snapshot
-range ordering preserving the latest projection. Rebuilds include earlier
-line-based chains, even when their provider files have disappeared. Appends
-share a chain and replay its final retained bytes once; rewrites and truncations
-start separate chains. Line parsers reconstruct their carry from the chain's
-start, while independent snapshots can resume at a committed record boundary.
-Same-chain open-item updates retain the existing latest projection; distinct
-rewrite-chain versions keep their native IDs and source ranges.
-
-Before selected parse jobs emit rows, the engine supplies their required
-format versions to the writer. The index retains those requirements and each
-chain's observed EOF, source length and last fully retired parser version.
-Replacing one input can update matching records immediately, but obsolete
-session-owned records remain until that session's contributing inputs complete
-their required parses. A shared input's sessions retire independently; links
-wait for their existing endpoints. Pending work survives writer restart and is
-shown as `reparsing`. Ready sessions and affected identities are deduplicated
-in operation-scoped SQLite, without collecting their bodies.
-
-An event's message anchor participates in its identity. The event table keeps
-its shared facts; `event_source` owns each observation's input, revision,
-snapshot, parser version, order and byte range. Current reads select a source
-by stable input ID, then its newest revision/snapshot. They do not keep the
-first arrival's coordinates. Source retirement promotes another observation,
-and excision consults the retained observation rows. Repeated identical records
-within one observation scope keep their latest order/range; this is not an
-occurrence list. A parser replacement resets the order for that scope.
-Active-branch selection chooses each input's newest marker by revision, snapshot and record
-order. Across inputs, known event time takes precedence and content identity
-resolves ties. Database row IDs do not describe observation order.
-
-`GET /v1/reader-location` resolves the running reader's published port and
-sign-in fragment after checking the listener owner. The CLI uses the same
-lookup. A reader that is unavailable returns an error; this lookup does not
-start one.
-
-## Storage and queries
-
-`polylogue-store` owns the archive, index, embeddings and blob access. One
-writer serializes archive changes; readers use read transactions. Original
-observations and authored values differ from derived indexes. Session reads,
-derivation and exports share one row mapping, including repository and mode.
-The daemon admits at most `Config.workers` client Readers, with one separate
-Reader reserved for convergence so waiting clients cannot starve the loop.
-Each Reader owns one index connection with the archive attached and may open
-one auxiliary embeddings connection. Daemon reads therefore open at most
-`2 * workers + 1` connections; the engine does not open embeddings.
-
-Before the first database read, a Reader takes a shared OS lock on the existing
-`archive.db`, pins both attached snapshots and checks removal revisions and pending
-cleanup. Database publications take that same file's exclusive lock before SQLite
-write locks. Ordinary transactions own exclusion through commit/rollback; paired
-commits and index replacement use explicit scopes. The reader releases admission
-exclusion before executing its query, so admitted WAL snapshots do not stop later
-publications. A single attached SELECT alone does not make two WAL snapshots simultaneous.
-
-Unused reservations hold no snapshot. Idle connections refresh after index-file
-replacement; a reserved old handle refuses its first read with `ReadIndexReplaced`.
-Existing pinned readers retain their view, and can make index retirement refuse
-until released. Closing the pool refuses unused first-read reservations whether
-publication is free or contended. The state check under shared publication
-exclusion admits the first read; already pinned readers remain usable. Admission
-waits also observe SQLite interruption, with the existing 30-second busy limit. Ordinary write batches are bounded; offline
-restore holds exclusion during its atomic row installation, with no fixed latency
-promise. Physical vector/blob cleanup keeps pending intent visible outside exclusion,
-then validates and acknowledges that intent in a fresh guarded transaction.
-
-The embeddings connection remains a separate snapshot checked against removal
-revisions. Its highest row ID is a vector position, not proof that all three databases
-were pinned at one instant. The attached-pair admission repair makes no such claim.
-
-The default `Config.reader_memory_bytes` is a 128 MiB page-cache target for
-these readers together. Each Reader gets an equal share, split between the
-main index, attached archive and optional embeddings caches (rounded down to
-KiB); all three have mmap disabled. A lifetime-bound vector guard retains at
-most one auxiliary connection per Reader, including embedding builds. Upgrading
-that connection closes the old one before opening another. Writable vector
-connections attach a read-only archive for fresh excision checks; its cache
-and the vectors cache share that same auxiliary allocation, with mmap disabled.
-The engine leaves
-its optional embeddings share unused. Workers must be positive and the budget
-must provide at least 1 KiB per database per slot. This is SQLite's suggested
-page-cache target, not a hard process memory limit: query work space,
-statement caches and returned values still use memory. It imposes no row or
-content-size refusal. Short-lived setup and maintenance connections retain
-their separate 16 MiB setup allocation with mmap disabled.
-
-A full read pool waits for a released slot; opening connections also count
-against the cap. Open, BEGIN and transaction-completion failures release slots.
-A Reader is thread-affine: acquire, use and drop it within one thread. HTTP
-handlers acquire it inside their blocking application worker, outside async
-network work. Nested readers on the same thread may use spare slots for snapshot comparisons;
-a checkout that would wait while that thread already holds a slot refuses with
-`ReadPoolNested`. Callers reuse or drop their reader before retrying. Closing a
-pool wakes every waiter, refuses checkouts still opening, releases idle
-connections and lets already admitted transactions finish.
-
-`archive/retired.rs` validates and disposes of obsolete local derived indexes.
-Startup checks every recognized copy's applied removal rules before cleanup;
-rebuilds discard their old cache after creating the replacement. Successful
-excision also clears retired caches, while previews preserve them. Checkpointing
-puts WAL state into the main file before sidecar removal; directory syncs and
-ordinary startup handle interrupted unlink. Conflicts and unrecognized contents
-remain explicit errors. Original inputs and paid embeddings are separate owners.
-
-Within store, `encoding.rs` owns packed row bodies and block-text separation;
-`text_rows.rs` owns text deduplication, pending search entries and removal.
-Fixtures use the same text-storage path as ingestion.
-Retained message-version blocks own their encoded bodies and text references.
-Text rows place their small search-membership field before the compressed body,
-so membership checks do not need the body's SQLite overflow pages. This is a
-derived-index layout; changing it rebuilds the index through its version check.
-
-Content hashes identify versions across sources; local integer row IDs place
-new attributes and blocks next to earlier inserts. Historical reads resolve the
-hash once, then read that version’s ordered blocks.
-Current blocks copy those retained rows and activate their search membership;
-historical-only versions do not enter search. Promotion uses the same path
-after clearing the previous current blocks.
-The parse pool prepares each message's canonical hash, compressed metadata and
-block bodies together. The writer borrows that record. Preparation releases
-structured parsed payloads only after all message and event rows are packed;
-repeating preparation preserves those original bytes. Excision filtering keeps
-whole prepared messages aligned by identity. A mismatch refuses the batch
-instead of recomputing from released values. Unprepared inputs retain the normal
-packing path on the writer.
-
-Message reading order uses the existing opaque input ID and the record's wire
-offset, then the opaque message ID when those source positions tie. This final
-tie-break keeps reads, logical selection, cursor fingerprints and first-prompt
-titles stable across insertion order and index rebuilds; it does not supply an
-otherwise unknown event time.
-The index keeps that ID in `message.order_input_id` beside its local input
-foreign key. Source selection and every order consumer compare the stable ID,
-so parallel arrival and index rebuilds cannot change the message order or a
-title derived from its first prompt. Preferred message versions keep their
-existing source, completeness, route and content-hash rules.
-
-Message version keys hash a normalized Message as JSON with object keys sorted
-at every depth, independently of serde_json map features or insertion order.
-Array order, strings and number values remain unchanged. Preparation holds one
-additional Message-sized JSON value and its serialized bytes while hashing,
-then releases them before row encoding. Encoded message/block bodies retain
-their existing representation. Index generation 30 rebuilds the old derived version keys;
-authored natural-ID targets, recorded text hashes and exact anchors remain in
-archive.db unchanged, as do excision policies and text-keyed embeddings. The
-last hash tie-break can change which conflicting equal-rank version is
-preferred; that is a derived choice, never an authored-target rewrite.
-
-`store/derive.rs` orders session derivations and records the source-change counter
-and rule version for each. A consumer's version includes its complete declared
-dependency rules, so an upstream rule change also refreshes unchanged sessions.
-Missing, cyclic or incorrectly ordered declarations fail before any rows change. Message costs use the same path, with the complete
-catalog digest and its published label in their version. Changing prices does
-not invalidate unrelated derivations. The work graph and its orphan cleanup
-live under `derive/work.rs`. Provider-reported costs remain recorded facts.
-Derived message, block and event rows use an embedded 8 KiB Zstandard dictionary
-trained from neutral model examples. Each row keeps the shorter of plain and
-dictionary compression; text and canonical archive records remain dictionary-free.
-Each frame carries its dictionary ID. Reads accept the existing plain frames
-and the current dictionary, and refuse other dictionaries. The index format
-version, SQL digest and dictionary digest are pinned together in a test;
-changing the dictionary requires a new index generation and rebuild from the
-canonical archive.
-
-`polylogue-query` binds the query language and compiles parameterized SQL.
-`daemon/query.rs` executes it through a store reader, computes the final answer
-count and prepares pages. Recall uses this path too. Saved-query and kept-result
-storage failures propagate as errors; an unavailable collection is not an
-empty collection. Cursors retain the query identity and resolved time; they do
-not establish a snapshot that survives between requests.
-
-## Imported bytes
-
-`engine/import.rs` acquires each file or ZIP member through the existing blob
-store's streaming plain writer. The original BLAKE3 names the input and its
-single retained blob. Before registering the complete revision, acquisition
-checks the same open source descriptor's generation and size; ZIP members also
-check their declared uncompressed length. An interrupted acquisition publishes
-no input or source observation. A completed blob can be orphaned if registration
-fails.
-
-Parsing reads that retained representation, so later source replacement or
-deletion does not change its identity or parsed content. The verified sequential
-plain reader decodes each frame once after one verification pass. Line-framed
-inputs and unparsed members use the normal parse pool's part-sized jobs without
-retaining duplicate part blobs. One input is imported at a time. Acquisition
-uses the blob store's default 4 MiB frames and a 64-byte recognition prefix;
-parser buffers scale with the configured chunk and the largest incomplete
-record carried between jobs. Other document-framed origins still read and
-parse a whole document. Its messages cite that retained document's full byte
-range; the writer takes their reading order from the emitted sequence. A
-logical message ordinal is never a byte offset. Framed captures cite the
-corresponding payload's absolute range. Reimporting a retained input retries missing or outdated parser
-progress without adding another revision or copy of its bytes. Restart replay
-selects the same sequential reader for a chain retained as one complete file
-blob, and obtains route precedence from its durable revision class.
-
-ChatGPT and Claude export arrays use Serde's array visitor and `RawValue` to
-frame one conversation at a time. The reader records and verifies the exact
-lexeme against the source bytes before accepting its range. The whole outer
-array, including its trailing suffix, must validate before any conversation is
-published. A private operation-scoped scratch object compresses the elements
-into an anonymous temporary file and indexes their ranges and ordering in a
-temporary SQLite file (1 MiB cache, no mmap). ChatGPT conversations retain their
-global oldest-first ordering and first-owner message deduplication through this
-same object; Claude preserves physical array order. Scratch disappears when the
-operation ends and is rebuilt from retained bytes on retry.
-
-AI Studio uses the same scratch and commit path for `chunkedPrompt.chunks`.
-A Serde object visitor retains the surrounding fields with an empty chunks
-array, including metadata appearing after the chunks. After the full input
-validates, the parser emits prompt settings and the system message, then one
-chunk at a time. Its state is the model name, previous message ID, chunk ordinal
-and whether a start time was found. Chunk messages cite exact original chunk
-spans; the system message and settings cite the enclosing prompt. Duplicate
-fields on the selected array path refuse the input before publication, rather
-than combining two ambiguous chunk populations. The Drive listing uses the
-same visitor for `files`, emitting session facts one entry at a time. A recorded
-Drive title outranks the separate `file_name` fallback from a loose import,
-regardless of arrival order. Unknown fields remain accounted and raw bytes
-retained.
-
-OpenAI-compatible chat files use the same reader for a bare message array or
-an object containing `messages`. The complete wrapper is checked before its
-ID, title and model initialize the parser, so fields after the array apply to
-earlier messages too. State keeps that session identity/model, the previous
-message ID and the raw message ordinal. Unknown/refused records still occupy
-their original ordinal; tool replies keep their harness meaning. Each emitted
-message cites its original JSON span. Header metadata and one message/output
-remain the memory bound, with the same retained-byte retry rules.
-
-Gemini CLI rewrites use that named `messages` reader too. The parser retains
-session ID and previous message ID after reading header facts; tool calls and
-results stay within their turn. Inline results keep both output and error
-streams, with the supplied result/status/display JSON on the same tool-result
-block. Display text remains user-facing data: its length or a literal
-truncation marker cannot establish that it is the same model-facing output,
-so neither replaces native streams or creates a truncation claim. ANSI-cell
-and structured media displays remain tool data. Empty strings, explicit nulls
-and absent fields remain distinct. Unreadable or missing status on an existing
-result stays unknown. Notices and errors remain events anchored to
-the preceding message, with their own original record spans. Watched revisions
-are retained before parsing, and retries and rebuilds use those bytes after the
-source file disappears. Physical order is the default; ChatGPT uses its recorded conversation time.
-
-OpenRouter uses `sources/export/keyed.rs` for its named message map and
-`store/export_items.rs` for disk ordering. Records sort by optional integer
-milliseconds, optional message ID and object key; unknown times sort first.
-Repeated object keys replace the staged value, its position and its source
-range. The selected first record names the room after those replacements,
-so an overwritten old value cannot supply its identity. The complete wrapper
-validates before header or message output; metadata after messages still applies.
-Only ordering fields decode during the scan; message bodies remain raw until
-their turn. Room metadata and one message/output remain memory bounds.
-
-OpenTelemetry GenAI exports use that retained export path, with repeated
-`resourceSpans/scopeSpans/spans` arrays visited by Serde. One span and its decoded
-attributes/output are held at a time. The private SQLite table sorts exact
-optional unsigned nanoseconds, span IDs and physical ties; its ownership table
-keeps first-seen conversation metadata and message positions. Each event and
-message cites its original span rather than an invented wrapper or the whole
-file.
-
-A whole JSON document validates before publication. If its syntax is invalid,
-the scanner rewinds the same retained view and accounts independent JSONL lines.
-Each staged group uses a SQLite savepoint and a compressed-file checkpoint;
-a malformed line discards its entire prefix before later lines are scanned.
-Input and callback errors abort instead of falling back. The private index uses
-a disk rollback journal with durability disabled; journal mode OFF cannot roll
-back staged rows. Rewinding reopens retained bytes, never the provider file.
-Temporary disk grows with staged spans and ownership; one unusually large span
-still needs its own memory. This synchronous scan is not a reusable parse turn.
-
-Gemini Takeout uses the same staging and writer path for original HTML activity
-cells. Its known `outer-cell` delimiter frames one cell plus a fixed read buffer;
-large headers are discarded while retaining only a possible delimiter suffix.
-This is the existing Takeout shape, not a general HTML parser. Integer timestamp
-keys retain chronological order and physical ties, with unknown dates first.
-The private SQLite state holds each conversation's previous message, so links
-survive interleaved activities without a whole-export map in memory. JSON
-origins decode their original staged bytes as JSON; HTML records are never
-wrapped in invented JSON source bytes. First-record metadata uses that same
-byte boundary. The small in-memory state adapter lives with the shared export
-code and serves individual captures and parser fixtures.
-
-The existing live-before-bulk and size ordering applies to work already planned.
-Preceding ordinary work drains through the parse pool and commits before the
-serial export driver runs with the pool inactive. A live append arriving during
-that synchronous driver waits until a subsequent discovery pass; this is not
-preemption or a latency bound.
-
-Polylogue's own export uses the same reader for `sessions`, keeping their
-physical order and authored identities. Every session is checked against the
-typed export schema during the scan; an invalid later session refuses the whole
-document before any prefix is published. Header format and version, including
-headers after sessions, apply before publication. Its typed wrapper rejects
-duplicate enclosing fields; value-based source wrappers retain their existing
-rules. Messages and events cite the original exported-session span, replacing
-ranges that belonged to the export's former input. Memory still includes one
-whole exported session and its output, rather than all sessions in the file.
-
-The driver waits for each item's writer commit before decoding the next.
-Message order is a separate logical ordinal. Repeated event facts retain their
-latest logical source order, including across replay. Memory scales with the
-largest conversation or chunk, its parser output and retained prompt metadata;
-a large individual item or non-chunk metadata still needs that much memory.
-Temporary disk scales with the export. Parser progress becomes complete only
-after every item commits. An interrupted retry rescans the retained input,
-resets accounting and idempotently replays committed items; it does not resume
-from a durable mid-export scanner cursor. Parsers receive a first-message-owner
-callback for export deduplication; the engine supplies the temporary SQLite
-lookup, while source interpretation stays in sources.
-
-## Application and transports
-
-`daemon/service.rs` owns application state and typed request handling, including
-starting the convergence loop. `daemon/server.rs` owns Unix socket framing and
-listeners. HTTP and MCP adapters translate requests and present results; they
-use the same application operations. Signal evaluation and embedding providers
-have their own modules. This is an internal boundary in the application crate,
-not another service or crate.
-
-Production startup resolves optional backing from operator configuration and
-passes it explicitly to `service::start`. In-process fixtures select
-`Backing::Standalone`; changing a fixture's source home does not select its
-backing. The daemon subprocess fixture uses its own configuration directory.
-
-`service::Runtime` owns the convergence and signal workers, the optional
-Sinex publisher and the archive lock. Socket and HTTP servers own their listeners and client work and stop
-before the application runtime. Application shutdown first marks request
-admission stopped and closes the client read pool, waking checkouts before
-transport or signal-worker joins. It then stops workers before releasing the
-writer lock. Independent transport shutdown still permits transport restart. Unfinished
-socket input or response writes fail when peers close; already admitted store
-writes finish before the writer joins. Retained writer-sender handles refuse
-new work after shutdown. Shutdown closes the read pool and releases its idle
-connections even when an external `Arc<Daemon>` survives. A reader already
-pinned keeps its transaction until its caller drops it.
-
-The in-process `TestDaemon` follows that order on ordinary drop and panic,
-before removing its temporary archive. On Linux, test daemon subprocesses also
-receive a kernel parent-death signal, with a parent-PID check closing the startup
-race. Source read events do not wake discovery, and unchanged incomplete JSONL
-tails wait for source growth rather than rereading retained bytes. The subprocess
-tests cover forced parent death, archive-lock release and idle input reads.
-
-`commands.rs` declares command arguments, capabilities, printers and local
-output actions. CLI, MCP and HTTP build their surfaces from that table.
-`daemon/measure.rs` declares measurements and their supported metrics once.
-
-## Presentation and backing storage
-
-`polylogue-render` owns session view projection and output selection. A view
-selects typed blocks without replacing message metadata or tool fields. Prose
-formats display those blocks as Pieces; structured JSON reads retain
-`{session, messages}`. JSON export retains the model's importable Document,
-including events and links, rather than converting it to prose Pieces. The
-same renderer owns the format and view names. HTML exports and the web reader
-share the content renderer; framing, navigation and transport remain with
-callers. HTML output returns write errors.
-
-The shared masker uses `credential-output-v2`, recognizing valid overlapping
-starts independently so a quoted value cannot hide a later credential.
-The public application response boundary masks decoded JSON strings before
-transport escaping, including nested metadata, error text and object keys.
-Ordinary IDs, field names, types and empty values stay unchanged. If credential
-keys collapse to the same masked label, numbered suffixes keep every value and
-preserve ordinary keys. Blocks are also masked before model-page sizing, so a
-page split cannot expose fragments of a credential. Structured export preserves
-ordinary recorded fields; credential masking intentionally survives reimport.
-
-Socket reads (and their CLI/MCP clients), the HTTP read API and the HTML session
-route receive the finalized application response. Shared transport-error
-construction masks validation failures too. Session headers also mask titles
-in the HTML helpers. The browser-action backend has separate response paths;
-this boundary does not describe those control responses.
-
-Standalone storage keeps Polylogue's archive locally. The optional Sinex
-adapter supplies primary backing; its publication and restore qualification
-have separate acceptance criteria. Neither mode provides daemonless CLI
-access. Shared blob storage, credential masking and development tooling live in
-`polylogue-sinex-common`; projects pin immutable releases.
-
-The optional Sinex publisher constructs each async pass on its owning thread,
-so its canonical SQLite snapshot can span awaits without being shared across
-threads. The publisher stops at an async suspension point, including
-its periodic wait. Shutdown joins its thread before releasing the archive
-lock. A pending publish is interrupted rather than reported successful:
-frames lacking a committed acknowledgment have an unknown remote outcome.
-The next pass asks Sinex which stable frame keys it holds before resending.
-Synchronous archive and blob operations finish before cancellation is polled;
-this does not impose a hard shutdown deadline or qualify primary mode.
-
-Each observation and delivery event has its own append-ordered publication
-unit. Its sequence is the inserting transaction's write counter; event keys
-are JSON `[delivery,what,at]` tuples because delivery IDs are opaque. Migration
-assigns existing facts deterministic sequences, preserving observation rowid order,
-after both the old write counter
-and every existing unit sequence, then advances the counter. Newly assigned
-observation IDs sort in insertion order within a shared transaction sequence;
-consumers treat IDs as opaque. Existing parent
-identities and confirmed positions remain unchanged. New revision, excision and
-delivery batches exclude independently owned observations and events.
-
-Historical parent batches retain their original hash and row count. Restore
-verifies their complete closure but skips a legacy embedded fact when the final
-selection includes that fact's independent unit, including a tombstone. General
-row equality remains strict. An observation batch includes its cited input and
-machine rows. A positive revision reference must name a selected revision
-identity, including an excision-authorized tombstone for historical observations.
-Archive format 9 records each machine alias's first local commit position.
-Machine dependencies include only aliases recorded by the enclosing unit's
-position. Their serialized rows retain the original `id`, `host` and
-`first_seen` fields; the cutoff is internal ordering knowledge, not event time.
-Restore derives the earliest supported cutoff from verified enclosing units,
-independent of arrival order. Before committing, restore compares each received
-machine dependency set with the target's final eligible aliases. Extra baseline
-aliases or changed fields refuse the restore and preserve its rows and checkpoint.
-Older local writers refuse archive 9; existing
-row decoders can consume its unchanged machine payloads.
-Migration assigns position zero to every existing alias, preserving the current
-serialized closures, including machines with several hostnames. It cannot
-reconstruct an older acknowledged payload that pre-version-9 software had
-already changed. Such external hash conflicts still require their original
-verified batches; migration does not rewrite acknowledgment history.
-
-Same-archive restore refuses a view missing any
-local independently sequenced fact before removing rows. Excision replaces the
-independent units and the parents that could contain legacy embedded copies.
-The Engine loads refused locations through the typed store reader. Malformed
-location records stop collection rather than becoming an empty refusal list.
-
-Record excision keeps requested, normalized and completed byte ranges in its
-existing private `Erasures` database. The shared JSON visitor advances through
-one normalized interval and its endpoint flags; one pending output range merges
-whitespace-only gaps using bounded file reads. Complete EOF and all endpoints
-must validate before counts mark the plan usable. Failures leave unpublished
-ranges inaccessible, and retries clear that blob's partial state. Ownership
-checks and physical replacement stream the completed ranges. Memory still
-includes one decoded JSON record and final observation JSON.
-
-Whole-document text blanking uses separate literal tables in that same erasure
-owner. Blob ordinals freeze the source query's traversal before extents change.
-Each text/form scan emits hits to a nonunique range index, preserving repeated
-counts and sorted observation bytes. Completed zero-hit scans are distinct from
-interrupted scans; readers refuse incomplete results. `SessionTexts` retains
-text identity and found/missing accounting. The per-blob scan/replace order,
-quoted encodings and minimum-length rule remain unchanged.
-
-Restore orders confirmations and folds later replacements in an operation-scoped
-SQLite file. It checks exact repeats, conflicting positions, gaps and unit order
-before opening payloads. The same scratch database holds excision's input and
-machine membership sets. Its page-cache target is 1 MiB with mmap disabled;
-this is not a hard process memory cap. The catalog is discarded after the
-operation. Row deletion reads indexed unit identities directly; checkpoint
-serialization borrows canonical descriptor JSON from SQLite, preserving the
-previous ordered bytes without decoding source-reference lists again.
-
-The selected catalog enumerates distinct current source-blob references on disk.
-Restore verifies each through EOF and records its actual byte count in the
-temporary catalog. Each install attempt requires a newly completed pass,
-including repeated restore; a failed pass invalidates earlier results. These
-counts do not change checkpoint identity. Retired references are excluded only
-by the selected replacements.
-Row batches retain their per-unit identity, row-count and integrity checks.
-Revision batches also match extent blob references, supplied plain-file catalog
-rows and the selected descriptor's source references as sets in the scratch
-catalog. Machine rows must be cited by the owning observation or a legacy revision's
-embedded observations; several host labels for one machine remain valid. Extents must belong to the owning
-chain and start within its length; their positive source slices must fit the
-verified source sizes. Catalog sizes must equal those verified byte counts.
-These checks do not reconstruct every earlier
-revision interval.
-
-Selected row batches use the blob store's sequential plain reader. Restore
-copies one batch to an anonymous temporary file while checking its content hash
-and length, then validates and applies one JSON row at a time. A bad later row,
-read failure or unavailable scratch space rolls back the whole target
-transaction. Repeated restores still verify payloads. Temporary disk scales
-with catalog metadata and the largest selected batch. Memory includes the
-largest descriptor, JSON row and decoded values, plus SQLite and blob-reader
-buffers and frame metadata; it does not hold every unit or batch row at once.
-A very large individual row or excision manifest still needs that much memory.
-
-Source-blob publication and excision share `blobs/copy.rs` for decoding and
-whole-content verification. Inline bodies use SQLite incremental BLOB reads;
-file bodies use the existing sequential plain reader. Publication keeps the
-verified bytes in one anonymous temporary file before placing them through the
-checked blob writer. Corrupt source bytes reach no destination blob, and a
-corrupt existing destination refuses placement while preserving the source.
-Placement queries and checks acknowledgment groups of at most 500 blob
-references before requesting the next group, releasing each group's frame names
-and reply map. A refusal stops later groups; retry asks about every reference
-again. The caller's unit/manifest reference list is still materialized.
-Memory holds copy and codec buffers plus frame metadata. Staging disk grows
-with one source blob, alongside the destination writer's temporary encoded
-file. This path handles plain catalog entries; encoded and sealed
-publication need their own readers.
-
-`sinex_rows/batch.rs` writes row batches to buffered anonymous JSONL files.
-It holds one row's decoded columns at a time and preserves their SQL values.
-The typed row envelope and sorted column names give the same bytes with or
-without transport features. Stored replacement batches retain their original
-bytes and hashes. Placement returns the material ID and hash from one write,
-so constructing a row event does not compress the same batch twice.
-
-A publication pass keeps one SQLite read transaction across its inventory,
-replacement and row queries. Later source commits appear in the next pass;
-holding this view can retain WAL pages until the pass ends. Physical blob
-retirement can still make referenced files unavailable, which verified reads
-refuse. `sinex_rows/inventory.rs` keeps ordered unit identities, current
-replacement descriptors and acknowledged positions in operation-scoped SQLite
-with a 1 MiB page cache. The adapter discards each Have reply after at most
-500 keys and visits missing units by position. Named replacement blob references
-are validated before placement and converted to binary hashes in groups of 500,
-using the same acknowledgment path. Historical manifests borrow their arrays
-from the canonical SQLite value, validate the complete manifest and its existing
-digest, then feed one replacement at a time into the inventory and retirement
-catalogs. Unknown fields and incoming whitespace do not change the typed digest.
-Temporary disk scales with the catalog and largest row batch. The canonical
-manifest JSON value, one replacement and its blob-reference list remain memory
-bounds; newly created and public manifests still own their lists. The canonical
-archive writer uses file-backed temporary tables with a 1 MiB temporary
-page-cache target. Excision freezes selected message IDs in an unnamed SQLite
-database before deleting index rows. Its nonunique ID index supports exact
-membership and sorted canonical serialization while preserving duplicate counts.
-Notes and deliveries use that selection; matched note targets have a separate
-disk owner.
-
-Session selection stays in an index-transaction TEMP table without foreign keys,
-so deleting source rows cannot change membership or order. Text ownership and
-surviving-source checks query that table directly. Success drops it; failure and
-preview roll back its creation with the index transaction. Text-scope reparse
-separately freezes candidate text IDs, affected sessions and all their input
-references in index TEMP tables before deletion. Input cleanup uses SQL
-membership, preserving process, run and link sources without an expanded SQL
-list. Orphan cleanup protects both current blocks and retained versions. Final
-public session and input lists and canonical JSON strings remain memory bounds.
-Session removal freezes copied-message IDs and, only for excision, the current
-and historical text/blob reference union on disk. It streams tool-call search
-cleanup and copy promotion through the existing writer context, then lets the
-caller process references after promotion and version pruning. The TEMP table
-definitions live with the index connection because dropping them would lock
-callers' active TEMP cursors; all staging rows are cleared before success and
-roll back on failure. Ordinary reparse skips reference capture. Excision-wide removed-text hashes and
-candidate blob hashes have separate unique TEMP tables on that same index
-transaction. Ordered text visitation writes vector policy JSON directly and
-supplies pending exclusions and embedding removal. Blob candidates still require
-extent, current-block and retained-version ownership checks plus the delta-base
-check before deletion. Success clears accumulated rows; rollback discards failed
-work. Final policy JSON remains a single owned value. Excision streams changed unit keys from
-the canonical writer's temporary table and uses `sinex_rows/excision/retirement.rs` to select historical
-batches on disk.
-A batch remains protected while any current replacement references it, including
-an unaffected unit. Manifest-owner order selects the latest replacement; source
-scan order does not matter. The new manifest's replacement and retirement lists
-still grow with that operation. `sinex_rows/excision/digest.rs` writes their
-sorted digest encoding directly into BLAKE3 through a fixed buffer, without
-building another JSON tree or a serialized manifest buffer. Existing digest
-bytes are unchanged.
-
-Excision records exact removed text hashes in `archive.db`'s
-`pending_vector_excision` table before committing. Embeddings and recorded
-provider failures are deleted by those hashes, then committed with full sync
-before the pending rows are cleared. Startup repeats pending deletions before
-preparing the index. It validates existing index removal rules before cleanup;
-conflicting archive history refuses before deleting purchased vectors.
-A failure after either commit can therefore retry the
-same cleanup without discarding unrelated purchased vectors. Fresh reads refuse
-while cleanup remains pending, even when archive and index revisions agree.
-
-Every vector insert or provider-failure write takes the embeddings write lock,
-then checks the current archive excision revision against its admitted reader.
-Excision takes that lock first too. A held provider request spanning an excision
-must obtain a fresh reader before writing. Dry runs preserve the revision.
-Each new excision owns one immutable `vector_deletion_policy` row: a format
-version and canonical sorted unique text hashes, including a known-empty array.
-Its excision batch publishes the row; older restores reject the unknown table.
-The local pending queue remains crash-recovery state and is not published.
-
-`embeddings.db` stores an archive-bound receipt for each applied exact policy.
-Deleting vectors and provider failures and recording the receipt commit together
-with FULL synchronization. Canonical restore commits policies with FULL
-synchronization before destructive reconciliation. Opening an archive or restoring canonical rows checks
-all receipts and applies missing known policies before vector access. Matching
-receipts skip deletion, preserving vectors bought later for the same text.
-Changed or missing canonical policies and conflicting archive identities refuse
-reconciliation. A scalar policy-revision stamp admits ordinary vector snapshots;
-receipt edits invalidate that stamp. Recovery validates each complete canonical
-hash array before deletion, then visits its hashes individually. A comparison
-writer checks serde's canonical encoding against the retained bytes without
-building another whole array. Reads pin the canonical and embeddings snapshots
-together, and writes retain the embeddings-first lock order.
-
-A missing policy row means legacy unknown coverage, exposed as
-`VectorStatus.legacy_excisions`; it never means an empty deletion set. Historical
-hashes are not inferred, so independently restored vectors from those legacy
-excisions cannot be reconciled retrospectively. One policy row remains the
-largest individual descriptor bound. Additive embeddings migrations preserve
-purchased vectors and reject newer unsupported schemas.
-
-Text excision preflights every retained logical chain before replacing bytes.
-Its unique logical matches, ordered frame-header patches, verified plaintext
-placements, affected blob keys, frozen referring extents and observation fragments
-share one disposable SQLite file with a 1 MiB page-cache target and mmap disabled.
-One unlinked mode-0600 plaintext file holds verified copies; a placement is
-recorded only after the full copy succeeds. The plan visits matches before header
-patches within each chain, preserving duplicate extent intersections and counts
-of overlapping unequal matches. Rewrites blank text before applying header
-patches, preserve unrelated shared fragments and discard unused blob padding.
-The matcher drains completed values to the plan. Leading-whitespace hits remain
-on disk until JSON/plain selection accepts or discards them; the current tentative
-string and nested JSON remain a value-sized memory cost. Snapshot headers are
-read one at a time through the verified plaintext owner and kept as plan rows,
-with every payload digest checked. Header/magic bytes never contribute text hits.
-A separate normalized write-range stream carries one interval across output
-chunks, while exact unequal overlaps retain their counts and observations.
-Replacement pieces become durable and enter the canonical transaction one at a
-time. A preparation failure before canonical commit rolls back the extent rows;
-prepared files may remain unreferenced. Interrupted commits use the existing
-recovery path. Required final result, policy and per-input observation JSON remain
-individual memory bounds.
-
-Local file cleanup records each authorized deletion directly in
-`pending_blob_excision` in the archive transaction. Replaced blobs, orphaned
-files and retired local batches feed that table without an operation-wide
-in-memory file list; rollback discards their intent with the canonical changes.
-Replay uses only the primary blob store and bounded groups of 500 keys; a failed delete or queue commit leaves
-recoverable intent and stops the writer. Missing local files permit retry.
-Before deletion, current catalog, extent and delta-base references refuse the
-operation. Current replacement batches and their source references are selected
-by the same disk-backed owner-order logic used for batch retirement. Referenced
-delta bases require a rewrite before excision can commit. The queue does not
-infer deletions from historical manifests or scan arbitrary orphan files.
-
-Excision records retain exact unit identities and content-addressed replacement
-batches or tombstones. Restore validates and folds all confirmed replacement
-metadata before opening payloads, then replaces the selected owner rows in one
-transaction. A nonempty target belonging to a different archive refuses before
-payload reads or changes. Same-archive updates must include every local excision's
-exact metadata; stale confirmed views refuse before reopening removed content.
-Before replacing target rows, restore snapshots hashes of its existing removal
-rules into the private catalog. It compares the final rules before committing,
-so an incompatible view rolls back policy rows, other selected rows, the local
-revision and the restore checkpoint. The hash definition is shared with index
-recovery; mutable explanations and local progress do not alter the rule.
-Pending batches remain in this archive's primary blob
-root, and local file cleanup never follows external read roots. Cataloged source
-blobs survive pending-batch retirement. Original provider files are untouched. After all row frames are acknowledged,
-the publisher requests Sinex retirement using the latest confirmed archive,
-excision owner and manifest digest. It repeats this request even when every row
-frame was already held. Sinex resolves original and historical replacement batches
-and preserves descriptor events/commit-log entries while retiring eligible material
-references. Current selections and shared aliases retain their backing. Results
-distinguish completed cleanup, retained shared files, pending unlinks and older
-servers without the retirement operation; the daemon logs outcome changes.
-Logical publication alone does not prove physical removal. Publication handles non-prefix acknowledgments;
-an interrupted pending suffix has an explicit gap and restore refuses it until
-the missing units arrive. Legacy excisions lacking replacement metadata refuse
-primary publication and restore rather than reconstructing deleted identities by guesswork.
-
-## Changing a boundary
-
-Keep a rule with its owner and update connected callers together. Add a
-provider through the origin and parser framework, a command through the
-command table, and a measurement through its declaration. Tests exercise the
-behavior through these interfaces. Follow [development.md](development.md) for
-focused checks and batch regression runs.
-
-## Text documents
-
-A model `Document` holds non-conversation text with a stable ID, purpose,
-optional source title/time, authorship and ordered blocks. `Output.documents`
-travels through the existing export scanner, staging and writer. Claude.ai
-sidecars stream individual scalar values and uploaded-document objects; they
-retain project/account descriptors without collecting every body in a project.
-The scanner receives the retained input identity explicitly. Native account,
-project and document IDs establish scope; missing identities use that input and
-the acquired record byte position. Same-length JSON removals preserve sibling
-coordinates. Independently imported inputs with no native identity remain
-independent records.
-
-Store owns shared `content_version` and `version_block` codecs for messages and
-documents, and separate current projections/source associations for each.
-Message version hashes retain their existing canonical bytes. Document hashes
-have their own domain tag. Index 31 rebuilds this derived representation;
-archive migration 7 adds only the canonical standing document-exclusion child
-rows in the existing excision unit. It does not rewrite authored targets,
-legacy seen hashes, anchors, vector bytes or existing removal policy.
-
-The `documents` query relation searches current text blocks and exposes purpose,
-authorship, source time and version count. Read/export dispatch accepts typed
-`document:ID` references. Rendering masks ordered source blocks before view
-projection and uses the existing block pieces and character splitter without
-constructing Messages. Budgeted document reads hold metadata, one decoded block
-and the output page; ordinary reads/exports may assemble the selected document.
-Cursor tokens contain hashes and numeric positions, bound to document ID,
-preferred content version, view and index generation. Prefix replay stays on one
-admitted Reader and reconstructs masking state. Changed selected content refuses
-a stale cursor; unrelated archive writes do not invalidate it. This bounds the
-decoded input unit, not process RSS or arbitrary record size.
-
-Importable exports with documents use `polylogue-export` version 2, with separate
-`sessions` and `documents` arrays. Session-only exports continue to use version 1.
-A new import cites its acquired export records, not fabricated original provider
-locations. Sinex publishes retained inputs and normal archive row units; it needs
-no durable Document table. Document exclusion rows travel in their owning
-excision unit, so an older row decoder refuses the unknown table instead of
-silently losing policy. Restoring the raw sources rebuilds document values and
-preserves that refusal on later reimport.
-
-Immutable manual imports replay by retained Input ID, separately from mutable
-watched-path state. Several imports from one filename each keep their own
-revision, parser path and progress; the latest physical-path observation cannot
-remove an earlier input from the rebuild population. Replay enumerates retained
-import metadata and decodes only inputs whose parser progress is behind. It
-opens retained chains, never source files, and does not register imports as live
-watchers. Text-excision reparse uses the same selection. Captured watched paths
-continue to resolve their latest non-import acquisition independently.
-
-A later imported Claude.ai sidecar with a null or empty document collection is
-another immutable input. Null has an interpretation diagnostic and does not hide
-valid sibling instructions; an empty array is known empty in that input. Older
-supplied text remains evidenced by the earlier input. Neither shape retracts
-another export's account records or claims a complete account snapshot.
+Polylogue retains source inputs and authored records in a local archive, derives
+searchable conversations and documents, and serves them through one daemon.
+This guide describes the current Rust implementation. [README.md](../README.md)
+describes its commands; Beads and the target design contain intended behavior
+that may still be unimplemented or unqualified.
+
+## Module owners and interfaces
+
+The ingestion path is `Sources → Engine → Store`; clients use application
+operations, which read through Store and present through Query and Render.
+
+| Owner | Responsibility and interface |
+|---|---|
+| [Model](../crates/model/src/lib.rs) | I/O-free identities, messages, blocks, documents and outcomes shared by the other crates. |
+| [Sources](../crates/sources/src/lib.rs) | Recognize and interpret native formats. An [origin declaration](../crates/sources/src/origin.rs) owns discovery, framing, parser version and tool capabilities. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) produce model values, source ranges and accounting. |
+| [Engine](../crates/engine/src/lib.rs) | Discover changes, acquire retained bytes, schedule parsing and drive convergence. The [parse pool](../crates/engine/src/pool.rs) feeds Store's bounded writer; it does not own SQL or source interpretation. |
+| [Store](../crates/store/src/lib.rs) | Own every SQLite connection, archive mutation, blob reference, read snapshot, derivation and excision. Its typed `Writer`, `ReadPool` and `Reader` interfaces isolate callers from database layout. |
+| [Query](../crates/query/src/lib.rs) | Bind the query language and compile parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) executes it through a Store reader and prepares answers. |
+| [Render](../crates/render/src/lib.rs) | Project typed content into views and produce terminal text, Markdown, HTML and structured output. It owns content presentation; callers own transport and surrounding navigation. |
+| [Application](../crates/polylogue/src/daemon/service.rs) | Own typed requests, configuration, convergence and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares arguments, capabilities and output actions for CLI, MCP and HTTP. The [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
+| [Sinex adapter](../crates/sinex/src/lib.rs) | Optional primary backing: publish canonical archive units and retained bytes, and restore confirmed selections through Store. |
+| [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real ingestion loop. Store-private row fixtures remain behind its [fixture feature](../crates/store/src/fixture.rs). |
+
+Add a source through the origin/parser framework, a command through the command
+table, and a measurement through its [declaration](../crates/polylogue/src/daemon/measure.rs).
+Crate dependency checks live in [xtask](../xtask/src/main.rs); development and
+verification commands belong in [development.md](development.md).
+
+## Durable state and derived state
+
+[Archive](../crates/store/src/archive.rs) owns the directory, writer lock and
+startup reconciliation. One writer serializes mutations. Databases have distinct
+recovery and preservation rules:
+
+| Store | Contents and recovery boundary |
+|---|---|
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. Additive [archive migrations](../crates/store/src/schema.rs) preserve this state and reject unsupported newer formats. |
+| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents, source associations and retained content versions; search and derived products. It rebuilds from canonical retained inputs when its format changes or recovery requires replacement. |
+| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Additive migrations and exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
+| [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes and published replacement batches. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
+
+Index rebuilds use retained source versions, including immutable manual imports
+whose provider files have disappeared. Parsed content versions are derived;
+authored targets, recorded hashes and anchors remain canonical. Message ordering
+uses stable source identities and positions, with opaque message IDs breaking
+ties. It does not invent event times. [Version selection](../crates/store/src/writer/tests/parser_versions.rs)
+and [import replay](../crates/engine/src/import/tests/replay.rs) tests cover those
+boundaries.
+
+Derived products declare dependency and rule versions in
+[derive](../crates/store/src/derive.rs). Changed rules refresh their dependents;
+idle derivation does not announce a new view. Search publication changes
+availability without claiming that the underlying session was edited.
+
+An unfinished index build has a durably synchronized marker and is rebuilt on
+reopen. Index replacement and an operating-system boot change replace the public
+generation; same-boot restarts preserve it. These mechanisms belong to
+[archive generation](../crates/store/src/archive/generation.rs) and
+[index retirement](../crates/store/src/archive/retired.rs), including validation
+that previously applied removal rules are still present.
+
+## Acquisition, interpretation and provenance
+
+[Import](../crates/engine/src/import.rs) and watched collection retain the bytes
+that parsing will read. The [writer's retention operation](../crates/store/src/writer/retention.rs)
+checks standing refusals, durably reserves ownership before installing file
+blobs, then admits verified installed bytes. Rejected first admissions discard
+their private stage. An interruption leaves an exact unfinished reservation:
+readers refuse its ranges, status reports `unfinished_inputs`, and recovery
+requires those exact bytes. A changed provider file cannot silently replace
+them. [Custody tests](../crates/engine/src/import/tests/custody.rs) cover imports,
+watched inputs and parse-pool groups.
+
+[Extracted blobs](../crates/store/src/retention/extracted.rs), such as decoded
+inline media, cite a retained input/chain, exact enclosing source range and hash,
+and parser version. They have independent durable owners and publication units.
+Editing or excising source bytes invalidates affected associations; surviving
+owners retain shared bytes. Recovery does not sweep unregistered historical CAS
+files. [Extracted ownership tests](../crates/store/src/sinex_rows/tests/extracted.rs)
+cover publication and restore.
+
+Parsers account for supplied records and fields, retain unknown source material,
+and distinguish unknown values from zero or empty collections. Native compaction
+history is context evidence, not newly authored messages. Provider-specific
+interpretation and its exceptions live with the [source parsers](../crates/sources/src/lib.rs)
+and [format tests](../crates/sources/tests/formats/main.rs).
+
+A completed newer interpretation can retire its predecessor's messages, events,
+links and metadata. Completion requires observed EOF and accounting through the
+selected source length. Partial work survives restart and remains `reparsing`;
+it cannot erase the prior interpretation prematurely. Different inputs' parser
+version numbers do not compete. [Reparse tests](../crates/store/src/writer/tests/reparse.rs)
+cover completion, promotion and rollback.
+
+Document-framed imports validate the complete wrapper before publishing any
+staged items. The [export driver](../crates/engine/src/import/exports.rs) keeps
+ordering/deduplication state and compressed items in disposable disk-backed
+scratch, then waits for each item's writer commit before decoding the next.
+Retry rescans retained bytes and idempotently replays committed items; there is
+no durable scanner cursor. Memory still includes the largest individual record,
+conversation or decoded output. A synchronous export can delay new live work
+until another discovery pass; it has no preemption or latency guarantee.
+
+[Tool database capture](../crates/store/src/tool_databases.rs) reads one native
+SQLite snapshot, stages complete logical changes and synchronizes them before
+advancing its completed-prefix checkpoint. Recovery preserves altered completed
+bytes and refuses ambiguous history. Capture identity binds the machine and
+normalized native path, independently of clocks or host labels. Legacy unbound exports remain retained
+without an inferred native profile. Cooperative
+capture turns let convergence service controls and ordinary inputs between
+turns; a single SQLite call or record can exceed the turn budget. The owning
+[capture tests](../crates/store/src/tool_databases/tests.rs) cover completion and
+recovery.
+
+[Browser capture](../crates/polylogue/src/browser/captures.rs) acknowledges a
+synchronized append to a framed spool. Exact retries are idempotent; an
+interrupted matching prefix can complete, while ambiguous tails are preserved
+and refused. Current acquisitions supply partial session coverage. Missing
+members or omitted metadata do not prove deletion. Retained snapshot and source
+ordering determine the current projection. The [spool tests](../crates/polylogue/src/browser/captures/tests.rs)
+and [capture parser tests](../crates/sources/src/browser_capture/tests.rs) own
+these rules.
+
+Non-conversation text uses the model's [Document](../crates/model/src/document.rs)
+and Store's [document projection](../crates/store/src/documents.rs), with source
+associations and content versions separate from messages. `document:ID` supports
+read and export; the `documents` relation searches current text. Supplied account
+or project text remains evidenced by each immutable import. A later empty or
+null collection is not an account-wide retraction. [Sidecar tests](../crates/sources/src/claude_ai/sidecars_tests.rs)
+and [document convergence tests](../crates/engine/tests/convergence/excision_documents.rs)
+cover identity, interpretation and standing exclusions.
+
+## Read snapshots, queries and continuation
+
+[ReadPool](../crates/store/src/read.rs) bounds client reader admission and gives
+convergence a separate reserved reader. A reader is thread-affine and reuses
+bounded SQLite connections. A checkout that would wait while its thread already
+holds a slot refuses rather than deadlocking. Closing the pool wakes waiters and
+refuses unused reservations; already pinned readers can finish.
+
+On first read, shared publication exclusion pins the attached archive/index
+snapshots and validates removal revisions and pending cleanup. Writers take
+exclusive publication exclusion before SQLite write locks. A pinned WAL reader
+then releases that exclusion, allowing later publications while retaining its
+view. An idle old-index handle refreshes; a reserved replaced handle refuses.
+An embeddings snapshot has its own checked removal revision and is not a claim
+that all three databases were pinned simultaneously. [Admission tests](../crates/store/src/read/tests/snapshot_admission.rs)
+cover those races. Cache budgets are SQLite targets with mmap disabled, not hard
+process memory or result-size limits.
+
+Ordinary query pages bind the resolved question, clock/seed, index generation
+and index/archive counters. An intervening publication returns `stale_cursor`;
+no transaction survives between requests. Page size may change. Semantic ranking
+supports complete single-page answers, without continuation over a changing
+vector set. [Query page tests](../crates/polylogue/src/daemon/query/tests/page_binding.rs)
+own this contract.
+
+Budgeted session and document reads instead bind selected content, view and
+index generation. Unrelated writes can leave them usable; changed content or a
+replaced index refuses continuation. Replaying the source prefix reconstructs
+masking state. The budget bounds returned output, not input memory or RSS;
+session reads can require one whole decoded message, and document reads one
+block. Ordinary unbudgeted formats can assemble complete output. See the
+[read operation](../crates/polylogue/src/daemon/service/read.rs),
+[model pager](../crates/render/src/model_pages.rs) and
+[read-page tests](../crates/polylogue/src/daemon/service/tests/read_pages.rs).
+
+The `changes --since POSITION` operation prepares a finite reference batch,
+validates and masks all its rows in a temporary file, then drops the reader
+before socket delivery. Only its `complete` line offers a new position; the
+receiver must apply or stage every prior record before persisting it. Disconnects
+can leave an unknown outcome and retries can replay references. A generation
+change requires replacement membership and replay of canonical notes/excisions.
+An arbitrary query over `changes` retains ordinary query semantics and does not
+acknowledge delivery. [Changes](../crates/polylogue/src/cli/changes.rs) and its
+[tests](../crates/polylogue/src/cli/changes/tests.rs) own this protocol.
+
+## Presentation and application lifetime
+
+[Render](../crates/render/src/lib.rs) shares content presentation across CLI,
+HTML exports and the web reader. View projection preserves message metadata and
+tool fields. Structured export preserves importable model records, events and
+links rather than converting them to prose.
+
+The model's [masker](../crates/model/src/masking.rs) processes ordered source
+content before view filtering, page splitting or structured encoding. Titles and
+[search snippets](../crates/store/src/search/tests/masking.rs) share source-order
+masking. Independently authored unordered structured fields do not establish
+chronology for a secret split across them. The public application response
+boundary also masks decoded strings, nested metadata, errors and object keys
+before transport escaping. Recorded source bytes remain unchanged; exported
+credential masking survives reimport. Browser control responses have their own
+response paths. [Masking tests](../crates/model/src/masking/tests.rs) and
+[CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover the
+shared content behavior.
+
+The daemon owns archive access; CLI archive commands require it in either
+backing mode. Startup receives explicit standalone or Sinex backing. The
+application runtime owns convergence, signal workers, the optional publisher
+and archive lock; transports own listeners and client work. Shutdown stops
+admission and closes the read pool before joining transports/workers, then
+releases the writer lock. Already admitted writes finish; pinned readers live
+until dropped. Transport restart is separate from application shutdown.
+[TestDaemon](../crates/polylogue/src/daemon/service/tests.rs) uses the same
+lifetime boundary. Publisher cancellation leaves unacknowledged remote outcomes
+unknown; synchronous archive/blob work has no hard shutdown deadline.
+
+## Excision and Sinex backing
+
+[Excision](excision.md) owns supported removals, standing refusals and known
+representation limits. It preserves unrelated shared content and canonical
+identities, leaves original provider files untouched, and refuses unsupported
+rewrites before committing. Exact pending blob/vector deletion intents survive
+interrupted paired commits. Readers refuse inconsistent removal state; reopening
+validates prior rules before recovery or rebuilding the derived index.
+
+Each new excision records an immutable exact vector-deletion policy. Embeddings
+reconciliation commits deletion and its archive-bound receipt together; repeated
+restore preserves later repurchases. Legacy missing policies mean unknown
+coverage, not an empty deletion set, and cannot retrospectively identify vectors
+to remove. [Vector cleanup](../crates/store/src/excise/vector_cleanup.rs) and
+[policy restore tests](../crates/store/src/sinex_rows/tests/vector_policies.rs)
+own this distinction.
+
+[Store's Sinex row interface](../crates/store/src/sinex_rows.rs) publishes
+commit-ordered units, each with checked identity, row count and content hash.
+Observations, delivery events and extracted blobs are independent units, so
+later facts do not mutate acknowledged parent batches. Historical embedded facts
+remain compatible with verified legacy closures. Machine alias dependencies
+include only aliases eligible at the unit's recorded commit position. Migration
+preserves current legacy closures but cannot reconstruct acknowledged bytes
+already changed by older software; those conflicts require the original verified
+batches. [Machine alias tests](../crates/store/src/sinex_rows/tests/machine_alias.rs)
+and [append-fact tests](../crates/store/src/sinex_rows/tests/append_facts.rs)
+cover ordering and closure preservation.
+
+[Restore](../crates/store/src/sinex_rows/restore.rs) validates confirmations,
+gaps, replacements, source bytes and row ownership before atomically installing
+the selected state. It refuses a different nonempty archive, missing local
+independent facts or omitted/changed removal rules. A stale confirmed view
+cannot reopen removed content. Its [catalog](../crates/store/src/sinex_rows/restore/catalog.rs)
+keeps operation-wide selection on disk; payloads are verified through EOF and
+applied row by row. The largest descriptor, JSON row or manifest remains an
+individual memory bound. [Restore tests](../crates/store/src/sinex_rows/restore/batch/tests.rs)
+cover malformed payloads and rollback.
+
+Excision publishes exact replacement batches or tombstones. After row-frame
+acknowledgment, the [Sinex adapter](../crates/sinex/src/lib.rs) requests retirement
+using the latest confirmed owner and manifest digest, including on retries that
+already hold every frame. Shared current references retain their backing.
+Logical publication does not prove physical removal: results distinguish
+completed cleanup, shared retention, pending unlink and unsupported older
+servers. Legacy excisions without replacement metadata refuse primary
+publication/restore. The [native backing control](../crates/sinex/src/tests.rs)
+exercises real publication, restore and retirement; primary-mode qualification
+remains a separate operational acceptance decision.
