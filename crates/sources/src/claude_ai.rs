@@ -8,6 +8,9 @@
 //! thinking, tool use and results); claude.ai runs some tools itself, so a
 //! tool result can sit in the assistant message that made the call.
 
+mod fields;
+mod sidecars;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
@@ -29,11 +32,17 @@ const ROOT_PARENT: &str = "00000000-0000-4000-8000-000000000000";
 /// `conversations.json` whose conversations start with `uuid` (ChatGPT's
 /// export has the same name and never does).
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
+    if sidecars::recognize(path, head) {
+        return true;
+    }
     let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
     named && first_byte(head) == Some(b'[') && first_key(head) == Some("uuid")
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
+    if let Some(parser) = sidecars::open(path) {
+        return Some(parser);
+    }
     let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
     named.then(|| Parse::Export(Box::new(Export)))
 }
@@ -615,3 +624,6 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sidecars_tests;

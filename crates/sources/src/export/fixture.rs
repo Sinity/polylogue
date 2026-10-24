@@ -50,6 +50,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
         append!(
             sessions,
             messages,
+            documents,
             events,
             links,
             background,

@@ -362,7 +362,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-ai",
-        parser_version: 4,
+        parser_version: 5,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
