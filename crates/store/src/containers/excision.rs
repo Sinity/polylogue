@@ -8,7 +8,6 @@ pub(crate) fn containing(
     conn: &Connection,
     selected: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>> {
-    require_authority(conn)?;
     verify_all(conn)?;
     let mut visited = BTreeSet::new();
     let mut pending: VecDeque<_> = selected.iter().cloned().collect();

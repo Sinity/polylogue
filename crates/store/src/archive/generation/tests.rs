@@ -41,7 +41,7 @@ fn same_boot_keeps_positions_but_changed_boot_ignores_a_stale_clean_stop() {
 }
 
 #[test]
-fn legacy_metadata_is_adopted_and_failed_adoption_changes_nothing() {
+fn a_missing_generation_is_created_and_a_failed_update_changes_nothing() {
     let conn = index();
     conn.execute("DELETE FROM meta WHERE key='generation'", [])
         .unwrap();

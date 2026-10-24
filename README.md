@@ -122,9 +122,7 @@ inputs with interpretation diagnostics.
 JSON exports containing documents use `polylogue-export` version 2; session-only
 exports retain version 1. Both can be imported. Document removals use
 `excise document:ID --yes`, keep unaffected sibling values readable and retain a
-standing exclusion through rebuild and Sinex restore. Archive format 7 stores
-that policy; older local readers refuse it. The derived index rebuilds at
-version 34 without changing existing message hashes or authored references.
+standing exclusion through rebuild and Sinex restore.
 
 Logical reads (`read SESSION --logical`) include only proven inherited prefixes.
 A fork's anchor is resolved in its parent's composed history, including that

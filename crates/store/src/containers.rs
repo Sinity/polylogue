@@ -6,18 +6,6 @@ use rusqlite::{Connection, params};
 mod excision;
 pub(crate) use excision::{containing, detach, require_removable};
 
-pub(crate) fn require_authority(conn: &Connection) -> Result<()> {
-    if crate::schema::version(conn)? >= 10 {
-        let present:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='observation_container')",[],|r|r.get(0))?;
-        if !present {
-            return Err(StoreError::Invalid(
-                "container custody authority is missing from archive10".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn coordinate(batch: &Batch) -> Option<&ImportContainer> {
     batch
         .observation

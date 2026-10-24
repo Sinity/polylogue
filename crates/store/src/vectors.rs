@@ -60,10 +60,10 @@ impl Vectors {
             open_read(&archive.embeddings_db())?
         };
         let found = crate::schema::version(&conn)?;
-        if found > 2 {
-            return Err(StoreError::TooNew {
+        if found > 1 {
+            return Err(StoreError::Version {
+                database: "embeddings",
                 found,
-                supported: 2,
             });
         }
         let metadata_kib = if writable { cache_kib / 2 } else { 0 };
@@ -78,12 +78,7 @@ impl Vectors {
         if !writable {
             conn.execute_batch("BEGIN")?;
         }
-        let has_pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM canonical.sqlite_master WHERE type='table' AND name='pending_vector_excision')",[],|r|r.get(0))?;
-        if has_pending {
-            crate::excise::vector_cleanup::check_writer(&conn, &revision)?;
-        } else {
-            crate::excise::vector_policy::check(&conn)?;
-        }
+        crate::excise::vector_cleanup::check_writer(&conn, &revision)?;
         Ok(Self {
             conn,
             writable,

@@ -7,10 +7,6 @@ pub struct RetainedImport {
     pub format: String,
     /// Captured parser context, never a provider file to reopen.
     pub path: Option<String>,
-    /// This format/path pair was recorded by the acquiring importer.
-    pub format_observed: bool,
-    /// Earlier acquisitions lack a recorded interpretation and can supply legacy path context.
-    pub legacy_context: bool,
     pub state: RetainedInput,
 }
 
@@ -25,9 +21,7 @@ impl Reader<'_> {
                 AND json_type(o.details_json,'$.import_format')='text'
             ) SELECT i.id,COALESCE(selected.format,i.format),
             COALESCE(selected.path,(SELECT o.path FROM a.observation o WHERE o.input=i.id AND o.class<>'excised' ORDER BY o.rowid LIMIT 1)),
-            r.chain,r.length,COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),selected.input IS NOT NULL,
-            EXISTS(SELECT 1 FROM a.observation legacy WHERE legacy.input=i.id AND legacy.class='imported'
-                AND CASE WHEN json_valid(legacy.details_json) THEN json_type(legacy.details_json,'$.import_format') END IS NULL)
+            r.chain,r.length,COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0)
             FROM a.input i JOIN a.revision r ON r.input=i.id
             LEFT JOIN interpreted selected ON selected.input=i.id AND selected.choice=1
             LEFT JOIN input_ref ir ON ir.id=i.id LEFT JOIN parse_state p ON p.input_pk=ir.pk AND p.chain=r.chain
@@ -40,8 +34,6 @@ impl Reader<'_> {
                     id: r.get(0)?,
                     format: r.get(1)?,
                     path: r.get(2)?,
-                    format_observed: r.get(8)?,
-                    legacy_context: r.get(9)?,
                     state: RetainedInput {
                         chain: r.get(3)?,
                         length: r.get::<_, i64>(4)? as u64,
@@ -53,10 +45,5 @@ impl Reader<'_> {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
-    }
-    /// Captured legacy acquisition paths, without probing the current filesystem.
-    pub fn retained_import_paths(&self, input: &str) -> Result<Vec<String>> {
-        Ok(self.conn()?.prepare("SELECT path FROM a.observation WHERE input=?1 AND class='imported' AND CASE WHEN json_valid(details_json) THEN json_type(details_json,'$.import_format') END IS NULL GROUP BY path ORDER BY min(rowid)")?
-            .query_map([input], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
     }
 }

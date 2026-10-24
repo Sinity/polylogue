@@ -383,49 +383,6 @@ fn excision_redacts_independent_events_and_publishes_excised_observations_before
 }
 
 #[test]
-fn migration_and_restore_keep_observation_insertion_order_when_ids_and_times_disagree() {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = crate::fixture::archive4::create(dir.path()).unwrap();
-    let mut db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    db.execute_batch("INSERT INTO input VALUES ('input','synthetic-text');
-        INSERT INTO machine(id,host,first_seen) VALUES ('machine','host',1);
-        INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('z','input','machine','first','deleted','test',900);
-        INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('a','input','machine','last','deleted','test',1);").unwrap();
-    let latest = |db: &Connection| {
-        db.query_row(
-            "SELECT path FROM observation WHERE input='input' ORDER BY rowid DESC LIMIT 1",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .unwrap()
-    };
-    assert_eq!(latest(&db), "last");
-    crate::schema::migrate_archive(&mut db).unwrap();
-    let source = Published::open(&archive.root).unwrap();
-    let (units, payloads) = descriptors(&source);
-    assert_eq!(
-        units
-            .iter()
-            .map(|u| u.unit.key.as_str())
-            .collect::<Vec<_>>(),
-        ["z", "a"]
-    );
-    let selected = select(&units).unwrap();
-    let target_dir = tempfile::tempdir().unwrap();
-    let (target, _lock) = Archive::open_or_create(target_dir.path()).unwrap();
-    let mut target = Restoring::open(&target).unwrap();
-    target
-        .install(&source.archive_id().unwrap(), &selected, |u| {
-            Ok(Some(Cursor::new(
-                payloads[units.iter().position(|x| x == u).unwrap()].clone(),
-            )))
-        })
-        .unwrap();
-    let restored = open_write(&target.archive.archive_db(), cache::SETUP).unwrap();
-    assert_eq!(latest(&restored), latest(&db));
-}
-
-#[test]
 fn more_than_ten_excised_locations_restore_the_latest_inserted_observation() {
     use crate::excise::{ExciseRequest, Scope};
     let dir = tempfile::tempdir().unwrap();

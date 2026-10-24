@@ -46,6 +46,4 @@ cancellation, exact identity reuse, private envelopes and missing evidence throu
 real NATS. The [cross-UID command proof](../crates/sinex/tests/proof/cross_uid.rs)
 uses existing binaries in an isolated mount namespace and reaps its owned actor
 process groups. The [native restore proof](../crates/sinex/src/tests.rs) uses the paired
-Sinex receiver and schema tools. Its historical machine control uses actual old8
-Writer data with a consistent SQLite snapshot and the current reserved publisher;
-it does not establish compatibility of old8's unreserved primary transport.
+Sinex receiver and schema tools.

@@ -29,7 +29,7 @@ fn invalid(reason: &str) -> ExportError {
 
 impl Publication {
     /// Validate before truncating: an altered committed prefix is never repaired
-    /// by deleting bytes. A legacy export is validated by the catalog loader.
+    /// by deleting bytes. An export without a marker is validated by the catalog loader.
     pub fn open(
         out: &Path,
         progress: &mut dyn FnMut() -> Result<(), ExportError>,
@@ -100,7 +100,7 @@ impl Publication {
         self.facts == facts(out) && self.marker_facts == facts(&checkpoint(out))
     }
 
-    /// Install only after the caller has strictly replayed legacy bytes.
+    /// Install only after the caller has strictly replayed the existing bytes.
     pub fn establish(&mut self, out: &Path) -> Result<(), ExportError> {
         if !checkpoint(out).exists() {
             let file = OpenOptions::new().create(true).append(true).open(out)?;

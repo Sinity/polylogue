@@ -122,59 +122,6 @@ fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {
 }
 
 #[test]
-fn legacy_conversion_keeps_all_chain_history_after_index_rebuild() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = config_at(dir.path());
-    std::fs::create_dir_all(&config.home).unwrap();
-    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    let ctx = Arc::new(Ctx::at(&config, &archive).unwrap());
-    let first = capture("rewrite", "before conversion");
-    let ack = exchange(&ctx, "POST", "/v1/browser-captures", &first);
-    let path = ctx.spool.join(ack.json()["artifact_ref"].as_str().unwrap());
-    // Existing installations have a single unframed envelope at this path.
-    std::fs::write(&path, &first).unwrap();
-    let mut engine = Engine::new(config.clone(), archive.clone()).unwrap();
-    assert!(engine.converge().unwrap().errors.is_empty());
-    assert_eq!(
-        exchange(
-            &ctx,
-            "POST",
-            "/v1/browser-captures",
-            &capture("rewrite", "after conversion")
-        )
-        .status,
-        200
-    );
-    assert!(engine.converge().unwrap().errors.is_empty());
-    let mid = MessageId::parse("chatgpt:t1").unwrap();
-    let before = {
-        let pool = ReadPool::open(&archive).unwrap();
-        let reader = pool.reader().unwrap();
-        reader.message_versions(&mid).unwrap()
-    };
-    assert_eq!(before.len(), 3);
-    assert_eq!(before.iter().filter(|v| v.current).count(), 1);
-    drop(engine);
-    drop(_lock);
-    let _engine = rebuild(config, &archive);
-    let pool = ReadPool::open(&archive).unwrap();
-    assert_eq!(
-        pool.reader().unwrap().message_versions(&mid).unwrap(),
-        before
-    );
-    assert_eq!(
-        text(
-            &pool
-                .reader()
-                .unwrap()
-                .messages(&SessionId::parse("chatgpt:rewrite").unwrap(), false)
-                .unwrap()
-        ),
-        ["after conversion"]
-    );
-}
-
-#[test]
 fn text_excision_rehashes_retained_frames_and_cannot_restore_historical_plaintext() {
     let dir = tempfile::tempdir().unwrap();
     let config = config_at(dir.path());

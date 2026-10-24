@@ -169,28 +169,11 @@ impl Config {
     }
 }
 
-/// A present interpretation of legacy captured bytes and paths. Zero candidates
-/// is unknown; multiple origins are ambiguous and are not replayed.
-#[derive(Debug, Clone, Serialize)]
-pub struct LegacyImport {
-    pub input: String,
-    pub candidates: Vec<LegacyImportCandidate>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LegacyImportCandidate {
-    pub format: String,
-    pub path: PathBuf,
-}
-
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unfinished_inputs: Vec<polylogue_store::retention::Unfinished>,
-    /// Current recognition of legacy retained bytes, not a historical acquisition claim.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub legacy_imports: Vec<LegacyImport>,
     /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -630,7 +613,6 @@ impl Engine {
             total.bytes_stored += next.bytes_stored;
             total.messages_written += next.messages_written;
             total.sessions_derived += next.sessions_derived;
-            total.legacy_imports.extend(next.legacy_imports);
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
             total.unfinished_inputs = next.unfinished_inputs;

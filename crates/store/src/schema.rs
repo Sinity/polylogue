@@ -1,5 +1,5 @@
-//! Table declarations. `archive.db` and `embeddings.db` evolve by numbered
-//! additive migrations applied when the daemon opens the archive.
+//! Table declarations. `archive.db` and `embeddings.db` are created at
+//! version 1, the only version; a file at any other version is refused.
 //! `index.db` is never migrated: a new version builds a new file and swaps
 //! it in.
 
@@ -15,20 +15,6 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// replay, including canonical ownership learned by parsing, also uses this boundary.
 pub const INDEX_VERSION: u32 = 34;
 
-/// Migrations for `archive.db`, applied in order after the base schema.
-/// Each is additive; an archive at a higher number than this list is refused.
-pub const ARCHIVE_MIGRATIONS: &[&str] = &[
-    include_str!("schema/migrations/002-excision-revision.sql"),
-    include_str!("schema/migrations/003-vector-excision.sql"),
-    include_str!("schema/migrations/004-local-blob-excision.sql"),
-    include_str!("schema/migrations/005-append-facts.sql"),
-    include_str!("schema/migrations/006-vector-deletion-policy.sql"),
-    include_str!("schema/migrations/007-document-excision.sql"),
-    include_str!("schema/migrations/008-extracted-blobs.sql"),
-    include_str!("schema/migrations/009-machine-order.sql"),
-    include_str!("schema/migrations/010-container-members.sql"),
-];
-
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {
     Ok(conn.pragma_query_value(None, "user_version", |r| r.get(0))?)
@@ -39,7 +25,7 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
     Ok(())
 }
 
-/// Creates `archive.db` at the base version (1) and applies migrations.
+/// Creates `archive.db` at version 1.
 pub fn create_archive(conn: &Connection) -> Result<()> {
     conn.execute_batch(ARCHIVE)?;
     set_version(conn, 1)?;
@@ -85,26 +71,26 @@ pub fn unsynced(conn: &Connection) -> Result<bool> {
     Ok(v.as_deref() == Some("1"))
 }
 
-/// Applies pending archive migrations inside one transaction.
-pub fn migrate_archive(conn: &mut Connection) -> Result<()> {
-    let latest = 1 + ARCHIVE_MIGRATIONS.len() as u32;
-    let found = version(conn)?;
-    if found > latest {
-        return Err(StoreError::TooNew {
-            found,
-            supported: latest,
-        });
+/// Creates `archive.db` in an empty file; refuses a file at another version.
+pub fn ensure_archive(conn: &Connection) -> Result<()> {
+    ensure(conn, "archive", create_archive)
+}
+
+/// Creates `embeddings.db` in an empty file; refuses a file at another version.
+pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
+    ensure(conn, "embeddings", create_embeddings)
+}
+
+fn ensure(
+    conn: &Connection,
+    database: &'static str,
+    create: fn(&Connection) -> Result<()>,
+) -> Result<()> {
+    match version(conn)? {
+        0 => create(conn),
+        1 => Ok(()),
+        found => Err(StoreError::Version { database, found }),
     }
-    let tx = conn.transaction()?;
-    for (i, sql) in ARCHIVE_MIGRATIONS.iter().enumerate() {
-        let target = 2 + i as u32;
-        if found < target {
-            tx.execute_batch(sql)?;
-            set_version(&tx, target)?;
-        }
-    }
-    tx.commit()?;
-    Ok(())
 }
 
 /// Ordinary tables in `index.db` and their column names.
@@ -128,29 +114,6 @@ pub(crate) fn index_columns(
         out.push((name, cols));
     }
     Ok(out)
-}
-
-/// Additive embeddings migrations preserve purchased vectors.
-pub(crate) fn migrate_embeddings(conn: &mut Connection) -> Result<()> {
-    let found = version(conn)?;
-    if found > 2 {
-        return Err(StoreError::TooNew {
-            found,
-            supported: 2,
-        });
-    }
-    if found == 0 {
-        create_embeddings(conn)?;
-    }
-    if found < 2 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(include_str!(
-            "schema/migrations/002-vector-policy-receipts.sql"
-        ))?;
-        set_version(&tx, 2)?;
-        tx.commit()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

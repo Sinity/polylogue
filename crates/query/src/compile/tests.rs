@@ -274,21 +274,22 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
             .all(|c| c.reference.is_none())
     );
     let fields = [("name", "id"), ("kind", "text")].into_iter();
-    let legacy: Column = serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
-        _,
-        serde::de::value::Error,
-    >::new(fields))
-    .unwrap();
+    let without_reference: Column =
+        serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
+            _,
+            serde::de::value::Error,
+        >::new(fields))
+        .unwrap();
     options.kept.insert(
-        "legacy".into(),
+        "plain".into(),
         Kept {
             unit: "sessions".into(),
-            columns: vec![legacy],
+            columns: vec![without_reference],
             match_columns: vec![],
         },
     );
     assert_eq!(
-        compile("result:legacy", &options).unwrap().columns[0].reference,
+        compile("result:plain", &options).unwrap().columns[0].reference,
         None
     );
     options.kept.insert(

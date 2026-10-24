@@ -106,8 +106,7 @@ impl Archive {
     }
 
     /// Creates the directory with copy-on-write off and the three databases
-    /// at their current versions, or opens an existing one and applies
-    /// archive migrations. Takes the writer lock; a second daemon on the
+    /// at their current versions, or opens an existing one. Takes the writer lock; a second daemon on the
     /// same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
         let fresh = !root.exists();
@@ -133,10 +132,7 @@ impl Archive {
         fs::create_dir_all(archive.blobs_dir())?;
         let mut a = open_write(&archive.archive_db(), cache::SETUP)?;
         let identity_publication = crate::publication::write(&a)?;
-        if schema::version(&a)? == 0 {
-            schema::create_archive(&a)?;
-        }
-        schema::migrate_archive(&mut a)?;
+        schema::ensure_archive(&a)?;
         // The archive's identity: Sinex keys this archive's published rows
         // by it, so two archives never collide (architecture 7.1).
         a.execute(
@@ -144,8 +140,8 @@ impl Archive {
             [uuid::Uuid::now_v7().to_string()],
         )?;
         drop(identity_publication);
-        let mut e = open_write(&archive.embeddings_db(), cache::SETUP)?;
-        schema::migrate_embeddings(&mut e)?;
+        let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
+        schema::ensure_embeddings(&e)?;
         drop(e);
         archive.validate_excision_indexes(&a)?;
         crate::excise::vector_cleanup::recover(&archive, &mut a)?;
@@ -167,8 +163,8 @@ impl Archive {
             return Ok(());
         }
         self.validate_excision_indexes(canonical)?;
-        let mut e = open_write(&self.embeddings_db(), cache::SETUP)?;
-        schema::migrate_embeddings(&mut e)?;
+        let e = open_write(&self.embeddings_db(), cache::SETUP)?;
+        schema::ensure_embeddings(&e)?;
         drop(e);
         crate::excise::vector_cleanup::recover(self, canonical)
     }

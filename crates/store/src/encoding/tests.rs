@@ -186,8 +186,8 @@ fn dictionary_rows_and_plain_canonical_frames_remain_distinct() {
     }
     let bytes = serde_json::to_vec(&message).unwrap();
     for level in [1, 3] {
-        let legacy = zstd::stream::encode_all(&bytes[..], level).unwrap();
-        assert_eq!(unpack_json::<Message>(&legacy).unwrap(), message);
+        let other_level = zstd::stream::encode_all(&bytes[..], level).unwrap();
+        assert_eq!(unpack_json::<Message>(&other_level).unwrap(), message);
     }
 }
 

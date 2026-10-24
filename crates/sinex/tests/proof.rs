@@ -16,15 +16,9 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "faults")]
 #[path = "proof/retention.rs"]
 mod retention;
-#[cfg(feature = "faults")]
-#[path = "proof/upgrade.rs"]
-mod upgrade;
 
 #[path = "proof/assets.rs"]
 mod assets;
-#[cfg(feature = "faults")]
-#[path = "proof/containers.rs"]
-mod containers;
 
 const EXAMPLES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -242,10 +236,6 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
             other => panic!("producer have endpoint did not become ready: {other:?}"),
         }
     }
-    #[cfg(feature = "faults")]
-    upgrade::verify(&mut sinex, &config, dir.path()).await;
-    #[cfg(feature = "faults")]
-    containers::verify(&mut sinex, &config, dir.path()).await;
     let first = sinex.publish(&a).await.unwrap();
     assert!(first.units > 0 && first.held == 0, "{first:?}");
     let second = sinex.publish(&a).await.unwrap();

@@ -219,34 +219,6 @@ mod publication;
 mod unfinished;
 
 #[test]
-fn missing_container_authority_is_not_an_empty_removal_policy() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
-    assert!(
-        writer
-            .sender()
-            .unwrap()
-            .retain_group(linked(&archive, "authority", false), store)
-            .unwrap()
-            .iter()
-            .all(Result::is_ok)
-    );
-    drop(writer);
-    let db = crate::archive::open_write(&archive.archive_db(), 1).unwrap();
-    db.execute_batch("DROP TABLE observation_container")
-        .unwrap();
-    drop(db);
-    assert!(
-        matches!(Writer::start(&archive),Err(StoreError::Invalid(message)) if message.contains("custody authority"))
-    );
-    assert!(
-        matches!(crate::sinex_rows::Published::open(&archive.root),Err(StoreError::Invalid(message)) if message.contains("custody authority"))
-    );
-}
-
-#[test]
 fn a_container_in_one_acquisition_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
