@@ -79,6 +79,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
 impl ExportParser for OpenAiChat {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {

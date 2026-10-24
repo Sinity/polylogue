@@ -263,6 +263,7 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
 pub trait ExportParser: Send {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {

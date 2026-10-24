@@ -1,5 +1,6 @@
 use super::*;
 use crate::parse::Step;
+use polylogue_model::export::Document;
 use polylogue_model::export::SessionExport;
 use polylogue_model::*;
 
@@ -72,6 +73,7 @@ fn steps(bytes: &[u8]) -> Vec<Step> {
     let mut items = Vec::new();
     parser
         .scan(
+            "synthetic-input",
             &mut std::io::Cursor::new(bytes),
             &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 items.push((range, String::from_utf8(raw.to_vec()).unwrap()));
@@ -158,6 +160,7 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     let mut count = 0;
     let stats = parser
         .scan(
+            "synthetic-input",
             &mut std::io::Cursor::new(bytes.as_bytes()),
             &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 count += 1;

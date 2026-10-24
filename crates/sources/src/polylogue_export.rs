@@ -34,6 +34,7 @@ pub struct Export {
 impl ExportParser for Export {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {

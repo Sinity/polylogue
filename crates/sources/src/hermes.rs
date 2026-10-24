@@ -240,6 +240,7 @@ impl Database {
 impl ExportParser for Database {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn Input,
         items: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {

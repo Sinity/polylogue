@@ -110,7 +110,7 @@ impl Engine {
             );
         };
         let mut reader = Counted::new(|| chain.reader(Arc::clone(&self.blobs)));
-        let scanned = parser.scan(&mut reader, &mut ItemWriter(&mut scratch));
+        let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
         pass.bytes_read += reader.count;
         if let Err(error) = scanned {
             let export::ScanError::Malformed(error) = error else {
