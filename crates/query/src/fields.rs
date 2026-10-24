@@ -343,7 +343,7 @@ pub static FIELDS: &[Field] = &[
     // documents have no conversation role, session or usage defaults.
     f(Documents,"id",Prefix,"document ID or a unique prefix").sql_ref("{r}.id", ColumnReference::Document),
     f(Documents,"origin",Match,"the provider export family").sql("{r}.origin"),
-    v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context or memory").sql("{r}.purpose"),
+    v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context, memory or transcript").sql("{r}.purpose"),
     v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
     f(Documents,"title",Substring,"the supplied source title").sql("{r}.title"),
     f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),

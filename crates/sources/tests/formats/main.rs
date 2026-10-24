@@ -15,3 +15,5 @@ mod golden;
 mod hermes_exports;
 mod optional_numeric;
 mod support;
+
+mod hermes_trajectories;

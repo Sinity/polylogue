@@ -4,6 +4,7 @@ mod identity;
 mod message;
 mod observer;
 mod outcome;
+mod trajectory;
 mod verification;
 
 use crate::document::{Sink, message_id, session_id};
@@ -22,7 +23,10 @@ pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evide
 pub const ORIGIN: &str = "hermes";
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    if observer::recognize(path, head) || verification::recognize(path) {
+    if observer::recognize(path, head)
+        || verification::recognize(path)
+        || trajectory::recognize(path, head)
+    {
         return true;
     }
     path.file_name()
@@ -41,6 +45,8 @@ pub fn open(path: &Path) -> Option<Parse> {
         Some(Parse::Export(Box::new(Database::default())))
     } else if verification::recognize(path) {
         Some(verification::open())
+    } else if path.extension().is_some_and(|s| s == "json") {
+        Some(trajectory::open())
     } else {
         observer::open(path)
     }

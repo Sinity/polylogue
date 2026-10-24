@@ -8,12 +8,14 @@ pub enum DocumentPurpose {
     Instruction,
     Context,
     Memory,
+    Transcript,
 }
 
 stored_names!(DocumentPurpose {
     Instruction => "instruction",
     Context => "context",
     Memory => "memory",
+    Transcript => "transcript",
 });
 
 /// A purpose, project creator or upload does not by itself establish a writer.
