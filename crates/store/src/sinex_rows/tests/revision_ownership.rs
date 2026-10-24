@@ -93,14 +93,9 @@ fn names() -> Vec<String> {
     vec![format!("blake3:{}", blake3::hash(b"abc"))]
 }
 fn target() -> Connection {
-    let target = Connection::open_in_memory().unwrap();
+    let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    target
-        .execute_batch(concat!(
-            include_str!("../../schema/migrations/005-append-facts.sql"),
-            include_str!("../../schema/migrations/009-machine-order.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut target).unwrap();
     target.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('kept','kept','note','unchanged','operator','test',1,2);").unwrap();
     target
 }

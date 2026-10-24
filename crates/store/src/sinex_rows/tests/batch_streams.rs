@@ -100,9 +100,7 @@ fn a_stored_legacy_batch_keeps_its_original_bytes_and_restores_them() {
     .unwrap();
     let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    target
-        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
-        .unwrap();
+    crate::schema::migrate_archive(&mut target).unwrap();
     assert_eq!(
         restore::install_fixture(&mut target, &selected, None, |_| Ok(Some(
             published.replacement(&name)?

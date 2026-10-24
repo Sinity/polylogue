@@ -219,12 +219,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     );
     let mut fresh = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&fresh).unwrap();
-    fresh
-        .execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut fresh).unwrap();
     restore::install_fixture(&mut fresh, &selected, None, |u| {
         Ok(payloads[current.iter().position(|x| x == u).unwrap()]
             .clone()
@@ -235,12 +230,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     missing[0] = None;
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
-    empty
-        .execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut empty).unwrap();
     assert!(
         restore::install_fixture(&mut empty, &selected, None, |u| Ok(missing
             [current.iter().position(|x| x == u).unwrap()]
@@ -349,12 +339,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         let before = units(&source, 0).unwrap();
         let mut restored = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&restored).unwrap();
-        restored
-            .execute_batch(concat!(
-                include_str!("../schema/migrations/005-append-facts.sql"),
-                include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-            ))
-            .unwrap();
+        crate::schema::migrate_archive(&mut restored).unwrap();
         restored.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         for unit in &before {
             apply(&restored, &read(&source, unit).unwrap().contents()).unwrap();
