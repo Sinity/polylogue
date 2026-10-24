@@ -8,6 +8,11 @@ verifies the private roles under its durable ownership. Polylogue's current
 archive publication uses `Open`; sealed byte publication refuses before reading
 or staging plaintext. Receivers without the versioned reservation response refuse.
 
+This caller uses same-host private placement. Native qualification runs the
+publisher and receiver under the same UID. Cross-UID spool access and Nix
+integration remain separate work (`sxnext-9zw.14.2.4.4`); remote byte upload
+belongs to the shared protocol's Source drivers.
+
 [Store](../crates/store/src/sinex_rows.rs) exports source blobs as anonymous,
 hash-verified plain snapshots. Publication never writes public Sinex CAS directly.
 Oversized JSON frames use a private envelope owned by the same final publication.
