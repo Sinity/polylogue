@@ -158,3 +158,25 @@ fn atif_native_timing_and_provider_ids_do_not_become_authorship_or_guessed_time(
     );
     assert!(!events(&parsed, "hermes_import_diagnostic").is_empty());
 }
+
+#[test]
+fn atif_result_content_parts_form_one_ordered_text_stream_without_a_second_text_copy() {
+    let first = "-----BEGIN PRIVATE KEY-----\n";
+    let last = "synthetic-private-tail\n-----END PRIVATE KEY-----";
+    let value = trajectory(
+        "result-parts",
+        json!([{"step_id":1,"source":"agent","message":"","tool_calls":[{"tool_call_id":"c","function_name":"terminal","arguments":{}}],"observation":{"results":[{"source_call_id":"c","content":[{"type":"text","text":first},{"type":"image","source":{"media_type":"image/png","path":"images/result.png"}},{"type":"text","text":last}],"extra":{"status":"supplied"}}]}}]),
+    );
+    let parsed = parse(
+        "hermes",
+        "trajectory-result-parts.json",
+        &serde_json::to_vec(&value).unwrap(),
+    );
+    let doc = documents(&parsed)[0];
+    let result = &doc["blocks"][2];
+    assert_eq!(result["output"], format!("{first}{last}"));
+    assert!(result["data"].get("content").is_none());
+    assert_eq!(result["data"]["extra"]["status"], "supplied");
+    assert_eq!(result["attachments"][0]["direction"], "unknown");
+    assert_eq!(result["attachments"][0]["source_id"], "images/result.png");
+}

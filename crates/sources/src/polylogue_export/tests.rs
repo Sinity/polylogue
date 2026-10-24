@@ -45,6 +45,16 @@ fn doc() -> Document {
 fn recognizes_only_its_own_format() {
     let text = doc().to_json().unwrap();
     assert!(recognize(Path::new("x.json"), text.as_bytes()));
+    let public = serde_json::to_vec(&serde_json::to_value(doc()).unwrap()).unwrap();
+    assert!(recognize(Path::new("x.json"), &public));
+    assert!(recognize(
+        Path::new("x.json"),
+        br#"{"events":[],"format":"polylogue-export","version":"#
+    ));
+    assert!(!recognize(
+        Path::new("x.json"),
+        br#"{"events":[{"format":"polylogue-export"}],"format":"other"}"#
+    ));
     assert!(!recognize(Path::new("x.json"), br#"{"format": "other"}"#));
     assert!(!recognize(Path::new("x.json"), br#"[{"uuid": "1"}]"#));
 }
@@ -192,4 +202,80 @@ fn typed_export_collections_refuse_null_instead_of_becoming_empty_arrays() {
         );
         assert!(steps.iter().any(|s| !s.accounting.refused.is_empty()));
     }
+}
+
+#[test]
+fn wire3_events_rebind_only_to_the_local_export_record_and_keep_sender_claims_in_retained_bytes() {
+    let native = serde_json::json!({"approved":false,"value":null,"text":" exact λ "});
+    let fact = polylogue_model::export::EventExport {
+        id: "sender-observation".into(),
+        input: "sender-input".into(),
+        source: "hermes".into(),
+        source_chain: 7,
+        source_start: Some(200),
+        source_end: Some(300),
+        event: Event {
+            session: None,
+            kind: "hermes_observer_mark".into(),
+            at: None,
+            after: None,
+            range: Some((200, 300)),
+            data: native.clone(),
+        },
+    };
+    let document = Document::new(vec![]).with_events(vec![fact.clone(), fact]);
+    let raw = document.to_json().unwrap();
+    let parsed = steps(raw.as_bytes());
+    let facts: Vec<_> = parsed.iter().flat_map(|s| &s.output.events).collect();
+    assert_eq!(facts.len(), 2);
+    assert_ne!(facts[0].range, facts[1].range);
+    for fact in facts {
+        assert!(fact.session.is_none());
+        assert_eq!(fact.data, native);
+        let (start, end) = fact.range.unwrap();
+        let retained: serde_json::Value =
+            serde_json::from_str(&raw[start as usize..end as usize]).unwrap();
+        assert_eq!(retained["input"], "sender-input");
+        assert_eq!(retained["source_chain"], 7);
+        assert_eq!(retained["id"], "sender-observation");
+        assert_ne!((start, end), (200, 300));
+    }
+    assert!(
+        parsed
+            .iter()
+            .all(|s| s.output.sessions.is_empty() && s.output.messages.is_empty())
+    );
+    let mut incompatible: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    incompatible["version"] = serde_json::json!(2);
+    let refused = steps(serde_json::to_string(&incompatible).unwrap().as_bytes());
+    assert!(
+        refused
+            .iter()
+            .all(|s| s.output.events.is_empty() && s.output.sessions.is_empty())
+    );
+    assert!(refused.iter().any(|s| !s.accounting.refused.is_empty()));
+}
+
+#[test]
+fn discriminator_after_a_large_value_is_found_without_claiming_foreign_objects() {
+    let large = "neutral λ ".repeat(20_000);
+    let leading = serde_json::to_string(&large).unwrap();
+    let own = format!("{{\"documents\":[{{\"text\":{leading}}}],\"format\":\"polylogue-export\"}}");
+    assert!(!recognize(Path::new("x.json"), &own.as_bytes()[..64]));
+    assert!(recognize_reader(std::io::Cursor::new(own)).unwrap());
+    for foreign in [
+        format!("{{\"events\":[{{\"text\":{leading}}}]}}"),
+        format!(
+            "{{\"documents\":[{{\"text\":{leading},\"format\":\"polylogue-export\"}}],\"format\":\"foreign\"}}"
+        ),
+    ] {
+        assert!(!recognize_reader(std::io::Cursor::new(foreign)).unwrap());
+    }
+    struct Failed;
+    impl std::io::Read for Failed {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("synthetic storage failure"))
+        }
+    }
+    assert!(recognize_reader(Failed).is_err());
 }

@@ -395,12 +395,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "read",
-        help: "Read one session or text document",
+        help: "Read one session, text document or event",
         args: &[
             pos(
                 "session",
                 Kind::Text,
-                "A session ID, or `document:origin:native_id` from a documents query",
+                "A session ID, `document:origin:native_id`, or `event:ID` from a query",
             ),
             Arg {
                 default: Some("full"),
@@ -431,12 +431,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "export",
-        help: "Write sessions and text documents out as files",
+        help: "Write sessions, text documents and events out as files",
         args: &[
             pos_opt(
                 "sessions",
                 Kind::List,
-                "Session IDs or document:origin:native_id references",
+                "Session IDs, document:origin:native_id or event:ID references",
             ),
             Arg {
                 default: Some("json"),

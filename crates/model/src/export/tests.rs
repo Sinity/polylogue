@@ -81,8 +81,87 @@ fn document_exports_require_wire_two_and_keep_empty_text_and_unknown_authorship(
     let mut old = export;
     old.version = 1;
     assert!(matches!(
-        Document::from_json(&old.to_json().unwrap()),
+        Document::from_json(&serde_json::to_string(&old).unwrap()),
         Err(ExportError::DocumentsNeedVersion2)
     ));
     assert_eq!(sample().version, 1);
+}
+
+#[test]
+fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_old_documents() {
+    use crate::{
+        Attachment, AttachmentDirection, Block, DocumentId, DocumentPurpose, NativeId, Origin,
+    };
+    let mut doc = crate::Document::new(
+        DocumentId::new(
+            Origin::new("hermes").unwrap(),
+            NativeId::new("native-transcript").unwrap(),
+        ),
+        DocumentPurpose::Transcript,
+    );
+    doc.blocks = vec![Block::Image(Attachment {
+        source_id: Some("images/neutral.png".into()),
+        direction: AttachmentDirection::Unknown,
+        ..Attachment::default()
+    })];
+    let mut export = Document::new(vec![]).with_documents(vec![doc]);
+    assert_eq!(export.version, 3);
+    assert_eq!(
+        Document::from_json(&export.to_json().unwrap()).unwrap(),
+        export
+    );
+    export.version = 2;
+    assert!(matches!(
+        export.to_json(),
+        Err(ExportError::ContentNeedsVersion3)
+    ));
+    let old = Document::new(vec![]);
+    assert_eq!(old.version, 1);
+    assert!(!old.to_json().unwrap().contains("events"));
+    export.documents[0].purpose = DocumentPurpose::Context;
+    assert_eq!(
+        Document::new(vec![])
+            .with_documents(export.documents.clone())
+            .version,
+        3,
+        "unknown image direction requires wire3 independently of transcript purpose"
+    );
+    assert!(matches!(
+        export.to_json(),
+        Err(ExportError::ContentNeedsVersion3)
+    ));
+    export.documents[0].blocks.clear();
+    assert_eq!(
+        Document::new(vec![])
+            .with_documents(export.documents)
+            .version,
+        2
+    );
+    let fact = EventExport {
+        id: "sender-event".into(),
+        input: "sender-input".into(),
+        source: "hermes".into(),
+        source_chain: 1,
+        source_start: Some(0),
+        source_end: Some(20),
+        event: Event {
+            session: None,
+            kind: "native_observation".into(),
+            at: None,
+            after: None,
+            range: Some((0, 20)),
+            data: serde_json::json!({"approved":false,"value":null}),
+        },
+    };
+    let mut exported = Document::new(vec![]).with_events(vec![fact]);
+    assert_eq!(exported.version, 3);
+    assert_eq!(
+        Document::from_json(&exported.to_json().unwrap()).unwrap(),
+        exported
+    );
+    exported.version = 2;
+    assert!(matches!(
+        Document::from_json(&serde_json::to_string(&exported).unwrap()),
+        Err(ExportError::ContentNeedsVersion3)
+    ));
 }

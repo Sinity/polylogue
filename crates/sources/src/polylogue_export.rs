@@ -1,24 +1,55 @@
-//! Polylogue's own export format read back (architecture 7, Export and
-//! import): importing an export into a fresh archive gives the same
-//! sessions and IDs. Sessions, messages, events and links are written as
-//! the export holds them. Sessions retain document order; their messages
-//! and events cite the exact exported-session record in the new input.
+//! Read Polylogue exports with whole-file validation before publication.
+//! Session/document identity is retained. Input-owned observations acquire local
+//! retained-record citations; sender identity and source claims stay in raw bytes.
 
 use crate::document::Sink;
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
-use polylogue_model::export::{Document, FORMAT, SessionExport};
+use polylogue_model::export::{Document, EventExport, FORMAT, SessionExport};
 use std::path::Path;
 
 pub const ORIGIN: &str = "polylogue-export";
 
-/// A JSON document whose first key is `format`, naming this format.
+/// Recognize the root format discriminator without depending on key order.
+/// The supplied head may end after that field; the full scan validates the file.
 pub fn recognize(_path: &Path, head: &[u8]) -> bool {
-    crate::document::first_key(head) == Some("format")
-        && head
-            .windows(FORMAT.len() + 2)
-            .any(|w| w[0] == b'"' && &w[1..=FORMAT.len()] == FORMAT.as_bytes())
+    recognize_reader(head).unwrap_or(false)
+}
+
+/// Check a stable input, skipping preceding values without retaining their bodies.
+pub fn recognize_reader(reader: impl std::io::Read) -> std::io::Result<bool> {
+    use serde::de::{IgnoredAny, MapAccess, Visitor};
+    struct Header<'a>(&'a mut bool);
+    impl<'de> Visitor<'de> for Header<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a Polylogue export header")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "format" {
+                    *self.0 = map.next_value::<String>()? == FORMAT;
+                    return Ok(());
+                }
+                map.next_value::<IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+    let mut recognized = false;
+    // Ending the visitor early may leave a truncated or unconsumed map. Only
+    // the observed root discriminator matters here; scan validates the rest.
+    let result = serde::Deserializer::deserialize_map(
+        &mut serde_json::Deserializer::from_reader(reader),
+        Header(&mut recognized),
+    );
+    if let Err(error) = result
+        && error.is_io()
+    {
+        return Err(std::io::Error::other(error));
+    }
+    Ok(recognized)
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
@@ -29,8 +60,15 @@ pub fn open(_path: &Path) -> Option<Parse> {
 pub struct Export {
     valid: bool,
     refusal: Option<String>,
-    kinds: Vec<bool>,
+    kinds: Vec<Kind>,
     at: usize,
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Session,
+    Document,
+    Event,
 }
 
 impl ExportParser for Export {
@@ -45,25 +83,48 @@ impl ExportParser for Export {
         self.kinds.clear();
         self.at = 0;
         let mut invalid = None;
+        let mut required_version = 1;
         let (mut metadata, stats) = crate::export::scan_objects(
             reader,
             false,
             &[
                 ("sessions", crate::export::FieldShape::Array),
                 ("documents", crate::export::FieldShape::Array),
+                ("events", crate::export::FieldShape::Array),
             ],
             &["format", "version"],
             |_, field, _, range, raw| {
-                let document = field == "documents";
-                let valid = if document {
-                    serde_json::from_str::<polylogue_model::Document>(raw.get()).map(|_| ())
-                } else {
-                    serde_json::from_str::<SessionExport>(raw.get()).map(|_| ())
+                let kind = match field {
+                    "documents" => Kind::Document,
+                    "events" => Kind::Event,
+                    _ => Kind::Session,
                 };
-                if invalid.is_none() {
-                    invalid = valid.err().map(|e| e.to_string());
+                let valid: Result<u32, String> = (|| match kind {
+                    Kind::Document => {
+                        let doc = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+                        Ok(Document::new(vec![])
+                            .with_documents(vec![doc])
+                            .required_version())
+                    }
+                    Kind::Event => {
+                        let event: EventExport =
+                            serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+                        event.validate().map_err(|e| e.to_string())?;
+                        Ok(3)
+                    }
+                    Kind::Session => {
+                        let session: SessionExport =
+                            serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+                        session.validate().map_err(|e| e.to_string())?;
+                        Ok(Document::new(vec![session]).required_version())
+                    }
+                })();
+                match valid {
+                    Ok(version) => required_version = required_version.max(version),
+                    Err(error) if invalid.is_none() => invalid = Some(error),
+                    Err(_) => {}
                 }
-                self.kinds.push(document);
+                self.kinds.push(kind);
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
             },
         )?;
@@ -72,8 +133,13 @@ impl ExportParser for Export {
             .err()
             .map(|e| e.to_string())
             .or(invalid);
-        if self.kinds.contains(&true) && metadata["version"].as_u64() != Some(2) {
-            self.refusal = Some("documents require Polylogue export version 2".into());
+        if metadata["version"]
+            .as_u64()
+            .is_some_and(|version| version < required_version as u64)
+        {
+            self.refusal = Some(format!(
+                "content requires Polylogue export version {required_version}"
+            ));
         }
         self.valid = self.refusal.is_none();
         Ok(stats)
@@ -106,22 +172,35 @@ impl ExportParser for Export {
         if !self.valid {
             return Ok(());
         }
-        let document = self
+        let kind = self
             .kinds
             .get(self.at)
             .copied()
             .ok_or("export record is outside validated scan")?;
         self.at += 1;
-        if document {
-            let document = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-            let at = sink.position();
-            sink.out.documents.push(polylogue_model::DocumentRow {
-                offset: at,
-                end: at,
-                document,
-            });
-            sink.records.record("document", &Disposition::Materialized);
-            return Ok(());
+        match kind {
+            Kind::Document => {
+                let document = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                let at = sink.position();
+                sink.out.documents.push(polylogue_model::DocumentRow {
+                    offset: at,
+                    end: at,
+                    document,
+                });
+                sink.records.record("document", &Disposition::Materialized);
+                return Ok(());
+            }
+            Kind::Event => {
+                let mut exported: EventExport =
+                    serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                // Sender IDs/coordinates remain claims in retained export bytes.
+                // This observation belongs to this local export record.
+                exported.event.range = None;
+                sink.out.events.push(exported.event);
+                sink.records.record("event", &Disposition::Materialized);
+                return Ok(());
+            }
+            Kind::Session => {}
         }
         let session: SessionExport =
             serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;

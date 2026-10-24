@@ -1007,6 +1007,7 @@ impl Ctx<'_, '_> {
             let mut hash = blake3::Hasher::new_derive_key("polylogue input-owned event v1");
             hash.update(&(self.input_id.len() as u64).to_le_bytes());
             hash.update(self.input_id.as_bytes());
+            hash.update(&self.chain.to_le_bytes());
             hash.update(&start.to_le_bytes());
             hash.update(&end.to_le_bytes());
             hash.update(&occurrence.to_le_bytes());

@@ -61,10 +61,12 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                     continue;
                 };
                 let content = fields.get("content");
-                let output = content.and_then(Json::as_str).map(str::to_owned);
+                let (output, attachments) = result_content(content, &mut limits);
                 let mut data = fields.clone();
                 data.remove("source_call_id");
-                if output.is_some() {
+                if content.is_some_and(|v| v.is_string() || v.is_array()) {
+                    // Ordered text is projected once through the shared block
+                    // masker. Original part boundaries remain in the source.
                     data.remove("content");
                 }
                 // ATIF declares no success/failure field. A result's prose or
@@ -76,10 +78,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                     },
                     output,
                     data: (!data.is_empty()).then_some(Json::Object(data)),
-                    attachments: content
-                        .and_then(Json::as_array)
-                        .map(|parts| parts.iter().filter_map(image).collect())
-                        .unwrap_or_default(),
+                    attachments,
                 });
             }
         } else {
@@ -142,4 +141,36 @@ fn image(value: &Json) -> Option<Attachment> {
         direction: AttachmentDirection::Unknown,
         ..Attachment::default()
     })
+}
+
+fn result_content(
+    value: Option<&Json>,
+    limits: &mut Vec<&'static str>,
+) -> (Option<String>, Vec<Attachment>) {
+    match value {
+        Some(Json::String(text)) => (Some(text.clone()), vec![]),
+        Some(Json::Array(parts)) => {
+            let mut text = String::new();
+            let mut images = Vec::new();
+            for part in parts {
+                if part.get("type").and_then(Json::as_str) == Some("text")
+                    && let Some(value) = part.get("text").and_then(Json::as_str)
+                {
+                    text.push_str(value);
+                } else if let Some(image) = image(part) {
+                    images.push(image);
+                } else {
+                    limits.push("unsupported ATIF result content part; original array remains in the source");
+                    return (None, vec![]);
+                }
+            }
+            (Some(text), images)
+        }
+        Some(value) if !value.is_null() => {
+            limits
+                .push("result content is neither text nor content parts; original value retained");
+            (None, vec![])
+        }
+        _ => (None, vec![]),
+    }
 }

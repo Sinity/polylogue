@@ -51,6 +51,77 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
         let lookup = cli(&env, &["--json", &exact]);
         assert!(lookup.status.success(), "{lookup:?}");
         assert_eq!(json(&lookup)["count"], 1);
+        let reference = format!("event:{}", row["id"].as_str().unwrap());
+        for args in [
+            vec!["--json", "read", &reference],
+            vec!["read", &reference],
+            vec!["read", &reference, "--format", "html"],
+            vec!["read", &reference, "--format", "markdown"],
+            vec!["export", &reference, "--format", "json"],
+        ] {
+            let result = cli(&env, &args);
+            assert!(result.status.success(), "{args:?}: {result:?}");
+            assert!(
+                !String::from_utf8(result.stdout)
+                    .unwrap()
+                    .contains("synthetic-later-value")
+            );
+        }
+        let portable = cli(&env, &["export", &reference, "--format", "json"]);
+        assert!(portable.status.success(), "{portable:?}");
+        let envelope = json(&portable);
+        assert_eq!(envelope["version"], 3);
+        assert_eq!(envelope["events"][0]["input"], row["input"]);
+        let imported_path = dir.path().join("portable-event.json");
+        // Root field order is irrelevant, including a discriminator beyond
+        // the import sniff prefix and beyond a large preceding value.
+        let mut reordered = envelope.as_object().unwrap().clone();
+        let format = reordered.remove("format").unwrap();
+        let leading = serde_json::to_string(&"neutral padding ".repeat(10_000)).unwrap();
+        let mut transfer = serde_json::to_string(&reordered).unwrap();
+        transfer.pop();
+        transfer.push_str(&format!(",\"padding\":{leading},\"format\":{format}}}"));
+        std::fs::write(&imported_path, transfer).unwrap();
+        let second_archive = dir.path().join("second-archive");
+        let second_env = [
+            ("POLYLOGUE_HOME", home.as_path()),
+            ("POLYLOGUE_ARCHIVE", second_archive.as_path()),
+            ("XDG_CONFIG_HOME", config.as_path()),
+        ];
+        {
+            let _second = start_daemon(&second_env);
+            let result = cli(&second_env, &["import", imported_path.to_str().unwrap()]);
+            assert!(result.status.success(), "{result:?}");
+            let imported = cli(&second_env, &["--json", "events"]);
+            assert!(imported.status.success(), "{imported:?}");
+            let imported = json(&imported);
+            assert_eq!(imported["count"], 1);
+            assert_ne!(imported["rows"][0]["input"], row["input"]);
+            assert_eq!(imported["rows"][0]["source"], "polylogue-export");
+            assert_ne!(
+                imported["rows"][0]["id"], row["id"],
+                "sender identity is a retained claim, not local provider custody"
+            );
+            assert!(imported["rows"][0]["session"].is_null());
+        }
+        let mut cursor: Option<String> = None;
+        let mut joined = String::new();
+        loop {
+            let mut args = vec!["--json", "read", reference.as_str(), "--budget", "16"];
+            if let Some(c) = cursor.as_deref() {
+                args.extend(["--cursor", c]);
+            }
+            let page = cli(&env, &args);
+            assert!(page.status.success(), "{page:?}");
+            let page = json(&page);
+            joined.push_str(page["text"].as_str().unwrap());
+            cursor = page["next"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(joined.contains("exact λ🙂"));
+        assert!(!joined.contains("synthetic-later-value"));
         let rendered = cli(&env, &["events where text:λ🙂"]);
         assert!(rendered.status.success(), "{rendered:?}");
         assert!(
@@ -232,4 +303,109 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
             && ledger_count(rows, "hermes_verification_row_deleted") == 1
     });
     assert_eq!(rebuilt["rows"], before_rebuild["rows"]);
+}
+
+#[test]
+fn hermes_atif_public_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
+    let env = [
+        ("POLYLOGUE_HOME", home.as_path()),
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let value = json!({"schema_version":"ATIF-v1.7","trajectory_id":"native-trajectory","session_id":"default","agent":{"name":"synthetic","version":"1"},"steps":[
+        {"step_id":1,"source":"user","message":[{"type":"text","text":" exact user λ🙂 "},{"type":"image","source":{"media_type":"image/png","path":"images/input.png"}}]},
+        {"step_id":2,"source":"agent","llm_call_count":0,"message":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"text","text":"synthetic-atif-message-tail\n-----END PRIVATE KEY-----"}],"tool_calls":[{"tool_call_id":"native-call","function_name":"terminal","arguments":{"command":"printf synthetic"}}],"observation":{"results":[{"source_call_id":"native-call","content":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"image","source":{"media_type":"image/png","path":"images/result.png"}},{"type":"text","text":"synthetic-atif-result-tail\n-----END PRIVATE KEY-----"}]}]}}
+    ]});
+    let raw = serde_json::to_vec_pretty(&value).unwrap();
+    let source = dir.path().join("trajectory-synthetic.json");
+    std::fs::write(&source, &raw).unwrap();
+    let _daemon = start_daemon(&env);
+    let imported = cli(&env, &["import", source.to_str().unwrap()]);
+    assert!(imported.status.success(), "{imported:?}");
+    let listed = cli(
+        &env,
+        &["--json", "documents where origin:hermes | sort by id"],
+    );
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = json(&listed);
+    assert_eq!(listed["count"], 2);
+    for row in listed["rows"].as_array().unwrap() {
+        let reference = format!("document:{}", row["id"].as_str().unwrap());
+        assert_eq!(row["purpose"], "transcript");
+        assert_eq!(row["authorship"], "unknown");
+        assert!(
+            row["title"].is_null(),
+            "Polylogue's rendering label is not a native title"
+        );
+        let read = cli(&env, &["--json", "read", &reference]);
+        assert!(read.status.success(), "{read:?}");
+        let text = String::from_utf8(read.stdout.clone()).unwrap();
+        assert!(
+            !text.contains("synthetic-atif-message-tail")
+                && !text.contains("synthetic-atif-result-tail")
+        );
+        let doc = json(&read)["document"].clone();
+        if doc["metadata"]["source"] == "user" {
+            assert_eq!(doc["blocks"][0]["text"], " exact user λ🙂 ");
+            assert_eq!(doc["blocks"][1]["direction"], "unknown");
+            assert_eq!(doc["blocks"][1]["source_id"], "images/input.png");
+            assert!(doc["blocks"][1].get("blob").is_none());
+        } else {
+            assert_eq!(doc["metadata"]["llm_call_count"], 0);
+            assert_eq!(doc["blocks"][3]["call_id"], "native-call");
+            assert_eq!(doc["blocks"][3]["outcome"]["kind"], "unknown");
+            let mut cursor: Option<String> = None;
+            let mut joined = String::new();
+            loop {
+                let mut args = vec!["--json", "read", reference.as_str(), "--budget", "24"];
+                if let Some(c) = cursor.as_deref() {
+                    args.extend(["--cursor", c]);
+                }
+                let page = cli(&env, &args);
+                assert!(page.status.success(), "{page:?}");
+                let page = json(&page);
+                joined.push_str(page["text"].as_str().unwrap());
+                cursor = page["next"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert!(
+                !joined.contains("synthetic-atif-message-tail")
+                    && !joined.contains("synthetic-atif-result-tail")
+            );
+        }
+        let out = cli(&env, &["export", &reference, "--format", "json"]);
+        assert!(out.status.success(), "{out:?}");
+        let exported = json(&out);
+        assert_eq!(exported["version"], 3);
+        assert_eq!(exported["sessions"], json!([]));
+        assert_eq!(exported["documents"][0]["purpose"], "transcript");
+    }
+    for unit in ["sessions", "messages", "tool_calls"] {
+        let out = cli(&env, &["--json", unit]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(json(&out)["count"], 0);
+    }
+    assert_eq!(std::fs::read(&source).unwrap(), raw);
+    let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = reader
+        .query("SELECT id FROM current_document ORDER BY id", &[])
+        .unwrap();
+    let mut originals = String::new();
+    for row in rows {
+        let id = polylogue_model::DocumentId::parse(row["id"].as_str().unwrap()).unwrap();
+        originals
+            .push_str(&serde_json::to_string(&reader.document(&id).unwrap().unwrap()).unwrap());
+    }
+    assert!(
+        originals.contains("synthetic-atif-message-tail")
+            && originals.contains("synthetic-atif-result-tail")
+    );
 }

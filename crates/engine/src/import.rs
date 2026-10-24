@@ -28,7 +28,12 @@ impl Engine {
             let mut head = [0u8; 64];
             let n = file.read(&mut head)?;
             let head = &head[..n];
-            let whole = recognize_import(path, head);
+            file.seek(SeekFrom::Start(0))?;
+            let whole = if polylogue_sources::polylogue_export::recognize_reader(&mut file)? {
+                polylogue_sources::origin::by_name("polylogue-export")
+            } else {
+                recognize_import(path, head)
+            };
             file.seek(SeekFrom::Start(0))?;
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
                 let generation = file.try_clone()?;
@@ -51,15 +56,17 @@ impl Engine {
                         )
                         .into());
                     }
-                    let origin = recognize_member(&at, &captured.head);
+                    let origin = self.recognize_captured(&at, &captured)?.unwrap_or_else(|| {
+                        polylogue_sources::origin::by_name(KEPT).expect("declared origin")
+                    });
                     self.import_captured(&at, origin, captured, None, &mut report)?;
                 }
             } else if whole.is_some() {
                 let captured = Captured::read(&self.blobs, &mut file)?;
                 unchanged(&file, facts, captured.piece.size)?;
-                // Recognition uses the captured prefix, so a concurrent rewrite
+                // Recognition uses retained bytes, so a concurrent rewrite
                 // cannot pair one version's identity with another's parser.
-                if let Some(origin) = recognize_import(path, &captured.head) {
+                if let Some(origin) = self.recognize_captured(path, &captured)? {
                     self.import_captured(path, origin, captured, Some(facts), &mut report)?;
                 } else {
                     report.unrecognized.push(path.clone());
@@ -72,6 +79,24 @@ impl Engine {
         report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
+    }
+
+    fn recognize_captured(
+        &self,
+        path: &Path,
+        captured: &Captured,
+    ) -> Result<Option<&'static OriginSpec>, EngineError> {
+        {
+            let reader = self.blobs.read_plain(
+                &hashed_blobs::Hash(captured.piece.hash.0),
+                Some(captured.piece.size),
+                || Ok(()),
+            )?;
+            if polylogue_sources::polylogue_export::recognize_reader(reader)? {
+                return Ok(polylogue_sources::origin::by_name("polylogue-export"));
+            }
+        }
+        Ok(recognize_import(path, &captured.head))
     }
 
     fn import_captured(
@@ -245,13 +270,6 @@ impl<R: std::io::Read> std::io::Read for CaptureReader<R> {
 
 /// The bytes a zip file starts with.
 pub(super) const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
-
-/// The origin that reads a zip member, or the one that keeps it as bytes.
-pub(super) fn recognize_member(at: &Path, bytes: &[u8]) -> &'static OriginSpec {
-    let head = &bytes[..bytes.len().min(64)];
-    recognize_import(at, head)
-        .unwrap_or_else(|| polylogue_sources::origin::by_name(KEPT).expect("declared origin"))
-}
 
 /// The origin an imported file belongs to. Several recognizers can accept
 /// one file (Claude Code takes any JSON-lines transcript, since an exported

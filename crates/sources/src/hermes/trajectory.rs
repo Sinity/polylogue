@@ -304,10 +304,6 @@ impl ExportParser for Trajectory {
             .map_err(|e| e.to_string())?,
         );
         let mut document = Document::new(id, DocumentPurpose::Transcript);
-        document.title = Some(format!(
-            "Hermes transcript {}",
-            step_id.map_or_else(|| "step".into(), |n| format!("step {n}"))
-        ));
         document.source_time = value.get("timestamp").and_then(crate::time::rfc3339);
         if value.get("timestamp").is_some_and(|v| !v.is_null()) && document.source_time.is_none() {
             limits.push("ATIF RFC3339 time unreadable; time remains unknown");

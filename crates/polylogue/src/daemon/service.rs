@@ -340,6 +340,23 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 cursor: cursor.as_deref(),
             },
         ),
+        Request::ReadEvent {
+            event,
+            view,
+            format,
+            budget,
+            cursor,
+        } => read::event(
+            &reader,
+            &event,
+            read::Options {
+                view: &view,
+                format: &format,
+                logical: false,
+                budget,
+                cursor: cursor.as_deref(),
+            },
+        ),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -360,8 +377,9 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Request::Export {
             sessions,
             documents,
+            events,
             format,
-        } => export(&reader, &sessions, &documents, &format),
+        } => export(&reader, &sessions, &documents, &events, &format),
         Request::Embed {
             what,
             query,
@@ -546,6 +564,7 @@ fn export(
     reader: &polylogue_store::Reader<'_>,
     ids: &[polylogue_model::SessionId],
     document_ids: &[polylogue_model::DocumentId],
+    event_ids: &[String],
     format: &str,
 ) -> Response {
     let mut sessions = Vec::new();
@@ -564,7 +583,17 @@ fn export(
             Err(e) => return store_error(&e),
         }
     }
-    let doc = polylogue_model::export::Document::new(sessions).with_documents(documents);
+    let mut events = Vec::new();
+    for id in event_ids {
+        match reader.event_export(id) {
+            Ok(Some(event)) => events.push(event),
+            Ok(None) => return error("not_found", format!("no event {id}")),
+            Err(e) => return store_error(&e),
+        }
+    }
+    let doc = polylogue_model::export::Document::new(sessions)
+        .with_documents(documents)
+        .with_events(events);
     let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown export format {format:?}"));
     };
