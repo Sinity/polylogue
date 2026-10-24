@@ -133,6 +133,9 @@ pub(super) fn remove_input(
         return Ok(());
     }
     insert_excised_observations(t, input, req, None)?;
+    crate::assets::invalidate_metadata(t.index, input)?;
+    t.index
+        .execute("DELETE FROM import_member WHERE input=?1", [input])?;
     t.archive
         .execute("DELETE FROM extracted_blob WHERE input=?1", [input])?;
     t.archive

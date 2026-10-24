@@ -8,6 +8,7 @@
 //! - `blobs/`: input bytes of 128 KiB and over.
 
 pub mod archive;
+pub mod assets;
 pub mod blobs;
 pub mod context;
 pub mod derive;
@@ -48,7 +49,8 @@ pub use notes::NoteFilter;
 pub use read::{KnownInput, MessageVersion, ReadPool, Reader, RetainedImport, SqlValue, Status};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
-    Batch, InFlight, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender,
+    Batch, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport, Writer,
+    WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]

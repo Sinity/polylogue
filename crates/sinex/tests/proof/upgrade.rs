@@ -239,7 +239,7 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
     );
     assert_eq!(
         rows(&root.join("index.db"), "PRAGMA user_version"),
-        vec![vec![Value::Integer(33)]]
+        vec![vec![Value::Integer(34)]]
     );
     let original = fingerprint(&root);
     let first = sinex.publish(&root).await.unwrap();

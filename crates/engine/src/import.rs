@@ -6,6 +6,7 @@
 use super::*;
 use polylogue_sources::origin::Route;
 
+mod assets;
 mod exports;
 mod replay;
 
@@ -27,9 +28,31 @@ impl Engine {
         }
         let mut files = Vec::new();
         for path in paths {
-            files_under(path, &mut files)?;
+            let mut selected = Vec::new();
+            files_under(path, &mut selected)?;
+            let acquisition = uuid::Uuid::now_v7().to_string();
+            let root = if path.is_dir() {
+                path.as_path()
+            } else {
+                path.parent().unwrap_or(Path::new(""))
+            };
+            for selected in selected {
+                let member = selected
+                    .strip_prefix(root)
+                    .map_err(std::io::Error::other)?
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((
+                    selected,
+                    polylogue_store::ImportMember {
+                        version: 1,
+                        acquisition: acquisition.clone(),
+                        member,
+                    },
+                ));
+            }
         }
-        for path in &files {
+        for (path, membership) in &files {
             let mut file = std::fs::File::open(path)?;
             let facts = FileFacts::of(&file.metadata()?);
             let mut head = [0u8; 64];
@@ -46,6 +69,7 @@ impl Engine {
                 let generation = file.try_clone()?;
                 let mut archive = zip::ZipArchive::new(file)
                     .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
+                let acquisition = uuid::Uuid::now_v7().to_string();
                 for i in 0..archive.len() {
                     let mut member = archive
                         .by_index(i)
@@ -55,8 +79,13 @@ impl Engine {
                     }
                     let at = PathBuf::from(format!("{}!/{}", path.display(), member.name()));
                     let declared = member.size();
-                    let captured =
+                    let mut captured =
                         Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
+                    captured.member = Some(polylogue_store::ImportMember {
+                        version: 1,
+                        acquisition: acquisition.clone(),
+                        member: member.name().to_owned(),
+                    });
                     unchanged(&generation, facts, facts.size)?;
                     if captured.prepared.len() != declared {
                         return Err(std::io::Error::other(
@@ -69,18 +98,17 @@ impl Engine {
                     });
                     self.import_captured(&at, origin, captured, None, &mut report)?;
                 }
-            } else if whole.is_some() {
-                let captured = Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
-                unchanged(&file, facts, captured.prepared.len())?;
-                // Recognition uses retained bytes, so a concurrent rewrite
-                // cannot pair one version's identity with another's parser.
-                if let Some(origin) = self.recognize_captured(path, &captured)? {
-                    self.import_captured(path, origin, captured, Some(facts), &mut report)?;
-                } else {
-                    report.unrecognized.push(path.clone());
-                }
             } else {
-                report.unrecognized.push(path.clone());
+                let mut captured =
+                    Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
+                captured.member = Some(membership.clone());
+                unchanged(&file, facts, captured.prepared.len())?;
+                let origin = self
+                    .recognize_captured(path, &captured)?
+                    .unwrap_or_else(|| {
+                        polylogue_sources::origin::by_name(KEPT).expect("declared origin")
+                    });
+                self.import_captured(path, origin, captured, Some(facts), &mut report)?;
             }
         }
         self.restore_failed_writes()?;
@@ -94,6 +122,7 @@ impl Engine {
                 report.pass.unfinished_inputs.push(pending);
             }
         }
+        self.refresh_import_assets(&mut report.pass)?;
         report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
@@ -136,6 +165,8 @@ impl Engine {
     ) -> Result<Option<Plan>, EngineError> {
         let size = captured.prepared.len();
         let id = captured.prepared.hash().to_string();
+        let mut observation = self.observation(path, facts);
+        observation.import = captured.member;
         let input = InputKey {
             id,
             format: origin.name.into(),
@@ -146,7 +177,7 @@ impl Engine {
             polylogue_store::Batch {
                 input: input.clone(),
                 change: Change::First,
-                observation: Some(self.observation(path, facts)),
+                observation: Some(observation),
                 continues: false,
                 piece: None,
                 blobs: Vec::new(),
@@ -229,6 +260,7 @@ struct Captured {
     prepared: polylogue_store::retention::PreparedBytes,
     head: Vec<u8>,
     polylogue_export: bool,
+    member: Option<polylogue_store::ImportMember>,
 }
 
 impl Captured {
@@ -252,6 +284,7 @@ impl Captured {
             prepared,
             head: reader.head,
             polylogue_export,
+            member: None,
         })
     }
 }

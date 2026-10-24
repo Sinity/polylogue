@@ -771,3 +771,5 @@ fn priced_native_usage_and_drilldown_keep_the_selected_session_population() {
 }
 
 mod documents;
+
+mod attachments;

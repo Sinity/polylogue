@@ -1,6 +1,8 @@
 use super::*;
 use crate::tests::conversation;
 
+mod attachments;
+
 fn all_pages(budget: usize) -> Vec<Page> {
     let ms = conversation();
     let mut pages = vec![];

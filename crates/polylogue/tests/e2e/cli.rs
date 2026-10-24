@@ -426,3 +426,6 @@ mod hermes_state;
 
 mod claude_account_text;
 mod hermes_events;
+
+#[cfg(target_os = "linux")]
+mod attachments;

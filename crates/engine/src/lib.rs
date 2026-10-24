@@ -462,6 +462,7 @@ impl Engine {
         let mut pass = Pass::default();
         self.execute(plans, &mut pass)?;
         self.replay_imports(Some(&done.inputs_reparsed), &mut pass)?;
+        self.refresh_import_assets(&mut pass)?;
         if !pass.errors.is_empty() {
             return Err(std::io::Error::other(pass.errors.join("; ")).into());
         }
@@ -534,6 +535,7 @@ impl Engine {
             path: path.display().to_string(),
             facts,
             seen_at_ms: now_ms(),
+            import: None,
         }
     }
 
@@ -766,6 +768,7 @@ impl Engine {
                     path: path.display().to_string(),
                     facts: None,
                     seen_at_ms: now_ms(),
+                    import: None,
                 }),
                 continues: false,
                 piece: None,
@@ -798,6 +801,7 @@ impl Engine {
         }
         self.execute(plans, &mut pass)?;
         self.restore_failed_writes()?;
+        self.refresh_import_assets(&mut pass)?;
         pass.sessions_derived = self.writer.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)

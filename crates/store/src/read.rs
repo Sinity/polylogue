@@ -734,6 +734,76 @@ impl Reader<'_> {
             .read_range(store, start, end)
     }
 
+    fn current_attachment(&self, asset: &crate::assets::AssetCandidate) -> Result<()> {
+        let current = self
+            .asset_basis(&asset.input)?
+            .ok_or_else(|| StoreError::NotFound("retained attachment input".into()))?;
+        if current.chain != asset.chain
+            || current.length != asset.size
+            || current.hash != asset.basis
+            || current.blob != asset.blob
+        {
+            return Err(StoreError::Conflict(
+                "retained attachment bytes changed; select it again".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read the selected retained asset range through this same admitted view.
+    pub fn attachment_range(
+        &self,
+        asset: &crate::assets::AssetCandidate,
+        roots: &[std::path::PathBuf],
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        self.current_attachment(asset)?;
+        if range.start > range.end || range.end > asset.size {
+            return Err(StoreError::Invalid(
+                "attachment range is outside the retained bytes".into(),
+            ));
+        }
+        let store =
+            hashed_blobs::Store::open(self.pool.archive.root.clone(), roots.to_vec(), 0o600)?;
+        self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
+    }
+
+    /// A current full hash may span several stored pieces. Compute
+    /// it once for an explicitly requested exact delivery, streaming the bytes.
+    pub fn attachment_hash(
+        &self,
+        asset: &crate::assets::AssetCandidate,
+        roots: &[std::path::PathBuf],
+    ) -> Result<polylogue_model::BlobHash> {
+        self.current_attachment(asset)?;
+        use std::io::Read;
+        let store = std::sync::Arc::new(hashed_blobs::Store::open(
+            self.pool.archive.root.clone(),
+            roots.to_vec(),
+            0o600,
+        )?);
+        let mut source = self
+            .stored_chain(&asset.input, asset.chain, asset.size)?
+            .reader(store);
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0; 64 * 1024];
+        let mut length = 0u64;
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            length += count as u64;
+        }
+        if length != asset.size {
+            return Err(StoreError::Invalid(
+                "retained attachment length differs".into(),
+            ));
+        }
+        Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))
+    }
+
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {

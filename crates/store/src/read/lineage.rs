@@ -330,4 +330,60 @@ impl MessageSelection<'_, '_> {
         }
         Ok(hash.finalize().to_hex().to_string())
     }
+
+    /// Fold only acquisition metadata and current byte catalogs associated
+    /// with the selected message versions. No message or asset body is loaded.
+    pub fn attachment_fingerprint(&self) -> Result<String> {
+        let conn = self.reader.conn()?;
+        let mut scopes = std::collections::BTreeSet::new();
+        let mut selected=conn.prepare_cached("SELECT DISTINCT own.acquisition FROM message_source ms
+            JOIN message_source preferred ON preferred.message_pk=ms.message_pk AND preferred.preferred=1
+            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id AND i.format='chatgpt'
+            JOIN import_member own ON own.input=ir.id
+            WHERE ms.message_pk=?1 AND ms.current=1 AND ms.version_hash=preferred.version_hash")?;
+        for pk in self.keys()? {
+            for scope in selected.query_map([pk], |row| row.get::<_, String>(0))? {
+                scopes.insert(scope?);
+            }
+        }
+        let mut hash = blake3::Hasher::new();
+        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.state,
+            metadata.ordinal,metadata.source_id,metadata.name,metadata.media_type,metadata.size,s.version,s.error
+            FROM import_member m
+            LEFT JOIN a.revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM a.revision latest WHERE latest.input=m.input)
+            LEFT JOIN a.extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN a.blob b ON b.hash=e.blob
+            LEFT JOIN import_asset_metadata metadata ON metadata.input=m.input AND metadata.sidecar=m.sidecar
+            LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
+            WHERE m.acquisition=?1 ORDER BY m.observation,e.offset,metadata.ordinal")?;
+        for scope in scopes {
+            hash.update(&(scope.len() as u64).to_le_bytes());
+            hash.update(scope.as_bytes());
+            let mut rows = stmt.query([scope])?;
+            while let Some(row) = rows.next()? {
+                hash.update(b"row");
+                for column in 0..row.as_ref().column_count() {
+                    use rusqlite::types::ValueRef;
+                    match row.get_ref(column)? {
+                        ValueRef::Null => {
+                            hash.update(b"n");
+                        }
+                        ValueRef::Integer(value) => {
+                            hash.update(b"i");
+                            hash.update(&value.to_le_bytes());
+                        }
+                        ValueRef::Real(value) => {
+                            hash.update(b"r");
+                            hash.update(&value.to_bits().to_le_bytes());
+                        }
+                        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+                            hash.update(b"b");
+                            hash.update(&(bytes.len() as u64).to_le_bytes());
+                            hash.update(bytes);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(hash.finalize().to_hex().to_string())
+    }
 }

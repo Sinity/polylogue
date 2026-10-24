@@ -35,6 +35,7 @@ clap = { version = "4.6", features = ["string"] }
 clap_complete = "4.6"
 notify = "8.2"
 libc = "0.2"
+rustix = { version = "1", features = ["fs", "net", "process"] }
 proptest = "1"
 tempfile = "3"
 atomicwrites = "0.4.4"

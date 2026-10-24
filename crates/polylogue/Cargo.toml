@@ -13,6 +13,7 @@ sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
 atomicwrites.workspace = true
+rustix.workspace = true
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
 polylogue-model.workspace = true
@@ -40,6 +41,8 @@ unicode-normalization.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+zip.workspace = true
+rustix = { workspace = true, features = ["pty"] }
 rusqlite.workspace = true
 
 polylogue-store = { workspace = true, features = ["fixture"] }

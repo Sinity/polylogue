@@ -3,8 +3,10 @@
 //! Source content is masked before views or formatting; response metadata is
 //! also masked at the application boundary.
 
+mod attachments;
 pub mod documents;
 pub mod events;
+pub use attachments::{AttachmentLabel, AttachmentRef};
 pub mod html;
 pub mod measures;
 pub use polylogue_model::masking::{mask, mask_json};
@@ -215,14 +217,38 @@ fn when(m: &Message) -> String {
 pub fn session(
     session: &Session,
     display_title: Option<&str>,
-    mut messages: Vec<Message>,
+    messages: Vec<Message>,
     view: View,
     format: Format,
     notices: &[String],
 ) -> io::Result<Value> {
+    session_with_attachments(
+        session,
+        display_title,
+        messages,
+        view,
+        format,
+        notices,
+        |_| Vec::new(),
+    )
+}
+
+pub fn session_with_attachments(
+    session: &Session,
+    display_title: Option<&str>,
+    mut messages: Vec<Message>,
+    view: View,
+    format: Format,
+    notices: &[String],
+    mut labels: impl FnMut(&Message) -> Vec<AttachmentLabel>,
+) -> io::Result<Value> {
     let mut masker = polylogue_model::masking::MessageMasker::default();
     for message in &mut messages {
         masker.message(message);
+        let labels = labels(message);
+        if format != Format::Json {
+            attachments::apply(message, view, labels);
+        }
     }
     let selected = project(messages, view);
     if format == Format::Json {

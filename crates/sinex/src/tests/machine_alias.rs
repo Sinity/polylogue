@@ -35,6 +35,7 @@ pub(super) async fn rename(sinex: &mut Sinex, root: &Path) -> Proof {
                     path: "synthetic".into(),
                     facts: None,
                     seen_at_ms: at,
+                    import: None,
                 }),
                 continues: false,
                 piece: None,

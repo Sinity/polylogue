@@ -25,6 +25,7 @@ fn reversed_batches_reconstruct_alias_cutoffs_for_legacy_embedded_observations()
                     path: "synthetic".into(),
                     facts: None,
                     seen_at_ms: 1,
+                    import: None,
                 }),
                 continues: false,
                 piece: None,

@@ -27,6 +27,9 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
+            Ok(request @ Request::Attachment { reveal: true, .. }) => {
+                super::attachment::socket(&out, request, d)
+            }
             Ok(Request::Changes { since }) => match service::change_feed(d, since.as_deref()) {
                 Ok(mut file) => {
                     if std::io::copy(&mut file, &mut out).is_err() {

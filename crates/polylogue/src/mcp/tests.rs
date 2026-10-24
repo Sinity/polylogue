@@ -59,3 +59,5 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
 mod read_pages;
 
 mod events;
+
+mod attachments;

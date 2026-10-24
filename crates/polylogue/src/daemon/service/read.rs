@@ -7,7 +7,9 @@ use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
-const CURSOR_VERSION: u8 = 2;
+const CURSOR_VERSION: u8 = 3;
+
+mod attachments;
 
 pub(super) struct Options<'a> {
     pub view: &'a str,
@@ -67,15 +69,34 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         }) {
             return store_error(&e);
         }
-        return match polylogue_render::session(
+        let mut descriptors = Vec::new();
+        let mut attachment_error = None;
+        let rendered = polylogue_render::session_with_attachments(
             &session,
             title.as_deref(),
             messages,
             view,
             format,
             &notices,
-        ) {
+            |message| match attachments::labels(reader, message, view) {
+                Ok((labels, mut found)) => {
+                    descriptors.append(&mut found);
+                    labels
+                }
+                Err(error) => {
+                    attachment_error = Some(error);
+                    Vec::new()
+                }
+            },
+        );
+        if let Some(error) = attachment_error {
+            return store_error(&error);
+        }
+        return match rendered {
             Ok(mut value) => {
+                if !descriptors.is_empty() {
+                    value["attachments"] = serde_json::json!(descriptors);
+                }
                 if options.logical {
                     value["lineage"] =
                         serde_json::to_value(selected.lineage()).expect("lineage is serializable");
@@ -97,7 +118,11 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         Ok(facts) => facts,
         Err(e) => return store_error(&e),
     };
-    let content = digest(&serde_json::json!([facts, session, title]));
+    let associations = match selected.attachment_fingerprint() {
+        Ok(value) => value,
+        Err(error) => return store_error(&error),
+    };
+    let content = digest(&serde_json::json!([facts, associations, session, title]));
     let generation = match reader.change_position() {
         Ok(position) => position.generation,
         Err(e) => return store_error(&e),
@@ -135,15 +160,48 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     };
     let mut pager = Pager::new(view, budget, position);
     let mut failure = None;
-    let result = selected.visit(|message| match pager.push(message) {
-        Ok(flow) => flow,
-        Err(e) => {
-            failure = Some(e);
-            ControlFlow::Break(())
+    let mut attachment_error = None;
+    let mut shown = std::collections::HashMap::new();
+    let result = selected.visit(|message| {
+        let mut found = Vec::new();
+        let result = pager.push_with_attachments(message, |message| {
+            match attachments::labels(reader, message, view) {
+                Ok((labels, descriptors)) => {
+                    found = descriptors;
+                    labels
+                }
+                Err(error) => {
+                    attachment_error = Some(error);
+                    Vec::new()
+                }
+            }
+        });
+        for descriptor in found {
+            let reference = polylogue_render::AttachmentRef {
+                message: descriptor.message.clone(),
+                block: descriptor.block,
+                attachment: descriptor.attachment_index,
+            };
+            if pager.visible_attachments().contains(&reference) {
+                shown.insert(reference, descriptor);
+            }
+        }
+        if attachment_error.is_some() {
+            return ControlFlow::Break(());
+        }
+        match result {
+            Ok(flow) => flow,
+            Err(error) => {
+                failure = Some(error);
+                ControlFlow::Break(())
+            }
         }
     });
     if let Err(e) = result {
         return store_error(&e);
+    }
+    if let Some(error) = attachment_error {
+        return store_error(&error);
     }
     if let Some(e) = failure {
         return error("bad_request", e);
@@ -152,6 +210,12 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
     };
+    let mut descriptors = Vec::new();
+    for reference in &page.attachments {
+        if let Some(descriptor) = shown.remove(reference) {
+            descriptors.push(descriptor);
+        }
+    }
     let next = match page.next {
         Some(position) => {
             let cursor = Cursor {
@@ -169,6 +233,9 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         None => None,
     };
     let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next});
+    if !descriptors.is_empty() {
+        value["attachments"] = serde_json::json!(descriptors);
+    }
     if options.logical {
         value["lineage"] =
             serde_json::to_value(selected.lineage()).expect("lineage is serializable");

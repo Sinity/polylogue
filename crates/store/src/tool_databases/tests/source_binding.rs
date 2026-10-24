@@ -8,6 +8,7 @@ fn observation(db: &Path, machine: &str) -> Observation {
         path: db.display().to_string(),
         facts: None,
         seen_at_ms: 1,
+        import: None,
     }
 }
 

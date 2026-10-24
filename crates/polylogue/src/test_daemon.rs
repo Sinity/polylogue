@@ -106,3 +106,5 @@ impl Drop for TestDaemon {
         }
     }
 }
+
+pub mod assets;

@@ -102,15 +102,15 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
 }
 
 #[test]
-fn read_pages_refuse_positions_from_the_previous_masking_version() {
+fn read_pages_refuse_positions_from_the_previous_rendering_version() {
     let world = test_daemon::start("synthetic text with enough bytes to paginate");
     let token = next(page(&world.daemon, "claude-code:s1", false, "full", None));
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(token)
         .unwrap();
     let mut cursor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(cursor["version"], 2);
-    cursor["version"] = serde_json::json!(1);
+    assert_eq!(cursor["version"], 3);
+    cursor["version"] = serde_json::json!(2);
     let old = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&cursor).unwrap());
     assert!(
