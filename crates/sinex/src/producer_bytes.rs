@@ -1,9 +1,7 @@
 //! Reserve the receiver's ownership of exact private bytes before installation.
 use super::*;
-use sinex_protocol::producer_bytes::{
-    Bytes, Material, Publication, encode_frame,
-    spool::{self, Frozen},
-};
+use sinex_protocol::producer_bytes::{Bytes, Material, Publication, encode_frame};
+use sinex_transport::spool::{self, Frozen};
 
 impl Sinex {
     pub(super) fn check_message(&self, frame: &Ingress) -> Result<()> {

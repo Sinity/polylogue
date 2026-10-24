@@ -847,7 +847,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2613,6 +2613,7 @@ dependencies = [
  "serde_json",
  "sinex-model",
  "sinex-protocol",
+ "sinex-transport",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2997,7 +2998,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3319,7 +3320,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=cd5d258b508db3fd8ee1646d26be2a7eeacb3feb#cd5d258b508db3fd8ee1646d26be2a7eeacb3feb"
+source = "git+https://github.com/Sinity/sinex?rev=f2951e51cf4ba02ac3952c2fb1165aac8d5ae317#f2951e51cf4ba02ac3952c2fb1165aac8d5ae317"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3329,7 +3330,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=cd5d258b508db3fd8ee1646d26be2a7eeacb3feb#cd5d258b508db3fd8ee1646d26be2a7eeacb3feb"
+source = "git+https://github.com/Sinity/sinex?rev=f2951e51cf4ba02ac3952c2fb1165aac8d5ae317#f2951e51cf4ba02ac3952c2fb1165aac8d5ae317"
 dependencies = [
  "blake3",
  "caseless",
@@ -3348,12 +3349,22 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=cd5d258b508db3fd8ee1646d26be2a7eeacb3feb#cd5d258b508db3fd8ee1646d26be2a7eeacb3feb"
+source = "git+https://github.com/Sinity/sinex?rev=f2951e51cf4ba02ac3952c2fb1165aac8d5ae317#f2951e51cf4ba02ac3952c2fb1165aac8d5ae317"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sinex-model",
+]
+
+[[package]]
+name = "sinex-transport"
+version = "0.1.0"
+source = "git+https://github.com/Sinity/sinex?rev=f2951e51cf4ba02ac3952c2fb1165aac8d5ae317#f2951e51cf4ba02ac3952c2fb1165aac8d5ae317"
 dependencies = [
  "blake3",
  "serde",
  "serde_json",
- "sinex-model",
+ "sinex-protocol",
  "tempfile",
 ]
 
@@ -3481,7 +3492,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4021,7 +4032,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
