@@ -8,9 +8,63 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let imports = self.reads.reader()?.retained_imports()?;
-        for input in imports {
+        for mut input in imports {
             if selected.is_some_and(|ids| !ids.contains(&input.id)) {
                 continue;
+            }
+            if input.format == KEPT && input.legacy_context {
+                let reader = self.reads.reader()?;
+                let paths = reader.retained_import_paths(&input.id)?;
+                let chain =
+                    match reader.stored_chain(&input.id, input.state.chain, input.state.length) {
+                        Ok(chain) => chain,
+                        Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                        Err(error) => return Err(error.into()),
+                    };
+                drop(reader);
+                let mut bytes = CaptureReader {
+                    reader: chain.reader(Arc::clone(&self.blobs)),
+                    size: 0,
+                    head: Vec::new(),
+                };
+                let normalized = polylogue_sources::polylogue_export::recognize_reader(&mut bytes)?;
+                let mut tail = [0; 64];
+                while bytes.head.len() < 64 {
+                    let remaining = 64 - bytes.head.len();
+                    if std::io::Read::read(&mut bytes, &mut tail[..remaining])? == 0 {
+                        break;
+                    }
+                }
+                pass.bytes_read += bytes.size;
+                let mut choices = std::collections::BTreeMap::new();
+                for path in paths {
+                    let path = PathBuf::from(path);
+                    let origin = if normalized {
+                        polylogue_sources::origin::by_name("polylogue-export")
+                    } else {
+                        recognize_import(&path, &bytes.head)
+                    };
+                    if let Some(origin) = origin {
+                        choices.entry(origin.name.to_owned()).or_insert(path);
+                    }
+                }
+                let candidates: Vec<_> = choices
+                    .into_iter()
+                    .map(|(format, path)| LegacyImportCandidate { format, path })
+                    .collect();
+                if candidates.len() == 1 {
+                    input.format = candidates[0].format.clone();
+                    input.path = Some(candidates[0].path.to_string_lossy().into_owned());
+                } else if candidates.len() > 1 {
+                    pass.errors.push(format!(
+                        "legacy import {} has competing current format interpretations",
+                        input.id
+                    ));
+                }
+                pass.legacy_imports.push(LegacyImport {
+                    input: input.id.clone(),
+                    candidates,
+                });
             }
             let Some(origin) = polylogue_sources::origin::by_name(&input.format) else {
                 continue;

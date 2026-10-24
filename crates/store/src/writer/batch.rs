@@ -36,6 +36,9 @@ pub struct ImportMember {
     pub version: u8,
     pub acquisition: String,
     pub member: String,
+    /// Interpretation selected for this acquisition, separate from immutable Input metadata.
+    #[serde(skip)]
+    pub format: Option<String>,
 }
 
 /// One parse step's rows and where they sit in the input's chain.

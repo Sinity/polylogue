@@ -72,7 +72,7 @@ pub(super) fn find_in(
         let (input, chain, length, format) = row?;
         if format == "export-file" {
             return Err(StoreError::ExcisionFormat { input, format,
-                detail: "uninterpreted export companions need a declared text/media decoder before their contents can be excised".into() });
+                detail: "input was captured as opaque; text/media excision for that byte format remains unsupported after later interpretation".into() });
         }
         let key = (input, chain);
         framing::scan(archive, store, &mut bytes, &plan, &key, length, needle)?;

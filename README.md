@@ -72,7 +72,7 @@ binary through the HTTP adapter, and neither operation is offered through CLI or
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). |
 | `read document:ID` | Read retained instructions, supplied context or memory without conversation roles. `full` and `dialogue` views, all formats and budgeted pages are available. |
-| `import PATH` | Bring in an export or a directory of them. |
+| `import PATH` | Retain files or export members and interpret recognized formats. `unrecognized` paths may also be `imported` or `already_stored`: retention and interpretation are separate. |
 | `attachment MESSAGE BLOCK` | Describe a message attachment and retained export candidates. The [interactive CLI](docs/attachments.md) can install verified bytes with `--reveal --out FILE`. |
 | `export SESSION…` | Write sessions or `document:ID` references as JSON (read back by `import`), Markdown, HTML or terminal text. |
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions. |

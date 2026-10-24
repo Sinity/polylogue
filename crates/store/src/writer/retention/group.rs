@@ -275,6 +275,11 @@ impl Inner {
         let mut ready = BTreeSet::new();
         for item in group.iter_mut() {
             let b = &mut item.batch;
+            check_import_format(
+                &self.archive,
+                &b.input.id,
+                b.observation.as_ref().and_then(|o| o.import.as_ref()),
+            )?;
             if !inputs.insert(b.input.id.clone()) {
                 return Err(StoreError::Invalid(
                     "one retention group repeats an input".into(),
