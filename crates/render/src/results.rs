@@ -9,6 +9,22 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
+    render_with_links(data, format, out, None)
+}
+
+type LinkTarget<'a> = dyn Fn(&Value, &Value) -> Option<String> + 'a;
+
+/// HTML links are chosen per column descriptor and cell, then escaped here.
+pub fn linked_html(data: &Value, out: &mut dyn Write, target: &LinkTarget<'_>) -> io::Result<()> {
+    render_with_links(data, Format::Html, out, Some(target))
+}
+
+fn render_with_links(
+    data: &Value,
+    format: Format,
+    out: &mut dyn Write,
+    target: Option<&LinkTarget<'_>>,
+) -> io::Result<()> {
     if format == Format::Json {
         return writeln!(out, "{data}");
     }
@@ -24,7 +40,7 @@ pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<(
         .map(|r| columns.iter().map(|c| cell(&r[c.as_str()])).collect())
         .collect();
     match format {
-        Format::Html => html(&columns, &cells, &rows, out)?,
+        Format::Html => html(data, &columns, &cells, &rows, out, target)?,
         Format::Markdown => markdown(&columns, &cells, &rows, out)?,
         _ => terminal(&columns, &cells, &rows, out)?,
     }
@@ -190,12 +206,24 @@ fn markdown(
 }
 
 fn html(
+    data: &Value,
     columns: &[String],
     cells: &[Vec<String>],
     rows: &[&Value],
     out: &mut dyn Write,
+    target: Option<&LinkTarget<'_>>,
 ) -> io::Result<()> {
-    writeln!(out, "<table>")?;
+    let descriptors: Vec<_> = data["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|column| column["name"].is_string())
+        .collect();
+    if target.is_some() {
+        writeln!(out, "<table class=\"results\">")?;
+    } else {
+        writeln!(out, "<table>")?;
+    }
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     write!(out, "<thead><tr>")?;
     for c in columns {
@@ -206,9 +234,23 @@ fn html(
     }
     writeln!(out, "</tr></thead><tbody>")?;
     for (r, row) in cells.iter().zip(rows) {
-        write!(out, "<tr>")?;
-        for v in r {
-            write!(out, "<td>{}</td>", escape(v))?;
+        if target.is_some() {
+            write!(out, "<tr class=\"hit\" tabindex=\"-1\">")?;
+        } else {
+            write!(out, "<tr>")?;
+        }
+        for (i, v) in r.iter().enumerate() {
+            let column = descriptors[i];
+            let value = &row[columns[i].as_str()];
+            match target.and_then(|target| target(column, value)) {
+                Some(href) => write!(
+                    out,
+                    "<td><a href=\"{}\">{}</a></td>",
+                    escape(&href),
+                    escape(v)
+                )?,
+                None => write!(out, "<td>{}</td>", escape(v))?,
+            }
         }
         if with_snippet {
             let s = marked(&row["snippet"], "<mark>", "</mark>", escape).unwrap_or_default();

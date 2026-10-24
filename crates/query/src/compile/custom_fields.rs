@@ -431,7 +431,7 @@ pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         compile: None,
     };
     if x.top {
-        c.show("depth", &expr, ColKind::Number);
+        c.show("depth", &expr, ColKind::Number, None);
     }
     c.typed(&def, &expr, x.op, x.span)
 }

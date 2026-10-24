@@ -156,6 +156,7 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/search", get(search))
         .route("/cost", get(cost))
         .route("/s/{id}", get(session))
+        .route("/d/{id}", get(document))
         .route("/auth", get(auth_page).post(auth_exchange))
         .route("/assets/reader.css", get(css))
         .route("/assets/reader.js", get(js))
@@ -462,6 +463,70 @@ async fn session(
         Response::Accepted { .. } => {
             failed(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no data")
         }
+    }
+}
+
+async fn document(
+    State(web): State<Arc<Web>>,
+    UrlPath(id): UrlPath<String>,
+    Query(p): Query<ReadQuery>,
+) -> HttpResponse {
+    let view_name = p.view.unwrap_or_else(|| "full".into());
+    let Some(view) = View::parse(&view_name).filter(|v| matches!(v, View::Full | View::Dialogue))
+    else {
+        return failed(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "documents support the full and dialogue views",
+        );
+    };
+    let Ok(id) = polylogue_model::DocumentId::parse(&id) else {
+        return failed(StatusCode::BAD_REQUEST, "bad_request", "not a document ID");
+    };
+    match ask(
+        &web,
+        Request::ReadDocument {
+            document: id,
+            view: view_name.clone(),
+            format: "json".into(),
+            budget: None,
+            cursor: None,
+        },
+    )
+    .await
+    {
+        Response::Ok { data } => {
+            let data = scrubbed(&web, data);
+            match serde_json::from_value(data["document"].clone()) {
+                Ok(document) => page(pages::document(
+                    &document,
+                    &data["sources"],
+                    view,
+                    &view_name,
+                )),
+                Err(_) => failed(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "the document could not be read",
+                ),
+            }
+        }
+        Response::Error { kind, message, .. } => failed(
+            if kind == "not_found" {
+                StatusCode::NOT_FOUND
+            } else if kind == "bad_request" {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
+            &kind,
+            &access::scrub(&message, &web.daemon.archive.root),
+        ),
+        Response::Accepted { .. } => failed(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "no document data",
+        ),
     }
 }
 

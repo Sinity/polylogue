@@ -9,8 +9,8 @@
 //! `next.action`) are resolved by [`crate::compile`] with other aliases.
 
 use crate::ast::Unit;
-use crate::compile::ColKind;
 use crate::compile::custom_fields::{self as custom, Custom};
+use crate::compile::{ColKind, ColumnReference};
 use polylogue_model::{
     BlockKind, DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind,
     Role, SessionKind, WorkNodeKind,
@@ -61,14 +61,22 @@ pub struct Field {
 #[derive(Clone, Copy)]
 pub enum Expr {
     Template(&'static str),
+    Reference(&'static str, ColumnReference),
     Fn(fn(&Aliases) -> String),
     Clock(fn(&Aliases, i64) -> String),
 }
 
 impl Expr {
+    pub fn reference(&self) -> Option<ColumnReference> {
+        match self {
+            Self::Reference(_, kind) => Some(*kind),
+            _ => None,
+        }
+    }
+
     pub fn render(&self, a: &Aliases, now: i64) -> String {
         match self {
-            Expr::Template(t) => a.expand(t),
+            Expr::Template(t) | Expr::Reference(t, _) => a.expand(t),
             Expr::Fn(f) => f(a),
             Expr::Clock(f) => f(a, now),
         }
@@ -78,6 +86,11 @@ impl Expr {
 impl Field {
     const fn sql(mut self, template: &'static str) -> Self {
         self.sql = Some(Expr::Template(template));
+        self
+    }
+
+    const fn sql_ref(mut self, template: &'static str, reference: ColumnReference) -> Self {
+        self.sql = Some(Expr::Reference(template, reference));
         self
     }
 
@@ -323,7 +336,7 @@ pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"
 
 pub static FIELDS: &[Field] = &[
     // documents have no conversation role, session or usage defaults.
-    f(Documents,"id",Prefix,"document ID or a unique prefix").sql("{r}.id"),
+    f(Documents,"id",Prefix,"document ID or a unique prefix").sql_ref("{r}.id", ColumnReference::Document),
     f(Documents,"origin",Match,"the provider export family").sql("{r}.origin"),
     v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context or memory").sql("{r}.purpose"),
     v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
@@ -331,7 +344,7 @@ pub static FIELDS: &[Field] = &[
     f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),
     f(Documents,"versions",Number,"the number of retained content versions").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
     // sessions
-    f(Sessions, "id", Prefix, "session ID or a unique prefix").sql("{s}.id"),
+    f(Sessions, "id", Prefix, "session ID or a unique prefix").sql_ref("{s}.id", ColumnReference::Session),
     f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …").sql("{s}.origin"),
     v(
         Sessions,
@@ -487,7 +500,7 @@ pub static FIELDS: &[Field] = &[
     sp(Sessions, "output", "words in tool output", custom::output),
     sp(Sessions, "thinking", "words in thinking", custom::thinking),
     // messages
-    f(Messages, "id", Prefix, "message ID").sql("{m}.id"),
+    f(Messages, "id", Prefix, "message ID").sql_ref("{m}.id", ColumnReference::Message),
     v(
         Messages,
         "role",
@@ -625,8 +638,8 @@ pub static FIELDS: &[Field] = &[
         LINK_HOW_NAMES,
         "how the child relates",
     ).sql("{r}.how"),
-    sp(Links, "parent", "the parent session", custom::link_parent).sql("{r}.parent_id"),
-    sp(Links, "child", "the child session", custom::link_child).sql("{r}c.id"),
+    sp(Links, "parent", "the parent session", custom::link_parent).sql_ref("{r}.parent_id", ColumnReference::Session),
+    sp(Links, "child", "the child session", custom::link_child).sql_ref("{r}c.id", ColumnReference::Session),
     f(Links, "pending", Bool, "the parent is not in the archive").sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
     f(
         Links,

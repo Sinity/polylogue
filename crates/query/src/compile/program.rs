@@ -179,7 +179,7 @@ impl<'a> Compiler<'a> {
                     for (field, desc) in then {
                         let (expr, kind) = self.expr(field, &scope, stage.span.start)?;
                         scalar(kind, field, stage.span.start)?;
-                        self.show(field, &expr, kind);
+                        self.show(field, &expr, kind, Self::field_reference(field, &scope));
                         let dir = if *desc { " DESC" } else { "" };
                         keys.push(format!("({expr}) IS NULL"));
                         keys.push(format!("({expr}){dir}"));
@@ -343,6 +343,7 @@ impl<'a> Compiler<'a> {
                     .map(|(n, _, k)| Column {
                         name: n.clone(),
                         kind: *k,
+                        reference: None,
                     })
                     .collect();
                 if keys.is_empty() {
@@ -377,6 +378,7 @@ impl<'a> Compiler<'a> {
                     .map(|(n, k)| Column {
                         name: n.clone(),
                         kind: *k,
+                        reference: None,
                     })
                     .collect();
                 let sql = match order {
@@ -402,6 +404,7 @@ impl<'a> Compiler<'a> {
                 .map(|(n, _, k)| Column {
                     name: n.clone(),
                     kind: *k,
+                    reference: None,
                 })
                 .collect();
             if keys.is_empty() {
@@ -451,35 +454,38 @@ impl<'a> Compiler<'a> {
                 let fields = self.opts.fields.clone();
                 for f in &fields {
                     let (e, k) = self.expr(f, &scope, 0)?;
-                    cols.push((flat(f), e, k));
+                    cols.push((flat(f), e, k, Self::field_reference(f, &scope)));
                 }
                 self.shown.clear();
             }
             let mut columns: Vec<Column> = cols
                 .iter()
-                .map(|(n, _, k)| Column {
+                .map(|(n, _, k, reference)| Column {
                     name: n.clone(),
                     kind: *k,
+                    reference: *reference,
                 })
                 .collect();
-            for (n, e, k) in std::mem::take(&mut self.shown) {
+            for (n, e, k, reference) in std::mem::take(&mut self.shown) {
                 if !columns.iter().any(|c| c.name == n) {
                     columns.push(Column {
                         name: n.clone(),
                         kind: k,
+                        reference,
                     });
-                    cols.push((n, e, k));
+                    cols.push((n, e, k, reference));
                 }
             }
             if let Some(rank) = &self.rank {
-                cols.push(("rank".into(), rank.clone(), ColKind::Number));
+                cols.push(("rank".into(), rank.clone(), ColKind::Number, None));
                 columns.push(Column {
                     name: "rank".into(),
                     kind: ColKind::Number,
+                    reference: None,
                 });
             }
             let mut select: Vec<String> = vec![format!("{pk} AS _pk")];
-            select.extend(cols.iter().map(|(n, e, _)| format!("{e} AS {n}")));
+            select.extend(cols.iter().map(|(n, e, _, _)| format!("{e} AS {n}")));
             let sql = if distinct {
                 let names = columns
                     .iter()

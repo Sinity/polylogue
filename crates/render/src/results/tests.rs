@@ -67,3 +67,19 @@ fn json_is_the_answer_as_given() {
     let back: Value = serde_json::from_str(&t).unwrap();
     assert_eq!(back, answer());
 }
+
+#[test]
+fn linked_html_escapes_targets_and_keeps_links_in_their_own_cells() {
+    let data = json!({"columns":[{"name":"id","reference":"document"},{"name":"title"}],"rows":[{"id":"<same>","title":"<same>"}],"count":1});
+    let mut out = vec![];
+    linked_html(&data, &mut out, &|column, _| {
+        (column["reference"] == "document").then(|| "/d/x\"<&".into())
+    })
+    .unwrap();
+    let html = String::from_utf8(out).unwrap();
+    assert!(
+        html.contains("<a href=\"/d/x&quot;&lt;&amp;\">&lt;same&gt;</a>"),
+        "{html}"
+    );
+    assert!(html.contains("<td>&lt;same&gt;</td>"), "{html}");
+}

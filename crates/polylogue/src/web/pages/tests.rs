@@ -31,3 +31,25 @@ fn incomplete_lineage_keeps_issues_evidence_and_session_navigation() {
     assert!(page.contains("Only the first 100 links"));
     assert!(!page.contains("<unknown>"));
 }
+
+#[test]
+fn identical_cell_text_links_only_by_its_column_reference() {
+    let id = "same:opaque";
+    let data = json!({"columns":[
+        {"name":"session","kind":"text","reference":"session"},
+        {"name":"document","kind":"text","reference":"document"},
+        {"name":"message","kind":"text","reference":"message"},
+        {"name":"note","kind":"text","reference":"note"},
+        {"name":"id","kind":"text"}],
+        "rows":[{"session":id,"document":id,"message":id,"note":id,"id":id}],"count":1});
+    let page = results_table(&data);
+    assert_eq!(page.matches("href=\"/s/same%3Aopaque\"").count(), 1);
+    assert_eq!(page.matches("href=\"/d/same%3Aopaque\"").count(), 1);
+    assert_eq!(page.matches("<td>same:opaque</td>").count(), 3);
+    assert!(page.contains("dedicated readers are unavailable"));
+    let old = json!({"unit":"sessions","shape":"rows","columns":[{"name":"id","kind":"text"}],"rows":[{"id":id}],"count":1});
+    assert!(
+        !results_table(&old).contains("href="),
+        "legacy metadata must not be guessed"
+    );
+}

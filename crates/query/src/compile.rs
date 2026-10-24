@@ -97,10 +97,22 @@ pub enum ColKind {
     Bool,
 }
 
+/// The entity named by a scalar column, proven by its owning field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnReference {
+    Session,
+    Document,
+    Message,
+    Note,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     pub kind: ColKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ColumnReference>,
 }
 
 /// A pasted ID-shaped word: it is a reference only if it names exactly one
@@ -303,7 +315,7 @@ pub(crate) struct Compiler<'a> {
     id_checks: Vec<IdCheck>,
     change_generations: Vec<String>,
     /// Fields shown beside each row because a condition or sort named them.
-    shown: Vec<(String, String, ColKind)>,
+    shown: Vec<RowColumn>,
     aliases: usize,
     /// Saved queries being expanded, innermost last: a cycle is refused.
     saved_stack: Vec<String>,
@@ -603,13 +615,15 @@ fn child_session_column(unit: Unit, a: &Aliases) -> String {
     a.expand(units::spec(unit).session_pk)
 }
 
+type RowColumn = (String, String, ColKind, Option<ColumnReference>);
+
 /// The key and default columns of each unit's rows.
-fn row_columns(unit: Unit, a: &Aliases, now: i64) -> (String, Vec<(String, String, ColKind)>) {
+fn row_columns(unit: Unit, a: &Aliases, now: i64) -> (String, Vec<RowColumn>) {
     let spec = units::spec(unit);
     let cols = spec
         .columns
         .iter()
-        .map(|(name, e, k)| ((*name).to_owned(), e.render(a, now), *k))
+        .map(|(name, e, k)| ((*name).to_owned(), e.render(a, now), *k, e.reference()))
         .collect();
     (a.expand(spec.key), cols)
 }

@@ -135,6 +135,12 @@ when present, otherwise the derived first-prompt title. JSON reads carry this
 as `display_title`, separate from the recorded `session` metadata. Importable
 exports retain source fields.
 
+The web reader links Document search results to `/d/ID`, with `full` and
+`dialogue` views, copied CLI commands, and masked source metadata including
+retained input ranges and versions. **Browse Documents** opens the document
+query from the overview. Query column descriptors identify supported reader
+links; message, note and untyped values remain text.
+
 The web reader's `/cost` page runs the same physical usage report as
 `measure usage`, including unknown usage, unpriced responses, independent
 recorded observations and the price catalog. Enter a session query to narrow
