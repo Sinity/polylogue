@@ -430,7 +430,7 @@
 
       renderTimeline(nextSnapshot?.timeline);
       renderIntelligence(nextSnapshot?.intelligence);
-      saveButton.disabled = saving || !nextSnapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || selectionDraft?.truncated === true;
+      saveButton.disabled = saving || !nextSnapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || !selectionDraft?.identity_observation?.provider_conversation_id || selectionDraft?.truncated === true;
 
       if (nextSnapshot?.ambient?.enabled === false || nextSnapshot?.ambient?.site_enabled === false) {
         stop();
@@ -552,7 +552,7 @@
         saving = false;
         bodyInput.disabled = false;
         cancelButton.disabled = false;
-        saveButton.disabled = !snapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || selectionDraft?.truncated === true;
+        saveButton.disabled = !snapshot?.notes?.persistence_supported || selectionDraft?.identity_observation?.fidelity !== "native" || !selectionDraft?.identity_observation?.provider_message_id || !selectionDraft?.identity_observation?.provider_conversation_id || selectionDraft?.truncated === true;
       }
     }
 

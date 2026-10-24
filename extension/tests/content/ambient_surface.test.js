@@ -326,6 +326,25 @@ describe("ambient capture status surface", () => {
   });
 
   it.each([
+    ["missing conversation", "Short quote", null],
+    ["oversized quote", "x".repeat(2001), "conversation-1"],
+  ])("keeps saving disabled after refresh for %s", async (_case, text, conversation) => {
+    const dom = freshDom('<article data-message-author-role="assistant"><span id="inside"></span></article>');
+    dom.window.document.getElementById("inside").textContent = text;
+    const response = missionFixture({ notes: { persistence_supported: true } });
+    const { api, runtime } = mount(dom, response, { identityForNode: () => ({ fidelity: "native", provider_conversation_id: conversation, provider_message_id: "m1" }) });
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    const range = dom.window.document.createRange();
+    range.selectNodeContents(dom.window.document.getElementById("inside"));
+    dom.window.getSelection().addRange(range);
+    dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
+    api.render(response);
+    expect(api.shadow.querySelector(".save-note").disabled).toBe(true);
+    trustedClick(api.shadow.querySelector(".save-note"));
+    expect(runtime.sendMessage.mock.calls.some(([m]) => m.type === "polylogue.note.saveSelection")).toBe(false);
+  });
+
+  it.each([
     ["ChatGPT", "https://chatgpt.com/c/conversation-1"],
     ["Claude.ai", "https://claude.ai/chat/conversation-1"],
   ])("keeps the slide-over keyboard reachable and labelled on %s", async (_name, url) => {
