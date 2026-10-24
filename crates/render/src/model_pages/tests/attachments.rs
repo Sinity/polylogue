@@ -16,6 +16,7 @@ fn unicode_attachment_labels_are_charged_before_splitting_and_described_only_whe
     assert_eq!(whole.len(), 1);
     for budget in [1, 3, 17] {
         let pages = pages(&message, &label, budget);
+        assert_eq!(pages, projected_pages(&message, &label, budget, true));
         assert_eq!(
             pages
                 .iter()
@@ -41,10 +42,23 @@ fn unicode_attachment_labels_are_charged_before_splitting_and_described_only_whe
 }
 
 fn pages(message: &polylogue_model::Message, label: &str, budget: usize) -> Vec<Page> {
+    projected_pages(message, label, budget, false)
+}
+
+fn projected_pages(
+    message: &polylogue_model::Message,
+    label: &str,
+    budget: usize,
+    cached: bool,
+) -> Vec<Page> {
     let mut result = Vec::new();
     let mut position = None;
+    let mut checkpoint = None;
     loop {
-        let mut pager = Pager::new(View::Full, budget, position);
+        let mut pager = match (position, checkpoint.take()) {
+            (Some(at), Some(saved)) if cached => Pager::resume(View::Full, budget, at, saved),
+            _ => Pager::new(View::Full, budget, position),
+        };
         let _ = pager
             .push_with_attachments(message.clone(), |_| {
                 vec![
@@ -61,6 +75,7 @@ fn pages(message: &polylogue_model::Message, label: &str, budget: usize) -> Vec<
                 ]
             })
             .unwrap();
+        checkpoint = pager.checkpoint();
         let page = pager.finish().unwrap();
         position = page.next;
         result.push(page);

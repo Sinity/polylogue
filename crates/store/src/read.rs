@@ -429,6 +429,12 @@ impl Reader<'_> {
         Ok(conn)
     }
 
+    /// Physical index identity admitted with this reader's pinned snapshot.
+    pub fn index_identity(&self) -> Result<(u64, u64)> {
+        self.conn()?;
+        self.index_identity.ok_or(StoreError::ReadIndexReplaced)
+    }
+
     /// Both counters and the index identity from this reader's pinned view.
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         Ok(self.conn()?.query_row(
@@ -559,7 +565,7 @@ impl Reader<'_> {
         &self,
         session_pk: i64,
         session: &SessionId,
-        keep: impl Fn(i64) -> bool,
+        mut keep: impl FnMut(i64) -> bool,
         visit: &mut impl FnMut(Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
         let mut stmt = self.conn()?.prepare_cached(
@@ -610,12 +616,12 @@ impl Reader<'_> {
                 attrs,
                 (w1h, speed),
             ) = row?;
-            if !keep(pk) {
-                continue;
-            }
             let Ok(id) = MessageId::parse(&id) else {
                 continue;
             };
+            if !keep(pk) {
+                continue;
+            }
             let n = |x: Option<i64>| x.map(|x| x as u64);
             let attrs: Option<serde_json::Value> =
                 attrs.and_then(|a| serde_json::from_str(&a).ok());

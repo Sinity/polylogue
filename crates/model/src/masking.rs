@@ -52,8 +52,9 @@ fn mask_json_values(value: &mut Value, mut string: impl FnMut(&str) -> String) {
     }
 }
 
-/// Request-local source-content masking, before views and output rearrangement.
-#[derive(Default)]
+/// Source-content masking before views and output rearrangement. Clones carry
+/// private source state and must never become public continuation tokens.
+#[derive(Clone, Default)]
 pub struct MessageMasker {
     stream: credential_masking::Masker,
 }

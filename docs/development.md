@@ -177,7 +177,10 @@ Build, corpus generation, archive ingestion/search readiness and daemon starts
 are recorded separately from request latency. The first request after each
 daemon restart and subsequent requests are reported with samples, median and
 p95; filesystem caches are not flushed, and each CLI call starts a new client
-process. Read results include page counts, source coverage and daemon current
+process. Sequential session pages may reuse up to 64 private message-boundary
+masking checkpoints; restarts and eviction replay the source prefix with identical
+answers.
+Read results include page counts, source coverage and daemon current
 and peak RSS before and after each repeated window. The report explicitly
 marks these as bounded windows, not complete session traversals. Add
 `--full-walk` to keep the repeated whole-session traversal runnable with its
