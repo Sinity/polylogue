@@ -56,7 +56,9 @@ pub fn home(status: &Value, sessions: &Value) -> String {
             );
         }
     }
-    body.push_str("</dl><h2>Latest sessions</h2>");
+    body.push_str(
+        "</dl><p><a href=\"/search?q=documents\">Browse Documents</a></p><h2>Latest sessions</h2>",
+    );
     body.push_str(&results_table(sessions));
     layout("Overview", "", "polylogue", &body)
 }
