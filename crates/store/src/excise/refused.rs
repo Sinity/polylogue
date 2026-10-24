@@ -41,6 +41,7 @@ impl RefusedIds {
 impl Refused {
     /// A complete replacement, built before it can become the writer's lookup.
     pub fn load(archive: &Connection) -> Result<Self> {
+        crate::containers::require_authority(archive)?;
         let mut out = Self::default();
         let mut stmt =
             archive.prepare("SELECT scope,message_ids_json,refused_json,id FROM excision")?;

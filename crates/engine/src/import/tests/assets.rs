@@ -139,8 +139,12 @@ fn duplicate_zip_member_content_retains_each_physical_source_association() {
     let (mut engine, _lock) = engine(&w, 1024);
     let report = engine.import(&[path]).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 2);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 2);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 3);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.observation_container"),
+        2
+    );
 }
 
 #[test]

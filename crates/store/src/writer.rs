@@ -36,7 +36,9 @@ mod search;
 use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, pack_event, unpack_block};
-pub use batch::{Batch, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport};
+pub use batch::{
+    Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
+};
 pub(crate) use bytes::observation_id;
 use bytes::*;
 use excluded::*;
@@ -855,6 +857,11 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
+            if crate::containers::linked(b) {
+                return Err(StoreError::Invalid(
+                    "container members require staged group retention".into(),
+                ));
+            }
             crate::fault::check("write.input", &b.input.id)?;
             for p in &b.parse {
                 p.accounting.check()?;

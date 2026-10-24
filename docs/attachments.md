@@ -47,14 +47,32 @@ still refuses Inputs originally captured as opaque, including ones interpreted
 later; it does not infer a safe decoder from a later format hint.
 
 Parsing and reading use retained bytes, without reopening provider files or
-fetching URLs. Whole-input excision removes an asset's retained Input and
-blocks reimport. Text excision of an opaque companion refuses until its format
+fetching URLs. Whole-input excision removes an independent asset Input and blocks reimport. Text excision of an opaque companion refuses until its format
 has a decoder. Malformed naming metadata is reported at import and raw sidecars remain
 retained. Native file-ID matching can still resolve bytes without a filename.
 
-Current ZIP import retains exact uncompressed member bytes and acquisition /
-member observations, but not the original compressed ZIP container or its
-metadata. Original-container custody and coordinated container/member excision
-remain open in `plnext-185.12`. This workflow covers ChatGPT native file-ID
-matching and naming/library sidecars; other provider and filename-only matching
-rules remain outside this delivery.
+ZIP import retains the exact original container, including its metadata, and
+separate uncompressed file-member Inputs. Member observations record their
+original container and native member index. Equal bytes share storage while
+keeping every physical observation. Archive10 stores this relationship; older
+writers and row decoders refuse it. Older member-only captures do not acquire
+missing original bytes during rebuild.
+
+A ZIP's file members are decoded, hashed and staged privately before any bytes
+are published. A refused member refuses the linked acquisition. Corrupt,
+encrypted or unreadable member populations refuse before public installation;
+the original does not fall back to opaque retention. After reservation, an I/O
+failure can leave accountable unfinished bytes, reported as unavailable until
+verified or supplied by an exact retry.
+
+Coordinated ZIP rewriting is unsupported. Member, container, session and
+document removals refuse before mutation while linked representations remain.
+Unrelated independent Inputs remain removable. The original container is
+material-only data, so its path can appear in both `imported` and `unrecognized`.
+
+Staging holds metadata for all entries and private compressed stages for all
+member bodies. The complete acquisition uses a synchronous Writer turn; this
+does not promise constant memory, fixed disk use or fair scheduling. Parsing
+continues from retained member bytes afterward. This workflow covers ChatGPT
+native file-ID matching and naming/library sidecars; other provider and
+filename-only matching remain open.

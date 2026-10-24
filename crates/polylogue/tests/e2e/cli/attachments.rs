@@ -35,6 +35,9 @@ impl World {
         Self::with_label(zip, bytes, "supplied λ🙂.png")
     }
     fn with_label(zip: bool, bytes: &[u8], label: &str) -> Self {
+        Self::with_source_name(zip, bytes, label, if zip { "export.zip" } else { "export" })
+    }
+    fn with_source_name(zip: bool, bytes: &[u8], label: &str, source_name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         let archive = dir.path().join("archive");
@@ -54,7 +57,7 @@ impl World {
             ("conversation_asset_file_names.json", naming.as_slice()),
             ("notes-file-Native.dat", b"basename decoy".as_slice()),
         ];
-        let source = dir.path().join(if zip { "export.zip" } else { "export" });
+        let source = dir.path().join(source_name);
         if zip {
             let mut output = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
             for (name, bytes) in members {
@@ -357,3 +360,58 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
 }
 
 mod promoted;
+
+#[test]
+fn retained_zip_member_and_container_excision_refuse_without_changing_public_reads() {
+    let world = World::new(true);
+    let before = cli(&world.env(), &["--json", "read", SESSION]);
+    assert!(before.status.success(), "{before:?}");
+    let pool =
+        polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
+    let origins = pool
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT DISTINCT container_input FROM a.observation_container",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(origins.len(), 1);
+    let original = origins[0]["container_input"].as_str().unwrap();
+    for target in [
+        format!("input:{original}"),
+        format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
+        format!("session:{SESSION}"),
+    ] {
+        let result = cli(&world.env(), &["--json", "excise", &target, "--yes"]);
+        assert!(!result.status.success(), "{result:?}");
+        assert!(
+            json(&result)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("coordinated ZIP removal"),
+            "{result:?}"
+        );
+    }
+    let after = cli(&world.env(), &["--json", "read", SESSION]);
+    assert!(after.status.success(), "{after:?}");
+    assert_eq!(json(&after), json(&before));
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT count(*) AS n FROM a.excision", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+}
+
+#[test]
+fn original_container_name_is_not_a_member_attachment_identity() {
+    let world = World::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
+    let descriptor = world.descriptor();
+    assert_eq!(descriptor["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        descriptor["candidates"][0]["blob"],
+        json!(polylogue_model::BlobHash::of(SECRET))
+    );
+}

@@ -350,6 +350,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
         acquisition: "competing".into(),
         member: "conversations.json".into(),
         format: None,
+        container: None,
     });
     let mut report = ImportReport::default();
     e.import_captured(

@@ -10,6 +10,7 @@
 pub mod archive;
 pub mod assets;
 pub mod blobs;
+mod containers;
 pub mod context;
 pub mod derive;
 pub mod documents;
@@ -49,8 +50,8 @@ pub use notes::NoteFilter;
 pub use read::{KnownInput, MessageVersion, ReadPool, Reader, RetainedImport, SqlValue, Status};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
-    Batch, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport, Writer,
-    WriterSender,
+    Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Writer, WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -101,7 +102,7 @@ pub enum StoreError {
     IncompleteLineage(read::LineageIssue),
     #[error("{0} not found")]
     NotFound(String),
-    #[error("text excision cannot inspect input {input} ({format}): {detail}")]
+    #[error("excision cannot inspect input {input} ({format}): {detail}")]
     ExcisionFormat {
         input: String,
         format: String,

@@ -162,6 +162,17 @@ impl Reader<'_> {
             [],
             |r| r.get(0),
         )?;
+        // A linked group's original is material custody, not one of its attachment members.
+        let mut originals =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.acquisition') FROM a.observation o
+            JOIN a.observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
+        for row in roots.query_map([after, through], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (input, acquisition) = row?;
+            originals.entry(input).or_default().insert(acquisition);
+        }
         let mut stmt = conn.prepare(
             "SELECT o.id,o.input,o.details_json FROM a.observation o
             WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL AND o.class<>'excised'",
@@ -178,6 +189,12 @@ impl Reader<'_> {
             let details: serde_json::Value = serde_json::from_str(&details)?;
             if let Some(member) = details.get("import") {
                 let membership: ImportMember = serde_json::from_value(member.clone())?;
+                if originals
+                    .get(&input)
+                    .is_some_and(|acquisitions| acquisitions.contains(&membership.acquisition))
+                {
+                    continue;
+                }
                 if membership.version != 1
                     || membership.acquisition.is_empty()
                     || membership.member.is_empty()

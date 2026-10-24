@@ -44,7 +44,11 @@ impl Inner {
                 drop(publication);
                 // A rejected reservation installed nothing. Retry independent
                 // inputs separately, as ordinary Writer groups already do.
-                if group.len() > 1 {
+                if group.len() > 1
+                    && !group
+                        .iter()
+                        .any(|item| crate::containers::linked(&item.batch))
+                {
                     return group
                         .into_iter()
                         .flat_map(|batch| {
@@ -241,7 +245,7 @@ impl Inner {
             }
         }
         if !parsed.is_empty() {
-            self.write_group(&parsed);
+            crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&parsed));
         }
         drop(parsed);
         retained
@@ -271,7 +275,10 @@ impl Inner {
         store: &hashed_blobs::Store,
     ) -> Result<Reservation> {
         let mut checked = BTreeSet::new();
-        let mut inputs = BTreeSet::new();
+        let linked_group = group
+            .iter()
+            .any(|item| crate::containers::linked(&item.batch));
+        let mut inputs = BTreeMap::new();
         let mut ready = BTreeSet::new();
         for item in group.iter_mut() {
             let b = &mut item.batch;
@@ -280,9 +287,20 @@ impl Inner {
                 &b.input.id,
                 b.observation.as_ref().and_then(|o| o.import.as_ref()),
             )?;
-            if !inputs.insert(b.input.id.clone()) {
+            let immutable = b.input.route_rank == 2
+                && b.piece
+                    .as_ref()
+                    .is_some_and(|p| b.input.id == p.hash.to_string() && p.size == b.length)
+                && !b.continues
+                && b.parse.is_empty()
+                && b.blobs.is_empty()
+                && item.extracted.is_empty();
+            if inputs
+                .insert(b.input.id.clone(), immutable)
+                .is_some_and(|previous| !linked_group || !previous || !immutable)
+            {
                 return Err(StoreError::Invalid(
-                    "one retention group repeats an input".into(),
+                    "one retention group repeats a mutable input".into(),
                 ));
             }
             i64::try_from(b.length).map_err(|_| {
@@ -487,6 +505,24 @@ impl Inner {
                 }
             }
         }
+        let staged_origins: BTreeSet<_> = group
+            .iter()
+            .filter(|item| {
+                item.batch.input.route_rank == 2
+                    && item.files.iter().any(|file| {
+                        file.hash().to_string() == item.batch.input.id
+                            && file.len() == item.batch.length
+                    })
+            })
+            .map(|item| item.batch.input.id.clone())
+            .collect();
+        for item in group.iter() {
+            if let Some(container) = crate::containers::coordinate(&item.batch)
+                && !staged_origins.contains(&container.input)
+            {
+                crate::containers::original(&self.archive, &container.input, true)?;
+            }
+        }
         let tx = self.archive.transaction()?;
         let seq = bump_counter(&tx)?;
         for item in group.iter() {
@@ -501,8 +537,24 @@ impl Inner {
             }
         }
         let mut retained = Vec::new();
-        for item in group.iter() {
-            let b = &item.batch;
+        let mut reserved_inputs = BTreeSet::new();
+        for item in group.iter_mut() {
+            let b = &mut item.batch;
+            let duplicate = !reserved_inputs.insert(b.input.id.clone());
+            if duplicate {
+                let hash = BlobHash::parse(&b.input.id).map_err(|_| {
+                    StoreError::Invalid("repeated import must name complete bytes".into())
+                })?;
+                let same:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM revision r JOIN extent e ON e.input=r.input AND e.chain=r.chain
+                    WHERE r.input=?1 AND r.number=1 AND r.length=?2 AND e.offset=0 AND e.length=?2 AND e.blob_offset=0 AND e.blob=?3)",params![b.input.id,b.length as i64,&hash.0[..]],|r|r.get(0))?;
+                if !same {
+                    return Err(StoreError::Invalid(
+                        "repeated immutable import has a different byte basis".into(),
+                    ));
+                }
+                b.change = Change::Unchanged;
+                b.piece = None;
+            }
             for piece in b.piece.iter().chain(&b.blobs) {
                 if let Stored::Inline(bytes) = &piece.stored
                     && !ready.contains(&piece.hash)
@@ -545,12 +597,18 @@ impl Inner {
                 input: b.input.id.clone(),
                 chain,
                 length: b.length,
-                already_stored: matches!(b.change, Change::Unchanged)
-                    && match crate::retention::require_present(&tx, "", &b.input.id, Some(chain)) {
-                        Ok(()) => true,
-                        Err(StoreError::InputUnfinished { .. }) => false,
-                        Err(error) => return Err(error),
-                    },
+                already_stored: duplicate
+                    || (matches!(b.change, Change::Unchanged)
+                        && match crate::retention::require_present(
+                            &tx,
+                            "",
+                            &b.input.id,
+                            Some(chain),
+                        ) {
+                            Ok(()) => true,
+                            Err(StoreError::InputUnfinished { .. }) => false,
+                            Err(error) => return Err(error),
+                        }),
             });
         }
         tx.commit()?;
