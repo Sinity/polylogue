@@ -215,7 +215,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         .0
         .clone();
     let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
-    assert!(pool.reader().unwrap().query("SELECT m.on_active_path FROM current_message m JOIN session s ON s.pk=m.session_pk WHERE s.id=?1",&[polylogue_store::SqlValue::Text(unknown)]).unwrap().iter().all(|r|r["on_active_path"].is_null()));
+    assert!(pool.reader().unwrap().query("SELECT m.on_active_path FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id=?1",&[polylogue_store::SqlValue::Text(unknown)]).unwrap().iter().all(|r|r["on_active_path"].is_null()));
     drop(pool);
     drop(daemon);
     let empty = states

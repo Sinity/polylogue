@@ -14,7 +14,7 @@ operations, which read through Store and present through Query and Render.
 | Owner | Responsibility and interface |
 |---|---|
 | [Model](../crates/model/src/lib.rs) | I/O-free identities, messages, blocks, documents and outcomes shared by the other crates. |
-| [Sources](../crates/sources/src/lib.rs) | Recognize and interpret native formats. An [origin declaration](../crates/sources/src/origin.rs) owns discovery, framing, parser version and tool capabilities. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) produce model values, source ranges and accounting. |
+| [Sources](../crates/sources/src/lib.rs) | Recognize and interpret native formats. An [origin declaration](../crates/sources/src/origin.rs) owns discovery, framing and tool capabilities. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) produce model values, source ranges and accounting. |
 | [Engine](../crates/engine/src/lib.rs) | Discover changes, acquire retained bytes, schedule parsing and drive convergence. The [parse pool](../crates/engine/src/pool.rs) feeds Store's bounded writer; it does not own SQL or source interpretation. |
 | [Store](../crates/store/src/lib.rs) | Own every SQLite connection, archive mutation, blob reference, read snapshot, derivation and excision. Its typed `Writer`, `ReadPool` and `Reader` interfaces isolate callers from database layout. |
 | [Query](../crates/query/src/lib.rs) | Bind the query language and compile parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) executes it through a Store reader and prepares answers. |
@@ -37,17 +37,22 @@ recovery and preservation rules:
 | Store | Contents and recovery boundary |
 |---|---|
 | [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. [`schema.rs`](../crates/store/src/schema.rs) creates it at version 1, the only version, and refuses any other. |
-| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents, source associations and retained content versions; search and derived products. It rebuilds from canonical retained inputs when its format changes or recovery requires replacement. |
+| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages and documents, each with one shown version and the sources that hold it; search and derived products. It is rebuilt from the stored inputs when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
 
-Index rebuilds use retained source versions, including immutable manual imports
-whose provider files have disappeared. Parsed content versions are derived;
-authored targets, recorded hashes and anchors remain canonical. Message ordering
-uses stable source identities and positions, with opaque message IDs breaking
-ties. It does not invent event times. [Version selection](../crates/store/src/writer/tests/parser_versions.rs)
-and [import replay](../crates/engine/src/import/tests/replay.rs) tests cover those
-boundaries.
+Index rebuilds parse the stored inputs, including manual imports whose
+provider files have disappeared. Authored targets, recorded hashes and anchors
+live in `archive.db` and survive a rebuild. A message seen in several inputs is
+stored once; [the writer](../crates/store/src/writer/rows.rs) keeps one row per
+input chain that holds it in `message_source` and shows the version that wins:
+within one input the newest chain, within one chain the earliest record (or, for
+inputs whose records restate whole conversations, the latest), and across inputs
+the originating session, then a complete version, then the more faithful route,
+then the smaller content hash. Message ordering uses stable source identities
+and positions, with opaque message IDs breaking ties. It does not invent event
+times. [Import replay](../crates/engine/src/import/tests/replay.rs) tests cover
+rebuilds from stored imports.
 
 Derived products declare dependency and rule versions in
 [derive](../crates/store/src/derive.rs). Changed rules refresh their dependents;
@@ -74,8 +79,8 @@ them. [Custody tests](../crates/engine/src/import/tests/custody.rs) cover import
 watched inputs and parse-pool groups.
 
 [Extracted blobs](../crates/store/src/retention/extracted.rs), such as decoded
-inline media, cite a retained input/chain, exact enclosing source range and hash,
-and parser version. They have independent durable owners and row batches.
+inline media, cite a retained input/chain and the exact enclosing source range
+and hash. They have independent durable owners and row batches.
 Editing or excising source bytes invalidates affected associations; surviving
 owners retain shared bytes. Recovery does not sweep unregistered historical CAS
 files.
@@ -95,13 +100,6 @@ and distinguish unknown values from zero or empty collections. Native compaction
 history is context evidence, not newly authored messages. Provider-specific
 interpretation and its exceptions live with the [source parsers](../crates/sources/src/lib.rs)
 and [format tests](../crates/sources/tests/formats/main.rs).
-
-A completed newer interpretation can retire its predecessor's messages, events,
-links and metadata. Completion requires observed EOF and accounting through the
-selected source length. Partial work survives restart and remains `reparsing`;
-it cannot erase the prior interpretation prematurely. Different inputs' parser
-version numbers do not compete. [Reparse tests](../crates/store/src/writer/tests/reparse.rs)
-cover completion, promotion and rollback.
 
 Document-framed imports validate the complete wrapper before publishing any
 staged items. The [export driver](../crates/engine/src/import/exports.rs) keeps
@@ -126,15 +124,17 @@ recovery.
 [Browser capture](../crates/polylogue/src/browser/captures.rs) acknowledges a
 synchronized append to a framed spool. Exact retries are idempotent; an
 interrupted matching prefix can complete, while ambiguous tails are preserved
-and refused. Current acquisitions supply partial session coverage. Missing
-members or omitted metadata do not prove deletion. Retained snapshot and source
-ordering determine the current projection. The [spool tests](../crates/polylogue/src/browser/captures/tests.rs)
+and refused. Each capture is a framed record that restates the conversation, so
+the latest capture's version of a message is shown; a message missing from a
+later capture stays, since a capture does not prove deletion. Every capture
+stays in the stored input. The [spool tests](../crates/polylogue/src/browser/captures/tests.rs)
 and [capture parser tests](../crates/sources/src/browser_capture/tests.rs) own
 these rules.
 
 Non-conversation text uses the model's [Document](../crates/model/src/document.rs)
-and Store's [document projection](../crates/store/src/documents.rs), with source
-associations and content versions separate from messages. `document:ID` supports
+and Store's [document rows](../crates/store/src/documents.rs), with one shown
+version chosen by source time and the sources that hold it, separate from
+messages. `document:ID` supports
 read and export; the `documents` relation searches current text. Supplied account
 or project text remains evidenced by each immutable import. A later empty or
 null collection is not an account-wide retraction. [Sidecar tests](../crates/sources/src/claude_ai/sidecars_tests.rs)

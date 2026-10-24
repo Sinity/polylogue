@@ -55,7 +55,6 @@ pub(crate) struct PreparedMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
-    pub(crate) attrs: Vec<u8>,
     pub(crate) blocks: Vec<Vec<u8>>,
 }
 
@@ -76,6 +75,8 @@ impl std::ops::DerefMut for PreparedMessage {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
+    /// The document without its blocks, packed JSON.
+    pub(crate) fields: Vec<u8>,
     content: PreparedContent,
 }
 
@@ -130,7 +131,7 @@ impl RowPacker {
         })
     }
 
-    fn pack_json(&mut self, value: &impl Serialize) -> Result<Vec<u8>> {
+    pub(crate) fn pack_json(&mut self, value: &impl Serialize) -> Result<Vec<u8>> {
         Ok(self.pack_row(&serde_json::to_vec(value)?)?)
     }
 
@@ -144,29 +145,14 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        let attrs = Message {
-            id: message.id.clone(),
-            session: message.session.clone(),
-            parent: message.parent.clone(),
-            role: message.role,
-            at: message.at,
-            model: message.model.clone(),
-            prompt_kind: message.prompt_kind,
-            blocks: Vec::new(),
-            usage: message.usage.clone(),
-            stop_reason: message.stop_reason.clone(),
-            reported_cost_usd: message.reported_cost_usd.clone(),
-            duration_ms: message.duration_ms,
-            production: message.production.clone(),
-        };
         Ok(PreparedMessage {
             id: message.id.clone(),
-            content: self.pack_content(message, &attrs, &message.blocks, None)?,
+            content: self.pack_content(message, &message.blocks, None)?,
         })
     }
 
     pub(crate) fn pack_document(&mut self, document: &Document) -> Result<PreparedDocument> {
-        let attrs = Document {
+        let fields = Document {
             id: document.id.clone(),
             purpose: document.purpose,
             title: document.title.clone(),
@@ -177,9 +163,9 @@ impl RowPacker {
         };
         Ok(PreparedDocument {
             id: document.id.clone(),
+            fields: self.pack_json(&fields)?,
             content: self.pack_content(
                 document,
-                &attrs,
                 &document.blocks,
                 Some(b"polylogue-document-v1\0"),
             )?,
@@ -189,12 +175,10 @@ impl RowPacker {
     fn pack_content(
         &mut self,
         value: &impl Serialize,
-        attrs: &impl Serialize,
         blocks: &[Block],
         domain: Option<&[u8]>,
     ) -> Result<PreparedContent> {
-        // Canonicalization changes derived identity only. Message hashes retain
-        // their existing byte domain; Documents have a separate explicit tag.
+        // Messages and documents hash in separate domains.
         let hash = {
             let mut canonical = serde_json::to_value(value)?;
             canonical.sort_all_objects();
@@ -207,7 +191,6 @@ impl RowPacker {
         };
         Ok(PreparedContent {
             hash,
-            attrs: self.pack_json(attrs)?,
             blocks: blocks
                 .iter()
                 .map(|block| self.pack_block(block))

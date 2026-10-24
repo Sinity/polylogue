@@ -12,7 +12,7 @@ use std::path::Path;
 
 mod excision_documents;
 mod excision_selected;
-mod retained_history;
+mod older_chains;
 mod tool_captures;
 
 #[test]
@@ -62,23 +62,11 @@ fn an_unchanged_incomplete_tail_waits_without_rereading_stored_bytes() {
 }
 
 #[test]
-fn waiting_tail_retries_after_parser_version_or_source_changes() {
+fn waiting_tail_retries_after_the_source_changes() {
     let w = ClaudeHome::new();
     w.append("s1.jsonl", &(user("u1", "s1", "before") + "{\"type\":"));
-    {
-        let (mut e, _lock) = w.engine(64 << 20);
-        e.converge().unwrap();
-    }
-    let conn = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
-    conn.execute("UPDATE parse_state SET parser_version = 0", [])
-        .unwrap();
-    drop(conn);
     let (mut e, _lock) = w.engine(64 << 20);
-    let changed = e.converge().unwrap();
-    assert!(
-        changed.bytes_read > 0,
-        "the new parser must retry pending bytes"
-    );
+    e.converge().unwrap();
     assert_eq!(e.converge().unwrap().bytes_read, 0);
     fs::write(w.file("s1.jsonl"), user("u1", "s1", "rewritten")).unwrap();
     e.converge().unwrap();

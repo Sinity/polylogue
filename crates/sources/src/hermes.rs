@@ -401,19 +401,8 @@ impl ExportParser for Database {
             accounting: records.finish().map_err(|error| error.to_string())?,
             start: 0,
             consumed: length,
-            // The final genuine record identifies the folded retained prefix.
-            // Selected messages/events keep their original row ranges.
-            snapshot: self
-                .refusal
-                .is_none()
-                .then(|| self.view.clone())
-                .flatten()
-                .map(|view| polylogue_model::Snapshot {
-                    start: view.start,
-                    end: view.end,
-                    covered: Vec::new(),
-                    complete: false,
-                }),
+            // Rows restate their whole record: a later row replaces an earlier one.
+            snapshot: self.refusal.is_none() && self.view.is_some(),
         }))
     }
     fn item(

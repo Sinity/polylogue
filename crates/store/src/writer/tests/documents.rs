@@ -47,7 +47,6 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
         reader.document(&original.id).unwrap(),
         Some(original.clone())
     );
-    assert_eq!(reader.document_versions(&original.id).unwrap().len(), 1);
     let selected = reader.select_document(&original.id).unwrap().unwrap();
     let sources = selected.sources().unwrap();
     assert_eq!(sources.len(), 2);
@@ -80,10 +79,21 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(reader.document(&original.id).unwrap(), Some(changed));
-    let versions = reader.document_versions(&original.id).unwrap();
-    assert_eq!(versions.len(), 2);
-    assert_eq!(versions.iter().filter(|v| v.preferred).count(), 1);
-    assert!(versions.iter().any(|v| v.document == original));
+    let sources = reader
+        .select_document(&original.id)
+        .unwrap()
+        .unwrap()
+        .sources()
+        .unwrap();
+    assert_eq!(sources.iter().filter(|s| s.preferred).count(), 1);
+    assert_eq!(
+        sources
+            .iter()
+            .map(|s| s.version.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2
+    );
 }
 
 #[test]

@@ -42,7 +42,9 @@ pub struct Step {
     pub consumed: u64,
     /// Start of this step within the supplied range. Normal parses start at 0.
     pub start: u64,
-    pub snapshot: Option<polylogue_model::Snapshot>,
+    /// Each record restates whole conversations, so a later record's
+    /// version of a message replaces an earlier one in the same chain.
+    pub snapshot: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -88,7 +90,7 @@ pub fn run<P: Parser>(
         accounting,
         consumed: consumed as u64,
         start: 0,
-        snapshot: None,
+        snapshot: false,
     })
 }
 
@@ -126,10 +128,6 @@ impl<P: Parser + Send> StepParser for P {
 /// them and submits each disposition to the shared accounting sink.
 pub trait DocumentParser {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records);
-
-    fn snapshot_complete(&self, _bytes: &[u8]) -> bool {
-        false
-    }
 }
 
 /// Parses a complete document. Each step covers the whole input, so there
@@ -159,7 +157,7 @@ pub fn run_document<D: DocumentParser + ?Sized>(
         accounting,
         consumed: bytes.len() as u64,
         start: 0,
-        snapshot: None,
+        snapshot: false,
     })
 }
 
@@ -254,12 +252,7 @@ fn snapshots(
                 _ => {}
             }
             let mut step = run_document(parser, bytes)?;
-            mark_snapshot(
-                &mut step,
-                0,
-                bytes.len() as u64,
-                parser.snapshot_complete(bytes),
-            );
+            mark_snapshot(&mut step, 0, bytes.len() as u64);
             return Ok(vec![step]);
         }
     }
@@ -283,12 +276,7 @@ fn snapshots(
             ));
         }
         let mut step = run_document(parser, &bytes[position..end])?;
-        mark_snapshot(
-            &mut step,
-            base + position as u64,
-            base + end as u64,
-            parser.snapshot_complete(&bytes[position..end]),
-        );
+        mark_snapshot(&mut step, base + position as u64, base + end as u64);
         step.start = if base == 0 && steps.is_empty() {
             0
         } else {
@@ -304,7 +292,7 @@ fn snapshots(
     Ok(steps)
 }
 
-fn mark_snapshot(step: &mut Step, start: u64, end: u64, complete: bool) {
+fn mark_snapshot(step: &mut Step, start: u64, end: u64) {
     for row in &mut step.output.messages {
         row.offset = start;
         row.end = end;
@@ -316,17 +304,7 @@ fn mark_snapshot(step: &mut Step, start: u64, end: u64, complete: bool) {
     for event in &mut step.output.events {
         event.range = Some((start, end));
     }
-    step.snapshot = Some(polylogue_model::Snapshot {
-        start,
-        end,
-        complete,
-        covered: step
-            .output
-            .sessions
-            .iter()
-            .map(|session| session.id.clone())
-            .collect(),
-    });
+    step.snapshot = true;
 }
 
 fn empty_steps() -> Result<Vec<Step>, ParseError> {
@@ -335,7 +313,7 @@ fn empty_steps() -> Result<Vec<Step>, ParseError> {
         accounting: Accounting::default(),
         consumed: 0,
         start: 0,
-        snapshot: None,
+        snapshot: false,
     }])
 }
 

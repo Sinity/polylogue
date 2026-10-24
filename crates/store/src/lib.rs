@@ -40,14 +40,13 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_writes;
 pub mod vectors;
-mod versions;
 pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use notes::NoteFilter;
-pub use read::{KnownInput, MessageVersion, ReadPool, Reader, RetainedImport, SqlValue, Status};
+pub use read::{KnownInput, ReadPool, Reader, RetainedImport, SqlValue, Status};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,

@@ -33,7 +33,7 @@ fn rows(archive: &Archive) -> Vec<Json> {
         .unwrap()
         .query(
             "SELECT e.id,r.id AS input,s.id AS session,pl_block(e.data) AS data
-         FROM current_event e JOIN input_ref r ON r.pk=e.input_pk
+         FROM event e JOIN input_ref r ON r.pk=e.input_pk
          LEFT JOIN session s ON s.pk=e.session_pk ORDER BY r.id,e.id",
             &[],
         )
@@ -110,63 +110,6 @@ fn input_event_occurrences_survive_preparation_replay_restart_and_input_separati
             );
         }
     }
-}
-
-fn snapshot(at: u64, complete: bool, events: Vec<Event>) -> Batch {
-    let mut b = unbound("snapshots", at, events, false);
-    b.change = Change::Reparse { chain: 1 };
-    b.length = 400;
-    b.parse[0].snapshot = Some(polylogue_model::Snapshot {
-        start: at,
-        end: at + 100,
-        complete,
-        covered: vec![],
-    });
-    b
-}
-
-#[test]
-fn complete_input_snapshots_retire_omitted_events_but_partial_and_failed_ones_do_not() {
-    let World {
-        archive,
-        writer,
-        _dir,
-        _lock,
-    } = world();
-    let mut seed = unbound("snapshots", 0, vec![], false);
-    seed.length = 400;
-    seed.parse.clear();
-    send(&writer, seed);
-    send(&writer, snapshot(0, true, vec![event((0, 100), "first")]));
-    send(
-        &writer,
-        snapshot(100, false, vec![event((100, 200), "partial")]),
-    );
-    assert_eq!(rows(&archive).len(), 2);
-    drop(writer);
-    let writer = Writer::start(&archive).unwrap();
-    assert_eq!(rows(&archive).len(), 2);
-    send(
-        &writer,
-        snapshot(200, true, vec![event((200, 300), "complete")]),
-    );
-    let before = rows(&archive);
-    assert_eq!(before.len(), 1);
-    let mut invalid = event((300, 400), "must roll back");
-    invalid.after = Some(MessageId::parse("hermes:unrelated").unwrap());
-    writer.send(snapshot(300, true, vec![invalid])).unwrap();
-    assert!(!writer.flush().unwrap().errors.is_empty());
-    assert_eq!(
-        rows(&archive),
-        before,
-        "a rejected complete snapshot changes nothing"
-    );
-    send(&writer, snapshot(300, false, vec![]));
-    assert_eq!(
-        rows(&archive),
-        before,
-        "an empty partial snapshot does not claim omission"
-    );
 }
 
 #[test]

@@ -71,9 +71,6 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
             unpack_block(&prepared.blocks[0]).unwrap(),
             unpack_block(&pack_block(&message.blocks[0]).unwrap()).unwrap()
         );
-        let mut metadata = message;
-        metadata.blocks.clear();
-        assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), metadata);
     }
 }
 
@@ -137,12 +134,6 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
     }))
     .unwrap();
     let prepared = PreparedMessage::new(&message).unwrap();
-    let mut old_metadata = message.clone();
-    old_metadata.blocks.clear();
-    assert_eq!(
-        unpack_json::<Message>(&prepared.attrs).unwrap(),
-        old_metadata
-    );
     for (block, packed) in message.blocks.iter().zip(&prepared.blocks) {
         let mut old_body = block.clone();
         match &mut old_body {
@@ -168,12 +159,12 @@ fn dictionary_rows_and_plain_canonical_frames_remain_distinct() {
     }))
     .unwrap();
     let dictionary = zstd::zstd_safe::get_dict_id_from_dict(ROW_DICTIONARY).unwrap();
-    let prepared = PreparedMessage::new(&message).unwrap();
+    let row = RowPacker::new().unwrap().pack_json(&message).unwrap();
     assert_eq!(
-        zstd::zstd_safe::get_dict_id_from_frame(&prepared.attrs),
+        zstd::zstd_safe::get_dict_id_from_frame(&row),
         Some(dictionary)
     );
-    assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), message);
+    assert_eq!(unpack_json::<Message>(&row).unwrap(), message);
     for plain in [
         pack_json(&message).unwrap(),
         pack_text("canonical text").unwrap(),
@@ -237,8 +228,8 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
             "role":"assistant", "blocks":[]}))
             .unwrap();
         message.production.response_boundary_unknown = boundary;
-        let prepared = RowPacker::new().unwrap().pack_message(&message).unwrap();
-        assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), message);
+        let row = RowPacker::new().unwrap().pack_json(&message).unwrap();
+        assert_eq!(unpack_json::<Message>(&row).unwrap(), message);
     }
     let reading = polylogue_model::UsageObservation {
         observation: "synthetic-reading".into(),

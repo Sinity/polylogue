@@ -230,7 +230,8 @@ struct InputState {
     facts: Option<FileFacts>,
     stored: u64,
     parsed_upto: u64,
-    parser_version: Option<u32>,
+    /// Whether the current chain was parsed at all.
+    parsed: bool,
     /// A successful parse reached source EOF with an incomplete last record.
     waiting: bool,
     carry: Option<Json>,
@@ -238,17 +239,16 @@ struct InputState {
     /// The revision chain whose bytes are stored, when known from the
     /// archive; `None` once this run stored a new chain.
     chain: Option<i64>,
-    /// The file facts and parser version a parse failed at: the input is
-    /// tried again only when its bytes or its parser change (law 63).
-    failed: Option<(FileFacts, u32)>,
-    /// Failed immutable chains wait for changed bytes, parser, or a restart.
+    /// The file facts a parse failed at: the input is tried again only when
+    /// its bytes change (law 63) or the daemon restarts.
+    failed: Option<FileFacts>,
+    /// Failed immutable chains wait for changed bytes or a restart.
     failed_history: HashMap<i64, RetainedFailure>,
 }
 
 #[derive(PartialEq, Eq)]
 struct RetainedFailure {
     length: u64,
-    parser_version: u32,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -514,7 +514,7 @@ impl Engine {
                     facts: k.facts,
                     stored: k.stored,
                     parsed_upto: k.parsed_upto,
-                    parser_version: k.parser_version,
+                    parsed: k.parsed,
                     waiting: k.waiting,
                     carry: None,
                     tail: None,
@@ -722,7 +722,7 @@ impl Engine {
                         facts: None,
                         stored: 0,
                         parsed_upto: 0,
-                        parser_version: None,
+                        parsed: false,
                         waiting: false,
                         carry: None,
                         tail: None,
@@ -816,7 +816,7 @@ impl Engine {
     ) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
-        if st.failed == Some((now, st.origin.parser_version)) {
+        if st.failed == Some(now) {
             return Ok(None);
         }
         let parsed = st.origin.support == Support::Parsed;
@@ -864,7 +864,7 @@ impl Engine {
                 change = Change::Rewritten;
             }
         }
-        let version_changed = parsed && st.parser_version != Some(st.origin.parser_version);
+        let never_parsed = parsed && !st.parsed;
         let (piece_pos, parse_pos, carry, priority) = match &change {
             Change::First | Change::Rewritten => {
                 st.stored = 0;
@@ -876,7 +876,7 @@ impl Engine {
                 let resumable = st.carry.is_some()
                     || st.parsed_upto == 0
                     || (st.origin.open)(path).is_some_and(|p| p.is_snapshots());
-                if resumable && !version_changed {
+                if resumable && !never_parsed {
                     (st.stored, st.parsed_upto, st.carry.take(), Priority::Live)
                 } else {
                     (st.stored, 0, None, Priority::Live)
@@ -919,11 +919,10 @@ impl Engine {
     }
 
     /// A parse-only plan over the bytes the archive stored for an input,
-    /// when the index is behind them: a new parser version, a fresh index,
-    /// or a file that moved or went. The same loop builds the index from
-    /// stored bytes as from files, so a rebuild needs no command of its own.
-    /// Historical chains share the ordinary parser and writer. Their scope
-    /// ordering prevents replay from replacing a newer current observation.
+    /// when the index is behind them: a fresh index, or a file that moved
+    /// or went. The same loop builds the index from stored bytes as from
+    /// files, so a rebuild needs no command of its own. Older chains go
+    /// through the ordinary parser and writer, where a newer chain wins.
     fn restore_history(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
         let inputs: Vec<_> = self
             .inputs
@@ -946,7 +945,6 @@ impl Engine {
             for (chain, state) in chains {
                 let failure = RetainedFailure {
                     length: state.length,
-                    parser_version: origin.parser_version,
                 };
                 if self
                     .inputs
@@ -958,14 +956,13 @@ impl Engine {
                 }
                 if Some(chain) == current
                     || state.length == 0
-                    || (state.parser_version == Some(origin.parser_version)
-                        && (state.waiting || state.parsed_upto >= state.length))
+                    || (state.parsed && (state.waiting || state.parsed_upto >= state.length))
                 {
                     continue;
                 }
                 // Independent snapshots can resume at their record boundary.
                 // Line parsers need the prefix to reconstruct their carry.
-                let start = if state.parser_version == Some(origin.parser_version)
+                let start = if state.parsed
                     && (origin.open)(&path).is_some_and(|parser| parser.is_snapshots())
                 {
                     state.parsed_upto
@@ -1014,8 +1011,7 @@ impl Engine {
             return Ok(None);
         };
         let parsed = st.origin.support == Support::Parsed;
-        let version_changed = st.parser_version != Some(st.origin.parser_version);
-        let behind = (!st.waiting && st.parsed_upto < st.stored) || version_changed;
+        let behind = (!st.waiting && st.parsed_upto < st.stored) || !st.parsed;
         let Some(chain) = st.chain else {
             return Ok(None);
         };
@@ -1065,8 +1061,7 @@ impl Engine {
             facts,
             size: stored,
             piece_pos: stored,
-            parse_pos: if !version_changed && (origin.open)(path).is_some_and(|p| p.is_snapshots())
-            {
+            parse_pos: if st.parsed && (origin.open)(path).is_some_and(|p| p.is_snapshots()) {
                 st.parsed_upto
             } else {
                 0
@@ -1091,12 +1086,6 @@ impl Engine {
         if plans.is_empty() {
             return Ok(());
         }
-        let versions: std::collections::BTreeMap<_, _> = plans
-            .iter()
-            .map(|p| (p.origin.name, p.origin.parser_version))
-            .collect();
-        self.writer
-            .require_parsers(&versions.into_iter().collect::<Vec<_>>())?;
         // Keep the existing priority/size order across parser kinds. An array
         // runs serially only after preceding pool work has committed.
         let mut plans = plans;
@@ -1202,13 +1191,8 @@ impl Engine {
                 && st.input_id == plan.input.id
             {
                 if plan.failed {
-                    st.failed_history.insert(
-                        chain,
-                        RetainedFailure {
-                            length: plan.size,
-                            parser_version: plan.origin.parser_version,
-                        },
-                    );
+                    st.failed_history
+                        .insert(chain, RetainedFailure { length: plan.size });
                 } else {
                     st.failed_history.remove(&chain);
                 }
@@ -1218,11 +1202,11 @@ impl Engine {
         if let Some(st) = self.inputs.get_mut(&plan.path) {
             st.stored = plan.piece_pos.max(st.stored);
             if plan.failed {
-                // Tried again when the bytes or the parser change; the facts
-                // stay old, so a change is still seen as one.
+                // Tried again when the bytes change; the facts stay old, so
+                // a change is still seen as one.
                 st.carry = None;
                 st.waiting = false;
-                st.failed = plan.facts.map(|f| (f, plan.origin.parser_version));
+                st.failed = plan.facts;
                 return;
             }
             st.failed = None;
@@ -1231,7 +1215,7 @@ impl Engine {
                 .is_some_and(|f| i128::from(now_ms()) * 1_000_000 - f.mtime_ns < KEEP_STATE_NS);
             st.facts = plan.facts;
             st.parsed_upto = plan.parse_pos.min(plan.size);
-            st.parser_version = Some(plan.origin.parser_version);
+            st.parsed = true;
             st.waiting = plan.waiting;
             st.carry = if recent { plan.carry } else { None };
             st.tail = plan.tail;

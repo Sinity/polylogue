@@ -182,13 +182,13 @@ impl<'a> Compiler<'a> {
                 self.id_checks.push(IdCheck {
                     word: id.to_owned(),
                     sql: "SELECT id FROM session WHERE native_id LIKE ?1 ESCAPE '\\' \
-                          UNION SELECT s.id FROM current_message m JOIN session s ON s.pk = m.session_pk \
+                          UNION SELECT s.id FROM message m JOIN session s ON s.pk = m.session_pk \
                           WHERE m.native_message_id LIKE ?1 ESCAPE '\\' LIMIT 5"
                         .into(),
                     params: vec![Param::Text(like_prefix(id))],
                 });
                 format!(
-                    "({s}.native_id LIKE {p} ESCAPE '\\' OR {s}.pk IN (SELECT session_pk FROM current_message WHERE native_message_id LIKE {p} ESCAPE '\\'))"
+                    "({s}.native_id LIKE {p} ESCAPE '\\' OR {s}.pk IN (SELECT session_pk FROM message WHERE native_message_id LIKE {p} ESCAPE '\\'))"
                 )
             }
         })
@@ -305,9 +305,7 @@ impl<'a> Compiler<'a> {
                     let p = self.text_param(text);
                     return Ok(match scope.unit {
                         Unit::Messages => format!("{}.id = {p}", scope.a.m),
-                        _ => format!(
-                            "{s}.pk IN (SELECT session_pk FROM current_message WHERE id = {p})"
-                        ),
+                        _ => format!("{s}.pk IN (SELECT session_pk FROM message WHERE id = {p})"),
                     });
                 }
                 "query" => return self.saved_cond(text, scope, span),

@@ -21,7 +21,7 @@ impl Reader<'_> {
                 AND json_type(o.details_json,'$.import_format')='text'
             ) SELECT i.id,COALESCE(selected.format,i.format),
             COALESCE(selected.path,(SELECT o.path FROM a.observation o WHERE o.input=i.id AND o.class<>'excised' ORDER BY o.rowid LIMIT 1)),
-            r.chain,r.length,COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0)
+            r.chain,r.length,COALESCE(p.parsed_upto,0),p.input_pk IS NOT NULL,COALESCE(p.status='waiting',0)
             FROM a.input i JOIN a.revision r ON r.input=i.id
             LEFT JOIN interpreted selected ON selected.input=i.id AND selected.choice=1
             LEFT JOIN input_ref ir ON ir.id=i.id LEFT JOIN parse_state p ON p.input_pk=ir.pk AND p.chain=r.chain
@@ -38,7 +38,7 @@ impl Reader<'_> {
                         chain: r.get(3)?,
                         length: r.get::<_, i64>(4)? as u64,
                         parsed_upto: r.get::<_, i64>(5)? as u64,
-                        parser_version: r.get::<_, Option<i64>>(6)?.map(|v| v as u32),
+                        parsed: r.get(6)?,
                         waiting: r.get(7)?,
                         route_rank: 2,
                     },

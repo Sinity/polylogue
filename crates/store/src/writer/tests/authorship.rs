@@ -43,7 +43,7 @@ fn an_explicit_harness_marker_keeps_native_roles_and_harness_authorship_in_queri
         let reader = reads.reader().unwrap();
         let rows = reader
             .query(
-                "SELECT role,written_by,prompt_kind,model FROM current_message ORDER BY id",
+                "SELECT role,written_by,prompt_kind,model FROM message ORDER BY id",
                 &[],
             )
             .unwrap();
@@ -54,7 +54,15 @@ fn an_explicit_harness_marker_keeps_native_roles_and_harness_authorship_in_queri
             assert_eq!(row["prompt_kind"], "harness");
             assert_eq!(row["model"], Json::Null);
         }
-        assert!(reader.query("SELECT model FROM current_message WHERE written_by='model' AND model IS NOT NULL", &[]).unwrap().is_empty());
+        assert!(
+            reader
+                .query(
+                    "SELECT model FROM message WHERE written_by='model' AND model IS NOT NULL",
+                    &[]
+                )
+                .unwrap()
+                .is_empty()
+        );
         let stored = reader
             .messages(&SessionId::parse(&format!("{origin}:s")).unwrap(), false)
             .unwrap();
@@ -95,10 +103,7 @@ fn ordinary_role_defaults_do_not_use_model_names_or_other_prompt_kinds_as_harnes
     let rows = reads
         .reader()
         .unwrap()
-        .query(
-            "SELECT role,written_by,model FROM current_message ORDER BY id",
-            &[],
-        )
+        .query("SELECT role,written_by,model FROM message ORDER BY id", &[])
         .unwrap();
     assert_eq!(rows.len(), cases.len());
     for (row, (role, _, model, expected)) in rows.iter().zip(cases) {

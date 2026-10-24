@@ -14,7 +14,6 @@ pub(crate) fn upsert_lookup(
     l: &RepoLookup,
     input_pk: i64,
     chain: i64,
-    parser_version: i64,
     counter: i64,
 ) -> Result<()> {
     let previous: Option<(Option<String>, Option<String>)> = tx
@@ -22,12 +21,12 @@ pub(crate) fn upsert_lookup(
         .query_row([&l.path], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
     tx.prepare_cached(
-        "INSERT INTO repo_lookup(path, remote, root_commit, input_pk, chain, parser_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO repo_lookup(path, remote, root_commit, input_pk, chain) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(path) DO UPDATE SET remote = excluded.remote,
              root_commit = excluded.root_commit, input_pk = excluded.input_pk,
-             chain=excluded.chain, parser_version=excluded.parser_version",
+             chain = excluded.chain",
     )?
-    .execute(params![l.path, l.remote, l.root_commit, input_pk, chain, parser_version])?;
+    .execute(params![l.path, l.remote, l.root_commit, input_pk, chain])?;
     if previous != Some((l.remote.clone(), l.root_commit.clone())) {
         tx.prepare_cached(
             "UPDATE session SET changed = ?2

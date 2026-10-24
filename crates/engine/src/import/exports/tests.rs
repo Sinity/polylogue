@@ -109,7 +109,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
     let r = reads.reader().unwrap();
     let locations = r
         .query(
-            "SELECT source_start,source_end,source_order FROM message_source ORDER BY source_order",
+            "SELECT source_start,source_end,seq AS source_order FROM message ORDER BY seq",
             &[],
         )
         .unwrap();
@@ -257,11 +257,17 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
                 .is_empty()
         );
         assert_eq!(texts(&w, "chatgpt:same"), ["A", "B"]);
-        assert_eq!(w.count("SELECT COUNT(*) AS n FROM current_message WHERE id='chatgpt:a' AND on_active_path=1"),1);
-        assert_eq!(w.count("SELECT COUNT(*) AS n FROM current_message WHERE id='chatgpt:b' AND on_active_path=0"),1);
+        assert_eq!(
+            w.count("SELECT COUNT(*) AS n FROM message WHERE id='chatgpt:a' AND on_active_path=1"),
+            1
+        );
+        assert_eq!(
+            w.count("SELECT COUNT(*) AS n FROM message WHERE id='chatgpt:b' AND on_active_path=0"),
+            1
+        );
         let reads = w.reads();
         let r = reads.reader().unwrap();
-        let orders = r.query("SELECT m.id,es.source_order FROM event_source es JOIN event e ON e.id=es.event_id JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='active_leaf' ORDER BY m.id", &[]).unwrap();
+        let orders = r.query("SELECT m.id,e.seq AS source_order FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='active_leaf' ORDER BY m.id", &[]).unwrap();
         assert_eq!(orders.len(), 2);
         assert_eq!(orders[0]["id"], "chatgpt:a");
         assert_eq!(orders[0]["source_order"], 3);
@@ -273,15 +279,11 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
     assert!(e.converge().unwrap().errors.is_empty());
     assert_eq!(texts(&w, "chatgpt:same"), ["A", "B"]);
     assert_eq!(
-        w.count(
-            "SELECT COUNT(*) AS n FROM current_message WHERE id='chatgpt:a' AND on_active_path=1"
-        ),
+        w.count("SELECT COUNT(*) AS n FROM message WHERE id='chatgpt:a' AND on_active_path=1"),
         1
     );
     assert_eq!(
-        w.count(
-            "SELECT COUNT(*) AS n FROM current_message WHERE id='chatgpt:b' AND on_active_path=0"
-        ),
+        w.count("SELECT COUNT(*) AS n FROM message WHERE id='chatgpt:b' AND on_active_path=0"),
         1
     );
 }

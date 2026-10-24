@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_engine::Engine;
-use polylogue_model::{MessageId, SessionId};
+use polylogue_model::SessionId;
 use polylogue_store::{Archive, ReadPool};
 
 fn text(messages: &[polylogue_model::Message]) -> Vec<String> {
@@ -11,7 +11,7 @@ fn text(messages: &[polylogue_model::Message]) -> Vec<String> {
 }
 
 #[test]
-fn rapid_native_acknowledgements_keep_history_latest_and_retry_identity() {
+fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let dir = tempfile::tempdir().unwrap();
     let config = config_at(dir.path());
     std::fs::create_dir_all(&config.home).unwrap();
@@ -33,7 +33,6 @@ fn rapid_native_acknowledgements_keep_history_latest_and_retry_identity() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let sid = SessionId::parse("chatgpt:rapid").unwrap();
-    let mid = MessageId::parse("chatgpt:t1").unwrap();
     let mut engine = Engine::new(config.clone(), archive.clone()).unwrap();
     let pass = engine.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
@@ -44,27 +43,6 @@ fn rapid_native_acknowledgements_keep_history_latest_and_retry_identity() {
             text(&reader.messages(&sid, false).unwrap()),
             ["second current version"]
         );
-        let versions = reader.message_versions(&mid).unwrap();
-        assert_eq!(versions.len(), 2);
-        assert_eq!(
-            versions.iter().map(|v| v.current).collect::<Vec<_>>(),
-            [false, true]
-        );
-        assert_eq!(
-            text(
-                &versions
-                    .iter()
-                    .map(|v| v.message.clone())
-                    .collect::<Vec<_>>()
-            ),
-            ["first retained version", "second current version"]
-        );
-        for v in versions {
-            assert_eq!(
-                &before[v.start as usize..v.end as usize],
-                if v.current { &second } else { &first }
-            );
-        }
     }
     drop(engine);
     let mut engine = Engine::new(config, archive.clone()).unwrap();
@@ -99,7 +77,6 @@ fn rapid_native_acknowledgements_keep_history_latest_and_retry_identity() {
         text(&reader.messages(&sid, false).unwrap()),
         ["first retained version"]
     );
-    assert_eq!(reader.message_versions(&mid).unwrap().len(), 3);
 }
 
 fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {
@@ -122,7 +99,7 @@ fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {
 }
 
 #[test]
-fn text_excision_rehashes_retained_frames_and_cannot_restore_historical_plaintext() {
+fn text_excision_rewrites_every_capture_and_survives_a_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let config = config_at(dir.path());
     std::fs::create_dir_all(&config.home).unwrap();
@@ -161,20 +138,14 @@ fn text_excision_rehashes_retained_frames_and_cannot_restore_historical_plaintex
             .unwrap()
             .is_empty()
     );
-    let mid = MessageId::parse("chatgpt:t1").unwrap();
-    let before = {
-        let pool = ReadPool::open(&archive).unwrap();
-        pool.reader().unwrap().message_versions(&mid).unwrap()
+    let sid = SessionId::parse("chatgpt:redact").unwrap();
+    let shown = |archive: &Archive| {
+        let pool = ReadPool::open(archive).unwrap();
+        text(&pool.reader().unwrap().messages(&sid, false).unwrap())
     };
-    assert_eq!(before.len(), 2);
-    assert!(before.iter().all(|v|!text(std::slice::from_ref(&v.message))[0].contains("synthetic-private-token")));
-    assert_eq!(text(&[before[1].message.clone()]), ["safe current version"]);
+    assert_eq!(shown(&archive), ["safe current version"]);
     drop(engine);
     drop(_lock);
     let _engine = rebuild(config, &archive);
-    let pool = ReadPool::open(&archive).unwrap();
-    assert_eq!(
-        pool.reader().unwrap().message_versions(&mid).unwrap(),
-        before
-    );
+    assert_eq!(shown(&archive), ["safe current version"]);
 }

@@ -125,7 +125,7 @@ impl Engine {
                 true,
                 true,
                 None,
-                None,
+                false,
                 pass,
             )?;
             plan.parse_pos = plan.size;
@@ -134,7 +134,7 @@ impl Engine {
         let mut next = next_record(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
-        let mut snapshot = None;
+        let mut snapshot = false;
         if let Some(step) = parser
             .begin(
                 plan.size,
@@ -152,7 +152,7 @@ impl Engine {
                 true,
                 false,
                 None,
-                snapshot.as_ref(),
+                snapshot,
                 pass,
             )?;
             first = false;
@@ -177,7 +177,7 @@ impl Engine {
                 first,
                 false,
                 Some((range, polylogue_model::BlobHash::of(&bytes))),
-                snapshot.as_ref(),
+                snapshot,
                 pass,
             )?;
             first = false;
@@ -192,7 +192,7 @@ impl Engine {
             first,
             true,
             None,
-            snapshot.as_ref(),
+            snapshot,
             pass,
         )?;
         plan.parse_pos = plan.size;
@@ -272,7 +272,7 @@ impl Engine {
         reset: bool,
         done: bool,
         source: Option<(std::ops::Range<u64>, polylogue_model::BlobHash)>,
-        snapshot: Option<&polylogue_model::Snapshot>,
+        snapshot: bool,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
@@ -304,33 +304,19 @@ impl Engine {
                 extracted.push(polylogue_store::retention::Extraction {
                     range: range.clone(),
                     source_hash,
-                    parser_version: plan.origin.parser_version,
                     blob: piece.hash,
                 });
                 files.extend(file);
                 blobs.push(piece);
             }
         }
-        // One view stamp, with session facts covered once where their actual
-        // records arrive. Message-only frames must not rescan whole sessions.
-        let scope = snapshot.map(|view| polylogue_model::Snapshot {
-            start: view.start,
-            end: view.end,
-            covered: output
-                .sessions
-                .iter()
-                .map(|session| session.id.clone())
-                .collect(),
-            complete: view.complete,
-        });
         let mut parse = ParseStep::new(
             output,
             accounting,
             0..if done { plan.size } else { 0 },
-            plan.origin.parser_version,
             done,
         );
-        parse.snapshot = scope;
+        parse.snapshot = snapshot;
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.prepare();

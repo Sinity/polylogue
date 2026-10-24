@@ -1,6 +1,9 @@
-//! Text documents, their retained versions and reads on the admitted Store view.
+//! Text documents: one shown version each, chosen like a message's, and
+//! reads on the admitted Store view.
 use crate::encoding::hex;
-use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
+use crate::encoding::{
+    PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,
+};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -10,12 +13,37 @@ use std::ops::ControlFlow;
 
 pub(crate) struct Source<'a> {
     pub input_pk: i64,
+    pub input_id: &'a str,
     pub chain: i64,
-    pub parser_version: i64,
+    /// Later records of the chain restate earlier ones.
+    pub snapshot: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     pub bulk: bool,
+}
+
+/// What decides the shown version: a known source time first, then the
+/// newest, then the more faithful route, then the larger content hash, then
+/// the smaller input ID and the newer chain, so arrival order never decides.
+type Rank = (bool, Option<i64>, i64, Vec<u8>, String, i64);
+
+fn better(new: &Rank, cur: &Rank) -> bool {
+    (
+        !new.0,
+        std::cmp::Reverse(new.1),
+        new.2,
+        std::cmp::Reverse(&new.3),
+        &new.4,
+        std::cmp::Reverse(new.5),
+    ) < (
+        !cur.0,
+        std::cmp::Reverse(cur.1),
+        cur.2,
+        std::cmp::Reverse(&cur.3),
+        &cur.4,
+        std::cmp::Reverse(cur.5),
+    )
 }
 
 pub(crate) fn write(
@@ -30,89 +58,128 @@ pub(crate) fn write(
         ));
     }
     let doc = &row.document;
-    crate::versions::retain_content(
-        tx,
-        "document",
-        prepared,
-        &doc.blocks,
-        source.packed,
-        source.bulk,
-    )?;
-    tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO NOTHING",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,doc.source_time.map(|t|t.unix_ms()),doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter])?;
-    let pk: i64 = tx.query_row(
-        "SELECT pk FROM document WHERE id=?1",
-        [doc.id.to_string()],
-        |r| r.get(0),
-    )?;
-    tx.execute(
-        "UPDATE document_source SET current=0 WHERE document_pk=?1 AND input_pk=?2 AND chain<?3",
-        params![pk, source.input_pk, source.chain],
-    )?;
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,parser_version,route_rank,source_time,version_hash,current)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NOT EXISTS(SELECT 1 FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain>?3))
-        ON CONFLICT(document_pk,input_pk,chain,source_start,source_end,version_hash) DO UPDATE SET parser_version=excluded.parser_version,route_rank=excluded.route_rank,current=excluded.current",params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.parser_version,source.rank,doc.source_time.map(|t|t.unix_ms()),&prepared.hash[..]])?;
-    project(tx, pk, source.counter, source.bulk)
-}
-
-pub(crate) fn project(tx: &Transaction<'_>, pk: i64, counter: i64, bulk: bool) -> Result<()> {
-    let preferred:Option<(Vec<u8>,i64,i64,i64,i64)>=tx.query_row("SELECT s.version_hash,s.input_pk,s.chain,s.source_start,s.source_end FROM document_source s JOIN input_ref r ON r.pk=s.input_pk
-        WHERE s.document_pk=?1 AND s.current=1 AND r.excised=0
-        ORDER BY (s.source_time IS NOT NULL) DESC,s.source_time DESC,s.route_rank,s.version_hash DESC,r.id,s.chain DESC,s.source_start LIMIT 1",[pk],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-    let old:Vec<i64>=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-    let Some((hash, input, chain, start, end)) = preferred else {
-        tx.execute(
-            "UPDATE document SET present=0,changed=?2 WHERE pk=?1",
-            params![pk, counter],
-        )?;
-        tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
-        for text in old {
-            crate::text_rows::unindex_unused(tx, text, bulk)?;
+    let time = doc.source_time.map(|t| t.unix_ms());
+    let new: Rank = (
+        time.is_some(),
+        time,
+        source.rank,
+        prepared.hash.to_vec(),
+        source.input_id.to_owned(),
+        source.chain,
+    );
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT pk FROM document WHERE id=?1",
+            [doc.id.to_string()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(pk) = existing {
+        // Within one chain the earliest record wins, or the latest in a chain of snapshots.
+        let earlier: Option<i64> = tx
+            .query_row(
+                "SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
+                params![pk, source.input_pk, source.chain],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let start = row.offset as i64;
+        if earlier.is_some_and(|earlier| {
+            if source.snapshot {
+                start < earlier
+            } else {
+                start > earlier
+            }
+        }) {
+            return Ok(());
+        }
+        let shown: Option<Rank> = tx
+            .query_row(
+                "SELECT s.source_time,s.route_rank,s.version_hash,r.id,s.chain FROM document_source s
+                 JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 AND s.preferred=1",
+                [pk],
+                |r| {
+                    let time: Option<i64> = r.get(0)?;
+                    Ok((time.is_some(), time, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                },
+            )
+            .optional()?;
+        let wins = shown
+            .as_ref()
+            .is_none_or(|shown| better(&new, shown) || (shown.4 == new.4 && shown.5 == new.5));
+        if wins {
+            tx.execute(
+                "UPDATE document_source SET preferred=0 WHERE document_pk=?1",
+                [pk],
+            )?;
+        }
+        set_source(tx, pk, source, row, time, &prepared.hash, wins)?;
+        if wins {
+            show(tx, pk, source, row, prepared)?;
         }
         return Ok(());
-    };
-    let (version, document) = crate::versions::load_document(tx, &hash)?;
-    tx.execute("UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,source_chain=?8,source_start=?9,source_end=?10,present=1,changed=?11 WHERE pk=?1",params![pk,document.purpose.as_str(),document.title,document.source_time.map(|t|t.unix_ms()),document.authorship.as_str(),hash,input,chain,start,end,counter])?;
+    }
+    tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
+    let pk = tx.last_insert_rowid();
+    set_source(tx, pk, source, row, time, &prepared.hash, true)?;
+    insert_blocks(tx, pk, source, doc, prepared)
+}
+
+fn set_source(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    row: &DocumentRow,
+    time: Option<i64>,
+    hash: &[u8; 32],
+    preferred: bool,
+) -> Result<()> {
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,route_rank,source_time,version_hash,preferred)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+        ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
+            route_rank=excluded.route_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,preferred=excluded.preferred",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&hash[..],preferred])?;
+    Ok(())
+}
+
+fn show(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    row: &DocumentRow,
+    prepared: &PreparedDocument,
+) -> Result<()> {
+    let document = &row.document;
+    tx.execute("UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12 WHERE pk=?1",params![pk,document.purpose.as_str(),document.title,document.source_time.map(|t|t.unix_ms()),document.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
+    let old: Vec<i64> = tx
+        .prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?
+        .query_map([pk], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
-    let mut statement = tx.prepare(
-        "SELECT idx,body,text_id,blob_hash FROM version_block WHERE version_pk=?1 ORDER BY idx",
-    )?;
-    let mut rows = statement.query([version])?;
-    for (idx, block) in document.blocks.iter().enumerate() {
-        let row = rows
-            .next()?
-            .ok_or_else(|| StoreError::Invalid("Document version has too few blocks".into()))?;
-        if row.get::<_, i64>(0)? != idx as i64 {
-            return Err(StoreError::Invalid(
-                "Document version block order is not consecutive".into(),
-            ));
-        }
-        let text: Option<i64> = row.get(2)?;
-        if let Some(text) = text {
-            crate::text_rows::activate(tx, text, 1, bulk)?;
-        }
-        tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash) VALUES (?1,?2,?3,?4,?5,?6)",params![pk,idx as i64,block.kind().as_str(),row.get::<_,Vec<u8>>(1)?,text,row.get::<_,Option<Vec<u8>>>(3)?])?;
-    }
-    if rows.next()?.is_some() {
-        return Err(StoreError::Invalid(
-            "Document version has too many blocks".into(),
-        ));
-    }
+    insert_blocks(tx, pk, source, document, prepared)?;
     for text in old {
-        crate::text_rows::unindex_unused(tx, text, bulk)?;
+        crate::text_rows::unindex_unused(tx, text, source.bulk)?;
     }
     Ok(())
 }
 
-/// Publish a parser replacement only after it reaches the captured source EOF.
-pub(crate) fn retire_previous_parser(tx: &Transaction<'_>, source: &Source<'_>) -> Result<()> {
-    let affected:Vec<i64>=tx.prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk=?1 AND (chain<?2 OR (chain=?2 AND parser_version<?3)) AND current=1")?.query_map(params![source.input_pk,source.chain,source.parser_version],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-    tx.execute(
-        "UPDATE document_source SET current=0 WHERE input_pk=?1 AND (chain<?2 OR (chain=?2 AND parser_version<?3))",
-        params![source.input_pk, source.chain, source.parser_version],
-    )?;
-    for pk in affected {
-        project(tx, pk, source.counter, source.bulk)?;
+fn insert_blocks(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    document: &Document,
+    prepared: &PreparedDocument,
+) -> Result<()> {
+    for (idx, (block, body)) in document.blocks.iter().zip(&prepared.blocks).enumerate() {
+        let text = block_text(block)
+            .map(|text| crate::text_rows::intern(tx, text, 1, Some(source.packed), source.bulk))
+            .transpose()?;
+        let blob = match block {
+            Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
+            _ => None,
+        };
+        tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash) VALUES (?1,?2,?3,?4,?5,?6)",params![pk,idx as i64,block.kind().as_str(),body,text,blob])?;
     }
     Ok(())
 }
@@ -122,18 +189,25 @@ pub(crate) fn retire_previous_parser(tx: &Transaction<'_>, source: &Source<'_>) 
 pub struct DocumentRead<'r, 'a> {
     reader: &'r Reader<'a>,
     pk: i64,
-    attrs: Document,
+    fields: Document,
     hash: Vec<u8>,
 }
 
 impl<'a> Reader<'a> {
     pub fn select_document<'r>(&'r self, id: &DocumentId) -> Result<Option<DocumentRead<'r, 'a>>> {
-        let row:Option<(i64,Vec<u8>,Vec<u8>)>=self.conn()?.query_row("SELECT d.pk,d.version_hash,v.attrs FROM current_document d JOIN content_version v ON v.hash=d.version_hash AND v.kind='document' WHERE d.id=?1",[id.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-        row.map(|(pk, hash, attrs)| {
+        let row: Option<(i64, Vec<u8>, Vec<u8>)> = self
+            .conn()?
+            .query_row(
+                "SELECT pk,version_hash,fields FROM document WHERE id=?1",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        row.map(|(pk, hash, fields)| {
             Ok(DocumentRead {
                 reader: self,
                 pk,
-                attrs: unpack_json(&attrs)?,
+                fields: unpack_json(&fields)?,
                 hash,
             })
         })
@@ -145,38 +219,23 @@ impl<'a> Reader<'a> {
             .map(|selected| selected.document())
             .transpose()
     }
-
-    pub fn document_versions(&self, id: &DocumentId) -> Result<Vec<DocumentVersion>> {
-        let mut statement=self.conn()?.prepare("SELECT DISTINCT s.version_hash,d.version_hash=s.version_hash FROM document_source s JOIN document d ON d.pk=s.document_pk WHERE d.id=?1 ORDER BY s.version_hash")?;
-        let mut rows = statement.query([id.to_string()])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let hash: Vec<u8> = row.get(0)?;
-            out.push(DocumentVersion {
-                version: hex(&hash),
-                preferred: row.get(1)?,
-                document: crate::versions::load_document(self.conn()?, &hash)?.1,
-            });
-        }
-        Ok(out)
-    }
 }
 
 impl DocumentRead<'_, '_> {
     pub fn id(&self) -> &DocumentId {
-        &self.attrs.id
+        &self.fields.id
     }
     pub fn title(&self) -> Option<&str> {
-        self.attrs.title.as_deref()
+        self.fields.title.as_deref()
     }
     pub fn purpose(&self) -> polylogue_model::DocumentPurpose {
-        self.attrs.purpose
+        self.fields.purpose
     }
     pub fn version(&self) -> String {
         hex(&self.hash)
     }
     pub fn metadata(&self) -> Result<Json> {
-        let mut value = serde_json::to_value(&self.attrs)?;
+        let mut value = serde_json::to_value(&self.fields)?;
         value
             .as_object_mut()
             .expect("Document is an object")
@@ -184,7 +243,7 @@ impl DocumentRead<'_, '_> {
         Ok(value)
     }
     pub fn document(&self) -> Result<Document> {
-        let mut document = self.attrs.clone();
+        let mut document = self.fields.clone();
         self.visit_blocks(|block| {
             document.blocks.push(block);
             ControlFlow::Continue(())
@@ -206,7 +265,7 @@ impl DocumentRead<'_, '_> {
         Ok(())
     }
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
-        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.parser_version,s.current FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
+        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.preferred FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
         let mut rows = statement.query([self.pk])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -218,8 +277,7 @@ impl DocumentRead<'_, '_> {
                 start: row.get(2)?,
                 end: row.get(3)?,
                 version: hex(&row.get::<_, Vec<u8>>(4)?),
-                parser_version: row.get(5)?,
-                current: row.get(6)?,
+                preferred: row.get(5)?,
                 locations,
             });
         }
@@ -227,12 +285,6 @@ impl DocumentRead<'_, '_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct DocumentVersion {
-    pub version: String,
-    pub preferred: bool,
-    pub document: Document,
-}
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentSource {
     pub input: String,
@@ -240,7 +292,6 @@ pub struct DocumentSource {
     pub start: i64,
     pub end: i64,
     pub version: String,
-    pub parser_version: i64,
-    pub current: bool,
+    pub preferred: bool,
     pub locations: Vec<Json>,
 }

@@ -73,7 +73,7 @@ fn answers(root: &Path) -> String {
         }
     }
     for row in reader
-        .query("SELECT id FROM current_document ORDER BY id", &[])
+        .query("SELECT id FROM document ORDER BY id", &[])
         .unwrap()
     {
         let id = polylogue_model::DocumentId::parse(row["id"].as_str().unwrap()).unwrap();
@@ -86,7 +86,7 @@ fn answers(root: &Path) -> String {
 fn document_sources(root: &Path) -> Vec<serde_json::Value> {
     let pool = ReadPool::open(&Archive::at(root)).unwrap();
     let reader = pool.reader().unwrap();
-    reader.query("SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,s.parser_version,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start",&[]).unwrap()
+    reader.query("SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 struct Daemon(Child);

@@ -81,7 +81,7 @@ pub struct UsageReport {
 
 pub(super) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
  AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
- AND NOT EXISTS(SELECT 1 FROM current_event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')";
+ AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')";
 
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
@@ -143,13 +143,13 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     let (cond, params) = scope.condition();
     let conn = reader.conn()?;
     let mut total = conn.query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}"),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
     )?;
     let mut by_model = vec![];
     let mut stmt = conn.prepare(&format!(
-        "SELECT m.model, {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}
+        "SELECT m.model, {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}
          GROUP BY m.model ORDER BY sum(m.cost_nusd) DESC NULLS LAST, count(*) DESC"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -186,7 +186,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         grain: "physical",
         time_basis: "source_record_time",
         sessions: conn.query_row(
-            &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM current_message UNION ALL SELECT session_pk,at FROM current_event) m WHERE {cond}"),
+            &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m WHERE {cond}"),
             rusqlite::params_from_iter(params.iter()),
             |r| r.get::<_, i64>(0).map(|n| n as u64),
         )?,
@@ -234,7 +234,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
     let (cond, params) = scope.condition();
     let conn = reader.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM current_message UNION ALL SELECT session_pk,at FROM current_event) m JOIN session s ON s.pk = m.session_pk
+        "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} ORDER BY s.started_at, s.id"
     ))?;
     let sessions: Vec<(i64, String)> = stmt
@@ -282,7 +282,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
     let mut x = reader.conn()?.query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}"),
         [],
         |r| row(r, 0),
     )?;
@@ -318,10 +318,10 @@ pub(super) fn unknown_items(
 ) -> Result<u64> {
     Ok(reader.conn()?.query_row(
         &format!(
-            "SELECT count(*) FROM current_message m
+            "SELECT count(*) FROM message m
         WHERE m.role='assistant' AND m.written_by='model' AND {cond} AND (
         json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1 OR
-        EXISTS(SELECT 1 FROM current_event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown'))"
+        EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown'))"
         ),
         rusqlite::params_from_iter(params.iter()),
         |row| row.get::<_, i64>(0).map(|n| n as u64),
@@ -339,7 +339,7 @@ pub(super) fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> 
     let (cond, params) = scope.condition();
     Ok(reader.conn()?.query_row(
         &format!(
-            "SELECT EXISTS(SELECT 1 FROM current_event m
+            "SELECT EXISTS(SELECT 1 FROM event m
         WHERE m.kind='response_boundaries_unknown' AND {cond})"
         ),
         rusqlite::params_from_iter(params.iter()),

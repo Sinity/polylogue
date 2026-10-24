@@ -21,8 +21,8 @@ struct Stored {
 impl Reader<'_> {
     pub fn event_export(&self, id: &str) -> Result<Option<EventExport>> {
         let row=self.conn()?.query_row("SELECT e.id,i.id,i.format,e.source_chain,e.source_start,e.source_end,s.id,e.kind,e.at,m.id,e.data
-            FROM current_event e JOIN input_ref i ON i.pk=e.input_pk
-            LEFT JOIN session s ON s.pk=e.session_pk LEFT JOIN current_message m ON m.pk=e.after_message_pk
+            FROM event e JOIN input_ref i ON i.pk=e.input_pk
+            LEFT JOIN session s ON s.pk=e.session_pk LEFT JOIN message m ON m.pk=e.after_message_pk
             WHERE e.id=?1",[id],|r|Ok(Stored {
                 id:r.get(0)?,input:r.get(1)?,source:r.get(2)?,chain:r.get(3)?,start:r.get(4)?,end:r.get(5)?,
                 session:r.get(6)?,kind:r.get(7)?,at:r.get(8)?,after:r.get(9)?,data:r.get(10)?,
@@ -71,8 +71,7 @@ impl Reader<'_> {
     }
 
     pub fn event_sources(&self, id: &str) -> Result<Vec<polylogue_model::Json>> {
-        self.query("SELECT i.id AS input,i.format AS source,s.chain,s.source_start,s.source_end,s.parser_version,s.current
-            FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_id=?1
-            ORDER BY i.id,s.chain,s.source_start,s.source_snapshot",&[crate::SqlValue::Text(id.into())])
+        self.query("SELECT i.id AS input,i.format AS source,e.source_chain AS chain,e.source_start,e.source_end
+            FROM event e JOIN input_ref i ON i.pk=e.input_pk WHERE e.id=?1",&[crate::SqlValue::Text(id.into())])
     }
 }

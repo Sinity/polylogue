@@ -556,7 +556,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
 fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>> {
     let spawned: bool = tx
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM current_link WHERE child_pk = ?1 AND kind = 'subagent')",
+            "SELECT EXISTS (SELECT 1 FROM link WHERE child_pk = ?1 AND kind = 'subagent')",
         )?
         .query_row([session_pk], |r| r.get(0))?;
     if !spawned {
@@ -564,7 +564,7 @@ fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>>
     }
     let first: Option<Vec<u8>> = tx
         .prepare_cached(
-            "SELECT x.body FROM current_message m JOIN block b ON b.message_pk = m.pk
+            "SELECT x.body FROM message m JOIN block b ON b.message_pk = m.pk
              JOIN text x ON x.id = b.text_id
              WHERE m.session_pk = ?1 AND m.role = 'user' AND b.kind = 'text'
              ORDER BY m.order_input_id, m.seq, b.idx LIMIT 1",

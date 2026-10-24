@@ -289,7 +289,7 @@ impl Reader<'_> {
                 .conn()?
                 .prepare_cached(
                     "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
-                     AND EXISTS (SELECT 1 FROM block b JOIN current_message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
+                     AND EXISTS (SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
                      ORDER BY t.id LIMIT ?2",
                 )?
                 .query_map(params![after, limit as i64], |r| {
@@ -301,7 +301,7 @@ impl Reader<'_> {
                 self.conn()?
                     .prepare_cached(
                         "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
-                         AND t.id IN (SELECT b.text_id FROM block b JOIN current_message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
+                         AND t.id IN (SELECT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
                                       WHERE s.id IN (SELECT value FROM json_each(?3)))
                          ORDER BY t.id LIMIT ?2",
                     )?

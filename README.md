@@ -140,7 +140,7 @@ exports retain source fields.
 
 The web reader links Document search results to `/d/ID`, with `full` and
 `dialogue` views, copied CLI commands, and masked source metadata including
-retained input ranges and versions. **Browse Documents** opens the document
+each source's input range and version hash. **Browse Documents** opens the document
 query from the overview. Query column descriptors identify supported reader
 links; message, note and untyped values remain text.
 

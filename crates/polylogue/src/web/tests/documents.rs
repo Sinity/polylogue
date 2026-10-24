@@ -77,7 +77,7 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
         );
         assert!(page.contains("authorship unknown"), "{page}");
         assert!(page.contains("Retained source records"));
-        assert!(page.contains("parser_version"));
+        assert!(page.contains("preferred"));
         assert!(page.contains("2026-05-02T00:00:00Z"));
         assert!(
             !page.contains(&secret),

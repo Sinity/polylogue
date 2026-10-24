@@ -19,7 +19,7 @@ pub(crate) fn visit(
 ) -> Result<()> {
     let mut statement = connection.prepare_cached(
         "SELECT b.pk, m.written_by, m.prompt_kind, b.body, t.body
-         FROM current_message m JOIN block b ON b.message_pk=m.pk
+         FROM message m JOIN block b ON b.message_pk=m.pk
          LEFT JOIN text t ON t.id=b.text_id WHERE m.session_pk=?1
          ORDER BY m.order_input_id, m.seq, m.id, b.idx",
     )?;

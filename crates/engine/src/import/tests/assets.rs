@@ -65,7 +65,7 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
             resolution.source.blob, None,
             "source Attachment must remain unchanged"
         );
-        let hash=reader.query("SELECT hex(ms.version_hash) AS hash FROM current_message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.preferred=1 WHERE m.id='chatgpt:asset-message'",&[]).unwrap();
+        let hash=reader.query("SELECT hex(ms.version_hash) AS hash FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.preferred=1 WHERE m.id='chatgpt:asset-message'",&[]).unwrap();
         if let Some(previous) = &previous {
             assert_eq!(previous, &hash);
         } else {

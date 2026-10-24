@@ -117,14 +117,14 @@ fn assert_bad_ranges_refuse(e: &mut Engine, w: &ClaudeHome, raw: &str) {
         polylogue_store::archive::cache::SETUP,
     )
     .unwrap();
-    let saved:Vec<(i64,i64,i64)>=index.prepare("SELECT message_pk,source_start,source_end FROM message_source WHERE session_pk=(SELECT pk FROM session WHERE id='claude-code:s2')").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
-    let other:(i64,i64)=index.query_row("SELECT source_start,source_end FROM message_source WHERE session_pk=(SELECT pk FROM session WHERE id='claude-code:s1') LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let saved:Vec<(i64,i64,i64)>=index.prepare("SELECT message_pk,source_start,source_end FROM message_source WHERE message_pk IN (SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:s2')").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<_,_>>().unwrap();
+    let other:(i64,i64)=index.query_row("SELECT source_start,source_end FROM message_source WHERE message_pk IN (SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:s1') LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
     let inside = raw.find("walrus-9931").unwrap() as i64;
     for (label, range) in [
         ("partial scalar", (inside, inside + 11)),
         ("surviving record", other),
     ] {
-        index.execute("UPDATE message_source SET source_start=?1,source_end=?2 WHERE session_pk=(SELECT pk FROM session WHERE id='claude-code:s2')",(range.0,range.1)).unwrap();
+        index.execute("UPDATE message_source SET source_start=?1,source_end=?2 WHERE message_pk IN (SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:s2')",(range.0,range.1)).unwrap();
         for dry_run in [true, false] {
             let error = e
                 .excise(ExciseRequest {

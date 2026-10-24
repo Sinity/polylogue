@@ -56,15 +56,15 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 }
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM current_message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
+    tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
     let mut statement = tx.prepare_cached(
         "SELECT r.input_pk,r.facts,
-                (SELECT MIN(m.at) FROM message_source ms JOIN current_message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND ms.current=1 AND m.session_pk=r.session_pk),
-                (SELECT MAX(m.at) FROM message_source ms JOIN current_message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND ms.current=1 AND m.session_pk=r.session_pk)
+                (SELECT MIN(m.at) FROM message_source ms JOIN message m ON m.pk=ms.message_pk
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk),
+                (SELECT MAX(m.at) FROM message_source ms JOIN message m ON m.pk=ms.message_pk
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk)
          FROM session_record r WHERE r.session_pk=?1
-         ORDER BY r.input_pk,r.chain,r.parser_version",
+         ORDER BY r.input_pk,r.chain",
     )?;
     let mut rows = statement.query([session_pk])?;
     let mut inputs: Vec<Input> = Vec::new();

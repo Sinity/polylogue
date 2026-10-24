@@ -24,7 +24,7 @@ fn single_input_excision_clears_session_records_without_touching_another_input()
         .input_id;
     let records = || {
         let rows = w.reads().reader().unwrap().query(
-            "SELECT s.id, r.facts, r.chain, r.parser_version FROM session_record r JOIN session s ON s.pk=r.session_pk ORDER BY s.id", &[]).unwrap();
+            "SELECT s.id, r.facts, r.chain FROM session_record r JOIN session s ON s.pk=r.session_pk ORDER BY s.id", &[]).unwrap();
         assert_eq!(
             w.count("SELECT count(*) AS n FROM session_record"),
             rows.len() as i64,

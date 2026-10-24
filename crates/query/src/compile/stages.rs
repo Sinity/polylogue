@@ -218,7 +218,7 @@ impl<'a> Compiler<'a> {
             out.push((
                 format!("partial_{flat_field}"),
                 format!(
-                    "sum(({expr}) IS NOT NULL AND EXISTS (SELECT 1 FROM current_message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL))",
+                    "sum(({expr}) IS NOT NULL AND EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL))",
                     fields::own_messages(&scope.a.s, "xp")
                 ),
                 ColKind::Number,

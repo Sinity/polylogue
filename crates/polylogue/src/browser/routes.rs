@@ -254,7 +254,7 @@ async fn archive_state(State(ctx): State<Arc<Ctx>>, Query(q): Query<StateQuery>)
     let indexed: Option<Option<i64>> = blocking(move || {
         let sid = sid?;
         let statement = format!(
-            "SELECT (SELECT COUNT(*) FROM current_message m WHERE m.session_pk = s.pk) AS n
+            "SELECT (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk) AS n
                FROM session s WHERE s.id = {}",
             sql_text(&sid)
         );

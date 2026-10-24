@@ -45,7 +45,7 @@ fn structured_message(reverse: bool) -> Message {
 }
 
 #[test]
-fn content_version_identity_ignores_nested_json_member_order() {
+fn version_hash_ignores_nested_json_member_order() {
     let first = structured_message(false);
     let second = structured_message(true);
     assert_eq!(
@@ -82,19 +82,16 @@ fn content_version_identity_ignores_nested_json_member_order() {
                 .as_slice(),
             std::slice::from_ref(&first)
         );
-        let sources = reader.message_versions(&first.id).unwrap();
+        let rows = reader
+            .query(
+                "SELECT count(*) AS sources, count(DISTINCT version_hash) AS n FROM message_source",
+                &[],
+            )
+            .unwrap();
         assert_eq!(
-            sources.len(),
-            2,
+            rows[0]["sources"], 2,
             "both physical source associations survive"
         );
-        assert!(
-            sources.iter().all(|version| version.message == first),
-            "exact structured values survive both read paths"
-        );
-        let rows = reader
-            .query("SELECT count(*) AS n FROM content_version", &[])
-            .unwrap();
         let count = rows[0]["n"].as_u64().unwrap();
         let hashes = reader
             .query(
@@ -102,12 +99,12 @@ fn content_version_identity_ignores_nested_json_member_order() {
                 &[],
             )
             .unwrap();
-        println!("prepared={prepared}: versions={count}, hashes={hashes:?}");
+        println!("prepared={prepared}: hashes={count}, {hashes:?}");
         counts.push((prepared, count));
     }
     assert!(
         counts.iter().all(|(_, count)| *count == 1),
-        "equal message values require one retained logical hash in both paths: {counts:?}"
+        "equal message values require one hash in both paths: {counts:?}"
     );
 }
 
@@ -134,13 +131,12 @@ fn distinct_structured_values_remain_inspectable_versions() {
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
-        let versions = reader.message_versions(&first.id).unwrap();
-        assert_eq!(versions.len(), 2);
-        assert!(versions.iter().any(|version| version.message == first));
-        assert!(versions.iter().any(|version| version.message == different));
         assert_eq!(
             reader
-                .query("SELECT count(*) AS n FROM content_version", &[])
+                .query(
+                    "SELECT count(DISTINCT version_hash) AS n FROM message_source",
+                    &[]
+                )
                 .unwrap()[0]["n"],
             2
         );

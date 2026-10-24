@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn reverse_event_replay_cannot_regress_an_already_observed_logical_position() {
+fn a_parse_from_the_first_byte_restates_event_positions() {
     let w = world();
     let row = MessageRow {
         offset: 100,
@@ -28,8 +28,8 @@ fn reverse_event_replay_cannot_regress_an_already_observed_logical_position() {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let rows = reader
-        .query("SELECT source_order FROM event_source", &[])
+        .query("SELECT seq AS source_order FROM event", &[])
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["source_order"], 9);
+    assert_eq!(rows[0]["source_order"], 1);
 }

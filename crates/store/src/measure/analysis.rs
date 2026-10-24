@@ -33,7 +33,7 @@ pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
                     sum(t.outcome = 'unknown'
                         AND coalesce(t.outcome_reason, '') NOT IN ('no_result', 'passed_without_result'))
              FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
-             JOIN current_message m ON m.pk = b.message_pk
+             JOIN message m ON m.pk = b.message_pk
              WHERE t.inherited = 0 AND {cond}"
         ),
         rusqlite::params_from_iter(params),
@@ -129,14 +129,14 @@ pub fn first_failure(reader: &Reader<'_>, scope: &Scope, turns: bool) -> Result<
     let sql = format!(
         "WITH s AS (
            SELECT m.session_pk AS pk, min(m.at) AS first_at, max(m.at) AS last_at
-           FROM current_message m WHERE {cond} GROUP BY m.session_pk),
+           FROM message m WHERE {cond} GROUP BY m.session_pk),
          f AS (
            SELECT b.session_pk AS pk, min(coalesce(t.at, fm.at)) AS fail_at
            FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
-           JOIN current_message fm ON fm.pk = b.message_pk
+           JOIN message fm ON fm.pk = b.message_pk
            WHERE t.outcome = 'error' AND t.inherited = 0 GROUP BY b.session_pk)
          SELECT s.first_at, s.last_at, f.fail_at,
-           (SELECT count(*) FROM current_message h WHERE h.session_pk = s.pk AND h.written_by = 'human'
+           (SELECT count(*) FROM message h WHERE h.session_pk = s.pk AND h.written_by = 'human'
               AND h.prompt_kind = 'prose' AND h.at <= coalesce(f.fail_at, s.last_at))
          FROM s LEFT JOIN f ON f.pk = s.pk"
     );
@@ -254,19 +254,19 @@ const DAILY: [(&str, &str, &str); 5] = [
         "tokens",
         "coalesce(m.input_tokens,0)+coalesce(m.cache_read_tokens,0)+coalesce(m.cache_write_tokens,0)
          +coalesce(m.output_tokens,0)+coalesce(m.reasoning_tokens,0)",
-        "current_message m",
+        "message m",
     ),
-    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "current_message m"),
-    ("sessions", "0", "current_message m"),
+    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "message m"),
+    ("sessions", "0", "message m"),
     (
         "prompts",
         "(m.written_by = 'human' AND m.prompt_kind = 'prose')",
-        "current_message m",
+        "message m",
     ),
     (
         "tool_errors",
         "(t.outcome = 'error')",
-        "tool_call t JOIN block b ON b.pk = t.call_block_pk JOIN current_message m ON m.pk = b.message_pk",
+        "tool_call t JOIN block b ON b.pk = t.call_block_pk JOIN message m ON m.pk = b.message_pk",
     ),
 ];
 
@@ -317,7 +317,7 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
             ..scope.clone()
         };
         let (condition, values) = untimed.condition();
-        incomplete |= reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM current_message m WHERE {known_rows} AND m.at IS NULL AND {condition})"),rusqlite::params_from_iter(values.iter()),|r|r.get::<_,bool>(0))?;
+        incomplete |= reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m WHERE {known_rows} AND m.at IS NULL AND {condition})"),rusqlite::params_from_iter(values.iter()),|r|r.get::<_,bool>(0))?;
     }
     let mut by_day: BTreeMap<jiff::civil::Date, f64> = BTreeMap::new();
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();
@@ -480,7 +480,7 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT s.id, t.action, coalesce(t.command_norm, t.tool), t.outcome, t.at
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
-         JOIN current_message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
+         JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
          WHERE t.inherited = 0 AND {cond}
          ORDER BY m.session_pk, m.order_input_id, m.seq, b.pk"
     ))?;
@@ -566,7 +566,7 @@ pub struct Rhythm {
 pub fn rhythm(reader: &Reader<'_>, scope: &Scope, day: &LogicalDay) -> Result<Rhythm> {
     let (cond, params) = scope.condition();
     let mut stmt = reader.conn()?.prepare(&format!(
-        "SELECT m.at FROM current_message m WHERE m.at IS NOT NULL AND m.written_by = 'human'
+        "SELECT m.at FROM message m WHERE m.at IS NOT NULL AND m.written_by = 'human'
            AND m.prompt_kind = 'prose' AND {cond}"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| r.get::<_, i64>(0))?;
@@ -620,7 +620,7 @@ pub fn failing_commands(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Failin
                   t.command_norm AS command, t.outcome, t.exit_code, coalesce(t.at, m.at) AS at,
                   t.pk AS call, s.id AS session
            FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
-           JOIN current_message m ON m.pk = b.message_pk JOIN session s ON s.pk = t.session_pk
+           JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = t.session_pk
            WHERE t.command_norm IS NOT NULL AND t.inherited = 0 AND t.outcome IN ('ok', 'error')
              AND coalesce(s.repo_root, s.cwd) IS NOT NULL AND {cond}),
          ranked AS (
@@ -666,14 +666,14 @@ pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Su
     let sql = format!(
         "WITH s AS (
            SELECT m.session_pk AS pk, min(m.at) AS first_at, max(m.at) AS last_at
-           FROM current_message m WHERE m.counted_as IS NULL AND {cond} GROUP BY m.session_pk)
+           FROM message m WHERE m.counted_as IS NULL AND {cond} GROUP BY m.session_pk)
          SELECT s.first_at, s.last_at,
-           EXISTS (SELECT 1 FROM current_message h WHERE h.session_pk = s.pk
+           EXISTS (SELECT 1 FROM message h WHERE h.session_pk = s.pk
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'),
            NOT EXISTS (
-             SELECT 1 FROM current_message a WHERE a.session_pk = s.pk AND a.role = 'assistant'
+             SELECT 1 FROM message a WHERE a.session_pk = s.pk AND a.role = 'assistant'
                AND (a.order_input_id, a.seq) > (
-                 SELECT h.order_input_id, h.seq FROM current_message h WHERE h.session_pk = s.pk
+                 SELECT h.order_input_id, h.seq FROM message h WHERE h.session_pk = s.pk
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'
                  ORDER BY h.order_input_id DESC, h.seq DESC LIMIT 1))
          FROM s"

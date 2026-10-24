@@ -34,7 +34,12 @@ fn whole_documents_cite_the_retained_bytes_and_preserve_reading_order_on_rebuild
             ["First", "Second"]
         );
         assert_eq!(messages[1].parent.as_ref(), Some(&messages[0].id));
-        let rows = r.query("SELECT source_start,source_end,source_order FROM message_source ORDER BY source_order",&[]).unwrap();
+        let rows = r
+            .query(
+                "SELECT source_start,source_end,seq AS source_order FROM message ORDER BY seq",
+                &[],
+            )
+            .unwrap();
         assert_eq!(
             rows,
             vec![

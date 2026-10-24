@@ -44,7 +44,7 @@ impl<'a> Compiler<'a> {
             self.ctes.push(format!(
                 "{ord_cte} AS (SELECT t.pk AS pk, t.session_pk AS session_pk, t.at AS at, \
                  row_number() OVER (PARTITION BY t.session_pk ORDER BY m.order_input_id, m.seq, cb.idx) AS n \
-                 FROM tool_call t JOIN block cb ON cb.pk = t.call_block_pk JOIN current_message m ON m.pk = cb.message_pk \
+                 FROM tool_call t JOIN block cb ON cb.pk = t.call_block_pk JOIN message m ON m.pk = cb.message_pk \
                  WHERE m.inherited_from IS NULL AND COALESCE(m.on_active_path, 1) = 1 AND {})",
                 fields::counted_call("t")
             ));
@@ -86,7 +86,7 @@ impl<'a> Compiler<'a> {
             }
             inner = format!(
                 "EXISTS (SELECT 1 FROM {ord_cte} {o} JOIN tool_call {t} ON {t}.pk = {o}.pk \
-                 JOIN block {cb} ON {cb}.pk = {t}.call_block_pk JOIN current_message {m} ON {m}.pk = {cb}.message_pk \
+                 JOIN block {cb} ON {cb}.pk = {t}.call_block_pk JOIN message {m} ON {m}.pk = {cb}.message_pk \
                  WHERE {})",
                 and_all(&w),
                 t = a.t,
@@ -188,7 +188,7 @@ impl<'a> Compiler<'a> {
             let a = &al[i];
             format!(
                 "{ord} {o} JOIN tool_call {t} ON {t}.pk = {o}.pk JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
-                 JOIN current_message {m} ON {m}.pk = {cb}.message_pk JOIN session {sa} ON {sa}.pk = {o}.session_pk",
+                 JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {sa} ON {sa}.pk = {o}.session_pk",
                 o = o(i),
                 t = a.t,
                 cb = a.cb,
@@ -292,7 +292,7 @@ impl<'a> Compiler<'a> {
             let n = i + 1;
             select.push(format!(
                 "(SELECT mm.id FROM tool_call tt JOIN block bb ON bb.pk = tt.call_block_pk \
-                 JOIN current_message mm ON mm.pk = bb.message_pk WHERE tt.pk = g.p{i}) AS step{n}_message"
+                 JOIN message mm ON mm.pk = bb.message_pk WHERE tt.pk = g.p{i}) AS step{n}_message"
             ));
             select.push(format!(
                 "(SELECT tt.command FROM tool_call tt WHERE tt.pk = g.p{i}) AS step{n}_command"

@@ -11,9 +11,10 @@ pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// A different version rebuilds the index into a new file. Required retained-source
-/// replay, including canonical ownership learned by parsing, also uses this boundary.
-pub const INDEX_VERSION: u32 = 34;
+/// A different version rebuilds the index into a new file. Raise it when the
+/// index schema, the row encoding, or what any parser produces from the same
+/// bytes changes.
+pub const INDEX_VERSION: u32 = 35;
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {

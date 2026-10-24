@@ -102,7 +102,7 @@ const COMMIT_BATCHES: &str = "
     UNION ALL SELECT 'delivery', id FROM delivery WHERE commit_seq = ?1
     UNION ALL SELECT 'extracted_blob',
         json_array(input, chain, source_start, source_end, lower(hex(source_hash)),
-                   parser_version, lower(hex(blob)))
+                   lower(hex(blob)))
         FROM extracted_blob WHERE commit_seq = ?1
     UNION ALL SELECT 'observation', id FROM observation WHERE commit_seq = ?1
     UNION ALL SELECT 'delivery_event', json_array(delivery, what, at)
@@ -273,7 +273,7 @@ impl Snapshot {
                     _ => String::new(),
                 };
                 let matching = "input = ?1 AND chain = ?2 AND source_start = ?3
-                    AND source_end = ?4 AND source_hash = ?5 AND parser_version = ?6 AND blob = ?7";
+                    AND source_end = ?4 AND source_hash = ?5 AND blob = ?6";
                 let written: Option<bool> = self
                     .conn
                     .query_row(
@@ -285,8 +285,8 @@ impl Snapshot {
                 if written == Some(false) {
                     return Err(unfinished_input(&input));
                 }
-                self.require_present(&input, "SELECT ?7", &args)?;
-                add("blob", &format!("{PLAIN_BLOB} WHERE hash = ?7"), &args)?;
+                self.require_present(&input, "SELECT ?6", &args)?;
+                add("blob", &format!("{PLAIN_BLOB} WHERE hash = ?6"), &args)?;
                 add(
                     "extracted_blob",
                     &format!("SELECT * FROM extracted_blob WHERE {matching}"),
@@ -603,15 +603,8 @@ fn revision_key(key: &str) -> Result<(&str, i64)> {
 
 /// The extracted blob primary key, in column order.
 fn extracted_key(key: &str) -> Result<Vec<Sql>> {
-    let (input, chain, start, end, source, parser, blob): (
-        String,
-        i64,
-        i64,
-        i64,
-        String,
-        i64,
-        String,
-    ) = serde_json::from_str(key).map_err(|_| invalid("invalid extracted blob batch key"))?;
+    let (input, chain, start, end, source, blob): (String, i64, i64, i64, String, String) =
+        serde_json::from_str(key).map_err(|_| invalid("invalid extracted blob batch key"))?;
     let hash = |hex: &str| {
         BlobHash::parse(hex)
             .map(|hash| Sql::Blob(hash.0.to_vec()))
@@ -623,7 +616,6 @@ fn extracted_key(key: &str) -> Result<Vec<Sql>> {
         Sql::Integer(start),
         Sql::Integer(end),
         hash(&source)?,
-        Sql::Integer(parser),
         hash(&blob)?,
     ])
 }

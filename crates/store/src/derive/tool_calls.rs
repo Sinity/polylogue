@@ -41,8 +41,8 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
 fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "UPDATE tool_call SET outcome_reason = CASE WHEN EXISTS (
-             SELECT 1 FROM block cb JOIN current_message cm ON cm.pk = cb.message_pk
-             JOIN current_message later ON later.session_pk = cm.session_pk
+             SELECT 1 FROM block cb JOIN message cm ON cm.pk = cb.message_pk
+             JOIN message later ON later.session_pk = cm.session_pk
              WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant' AND later.written_by='model'
                AND coalesce(json_extract(later.attrs_json,'$.production.response_boundary_unknown'),0)=0
                AND coalesce(json_extract(cm.attrs_json,'$.production.response_boundary_unknown'),0)=0

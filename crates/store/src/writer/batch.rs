@@ -58,17 +58,16 @@ pub struct ParseStep {
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
-    pub snapshot: Option<polylogue_model::Snapshot>,
+    /// Each record restates whole conversations: a later record's version
+    /// of a message replaces an earlier one in the same chain.
+    pub snapshot: bool,
     pub accounting: Accounting,
     /// Where the step's bytes start in the chain. 0 means the chain was
     /// parsed from the start, so the step's counts replace earlier ones.
     pub start: u64,
     /// Offset after the last complete record parsed.
     pub parsed_upto: u64,
-    pub parser_version: u32,
     /// The parse observed source EOF; an unconsumed suffix waits for growth.
-    /// Retiring an older interpretation also needs this: consuming all stored
-    /// bytes can mean only that the currently captured prefix was parsed.
     pub at_end: bool,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
@@ -85,18 +84,16 @@ impl ParseStep {
         output: Output,
         accounting: Accounting,
         range: std::ops::Range<u64>,
-        parser_version: u32,
         at_end: bool,
     ) -> Self {
         Self {
             order_from: None,
             reset: range.start == 0,
-            snapshot: None,
+            snapshot: false,
             output,
             accounting,
             start: range.start,
             parsed_upto: range.end,
-            parser_version,
             at_end,
             prepared: PreparedRows::default(),
         }

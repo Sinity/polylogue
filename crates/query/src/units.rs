@@ -126,7 +126,7 @@ fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
 fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-         JOIN current_message xm ON xm.pk = xb.message_pk \
+         JOIN message xm ON xm.pk = xb.message_pk \
          WHERE {}{} AND xm.inherited_from IS NULL \
          AND COALESCE(xm.on_active_path, 1) = 1 \
          AND xm.session_pk IN ({})",
@@ -335,7 +335,7 @@ const MESSAGE_DEFAULTS: &[Default] = &[
 
 /// The session's next counted tool call after `{t}`, in session order.
 pub const NEXT_CALL: &str = "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
-     JOIN current_message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
+     JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
      AND (qm.order_input_id, qm.seq, qb.idx) > ({m}.order_input_id, {m}.seq, {cb}.idx) \
      ORDER BY qm.order_input_id, qm.seq, qb.idx LIMIT 1";
 
@@ -400,7 +400,7 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Documents,
         name: "documents",
         singular: "document",
-        from: Expr::Template("current_document {r}"),
+        from: Expr::Template("document {r}"),
         key: "{r}.pk",
         columns: &[
             (
@@ -434,7 +434,7 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Messages,
         name: "messages",
         singular: "message",
-        from: Expr::Template("current_message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
+        from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
         key: "{m}.pk",
         columns: &[
             (
@@ -474,7 +474,7 @@ pub static UNITS: &[UnitSpec] = &[
         name: "blocks",
         singular: "block",
         from: Expr::Template(
-            "block {b} JOIN current_message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+            "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
         key: "{b}.pk",
         columns: &[
@@ -521,7 +521,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "tool_call",
         from: Expr::Template(
             "tool_call {t} JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
-             JOIN current_message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
+             JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
         ),
         key: "{t}.pk",
         columns: &[
@@ -576,7 +576,7 @@ pub static UNITS: &[UnitSpec] = &[
                 "child",
                 Unit::Sessions,
                 Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM current_link lc JOIN {from} ON {ns}.pk = lc.child_pk \
+                    cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.pk = lc.child_pk \
                            WHERE lc.kind = 'subagent' AND lc.parent_id = {s}.id \
                            AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) AND {cond})",
                     value: None,
@@ -637,7 +637,7 @@ pub static UNITS: &[UnitSpec] = &[
         name: "events",
         singular: "event",
         from: Expr::Template(
-            "current_event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
+            "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
         ),
         key: "{r}.pk",
         columns: &[
@@ -720,7 +720,7 @@ pub static UNITS: &[UnitSpec] = &[
         name: "links",
         singular: "link",
         from: Expr::Template(
-            "current_link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
+            "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
         ),
         key: "{r}.pk",
         columns: &[
@@ -1001,9 +1001,9 @@ pub static UNITS: &[UnitSpec] = &[
 /// such start; a session with no prompt is one turn. Copies are counted in
 /// the session that originated them, so inherited messages are left out.
 const TURNS: &str = "(SELECT g.*, \
-     (SELECT count(*) FROM current_message ax WHERE ax.parent_id = g.last_prompt \
+     (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
         AND ax.written_by = 'model') AS attempts, \
-     (SELECT min(lx.at) FROM current_message lx WHERE lx.session_pk = g.session_pk \
+     (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
         AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
      (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
    FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
@@ -1036,7 +1036,7 @@ const TURNS: &str = "(SELECT g.*, \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
-           FROM current_message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
+           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
              AND m.written_by IN ('human', 'model')) o) tm \
      GROUP BY tm.session_pk, tm.turn) g)";
 

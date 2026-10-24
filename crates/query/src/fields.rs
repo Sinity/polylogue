@@ -225,7 +225,7 @@ pub const SESSION_HAS: [Has; 9] = [
         name: "thinking",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM block xb JOIN current_message xm ON xm.pk = xb.message_pk WHERE {} AND xb.kind = 'thinking')",
+                "EXISTS (SELECT 1 FROM block xb JOIN message xm ON xm.pk = xb.message_pk WHERE {} AND xb.kind = 'thinking')",
                 own_messages(s, "xm")
             )
         },
@@ -254,7 +254,7 @@ pub const SESSION_HAS: [Has; 9] = [
         name: "compaction",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM current_event xe WHERE xe.session_pk = {s}.pk AND xe.kind = 'compaction')"
+                "EXISTS (SELECT 1 FROM event xe WHERE xe.session_pk = {s}.pk AND xe.kind = 'compaction')"
             )
         },
     },
@@ -262,7 +262,7 @@ pub const SESSION_HAS: [Has; 9] = [
         name: "branches",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM current_message xm WHERE xm.session_pk = {s}.pk AND xm.on_active_path = 0)"
+                "EXISTS (SELECT 1 FROM message xm WHERE xm.session_pk = {s}.pk AND xm.on_active_path = 0)"
             )
         },
     },
@@ -271,7 +271,7 @@ pub const SESSION_HAS: [Has; 9] = [
         sql: |s| {
             format!(
                 "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
-                 WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM current_message xm WHERE xm.session_pk = {s}.pk)) \
+                 WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
                 live_note("hn")
             )
@@ -347,7 +347,7 @@ pub static FIELDS: &[Field] = &[
     v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
     f(Documents,"title",Substring,"the supplied source title").sql("{r}.title"),
     f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),
-    f(Documents,"versions",Number,"the number of retained content versions").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
+    f(Documents,"versions",Number,"the number of distinct versions its sources hold").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
     // sessions
     f(Sessions, "id", Prefix, "session ID or a unique prefix").sql_ref("{s}.id", ColumnReference::Session),
     f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …").sql("{s}.origin"),
@@ -432,7 +432,7 @@ pub static FIELDS: &[Field] = &[
         "claude-code, codex-tui, codex-exec, …",
     ).sql("{s}.harness"),
     sp(Sessions, "model", "a model that wrote at least one message", custom::model).sql(
-        "(SELECT x.model FROM current_message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL GROUP BY x.model ORDER BY count(*) DESC LIMIT 1)",
+        "(SELECT x.model FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL GROUP BY x.model ORDER BY count(*) DESC LIMIT 1)",
     ),
     sp(Sessions, "tag", "a tag note; tag:key:value for key:value tags", custom::tag),
     sv(Sessions, "has", &SESSION_HAS_NAMES, "the session has thinking, tool calls, errors, …", custom::has),
@@ -1008,7 +1008,7 @@ pub fn counted_call(t: &str) -> String {
 fn own_calls(s: &str, x: &str, extra: &str) -> String {
     format!(
         "(SELECT count(*) FROM tool_call {x} JOIN block {x}b ON {x}b.pk = {x}.call_block_pk \
-         JOIN current_message {x}m ON {x}m.pk = {x}b.message_pk \
+         JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
          WHERE {x}.session_pk = {s}.pk AND {x}m.inherited_from IS NULL \
          AND COALESCE({x}m.on_active_path, 1) = 1 AND {}{extra})",
         counted_call(x)
@@ -1094,7 +1094,7 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
 /// The sum of a column over session `s`'s own messages.
 fn own_sum(s: &str, col: &str) -> String {
     format!(
-        "(SELECT sum(x.{col}) FROM current_message x WHERE {})",
+        "(SELECT sum(x.{col}) FROM message x WHERE {})",
         own_messages(s, "x")
     )
 }
@@ -1102,7 +1102,7 @@ fn own_sum(s: &str, col: &str) -> String {
 /// Session `s`'s own messages matching `extra`, counted.
 fn own_count(s: &str, extra: &str) -> String {
     format!(
-        "(SELECT count(*) FROM current_message x WHERE {}{extra})",
+        "(SELECT count(*) FROM message x WHERE {}{extra})",
         own_messages(s, "x")
     )
 }
@@ -1140,7 +1140,7 @@ fn sessions_human_commands(a: &Aliases) -> String {
 
 fn sessions_words(a: &Aliases) -> String {
     format!(
-        "(SELECT COALESCE(sum(x.words), 0) FROM current_message x WHERE {} AND x.written_by IN ('human', 'model'))",
+        "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
         own_messages(&a.s, "x")
     )
 }
@@ -1204,7 +1204,7 @@ fn sessions_cost(a: &Aliases) -> String {
 
 fn sessions_tree_cost(a: &Aliases) -> String {
     format!(
-        "(SELECT sum(x.cost_nusd) FROM current_message x WHERE x.inherited_from IS NULL \
+        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL \
          AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
         subtree(&a.s)
     )
@@ -1311,7 +1311,7 @@ pub fn excised(s: &str) -> String {
 /// The session and every session below it in its subagent tree.
 pub fn subtree(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM current_link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
     )

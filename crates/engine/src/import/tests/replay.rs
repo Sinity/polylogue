@@ -3,7 +3,7 @@ use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 fn basis(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,s.parser_version,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
+    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 #[test]
