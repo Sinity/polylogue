@@ -624,13 +624,14 @@ CREATE TABLE file_edit (
 CREATE INDEX message_source_current ON message_source(input_pk,session_pk,current,message_pk);
 CREATE INDEX message_source_snapshot ON message_source(input_pk,chain,source_snapshot);
 CREATE INDEX message_source_version ON message_source(version_hash);
-CREATE TABLE message_version (
+CREATE TABLE content_version (
   pk INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message','document')),
   hash BLOB NOT NULL UNIQUE,
   attrs BLOB NOT NULL
 ) STRICT;
 CREATE TABLE version_block (
-  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
+  version_pk INTEGER NOT NULL REFERENCES content_version(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
@@ -715,3 +716,49 @@ CREATE TABLE required_parser (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX parse_retirement_pending ON parse_state(input_pk,chain) WHERE parser_version>retired_version;
+
+-- Non-conversation text shares content versions and interned text with messages.
+CREATE TABLE document (
+  pk INTEGER PRIMARY KEY,
+  id TEXT NOT NULL UNIQUE,
+  origin TEXT NOT NULL,
+  native_id TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  title TEXT,
+  source_time INTEGER,
+  authorship TEXT NOT NULL,
+  version_hash BLOB NOT NULL,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  source_chain INTEGER NOT NULL,
+  source_start INTEGER NOT NULL,
+  source_end INTEGER NOT NULL,
+  present INTEGER NOT NULL DEFAULT 1,
+  changed INTEGER NOT NULL
+) STRICT;
+CREATE TABLE document_source (
+  document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  source_start INTEGER NOT NULL,
+  source_end INTEGER NOT NULL,
+  parser_version INTEGER NOT NULL,
+  route_rank INTEGER NOT NULL,
+  source_time INTEGER,
+  version_hash BLOB NOT NULL REFERENCES content_version(hash),
+  current INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(document_pk,input_pk,chain,source_start,source_end,version_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX document_source_input ON document_source(input_pk,chain);
+CREATE INDEX document_source_version ON document_source(version_hash);
+CREATE TABLE document_block (
+  document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  body BLOB NOT NULL,
+  text_id INTEGER REFERENCES text(id),
+  blob_hash BLOB,
+  PRIMARY KEY(document_pk,idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
+CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
+CREATE VIEW current_document AS SELECT * FROM document WHERE present=1;

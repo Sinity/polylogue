@@ -112,10 +112,22 @@ impl polylogue_sources::DocumentParser for Document {
     fn document(
         &self,
         bytes: &[u8],
-        _: &mut polylogue_sources::Output,
+        out: &mut polylogue_sources::Output,
         records: &mut polylogue_sources::Records,
     ) {
         assert_eq!(bytes, b"{}", "the document must be complete");
+        let mut document = polylogue_model::Document::new(
+            polylogue_model::DocumentId::parse("claude-ai:synthetic-account-memory").unwrap(),
+            polylogue_model::DocumentPurpose::Memory,
+        );
+        document.blocks.push(polylogue_model::Block::Text {
+            text: "PRIVATE_BODY_MARKER".into(),
+        });
+        out.documents.push(polylogue_model::DocumentRow {
+            offset: 0,
+            end: 0,
+            document,
+        });
         records.record("document", &polylogue_sources::Disposition::Materialized);
     }
 }
@@ -135,6 +147,9 @@ fn whole_documents_are_not_parsed_at_short_read_boundaries() {
     assert!(matches!(scanned.outcome, Outcome::Complete));
     assert_eq!(scanned.counts.accounting.framed, 1);
     assert_eq!(scanned.counts.bytes, 2);
+    assert_eq!(scanned.counts.documents, 1);
+    assert_eq!(scanned.counts.messages, 0);
+    assert_eq!(scanned.counts.sessions, 0);
 }
 
 #[test]
@@ -151,6 +166,7 @@ fn coalesced_snapshots_use_end_offsets_not_a_sum_of_ends() {
     );
     assert!(matches!(scanned.outcome, Outcome::Complete));
     assert_eq!(scanned.counts.accounting.framed, 2);
+    assert_eq!(scanned.counts.documents, 2);
     assert_eq!(scanned.counts.bytes, bytes.len() as u64);
 }
 

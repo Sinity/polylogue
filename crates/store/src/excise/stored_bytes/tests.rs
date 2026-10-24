@@ -23,13 +23,13 @@ fn inspection_finds_dictionary_metadata_and_refuses_damaged_frames() {
     let db = open_write(&archive.index_db(), cache::SETUP).unwrap();
     for bytes in [prepared.attrs.clone(), pack_json(&message).unwrap()] {
         db.execute(
-            "INSERT OR REPLACE INTO message_version(hash,attrs) VALUES (?1,?2)",
+            "INSERT OR REPLACE INTO content_version(hash,attrs) VALUES (?1,?2)",
             params![&prepared.hash[..], bytes],
         )
         .unwrap();
         let columns = index_columns_containing(&archive, "metadata-only-marker").unwrap();
         assert!(
-            columns.contains(&"message_version.attrs".to_owned()),
+            columns.contains(&"content_version.attrs".to_owned()),
             "{columns:?}"
         );
         assert!(
@@ -40,15 +40,15 @@ fn inspection_finds_dictionary_metadata_and_refuses_damaged_frames() {
     }
     let mut opaque = [0xff_u8; 32];
     opaque[..b"binary-marker".len()].copy_from_slice(b"binary-marker");
-    db.execute("UPDATE message_version SET hash=?1", [&opaque[..]])
+    db.execute("UPDATE content_version SET hash=?1", [&opaque[..]])
         .unwrap();
     assert!(
         index_columns_containing(&archive, "binary-marker")
             .unwrap()
-            .contains(&"message_version.hash".to_owned())
+            .contains(&"content_version.hash".to_owned())
     );
     db.execute(
-        "UPDATE message_version SET attrs=?1",
+        "UPDATE content_version SET attrs=?1",
         [&prepared.attrs[..prepared.attrs.len() - 1]],
     )
     .unwrap();

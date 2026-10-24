@@ -74,6 +74,25 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
+    if let Some(id) = v
+        .text("session")
+        .and_then(|text| text.strip_prefix("document:").map(str::to_owned))
+    {
+        if v.flag("logical") {
+            return Err("documents have no conversation ancestry".into());
+        }
+        return Ok(Request::ReadDocument {
+            document: polylogue_model::DocumentId::parse(&id).map_err(|e| e.to_string())?,
+            view: v.text("view").unwrap_or_else(|| "full".into()),
+            format: v
+                .text("format")
+                .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
+            budget: v
+                .integer("budget")
+                .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
+            cursor: v.text("cursor"),
+        });
+    }
     Ok(Request::Read {
         session: v.session("session")?.ok_or("`session` is required")?,
         view: v.text("view").unwrap_or_else(|| "full".into()),
@@ -89,16 +108,24 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
 }
 
 pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
-    let sessions = v
-        .list("sessions")
-        .iter()
-        .map(|s| polylogue_model::SessionId::parse(s).map_err(|e| e.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    if sessions.is_empty() {
-        return Err("name at least one session".into());
+    let mut sessions = Vec::new();
+    let mut documents = Vec::new();
+    for text in v.list("sessions") {
+        if let Some(id) = text.strip_prefix("document:") {
+            documents.push(polylogue_model::DocumentId::parse(id).map_err(|e| e.to_string())?);
+        } else {
+            sessions.push(
+                polylogue_model::SessionId::parse(text.strip_prefix("session:").unwrap_or(&text))
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+    }
+    if sessions.is_empty() && documents.is_empty() {
+        return Err("name at least one session or document".into());
     }
     Ok(Request::Export {
         sessions,
+        documents,
         format: v.text("format").unwrap_or_else(|| "json".into()),
     })
 }

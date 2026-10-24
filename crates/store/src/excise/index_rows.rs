@@ -133,15 +133,20 @@ pub(super) fn remove_input(
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
     let mut texts = Vec::new();
     if let Some(pk) = input_pk(t.index, input)? {
-        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN (SELECT input_pk,version_hash FROM message_source UNION ALL SELECT input_pk,version_hash FROM document_source) s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
         refused.blobs.extend(media.iter().map(|hash| hex(hash)));
 
-        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
+        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN (SELECT input_pk,version_hash FROM message_source UNION ALL SELECT input_pk,version_hash FROM document_source) s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
         let messages: Vec<i64> = t
             .index
             .prepare("SELECT DISTINCT message_pk FROM message_source WHERE input_pk=?1")?
             .query_map([pk], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
+        let documents = t
+            .index
+            .prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk=?1")?
+            .query_map([pk], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         // Rows of other sessions from this input (an input scope's
         // shared sessions keep their other inputs' rows).
         for table in [
@@ -149,6 +154,7 @@ pub(super) fn remove_input(
             "unrecognized",
             "parsed",
             "message_source",
+            "document_source",
             "event_source",
             "link_source",
             "snapshot",
@@ -159,11 +165,14 @@ pub(super) fn remove_input(
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
         crate::writer::promote_current(t.index, messages.into_iter().map(Ok), t.counter)?;
+        for document in documents {
+            crate::documents::project(t.index, document, t.counter, false)?;
+        }
     }
     let _ = done;
     crate::versions::prune(t.index)?;
     for id in texts {
-        let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM version_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM version_block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         if let Some((hash, indexed)) = orphan {
             crate::text_rows::remove(t.index, id, indexed)?;
             hashes.text(&hash)?;
@@ -220,7 +229,7 @@ pub(super) fn delete_session(
         let mut selected = i.prepare(
             "SELECT DISTINCT t.hash FROM block b JOIN text t ON t.id = b.text_id
              WHERE b.session_pk = ?1 AND NOT EXISTS
-               (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
+               (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1) AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id=b.text_id)",
         )?;
         for hash in selected.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
             hashes.text(&hash?)?;
@@ -240,7 +249,8 @@ pub(super) fn delete_session(
                 .query_row(
                     "SELECT hash, indexed FROM text WHERE id = ?1
                  AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)
-                 AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)",
+                 AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM document_block WHERE text_id = ?1)",
                     [tid],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )

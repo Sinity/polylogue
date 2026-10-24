@@ -12,7 +12,8 @@ use crate::ast::Unit;
 use crate::compile::ColKind;
 use crate::compile::custom_fields::{self as custom, Custom};
 use polylogue_model::{
-    BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WorkNodeKind,
+    BlockKind, DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind,
+    Role, SessionKind, WorkNodeKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -321,6 +322,14 @@ pub const TOOL_OUTCOMES: &[&str] = &["ok", "error", "pending", "unknown"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
 
 pub static FIELDS: &[Field] = &[
+    // documents have no conversation role, session or usage defaults.
+    f(Documents,"id",Prefix,"document ID or a unique prefix").sql("{r}.id"),
+    f(Documents,"origin",Match,"the provider export family").sql("{r}.origin"),
+    v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context or memory").sql("{r}.purpose"),
+    v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
+    f(Documents,"title",Substring,"the supplied source title").sql("{r}.title"),
+    f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),
+    f(Documents,"versions",Number,"the number of retained content versions").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
     // sessions
     f(Sessions, "id", Prefix, "session ID or a unique prefix").sql("{s}.id"),
     f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …").sql("{s}.origin"),

@@ -25,13 +25,18 @@ fn units_in_a_session_relate_to_it() {
 }
 
 #[test]
-fn units_outside_a_session_scope_to_sessions_or_are_sessions() {
+fn sessionless_units_keep_explicit_association_or_independence() {
     for s in UNITS
         .iter()
-        .filter(|s| !s.in_session && s.unit != Unit::Sessions)
+        .filter(|s| !s.in_session && !matches!(s.unit, Unit::Sessions | Unit::Documents))
     {
         assert!(s.session_scope.is_some(), "{:?}", s.unit);
     }
+    let documents = spec(Unit::Documents);
+    assert!(!documents.in_session);
+    assert!(documents.session_scope.is_none());
+    assert!(documents.defaults.is_empty());
+    assert!(documents.relations.is_empty());
 }
 
 #[test]

@@ -91,7 +91,7 @@ fn reverse_hashes_keep_contiguous_version_blocks_and_exact_historical_values() {
         "{plan}"
     );
     assert_eq!(
-        tx.query_row("SELECT count(*) FROM message_version", [], |r| r
+        tx.query_row("SELECT count(*) FROM content_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         128

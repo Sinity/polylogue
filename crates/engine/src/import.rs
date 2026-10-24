@@ -7,6 +7,7 @@ use super::*;
 use polylogue_sources::origin::Route;
 
 mod exports;
+mod replay;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original

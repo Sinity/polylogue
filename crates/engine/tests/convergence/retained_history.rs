@@ -91,7 +91,7 @@ fn legacy_hash_generation(
         assert_eq!(
             transaction
                 .execute(
-                    "UPDATE message_version SET hash=?1 WHERE hash=?2",
+                    "UPDATE content_version SET hash=?1 WHERE hash=?2 AND kind='message'",
                     rusqlite::params![
                         legacy.as_bytes().as_slice(),
                         canonical.as_bytes().as_slice()
@@ -227,7 +227,7 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
             if replace_generation {
                 let actual = r
                     .query(
-                        "SELECT lower(hex(hash)) AS hash FROM message_version ORDER BY hash",
+                        "SELECT lower(hex(hash)) AS hash FROM content_version WHERE kind='message' ORDER BY hash",
                         &[],
                     )
                     .unwrap()
@@ -327,7 +327,7 @@ fn retained_append_chains_rebuild_the_observed_versions_without_full_prefix_rere
             .reader()
             .unwrap()
             .query(
-                "SELECT lower(hex(hash)) AS hash FROM message_version ORDER BY hash",
+                "SELECT lower(hex(hash)) AS hash FROM content_version WHERE kind='message' ORDER BY hash",
                 &[],
             )
             .unwrap();
@@ -354,7 +354,7 @@ fn retained_append_chains_rebuild_the_observed_versions_without_full_prefix_rere
             .reader()
             .unwrap()
             .query(
-                "SELECT lower(hex(hash)) AS hash FROM message_version ORDER BY hash",
+                "SELECT lower(hex(hash)) AS hash FROM content_version WHERE kind='message' ORDER BY hash",
                 &[]
             )
             .unwrap(),

@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod authored;
 pub(crate) mod blob_cleanup;
+mod documents;
 mod hashes;
 mod index_rows;
 mod messages;
@@ -65,15 +66,19 @@ pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 #[serde(tag = "scope", content = "value", rename_all = "snake_case")]
 pub enum Scope {
     Session(SessionId),
+    Document(polylogue_model::DocumentId),
     Input(String),
     Text(String),
 }
 
 impl Scope {
-    /// `session:<id>`, `input:<id>`, `text:<string>`, or a bare session ID.
+    /// `session:<id>`, `document:<id>`, `input:<id>`, `text:<string>`, or a bare session ID.
     pub fn parse(target: &str) -> std::result::Result<Self, String> {
         let (kind, value) = target.split_once(':').unwrap_or(("", target));
         match kind {
+            "document" => polylogue_model::DocumentId::parse(value)
+                .map(Self::Document)
+                .map_err(|e| e.to_string()),
             "input" if !value.is_empty() => Ok(Self::Input(value.to_owned())),
             "text" if !value.is_empty() => Ok(Self::Text(value.to_owned())),
             "session" => SessionId::parse(value)
@@ -81,7 +86,7 @@ impl Scope {
                 .map_err(|e| e.to_string()),
             _ => SessionId::parse(target).map(Self::Session).map_err(|_| {
                 format!(
-                    "not an excision target: {target:?} (session:<id>, input:<id>, text:<string>)"
+                    "not an excision target: {target:?} (session:<id>, document:<id>, input:<id>, text:<string>)"
                 )
             }),
         }
@@ -90,6 +95,7 @@ impl Scope {
     fn label(&self) -> String {
         match self {
             Self::Session(s) => format!("session:{s}"),
+            Self::Document(d) => format!("document:{d}"),
             Self::Input(i) => format!("input:{i}"),
             // Never the text itself: the row keeps only its hash.
             Self::Text(t) => format!("text:{}", blake3::hash(t.as_bytes()).to_hex()),
@@ -115,6 +121,8 @@ pub struct Excised {
     pub dry_run: bool,
     pub sessions: Vec<String>,
     pub messages: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<String>,
     pub texts: u64,
     /// Inputs removed whole.
     pub inputs_removed: Vec<String>,
@@ -253,6 +261,18 @@ pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
                 .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
             plan.session(t, pk, &id.to_string())?;
         }
+        Scope::Document(id) => {
+            let pk = t
+                .index
+                .query_row(
+                    "SELECT pk FROM document WHERE id=?1",
+                    [id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| StoreError::NotFound(format!("document {id}")))?;
+            plan.document(t, pk, &id.to_string())?;
+        }
         Scope::Input(input) => {
             let pk = input_pk(t.index, input)?;
             let known: bool = t.archive.query_row(
@@ -274,6 +294,13 @@ pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
                 for row in sessions {
                     let (spk, sid) = row?;
                     plan.session(t, spk, &sid)?;
+                }
+                let mut docs=t.index.prepare("SELECT d.pk,d.id FROM document d WHERE EXISTS(SELECT 1 FROM document_source s WHERE s.document_pk=d.pk AND s.input_pk=?1) AND NOT EXISTS(SELECT 1 FROM document_source s WHERE s.document_pk=d.pk AND s.input_pk<>?1)")?;
+                for row in
+                    docs.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                {
+                    let (pk, id) = row?;
+                    plan.document(t, pk, &id)?;
                 }
             }
         }
@@ -299,10 +326,14 @@ struct Plan<'a> {
     /// blanking shared whole documents and delivered briefs.
     own_texts: SessionTexts,
     text: Option<String>,
+    documents: BTreeMap<i64, String>,
 }
 
 impl<'a> Plan<'a> {
     fn new(index: &'a rusqlite::Connection) -> Result<Self> {
+        index.execute_batch(
+            "CREATE TEMP TABLE excision_documents(document_pk INTEGER PRIMARY KEY)",
+        )?;
         Ok(Self {
             sessions: SelectedSessions::new(index)?,
             whole: BTreeSet::new(),
@@ -311,6 +342,7 @@ impl<'a> Plan<'a> {
             message_ids: SelectedMessages::default(),
             own_texts: SessionTexts::default(),
             text: None,
+            documents: BTreeMap::new(),
         })
     }
 
@@ -335,7 +367,8 @@ impl<'a> Plan<'a> {
             let shared: bool = t.index.query_row(
                 "SELECT EXISTS (SELECT 1 FROM parsed WHERE input_pk = ?1 AND session_pk <> ?2)
                      OR EXISTS (SELECT 1 FROM message_source s JOIN message m ON m.pk = s.message_pk
-                                WHERE s.input_pk = ?1 AND m.session_pk <> ?2)",
+                                WHERE s.input_pk = ?1 AND m.session_pk <> ?2)
+                     OR EXISTS(SELECT 1 FROM document_source WHERE input_pk=?1)",
                 params![ipk, pk],
                 |r| r.get(0),
             )?;
@@ -378,7 +411,8 @@ impl<'a> Plan<'a> {
                (SELECT text_id FROM block WHERE session_pk IN (SELECT session_pk FROM temp.excision_sessions))
              AND NOT EXISTS
                (SELECT 1 FROM block o WHERE o.text_id=t.id
-                  AND o.session_pk NOT IN (SELECT session_pk FROM temp.excision_sessions))",
+                  AND o.session_pk NOT IN (SELECT session_pk FROM temp.excision_sessions))
+             AND NOT EXISTS (SELECT 1 FROM document_block d WHERE d.text_id=t.id)",
         )?;
         for body in bodies.query_map([], |r| r.get::<_, Vec<u8>>(0))? {
             self.own_texts.insert(&unpack_text(&body?)?)?;
@@ -448,6 +482,7 @@ impl<'a> Plan<'a> {
                 .map_err(|error| StoreError::Invalid(error.to_string()))?,
         );
         done.messages = self.message_ids.count()?;
+        done.documents = self.documents.values().cloned().collect();
         done.inputs_removed = self.whole.iter().cloned().collect();
         done.inputs_kept = self.kept.iter().cloned().collect();
         self.spans.visit_inputs(|input, count| {
@@ -460,6 +495,9 @@ impl<'a> Plan<'a> {
         self.sessions
             .visit(|pk, id| delete_session(t, pk, id, req.dry_run, &hashes))?;
 
+        for (&pk, id) in &self.documents {
+            documents::remove(t, pk, id, req, &hashes, done)?;
+        }
         for input in &self.whole {
             remove_input(t, input, req, &mut refused, done, &hashes)?;
         }
@@ -605,6 +643,8 @@ impl<'a> Plan<'a> {
         }
         hashes.finish()?;
         self.sessions.finish()?;
+        t.index
+            .execute_batch("DROP TABLE temp.excision_documents")?;
         Ok(done.clone())
     }
 

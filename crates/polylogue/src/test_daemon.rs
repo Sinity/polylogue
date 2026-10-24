@@ -22,7 +22,7 @@ pub struct TestDaemon {
 }
 
 /// A daemon whose loop has parsed one Claude Code session, `claude-code:s1`,
-/// holding `text`, with its socket served.
+/// holding `text`, with its first derivation pass finished and socket served.
 pub fn start(text: &str) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
@@ -55,6 +55,9 @@ pub fn start(text: &str) -> TestDaemon {
     world.wait_for(|data| {
         data["store"]["messages"].as_u64() == Some(1)
             && data["store"]["search_pending"].as_u64() == Some(0)
+            && data["last_pass"]["seconds"]
+                .as_f64()
+                .is_some_and(|seconds| seconds > 0.0)
     });
     world
 }

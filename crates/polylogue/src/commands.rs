@@ -395,12 +395,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "read",
-        help: "Read one session",
+        help: "Read one session or text document",
         args: &[
             pos(
                 "session",
                 Kind::Text,
-                "`origin:native_id`, as `list` prints it",
+                "A session ID, or `document:origin:native_id` from a documents query",
             ),
             Arg {
                 default: Some("full"),
@@ -409,7 +409,7 @@ const WRITTEN: &[Command] = &[
             opt(
                 "format",
                 Kind::Choice(FORMATS),
-                "Default: JSON messages for programs (`--json`, MCP, HTTP), else terminal text",
+                "Default: typed JSON for programs (`--json`, MCP, HTTP), else terminal text",
             ),
             opt(
                 "budget",
@@ -431,9 +431,13 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "export",
-        help: "Write sessions out as files",
+        help: "Write sessions and text documents out as files",
         args: &[
-            pos_opt("sessions", Kind::List, "The sessions to write"),
+            pos_opt(
+                "sessions",
+                Kind::List,
+                "Session IDs or document:origin:native_id references",
+            ),
             Arg {
                 default: Some("json"),
                 ..opt("format", Kind::Choice(FORMATS), "The file format")
@@ -453,7 +457,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "note add",
-        help: "Add a note to one or more targets: session:<id>, message:<id>, tool:<session>#<call>, repo:<name>, cwd:<path>, work:<n>. Over MCP the author is the calling agent",
+        help: "Add a note to one or more targets: session:<id>, message:<id>, document:<id>, tool:<session>#<call>, repo:<name>, cwd:<path>, work:<n>. Over MCP the author is the calling agent",
         args: &[
             pos("targets", Kind::List, "What the note is about"),
             Arg {
@@ -709,7 +713,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "excise",
-        help: "Remove content permanently from every file and derived product: `session:<id>`, `input:<id>` or `text:<string>`. Without `--yes`, shows what would go and changes nothing",
+        help: "Remove content permanently from every file and derived product: `session:<id>`, `document:<id>`, `input:<id>` or `text:<string>`. Without `--yes`, shows what would go and changes nothing",
         args: &[
             pos("target", Kind::Text, "What to remove"),
             opt("yes", Kind::Bool, "Remove it"),

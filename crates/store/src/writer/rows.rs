@@ -61,6 +61,26 @@ pub(super) fn write_rows(
         }
         sessions.insert(s.id.to_string(), pk);
     }
+    let source = crate::documents::Source {
+        input_pk,
+        chain,
+        parser_version: i64::from(p.parser_version),
+        rank: i64::from(b.input.route_rank),
+        counter,
+        packed: &p.prepared.texts,
+        bulk,
+    };
+    for (i, row) in p.output.documents.iter().enumerate() {
+        let fallback;
+        let prepared = match p.prepared.documents.get(i) {
+            Some(prepared) => prepared,
+            None => {
+                fallback = PreparedDocument::new(&row.document)?;
+                &fallback
+            }
+        };
+        crate::documents::write(tx, &source, row, prepared)?;
+    }
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
     for (i, row) in p.output.messages.iter().enumerate() {
@@ -165,6 +185,9 @@ pub(super) fn write_rows(
     ctx.finish_snapshot(p, &affected)?;
     ctx.write_parse_state(b, p)?;
     ctx.finish_reparse(p, b.length)?;
+    if p.at_end && p.parsed_upto >= b.length {
+        crate::documents::retire_previous_parser(tx, &source)?;
+    }
     Ok(written)
 }
 
@@ -545,7 +568,7 @@ impl Ctx<'_, '_> {
             .optional()?.flatten();
         self.set_source(pk, v, preferred)?;
         if let Some(old) = old.filter(|old| old != &v.hash) {
-            self.tx.execute("DELETE FROM message_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;
+            self.tx.execute("DELETE FROM content_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;
         }
         Ok(())
     }

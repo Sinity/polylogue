@@ -47,12 +47,21 @@ pub enum Request {
         budget: Option<usize>,
         cursor: Option<String>,
     },
+    ReadDocument {
+        document: polylogue_model::DocumentId,
+        view: String,
+        format: String,
+        budget: Option<usize>,
+        cursor: Option<String>,
+    },
     Import {
         request_id: String,
         paths: Vec<PathBuf>,
     },
     Export {
         sessions: Vec<SessionId>,
+        #[serde(default)]
+        documents: Vec<polylogue_model::DocumentId>,
         format: String,
     },
     AddNote {
@@ -156,6 +165,7 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
+            | Self::ReadDocument { .. }
             | Self::Export { .. }
             | Self::Notes { .. }
             | Self::Resumable { .. }

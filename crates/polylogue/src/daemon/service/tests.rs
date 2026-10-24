@@ -292,6 +292,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
     let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
     let export = || match handle(
         Request::Export {
+            documents: Vec::new(),
             sessions: vec![id.clone()],
             format: "json".into(),
         },

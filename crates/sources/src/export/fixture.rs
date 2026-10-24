@@ -2,6 +2,14 @@
 use polylogue_sources::{Parse, Step};
 
 pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
+    parse_input(
+        parser,
+        &polylogue_model::BlobHash::of(bytes).to_string(),
+        bytes,
+    )
+}
+
+pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step, String> {
     let Parse::Export(export) = parser else {
         return parser
             .step(None, bytes, 0)
@@ -9,7 +17,7 @@ pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
             .map_err(|e| e.to_string());
     };
     let mut sink = Items::default();
-    if let Err(error) = export.scan(&mut std::io::Cursor::new(bytes), &mut sink) {
+    if let Err(error) = export.scan(input, &mut std::io::Cursor::new(bytes), &mut sink) {
         let polylogue_sources::export::ScanError::Malformed(error) = error else {
             return Err(error.to_string());
         };
@@ -42,6 +50,7 @@ pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
         append!(
             sessions,
             messages,
+            documents,
             events,
             links,
             background,

@@ -109,6 +109,20 @@ impl Hits<'_> {
     }
 }
 
+fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+    if h.index != Index::Prose {
+        return None;
+    }
+    let from = format!(
+        "FROM {} h JOIN document_block db ON db.text_id=h.text_id WHERE db.document_pk={}.pk AND db.kind='text'",
+        h.cte, a.row
+    );
+    Some((
+        format!("EXISTS(SELECT 1 {from})"),
+        format!("(SELECT min(h.rank) {from})"),
+    ))
+}
+
 fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
@@ -375,6 +389,36 @@ pub static UNITS: &[UnitSpec] = &[
             d(Expr::Fn(not_hidden), &["hidden"], true),
             d(Expr::Fn(not_excised), &[], false),
         ],
+        relations: &[],
+        parents: &[],
+    },
+    UnitSpec {
+        unit: Unit::Documents,
+        name: "documents",
+        singular: "document",
+        from: Expr::Template("current_document {r}"),
+        key: "{r}.pk",
+        columns: &[
+            ("id", T("{r}.id"), Text),
+            ("origin", T("{r}.origin"), Text),
+            ("purpose", T("{r}.purpose"), Text),
+            ("title", T("{r}.title"), Text),
+            ("source_time", T("{r}.source_time"), Time),
+            ("authorship", T("{r}.authorship"), Text),
+        ],
+        time: "{r}.source_time",
+        newest_first: true,
+        session_order: false,
+        since: Some("{r}.source_time >= {v}"),
+        until: Some("{r}.source_time < {v}"),
+        in_session: false,
+        session_pk: "",
+        session_scope: None,
+        search: Search::Hits {
+            words: true,
+            rows: documents_hits,
+        },
+        defaults: &[],
         relations: &[],
         parents: &[],
     },

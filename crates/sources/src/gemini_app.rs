@@ -53,6 +53,7 @@ mod stream;
 impl ExportParser for GeminiApp {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         items: &mut dyn crate::export::ItemSink,
     ) -> Result<crate::export::ScanStats, crate::export::ScanError> {

@@ -13,7 +13,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Bumped when the index schema or row format changes; a different version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 30;
+pub const INDEX_VERSION: u32 = 31;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.
@@ -23,6 +23,7 @@ pub const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/migrations/004-local-blob-excision.sql"),
     include_str!("schema/migrations/005-append-facts.sql"),
     include_str!("schema/migrations/006-vector-deletion-policy.sql"),
+    include_str!("schema/migrations/007-document-excision.sql"),
 ];
 
 /// The `user_version` of a database: 0 for an empty file.

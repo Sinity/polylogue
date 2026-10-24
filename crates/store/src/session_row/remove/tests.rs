@@ -77,7 +77,7 @@ fn removal_references_freeze_current_and_historical_unions_with_exact_order() {
     for (pk, tid) in [(1, historical), (2, from_source)] {
         let hash = vec![pk as u8; 32];
         tx.execute(
-            "INSERT INTO message_version(pk,hash,attrs) VALUES(?1,?2,x'00')",
+            "INSERT INTO content_version(pk,hash,attrs) VALUES(?1,?2,x'00')",
             params![pk, hash],
         )
         .unwrap();
@@ -90,7 +90,7 @@ fn removal_references_freeze_current_and_historical_unions_with_exact_order() {
             VALUES(?1,1,1,1,1,0,1,0,?2)",params![pk,hash]).unwrap();
     }
     let refs = References::capture(&tx, 1).unwrap();
-    tx.execute_batch("DELETE FROM message_source; DELETE FROM version_block; DELETE FROM message_version; DELETE FROM block").unwrap();
+    tx.execute_batch("DELETE FROM message_source; DELETE FROM version_block; DELETE FROM content_version; DELETE FROM block").unwrap();
     let mut texts = Vec::new();
     refs.visit_texts(|id| {
         texts.push(id);

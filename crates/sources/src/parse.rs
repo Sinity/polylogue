@@ -6,7 +6,7 @@ use crate::Records;
 use crate::frame::{self, Record};
 use polylogue_model::Json;
 use polylogue_model::{Accounting, CountMismatch, Disposition};
-pub use polylogue_model::{BackgroundUpdate, InlineBlob, MessageRow, Output};
+pub use polylogue_model::{BackgroundUpdate, DocumentRow, InlineBlob, MessageRow, Output};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Parser {
@@ -143,6 +143,10 @@ pub fn run_document<D: DocumentParser + ?Sized>(
     parser.document(bytes, &mut output, &mut sink);
     // Document parsers emit messages in logical order, not at byte offsets.
     for row in &mut output.messages {
+        row.offset = 0;
+        row.end = bytes.len() as u64;
+    }
+    for row in &mut output.documents {
         row.offset = 0;
         row.end = bytes.len() as u64;
     }
@@ -302,6 +306,10 @@ fn snapshots(
 
 fn mark_snapshot(step: &mut Step, start: u64, end: u64, complete: bool) {
     for row in &mut step.output.messages {
+        row.offset = start;
+        row.end = end;
+    }
+    for row in &mut step.output.documents {
         row.offset = start;
         row.end = end;
     }

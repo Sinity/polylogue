@@ -175,3 +175,127 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     }
     ok(value)
 }
+
+/// Document pages retain only metadata, one decoded block and the output page.
+pub(super) fn document(
+    reader: &Reader<'_>,
+    id: &polylogue_model::DocumentId,
+    options: Options<'_>,
+) -> Response {
+    let Some(view) = polylogue_render::View::parse(options.view) else {
+        return error("bad_request", "unknown document view");
+    };
+    if matches!(
+        view,
+        polylogue_render::View::Prompts | polylogue_render::View::Actions
+    ) {
+        return error(
+            "bad_request",
+            "documents support the full and dialogue views",
+        );
+    }
+    let selected = match reader.select_document(id) {
+        Ok(Some(selected)) => selected,
+        Ok(None) => return error("not_found", format!("no document {id}")),
+        Err(e) => return store_error(&e),
+    };
+    let Some(budget) = options.budget else {
+        if options.cursor.is_some() {
+            return error("bad_request", "a cursor continues a read with a budget");
+        }
+        let Some(format) = polylogue_render::Format::parse(options.format) else {
+            return error("bad_request", "unknown document format");
+        };
+        return match selected.document().and_then(|doc| {
+            polylogue_render::documents::document(doc, view, format).map_err(Into::into)
+        }) {
+            Ok(mut value) => {
+                match selected.sources() {
+                    Ok(sources) => value["sources"] = serde_json::json!(sources),
+                    Err(e) => return store_error(&e),
+                };
+                ok(value)
+            }
+            Err(e) => store_error(&e),
+        };
+    };
+    let digest = |value: &serde_json::Value| {
+        blake3::hash(value.to_string().as_bytes())
+            .to_hex()
+            .to_string()
+    };
+    let binding = digest(&serde_json::json!(["document", id, options.view]));
+    let content = selected.version();
+    let generation = match reader.change_position() {
+        Ok(position) => position.generation,
+        Err(e) => return store_error(&e),
+    };
+    let position = if let Some(text) = options.cursor {
+        let cursor = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(text)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
+        let Some(cursor) = cursor.filter(|c| c.version == CURSOR_VERSION) else {
+            return error(
+                "bad_request",
+                "the read cursor is invalid or from an unsupported version",
+            );
+        };
+        if cursor.binding != binding {
+            return error(
+                "bad_request",
+                "the read cursor belongs to another content or view",
+            );
+        }
+        if cursor.content != content || cursor.generation != generation {
+            return error(
+                "stale_cursor",
+                "the document read changed; start the read again",
+            );
+        }
+        Some(Position {
+            message: cursor.position[0],
+            piece: cursor.position[1],
+            character: cursor.position[2],
+        })
+    } else {
+        None
+    };
+    let heading = format!("[document:{} {}]\n", id, selected.purpose().as_str());
+    let mut pager =
+        polylogue_render::model_pages::DocumentPager::new(view, budget, position, heading);
+    let mut failure = None;
+    if let Err(e) = selected.visit_blocks(|block| match pager.push(block) {
+        Ok(flow) => flow,
+        Err(e) => {
+            failure = Some(e);
+            ControlFlow::Break(())
+        }
+    }) {
+        return store_error(&e);
+    }
+    if let Some(e) = failure {
+        return error("bad_request", e);
+    }
+    let page = match pager.finish() {
+        Ok(page) => page,
+        Err(e) => return error("bad_request", e),
+    };
+    let next = page.next.map(|p| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&Cursor {
+                version: CURSOR_VERSION,
+                binding,
+                content,
+                generation,
+                position: [p.message, p.piece, p.character],
+            })
+            .expect("cursor is serializable"),
+        )
+    });
+    let metadata = match selected.metadata() {
+        Ok(value) => value,
+        Err(e) => return store_error(&e),
+    };
+    ok(serde_json::json!({"document":metadata,"text":page.text,"next":next}))
+}

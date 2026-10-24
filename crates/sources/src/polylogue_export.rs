@@ -29,31 +29,52 @@ pub fn open(_path: &Path) -> Option<Parse> {
 pub struct Export {
     valid: bool,
     refusal: Option<String>,
+    kinds: Vec<bool>,
+    at: usize,
 }
 
 impl ExportParser for Export {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.valid = false;
         self.refusal = None;
-        let mut invalid_session = None;
-        let (metadata, stats) =
-            crate::export::scan_nested_unique(reader, &["sessions"], |range, raw| {
-                // Validate every typed session before any of them may be published.
-                if invalid_session.is_none()
-                    && let Err(error) = serde_json::from_str::<SessionExport>(raw.get())
-                {
-                    invalid_session = Some(error.to_string());
+        self.kinds.clear();
+        self.at = 0;
+        let mut invalid = None;
+        let (mut metadata, stats) = crate::export::scan_objects(
+            reader,
+            false,
+            &[
+                ("sessions", crate::export::FieldShape::Array),
+                ("documents", crate::export::FieldShape::Array),
+            ],
+            &["format", "version"],
+            |_, field, _, range, raw| {
+                let document = field == "documents";
+                let valid = if document {
+                    serde_json::from_str::<polylogue_model::Document>(raw.get()).map(|_| ())
+                } else {
+                    serde_json::from_str::<SessionExport>(raw.get()).map(|_| ())
+                };
+                if invalid.is_none() {
+                    invalid = valid.err().map(|e| e.to_string());
                 }
+                self.kinds.push(document);
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
-            })?;
+            },
+        )?;
+        let metadata = metadata.pop().expect("root export object").fields;
         self.refusal = Document::from_json(&metadata.to_string())
             .err()
             .map(|e| e.to_string())
-            .or(invalid_session);
+            .or(invalid);
+        if self.kinds.contains(&true) && metadata["version"].as_u64() != Some(2) {
+            self.refusal = Some("documents require Polylogue export version 2".into());
+        }
         self.valid = self.refusal.is_none();
         Ok(stats)
     }
@@ -83,6 +104,23 @@ impl ExportParser for Export {
             serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let value = &value;
         if !self.valid {
+            return Ok(());
+        }
+        let document = self
+            .kinds
+            .get(self.at)
+            .copied()
+            .ok_or("export record is outside validated scan")?;
+        self.at += 1;
+        if document {
+            let document = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+            let at = sink.position();
+            sink.out.documents.push(polylogue_model::DocumentRow {
+                offset: at,
+                end: at,
+                document,
+            });
+            sink.records.record("document", &Disposition::Materialized);
             return Ok(());
         }
         let session: SessionExport =

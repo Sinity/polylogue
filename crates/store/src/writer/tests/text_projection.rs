@@ -145,7 +145,7 @@ fn promotion_refuses_a_gap_in_retained_block_indices() {
     let db = open_write(&w.archive.index_db(), 1).unwrap();
     assert_eq!(
         db.execute(
-            "UPDATE version_block SET idx=7 WHERE version_pk=(SELECT v.pk FROM message_version v JOIN message_source s ON s.version_hash=v.hash JOIN input_ref r ON r.pk=s.input_pk WHERE r.id='alternative')",
+            "UPDATE version_block SET idx=7 WHERE version_pk=(SELECT v.pk FROM content_version v JOIN message_source s ON s.version_hash=v.hash JOIN input_ref r ON r.pk=s.input_pk WHERE r.id='alternative')",
             []
         )
         .unwrap(),

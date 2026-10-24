@@ -89,33 +89,8 @@ impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> Visitor<'
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         while let Some(key) = map.next_key::<String>()? {
-            let start = self.tap.borrow().position;
-            self.tap.borrow_mut().captured = Some((start, Vec::new()));
-            let raw = map.next_value::<Box<RawValue>>()?;
-            let (start, captured) = self
-                .tap
-                .borrow_mut()
-                .captured
-                .take()
-                .expect("capture started");
-            if !captured.starts_with(raw.get().as_bytes()) {
-                self.tap.borrow_mut().failure = Some(ScanError::Span);
-                return Err(A::Error::custom(
-                    "Serde map value differs from observed source bytes",
-                ));
-            }
-            {
-                let mut tap = self.tap.borrow_mut();
-                tap.stats.elements += 1;
-                tap.stats.peak_element_bytes = tap
-                    .stats
-                    .peak_element_bytes
-                    .max(captured.len() + raw.get().len());
-            }
-            drop(captured);
-            (self.item)(start..start + raw.get().len() as u64, &key, &raw).map_err(|error| {
-                self.tap.borrow_mut().failure = Some(ScanError::Callback(error));
-                A::Error::custom("export callback failed")
+            map_value(&mut map, self.tap, &mut |range, raw| {
+                (self.item)(range, &key, raw)
             })?;
         }
         Ok(())

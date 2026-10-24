@@ -58,6 +58,7 @@ pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> 
                     escape(&session.id.to_string())
                 )?;
             }
+            Rendered::Document(doc) => super::documents::html(doc, view, out)?,
             Rendered::Message(value) => {
                 write!(out, "{}", message(value, view, &results, &mut paired))?;
             }

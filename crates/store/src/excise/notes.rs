@@ -109,3 +109,28 @@ impl Targets {
 
 #[cfg(test)]
 mod tests;
+
+pub(super) fn remove_document(archive: &Transaction<'_>, reference: &str) -> Result<u64> {
+    let ids = archive
+        .prepare("SELECT note_id FROM note_target WHERE ref=?1")?
+        .query_map([reference], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut removed = 0;
+    for id in ids {
+        archive.execute(
+            "DELETE FROM note_target WHERE note_id=?1 AND ref=?2",
+            params![id, reference],
+        )?;
+        let remains: bool = archive.query_row(
+            "SELECT EXISTS(SELECT 1 FROM note_target WHERE note_id=?1)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if !remains {
+            archive.execute("DELETE FROM note_relation WHERE note_id=?1", [&id])?;
+            archive.execute("DELETE FROM note WHERE id=?1", [&id])?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}

@@ -1,5 +1,6 @@
 use super::*;
 use crate::parse::Step;
+use polylogue_model::export::Document;
 use polylogue_model::export::SessionExport;
 use polylogue_model::*;
 
@@ -72,6 +73,7 @@ fn steps(bytes: &[u8]) -> Vec<Step> {
     let mut items = Vec::new();
     parser
         .scan(
+            "synthetic-input",
             &mut std::io::Cursor::new(bytes),
             &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 items.push((range, String::from_utf8(raw.to_vec()).unwrap()));
@@ -158,6 +160,7 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     let mut count = 0;
     let stats = parser
         .scan(
+            "synthetic-input",
             &mut std::io::Cursor::new(bytes.as_bytes()),
             &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 count += 1;
@@ -173,4 +176,20 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     assert_eq!(stats.elements, 100);
     assert!(stats.peak_element_bytes < one.len() * 3);
     assert!(parser.begin(bytes.len() as u64, None).unwrap().is_none());
+}
+
+#[test]
+fn typed_export_collections_refuse_null_instead_of_becoming_empty_arrays() {
+    for raw in [
+        r#"{"format":"polylogue-export","version":2,"sessions":null,"documents":[]}"#,
+        r#"{"format":"polylogue-export","version":2,"sessions":[],"documents":null}"#,
+    ] {
+        let steps = steps(raw.as_bytes());
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.output.documents.is_empty() && s.output.sessions.is_empty())
+        );
+        assert!(steps.iter().any(|s| !s.accounting.refused.is_empty()));
+    }
 }

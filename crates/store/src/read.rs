@@ -15,7 +15,9 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
+mod imports;
 mod lineage;
+pub use imports::RetainedImport;
 mod rows;
 
 pub use lineage::{Lineage, LineageIssue, MessageSelection};
@@ -110,6 +112,7 @@ pub struct RetainedInput {
 pub struct Status {
     pub sessions: u64,
     pub messages: u64,
+    pub documents: u64,
     pub tool_calls: u64,
     pub inputs: u64,
     pub revisions: u64,
@@ -676,6 +679,7 @@ impl Reader<'_> {
         Ok(Status {
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM current_message")?,
+            documents: count("SELECT COUNT(*) FROM current_document")?,
             tool_calls: count(
                 "SELECT COUNT(*) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN current_message m ON m.pk=b.message_pk",
             )?,
@@ -718,15 +722,28 @@ impl Reader<'_> {
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
-        self.known_inputs_at(machine, None)
+        self.known_inputs_at(machine, None, true)
     }
 
     /// Committed state of one source path after a rejected write.
     pub fn known_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
-        Ok(self.known_inputs_at(machine, Some(path))?.pop())
+        Ok(self.known_inputs_at(machine, Some(path), true)?.pop())
     }
 
-    fn known_inputs_at(&self, machine: &str, path: Option<&str>) -> Result<Vec<KnownInput>> {
+    /// Mutable source observations used by discovery, excluding manual imports.
+    pub fn known_watched_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        self.known_inputs_at(machine, None, false)
+    }
+    pub fn known_watched_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
+        Ok(self.known_inputs_at(machine, Some(path), false)?.pop())
+    }
+
+    fn known_inputs_at(
+        &self,
+        machine: &str,
+        path: Option<&str>,
+        include_imported: bool,
+    ) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
@@ -735,9 +752,10 @@ impl Reader<'_> {
              FROM a.observation o JOIN a.input i ON i.id = o.input
              WHERE o.machine = ?1 AND (?2 IS NULL OR o.path = ?2) AND o.rowid = (
                  SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
-                 AND x.class <> 'excised')",
+                 AND x.class <> 'excised' AND (?3 OR NOT EXISTS(
+                    SELECT 1 FROM a.revision r WHERE r.input=x.input AND r.produced='imported')))",
         )?;
-        let rows = stmt.query_map(params![machine, path], |r| {
+        let rows = stmt.query_map(params![machine, path, include_imported], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

@@ -194,6 +194,10 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
             conn.execute("DELETE FROM delivery WHERE id=?1", key)?;
         }
         "excision" => {
+            let documents:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='excision_document' AND type='table')",[],|r|r.get(0))?;
+            if documents {
+                conn.execute("DELETE FROM excision_document WHERE excision_id=?1", key)?;
+            }
             if crate::excise::vector_policy::exists(conn)? {
                 conn.execute(
                     "DELETE FROM vector_deletion_policy WHERE excision_id=?1",

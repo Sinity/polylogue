@@ -282,7 +282,7 @@ fn removing_an_input_promotes_only_remaining_current_versions_and_prunes_history
     assert_eq!(history[0].input, "b");
     assert!(history[0].current);
     let rows = reader
-        .query("SELECT count(*) AS n FROM message_version", &[])
+        .query("SELECT count(*) AS n FROM content_version", &[])
         .unwrap();
     assert_eq!(rows[0]["n"], 1);
     assert_eq!(
@@ -409,7 +409,7 @@ fn normalized_history_shares_prose_and_keeps_only_bounded_nonprose_copies() {
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let rows=reader.query("SELECT (SELECT count(*) FROM text) AS texts,(SELECT count(*) FROM message_version) AS versions,(SELECT sum(length(attrs)) FROM message_version)+(SELECT sum(length(body)) FROM version_block) AS metadata_bytes",&[]).unwrap();
+    let rows=reader.query("SELECT (SELECT count(*) FROM text) AS texts,(SELECT count(*) FROM content_version) AS versions,(SELECT sum(length(attrs)) FROM content_version)+(SELECT sum(length(body)) FROM version_block) AS metadata_bytes",&[]).unwrap();
     assert_eq!(rows[0]["texts"], 2);
     assert_eq!(rows[0]["versions"], 2);
     assert!(rows[0]["metadata_bytes"].as_u64().unwrap() < 2048);

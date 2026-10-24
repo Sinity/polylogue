@@ -180,6 +180,7 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
 impl ExportParser for AiStudio {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
@@ -669,6 +670,7 @@ static LISTING_FIELDS: Fields = Fields::new(&[
 impl ExportParser for Listing {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {

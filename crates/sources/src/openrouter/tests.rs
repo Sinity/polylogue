@@ -189,6 +189,7 @@ fn many_room_entries_scan_with_one_message_buffer() {
     let mut count = 0;
     let stats = parser
         .scan(
+            "synthetic-input",
             &mut std::io::BufReader::new(Room {
                 part: std::io::Cursor::new(vec![]),
                 next: 0,

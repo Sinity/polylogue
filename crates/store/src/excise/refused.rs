@@ -29,11 +29,12 @@ pub struct Refused(Option<Connection>);
 pub(crate) struct RefusedIds {
     pub sessions: HashSet<String>,
     pub messages: HashSet<String>,
+    pub documents: HashSet<String>,
 }
 
 impl RefusedIds {
     pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty() && self.messages.is_empty()
+        self.sessions.is_empty() && self.messages.is_empty() && self.documents.is_empty()
     }
 }
 
@@ -67,6 +68,21 @@ impl Refused {
                     .map_err(|e| StoreError::Invalid(e.to_string()))?,
             )?;
         }
+        let has_documents:bool=archive.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='excision_document')",[],|r|r.get(0))?;
+        if has_documents {
+            let mut selected = archive
+                .prepare("SELECT document_id FROM excision_document ORDER BY document_id")?;
+            for id in selected.query_map([], |r| r.get::<_, String>(0))? {
+                let id = id?;
+                polylogue_model::DocumentId::parse(&id)
+                    .map_err(|e| StoreError::Invalid(e.to_string()))?;
+                out.insert("documents", &id)?;
+            }
+        } else if crate::schema::version(archive)? >= 7 {
+            return Err(StoreError::Invalid(
+                "document exclusion authority is missing from an archive at version7".into(),
+            ));
+        }
         if let Some(conn) = &out.0 {
             conn.execute_batch("COMMIT")?;
         }
@@ -84,6 +100,14 @@ impl Refused {
             Self::find(conn, "messages", messages, &mut out.messages)?;
         }
         Ok(out)
+    }
+
+    pub(crate) fn matching_documents(&self, documents: &[String]) -> Result<HashSet<String>> {
+        let mut selected = HashSet::new();
+        if let Some(conn) = &self.0 {
+            Self::find(conn, "documents", documents, &mut selected)?;
+        }
+        Ok(selected)
     }
 
     fn find(
@@ -117,6 +141,7 @@ impl Refused {
                  PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
                  CREATE TABLE sessions(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  CREATE TABLE messages(id TEXT PRIMARY KEY) WITHOUT ROWID;
+                 CREATE TABLE documents(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  BEGIN;",
             )?;
             self.0 = Some(conn);

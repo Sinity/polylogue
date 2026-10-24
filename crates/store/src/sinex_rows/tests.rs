@@ -832,3 +832,5 @@ mod delivery_updates;
 mod append_facts;
 
 mod vector_policies;
+
+mod document_policy;

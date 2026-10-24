@@ -63,6 +63,8 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
+mod objects;
+pub(crate) use objects::{FieldShape, scan_objects};
 mod state;
 pub use state::MemoryState;
 mod path;
@@ -111,6 +113,41 @@ fn scan_error(error: serde_json::Error, tap: &Rc<RefCell<Tap>>) -> ScanError {
         } else {
             ScanError::Malformed(error)
         }
+    })
+}
+
+fn map_value<
+    'de,
+    A: serde::de::MapAccess<'de>,
+    F: FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+>(
+    map: &mut A,
+    tap: &Rc<RefCell<Tap>>,
+    item: &mut F,
+) -> Result<(), A::Error> {
+    use serde::de::Error;
+    let start = tap.borrow().position;
+    tap.borrow_mut().captured = Some((start, Vec::new()));
+    let raw = map.next_value::<Box<RawValue>>()?;
+    let (start, captured) = tap.borrow_mut().captured.take().expect("capture started");
+    if !captured.starts_with(raw.get().as_bytes()) {
+        tap.borrow_mut().failure = Some(ScanError::Span);
+        return Err(A::Error::custom(
+            "Serde map value differs from observed source bytes",
+        ));
+    }
+    {
+        let mut tap = tap.borrow_mut();
+        tap.stats.elements += 1;
+        tap.stats.peak_element_bytes = tap
+            .stats
+            .peak_element_bytes
+            .max(captured.len() + raw.get().len());
+    }
+    drop(captured);
+    item(start..start + raw.get().len() as u64, &raw).map_err(|error| {
+        tap.borrow_mut().failure = Some(ScanError::Callback(error));
+        A::Error::custom("export callback failed")
     })
 }
 
@@ -263,6 +300,7 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
 pub trait ExportParser: Send {
     fn scan(
         &mut self,
+        _input: &str,
         reader: &mut dyn Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
@@ -325,6 +363,10 @@ pub fn parse_item(
         owners,
     )?;
     for row in &mut output.messages {
+        row.offset = range.start;
+        row.end = range.end;
+    }
+    for row in &mut output.documents {
         row.offset = range.start;
         row.end = range.end;
     }

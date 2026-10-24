@@ -121,6 +121,11 @@ macro_rules! scoped_id {
 }
 
 scoped_id!(
+    /// A provider text document, independent of conversation/session identities.
+    DocumentId
+);
+
+scoped_id!(
     /// `origin:native_id`. Stored session IDs never change.
     SessionId
 );

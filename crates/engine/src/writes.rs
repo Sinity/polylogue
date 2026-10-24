@@ -19,7 +19,8 @@ impl Engine {
             if !self.failed_writes.contains(&st.input_id) {
                 continue;
             }
-            let known = reader.known_input_at(&self.config.machine, &path.to_string_lossy())?;
+            let known =
+                reader.known_watched_input_at(&self.config.machine, &path.to_string_lossy())?;
             st.facts = known.as_ref().and_then(|k| k.facts);
             st.chain = known.as_ref().and_then(|k| k.chain);
             st.stored = known.as_ref().map_or(0, |k| k.stored);
