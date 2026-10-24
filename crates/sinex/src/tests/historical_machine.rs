@@ -9,7 +9,52 @@ fn bytes(source: &Published, unit: &polylogue_store::sinex_rows::Unit) -> Vec<u8
     out
 }
 
-pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path) {
+// Match the archive8 three-table observation wire format without migrating it.
+fn archive8_observation(db: &rusqlite::Connection, key: &str) -> Vec<u8> {
+    use rusqlite::types::ValueRef;
+    use std::collections::BTreeMap;
+    let mut out = Vec::new();
+    for (table, sql) in [
+        (
+            "input",
+            "SELECT * FROM input WHERE id IN (SELECT input FROM observation WHERE id=?1)",
+        ),
+        (
+            "machine",
+            "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE id=?1)",
+        ),
+        ("observation", "SELECT * FROM observation WHERE id=?1"),
+    ] {
+        let mut statement = db.prepare(sql).unwrap();
+        let names = statement
+            .column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>();
+        let mut rows = statement.query([key]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let mut object = BTreeMap::new();
+            for (at, name) in names.iter().enumerate() {
+                let value = match row.get_ref(at).unwrap() {
+                    ValueRef::Null => serde_json::Value::Null,
+                    ValueRef::Integer(n) => serde_json::json!(n),
+                    ValueRef::Real(n) => serde_json::json!(n),
+                    ValueRef::Text(t) => serde_json::json!(String::from_utf8_lossy(t)),
+                    ValueRef::Blob(b) => {
+                        serde_json::json!({"hex":polylogue_store::sinex_rows::hex(b)})
+                    }
+                };
+                object.insert(name, value);
+            }
+            serde_json::to_writer(&mut out, &serde_json::json!({"row":object,"table":table}))
+                .unwrap();
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+pub(super) async fn proof(sinex: &mut Sinex, root: &Path) {
     let root = std::env::var_os("POLYLOGUE_HELD_PROOF_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("historical-machine"));
@@ -29,17 +74,6 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
     };
     fs::write(&input, line("first")).unwrap();
     fs::create_dir_all(cfg.join("polylogue")).unwrap();
-    fs::write(
-        cfg.join("polylogue/sinex.toml"),
-        format!(
-            "mode='primary'\nnats={:?}\nsubjects={:?}\nproducer={:?}\nstore={:?}\n",
-            config.nats,
-            config.subjects,
-            config.producer,
-            fs::canonicalize(&config.store).unwrap()
-        ),
-    )
-    .unwrap();
     let spawn = |host: &str| {
         let mut command = Command::new("unshare");
         command
@@ -80,29 +114,47 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     drop(first);
-    // The ordinary publisher polls once a minute. Restart after the canonical
-    // write so its immediate first pass sees the completed observation.
-    let first = spawn("host-a");
-    let start = Instant::now();
-    let id = loop {
-        if source.join("archive.db").exists() {
-            let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
-            if let Ok(id) = db.query_row("SELECT value FROM meta WHERE key='archive_id'", [], |r| {
-                r.get::<_, String>(0)
-            }) {
-                let held = sinex
-                    .have(&[format!("rows:{id}:1"), format!("rows:{id}:2")])
-                    .await
-                    .unwrap();
-                if held.len() == 2 {
-                    break id;
-                }
-            }
-        }
-        assert!(start.elapsed() < Duration::from_secs(30));
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    drop(first);
+    // Capture the actual old8 JSONL closure before migration. This small
+    // synthetic input is inline, so SQLite backup owns every required byte.
+    let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 8);
+    let unit = db
+        .query_row(
+            "SELECT commit_seq,id FROM observation ORDER BY commit_seq LIMIT 1",
+            [],
+            |r| {
+                Ok(polylogue_store::sinex_rows::Unit {
+                    commit_seq: r.get(0)?,
+                    kind: "observation".into(),
+                    key: r.get(1)?,
+                })
+            },
+        )
+        .unwrap();
+    let original = archive8_observation(&db, &unit.key);
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM blob WHERE place!='inline'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let snapshot = root.join("publication-snapshot");
+    fs::create_dir_all(&snapshot).unwrap();
+    db.backup(rusqlite::MAIN_DB, snapshot.join("archive.db"), None)
+        .unwrap();
+    let copy = polylogue_store::archive::open_read(&snapshot.join("archive.db")).unwrap();
+    assert_eq!(archive8_observation(&copy, &unit.key), original);
+    drop(copy);
+    drop(db);
+    let (migrated, snapshot_lock) = Archive::open_or_create(&snapshot).unwrap();
+    let rows = Published::open(&migrated.root).unwrap();
+    assert_eq!(bytes(&rows, &unit), original);
+    assert_eq!(blake3::hash(&bytes(&rows, &unit)), blake3::hash(&original));
+    let id = rows.archive_id().unwrap();
+    drop(rows);
+    drop(snapshot_lock);
+    let published = sinex.publish(&snapshot).await.unwrap();
+    assert_eq!((published.units, published.held), (2, 0));
     let (prefix, _lock) = Archive::open_or_create(&root.join("verified-prefix")).unwrap();
     let start = Instant::now();
     loop {
@@ -113,11 +165,7 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let prefix = Published::open(&prefix.root).unwrap();
-    let unit = inventory_units(&prefix)
-        .into_iter()
-        .find(|u| u.kind == "observation")
-        .unwrap();
-    let original = bytes(&prefix, &unit);
+    assert_eq!(bytes(&prefix, &unit), original);
     fs::write(root.join("original-observation.jsonl"), &original).unwrap();
     let stream = jetstream::new(sinex.client.clone())
         .get_stream(sinex.subjects.confirmed_stream())
@@ -174,43 +222,14 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
     let start = Instant::now();
     loop {
         let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
-        if db
-            .query_row("SELECT COUNT(*) FROM machine", [], |r| r.get::<_, i64>(0))
-            .unwrap()
-            == 2
-        {
+        let complete: bool = db.query_row(
+            "SELECT (SELECT COUNT(*) FROM machine)=2 AND (SELECT COUNT(*) FROM observation)+(SELECT COUNT(*) FROM revision)>2 AND NOT EXISTS(SELECT 1 FROM blob WHERE state!='present')",
+            [], |r|r.get(0),
+        ).unwrap();
+        if complete {
             break;
         }
         assert!(start.elapsed() < Duration::from_secs(15));
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    drop(second);
-    let second = spawn("host-b");
-    let start = Instant::now();
-    loop {
-        let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
-        let aliases: i64 = db
-            .query_row("SELECT COUNT(*) FROM machine", [], |r| r.get(0))
-            .unwrap();
-        let units: i64 = db
-            .query_row(
-                "SELECT (SELECT COUNT(*) FROM observation)+(SELECT COUNT(*) FROM revision)",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        if aliases == 2
-            && units > 2
-            && sinex
-                .have(&[format!("rows:{id}:{units}")])
-                .await
-                .unwrap()
-                .len()
-                == 1
-        {
-            break;
-        }
-        assert!(start.elapsed() < Duration::from_secs(30));
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     drop(second);
@@ -221,9 +240,15 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
             .unwrap(),
         old_ack
     );
+    let db = polylogue_store::archive::open_read(&source.join("archive.db")).unwrap();
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 8);
+    let drifted = archive8_observation(&db, &unit.key);
+    assert_ne!(drifted, original);
+    drop(db);
     let (archive, _lock) = Archive::open_or_create(&source).unwrap();
     let current = Published::open(&archive.root).unwrap();
     let changed = bytes(&current, &unit);
+    assert_eq!(changed, drifted);
     fs::write(root.join("current-observation.jsonl"), &changed).unwrap();
     assert_ne!(original, changed);
     let positions = (1..=current.inventory().unwrap().len())
@@ -231,7 +256,7 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         .collect::<Vec<_>>();
     let held_before = sinex.have(&positions).await.unwrap();
     let report = sinex.publish(&source).await;
-    let receipt = serde_json::json!({"original":blake3::hash(&original).to_hex().to_string(),"current":blake3::hash(&changed).to_hex().to_string(),"result":format!("{report:?}"),"source_version":9,"producer_version":8});
+    let receipt = serde_json::json!({"original":blake3::hash(&original).to_hex().to_string(),"current":blake3::hash(&changed).to_hex().to_string(),"result":format!("{report:?}"),"source_version":10,"writer_version":8,"publisher":"current reserved transport","snapshot":"SQLite consistent backup"});
     fs::write(
         root.join("receipt.json"),
         serde_json::to_vec_pretty(&receipt).unwrap(),

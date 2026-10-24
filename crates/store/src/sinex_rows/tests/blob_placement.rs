@@ -16,7 +16,7 @@ fn register(
 }
 
 #[test]
-fn corrupt_inline_content_is_refused_before_any_destination_blob_is_installed() {
+fn corrupt_inline_content_refuses_a_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
@@ -24,24 +24,16 @@ fn corrupt_inline_content_is_refused_before_any_destination_blob_is_installed() 
     let compressed = zstd::bulk::compress(b"public", 1).unwrap();
     register(&conn, hash, 6, "inline", Some(&compressed));
     drop(conn);
-    let target_dir = tempfile::tempdir().unwrap();
-    let target = hashed_blobs::Store::open(target_dir.path(), vec![], 0o600).unwrap();
-    let entries = std::fs::read_dir(target_dir.path()).unwrap().count();
     let publisher = Published::open(dir.path()).unwrap();
     assert!(matches!(
-        publisher.copy_blob_to(&hash.0, &target),
+        publisher.blob_snapshot(&hash.0),
         Err(crate::StoreError::BlobCorrupt(_))
     ));
-    assert_eq!(
-        std::fs::read_dir(target_dir.path()).unwrap().count(),
-        entries
-    );
-    assert!(!target.contains(&hashed_blobs::Hash(hash.0)));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn large_file_and_historical_inline_blobs_are_placed_without_whole_body_allocations() {
+fn large_file_and_historical_inline_snapshots_do_not_allocate_whole_bodies() {
     use std::io::Read;
     fn peak_kib() -> u64 {
         std::fs::read_to_string("/proc/self/status")
@@ -73,57 +65,15 @@ fn large_file_and_historical_inline_blobs_are_placed_without_whole_body_allocati
             register(&conn, hash, SIZE, "file", None);
         }
         drop(conn);
-        let target_dir = tempfile::tempdir().unwrap();
-        let target = hashed_blobs::Store::open(target_dir.path(), vec![], 0o600).unwrap();
         let publisher = Published::open(dir.path()).unwrap();
         let before = peak_kib();
-        assert_eq!(publisher.copy_blob_to(&hash.0, &target).unwrap(), SIZE);
+        let mut snapshot = publisher.blob_snapshot(&hash.0).unwrap();
+        assert_eq!(snapshot.length, SIZE);
         let growth = peak_kib().saturating_sub(before);
         eprintln!("64MiB inline={inline}: placement high-water growth {growth}KiB");
         assert!(growth < 32 * 1024, "whole-body memory growth {growth}KiB");
-        let mut reader = target
-            .read_plain(&hashed_blobs::Hash(hash.0), Some(SIZE), || Ok(()))
-            .unwrap();
         let mut found = blake3::Hasher::new();
-        assert_eq!(std::io::copy(&mut reader, &mut found).unwrap(), SIZE);
+        assert_eq!(std::io::copy(&mut snapshot.file, &mut found).unwrap(), SIZE);
         assert_eq!(found.finalize(), digest.finalize());
     }
-}
-
-#[test]
-fn a_corrupt_existing_destination_refuses_placement_and_preserves_the_source() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let hash = polylogue_model::BlobHash::of(b"retained source");
-    let compressed = zstd::bulk::compress(b"retained source", 1).unwrap();
-    register(&conn, hash, 15, "inline", Some(&compressed));
-    drop(conn);
-    let target_dir = tempfile::tempdir().unwrap();
-    let target = hashed_blobs::Store::open(target_dir.path(), vec![], 0o600).unwrap();
-    let installed = target.put(b"retained source".as_slice(), 1).unwrap();
-    let name = installed.hex();
-    let path = target_dir
-        .path()
-        .join("blobs")
-        .join(&name[..2])
-        .join(format!("{name}.zst"));
-    std::fs::write(&path, b"corrupt synthetic destination").unwrap();
-    assert!(
-        Published::open(dir.path())
-            .unwrap()
-            .copy_blob_to(&hash.0, &target)
-            .is_err()
-    );
-    assert_eq!(
-        std::fs::read(path).unwrap(),
-        b"corrupt synthetic destination"
-    );
-    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    let kept: Vec<u8> = conn
-        .query_row("SELECT data FROM blob WHERE hash=?1", [&hash.0[..]], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(kept, compressed);
 }

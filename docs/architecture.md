@@ -246,6 +246,8 @@ and [append-fact tests](../crates/store/src/sinex_rows/tests/append_facts.rs)
 cover ordering and closure preservation. The
 [machine publication contract](machine-publication.md) owns legacy held-frame
 reporting and its cached-comparison limits.
+[Producer byte publication](sinex-publication.md) owns private staging,
+receiver reservation and exact interrupted-delivery retries.
 
 [Restore](../crates/store/src/sinex_rows/restore.rs) validates confirmations,
 gaps, replacements, source bytes and row ownership before atomically installing

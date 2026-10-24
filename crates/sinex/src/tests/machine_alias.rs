@@ -121,7 +121,7 @@ pub(super) async fn after_restart(sinex: &mut Sinex, root: &Path, proof: Proof) 
 
 #[test]
 #[ignore = "needs the retained actual archive8 frontend in POLYLOGUE_OLD8"]
-fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
+fn an_actual_archive8_writer_migrates_and_then_refuses_current_archive() {
     let old = std::env::var_os("POLYLOGUE_OLD8")
         .expect("POLYLOGUE_OLD8 names the retained archive8 frontend");
     let dir = tempfile::tempdir().unwrap();
@@ -188,7 +188,7 @@ fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
     assert_eq!(machine_rows(&archive), before);
     let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
-    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 9);
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 10);
     let published = Published::open(&root).unwrap();
     let units = inventory_units(&published);
     let batches: Vec<_> = units.iter().map(|unit| payload(&published, unit)).collect();
@@ -208,7 +208,7 @@ fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
     );
     assert_eq!(machine_rows(&archive), before);
     let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
-    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 9);
+    assert_eq!(polylogue_store::schema::version(&db).unwrap(), 10);
     let published = Published::open(&root).unwrap();
     assert_eq!(inventory_units(&published), units);
     for (unit, bytes) in units.iter().zip(batches) {

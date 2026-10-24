@@ -195,7 +195,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         }
     }
     if std::env::var_os("POLYLOGUE_OLD8").is_some() {
-        historical_machine::proof(&mut sinex, &config, dir.path()).await;
+        historical_machine::proof(&mut sinex, dir.path()).await;
     }
     historical_machine::cached_comparison(&mut sinex, dir.path()).await;
     let first = sinex.publish(&a).await.unwrap();

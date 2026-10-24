@@ -7,11 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+uuid.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "de3fe0241ba3d113dac1f4f0404f3fd136e2eb64" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "de3fe0241ba3d113dac1f4f0404f3fd136e2eb64" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "cd5d258b508db3fd8ee1646d26be2a7eeacb3feb" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "cd5d258b508db3fd8ee1646d26be2a7eeacb3feb" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
@@ -23,7 +24,7 @@ toml = "0.9"
 [dev-dependencies]
 zip.workspace = true
 polylogue-store = { workspace = true, features = ["fixture"] }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true
 polylogue-model.workspace = true
