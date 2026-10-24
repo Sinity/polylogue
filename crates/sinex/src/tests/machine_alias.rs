@@ -164,11 +164,16 @@ fn an_actual_archive8_writer_migrates_and_then_refuses_archive9() {
     drop(published);
     drop(db);
     drop(lock);
+    let before_refusal = blake3::hash(&fs::read(archive.archive_db()).unwrap());
     let refused = command().arg("daemon").output().unwrap();
     assert!(!refused.status.success());
     assert!(
         String::from_utf8_lossy(&refused.stderr)
             .contains("archive format 9 is newer than this Polylogue (8)")
+    );
+    assert_eq!(
+        blake3::hash(&fs::read(archive.archive_db()).unwrap()),
+        before_refusal
     );
     assert_eq!(machine_rows(&archive), before);
     let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
