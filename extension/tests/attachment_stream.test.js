@@ -19,7 +19,14 @@ describe("streamed action attachment integrity", () => {
       remaining -= bytes.length;
     }
     expect(hash.digestHex()).toBe(oracle.digest("hex"));
-    expect(() => hash.update(chunk)).toThrow("hash_finished");
+    expect(() => hash.update(chunk)).toThrow("protocol_attachment_hash_finished");
+    expect(() => hash.digestHex()).toThrow("protocol_attachment_hash_finished");
+  });
+
+  it("refuses an unrepresentable accumulated byte count before hashing", () => {
+    const hash = new AttachmentSha256();
+    hash.size = Number.MAX_SAFE_INTEGER;
+    expect(() => hash.update(new Uint8Array([1]))).toThrow("protocol_attachment_size_unrepresentable");
   });
 
   it("assembles the exact provider File while refusing foreign ownership, skipped chunks and premature finish", async () => {
