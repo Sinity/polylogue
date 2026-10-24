@@ -82,13 +82,12 @@ fn nested_arrays_and_jsonl_keep_exact_unaffected_bytes() {
 
 #[test]
 fn partial_scalars_and_bad_ranges_are_refused() {
-    for (bytes, needle) in [(br#"[{"text":"1234"}]"#.as_slice(), b"23".as_slice())] {
-        let at = bytes
-            .windows(needle.len())
-            .position(|v| v == needle)
-            .unwrap();
-        assert!(plan(bytes, &[(at, at + needle.len())]).is_err());
-    }
+    let (bytes, needle) = (br#"[{"text":"1234"}]"#.as_slice(), b"23".as_slice());
+    let at = bytes
+        .windows(needle.len())
+        .position(|v| v == needle)
+        .unwrap();
+    assert!(plan(bytes, &[(at, at + needle.len())]).is_err());
     assert!(plan(b"[1]", &[(0, 10)]).is_err());
     assert!(plan(b"[1] trailing", &[]).is_err());
     assert!(plan(b"{", &[]).is_err());

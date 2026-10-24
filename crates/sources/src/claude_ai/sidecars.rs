@@ -187,10 +187,10 @@ impl Sidecars {
         parent: u64,
         field: &str,
         key: Option<&str>,
-        range: Range<u64>,
-        raw: &RawValue,
+        record: (Range<u64>, &RawValue),
         sink: &mut dyn ItemSink,
     ) -> Result<(), String> {
+        let (range, raw) = record;
         let (purpose, suffix, missing_child, kind, title, at, keys, diagnostic) = match field {
             "conversations_memory" => (
                 DocumentPurpose::Memory,
@@ -343,7 +343,7 @@ impl ExportParser for Sidecars {
             frames,
             keep,
             |parent, field, key, range, raw| {
-                self.frame(input, parent, field, key, range, raw, sink)
+                self.frame(input, parent, field, key, (range, raw), sink)
             },
         )?;
         let parents: BTreeMap<_, _> = objects
