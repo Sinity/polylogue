@@ -72,15 +72,16 @@ pub fn metadata(
                 .ok_or("library entry has no string file_id")?;
             emit(AssetMetadata {
                 source_id: source_id.to_owned(),
-                name: value
-                    .get("file_name")
-                    .and_then(Json::as_str)
-                    .map(str::to_owned),
-                media_type: value
-                    .get("mime_type")
-                    .and_then(Json::as_str)
-                    .map(str::to_owned),
-                size: value.get("file_size_bytes").and_then(Json::as_u64),
+                name: optional_text(&value, "file_name")?,
+                media_type: optional_text(&value, "mime_type")?,
+                size: match value.get("file_size_bytes") {
+                    None | Some(Json::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_u64()
+                            .ok_or("library entry file_size_bytes must be an unsigned integer")?,
+                    ),
+                },
             })
         })
         .map(|_| ());
@@ -90,6 +91,14 @@ pub fn metadata(
         .map_err(ScanError::Malformed)?;
     de.end().map_err(ScanError::Malformed)?;
     Ok(())
+}
+
+fn optional_text(value: &Json, field: &str) -> Result<Option<String>, String> {
+    match value.get(field) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(format!("library entry {field} must be a string or null")),
+    }
 }
 
 struct Names<'a, F>(&'a mut F);

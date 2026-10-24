@@ -245,3 +245,83 @@ fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
         assert!(resolution.candidates.is_empty());
     }
 }
+
+#[test]
+fn text_excision_refuses_opaque_assets_without_changing_basis_or_retained_bytes() {
+    let w = ClaudeHome::new();
+    let source = w.dir.path().join("asset-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("conversations.json"), conversation()).unwrap();
+    let secret = "synthetic-sensitive-asset-content";
+    let original = format!("before {secret} after");
+    std::fs::write(source.join("file-Native.dat"), original.as_bytes()).unwrap();
+    let mut current = None;
+    for rebuild in [false, true] {
+        if rebuild {
+            std::fs::remove_dir_all(&source).unwrap();
+            polylogue_testkit::delete_index(&w.root);
+        }
+        let (mut engine, _lock) = engine(&w, 1024);
+        if !rebuild {
+            assert!(
+                engine
+                    .import(std::slice::from_ref(&source))
+                    .unwrap()
+                    .pass
+                    .errors
+                    .is_empty()
+            );
+            let before = engine
+                .reads
+                .reader()
+                .unwrap()
+                .attachment(&message_id(), 0, 0)
+                .unwrap();
+            let error = engine
+                .excise(ExciseRequest {
+                    id: "remove-asset-text".into(),
+                    scope: ExciseScope::Text(secret.into()),
+                    reason: None,
+                    dry_run: false,
+                })
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    EngineError::Store(polylogue_store::StoreError::ExcisionFormat { .. })
+                ),
+                "{error}"
+            );
+            let reader = engine.reads.reader().unwrap();
+            assert_eq!(
+                reader
+                    .attachment_range(&before.candidates[0], &[], 0..before.candidates[0].size)
+                    .unwrap(),
+                original.as_bytes()
+            );
+        } else {
+            assert!(engine.converge().unwrap().errors.is_empty());
+        }
+        let reader = engine.reads.reader().unwrap();
+        let resolution = reader.attachment(&message_id(), 0, 0).unwrap();
+        assert_eq!(
+            resolution.state,
+            polylogue_store::assets::AttachmentState::Available
+        );
+        let candidate = &resolution.candidates[0];
+        let bytes = reader
+            .attachment_range(candidate, &[], 0..candidate.size)
+            .unwrap();
+        assert_eq!(bytes, original.as_bytes());
+        assert_eq!(
+            candidate.blob,
+            Some(polylogue_model::BlobHash::of(original.as_bytes()))
+        );
+        if let Some((binding, expected)) = &current {
+            assert_eq!(&resolution.binding, binding);
+            assert_eq!(&bytes, expected);
+        } else {
+            current = Some((resolution.binding, bytes));
+        }
+    }
+}

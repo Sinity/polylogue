@@ -36,6 +36,9 @@ pub(super) fn socket(
     request: Request,
     d: &Daemon,
 ) -> Response {
+    if let Err(response) = super::service::admit(d) {
+        return response;
+    }
     match operator::Operator::admit(stream) {
         Ok(operator) => reveal(request, d, operator),
         Err(e) => error("operator_required", e),

@@ -734,6 +734,22 @@ impl Reader<'_> {
             .read_range(store, start, end)
     }
 
+    fn current_attachment(&self, asset: &crate::assets::AssetCandidate) -> Result<()> {
+        let current = self
+            .asset_basis(&asset.input)?
+            .ok_or_else(|| StoreError::NotFound("retained attachment input".into()))?;
+        if current.chain != asset.chain
+            || current.length != asset.size
+            || current.hash != asset.basis
+            || current.blob != asset.blob
+        {
+            return Err(StoreError::Conflict(
+                "retained attachment bytes changed; select it again".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Read the selected retained asset range through this same admitted view.
     pub fn attachment_range(
         &self,
@@ -741,18 +757,25 @@ impl Reader<'_> {
         roots: &[std::path::PathBuf],
         range: std::ops::Range<u64>,
     ) -> Result<Vec<u8>> {
+        self.current_attachment(asset)?;
+        if range.start > range.end || range.end > asset.size {
+            return Err(StoreError::Invalid(
+                "attachment range is outside the retained bytes".into(),
+            ));
+        }
         let store =
             hashed_blobs::Store::open(self.pool.archive.root.clone(), roots.to_vec(), 0o600)?;
         self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
     }
 
-    /// A current full hash may span several blobs after text excision. Compute
+    /// A current full hash may span several stored pieces. Compute
     /// it once for an explicitly requested exact delivery, streaming the bytes.
     pub fn attachment_hash(
         &self,
         asset: &crate::assets::AssetCandidate,
         roots: &[std::path::PathBuf],
     ) -> Result<polylogue_model::BlobHash> {
+        self.current_attachment(asset)?;
         use std::io::Read;
         let store = std::sync::Arc::new(hashed_blobs::Store::open(
             self.pool.archive.root.clone(),

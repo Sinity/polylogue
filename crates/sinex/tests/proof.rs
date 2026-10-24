@@ -20,6 +20,9 @@ mod retention;
 #[path = "proof/upgrade.rs"]
 mod upgrade;
 
+#[path = "proof/assets.rs"]
+mod assets;
+
 const EXAMPLES: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/sources/claude-code"
@@ -118,6 +121,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     let project = serde_json::json!({"uuid":"native-project","updated_at":"2026-01-01T00:00:00Z","prompt_template":"Supplied instructions","docs":[{"uuid":"gone","content":"Remove this supplied text"},{"uuid":"kept","filename":"manual.txt","content":"Exact supplied document λ🙂\nsecond line"}]});
     fs::write(&source, serde_json::to_vec(&project).unwrap()).unwrap();
     converge(&a, &home, vec![], |engine| {
+        assets::seed(engine, dir.path());
         for revision in [0, 1, 2] {
             let mut value = project.clone();
             if revision > 0 {
@@ -244,6 +248,9 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
 
     #[cfg(feature = "faults")]
     retention::verify(&mut sinex, &a, &home, dir.path()).await;
+    assets::remove(&a, &home);
+    assert!(sinex.publish(&a).await.unwrap().units > 0);
+    let asset_basis = assets::verify(&a, &[]);
     let expected = answers(&a);
     let total = polylogue_store::sinex_rows::Published::open(&a)
         .unwrap()
@@ -279,6 +286,15 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     converge(&b, &empty, vec![store.clone()], |_| {});
     assert_eq!(answers(&b), expected);
     assert_eq!(document_sources(&b), source_basis);
+    assert_eq!(
+        assets::verify(&b, std::slice::from_ref(&store)),
+        asset_basis
+    );
+    assets::refuse_reimport(&b, &empty, vec![store.clone()], dir.path());
+    assert_eq!(
+        assets::verify(&b, std::slice::from_ref(&store)),
+        asset_basis
+    );
     // A restored standing document selection refuses an original export again.
     let mut reimport = project.clone();
     reimport["docs"][0]["content"] = serde_json::json!("Attempt from a different immutable input");

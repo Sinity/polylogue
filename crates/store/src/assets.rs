@@ -310,3 +310,6 @@ pub(crate) fn install(
     tx.commit()?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -167,15 +167,20 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     }
 }
 
-/// Prepare a complete finite feed through the same admission and read pool.
-/// The returned unnamed file owns delivery bytes, never a live Reader.
-pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::File, Response> {
+pub(super) fn admit(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
             "daemon_stopping",
             "the daemon has stopped accepting requests",
         ));
     }
+    Ok(())
+}
+
+/// Prepare a complete finite feed through the same admission and read pool.
+/// The returned unnamed file owns delivery bytes, never a live Reader.
+pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::File, Response> {
+    admit(d)?;
     let reader = d.reads.reader().map_err(|e| store_error(&e))?;
     let file = tempfile::tempfile_in(&d.archive.root).map_err(|e| error("io", e))?;
     super::query::feed::prepare(&reader, since, now_ms(), file).map_err(|f| {
@@ -195,11 +200,8 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {
-    if d.stopping.load(Ordering::Acquire) {
-        return error(
-            "daemon_stopping",
-            "the daemon has stopped accepting requests",
-        );
+    if let Err(response) = admit(d) {
+        return response;
     }
     if matches!(d.backing, BackingState::Blocked { .. }) && !request.read_only() {
         return writes_paused(d);

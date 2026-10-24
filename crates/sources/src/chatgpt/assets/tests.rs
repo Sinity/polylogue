@@ -58,3 +58,19 @@ fn malformed_sidecars_cannot_be_accepted_from_a_valid_prefix() {
         .is_err()
     );
 }
+
+#[test]
+fn supplied_library_fields_with_unknown_types_do_not_silently_become_absent() {
+    for field in [
+        r#""file_name":7"#,
+        r#""mime_type":false"#,
+        r#""file_size_bytes":-1"#,
+        r#""file_size_bytes":1.5"#,
+    ] {
+        let source = format!(r#"[{{"file_id":"file-Native",{field}}}]"#);
+        assert!(
+            metadata("library_files.json", source.as_bytes(), |_| Ok(())).is_err(),
+            "accepted {source}"
+        );
+    }
+}
