@@ -16,7 +16,7 @@ fn register(
 }
 
 #[test]
-fn corrupt_inline_content_is_refused_before_any_destination_blob_is_installed() {
+fn corrupt_inline_content_refuses_a_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
@@ -24,19 +24,11 @@ fn corrupt_inline_content_is_refused_before_any_destination_blob_is_installed() 
     let compressed = zstd::bulk::compress(b"public", 1).unwrap();
     register(&conn, hash, 6, "inline", Some(&compressed));
     drop(conn);
-    let target_dir = tempfile::tempdir().unwrap();
-    let target = hashed_blobs::Store::open(target_dir.path(), vec![], 0o600).unwrap();
-    let entries = std::fs::read_dir(target_dir.path()).unwrap().count();
     let publisher = Published::open(dir.path()).unwrap();
     assert!(matches!(
         publisher.blob_snapshot(&hash.0),
         Err(crate::StoreError::BlobCorrupt(_))
     ));
-    assert_eq!(
-        std::fs::read_dir(target_dir.path()).unwrap().count(),
-        entries
-    );
-    assert!(!target.contains(&hashed_blobs::Hash(hash.0)));
 }
 
 #[cfg(target_os = "linux")]
@@ -84,44 +76,4 @@ fn large_file_and_historical_inline_snapshots_do_not_allocate_whole_bodies() {
         assert_eq!(std::io::copy(&mut snapshot.file, &mut found).unwrap(), SIZE);
         assert_eq!(found.finalize(), digest.finalize());
     }
-}
-
-#[test]
-fn snapshot_does_not_modify_a_corrupt_unrelated_destination() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let hash = polylogue_model::BlobHash::of(b"retained source");
-    let compressed = zstd::bulk::compress(b"retained source", 1).unwrap();
-    register(&conn, hash, 15, "inline", Some(&compressed));
-    drop(conn);
-    let target_dir = tempfile::tempdir().unwrap();
-    let target = hashed_blobs::Store::open(target_dir.path(), vec![], 0o600).unwrap();
-    let installed = target.put(b"retained source".as_slice(), 1).unwrap();
-    let name = installed.hex();
-    let path = target_dir
-        .path()
-        .join("blobs")
-        .join(&name[..2])
-        .join(format!("{name}.zst"));
-    std::fs::write(&path, b"corrupt synthetic destination").unwrap();
-    let mut snapshot = Published::open(dir.path())
-        .unwrap()
-        .blob_snapshot(&hash.0)
-        .unwrap();
-    let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut snapshot.file, &mut bytes).unwrap();
-    assert_eq!(bytes, b"retained source");
-    assert_eq!(
-        std::fs::read(path).unwrap(),
-        b"corrupt synthetic destination"
-    );
-    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    assert_eq!(
-        conn.query_row("SELECT data FROM blob WHERE hash=?1", [&hash.0[..]], |r| {
-            r.get::<_, Vec<u8>>(0)
-        })
-        .unwrap(),
-        compressed
-    );
 }

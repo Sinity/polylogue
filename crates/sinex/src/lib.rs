@@ -170,6 +170,9 @@ pub struct Sinex {
     subjects: Subjects,
     producer: String,
     max_message: usize,
+    // Producer custody stays at the configured receiver root; restore readers
+    // may use a separately unavailable view without redirecting private writes.
+    spool_root: PathBuf,
     store_root: PathBuf,
     acks: async_nats::Subscriber,
     machine_memo: Option<machine_history::Memo>,
@@ -202,6 +205,7 @@ impl Sinex {
             subjects,
             producer: config.producer.clone(),
             max_message,
+            spool_root: config.store.clone(),
             store_root: config.store.clone(),
             acks,
             machine_memo: None,

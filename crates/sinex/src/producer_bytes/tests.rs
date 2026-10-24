@@ -250,6 +250,7 @@ async fn cancellation_with_incomplete_reservation_reuses_exact_material_and_priv
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (config, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
+    sinex.store_root = dir.path().join("unavailable-restore-reader");
     let client = sinex.client.clone();
     let subject = sinex.subjects.ack(&sinex.producer);
     let (reserved, wait_reservation) = oneshot::channel();

@@ -44,7 +44,7 @@ impl Sinex {
         };
         publication.validate().map_err(Error::Invalid)?;
         let frozen = spool::freeze(
-            &self.store_root,
+            &self.spool_root,
             &self.producer,
             &Frozen { publication, frame },
         )
@@ -52,7 +52,7 @@ impl Sinex {
         let publication = &frozen.publication;
         if let Some(bytes) = material {
             spool::stage(
-                &self.store_root,
+                &self.spool_root,
                 &self.producer,
                 publication,
                 sinex_protocol::producer_bytes::Role::Material,
@@ -62,7 +62,7 @@ impl Sinex {
         }
         if publication.envelope.is_some() {
             spool::stage(
-                &self.store_root,
+                &self.spool_root,
                 &self.producer,
                 publication,
                 sinex_protocol::producer_bytes::Role::Envelope,
@@ -89,7 +89,7 @@ impl Sinex {
     /// only this producer's actual artifacts, independent of held archive size.
     pub(super) async fn cleanup_completed(&mut self) -> Result<()> {
         let mut pending =
-            spool::pending(&self.store_root, &self.producer).map_err(Error::Invalid)?;
+            spool::pending(&self.spool_root, &self.producer).map_err(Error::Invalid)?;
         loop {
             let mut publications = Vec::with_capacity(500);
             for artifact in pending.by_ref().take(500) {
@@ -111,7 +111,7 @@ impl Sinex {
             }
             for publication in publications {
                 if held.contains_key(&publication.frame) {
-                    spool::discard(&self.store_root, &self.producer, &publication)
+                    spool::discard(&self.spool_root, &self.producer, &publication)
                         .map_err(Error::Invalid)?;
                 }
             }
@@ -143,7 +143,7 @@ impl Sinex {
             for (role, _) in frozen.publication.roles() {
                 // Receiver cleanup may already have removed these after a lost
                 // final ack; the completed reservation above needs no bytes.
-                spool::snapshot(&self.store_root, &self.producer, &frozen.publication, role)
+                spool::snapshot(&self.spool_root, &self.producer, &frozen.publication, role)
                     .map_err(Error::Invalid)?;
             }
             let wire = frozen.wire_frame();
@@ -155,7 +155,7 @@ impl Sinex {
             )?)?
         };
         let done = Self::final_ack(&frozen.publication, done)?;
-        spool::discard(&self.store_root, &self.producer, &frozen.publication)
+        spool::discard(&self.spool_root, &self.producer, &frozen.publication)
             .map_err(Error::Invalid)?;
         Ok(done)
     }
@@ -174,7 +174,7 @@ impl Sinex {
             }
         };
         if let Some(frozen) =
-            spool::load(&self.store_root, &self.producer, frame.frame()).map_err(Error::Invalid)?
+            spool::load(&self.spool_root, &self.producer, frame.frame()).map_err(Error::Invalid)?
         {
             if frozen.publication.class != class {
                 return Err(Error::Invalid("frozen frame classification differs".into()));
@@ -203,7 +203,7 @@ impl Sinex {
             ));
         }
         let frozen =
-            spool::load(&self.store_root, &self.producer, &frame).map_err(Error::Invalid)?;
+            spool::load(&self.spool_root, &self.producer, &frame).map_err(Error::Invalid)?;
         if let Some(known) = known {
             let done = checked(known.clone())?;
             if done.frame != frame {
@@ -211,7 +211,7 @@ impl Sinex {
             }
             if let Some(frozen) = frozen {
                 Self::final_ack(&frozen.publication, done.clone())?;
-                spool::discard(&self.store_root, &self.producer, &frozen.publication)
+                spool::discard(&self.spool_root, &self.producer, &frozen.publication)
                     .map_err(Error::Invalid)?;
             }
             return done
