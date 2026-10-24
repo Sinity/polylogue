@@ -89,7 +89,7 @@ impl<'a> Reader<'a> {
         let links = self
             .conn()?
             .prepare_cached(
-                "SELECT parent_id, how, branch_point FROM current_link
+                "SELECT parent_id, how, branch_point FROM link
                  WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
                  ORDER BY pk",
             )?
@@ -149,10 +149,10 @@ impl<'a> Reader<'a> {
                     let copied = self
                         .conn()?
                         .prepare_cached(
-                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq FROM current_message m
+                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq FROM message m
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                             WHERE m.session_pk = ?1 AND s.current=1 ORDER BY m.order_input_id, m.seq, m.id",
+                             WHERE m.session_pk = ?1 ORDER BY m.order_input_id, m.seq, m.id",
                         )?
                         .query_map(params![parent_pk, frame.pk], |r| {
                             Ok(Key {
@@ -312,7 +312,7 @@ impl MessageSelection<'_, '_> {
         let mut facts = self
             .reader
             .conn()?
-            .prepare_cached("SELECT * FROM current_message WHERE pk=?1")?;
+            .prepare_cached("SELECT * FROM message WHERE pk=?1")?;
         let mut blocks = self.reader.conn()?.prepare_cached(
             "SELECT b.*, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
              WHERE b.message_pk=?1 ORDER BY b.idx",
@@ -359,7 +359,7 @@ impl MessageSelection<'_, '_> {
             JOIN message_source preferred ON preferred.message_pk=ms.message_pk AND preferred.preferred=1
             JOIN input_ref ir ON ir.pk=ms.input_pk AND ir.format='chatgpt' JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.current=1 AND ms.version_hash=preferred.version_hash")?;
+            WHERE ms.message_pk=?1 AND ms.version_hash=preferred.version_hash")?;
         for pk in self.keys()? {
             for scope in selected.query_map([pk], |row| row.get::<_, String>(0))? {
                 scopes.insert(scope?);

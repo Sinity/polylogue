@@ -3,7 +3,7 @@ use super::*;
 fn note(conn: &Connection, id: &str, refs: &[&str]) {
     conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES (?1,?1,'note','synthetic note','operator','test',1,1)", [id]).unwrap();
     for reference in refs {
-        conn.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end,anchor_parser) VALUES (?1,?2,x'010203','input:opaque',7,10,20,2)",params![id,reference]).unwrap();
+        conn.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES (?1,?2,x'010203','input:opaque',7,10,20)",params![id,reference]).unwrap();
     }
     conn.execute(
         "INSERT INTO note_relation VALUES (?1,'derived_from','session:kept')",
@@ -55,7 +55,7 @@ fn selected_notes_are_removed_or_trimmed_without_losing_surviving_anchors() {
     assert_eq!(remove(&tx, &sessions, &messages, false).unwrap(), 4);
     assert_eq!(count("note"), 10_004);
     assert_eq!(count("note_relation"), 10_004);
-    let kept: (String,Vec<u8>,String,i64,i64,i64,i64) = tx.query_row("SELECT ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end,anchor_parser FROM note_target WHERE note_id='partial'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).unwrap();
+    let kept: (String,Vec<u8>,String,i64,i64,i64) = tx.query_row("SELECT ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end FROM note_target WHERE note_id='partial'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     assert_eq!(
         kept,
         (
@@ -64,8 +64,7 @@ fn selected_notes_are_removed_or_trimmed_without_losing_surviving_anchors() {
             "input:opaque".into(),
             7,
             10,
-            20,
-            2
+            20
         )
     );
     assert_eq!(remove(&tx, &sessions, &messages, false).unwrap(), 0);

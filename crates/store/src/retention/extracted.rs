@@ -3,7 +3,7 @@ use super::*;
 
 pub(crate) fn key_sql(row: &str) -> String {
     format!(
-        "json_array({row}.input,{row}.chain,{row}.source_start,{row}.source_end,lower(hex({row}.source_hash)),{row}.parser_version,lower(hex({row}.blob)))"
+        "json_array({row}.input,{row}.chain,{row}.source_start,{row}.source_end,lower(hex({row}.source_hash)),lower(hex({row}.blob)))"
     )
 }
 
@@ -77,20 +77,12 @@ pub(crate) struct Key {
     pub start: i64,
     pub end: i64,
     pub source: BlobHash,
-    pub parser: u32,
     pub blob: BlobHash,
 }
 impl Key {
     pub(crate) fn parse(value: &str) -> Result<Self> {
-        let (input, chain, start, end, source, parser, blob): (
-            String,
-            i64,
-            i64,
-            i64,
-            String,
-            u32,
-            String,
-        ) = serde_json::from_str(value)?;
+        let (input, chain, start, end, source, blob): (String, i64, i64, i64, String, String) =
+            serde_json::from_str(value)?;
         if input.is_empty() || chain < 1 || start < 0 || end <= start {
             return Err(StoreError::Invalid(
                 "invalid extracted source unit key".into(),
@@ -102,11 +94,10 @@ impl Key {
             start,
             end,
             source: BlobHash::parse(&source).map_err(|e| StoreError::Invalid(e.to_string()))?,
-            parser,
             blob: BlobHash::parse(&blob).map_err(|e| StoreError::Invalid(e.to_string()))?,
         })
     }
-    pub(crate) fn args(&self) -> [rusqlite::types::Value; 7] {
+    pub(crate) fn args(&self) -> [rusqlite::types::Value; 6] {
         use rusqlite::types::Value;
         [
             Value::Text(self.input.clone()),
@@ -114,7 +105,6 @@ impl Key {
             Value::Integer(self.start),
             Value::Integer(self.end),
             Value::Blob(self.source.0.to_vec()),
-            Value::Integer(self.parser as i64),
             Value::Blob(self.blob.0.to_vec()),
         ]
     }
@@ -122,12 +112,12 @@ impl Key {
         Extraction {
             range: self.start as u64..self.end as u64,
             source_hash: self.source,
-            parser_version: self.parser,
             blob: self.blob,
         }
     }
 }
-pub(crate) const MATCH: &str = "input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND parser_version=?6 AND blob=?7";
+pub(crate) const MATCH: &str =
+    "input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND blob=?6";
 
 pub(crate) fn candidates(
     conn: &Connection,

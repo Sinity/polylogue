@@ -116,7 +116,7 @@ fn two_same_named_native_databases_keep_profile_identity_after_provider_removal_
 }
 
 #[test]
-fn hermes_many_framed_messages_keep_one_view_scope_and_supplied_subagent_metadata() {
+fn hermes_many_framed_messages_keep_supplied_subagent_metadata() {
     let w = ClaudeHome::new();
     let path = w.home.join(".hermes/state.db");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -150,27 +150,15 @@ fn hermes_many_framed_messages_keep_one_view_scope_and_supplied_subagent_metadat
             .iter()
             .all(|m| m.model.as_deref() == Some("supplied-model"))
     );
-    let rows = r
-        .query("SELECT count(*) AS scopes FROM snapshot_session", &[])
-        .unwrap();
-    assert_eq!(rows[0]["scopes"], 1);
     assert_eq!(
         r.query(
-            "SELECT count(*) AS n FROM current_message WHERE on_active_path=0",
+            "SELECT count(*) AS n FROM message WHERE on_active_path=0",
             &[]
         )
         .unwrap()[0]["n"],
         128
     );
-    assert_eq!(
-        r.query("SELECT count(*) AS n FROM message_source WHERE main=0", &[])
-            .unwrap()[0]["n"],
-        128
-    );
     let accounting = r.query("SELECT framed FROM parse_state", &[]).unwrap();
-    println!(
-        "Hermes128 messages: scoped sessions={}, accounting={accounting:?}",
-        rows[0]["scopes"]
-    );
+    println!("Hermes128 messages: accounting={accounting:?}");
     assert_eq!(accounting[0]["framed"], 130);
 }

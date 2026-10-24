@@ -364,7 +364,7 @@ impl<'a> Plan<'a> {
             "SELECT pk,id FROM input_ref WHERE pk IN (
                 SELECT input_pk FROM parsed WHERE session_pk=?1
                 UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.session_pk=?1
-                UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id WHERE e.session_pk=?1)")?;
+                UNION SELECT input_pk FROM event WHERE session_pk=?1)")?;
         let inputs =
             inputs.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         for row in inputs {
@@ -374,8 +374,8 @@ impl<'a> Plan<'a> {
                      OR EXISTS (SELECT 1 FROM message_source s JOIN message m ON m.pk = s.message_pk
                                 WHERE s.input_pk = ?1 AND m.session_pk <> ?2)
                      OR EXISTS(SELECT 1 FROM document_source WHERE input_pk=?1)
-                     OR EXISTS (SELECT 1 FROM event_source s JOIN event e ON e.id=s.event_id
-                                WHERE s.input_pk=?1 AND (e.session_pk IS NULL OR e.session_pk<>?2))",
+                     OR EXISTS (SELECT 1 FROM event e
+                                WHERE e.input_pk=?1 AND (e.session_pk IS NULL OR e.session_pk<>?2))",
                 params![ipk, pk],
                 |r| r.get(0),
             )?;
@@ -386,8 +386,8 @@ impl<'a> Plan<'a> {
             let mut statement = t.index.prepare(
                 "SELECT s.chain,s.source_start,s.source_end FROM message_source s JOIN message m ON m.pk=s.message_pk
                  WHERE m.session_pk=?2 AND s.input_pk=?1 AND s.source_end>s.source_start
-                 UNION SELECT es.chain,es.source_start,es.source_end FROM event_source es JOIN event e ON e.id=es.event_id
-                 WHERE e.session_pk=?2 AND es.input_pk=?1 AND es.source_end>es.source_start")?;
+                 UNION SELECT source_chain,source_start,source_end FROM event
+                 WHERE session_pk=?2 AND input_pk=?1 AND source_end>source_start")?;
             let spans = statement.query_map(params![ipk, pk], |r| {
                 Ok(Span {
                     chain: r.get(0)?,
@@ -525,6 +525,12 @@ impl<'a> Plan<'a> {
         for (&pk, id) in &self.documents {
             documents::remove(t, pk, id, req, &hashes, done)?;
         }
+        // Sessions that also came from other inputs are rebuilt from those.
+        if !self.whole.is_empty() {
+            let mut again = clear_for_reparse(t, None, &self.whole, req.dry_run, &hashes)?;
+            again.retain(|input| !self.whole.contains(input));
+            done.inputs_reparsed.extend(again);
+        }
         for input in &self.whole {
             remove_input(t, input, req, &mut refused, done, &hashes)?;
         }
@@ -568,7 +574,7 @@ impl<'a> Plan<'a> {
                     [hash],
                     |r| r.get(0),
                 )? || t.index.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM block WHERE blob_hash = ?1) OR EXISTS (SELECT 1 FROM version_block WHERE blob_hash=?1)",
+                    "SELECT EXISTS (SELECT 1 FROM block WHERE blob_hash = ?1) OR EXISTS (SELECT 1 FROM document_block WHERE blob_hash=?1)",
                     [hash],
                     |r| r.get(0),
                 )?;
@@ -689,7 +695,7 @@ impl<'a> Plan<'a> {
         authored::redact(t.archive, text, req.dry_run, done)?;
         // The rows parsed from the text go; the caller parses their inputs
         // again from the overwritten stored bytes.
-        done.inputs_reparsed = clear_for_reparse(t, text, &reparse, req.dry_run, hashes)?;
+        done.inputs_reparsed = clear_for_reparse(t, Some(text), &reparse, req.dry_run, hashes)?;
         // Files on disk that held it: Polylogue never edits them; the
         // operator scrubs them.
         let mut on_disk = BTreeSet::new();

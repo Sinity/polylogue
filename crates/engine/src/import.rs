@@ -205,9 +205,7 @@ impl Engine {
         let retained = reader
             .retained_input(&input.id)?
             .ok_or_else(|| std::io::Error::other("admitted import has no retained revision"))?;
-        if (retained.parsed_upto == size || retained.waiting)
-            && retained.parser_version == Some(origin.parser_version)
-        {
+        if (retained.parsed_upto == size || retained.waiting) && retained.parsed {
             return Ok(None);
         }
         let chain = reader.stored_chain(&input.id, admitted.chain, size)?;

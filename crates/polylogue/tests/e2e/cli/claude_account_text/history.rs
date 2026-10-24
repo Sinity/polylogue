@@ -77,7 +77,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             .to_string()
             .contains("project_document")
     );
-    let basis_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,s.parser_version,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
+    let basis_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
     let basis = cli(&env, &["--json", "sql", basis_sql]);
     assert!(basis.status.success(), "{basis:?}");
     let basis = json(&basis);

@@ -2,10 +2,15 @@ use super::*;
 use crate::{ExciseRequest, ExciseScope};
 
 fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
-    w.reads().reader().unwrap().query(
-        "SELECT e.id,e.kind,e.source_start,e.source_end,pl_block(e.data) AS data,i.id AS input
-         FROM current_event e JOIN input_ref i ON i.pk=e.input_pk ORDER BY e.source_start,e.kind,e.id", &[]
-    ).unwrap()
+    w.reads()
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT e.id,e.kind,e.source_start,e.source_end,pl_block(e.data) AS data,i.id AS input
+         FROM event e JOIN input_ref i ON i.pk=e.input_pk ORDER BY e.source_start,e.kind,e.id",
+            &[],
+        )
+        .unwrap()
 }
 
 #[test]
@@ -60,7 +65,7 @@ fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
                 0,
                 "no orphan payload"
             );
-            assert_eq!(w.count("SELECT COUNT(*) AS n FROM event_source"), 0);
+            assert_eq!(w.count("SELECT COUNT(*) AS n FROM event"), 0);
         }
         polylogue_testkit::delete_index(&w.root);
         let (mut e, _lock) = engine(&w, chunk);

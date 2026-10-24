@@ -16,8 +16,8 @@ fn preparations(messages: usize, tools: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "content_version",
-                column_name: "hash"
+                table_name: "message",
+                column_name: "id"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);

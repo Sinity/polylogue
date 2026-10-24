@@ -34,9 +34,6 @@ pub(super) fn matching(
                 sessions.insert(link.child.to_string());
             }
             sessions.extend(o.background.iter().map(|b| b.session.to_string()));
-            if let Some(snapshot) = &p.snapshot {
-                sessions.extend(snapshot.covered.iter().map(ToString::to_string));
-            }
         }
     }
     let mut selected = cache.matching(
@@ -107,11 +104,6 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch
         p.output
             .background
             .retain(|u| !r.sessions.contains(&u.session.to_string()));
-        if let Some(snapshot) = &mut p.snapshot {
-            snapshot
-                .covered
-                .retain(|session| !r.sessions.contains(&session.to_string()));
-        }
     }
     out
 }

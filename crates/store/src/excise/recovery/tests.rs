@@ -15,7 +15,7 @@ fn applied() -> (Connection, Connection) {
 #[test]
 fn newer_excision_metadata_preserves_policy_but_changed_rules_refuse() {
     for change in [
-        "UPDATE excision SET reason='new explanation',applied_upto='end',commit_seq=7",
+        "UPDATE excision SET reason='new explanation',commit_seq=7",
         "UPDATE excision SET scope='session:claude-code:other'",
         "UPDATE excision SET refused_json='[1]'",
         "UPDATE excision SET message_ids_json='[1]'",

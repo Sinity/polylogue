@@ -38,7 +38,7 @@ impl Reader<'_> {
         };
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT e.kind, e.at, m.id, e.source_start, e.source_end, e.data
-             FROM current_event e LEFT JOIN current_message m ON m.pk = e.after_message_pk
+             FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
              -- Events at the same position (each file's own byte 0, from
              -- different inputs) sort by their content-derived ID, not by
              -- which file was read first.
@@ -76,7 +76,7 @@ impl Reader<'_> {
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
-             FROM current_link WHERE parent_id = ?1 OR child_id = ?1
+             FROM link WHERE parent_id = ?1 OR child_id = ?1
              ORDER BY parent_id, child_id, kind, how",
         )?;
         let rows = stmt.query_map([id.to_string()], |r| {

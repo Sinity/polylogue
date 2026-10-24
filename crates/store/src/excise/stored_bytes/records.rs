@@ -109,11 +109,11 @@ pub(super) fn preflight(
                     return Ok(());
                 }
                 let overlaps:bool=t.index.query_row("SELECT EXISTS(
-                    SELECT 1 FROM message_source s JOIN input_ref r ON r.pk=s.input_pk
+                    SELECT 1 FROM message_source s JOIN input_ref r ON r.pk=s.input_pk JOIN message m ON m.pk=s.message_pk
                     WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
-                      AND s.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions)
-                    UNION ALL SELECT 1 FROM event_source s JOIN input_ref r ON r.pk=s.input_pk JOIN event e ON e.id=s.event_id
-                    WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
+                      AND m.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions)
+                    UNION ALL SELECT 1 FROM event e JOIN input_ref r ON r.pk=e.input_pk
+                    WHERE r.id=?1 AND e.source_chain=?2 AND e.source_start<?4 AND e.source_end>?3
                       AND (e.session_pk IS NULL OR e.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions))
                     UNION ALL SELECT 1 FROM document_source s JOIN input_ref r ON r.pk=s.input_pk
                     WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3

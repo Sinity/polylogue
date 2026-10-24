@@ -238,7 +238,6 @@ fn a_stale_decode_cannot_reinstall_bytes_after_same_length_source_excision() {
         extracted: vec![Extraction {
             range,
             source_hash,
-            parser_version: row["parser_version"].as_u64().unwrap() as u32,
             blob: hash,
         }],
     };

@@ -164,12 +164,10 @@ CREATE TABLE note_target (
   note_id       TEXT NOT NULL REFERENCES note(id),
   ref           TEXT NOT NULL,           -- 'session:...', 'message:...', 'block:...', 'result:...', ...
   seen_hash     BLOB,                    -- BLAKE3 of the target's text when the note was written
-  anchor_input  TEXT,                    -- optional exact anchor for a citation: the input, the revision chain,
-  anchor_chain  INTEGER,                 --   the byte range of the cited record in that chain, and the parser
-  anchor_start  INTEGER,                 --   version that read it (exact even if the index is rebuilt from
-  anchor_end    INTEGER,                 --   another backend; a parser version is not a content version, so
-  anchor_parser INTEGER,                 --   the chain is what pins the bytes). Bytes excised since resolve to
-                                         --   "excised", never to the overwritten bytes (model.md, Identity)
+  anchor_input  TEXT,                    -- optional exact anchor for a citation: the input, the revision chain
+  anchor_chain  INTEGER,                 --   and the byte range of the cited record in that chain (exact even if
+  anchor_start  INTEGER,                 --   the index is rebuilt from another backend). Bytes excised since
+  anchor_end    INTEGER,                 --   resolve to "excised", never to the overwritten bytes (model.md, Identity)
   PRIMARY KEY (note_id, ref)
 ) STRICT;
 CREATE INDEX note_target_ref ON note_target(ref);       -- notes about X; the hidden filter
@@ -213,8 +211,6 @@ CREATE TABLE excision (
   message_ids_json TEXT NOT NULL DEFAULT '[]',  -- session scope: the excised session's message IDs (IDs only, never
                                          --   content), so copies of them elsewhere are counted nowhere, also after
                                          --   an index rebuild (How excision works)
-  applied_upto  TEXT,                    -- text scope: local progress, never copied in a union: the last input
-                                         --   ID scanned; 'end' once every input was. A union resets it to NULL.
   commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
 ) STRICT;
 CREATE INDEX excision_commit_seq ON excision(commit_seq);
@@ -385,11 +381,10 @@ CREATE TABLE extracted_blob (
   source_start INTEGER NOT NULL CHECK(source_start>=0),
   source_end INTEGER NOT NULL CHECK(source_end>source_start),
   source_hash BLOB NOT NULL CHECK(length(source_hash)=32),
-  parser_version INTEGER NOT NULL CHECK(parser_version>=0),
   blob BLOB NOT NULL REFERENCES blob(hash),
   state TEXT NOT NULL CHECK(state IN ('writing','present')),
   commit_seq INTEGER NOT NULL CHECK(commit_seq>0),
-  PRIMARY KEY(input,chain,source_start,source_end,source_hash,parser_version,blob)
+  PRIMARY KEY(input,chain,source_start,source_end,source_hash,blob)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX extracted_blob_hash ON extracted_blob(blob);
 CREATE INDEX extracted_blob_sequence ON extracted_blob(commit_seq);

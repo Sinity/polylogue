@@ -396,7 +396,6 @@ fn run(
                                     extracted.push(Extraction {
                                         range: range.clone(),
                                         source_hash,
-                                        parser_version: job.origin.parser_version,
                                         blob: p.hash,
                                     });
                                     extra.push(p);
@@ -409,7 +408,6 @@ fn run(
                             step.output,
                             step.accounting,
                             job.start + step.start..job.start + step.consumed,
-                            job.origin.parser_version,
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);

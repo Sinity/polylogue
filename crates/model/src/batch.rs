@@ -53,20 +53,6 @@ pub struct InlineBlob {
     pub bytes: Vec<u8>,
 }
 
-/// One retained observation's byte range and session scope. Other inputs
-/// keep their own current contributions to those sessions. A folded logical
-/// export can identify its observed prefix by its last complete record. Its
-/// content rows still cite their original records; partial coverage does not
-/// make absence authoritative.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub start: u64,
-    pub end: u64,
-    pub covered: Vec<SessionId>,
-    /// Absence is authoritative only for explicitly complete observations.
-    pub complete: bool,
-}
-
 /// A document as one input holds it, with the acquired record's byte range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentRow {

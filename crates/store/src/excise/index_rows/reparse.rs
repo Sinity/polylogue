@@ -1,18 +1,18 @@
-//! Freeze affected sessions and their inputs before deleting rows for text reparse.
+//! Clear the sessions built from changed inputs so they are parsed again.
 use super::*;
 
-/// Text scope in `index.db`: rather than overwriting the columns that may
-/// hold the text, every row parsed from records that held it goes, and the
-/// inputs are parsed again from their overwritten stored bytes (the caller
-/// runs that parse). The affected sessions are those parsed from an input
-/// whose bytes held the text, and those whose texts hold it; each loses
-/// every row, and each input it was built from is parsed again, so it
-/// comes back whole and clean. Returns the inputs to parse again. Texts
+/// Rather than patching the columns that may hold removed content, every
+/// row parsed from a changed input goes, and the inputs are parsed again
+/// from their stored bytes (the caller runs that parse). The affected
+/// sessions are those parsed from a `holding` input, and, for a text
+/// excision, those whose texts hold the text; each loses every row, and
+/// each input it was built from is parsed again, so it comes back whole
+/// from the bytes that remain. Returns the inputs to parse again. Texts
 /// that held the text are recorded so their embeddings go; the session's
 /// other texts come back with the same hash and keep theirs.
 pub(in crate::excise) fn clear_for_reparse(
     t: &Transactions<'_, '_>,
-    text: &str,
+    text: Option<&str>,
     holding: &BTreeSet<String>,
     dry_run: bool,
     hashes: &RemovalHashes<'_>,
@@ -31,19 +31,18 @@ pub(in crate::excise) fn clear_for_reparse(
     )?;
     // Start with matching current texts. Freed texts join this table only
     // after the complete session and input selections have been frozen.
-    let mut stmt = i.prepare("SELECT id, hash, body FROM text")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let hash: Vec<u8> = row.get(1)?;
-        let body: Vec<u8> = row.get(2)?;
-        if unpack_text(&body)?.contains(text) {
-            hashes.text(&hash)?;
-            i.prepare_cached("INSERT INTO temp.excision_reparse_text VALUES (?1)")?
-                .execute([row.get::<_, i64>(0)?])?;
+    if let Some(text) = text {
+        let mut stmt = i.prepare("SELECT id, hash, body FROM text")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let body: Vec<u8> = row.get(2)?;
+            if unpack_text(&body)?.contains(text) {
+                hashes.text(&row.get::<_, Vec<u8>>(1)?)?;
+                i.prepare_cached("INSERT INTO temp.excision_reparse_text VALUES (?1)")?
+                    .execute([row.get::<_, i64>(0)?])?;
+            }
         }
     }
-    drop(rows);
-    drop(stmt);
     i.execute(
         "INSERT OR IGNORE INTO temp.excision_reparse_session
          SELECT s.pk,s.id FROM block b JOIN session s ON s.pk=b.session_pk
@@ -54,8 +53,8 @@ pub(in crate::excise) fn clear_for_reparse(
         "INSERT OR IGNORE INTO temp.excision_reparse_session
          SELECT s.pk,s.id FROM session s WHERE s.pk IN (
              SELECT p.session_pk FROM parsed p JOIN input_ref r ON r.pk=p.input_pk WHERE r.id=?1
-             UNION SELECT e.session_pk FROM event e JOIN event_source es ON es.event_id=e.id
-                   JOIN input_ref r ON r.pk=es.input_pk WHERE r.id=?1
+             UNION SELECT e.session_pk FROM event e
+                   JOIN input_ref r ON r.pk=e.input_pk WHERE r.id=?1
              UNION SELECT m.session_pk FROM message_source ms JOIN message m ON m.pk=ms.message_pk
                    JOIN input_ref r ON r.pk=ms.input_pk WHERE r.id=?1)",
     )?;
@@ -70,8 +69,8 @@ pub(in crate::excise) fn clear_for_reparse(
          SELECT pk,id FROM input_ref WHERE pk IN (
              SELECT input_pk FROM parsed WHERE session_pk IN (SELECT pk FROM temp.excision_reparse_session)
              UNION SELECT input_pk FROM session_record WHERE session_pk IN (SELECT pk FROM temp.excision_reparse_session)
-             UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id
-                   WHERE e.session_pk IN (SELECT pk FROM temp.excision_reparse_session)
+             UNION SELECT input_pk FROM event
+                   WHERE session_pk IN (SELECT pk FROM temp.excision_reparse_session)
              UNION SELECT ms.input_pk FROM message_source ms JOIN message m ON m.pk=ms.message_pk
                    WHERE m.session_pk IN (SELECT pk FROM temp.excision_reparse_session)
              UNION SELECT p.input_pk FROM process p JOIN process_session ps ON ps.process_pk=p.pk
@@ -86,10 +85,13 @@ pub(in crate::excise) fn clear_for_reparse(
             "INSERT OR IGNORE INTO temp.excision_reparse_input SELECT pk,id FROM input_ref WHERE id=?1",
         )?.execute([input])?;
     }
-    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT d.pk,d.id FROM document d JOIN document_source s ON s.document_pk=d.pk JOIN content_version c ON c.hash=s.version_hash JOIN version_block b ON b.version_pk=c.pk WHERE b.text_id IN(SELECT id FROM temp.excision_reparse_text)",[])?;
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT DISTINCT d.pk,d.id FROM document d JOIN document_block b ON b.document_pk=d.pk WHERE b.text_id IN(SELECT id FROM temp.excision_reparse_text)",[])?;
     for input in holding {
         i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT d.pk,d.id FROM document d JOIN document_source s ON s.document_pk=d.pk JOIN input_ref r ON r.pk=s.input_pk WHERE r.id=?1",[input])?;
     }
+    // Documents from the inputs parsed again are rebuilt with them, from every
+    // input that holds them.
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_document SELECT d.pk,d.id FROM document d JOIN document_source s ON s.document_pk=d.pk WHERE s.input_pk IN(SELECT pk FROM temp.excision_reparse_input)",[])?;
     i.execute("INSERT OR IGNORE INTO temp.excision_reparse_input SELECT r.pk,r.id FROM input_ref r JOIN document_source s ON s.input_pk=r.pk WHERE s.document_pk IN(SELECT pk FROM temp.excision_reparse_document)",[])?;
     crate::fault::check("excision_reparse.after_selection", "")?;
     if dry_run {
@@ -100,7 +102,7 @@ pub(in crate::excise) fn clear_for_reparse(
     let mut rows = selected.query([])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(1)?;
-        crate::session_row::remove_with_references(i, row.get(0)?, &id, t.counter, |references| {
+        crate::session_row::remove_with_references(i, row.get(0)?, &id, |references| {
             references.visit_texts(|text| {
                 i.prepare_cached("INSERT OR IGNORE INTO temp.excision_reparse_text VALUES (?1)")?
                     .execute([text])?;
@@ -112,12 +114,15 @@ pub(in crate::excise) fn clear_for_reparse(
     }
     drop(rows);
     drop(selected);
-    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_text SELECT b.text_id FROM version_block b JOIN content_version c ON c.pk=b.version_pk JOIN document_source s ON s.version_hash=c.hash WHERE s.document_pk IN(SELECT pk FROM temp.excision_reparse_document) AND b.text_id IS NOT NULL",[])?;
+    i.execute("INSERT OR IGNORE INTO temp.excision_reparse_text SELECT text_id FROM document_block WHERE document_pk IN(SELECT pk FROM temp.excision_reparse_document) AND text_id IS NOT NULL",[])?;
     i.execute(
         "DELETE FROM document WHERE pk IN(SELECT pk FROM temp.excision_reparse_document)",
         [],
     )?;
-    let documents=i.prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk IN(SELECT pk FROM temp.excision_reparse_input)")?.query_map([],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    i.execute(
+        "DELETE FROM event WHERE session_pk IS NULL AND input_pk IN (SELECT pk FROM temp.excision_reparse_input)",
+        [],
+    )?;
     // Clear input-owned rows and their dependents through the same frozen set.
     let tables = crate::schema::index_columns(i)?;
     for (table, cols) in &tables {
@@ -151,14 +156,6 @@ pub(in crate::excise) fn clear_for_reparse(
             [],
         )?;
     }
-    for document in documents {
-        crate::documents::project(i, document, t.counter, false)?;
-    }
-    crate::versions::prune(i)?;
-    i.execute(
-        "DELETE FROM event WHERE NOT EXISTS(SELECT 1 FROM event_source WHERE event_id=event.id)",
-        [],
-    )?;
     let mut texts = i.prepare("SELECT id FROM temp.excision_reparse_text ORDER BY id")?;
     let mut rows = texts.query([])?;
     while let Some(row) = rows.next()? {
@@ -167,7 +164,6 @@ pub(in crate::excise) fn clear_for_reparse(
             .query_row(
                 "SELECT indexed FROM text WHERE id=?1
              AND NOT EXISTS (SELECT 1 FROM block WHERE text_id=?1)
-             AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id=?1)
              AND NOT EXISTS (SELECT 1 FROM document_block WHERE text_id=?1)",
                 [tid],
                 |r| r.get(0),

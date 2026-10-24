@@ -86,10 +86,10 @@ pub struct KnownInput {
     /// The current revision chain and how many of its bytes are stored.
     pub chain: Option<i64>,
     pub stored: u64,
-    /// Offset after the last complete record parsed in that chain, and the
-    /// parser version that parsed it.
+    /// Offset after the last complete record parsed in that chain, and
+    /// whether that chain was parsed at all.
     pub parsed_upto: u64,
-    pub parser_version: Option<u32>,
+    pub parsed: bool,
     /// A successful parse reached source EOF with only an incomplete suffix.
     pub waiting: bool,
 }
@@ -103,7 +103,7 @@ pub struct RetainedInput {
     pub waiting: bool,
     pub length: u64,
     pub parsed_upto: u64,
-    pub parser_version: Option<u32>,
+    pub parsed: bool,
 }
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
@@ -535,7 +535,7 @@ impl Reader<'_> {
         Ok(self
             .conn()?
             .prepare_cached(
-                "SELECT pk, id FROM current_message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
+                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
             )?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -572,7 +572,7 @@ impl Reader<'_> {
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
                     duration_ms, attrs_json, cache_write_1h_tokens, speed
-             FROM current_message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
+             FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
         )?;
         let rows = stmt.query_map([session_pk], |r| {
             Ok((
@@ -670,8 +670,7 @@ impl Reader<'_> {
             |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
         let mut parse_states = BTreeMap::new();
         let mut stmt =
-            c.prepare_cached("SELECT CASE WHEN p.parser_version<COALESCE(r.version,p.parser_version) OR p.parser_version>p.retired_version THEN 'reparsing' ELSE p.status END AS state,COUNT(*)
-                FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk LEFT JOIN required_parser r ON r.format=i.format GROUP BY state")?;
+            c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
@@ -687,10 +686,10 @@ impl Reader<'_> {
         Ok(Status {
             unfinished_inputs: crate::retention::unfinished(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
-            messages: count("SELECT COUNT(*) FROM current_message")?,
-            documents: count("SELECT COUNT(*) FROM current_document")?,
+            messages: count("SELECT COUNT(*) FROM message")?,
+            documents: count("SELECT COUNT(*) FROM document")?,
             tool_calls: count(
-                "SELECT COUNT(*) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN current_message m ON m.pk=b.message_pk",
+                "SELECT COUNT(*) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk",
             )?,
             inputs: count("SELECT COUNT(*) FROM a.input")?,
             revisions: count("SELECT COUNT(*) FROM a.revision")?,
@@ -885,29 +884,28 @@ impl Reader<'_> {
                 chain,
                 stored: length.unwrap_or(0) as u64,
                 parsed_upto: 0,
-                parser_version: None,
+                parsed: false,
                 waiting: false,
             });
         }
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT p.parsed_upto, p.parser_version, p.status, p.detail FROM parse_state p
+            "SELECT p.parsed_upto, p.status, p.detail FROM parse_state p
              JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
         )?;
         for k in &mut out {
             if let Some(chain) = k.chain
-                && let Some((upto, version, status, detail)) = stmt
+                && let Some((upto, status, detail)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
                         Ok((
                             r.get::<_, i64>(0)?,
-                            r.get::<_, i64>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
                         ))
                     })
                     .optional()?
             {
                 k.parsed_upto = upto as u64;
-                k.parser_version = Some(version as u32);
+                k.parsed = true;
                 k.waiting = status == "waiting"
                     && detail.and_then(|end| end.parse::<u64>().ok()) == Some(k.stored);
             }
@@ -918,7 +916,7 @@ impl Reader<'_> {
     /// The latest retained revision and any committed parse progress.
     /// Every retained physical chain, with rebuildable parser progress.
     pub fn retained_chains(&self, id: &str) -> Result<Vec<(i64, RetainedInput)>> {
-        let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
+        let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.input_pk IS NOT NULL,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
         Ok(stmt
             .query_map([id], |r| {
                 Ok((
@@ -927,7 +925,7 @@ impl Reader<'_> {
                         chain: r.get(0)?,
                         length: r.get::<_, i64>(1)? as u64,
                         parsed_upto: r.get::<_, i64>(2)? as u64,
-                        parser_version: r.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                        parsed: r.get(3)?,
                         waiting: r.get(4)?,
                         route_rank: if r.get::<_, bool>(5)? { 2 } else { 0 },
                     },
@@ -940,7 +938,7 @@ impl Reader<'_> {
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.parser_version, r.produced, COALESCE(p.status = 'waiting', 0), r.chain
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting', 0), r.chain
              FROM a.revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
@@ -950,14 +948,14 @@ impl Reader<'_> {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, i64>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, bool>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, bool>(4)?,
                     r.get::<_, i64>(5)?,
                 ))
             })
             .optional()?;
-        let Some((length, parsed_upto, parser_version, produced, waiting, chain)) = row else {
+        let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
             return Ok(None);
         };
         let route_rank = match produced.as_str() {
@@ -975,51 +973,8 @@ impl Reader<'_> {
             waiting,
             length: length as u64,
             parsed_upto: parsed_upto as u64,
-            parser_version: parser_version.map(|v| v as u32),
+            parsed,
         }))
-    }
-}
-
-/// A normalized version at its exact retained source range.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageVersion {
-    pub input: String,
-    pub chain: u64,
-    pub snapshot: Option<u64>,
-    pub start: u64,
-    pub end: u64,
-    pub current: bool,
-    pub message: Message,
-}
-
-impl Reader<'_> {
-    pub fn message_versions(&self, id: &polylogue_model::MessageId) -> Result<Vec<MessageVersion>> {
-        let mut stmt = self.conn()?.prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk JOIN session placement ON placement.pk=s.session_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start,placement.id")?;
-        let rows = stmt.query_map([id.to_string()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Vec<u8>>(6)?,
-            ))
-        })?;
-        let mut versions = Vec::new();
-        for row in rows {
-            let (input, chain, snapshot, start, end, current, hash) = row?;
-            versions.push(MessageVersion {
-                input,
-                chain: chain as u64,
-                snapshot: (snapshot >= 0).then_some(snapshot as u64),
-                start: start as u64,
-                end: end as u64,
-                current: current != 0,
-                message: crate::versions::load(self.conn()?, &hash)?.1,
-            });
-        }
-        Ok(versions)
     }
 }
 

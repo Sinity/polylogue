@@ -25,7 +25,7 @@ impl Engine {
             st.chain = known.as_ref().and_then(|k| k.chain);
             st.stored = known.as_ref().map_or(0, |k| k.stored);
             st.parsed_upto = known.as_ref().map_or(0, |k| k.parsed_upto);
-            st.parser_version = known.as_ref().and_then(|k| k.parser_version);
+            st.parsed = known.as_ref().is_some_and(|k| k.parsed);
             st.waiting = known.as_ref().is_some_and(|k| k.waiting);
             st.carry = None;
             st.tail = None;

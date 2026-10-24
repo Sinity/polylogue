@@ -22,7 +22,7 @@ fn canonical_message_hash_generation_preserves_authored_scope_exclusions_and_vec
     let removed = BlobHash::of(b"synthetic removed text");
     let removed_blob = BlobHash::of(b"synthetic removed attachment");
     canonical.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
-    canonical.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end,anchor_parser) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29,3)", [&seen.0[..]]).unwrap();
+    canonical.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29)", [&seen.0[..]]).unwrap();
     canonical.execute("INSERT INTO variant(id,target,seen_hash,kind,coverage,body,author,machine,created_at) VALUES ('variant','message:claude-code:stable',?1,'summary','whole','exact transformed text','operator','synthetic',2)", [&seen.0[..]]).unwrap();
     let refusal = serde_json::json!({
         "sessions":["claude-code:blocked"],

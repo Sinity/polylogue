@@ -309,9 +309,9 @@ pub trait ExportParser: Send {
         })
     }
     /// File-level output after validation and ordering, before its items. `first`
-    /// is the selected first record after any keyed replacements. A partial
-    /// Snapshot identifies a folded retained-prefix view; owning Session facts
-    /// must precede message-only frames, whose original ranges stay unchanged.
+    /// is the selected first record after any keyed replacements. A step with
+    /// `snapshot` set makes every later item restate whole records; owning
+    /// Session facts precede message-only items, whose ranges stay unchanged.
     fn begin(
         &mut self,
         _length: u64,
@@ -380,7 +380,7 @@ pub fn parse_item(
         accounting: records.finish().map_err(|e| e.to_string())?,
         start: range.start,
         consumed: range.end,
-        snapshot: None,
+        snapshot: false,
     })
 }
 
@@ -395,7 +395,7 @@ pub fn refused(error: String, length: u64) -> crate::parse::Step {
         accounting: records.finish().expect("refusal accounted"),
         start: 0,
         consumed: length,
-        snapshot: None,
+        snapshot: false,
     }
 }
 

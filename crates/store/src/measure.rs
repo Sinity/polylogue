@@ -85,7 +85,7 @@ pub fn sessions(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<SessionUsage>>
 pub(crate) fn hidden_sessions(reader: &Reader<'_>, scope: &Scope) -> Result<u64> {
     let (cond, params) = scope.condition();
     let sql = format!(
-        "SELECT count(DISTINCT s.pk) FROM current_message m JOIN session s ON s.pk = m.session_pk
+        "SELECT count(DISTINCT s.pk) FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} AND EXISTS (
            SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id

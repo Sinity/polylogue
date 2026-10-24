@@ -25,7 +25,7 @@ pub(super) fn visit<T: DeserializeOwned>(
     let (cond, mut params) = scope.condition();
     params.push(kind.to_owned().into());
     let mut stmt = conn.prepare(&format!(
-        "SELECT s.origin,m.at,m.data FROM current_event m
+        "SELECT s.origin,m.at,m.data FROM event m
         JOIN session s ON s.pk=m.session_pk WHERE {cond} AND m.kind=?{} ORDER BY m.at,m.id",
         params.len()
     ))?;

@@ -25,7 +25,7 @@ mod work;
 
 pub use batch::{
     Accounting, BackgroundUpdate, CountMismatch, Disposition, DocumentRow, InlineBlob, MessageRow,
-    OrderKey, Output, RepoLookup, Snapshot,
+    OrderKey, Output, RepoLookup,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,

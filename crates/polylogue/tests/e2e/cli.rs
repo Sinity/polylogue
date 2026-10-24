@@ -36,6 +36,7 @@ fn wait_status(
     env: &[(&str, &Path)],
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
+    let started = std::time::Instant::now();
     loop {
         let out = cli(env, &["--json", "status"]);
         assert!(out.status.success(), "{out:?}");
@@ -43,6 +44,10 @@ fn wait_status(
         if ready(&status) {
             return status;
         }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "status never became ready: {status}"
+        );
     }
 }
 

@@ -95,7 +95,7 @@ pub(crate) fn require_removable(
                 return Err(unsupported());
             }
         }
-        let presentation: bool=index.query_row("SELECT EXISTS(SELECT 1 FROM version_block WHERE blob_hash=?1) OR EXISTS(SELECT 1 FROM block WHERE blob_hash=?1)",[&hash.0[..]],|r|r.get(0))?;
+        let presentation: bool=index.query_row("SELECT EXISTS(SELECT 1 FROM document_block WHERE blob_hash=?1) OR EXISTS(SELECT 1 FROM block WHERE blob_hash=?1)",[&hash.0[..]],|r|r.get(0))?;
         let delta: bool = archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE base=?1)",
             [&hash.0[..]],

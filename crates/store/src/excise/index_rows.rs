@@ -144,47 +144,30 @@ pub(super) fn remove_input(
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
     let mut texts = Vec::new();
     if let Some(pk) = input_pk(t.index, input)? {
-        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN (SELECT input_pk,version_hash FROM message_source UNION ALL SELECT input_pk,version_hash FROM document_source) s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT b.blob_hash FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.input_pk=?1 AND b.blob_hash IS NOT NULL UNION SELECT b.blob_hash FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.input_pk=?1 AND b.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
         refused.blobs.extend(media.iter().map(|hash| hex(hash)));
 
-        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN content_version mv ON mv.pk=v.version_pk JOIN (SELECT input_pk,version_hash FROM message_source UNION ALL SELECT input_pk,version_hash FROM document_source) s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
-        let messages: Vec<i64> = t
-            .index
-            .prepare("SELECT DISTINCT message_pk FROM message_source WHERE input_pk=?1")?
-            .query_map([pk], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let documents = t
-            .index
-            .prepare("SELECT DISTINCT document_pk FROM document_source WHERE input_pk=?1")?
-            .query_map([pk], |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        // Rows of other sessions from this input (an input scope's
-        // shared sessions keep their other inputs' rows).
+        texts=t.index.prepare("SELECT DISTINCT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.input_pk=?1 AND b.text_id IS NOT NULL UNION SELECT b.text_id FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.input_pk=?1 AND b.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
+        // Rows of other sessions from this input (an input scope's shared
+        // sessions keep their other inputs' rows, rebuilt by parsing those
+        // inputs again).
         for table in [
             "parse_state",
             "unrecognized",
             "parsed",
             "message_source",
             "document_source",
-            "event_source",
-            "link_source",
-            "snapshot",
+            "event",
         ] {
             t.index
                 .execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
         }
-        t.index.execute("DELETE FROM event WHERE NOT EXISTS(SELECT 1 FROM event_source WHERE event_id=event.id)", [])?;
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
-        crate::writer::promote_current(t.index, messages.into_iter().map(Ok), t.counter)?;
-        for document in documents {
-            crate::documents::project(t.index, document, t.counter, false)?;
-        }
     }
     let _ = done;
-    crate::versions::prune(t.index)?;
     for id in texts {
-        let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM version_block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         if let Some((hash, indexed)) = orphan {
             crate::text_rows::remove(t.index, id, indexed)?;
             hashes.text(&hash)?;
@@ -248,7 +231,7 @@ pub(super) fn delete_session(
         }
         return Ok(());
     }
-    crate::session_row::remove_with_references(i, pk, id, t.counter, |references| {
+    crate::session_row::remove_with_references(i, pk, id, |references| {
         references.visit_blobs(|hash| hashes.blob_candidate(hash))?;
         i.execute(
             "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
@@ -261,7 +244,6 @@ pub(super) fn delete_session(
                 .query_row(
                     "SELECT hash, indexed FROM text WHERE id = ?1
                  AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)
-                 AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM document_block WHERE text_id = ?1)",
                     [tid],
                     |r| Ok((r.get(0)?, r.get(1)?)),

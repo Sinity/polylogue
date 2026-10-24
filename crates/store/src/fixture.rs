@@ -183,8 +183,8 @@ impl Fixture {
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
-                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, parser_version, order_input_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, 1, (SELECT id FROM input_ref WHERE pk = ?3))",
+                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, order_input_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, (SELECT id FROM input_ref WHERE pk = ?3))",
             params![
                 m.id,
                 session_pk,
@@ -291,8 +291,8 @@ impl Fixture {
 
     pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: &str) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk, parser_version)
-             VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5, 1)",
+            "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk)
+             VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
         Ok(())
@@ -328,10 +328,9 @@ impl Fixture {
         let data = crate::encoding::pack_json(&serde_json::json!({}))?;
         let id = format!("e{}", self.seq);
         self.index.execute(
-            "INSERT INTO event(id,session_pk,kind,at,data) VALUES (?1,?2,?3,?4,?5)",
-            params![id, session_pk, kind, at, data],
+            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![id, session_pk, self.seq, kind, at, self.input_pk, data],
         )?;
-        self.index.execute("INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current,parser_version,source_order) VALUES (?1,?2,1,-1,1,1,?3)",params![id,self.input_pk,self.seq])?;
         Ok(())
     }
 

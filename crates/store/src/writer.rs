@@ -27,9 +27,8 @@ use std::thread::JoinHandle;
 mod batch;
 mod bytes;
 mod excluded;
-mod rows;
-pub(crate) use rows::promote_current;
 mod retention;
+mod rows;
 mod search;
 
 #[cfg(test)]
@@ -64,7 +63,6 @@ enum Msg {
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
     ),
-    Parsers(Vec<(String, u32)>, SyncSender<Result<()>>),
     Stop,
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>),
@@ -247,23 +245,6 @@ impl Writer {
             tx: Some(WriterQueue(Arc::new(Mutex::new(Some(tx))))),
             handle: Some(handle),
         })
-    }
-
-    /// Select format versions before their parse jobs start emitting rows.
-    pub fn require_parsers(&self, versions: &[(&str, u32)]) -> Result<()> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Parsers(
-                versions
-                    .iter()
-                    .map(|(format, version)| ((*format).to_owned(), *version))
-                    .collect(),
-                reply,
-            ))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
@@ -452,7 +433,6 @@ impl Inner {
         let mut users = Vec::new();
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
-        let mut parsers = Vec::new();
         let mut retentions = Vec::new();
         let mut retention_groups = Vec::new();
         let mut reconciliations = Vec::new();
@@ -478,10 +458,6 @@ impl Inner {
                     }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
-                        false
-                    }
-                    Msg::Parsers(versions, reply) => {
-                        parsers.push((versions, reply));
                         false
                     }
                     Msg::Stop => {
@@ -547,24 +523,6 @@ impl Inner {
             }
             for (store, reply) in reconciliations.drain(..) {
                 let _ = reply.send(self.reconcile_retained_bytes(&store));
-            }
-            for (versions, reply) in parsers.drain(..) {
-                let result = (|| {
-                    let tx = crate::publication::transaction(
-                        &self.index,
-                        TransactionBehavior::Deferred,
-                    )?;
-                    let before = tx.total_changes();
-                    for (format, version) in versions {
-                        rows::require_parser(&tx, &format, version)?;
-                    }
-                    if tx.total_changes() != before {
-                        bump_counter(&tx)?;
-                    }
-                    tx.commit()?;
-                    Ok(())
-                })();
-                let _ = reply.send(result);
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));

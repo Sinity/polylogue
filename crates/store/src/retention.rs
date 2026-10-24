@@ -12,7 +12,6 @@ pub(crate) mod extracted;
 pub struct Extraction {
     pub range: std::ops::Range<u64>,
     pub source_hash: BlobHash,
-    pub parser_version: u32,
     pub blob: BlobHash,
 }
 

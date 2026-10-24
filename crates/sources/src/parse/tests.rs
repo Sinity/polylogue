@@ -109,7 +109,7 @@ fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].consumed, bytes.len() as u64);
-    assert!(!steps[0].snapshot.as_ref().unwrap().complete);
+    assert!(steps[0].snapshot);
     let end = bytes.len();
     bytes.extend(&Header::of(body).encode()[..10]);
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();

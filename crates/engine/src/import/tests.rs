@@ -290,8 +290,6 @@ fn replayed_import_does_not_replace_the_native_winner() {
 
 mod documents;
 
-mod reparse;
-
 #[test]
 fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
     let head = br#"{"resourceSpans":[{"scopeSpans":[{"spans":[]}"#;

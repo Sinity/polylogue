@@ -67,6 +67,9 @@ Optimize for fast integration. See `docs/development.md`.
 - Unsupported operations return a typed error, never an empty success.
   Unknown times stay unknown. IDs are opaque strings and may contain colons.
   Check the schema version before writing.
+- A change to the index schema, the row encoding or what a parser produces
+  from the same bytes raises `INDEX_VERSION` in `crates/store/src/schema.rs`;
+  the index is then rebuilt from the stored inputs.
 
 ## Data
 

@@ -191,12 +191,12 @@ impl Inner {
                 if outcomes[index].is_none() {
                     crate::fault::check("import.installed", &item.batch.input.id)?;
                     for extraction in &item.extracted {
-                        tx.execute("UPDATE extracted_blob SET state='present' WHERE input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND parser_version=?6 AND blob=?7",params![item.batch.input.id,retained[index].chain,extraction.range.start as i64,extraction.range.end as i64,&extraction.source_hash.0[..],extraction.parser_version,&extraction.blob.0[..]])?;
+                        tx.execute("UPDATE extracted_blob SET state='present' WHERE input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND blob=?6",params![item.batch.input.id,retained[index].chain,extraction.range.start as i64,extraction.range.end as i64,&extraction.source_hash.0[..],&extraction.blob.0[..]])?;
                     }
                     crate::fault::check("import.admit_commit", &item.batch.input.id)?;
                 } else if rejected.contains(&index) {
                     for extraction in &item.extracted {
-                        tx.execute("DELETE FROM extracted_blob WHERE input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND parser_version=?6 AND blob=?7 AND state='writing'",params![item.batch.input.id,retained[index].chain,extraction.range.start as i64,extraction.range.end as i64,&extraction.source_hash.0[..],extraction.parser_version,&extraction.blob.0[..]])?;
+                        tx.execute("DELETE FROM extracted_blob WHERE input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND blob=?6 AND state='writing'",params![item.batch.input.id,retained[index].chain,extraction.range.start as i64,extraction.range.end as i64,&extraction.source_hash.0[..],&extraction.blob.0[..]])?;
                     }
                 }
             }
@@ -590,7 +590,18 @@ impl Inner {
                         "decoded source range is not retained".into(),
                     ));
                 }
-                tx.execute("INSERT OR IGNORE INTO extracted_blob VALUES (?1,?2,?3,?4,?5,?6,?7,'writing',?8)",params![b.input.id,chain,extraction.range.start as i64,extraction.range.end as i64,&extraction.source_hash.0[..],extraction.parser_version,&extraction.blob.0[..],seq])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO extracted_blob VALUES (?1,?2,?3,?4,?5,?6,'writing',?7)",
+                    params![
+                        b.input.id,
+                        chain,
+                        extraction.range.start as i64,
+                        extraction.range.end as i64,
+                        &extraction.source_hash.0[..],
+                        &extraction.blob.0[..],
+                        seq
+                    ],
+                )?;
             }
             crate::fault::check("import.reserve_commit", &b.input.id)?;
             retained.push(Retained {

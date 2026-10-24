@@ -45,7 +45,7 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
     )
     .unwrap();
     // The supported legacy fallback: these records have no known end offset.
-    index.execute("UPDATE message_source SET source_end=source_start WHERE session_pk=(SELECT pk FROM session WHERE id='claude-code:removed')", []).unwrap();
+    index.execute("UPDATE message_source SET source_end=source_start WHERE message_pk IN (SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:removed')", []).unwrap();
     drop(index);
     let archive = Archive::at(&w.root);
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();

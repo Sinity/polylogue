@@ -378,7 +378,7 @@ fn missing_or_malformed_activity_does_not_assert_an_empty_path() {
 }
 
 #[test]
-fn folded_view_uses_a_genuine_last_record_and_keeps_original_message_ranges() {
+fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
     let records = vec![
         header("a"),
         session("s", None, None),
@@ -399,22 +399,17 @@ fn folded_view_uses_a_genuine_last_record_and_keeps_original_message_ranges() {
             },
         )
         .unwrap();
-    let scope = parser
-        .begin(raw.len() as u64, None)
-        .unwrap()
-        .unwrap()
-        .snapshot
-        .unwrap();
-    assert_eq!(
-        (scope.start, scope.end),
-        (last_start as u64, raw.len() as u64)
+    assert!(
+        parser
+            .begin(raw.len() as u64, None)
+            .unwrap()
+            .unwrap()
+            .snapshot
     );
-    assert!(!scope.complete);
-    assert!(scope.covered.is_empty());
     assert_eq!(count, records.len());
     let parsed = parse(records);
     let row = &parsed.output.messages[0];
-    assert!(row.end <= scope.start);
+    assert!(row.end <= last_start as u64);
     let source: Json = serde_json::from_str(&raw[row.offset as usize..row.end as usize]).unwrap();
     assert_eq!(source["r"]["content"], "old row");
 }

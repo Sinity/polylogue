@@ -71,7 +71,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             for pk in selected.keys().unwrap() {
                 key_ids.push(
                     r.query(
-                        "SELECT id FROM current_message WHERE pk=?1",
+                        "SELECT id FROM message WHERE pk=?1",
                         &[crate::read::SqlValue::Int(pk)],
                     )
                     .unwrap()[0]["id"]

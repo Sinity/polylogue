@@ -19,9 +19,7 @@ impl Engine {
                 continue;
             }
             let state = input.state;
-            if state.parser_version == Some(origin.parser_version)
-                && (state.waiting || state.parsed_upto >= state.length)
-            {
+            if state.parsed && (state.waiting || state.parsed_upto >= state.length) {
                 continue;
             }
             let path = PathBuf::from(input.path.ok_or_else(|| {

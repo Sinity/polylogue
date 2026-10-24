@@ -396,7 +396,7 @@ fn hermes_atif_public_documents_preserve_roles_unknown_media_and_mask_ordered_pa
     let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
     let reader = pool.reader().unwrap();
     let rows = reader
-        .query("SELECT id FROM current_document ORDER BY id", &[])
+        .query("SELECT id FROM document ORDER BY id", &[])
         .unwrap();
     let mut originals = String::new();
     for row in rows {

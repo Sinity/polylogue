@@ -79,7 +79,6 @@ CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 
 CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
-  present           INTEGER NOT NULL DEFAULT 1, -- current contribution; history stays in message_source
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
@@ -110,9 +109,6 @@ CREATE TABLE message (
   response_id       TEXT,                   -- a model message: the provider's response ID (Claude Code message.id)
   request_id        TEXT,                   --   and request ID (requestId), so the derive step can match a response a
                                             --   fork re-emits under new uuids (model.md, Link); NULL elsewhere
-  version_hash      BLOB,                   -- BLAKE3 of the preferred version's records as canonical JSON without
-                                            --   volatile fields: merge rule 2's last tie-break, decided the same way
-                                            --   whichever input arrives first (law 4; sources/README.md, rule 2)
   in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced (model.md)
   pasted_spans_json TEXT,                   -- written_by human: pasted byte ranges with their basis (model.md, Message)
   authorship        TEXT,                   -- written_by human: authored | pasted | mixed | unknown
@@ -141,9 +137,6 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  parser_version    INTEGER NOT NULL,       -- version of the parser that produced its winning version; a session
-                                            --   rebuilt in place deletes, at its last step, the rows still at the
-                                            --   old version of the bumped format (convergence.md)
   UNIQUE (pk, session_pk)                   -- lets children state their owner once (R73)
 ) STRICT;
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq);   -- reading in order; [last:N]
@@ -163,19 +156,12 @@ CREATE TABLE message_source (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
-  session_pk        INTEGER NOT NULL REFERENCES session(pk), -- placement in this source, independent of preferred ownership
-  source_snapshot   INTEGER NOT NULL DEFAULT -1, -- snapshot start, or -1 for ordinary upserts
-  current           INTEGER NOT NULL DEFAULT 1,
-  source_order      INTEGER NOT NULL DEFAULT 0,
-  parser_version    INTEGER NOT NULL,
-  route_rank        INTEGER NOT NULL DEFAULT 0,
-  main              INTEGER NOT NULL DEFAULT 1,
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
   preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
   version_hash      BLOB,                   -- BLAKE3 of the version's canonical JSON: the last tie-break
-  PRIMARY KEY (message_pk, input_pk, chain, source_snapshot, session_pk)
+  PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
 
@@ -338,7 +324,6 @@ CREATE TABLE link (
                                             --   toolUseResult.agentId (model.md, link evidence)
   evidence          TEXT NOT NULL,          -- which input field established the parent (model.md's closed list)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
-  parser_version    INTEGER NOT NULL,       -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
   attrs_json        TEXT,                   -- provider facts as given: agent type, description, role, depth,
                                             --   worktree, stopped by user, Codex edge status
   retry_of          TEXT,                   -- natural block id of the spawning call this one retries (harness evidence only)
@@ -351,14 +336,21 @@ CREATE INDEX link_parent ON link(parent_id, kind);             -- lineage down; 
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- bound fact identity, or exact input-record occurrence when unbound
-  session_pk        INTEGER REFERENCES session(pk),
-  after_message_pk  INTEGER REFERENCES message(pk),
-  kind              TEXT NOT NULL,
+  id                TEXT NOT NULL UNIQUE,   -- computed by the parser from the raw record (model.md, Identity); an
+                                            --   event that names no session is keyed by its input record instead
+  session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
+  seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
+  after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`
+  kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
   at                INTEGER,
-  data              BLOB NOT NULL           -- zstd-compressed provider payload
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input whose record it came from
+  source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
+  source_start      INTEGER,
+  source_end        INTEGER,
+  data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
-CREATE INDEX event_session ON event(session_pk);
+CREATE INDEX event_session ON event(session_pk, seq);
+CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
@@ -373,8 +365,7 @@ CREATE TABLE run (
   started_at        INTEGER,
   ended_at          INTEGER,
   evidence          TEXT NOT NULL,          -- the input field that established it (sources/)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  parser_version    INTEGER NOT NULL        -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
 ) STRICT;
 CREATE INDEX run_task ON run(task_id) WHERE task_id IS NOT NULL;
 
@@ -407,7 +398,6 @@ CREATE TABLE process (
   usage_partial     INTEGER NOT NULL DEFAULT 0, -- 1 when a daemon restart lost part of the samples
   tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- only when timing and ancestry both match (slice 6)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  parser_version    INTEGER NOT NULL,       -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
   UNIQUE (boot_id, pid, start_ticks)
 ) STRICT;
 CREATE INDEX process_alive ON process(pk) WHERE ended_at IS NULL;   -- live view, process trees
@@ -424,31 +414,23 @@ CREATE TABLE process_session (
 CREATE INDEX process_session_session ON process_session(session_pk);   -- live view; foreign-key check
 CREATE INDEX process_tool_call ON process(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
--- Which inputs produced which sessions, and with which parser version.
+-- Which inputs produced which sessions.
 CREATE TABLE parsed (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- the revision chain parsed (blobs.md)
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  parser_version    INTEGER NOT NULL,
   PRIMARY KEY (input_pk, chain, session_pk)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parsed_session ON parsed(session_pk);             -- rebuild a session from all its inputs
 
--- How far each revision chain has been parsed, with which parser version, and
--- how it ended. Every chain of every input has a row once the loop has seen it,
+-- How far each revision chain has been parsed, and how it ended. Every chain of every input has a row once the loop has seen it,
 -- so nothing is silently skipped.
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  parser_version    INTEGER NOT NULL,
-  retired_version   INTEGER NOT NULL DEFAULT 0, -- parser version whose obsolete rows have been retired
-  source_eof        INTEGER NOT NULL DEFAULT 0,
-  source_length     INTEGER NOT NULL DEFAULT 0,
   status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at observed EOF;
                                             --   done: at the stored length; companion: read with its main input
                                             --   (detail: that input's id); no_sessions | refused | failed | no_parser_yet
-  excisions_seen    INTEGER NOT NULL DEFAULT 0,  -- number of `excised` observations of the input when parsed;
-                                            --   fewer than archive.db holds means the chain is parsed again
   companions_json   TEXT,                   -- [[companion input id, revision], ...] the companion revisions this
                                             --   chain was parsed with; a companion with a newer revision means the
                                             --   chain is parsed again (convergence.md, companion files)
@@ -539,8 +521,7 @@ CREATE TABLE repo_lookup (
   remote            TEXT,                   -- origin's URL without credentials; NULL when there is none
   root_commit       TEXT,                   -- NULL when it could not be read (shallow clone)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  parser_version    INTEGER NOT NULL
+  chain             INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
 
@@ -592,9 +573,8 @@ CREATE TABLE session_record (
   session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  parser_version    INTEGER NOT NULL,
   facts             TEXT NOT NULL,
-  PRIMARY KEY (session_pk, input_pk, chain, parser_version)
+  PRIMARY KEY (session_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
 
@@ -619,90 +599,6 @@ CREATE TABLE file_edit (
   PRIMARY KEY (session_pk, path, tool_call_pk)
 ) STRICT, WITHOUT ROWID;
 
--- Normalized versions share existing text rows; historical prose is not copied
--- into opaque packed bodies. Current search still joins current blocks only.
-CREATE INDEX message_source_current ON message_source(input_pk,session_pk,current,message_pk);
-CREATE INDEX message_source_snapshot ON message_source(input_pk,chain,source_snapshot);
-CREATE INDEX message_source_version ON message_source(version_hash);
-CREATE TABLE content_version (
-  pk INTEGER PRIMARY KEY,
-  kind TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message','document')),
-  hash BLOB NOT NULL UNIQUE,
-  attrs BLOB NOT NULL
-) STRICT;
-CREATE TABLE version_block (
-  version_pk INTEGER NOT NULL REFERENCES content_version(pk) ON DELETE CASCADE,
-  idx INTEGER NOT NULL,
-  body BLOB NOT NULL,
-  text_id INTEGER REFERENCES text(id),
-  blob_hash BLOB,
-  PRIMARY KEY (version_pk, idx)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX version_block_text ON version_block(text_id) WHERE text_id IS NOT NULL;
-CREATE INDEX version_block_blob ON version_block(blob_hash) WHERE blob_hash IS NOT NULL;
-
-CREATE TABLE snapshot (
-  pk INTEGER PRIMARY KEY,
-  parser_version INTEGER NOT NULL,
-  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain INTEGER NOT NULL,
-  source_start INTEGER NOT NULL,
-  source_end INTEGER NOT NULL,
-  complete INTEGER NOT NULL DEFAULT 0,
-  accounting BLOB NOT NULL,
-  UNIQUE(input_pk, chain, source_start)
-) STRICT;
-CREATE TABLE snapshot_session (
-  snapshot_pk INTEGER NOT NULL REFERENCES snapshot(pk) ON DELETE CASCADE,
-    complete INTEGER NOT NULL DEFAULT 0,
-  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  facts BLOB NOT NULL,
-  PRIMARY KEY(snapshot_pk, session_pk)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX snapshot_session_session ON snapshot_session(session_pk);
--- One selected record for each event/input/revision/snapshot observation.
--- Repeated records in that scope keep the latest source order and its range.
-CREATE TABLE event_source (
-  parser_version INTEGER NOT NULL,
-  source_order INTEGER NOT NULL,
-  source_start INTEGER,
-  source_end INTEGER,
-  event_id TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
-  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain INTEGER NOT NULL,
-  source_snapshot INTEGER NOT NULL,
-  current INTEGER NOT NULL,
-  PRIMARY KEY(event_id, input_pk, chain, source_snapshot)
-) STRICT, WITHOUT ROWID;
-CREATE TABLE link_source (
-  parser_version INTEGER NOT NULL,
-  link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
-  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain INTEGER NOT NULL,
-  source_snapshot INTEGER NOT NULL,
-  current INTEGER NOT NULL,
-  facts BLOB NOT NULL,
-  PRIMARY KEY(link_pk, input_pk, chain, source_snapshot)
-) STRICT, WITHOUT ROWID;
-CREATE VIEW current_message AS SELECT * FROM message WHERE present = 1;
--- Resolve a source per event through its primary key. Within one input the
--- newest revision/snapshot wins; stable input ID resolves different inputs.
-CREATE VIEW current_event AS
-SELECT e.pk,e.id,e.session_pk,s.source_order AS seq,e.after_message_pk,e.kind,e.at,
-       s.input_pk,s.parser_version,
-       CASE WHEN s.source_start IS NOT NULL THEN s.chain END AS source_chain,
-       s.source_start,s.source_end,e.data
-FROM event e JOIN event_source s ON s.event_id=e.id
-AND (s.input_pk,s.chain,s.source_snapshot) = (
-  SELECT n.input_pk,n.chain,n.source_snapshot
-  FROM event_source n JOIN input_ref r ON r.pk=n.input_pk
-  WHERE n.event_id=e.id AND n.current=1 AND r.excised=0
-  ORDER BY r.id,n.chain DESC,n.source_snapshot DESC,n.source_order DESC LIMIT 1
-);
-CREATE VIEW current_link AS SELECT * FROM link l WHERE (NOT EXISTS
-  (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk) AND COALESCE((SELECT excised FROM input_ref WHERE pk=l.input_pk),0)=0) OR EXISTS
-  (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk AND s.current = 1);
-
 -- Applied removal rules survive as receipts until an index rebuild verifies
 -- their inclusion in the archive. No removed content is retained here.
 CREATE TABLE excision_applied (
@@ -710,15 +606,8 @@ CREATE TABLE excision_applied (
   policy_hash BLOB NOT NULL CHECK(length(policy_hash)=32)
 ) STRICT, WITHOUT ROWID;
 
--- Parser versions selected by the engine, before any selected jobs emit rows.
-CREATE TABLE required_parser (
-  format TEXT PRIMARY KEY,
-  version INTEGER NOT NULL
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX parse_retirement_pending ON parse_state(input_pk,chain) WHERE parser_version>retired_version;
-
--- Non-conversation text shares content versions and interned text with messages.
+-- Text that is not a conversation (claude.ai documents, for example), with the
+-- same preferred-version rule as messages and interned text.
 CREATE TABLE document (
   pk INTEGER PRIMARY KEY,
   id TEXT NOT NULL UNIQUE,
@@ -733,7 +622,7 @@ CREATE TABLE document (
   source_chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
-  present INTEGER NOT NULL DEFAULT 1,
+  fields BLOB NOT NULL, -- the shown version without its blocks, zstd JSON
   changed INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE document_source (
@@ -742,15 +631,13 @@ CREATE TABLE document_source (
   chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
-  parser_version INTEGER NOT NULL,
   route_rank INTEGER NOT NULL,
   source_time INTEGER,
-  version_hash BLOB NOT NULL REFERENCES content_version(hash),
-  current INTEGER NOT NULL DEFAULT 1,
-  PRIMARY KEY(document_pk,input_pk,chain,source_start,source_end,version_hash)
+  version_hash BLOB NOT NULL,
+  preferred INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(document_pk,input_pk,chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_source_input ON document_source(input_pk,chain);
-CREATE INDEX document_source_version ON document_source(version_hash);
 CREATE TABLE document_block (
   document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
@@ -762,7 +649,6 @@ CREATE TABLE document_block (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
 CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
-CREATE VIEW current_document AS SELECT * FROM document WHERE present=1;
 
 -- Import membership is projected from the engine-authored observation details.
 CREATE TABLE import_member (

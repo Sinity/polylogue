@@ -84,7 +84,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         parse: vec![ParseStep {
             order_from: None,
             reset: start == 0,
-            snapshot: None,
+            snapshot: false,
             output: Output {
                 sessions: sessions
                     .iter()
@@ -96,7 +96,6 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             accounting: accounting(n),
             start,
             parsed_upto: start + 100,
-            parser_version: 1,
             at_end: true,
             prepared: Default::default(),
         }],
@@ -892,12 +891,6 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
 mod snapshots;
 
 mod array_order;
-
-mod event_sources;
-
-mod parser_versions;
-
-mod reparse;
 
 mod metadata;
 

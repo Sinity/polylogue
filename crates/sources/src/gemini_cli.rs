@@ -129,7 +129,7 @@ impl ExportParser for GeminiCli {
             accounting: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: None,
+            snapshot: false,
         }))
     }
     fn item(
