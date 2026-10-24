@@ -91,7 +91,6 @@ impl Sinex {
             batch: content_name(&encoded.hash),
             rows: encoded.rows,
             blobs: encoded.blobs.iter().map(content_name).collect(),
-            excision: None,
         };
         let reading_order = i64::try_from(position)
             .map_err(|_| Error::Invalid("a batch position exceeds the wire order range".into()))?;
