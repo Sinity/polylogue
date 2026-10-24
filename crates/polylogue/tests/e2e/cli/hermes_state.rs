@@ -111,3 +111,167 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_a
         }
     ));
 }
+
+#[test]
+fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let native = home.join(".hermes/state.db");
+    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&native).unwrap();
+    db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,title TEXT);
+        INSERT INTO sessions VALUES('empty','cli','All inactive'),('mixed','cli','Mixed activity'),('unknown','cli','Unknown activity');
+        CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,active INTEGER,compacted INTEGER);
+        INSERT INTO messages VALUES
+          (1,'empty','user','inactive first',0,0),(2,'empty','assistant','inactive second',0,0),
+          (3,'mixed','user','abandoned first',0,0),(4,'mixed','assistant','active reply',1,0),(5,'mixed','user','abandoned last',0,0),
+          (6,'unknown','user','unknown first',NULL,NULL),(7,'unknown','assistant','unknown second',NULL,NULL);").unwrap();
+    drop(db);
+    let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
+    let env = [
+        ("POLYLOGUE_HOME", home.as_path()),
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let daemon = start_daemon(&env);
+    wait_status(&env, |s| {
+        s["store"]["messages"].as_u64() == Some(7)
+            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
+            && s["last_pass"]["capture_pending"] == false
+    });
+    let listed = cli(&env, &["--json", "origin:hermes"]);
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = json(&listed);
+    let mut states = Vec::new();
+    for (title, retained, active) in [
+        ("All inactive", 2, 0),
+        ("Mixed activity", 3, 1),
+        ("Unknown activity", 2, 2),
+    ] {
+        let sid = listed["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["title"] == title)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap();
+        let read = cli(&env, &["--json", "read", sid]);
+        assert!(read.status.success(), "{read:?}");
+        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), retained);
+        let query = format!("messages where session.title:\"{title}\"");
+        let visible = cli(&env, &["--json", &query]);
+        assert!(visible.status.success(), "{visible:?}");
+        assert_eq!(
+            json(&visible)["count"],
+            active,
+            "{title}: default active-path query"
+        );
+        let all = format!("messages where session:{sid} active:*");
+        let all = cli(&env, &["--json", &all]);
+        assert!(all.status.success(), "{all:?}");
+        assert_eq!(json(&all)["count"], retained);
+        let markers = cli(
+            &env,
+            &[
+                "--json",
+                &format!("events where session:{sid} kind:active_path_empty"),
+            ],
+        );
+        assert!(markers.status.success(), "{markers:?}");
+        assert_eq!(json(&markers)["count"], u64::from(title == "All inactive"));
+        let exported = cli(&env, &["export", sid, "--format", "json"]);
+        assert!(exported.status.success(), "{exported:?}");
+        let export = json(&exported);
+        for event in export["sessions"][0]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "hermes_message_state")
+        {
+            if title == "All inactive" {
+                assert_eq!(event["data"], json!({"active":0,"compacted":0}));
+            }
+            if title == "Unknown activity" {
+                assert_eq!(event["data"], json!({"active":null,"compacted":null}));
+            }
+        }
+        if title == "All inactive" {
+            let marker = export["sessions"][0]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["kind"] == "active_path_empty")
+                .unwrap();
+            assert!(marker.get("after").is_none());
+        }
+        states.push((sid.to_owned(), json(&all), active));
+    }
+    let unknown = states
+        .iter()
+        .find(|(id, _, _)| id.starts_with("hermes:unknown@profile-"))
+        .unwrap()
+        .0
+        .clone();
+    let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
+    assert!(pool.reader().unwrap().query("SELECT m.on_active_path FROM current_message m JOIN session s ON s.pk=m.session_pk WHERE s.id=?1",&[polylogue_store::SqlValue::Text(unknown)]).unwrap().iter().all(|r|r["on_active_path"].is_null()));
+    drop(pool);
+    drop(daemon);
+    let empty = states
+        .iter()
+        .find(|(id, _, _)| id.starts_with("hermes:empty@profile-"))
+        .unwrap()
+        .0
+        .clone();
+    for (flag, expected) in [(Some(1), 1), (Some(0), 0), (None, 2), (Some(0), 0)] {
+        let db = rusqlite::Connection::open(&native).unwrap();
+        db.execute("UPDATE messages SET active=?1 WHERE id=2", [flag])
+            .unwrap();
+        drop(db);
+        let daemon = start_daemon(&env);
+        loop {
+            let out = cli(
+                &env,
+                &[
+                    "--json",
+                    &format!("messages where session:{empty} active:true"),
+                ],
+            );
+            assert!(out.status.success(), "{out:?}");
+            if json(&out)["count"] == expected {
+                break;
+            }
+        }
+        let read = cli(&env, &["--json", "read", &empty]);
+        assert!(read.status.success(), "{read:?}");
+        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), 2);
+        drop(daemon);
+    }
+    std::fs::remove_file(&native).unwrap();
+    polylogue_testkit::delete_index(&archive);
+    let _rebuilt = start_daemon(&env);
+    wait_status(&env, |s| {
+        s["store"]["messages"].as_u64() == Some(7)
+            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
+            && s["last_pass"]["capture_pending"] == false
+    });
+    for (sid, expected, active) in states {
+        let query = format!("messages where session:{sid} active:*");
+        let out = cli(&env, &["--json", &query]);
+        assert!(out.status.success(), "{out:?}");
+        let out = json(&out);
+        assert_eq!(out["rows"], expected["rows"]);
+        assert_eq!(out["columns"], expected["columns"]);
+        assert_eq!(out["count"], expected["count"]);
+        let visible = cli(
+            &env,
+            &[
+                "--json",
+                &format!("messages where session:{sid} active:true"),
+            ],
+        );
+        assert!(visible.status.success(), "{visible:?}");
+        assert_eq!(json(&visible)["count"], active);
+    }
+}

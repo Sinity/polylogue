@@ -54,7 +54,10 @@ pub struct InlineBlob {
 }
 
 /// One retained observation's byte range and session scope. Other inputs
-/// keep their own current contributions to those sessions.
+/// keep their own current contributions to those sessions. A folded logical
+/// export can identify its observed prefix by its last complete record. Its
+/// content rows still cite their original records; partial coverage does not
+/// make absence authoritative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub start: u64,

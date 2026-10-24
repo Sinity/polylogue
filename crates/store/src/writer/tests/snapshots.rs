@@ -414,3 +414,167 @@ fn normalized_history_shares_prose_and_keeps_only_bounded_nonprose_copies() {
     assert_eq!(rows[0]["versions"], 2);
     assert!(rows[0]["metadata_bytes"].as_u64().unwrap() < 2048);
 }
+
+#[test]
+fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
+    for last_empty in [false, true] {
+        for reverse in [false, true] {
+            let w = world();
+            let mut seed = batch("a", 0, 0, vec![], &[]);
+            seed.length = 300;
+            seed.parse.clear();
+            w.writer.send(seed).unwrap();
+            w.writer.flush().unwrap();
+            let mut observations = Vec::new();
+            for (at, empty) in [(0, last_empty), (100, !last_empty), (200, last_empty)] {
+                let mut b = snapshot("a", at, false, &[("a", "A"), ("b", "B")]);
+                b.change = Change::Reparse { chain: 1 };
+                b.length = 300;
+                b.parse[0].output.events.push(polylogue_model::Event {
+                    session: Some(sid("s")),
+                    kind: if empty {
+                        "active_path_empty"
+                    } else {
+                        "active_leaf"
+                    }
+                    .into(),
+                    at: None,
+                    after: (!empty).then(|| MessageId::parse("claude-code:a").unwrap()),
+                    range: None,
+                    data: Json::Null,
+                });
+                observations.push(b);
+            }
+            if reverse {
+                observations.reverse();
+            }
+            for b in observations {
+                w.writer.send(b).unwrap();
+                w.writer.derive().unwrap();
+            }
+            let pool = ReadPool::open(&w.archive).unwrap();
+            let reader = pool.reader().unwrap();
+            let rows = reader
+                .query(
+                    "SELECT id,on_active_path FROM current_message ORDER BY id",
+                    &[],
+                )
+                .unwrap();
+            assert_eq!(
+                rows,
+                vec![
+                    serde_json::json!({"id":"claude-code:a","on_active_path":if last_empty {0}else{1}}),
+                    serde_json::json!({"id":"claude-code:b","on_active_path":0})
+                ],
+                "empty:{last_empty}, reverse:{reverse}"
+            );
+            assert_eq!(read(&w), ["A", "B"], "retention does not follow visibility");
+        }
+    }
+}
+
+#[test]
+fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path() {
+    for invalid in [
+        None,
+        Some(("active_leaf", None)),
+        Some(("active_path_empty", Some("a"))),
+    ] {
+        let w = world();
+        let mut b = snapshot("a", 0, false, &[("a", "A")]);
+        if let Some((kind, after)) = invalid {
+            b.parse[0].output.events.push(polylogue_model::Event {
+                session: Some(sid("s")),
+                kind: kind.into(),
+                at: None,
+                after: after.map(|id| MessageId::parse(&format!("claude-code:{id}")).unwrap()),
+                range: None,
+                data: Json::Null,
+            });
+        }
+        w.writer.send(b).unwrap();
+        w.writer.derive().unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let activity = || {
+            pool.reader()
+                .unwrap()
+                .query("SELECT on_active_path FROM current_message", &[])
+                .unwrap()[0]["on_active_path"]
+                .clone()
+        };
+        assert!(activity().is_null());
+        let mut b = snapshot("a", 100, false, &[("a", "A")]);
+        b.parse[0].output.events.push(polylogue_model::Event {
+            session: Some(sid("s")),
+            kind: "active_path_empty".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: Json::Null,
+        });
+        w.writer.send(b).unwrap();
+        w.writer.derive().unwrap();
+        assert_eq!(activity(), 0);
+        let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+        conn.execute_batch("UPDATE message SET on_active_path=NULL; UPDATE derive_state SET version='4' WHERE name='active_path';").unwrap();
+        w.writer.derive().unwrap();
+        assert_eq!(activity(), 0);
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .query(
+                    "SELECT version FROM derive_state WHERE name='active_path'",
+                    &[]
+                )
+                .unwrap()[0]["version"],
+            "5"
+        );
+    }
+}
+
+#[test]
+fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
+    for timed in [false, true] {
+        let mut forward = None;
+        for reverse in [false, true] {
+            let w = world();
+            let mut inputs = [("empty", true, 200), ("leaf", false, 100)];
+            if reverse {
+                inputs.reverse();
+            }
+            for (input, empty, at) in inputs {
+                let mut b = snapshot(input, 0, false, &[("a", "A")]);
+                b.parse[0].output.events.push(polylogue_model::Event {
+                    session: Some(sid("s")),
+                    kind: if empty {
+                        "active_path_empty"
+                    } else {
+                        "active_leaf"
+                    }
+                    .into(),
+                    at: timed.then(|| Timestamp::from_unix_ms(at).unwrap()),
+                    after: (!empty).then(|| MessageId::parse("claude-code:a").unwrap()),
+                    range: None,
+                    data: Json::Null,
+                });
+                w.writer.send(b).unwrap();
+            }
+            w.writer.derive().unwrap();
+            let pool = ReadPool::open(&w.archive).unwrap();
+            let value = pool
+                .reader()
+                .unwrap()
+                .query("SELECT on_active_path FROM current_message", &[])
+                .unwrap()[0]["on_active_path"]
+                .clone();
+            if timed {
+                assert_eq!(value, 0);
+            }
+            if let Some(expected) = &forward {
+                assert_eq!(&value, expected);
+            } else {
+                forward = Some(value);
+            }
+        }
+    }
+}

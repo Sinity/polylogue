@@ -297,8 +297,9 @@ fn inactive_positive_rows_are_not_empty_compression_intermediaries() {
             .output
             .events
             .iter()
-            .any(|event| event.kind == "hermes_session_diagnostic"
-                && event.data.to_string().contains("no active leaf"))
+            .any(|event| event.kind == "active_path_empty"
+                && event.after.is_none()
+                && event.data.is_null())
     );
 }
 
@@ -340,4 +341,80 @@ fn fork_marker_does_not_invent_an_anchor_from_a_parent_that_can_continue() {
     assert_eq!(parsed.output.links[0].kind, LinkKind::Fork);
     assert!(parsed.output.links[0].at.is_none());
     assert_eq!(parsed.output.messages.len(), 3);
+}
+
+#[test]
+fn missing_or_malformed_activity_does_not_assert_an_empty_path() {
+    for flags in [
+        json!({}),
+        json!({"active":null,"compacted":null}),
+        json!({"active":false,"compacted":false}),
+        json!({"active":"0","compacted":0}),
+    ] {
+        let mut row = message(1, "s", "user", "retained unknown source");
+        row["r"].as_object_mut().unwrap().remove("active");
+        row["r"].as_object_mut().unwrap().remove("compacted");
+        row["r"]
+            .as_object_mut()
+            .unwrap()
+            .extend(flags.as_object().unwrap().clone());
+        let parsed = parse(vec![header("a"), session("s", None, None), row]);
+        assert_eq!(parsed.output.messages.len(), 1);
+        assert!(
+            parsed
+                .output
+                .events
+                .iter()
+                .any(|e| e.kind == "active_path_unknown" && e.after.is_none())
+        );
+        assert!(
+            !parsed
+                .output
+                .events
+                .iter()
+                .any(|e| matches!(e.kind.as_str(), "active_leaf" | "active_path_empty"))
+        );
+    }
+}
+
+#[test]
+fn folded_view_uses_a_genuine_last_record_and_keeps_original_message_ranges() {
+    let records = vec![
+        header("a"),
+        session("s", None, None),
+        message(1, "s", "user", "old row"),
+        json!({"t":"auxiliary","k":[1],"r":{"note":"later observation"}}),
+    ];
+    let raw = records.iter().map(|r| format!("{r}\n")).collect::<String>();
+    let last_start = raw[..raw.len() - 1].rfind('\n').unwrap() + 1;
+    let mut parser = Database::default();
+    let mut count = 0;
+    parser
+        .scan(
+            "retained-input",
+            &mut std::io::Cursor::new(raw.as_bytes()),
+            &mut |_: Range<u64>, _: Vec<u8>, _: Option<&str>, _: &[u8]| {
+                count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    let scope = parser
+        .begin(raw.len() as u64, None)
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert_eq!(
+        (scope.start, scope.end),
+        (last_start as u64, raw.len() as u64)
+    );
+    assert!(!scope.complete);
+    assert!(scope.covered.is_empty());
+    assert_eq!(count, records.len());
+    let parsed = parse(records);
+    let row = &parsed.output.messages[0];
+    assert!(row.end <= scope.start);
+    let source: Json = serde_json::from_str(&raw[row.offset as usize..row.end as usize]).unwrap();
+    assert_eq!(source["r"]["content"], "old row");
 }

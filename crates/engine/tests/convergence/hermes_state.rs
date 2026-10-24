@@ -114,3 +114,63 @@ fn two_same_named_native_databases_keep_profile_identity_after_provider_removal_
         );
     }
 }
+
+#[test]
+fn hermes_many_framed_messages_keep_one_view_scope_and_supplied_subagent_metadata() {
+    let w = ClaudeHome::new();
+    let path = w.home.join(".hermes/state.db");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,title TEXT,model TEXT,cwd TEXT); INSERT INTO sessions VALUES('child','subagent','Supplied child title','supplied-model','/synthetic/work'); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,active INTEGER,compacted INTEGER);").unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..128 {
+        tx.execute(
+            "INSERT INTO messages VALUES(?1,'child','assistant',?2,0,0)",
+            rusqlite::params![n, format!("retained body {n}")],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    drop(db);
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.converge().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    let ids = hermes_ids(&w);
+    assert_eq!(ids.len(), 1);
+    let session = r.session(&ids[0]).unwrap().unwrap();
+    assert_eq!(session.kind, polylogue_model::SessionKind::Subagent);
+    assert_eq!(session.title.unwrap().text, "Supplied child title");
+    assert_eq!(session.cwd, vec!["/synthetic/work"]);
+    let messages = r.messages(&ids[0], false).unwrap();
+    assert_eq!(messages.len(), 128);
+    assert!(
+        messages
+            .iter()
+            .all(|m| m.model.as_deref() == Some("supplied-model"))
+    );
+    let rows = r
+        .query("SELECT count(*) AS scopes FROM snapshot_session", &[])
+        .unwrap();
+    assert_eq!(rows[0]["scopes"], 1);
+    assert_eq!(
+        r.query(
+            "SELECT count(*) AS n FROM current_message WHERE on_active_path=0",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        128
+    );
+    assert_eq!(
+        r.query("SELECT count(*) AS n FROM message_source WHERE main=0", &[])
+            .unwrap()[0]["n"],
+        128
+    );
+    let accounting = r.query("SELECT framed FROM parse_state", &[]).unwrap();
+    println!(
+        "Hermes128 messages: scoped sessions={}, accounting={accounting:?}",
+        rows[0]["scopes"]
+    );
+    assert_eq!(accounting[0]["framed"], 130);
+}
