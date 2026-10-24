@@ -269,6 +269,14 @@ pub(super) fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static Orig
         .clone()
         .find(|o| o.locations.iter().any(|l| collect::ends_in(path, l)))
         .or_else(|| found.clone().find(|o| o.route == Route::Import))
+        .or_else(|| {
+            found.clone().find(|o| {
+                matches!(
+                    (o.open)(path),
+                    Some(polylogue_sources::parse::Parse::Export(_))
+                )
+            })
+        })
         .or(Some(first))
 }
 

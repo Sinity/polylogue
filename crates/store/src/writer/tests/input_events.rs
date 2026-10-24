@@ -199,3 +199,64 @@ fn input_events_require_record_coordinates_and_cannot_claim_after_message_associ
         );
     }
 }
+
+#[test]
+fn session_excision_preserves_input_owned_facts_and_refuses_shared_record_bytes() {
+    use crate::blobs::Piece;
+    use crate::excise::{ExciseRequest, Scope};
+    use std::sync::Arc;
+    for shared_record in [false, true] {
+        let w = world();
+        let store =
+            Arc::new(hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap());
+        let first = b"{\"native\":\"bound observation\"}\n";
+        let last = b"{\"native\":\"independent observation\"}\n";
+        let raw = if shared_record {
+            first.to_vec()
+        } else {
+            [first.as_slice(), last.as_slice()].concat()
+        };
+        let bound_end = first.len() as u64;
+        let mut bound = event((0, bound_end), "bound");
+        bound.session = Some(sid("conversation"));
+        let unrelated_range = if shared_record {
+            (0, bound_end)
+        } else {
+            (bound_end, raw.len() as u64)
+        };
+        let unrelated = event(unrelated_range, "independent");
+        let mut b = batch("shared-observer", 0, 0, vec![], &["conversation"]);
+        b.length = raw.len() as u64;
+        b.piece = Some(Piece::prepare(&store, &raw).unwrap());
+        b.parse[0].parsed_upto = b.length;
+        b.parse[0].output.events = vec![bound, unrelated];
+        send(&w.writer, b);
+        let before = rows(&w.archive);
+        let result = w.writer.excise(
+            ExciseRequest {
+                id: "remove-conversation".into(),
+                scope: Scope::Session(sid("conversation")),
+                reason: None,
+                dry_run: false,
+            },
+            store.clone(),
+        );
+        if shared_record {
+            assert!(
+                result.is_err(),
+                "unbound observer bytes are not owned by the conversation"
+            );
+            assert_eq!(rows(&w.archive), before);
+        } else {
+            let removed = result.unwrap();
+            assert!(removed.inputs_removed.is_empty());
+            let surviving = rows(&w.archive);
+            assert_eq!(surviving.len(), 1);
+            assert!(surviving[0]["session"].is_null());
+            assert_eq!(
+                surviving[0]["id"],
+                before.iter().find(|r| r["session"].is_null()).unwrap()["id"]
+            );
+        }
+    }
+}
