@@ -10,9 +10,10 @@ import { receiverContractPreparation, stagingRuntime } from "./infra/capture-sta
 import { BackfillCoordinator } from "../src/backfill/coordinator.js";
 import { backfillAlarmName } from "../src/backfill/models.js";
 import { ChatGptBackfillAdapter, ClaudeBackfillAdapter, GrokBackfillAdapter } from "../src/backfill/providers.js";
-import { IndexedDbBackfillStore, MemoryBackfillStore } from "../src/backfill/storage.js";
+import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 
 const captureOwners = new Map();
+function makeStore() { return new IndexedDbBackfillStore(indexedDB, `backfill-test-${globalThis.crypto.randomUUID()}`); }
 async function serializedContentHash(file) { return createHash("sha256").update(Buffer.from(await file.arrayBuffer())).digest("hex"); }
 async function captureContentHash(_envelope, file) { return serializedContentHash(file); }
 async function* checkpointResults(store, failures = []) {
@@ -141,7 +142,7 @@ class FixtureAdapter {
   }
 }
 
-function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
+function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, start = 100000, instanceId = "instance-a", policy = {}, store = makeStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
   const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, outcome: "accepted", submitted_content_hash: await captureContentHash(envelope, serialized), content_hash: await captureContentHash(envelope, serialized) }));
@@ -174,6 +175,8 @@ async function enumerateThenAdvance(h, job) {
   h.advance(h.policy.baseCadenceMs);
 }
 
+beforeEach(() => { vi.restoreAllMocks(); captureOwners.clear(); globalThis.IDBKeyRange = IDBKeyRange; });
+
 describe("background backfill coordinator", () => {
   it("does not let an unavailable retired checkpoint service block local job control", async () => {
     const h = harness(); const job = await startJob(h);
@@ -183,12 +186,7 @@ describe("background backfill coordinator", () => {
     expect((await h.store.getJob(job.id)).recovery_checkpoint_outcome.error).toBe("old remote checkpoint unavailable");
   });
 
-  beforeEach(() => { vi.restoreAllMocks(); captureOwners.clear(); globalThis.IDBKeyRange = IDBKeyRange; });
-
-  it.each([
-    ["memory", () => new MemoryBackfillStore()],
-    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `slow-${globalThis.crypto.randomUUID()}`)],
-  ])("renews a progressing capture past multiple recovery leases with %s", async (_label, makeStore) => {
+  it("renews a progressing capture past multiple recovery leases with IndexedDB", async () => {
     // Leave IndexedDB scheduling on real immediates while controlling lease timers.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
@@ -554,10 +552,13 @@ describe("background backfill coordinator", () => {
 
   it("commits state mutated during an in-flight receiver checkpoint before returning", async () => {
     let releaseCheckpoint;
+    let snapshotTaken;
+    const checkpointStarted = new Promise((resolve) => { snapshotTaken = resolve; });
     const checkpointGate = new Promise((resolve) => { releaseCheckpoint = resolve; });
     const writes = [];
     const checkpoint = vi.fn(async () => {
       writes.push({ jobs: await snapshotJobs(h.store) });
+      snapshotTaken();
       if (writes.length === 1) await checkpointGate;
       return checkpointResults(h.store);
     });
@@ -566,7 +567,7 @@ describe("background backfill coordinator", () => {
     h.coordinator.checkpoint = checkpoint;
 
     const reading = h.coordinator.status(job.id);
-    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    await checkpointStarted;
     const pausing = h.coordinator.control(job.id, "pause");
     await vi.waitFor(async () => expect((await h.store.getJob(job.id)).status).toBe("paused"));
     releaseCheckpoint();
@@ -579,6 +580,8 @@ describe("background backfill coordinator", () => {
 
   it("commits a healthy job mutation after a concurrent job checkpoint fails", async () => {
     let releaseCheckpoint;
+    let snapshotTaken;
+    const checkpointStarted = new Promise((resolve) => { snapshotTaken = resolve; });
     const checkpointGate = new Promise((resolve) => { releaseCheckpoint = resolve; });
     const writes = [];
     const h = harness();
@@ -593,12 +596,13 @@ describe("background backfill coordinator", () => {
     await h.store.createJob(healthy);
     h.coordinator.checkpoint = vi.fn(async () => {
       writes.push({ jobs: await snapshotJobs(h.store) });
+      snapshotTaken();
       if (writes.length === 1) await checkpointGate;
       return checkpointResults(h.store, [{ job_id: failed.id, error: "capture_job_receiver_unavailable" }]);
     });
 
     const readingFailed = h.coordinator.status(failed.id);
-    await vi.waitFor(() => expect(h.coordinator.checkpoint).toHaveBeenCalledTimes(1));
+    await checkpointStarted;
     const pausingHealthy = h.coordinator.control(healthy.id, "pause");
     await vi.waitFor(async () => expect((await h.store.getJob(healthy.id)).status).toBe("paused"));
     releaseCheckpoint();
@@ -813,10 +817,7 @@ describe("background backfill coordinator", () => {
     expect(h.adapter.fetchCalls).toEqual(["bad", "good"]);
   });
 
-  it.each([
-    ["memory storage", () => new MemoryBackfillStore()],
-    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
-  ])("atomically requeues auth-required work when resuming with %s", async (_label, makeStore) => {
+  it("atomically requeues auth-required work when resuming with IndexedDB", async () => {
     const adapter = new FixtureAdapter(["one"]);
     adapter.responses = [response({}, { status: 403 }), response(chatGptNative("one"))];
     const store = makeStore();
@@ -849,10 +850,7 @@ describe("background backfill coordinator", () => {
     expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    ["memory storage", () => new MemoryBackfillStore()],
-    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
-  ])("atomically requeues authenticated work when resuming with %s", async (_label, makeStore) => {
+  it("atomically requeues authenticated work when resuming with IndexedDB", async () => {
     const store = makeStore();
     const h = harness({ store });
     const job = await startJob(h);
@@ -864,7 +862,7 @@ describe("background backfill coordinator", () => {
   });
 
   it("grants only one lease across simultaneous extension instances", async () => {
-    const store = new MemoryBackfillStore();
+    const store = makeStore();
     await store.putQueue({ id: "q1", job_id: "j1", provider: "chatgpt", native_id: "one", state: "eligible", next_eligible_at_ms: 0 });
     const [left, right] = await Promise.all([
       store.acquireNextLease("j1", "instance-left", 100, 1000),
@@ -875,7 +873,7 @@ describe("background backfill coordinator", () => {
   });
 
   it("serializes leases across separate jobs for the same provider", async () => {
-    const store = new MemoryBackfillStore();
+    const store = makeStore();
     await store.putQueue({ id: "q1", job_id: "j1", provider: "chatgpt", native_id: "one", state: "eligible", next_eligible_at_ms: 0 });
     await store.putQueue({ id: "q2", job_id: "j2", provider: "chatgpt", native_id: "two", state: "eligible", next_eligible_at_ms: 0 });
     expect(await store.acquireNextLease("j1", "instance-left", 100, 1000)).not.toBeNull();
@@ -883,7 +881,7 @@ describe("background backfill coordinator", () => {
   });
 
   it("invalidates an expired execution even when the stable instance id reacquires it", async () => {
-    const store = new MemoryBackfillStore();
+    const store = makeStore();
     await store.createJob({ id: "j1", provider: "chatgpt", status: "running", policy: { maxDailyRequests: 10 }, execution_generation: 0 });
     const first = await store.acquireJobExecution("j1", "stable-instance", 0, 10);
     const second = await store.acquireJobExecution("j1", "stable-instance", 11, 10);
@@ -996,7 +994,7 @@ describe("background backfill coordinator", () => {
 
   it("pins Claude organization identity across restart and hard-reserves its request budget", async () => {
     let now = 1000;
-    const store = new MemoryBackfillStore();
+    const store = makeStore();
     const alarms = { create: vi.fn(async () => undefined) };
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response([{ uuid: "org-1" }]))
@@ -1017,7 +1015,7 @@ describe("background backfill coordinator", () => {
     expect(fetchImpl.mock.calls[2][0]).toContain("/organizations/org-1/chat_conversations/claude-1");
 
     const cappedFetch = vi.fn();
-    const capped = coordinatorFixture({ store: new MemoryBackfillStore(), adapters: { "claude-ai": new ClaudeBackfillAdapter(cappedFetch) }, receiver, alarms, clock: () => now, random: () => 0 });
+    const capped = coordinatorFixture({ store: makeStore(), adapters: { "claude-ai": new ClaudeBackfillAdapter(cappedFetch) }, receiver, alarms, clock: () => now, random: () => 0 });
     const cappedJob = await capped.start({ provider: "claude-ai", cutoff: "2026-01-01T00:00:00Z", policy: { maxDailyRequests: 1 } });
     await capped.wake(cappedJob.id);
     expect((await capped.status(cappedJob.id)).status).toBe("paused");
@@ -1147,10 +1145,7 @@ describe("provider adapter contracts", () => {
     });
   });
 
-  it.each([
-    ["memory storage", () => new MemoryBackfillStore()],
-    ["IndexedDB", () => new IndexedDbBackfillStore(indexedDB, `polylogue-test-${globalThis.crypto.randomUUID()}`)],
-  ])("keeps an unproven 200-empty inventory paused, then captures once with %s", async (_label, makeStore) => {
+  it("keeps an unproven 200-empty inventory paused, then captures once with IndexedDB", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ items: [], total: 0 }))
       .mockResolvedValueOnce(Object.assign(response({ items: [{ id: "one", update_time: 1780000000 }], total: 1 }), { polyloguePageContext: true }))
