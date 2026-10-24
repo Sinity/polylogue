@@ -734,6 +734,22 @@ selection includes that fact's independent unit, including a tombstone. General
 row equality remains strict. An observation batch includes its cited input and
 machine rows. A positive revision reference must name a selected revision
 identity, including an excision-authorized tombstone for historical observations.
+Archive format 9 records each machine alias's first local commit position.
+Machine dependencies include only aliases recorded by the enclosing unit's
+position. Their serialized rows retain the original `id`, `host` and
+`first_seen` fields; the cutoff is internal ordering knowledge, not event time.
+Restore derives the earliest supported cutoff from verified enclosing units,
+independent of arrival order. Before committing, restore compares each received
+machine dependency set with the target's final eligible aliases. Extra baseline
+aliases or changed fields refuse the restore and preserve its rows and checkpoint.
+Older local writers refuse archive 9; existing
+row decoders can consume its unchanged machine payloads.
+Migration assigns position zero to every existing alias, preserving the current
+serialized closures, including machines with several hostnames. It cannot
+reconstruct an older acknowledged payload that pre-version-9 software had
+already changed. Such external hash conflicts still require their original
+verified batches; migration does not rewrite acknowledgment history.
+
 Same-archive restore refuses a view missing any
 local independently sequenced fact before removing rows. Excision replaces the
 independent units and the parents that could contain legacy embedded copies.

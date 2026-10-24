@@ -25,6 +25,7 @@ pub const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/migrations/006-vector-deletion-policy.sql"),
     include_str!("schema/migrations/007-document-excision.sql"),
     include_str!("schema/migrations/008-extracted-blobs.sql"),
+    include_str!("schema/migrations/009-machine-order.sql"),
 ];
 
 /// The `user_version` of a database: 0 for an empty file.

@@ -5,12 +5,15 @@ fn source() -> Connection {
     let source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
     source
-        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../../schema/migrations/005-append-facts.sql"),
+            include_str!("../../schema/migrations/009-machine-order.sql")
+        ))
         .unwrap();
     source.execute_batch("PRAGMA foreign_keys=ON;
         INSERT INTO input VALUES ('input1','synthetic-text');
         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input1',1,'first',1,3,1);
-        INSERT INTO machine VALUES ('machine1','host-a',1),('machine1','host-b',1);
+        INSERT INTO machine(id,host,first_seen) VALUES ('machine1','host-a',1),('machine1','host-b',1);
         INSERT INTO observation(id,input,machine,path,class,revision,polylogue_version,seen_at) VALUES ('seen1','input1','machine1','synthetic','first',1,'test',1);").unwrap();
     let hash = blake3::hash(b"abc");
     source
@@ -93,7 +96,10 @@ fn target() -> Connection {
     let target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
     target
-        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../../schema/migrations/005-append-facts.sql"),
+            include_str!("../../schema/migrations/009-machine-order.sql")
+        ))
         .unwrap();
     target.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('kept','kept','note','unchanged','operator','test',1,2);").unwrap();
     target

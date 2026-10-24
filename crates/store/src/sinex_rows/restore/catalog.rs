@@ -25,6 +25,9 @@ impl Catalog {
             CREATE TABLE excision_applied(id_hash BLOB PRIMARY KEY,policy_hash BLOB NOT NULL) WITHOUT ROWID;
             CREATE TABLE verified_source(hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK(bytes>=0)) WITHOUT ROWID;
             CREATE TABLE blob_range(hash TEXT PRIMARY KEY, needed INTEGER NOT NULL) WITHOUT ROWID;
+            CREATE TABLE expected_machine(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
+                id TEXT NOT NULL,host TEXT NOT NULL,first_seen INTEGER NOT NULL,
+                PRIMARY KEY(seq,kind,key,id,host,first_seen)) WITHOUT ROWID;
             CREATE TABLE allowed(kind TEXT NOT NULL, id TEXT NOT NULL,
                 PRIMARY KEY(kind,id)) WITHOUT ROWID;
             BEGIN;",
@@ -252,6 +255,9 @@ impl Selection {
     }
 
     pub(super) fn begin_install(&self) -> Result<()> {
+        self.catalog
+            .db
+            .execute("DELETE FROM expected_machine", [])?;
         let verified = self.sources_verified.replace(false);
         let required: bool = self.catalog.db.query_row(
             "SELECT EXISTS(SELECT 1 FROM selected s,json_each(s.data,'$.blobs'))",

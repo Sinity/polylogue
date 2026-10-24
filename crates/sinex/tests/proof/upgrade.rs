@@ -1,4 +1,4 @@
-//! An actual archive7 producer, followed by source-free archive8/index33 replay.
+//! An actual archive7 producer, followed by source-free archive9/index33 replay.
 use super::*;
 use polylogue_store::sinex_rows::Published;
 use rusqlite::{Connection, types::Value};
@@ -235,7 +235,7 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
     drop(lock);
     assert_eq!(
         rows(&root.join("archive.db"), "PRAGMA user_version"),
-        vec![vec![Value::Integer(8)]]
+        vec![vec![Value::Integer(9)]]
     );
     assert_eq!(
         rows(&root.join("index.db"), "PRAGMA user_version"),
@@ -341,7 +341,7 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
 
     let mut old_writer = command(&old, &root, &empty, &cfg);
     old_writer.arg("daemon");
-    assert_refused(old_writer, "archive format 8", dir);
+    assert_refused(old_writer, "archive format 9", dir);
     let decoder_cfg = dir.join("old-decoder-config");
     fs::create_dir_all(decoder_cfg.join("polylogue")).unwrap();
     fs::write(

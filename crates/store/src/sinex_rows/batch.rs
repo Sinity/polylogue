@@ -99,8 +99,8 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "machine",
-                "SELECT m.* FROM machine m WHERE m.id IN
-                   (SELECT machine FROM observation WHERE input = ?1 AND revision = ?2 AND commit_seq=0)",
+                &format!("SELECT m.id,m.host,m.first_seen FROM machine m WHERE m.first_commit_seq<={} AND m.id IN
+                   (SELECT machine FROM observation WHERE input = ?1 AND revision = ?2 AND commit_seq=0)",unit.commit_seq),
                 &args,
             )?;
             add(
@@ -171,7 +171,10 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "machine",
-                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE id=?1)",
+                &format!(
+                    "SELECT id,host,first_seen FROM machine WHERE first_commit_seq<={} AND id IN (SELECT machine FROM observation WHERE id=?1)",
+                    unit.commit_seq
+                ),
                 &key,
             )?;
             add(
@@ -229,7 +232,10 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "machine",
-                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0)",
+                &format!(
+                    "SELECT id,host,first_seen FROM machine WHERE first_commit_seq<={} AND id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0)",
+                    unit.commit_seq
+                ),
                 &key,
             )?;
             add(

@@ -815,6 +815,7 @@ mod revision_ownership;
 mod delivery_updates;
 
 mod append_facts;
+mod machine_alias;
 
 mod vector_policies;
 
