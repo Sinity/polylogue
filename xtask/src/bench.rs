@@ -112,6 +112,9 @@ pub enum Bench {
         /// Warm repetitions after each operation's first request.
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
         repetitions: u32,
+        /// Traverse every page rather than bounded first/middle/tail windows.
+        #[arg(long)]
+        full_walk: bool,
     },
     /// Compare the latest linear estimate with a supplied full-run result.
     /// Candidate/input matching and multi-size calibration remain unchecked.
@@ -134,7 +137,10 @@ pub fn execute(command: Bench) -> ExitCode {
             storage,
             incremental,
         } => run(target, &storage, incremental),
-        Bench::Reads { repetitions } => return reads::execute(repetitions),
+        Bench::Reads {
+            repetitions,
+            full_walk,
+        } => return reads::execute(repetitions, full_walk),
         Bench::Validate { result } => validate(&result),
         Bench::Shared(b) => return devkit::cli::bench("polylogue", b),
     };
