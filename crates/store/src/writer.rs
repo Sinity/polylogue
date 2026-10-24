@@ -36,7 +36,7 @@ mod search;
 use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, pack_event, unpack_block};
-pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
+pub use batch::{Batch, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport};
 pub(crate) use bytes::observation_id;
 use bytes::*;
 use excluded::*;
@@ -58,6 +58,7 @@ enum Msg {
         std::sync::Arc<hashed_blobs::Store>,
         SyncSender<Result<crate::retention::Reconciled>>,
     ),
+    Assets(crate::export_items::ExportItems, SyncSender<Result<()>>),
     Parsers(Vec<(String, u32)>, SyncSender<Result<()>>),
     Stop,
     Batch(Box<Batch>),
@@ -336,6 +337,16 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Assets(staged, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Waits until earlier batches are committed and their memory reservations
     /// are released, then returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
@@ -440,6 +451,7 @@ impl Inner {
         let mut retentions = Vec::new();
         let mut retention_groups = Vec::new();
         let mut reconciliations = Vec::new();
+        let mut assets = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
             let mut group = Vec::new();
@@ -457,6 +469,10 @@ impl Inner {
                     }
                     Msg::ReconcileRetained(store, reply) => {
                         reconciliations.push((store, reply));
+                        false
+                    }
+                    Msg::Assets(staged, reply) => {
+                        assets.push((staged, reply));
                         false
                     }
                     Msg::Parsers(versions, reply) => {
@@ -583,6 +599,12 @@ impl Inner {
                 })
             {
                 self.report.errors.push(format!("derive: {e}"));
+            }
+            for (staged, reply) in assets.drain(..) {
+                let result = self
+                    .settle()
+                    .and_then(|()| crate::assets::install(&mut self.index, &self.archive, staged));
+                let _ = reply.send(result);
             }
             // Whatever a flush reports written is also searchable.
             if !flushes.is_empty()

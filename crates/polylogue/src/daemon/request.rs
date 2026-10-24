@@ -18,6 +18,20 @@ pub enum Request {
         bytes: Vec<u8>,
     },
     Status,
+    Attachment {
+        message: polylogue_model::MessageId,
+        block: usize,
+        #[serde(default)]
+        attachment: usize,
+        #[serde(default)]
+        asset: Option<String>,
+        #[serde(default)]
+        reveal: bool,
+        #[serde(default = "attachment_chunk")]
+        length: usize,
+        #[serde(default)]
+        cursor: Option<String>,
+    },
     /// Finite JSON-lines change-reference batch over the existing socket.
     Changes {
         since: Option<String>,
@@ -171,6 +185,7 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::Attachment { .. }
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
@@ -196,6 +211,10 @@ impl Request {
             | Self::Cancel { .. } => false,
         }
     }
+}
+
+fn attachment_chunk() -> usize {
+    64 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

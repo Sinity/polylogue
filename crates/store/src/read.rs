@@ -734,6 +734,53 @@ impl Reader<'_> {
             .read_range(store, start, end)
     }
 
+    /// Read the selected retained asset range through this same admitted view.
+    pub fn attachment_range(
+        &self,
+        asset: &crate::assets::AssetCandidate,
+        roots: &[std::path::PathBuf],
+        range: std::ops::Range<u64>,
+    ) -> Result<Vec<u8>> {
+        let store =
+            hashed_blobs::Store::open(self.pool.archive.root.clone(), roots.to_vec(), 0o600)?;
+        self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
+    }
+
+    /// A current full hash may span several blobs after text excision. Compute
+    /// it once for an explicitly requested exact delivery, streaming the bytes.
+    pub fn attachment_hash(
+        &self,
+        asset: &crate::assets::AssetCandidate,
+        roots: &[std::path::PathBuf],
+    ) -> Result<polylogue_model::BlobHash> {
+        use std::io::Read;
+        let store = std::sync::Arc::new(hashed_blobs::Store::open(
+            self.pool.archive.root.clone(),
+            roots.to_vec(),
+            0o600,
+        )?);
+        let mut source = self
+            .stored_chain(&asset.input, asset.chain, asset.size)?
+            .reader(store);
+        let mut hasher = blake3::Hasher::new();
+        let mut buffer = [0; 64 * 1024];
+        let mut length = 0u64;
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            length += count as u64;
+        }
+        if length != asset.size {
+            return Err(StoreError::Invalid(
+                "retained attachment length differs".into(),
+            ));
+        }
+        Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))
+    }
+
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {

@@ -56,6 +56,35 @@ pub fn status(_: &Command, _: &Values, _: &Caller) -> Built {
     Ok(Request::Status)
 }
 
+pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
+    let reveal = v.flag("reveal");
+    if reveal {
+        if caller.surface != super::Surface::Cli || v.text("out").is_none() {
+            return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
+        }
+        crate::daemon::attachment::check_cli()?;
+    } else if v.text("out").is_some() {
+        return Err("--out requires --reveal".into());
+    }
+    let index = |key: &str, default: u64| {
+        usize::try_from(v.integer(key).unwrap_or(default))
+            .map_err(|_| format!("{key} exceeds address space"))
+    };
+    let message = v.text("message").ok_or("message is required")?;
+    Ok(Request::Attachment {
+        message: polylogue_model::MessageId::parse(
+            message.strip_prefix("message:").unwrap_or(&message),
+        )
+        .map_err(|e| e.to_string())?,
+        block: index("block", 0)?,
+        attachment: index("attachment", 0)?,
+        asset: v.text("asset"),
+        reveal,
+        length: index("length", 65536)?,
+        cursor: None,
+    })
+}
+
 pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
     let base = caller.cwd.clone().unwrap_or_default();
     Ok(Request::Import {

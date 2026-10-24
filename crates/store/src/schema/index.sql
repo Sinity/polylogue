@@ -763,3 +763,35 @@ CREATE TABLE document_block (
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
 CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
 CREATE VIEW current_document AS SELECT * FROM document WHERE present=1;
+
+-- Import membership is projected from the engine-authored observation details.
+CREATE TABLE import_member (
+  observation TEXT PRIMARY KEY,
+  acquisition TEXT NOT NULL,
+  input TEXT NOT NULL,
+  member TEXT NOT NULL,
+  source_id TEXT,
+  sidecar TEXT
+) STRICT;
+CREATE INDEX import_member_input ON import_member(input,acquisition);
+CREATE INDEX import_member_asset ON import_member(acquisition,source_id);
+CREATE INDEX import_member_sidecar ON import_member(input) WHERE sidecar IS NOT NULL;
+CREATE TABLE import_asset_metadata (
+  input TEXT NOT NULL,
+  sidecar TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  source_id TEXT NOT NULL,
+  name TEXT,
+  media_type TEXT,
+  size TEXT,
+  PRIMARY KEY(input,sidecar,ordinal)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX import_asset_metadata_id ON import_asset_metadata(input,sidecar,source_id);
+CREATE TABLE import_asset_sidecar (
+  input TEXT NOT NULL,
+  sidecar TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  basis TEXT NOT NULL,
+  error TEXT,
+  PRIMARY KEY(input,sidecar)
+) STRICT, WITHOUT ROWID;

@@ -24,6 +24,18 @@ pub struct Observation {
     pub path: String,
     pub facts: Option<FileFacts>,
     pub seen_at_ms: i64,
+    /// Membership established by this explicit import, independent of byte deduplication.
+    pub import: Option<ImportMember>,
+}
+
+/// Engine-authored membership of one acquisition. It does not assert that
+/// every expected export member was present or successfully acquired.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportMember {
+    pub version: u8,
+    pub acquisition: String,
+    pub member: String,
 }
 
 /// One parse step's rows and where they sit in the input's chain.

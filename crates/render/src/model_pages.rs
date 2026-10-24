@@ -12,6 +12,7 @@ const CHARS_PER_TOKEN: usize = 4;
 pub struct Page {
     pub text: String,
     pub next: Option<Position>,
+    pub attachments: Vec<crate::AttachmentRef>,
 }
 
 /// A position in the rendered stream. The caller binds it to the read view.
@@ -33,6 +34,8 @@ pub struct Pager {
     used: usize,
     text: String,
     next: Option<Position>,
+    attachments: Vec<crate::AttachmentRef>,
+    seen_attachments: std::collections::HashSet<crate::AttachmentRef>,
 }
 
 impl Pager {
@@ -48,23 +51,43 @@ impl Pager {
             used: 0,
             text: String::new(),
             next: None,
+            attachments: Vec::new(),
+            seen_attachments: std::collections::HashSet::new(),
         }
     }
 
     /// Consume the message at the requested position, then following messages.
     /// Break as soon as a continuation is known, before decoding later bodies.
-    pub fn push(&mut self, mut message: Message) -> Result<ControlFlow<()>, &'static str> {
+    pub fn push(&mut self, message: Message) -> Result<ControlFlow<()>, &'static str> {
+        self.push_with_attachments(message, |_| Vec::new())
+    }
+
+    pub fn push_with_attachments(
+        &mut self,
+        mut message: Message,
+        labels: impl FnOnce(&Message) -> Vec<crate::AttachmentLabel>,
+    ) -> Result<ControlFlow<()>, &'static str> {
         // Replay prior source messages on resume. Hidden blocks establish the
         // same context ordinary and structured outputs use before projection.
         self.masker.message(&mut message);
+        if self.message < self.at.message {
+            return self.push_pieces(Vec::new(), header(&message), Vec::new());
+        }
+        let labels = labels(&message);
+        let annotations = crate::attachments::apply(&mut message, self.view, labels);
         let ps = pieces(&message, self.view);
-        self.push_pieces(ps, header(&message))
+        self.push_pieces(ps, header(&message), annotations)
+    }
+
+    pub fn visible_attachments(&self) -> &[crate::AttachmentRef] {
+        &self.attachments
     }
 
     fn push_pieces(
         &mut self,
         ps: Vec<crate::Piece>,
         heading: String,
+        annotations: Vec<crate::attachments::Annotation>,
     ) -> Result<ControlFlow<()>, &'static str> {
         let current = self.message;
         self.message += 1;
@@ -86,6 +109,10 @@ impl Pager {
                 let sep = if self.at.message > 0 { "\n" } else { "" };
                 body = format!("{sep}{}{body}", heading);
             }
+            let prefix = body
+                .chars()
+                .count()
+                .saturating_sub(p.text.chars().count() + 1);
             let length = body.chars().count();
             if self.at.character >= length {
                 return Err("the read cursor character is outside the piece");
@@ -94,6 +121,17 @@ impl Pager {
             let room = self.budget.saturating_sub(self.used);
             let remaining = length - self.at.character;
             let take = remaining.min(room);
+            for annotation in annotations
+                .iter()
+                .filter(|annotation| annotation.piece == self.at.piece)
+            {
+                if prefix + annotation.from < self.at.character + take
+                    && prefix + annotation.until > self.at.character
+                    && self.seen_attachments.insert(annotation.reference.clone())
+                {
+                    self.attachments.push(annotation.reference.clone());
+                }
+            }
             self.text
                 .extend(body.chars().skip(self.at.character).take(take));
             self.used += take;
@@ -117,6 +155,7 @@ impl Pager {
         Ok(Page {
             text: self.text,
             next: self.next,
+            attachments: self.attachments,
         })
     }
 }
@@ -153,7 +192,7 @@ impl BlockPager {
         } else {
             String::new()
         };
-        self.stream.push_pieces(ps, heading)
+        self.stream.push_pieces(ps, heading, Vec::new())
     }
     pub fn finish(self) -> Result<Page, &'static str> {
         self.stream.finish()

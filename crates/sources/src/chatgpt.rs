@@ -15,6 +15,8 @@
 //! ancestors (the Python rule). Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
+pub mod assets;
+
 use crate::Disposition;
 use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};

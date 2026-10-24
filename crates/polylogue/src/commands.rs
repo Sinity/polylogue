@@ -430,6 +430,50 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "attachment",
+        help: "Describe a message attachment and its retained export bytes",
+        args: &[
+            pos("message", Kind::Text, "The message ID"),
+            pos("block", Kind::Integer, "Zero-based source block index"),
+            opt(
+                "attachment",
+                Kind::Integer,
+                "Zero-based attachment within a tool result (default 0)",
+            ),
+            opt(
+                "asset",
+                Kind::Text,
+                "Select a retained input ID from an ambiguous descriptor",
+            ),
+            Arg {
+                default: Some("65536"),
+                ..opt("length", Kind::Integer, "Bytes per exact retrieval range")
+            },
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "reveal",
+                    Kind::Bool,
+                    "Retrieve exact bytes with terminal stdout outside an agent harness",
+                )
+            },
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "out",
+                    Kind::Text,
+                    "Install verified exact bytes at this file; requires --reveal",
+                )
+            },
+        ],
+        action: Action::Request(requests::attachment),
+        output: Some(crate::cli::attachment::output),
+        print: print::json,
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
         name: "export",
         help: "Write sessions, text documents and events out as files",
         args: &[

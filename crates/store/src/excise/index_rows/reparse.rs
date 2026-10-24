@@ -18,6 +18,11 @@ pub(in crate::excise) fn clear_for_reparse(
     hashes: &RemovalHashes<'_>,
 ) -> Result<Vec<String>> {
     let i = t.index;
+    if !dry_run {
+        for input in holding {
+            crate::assets::invalidate_metadata(i, input)?;
+        }
+    }
     i.execute_batch(
         "CREATE TEMP TABLE excision_reparse_text(id INTEGER PRIMARY KEY);
          CREATE TEMP TABLE excision_reparse_session(pk INTEGER PRIMARY KEY,id TEXT NOT NULL);

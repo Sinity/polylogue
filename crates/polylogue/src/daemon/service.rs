@@ -212,6 +212,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(e) => return error("store", e),
     };
     match request {
+        Request::Attachment {
+            message,
+            block,
+            attachment,
+            reveal,
+            cursor,
+            ..
+        } => {
+            if reveal {
+                return error(
+                    "operator_required",
+                    "exact attachment bytes require the interactive CLI operator path",
+                );
+            }
+            if cursor.is_some() {
+                return error("bad_request", "a cursor continues an exact attachment read");
+            }
+            match reader.masked_attachment(&message, block, attachment) {
+                Ok(resolution) => ok(resolution),
+                Err(e) => store_error(&e),
+            }
+        }
         Request::BrowserEnqueue { action } => {
             let enabled = match reader.setting("browser.actions", &machine_id()) {
                 Ok(value) => value.as_deref() == Some("on"),

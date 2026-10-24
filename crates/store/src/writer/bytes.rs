@@ -160,8 +160,8 @@ pub(super) fn insert_observation(
     let f = o.facts;
     tx.prepare_cached(
         "INSERT INTO observation(id, input, machine, path, class, revision, length, device, inode,
-             size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq, details_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )?
     .execute(params![
         observation_id(tx, seq, &b.input.id)?,
@@ -179,6 +179,10 @@ pub(super) fn insert_observation(
         env!("CARGO_PKG_VERSION"),
         o.seen_at_ms,
         seq,
+        o.import
+            .as_ref()
+            .map(|member| serde_json::to_string(&serde_json::json!({"import": member})))
+            .transpose()?,
     ])?;
     Ok(())
 }

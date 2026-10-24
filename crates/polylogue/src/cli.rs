@@ -2,6 +2,7 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
+pub(crate) mod attachment;
 mod changes;
 pub mod local;
 pub mod print;

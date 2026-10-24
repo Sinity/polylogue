@@ -75,6 +75,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             path: format!("/p/{input}"),
             facts: None,
             seen_at_ms: 1,
+            import: None,
         }),
         continues: false,
         piece: None,

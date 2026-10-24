@@ -220,6 +220,7 @@ impl WriterWorld {
                 path: path.into(),
                 facts: None,
                 seen_at_ms: 1,
+                import: None,
             }),
             continues: false,
             piece: None,

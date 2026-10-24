@@ -13,6 +13,7 @@ sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
 atomicwrites.workspace = true
+rustix.workspace = true
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
 polylogue-model.workspace = true
