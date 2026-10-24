@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     name: "work",
     // Bumped when the rules change; every session is derived again.
-    version: super::Version::Rules(1),
+    version: super::Version::Rules(2),
     // Reads tool calls' commands and outcome reasons.
     after: &["tool_calls"],
     run: |tx, session_pk, _| {
@@ -149,6 +149,7 @@ struct Pursuit {
     state: &'static str,
     checks_ok: u32,
     checks_failed: u32,
+    checks_unknown: u32,
     commits: u32,
 }
 
@@ -317,6 +318,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
                     state: "pending",
                     checks_ok: 0,
                     checks_failed: 0,
+                    checks_unknown: 0,
                     commits: 0,
                 }
             });
@@ -366,6 +368,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
                                     state: "open",
                                     checks_ok: 0,
                                     checks_failed: 0,
+                                    checks_unknown: 0,
                                     commits: 0,
                                 }
                             });
@@ -433,6 +436,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
                 state: "",
                 checks_ok: 0,
                 checks_failed: 0,
+                checks_unknown: 0,
                 commits: 0,
             },
         );
@@ -440,12 +444,11 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
     // Attempts, with what was checked and made while each was open.
     let mut attempt_pk: BTreeMap<String, i64> = BTreeMap::new();
     for (call, _) in &checks {
-        let ok = call.outcome == "ok";
         for p in pursuits.values_mut().filter(|p| p.open_at(call.at)) {
-            if ok {
-                p.checks_ok += 1;
-            } else {
-                p.checks_failed += 1;
+            match call.outcome.as_str() {
+                "ok" => p.checks_ok += 1,
+                "error" => p.checks_failed += 1,
+                _ => p.checks_unknown += 1,
             }
         }
     }
@@ -470,6 +473,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
         let attrs = serde_json::json!({
             "checks_passed": p.checks_ok,
             "checks_failed": p.checks_failed,
+            "checks_unknown": p.checks_unknown,
             "artifacts": p.commits,
         });
         let attempt = node(

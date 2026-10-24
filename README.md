@@ -93,6 +93,10 @@ binary through the HTTP adapter, and neither operation is offered through CLI or
 | `completions SHELL` | Shell completions for bash, elvish, fish, PowerShell or zsh. |
 | `sinex status\|cutover` | Not built yet, so hidden from help: the optional Sinex backend's state and the move to it. |
 
+Work attempt totals distinguish `checks_passed`, `checks_failed` and
+`checks_unknown`. `polylogue 'work where checks_unknown:>0'` finds attempts
+with checks whose outcome is unknown.
+
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
 invalid request, 6 no daemon running.
 
