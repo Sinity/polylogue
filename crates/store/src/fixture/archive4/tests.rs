@@ -24,6 +24,7 @@ fn historical_archive4_upgrades_without_changing_authored_data_or_identity() {
         "vector_deletion_policy",
         "excision_document",
         "extracted_blob",
+        "observation_container",
     ] {
         let count: i64 = db
             .query_row(
@@ -57,7 +58,7 @@ fn historical_archive4_upgrades_without_changing_authored_data_or_identity() {
     drop(db);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    assert_eq!(crate::schema::version(&db).unwrap(), 9);
+    assert_eq!(crate::schema::version(&db).unwrap(), 10);
     assert_eq!(
         db.query_row("SELECT value FROM meta WHERE key='archive_id'", [], |r| {
             r.get::<_, String>(0)

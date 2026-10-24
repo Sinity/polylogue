@@ -301,17 +301,18 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
     let (mut e, _lock) = w.engine(64 << 20);
     let report = e.import(std::slice::from_ref(&zip_path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-    assert_eq!(report.imported.len(), 2, "{:?}", report.imported);
+    assert_eq!(report.imported.len(), 3, "{:?}", report.imported);
+    assert!(report.imported.contains(&zip_path));
     let msgs = messages_of(&w.root, "chatgpt:c1");
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].text(), "look at this");
     assert_eq!(
         w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'export-file'"),
-        1,
-        "the image is kept as bytes"
+        2,
+        "the original ZIP and image are kept as bytes"
     );
     let again = e.import(std::slice::from_ref(&zip_path)).unwrap();
-    assert_eq!(again.already_stored.len(), 2);
+    assert_eq!(again.already_stored.len(), 3);
     assert!(again.imported.is_empty());
 }
 

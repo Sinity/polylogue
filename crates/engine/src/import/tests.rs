@@ -172,7 +172,10 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert_eq!(
         report.imported,
-        [PathBuf::from(format!("{}!/one.bin", path.display()))]
+        [
+            path.clone(),
+            PathBuf::from(format!("{}!/one.bin", path.display()))
+        ]
     );
     assert_eq!(
         report.already_stored,
@@ -190,9 +193,9 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
             .length,
         bytes.len() as u64
     );
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 1);
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 2);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 2);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 2);
 }
 
 #[test]

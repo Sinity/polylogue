@@ -103,16 +103,15 @@ fn legacy_alias_migration_keeps_current_batches_and_excludes_a_future_alias() {
     observe(&writer, "host-b", 1, Change::Unchanged);
     drop(writer);
     let db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    // Archive8 exposed every current alias to every observation. Capture that
-    // closure, then remove the new local-only column to exercise its migration.
+    // Archive8 exposed every current alias to every observation. Preserve that
+    // closure while projecting rows into the frozen historical schema.
     db.execute("UPDATE machine SET first_commit_seq=0", [])
         .unwrap();
     let source = Published::open(&archive.root).unwrap();
     let before = super::append_facts::descriptors(&source);
     drop(source);
-    db.execute_batch("ALTER TABLE machine DROP COLUMN first_commit_seq; PRAGMA user_version=8;")
-        .unwrap();
     drop(db);
+    archive8::replace(&archive.archive_db());
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let source = Published::open(&archive.root).unwrap();
@@ -165,9 +164,8 @@ fn verified_older_machine_closure_refuses_a_migrated_conflicting_target_atomical
     let mut restore = Restoring::open(&target).unwrap();
     install(&mut restore).unwrap();
     drop(restore);
+    archive8::replace(&target.archive_db());
     let mut db = open_write(&target.archive_db(), cache::SETUP).unwrap();
-    db.execute_batch("ALTER TABLE machine DROP COLUMN first_commit_seq; PRAGMA user_version=8;")
-        .unwrap();
     crate::schema::migrate_archive(&mut db).unwrap();
     // Migration preserves the current alias set. The original verified older
     // batch now proves that the target's baseline closure already diverged.
@@ -259,3 +257,5 @@ fn verified_older_machine_closure_refuses_a_migrated_conflicting_target_atomical
 }
 
 mod history;
+
+mod archive8;
