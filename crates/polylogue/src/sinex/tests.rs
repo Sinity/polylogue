@@ -89,13 +89,39 @@ fn a_later_startup_error_drops_the_started_publisher() {
 
 #[test]
 fn a_publisher_panic_is_reported_when_joined() {
-    let (started, wait) = sync_channel(1);
+    struct PanicCleanup {
+        unwinding: std::sync::mpsc::SyncSender<()>,
+        release: Receiver<()>,
+        cleaned: std::sync::mpsc::SyncSender<()>,
+    }
+
+    impl Drop for PanicCleanup {
+        fn drop(&mut self) {
+            self.unwinding.send(()).unwrap();
+            self.release.recv().unwrap();
+            self.cleaned.send(()).unwrap();
+        }
+    }
+
+    let (unwinding, wait) = sync_channel(1);
+    let (release, held) = sync_channel(1);
+    let (cleaned, cleanup) = sync_channel(1);
     let publisher = Publisher::spawn(runtime(), move || async move {
-        started.send(()).unwrap();
+        let _cleanup = PanicCleanup {
+            unwinding,
+            release: held,
+            cleaned,
+        };
         panic!("synthetic publisher failure");
     })
     .unwrap();
-    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    // Panic handling and future cleanup precede the bounded shutdown check.
+    // Nextest's process guard also bounds these synchronization waits.
+    wait.recv().unwrap();
+    assert!(!publisher.thread.as_ref().unwrap().is_finished());
+    release.send(()).unwrap();
+    cleanup.recv().unwrap();
     assert!(
         stop(publisher)
             .unwrap_err()
