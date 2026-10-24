@@ -145,6 +145,27 @@ pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<S
     ))
 }
 
+pub(super) fn check_import_format(
+    tx: &Connection,
+    input: &str,
+    member: Option<&ImportMember>,
+) -> Result<()> {
+    let Some(format) = member
+        .and_then(|member| member.format.as_deref())
+        .filter(|format| *format != "export-file")
+    else {
+        return Ok(());
+    };
+    let competing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM input WHERE id=?1 AND format NOT IN ('export-file',?2))
+        OR EXISTS(SELECT 1 FROM observation WHERE input=?1 AND class='imported' AND json_valid(details_json)
+            AND json_type(details_json,'$.import.format')='text' AND json_extract(details_json,'$.import.format') NOT IN ('export-file',?2))",
+        params![input,format], |r|r.get(0))?;
+    if competing {
+        return Err(StoreError::Conflict("immutable import has a competing parsed origin; switching interpretations is unsupported".into()));
+    }
+    Ok(())
+}
+
 pub(super) fn insert_observation(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -155,6 +176,7 @@ pub(super) fn insert_observation(
     let Some(o) = &b.observation else {
         return Ok(());
     };
+    check_import_format(tx, &b.input.id, o.import.as_ref())?;
     tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen, first_commit_seq) VALUES (?1, ?2, ?3, ?4)")?
         .execute(params![o.machine, o.host, o.seen_at_ms, seq])?;
     let f = o.facts;

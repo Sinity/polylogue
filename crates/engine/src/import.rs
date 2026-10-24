@@ -48,6 +48,7 @@ impl Engine {
                         version: 1,
                         acquisition: acquisition.clone(),
                         member,
+                        format: None,
                     },
                 ));
             }
@@ -85,6 +86,7 @@ impl Engine {
                         version: 1,
                         acquisition: acquisition.clone(),
                         member: member.name().to_owned(),
+                        format: None,
                     });
                     unchanged(&generation, facts, facts.size)?;
                     if captured.prepared.len() != declared {
@@ -163,10 +165,16 @@ impl Engine {
         facts: Option<FileFacts>,
         report: &mut ImportReport,
     ) -> Result<Option<Plan>, EngineError> {
+        if origin.support != Support::Parsed {
+            report.unrecognized.push(path.to_path_buf());
+        }
         let size = captured.prepared.len();
         let id = captured.prepared.hash().to_string();
         let mut observation = self.observation(path, facts);
-        observation.import = captured.member;
+        observation.import = captured.member.map(|mut member| {
+            member.format = Some(origin.name.into());
+            member
+        });
         let input = InputKey {
             id,
             format: origin.name.into(),

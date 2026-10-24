@@ -377,7 +377,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "import",
-        help: "Bring in an export (ChatGPT, claude.ai, Gemini, a Polylogue export)",
+        help: "Retain files or export members and interpret recognized formats; unrecognized paths may also be imported or already stored",
         args: &[pos_opt("paths", Kind::List, "Files or directories")],
         action: Action::Request(requests::import),
         writes: true,

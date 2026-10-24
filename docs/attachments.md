@@ -34,6 +34,16 @@ replaces the destination only after all ranges, length and BLAKE3 agree.
 Changed source or association state refuses continuation; a failure before installation
 leaves an existing destination untouched.
 
+Import results separate byte retention (`imported` / `already_stored`) from
+interpretation (`unrecognized`), so those lists can overlap. Each new acquisition
+records its selected format beside its captured path. Rebuild reuses that pair
+without changing the original Input format. For legacy acquisitions without
+format hints, current recognition uses retained bytes and recorded paths;
+`legacy_imports` reports its current candidates. Unknown or competing origins
+remain uninterpreted, and this result does not become a historical source claim.
+A later opaque acquisition keeps earlier recognized context. Switching between
+competing parsed origins for one immutable input is unsupported.
+
 Parsing and reading use retained bytes, without reopening provider files or
 fetching URLs. Whole-input excision removes an asset's retained Input and
 blocks reimport. Text excision of an opaque companion refuses until its format

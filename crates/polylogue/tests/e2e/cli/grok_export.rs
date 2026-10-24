@@ -212,16 +212,37 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     assert!(unsupported.status.success(), "{unsupported:?}");
     let report = json(&unsupported);
     assert_eq!(report["unrecognized"].as_array().unwrap().len(), 1);
-    assert!(report["imported"].as_array().unwrap().is_empty());
+    assert_eq!(report["imported"].as_array().unwrap().len(), 1);
     let standard = dir.path().join("prod-grok-backend.json");
     std::fs::write(&standard, &bytes).unwrap();
     let imported = cli(&env, &["--json", "import", standard.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");
-    assert_eq!(json(&imported)["imported"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json(&imported)["already_stored"].as_array().unwrap().len(),
+        1
+    );
     let read = cli(&env, &["--json", "read", "grok:metadata-prefix"]);
     assert!(read.status.success(), "{read:?}");
     assert_eq!(
         json(&read)["messages"][0]["blocks"][0]["text"],
         "synthetic prefix control"
     );
+    drop(_daemon);
+    std::fs::remove_file(renamed).unwrap();
+    std::fs::remove_file(standard).unwrap();
+    polylogue_testkit::delete_index(&archive);
+    let _daemon = start_daemon(&env);
+    let started = Instant::now();
+    wait_status(&env, |status| {
+        assert!(started.elapsed() < Duration::from_secs(10), "{status}");
+        status["store"]["messages"] == 1
+    });
+    let rebuilt = cli(&env, &["--json", "read", "grok:metadata-prefix"]);
+    assert!(rebuilt.status.success(), "{rebuilt:?}");
+    assert_eq!(
+        json(&rebuilt)["messages"][0]["blocks"][0]["text"],
+        "synthetic prefix control"
+    );
 }
+
+mod legacy;
