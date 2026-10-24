@@ -137,7 +137,6 @@ struct Call {
     command: Option<String>,
     outcome: String,
     input: Option<Json>,
-    result: Option<String>,
 }
 
 /// A goal the session pursued, with its attempt's span.
@@ -177,12 +176,8 @@ fn sweep(index: &Transaction<'_>) -> Result<()> {
 
 fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {
     let mut stmt = tx.prepare_cached(
-        "SELECT t.pk, t.at, t.tool, t.command, t.outcome, cb.body,
-             rt.body, rb.body
+        "SELECT t.pk, t.at, t.tool, t.command, t.outcome
          FROM tool_call t
-         JOIN block cb ON cb.pk = t.call_block_pk
-         LEFT JOIN block rb ON rb.pk = t.result_block_pk
-         LEFT JOIN text rt ON rt.id = rb.text_id
          WHERE t.session_pk = ?1 AND t.inherited = 0
          ORDER BY t.at IS NULL, t.at, t.pk",
     )?;
@@ -193,26 +188,26 @@ fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {
             r.get::<_, String>(2)?,
             r.get::<_, Option<String>>(3)?,
             r.get::<_, String>(4)?,
-            r.get::<_, Vec<u8>>(5)?,
-            r.get::<_, Option<Vec<u8>>>(6)?,
-            r.get::<_, Option<Vec<u8>>>(7)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (pk, at, tool, command, outcome, call_body, text, body) = row?;
-        // A block this build cannot decode has no input or output to read;
+        let (pk, at, tool, command, outcome) = row?;
+        // A block this build cannot decode has no declared input to read;
         // it never stops the derivation of the rest.
-        let input = match unpack_block(&call_body) {
-            Ok(Block::ToolCall { input, .. }) if !input.is_null() => Some(input),
-            _ => None,
-        };
-        let result = match text {
-            Some(t) => Some(unpack_text(&t)?),
-            None => match body.map(|b| unpack_block(&b)) {
-                Some(Ok(Block::ToolResult { output, .. })) => output,
+        let input = if matches!(tool.as_str(), "TodoWrite" | "update_plan") {
+            let body: Vec<u8> = tx
+                .prepare_cached(
+                    "SELECT b.body FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
+                     WHERE t.pk = ?1",
+                )?
+                .query_row([pk], |r| r.get(0))?;
+            match unpack_block(&body) {
+                Ok(Block::ToolCall { input, .. }) if !input.is_null() => Some(input),
                 _ => None,
-            },
+            }
+        } else {
+            None
         };
         out.push(Call {
             pk,
@@ -221,10 +216,28 @@ fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {
             command,
             outcome,
             input,
-            result,
         });
     }
     Ok(out)
+}
+
+/// Only artifact-producing commands interpret their output. Checks and claims
+/// use the recorded command and outcome without reading retained result bodies.
+fn result(tx: &Transaction<'_>, call_pk: i64) -> Result<Option<String>> {
+    let (text, body): (Option<Vec<u8>>, Option<Vec<u8>>) = tx
+        .prepare_cached(
+            "SELECT rt.body, rb.body FROM tool_call t
+             LEFT JOIN block rb ON rb.pk = t.result_block_pk
+             LEFT JOIN text rt ON rt.id = rb.text_id WHERE t.pk = ?1",
+        )?
+        .query_row([call_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    match text {
+        Some(text) => Ok(Some(unpack_text(&text)?)),
+        None => Ok(match body.map(|body| unpack_block(&body)) {
+            Some(Ok(Block::ToolResult { output, .. })) => output,
+            _ => None,
+        }),
+    }
 }
 
 /// `[branch abc1234] subject` lines of `git commit` output.
@@ -325,7 +338,18 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
         let Some(command) = &call.command else {
             continue;
         };
-        for stage in &effective_stages(command) {
+        let stages = effective_stages(command);
+        let output = if stages.iter().any(|stage| {
+            (stage.program == "git" && stage.subcommand() == Some("commit"))
+                || (stage.program == "gh"
+                    && stage.subcommand() == Some("pr")
+                    && stage.operands().first().is_some_and(|o| o == "create"))
+        }) {
+            result(tx, call.pk)?
+        } else {
+            None
+        };
+        for stage in &stages {
             if let Some((change, ids)) = bead_change(stage) {
                 for id in ids {
                     let key = format!("bead:{id}");
@@ -368,12 +392,12 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
             }
             match (stage.program.as_str(), stage.subcommand()) {
                 ("git", Some("commit")) => {
-                    for hash in committed(call.result.as_deref().unwrap_or("")) {
+                    for hash in committed(output.as_deref().unwrap_or("")) {
                         artifacts.push((call, format!("commit:{session_id}:{hash}"), hash));
                     }
                 }
                 ("gh", Some("pr")) if stage.operands().first().is_some_and(|o| o == "create") => {
-                    for (repo, n, url) in pull_requests(call.result.as_deref().unwrap_or("")) {
+                    for (repo, n, url) in pull_requests(output.as_deref().unwrap_or("")) {
                         tx.prepare_cached(
                             "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence)
                              VALUES (?1, ?2, ?3, ?4, 'gh-output')",
