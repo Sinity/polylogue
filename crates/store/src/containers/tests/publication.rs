@@ -31,7 +31,11 @@ fn container_relationships_restore_in_reverse_order_with_exact_unit_bytes() {
         let unit = inventory.unit(position).unwrap();
         let batch = published.read(&unit).unwrap();
         for hash in &batch.blobs {
-            published.copy_blob_to(hash, &material).unwrap();
+            let mut snapshot = published.blob_snapshot(hash).unwrap();
+            let installed = material
+                .put_plain_checked::<crate::StoreError>(&mut snapshot.file, 3, || Ok(()))
+                .unwrap();
+            assert_eq!(installed.0, *hash);
         }
         let bytes = contents(&batch);
         data.push((
