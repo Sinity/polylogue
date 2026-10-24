@@ -100,6 +100,12 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
         .await;
         assert_eq!(status, StatusCode::OK, "{api}");
         let api: serde_json::Value = serde_json::from_str(&api).unwrap();
+        let source_path = api["sources"][0]["locations"][0]["path"].as_str().unwrap();
+        assert!(!source_path.contains(&secret));
+        assert!(
+            source_path.contains("masked"),
+            "the supplied source path must be masked: {source_path}"
+        );
         let Response::Ok { data } = handle(
             Request::ReadDocument {
                 document: polylogue_model::DocumentId::parse(id).unwrap(),
