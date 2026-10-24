@@ -155,8 +155,8 @@ pub(super) fn insert_observation(
     let Some(o) = &b.observation else {
         return Ok(());
     };
-    tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen) VALUES (?1, ?2, ?3)")?
-        .execute(params![o.machine, o.host, o.seen_at_ms])?;
+    tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen, first_commit_seq) VALUES (?1, ?2, ?3, ?4)")?
+        .execute(params![o.machine, o.host, o.seen_at_ms, seq])?;
     let f = o.facts;
     tx.prepare_cached(
         "INSERT INTO observation(id, input, machine, path, class, revision, length, device, inode,

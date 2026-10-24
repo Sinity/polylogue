@@ -52,7 +52,20 @@ pub(super) fn install<R: Read>(
                     return Ok(());
                 }
             }
-            inserted += super::super::apply_row(target, value)?;
+            let machine = (table == "machine").then(|| (
+                value["row"]["id"].as_str().unwrap().to_owned(),
+                value["row"]["host"].as_str().unwrap().to_owned(),
+            ));
+            let added = super::super::apply_row(target, value)?;
+            if let Some((id, host)) = machine {
+                // The original three-column payload is unchanged. Its enclosing
+                // verified unit proves when this alias was already present.
+                target.execute(
+                    "UPDATE machine SET first_commit_seq=CASE WHEN ?4 THEN ?3 ELSE MIN(first_commit_seq,?3) END WHERE id=?1 AND host=?2",
+                    rusqlite::params![id,host,unit.unit.commit_seq,added>0],
+                )?;
+            }
+            inserted += added;
             Ok(())
         })?;
     }
@@ -195,6 +208,14 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
             .as_str()
             .ok_or_else(|| invalid("row names no table"))?;
         let row = &value["row"];
+        if table == "machine"
+            && (row["id"].as_str().is_none()
+                || row["host"].as_str().is_none()
+                || row["first_seen"].as_i64().is_none()
+                || row.as_object().is_none_or(|r| r.len() != 3))
+        {
+            return Err(invalid("machine dependency has an unsupported shape"));
+        }
         let is_owner = match unit.unit.kind.as_str() {
             "delivery_event" => {
                 owning += 1;
@@ -352,3 +373,6 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

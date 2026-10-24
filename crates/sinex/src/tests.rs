@@ -530,6 +530,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert_eq!(event_values(&event_fresh), event_values(&source_archive));
     assert!(!event_values(&event_fresh).3.contains("event-private-token"));
     assert_eq!(sinex.restore(&event_fresh, &id).await.unwrap().rows, 0);
+    machine_alias::rename(&mut sinex, dir.path()).await;
     session_policy::input_removal(&mut sinex, &store, dir.path()).await;
     legacy::parent_retirement(&mut sinex, &store, dir.path()).await;
     // Rebuild the stream from durable descriptors after all before-images go.
@@ -571,3 +572,5 @@ mod placement;
 
 mod legacy;
 mod session_policy;
+
+mod machine_alias;
