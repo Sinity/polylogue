@@ -105,6 +105,15 @@ TimescaleDB and `nats-server`:
 `SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
 nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(excision_restores_current_units_after_retired_payloads_and_unknown_ack)'`.
 
+The ignored `cli_publication_and_plain_restore_cross_distinct_uids` control also
+needs `POLYLOGUE_BIN` (built with `sinex`) and a fresh
+`POLYLOGUE_CROSS_UID_PROOF_DIR`. It starts owned PostgreSQL/NATS fixtures, then
+uses sudo and a private mount namespace for numeric UID actors. The command
+driver reuses existing executables; same-inode pins keep them stable without
+copying binaries. It exercises CLI import/note publication and exact plain
+restore with the provider absent. It does not activate installed services or
+create accounts. Use a declared operation and preserve its binary hashes.
+
 The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It checks formatting and crate
 boundaries, and skips pushes that change no Rust build inputs.

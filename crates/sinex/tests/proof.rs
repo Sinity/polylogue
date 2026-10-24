@@ -316,3 +316,6 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     });
     assert_eq!(answers(&b), expected);
 }
+
+#[path = "proof/cross_uid.rs"]
+mod cross_uid;
