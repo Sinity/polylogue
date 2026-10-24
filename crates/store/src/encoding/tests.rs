@@ -4,7 +4,7 @@ use serde_json::json;
 #[test]
 fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
     let mut event = Event {
-        session: polylogue_model::SessionId::parse("chatgpt:example").unwrap(),
+        session: Some(polylogue_model::SessionId::parse("chatgpt:example").unwrap()),
         kind: "active_leaf".into(),
         at: None,
         after: Some(polylogue_model::MessageId::parse("chatgpt:a").unwrap()),
@@ -45,7 +45,7 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
         assert!(packed.len() <= pack_json(&value).unwrap().len());
         assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
         let event = Event {
-            session: polylogue_model::SessionId::parse("claude-code:session").unwrap(),
+            session: Some(polylogue_model::SessionId::parse("claude-code:session").unwrap()),
             kind: "synthetic".into(),
             at: None,
             after: None,
@@ -255,7 +255,7 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         output_including_reasoning: None,
     };
     let event = Event {
-        session: polylogue_model::SessionId::parse("codex:thread").unwrap(),
+        session: Some(polylogue_model::SessionId::parse("codex:thread").unwrap()),
         kind: "usage_observation".into(),
         at: None,
         after: None,

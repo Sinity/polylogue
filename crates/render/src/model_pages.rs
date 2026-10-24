@@ -121,15 +121,15 @@ impl Pager {
     }
 }
 
-/// A document read decodes one ordered block at a time, replaying masking on
+/// Role-free content is projected one ordered block at a time, replaying masking on
 /// continuation before projecting it. Positions use the same character splitter.
-pub struct DocumentPager {
+pub struct BlockPager {
     stream: Pager,
     heading: String,
     heading_emitted: bool,
 }
 
-impl DocumentPager {
+impl BlockPager {
     pub fn new(view: View, budget: usize, position: Option<Position>, heading: String) -> Self {
         Self {
             stream: Pager::new(view, budget, position),

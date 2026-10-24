@@ -196,3 +196,11 @@ without a delivery sender remain available. Archive mutations return
 Correct the configuration or restore failure and restart the daemon. Source
 capture spools remain pending until collection can run. An existing nonempty
 primary archive can start and serve reads while Sinex is offline.
+
+Hermes imports ATIF 1.7 trajectories as Transcript Documents and ATOF 0.1
+records as input-owned observations. Its native verification database uses the
+shared logical SQLite exporter; row history, schema transitions and deletion
+markers remain observations, not chat turns or run counts. Native run IDs do
+not create conversations. `read event:ID` and `export event:ID` use the ordinary
+reader/export paths. Transcript documents and input events require export
+wire version 3; ordinary text documents retain version 2.

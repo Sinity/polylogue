@@ -150,6 +150,10 @@ pub(in crate::excise) fn clear_for_reparse(
         crate::documents::project(i, document, t.counter, false)?;
     }
     crate::versions::prune(i)?;
+    i.execute(
+        "DELETE FROM event WHERE NOT EXISTS(SELECT 1 FROM event_source WHERE event_id=event.id)",
+        [],
+    )?;
     let mut texts = i.prepare("SELECT id FROM temp.excision_reparse_text ORDER BY id")?;
     let mut rows = texts.query([])?;
     while let Some(row) = rows.next()? {

@@ -77,7 +77,10 @@ fn a_subagent_todo_list_belongs_to_the_subagent() {
         "/h/.claude/todos/s1-agent-a2.json",
         br#"[{"content":"x","status":"pending"}]"#,
     );
-    assert_eq!(out.events[0].session.to_string(), "claude-code:agent-a2");
+    assert_eq!(
+        out.events[0].session.as_ref().unwrap().to_string(),
+        "claude-code:agent-a2"
+    );
     assert_eq!(out.events[0].kind, "todo_list");
     assert_eq!(out.events[0].range, Some((0, 36)));
 }
@@ -89,7 +92,10 @@ fn meta_is_an_event_on_the_subagent() {
         br#"{"agentType":"Explore","description":"Find callers"}"#,
     );
     assert!(out.sessions.is_empty());
-    assert_eq!(out.events[0].session.to_string(), "claude-code:agent-x");
+    assert_eq!(
+        out.events[0].session.as_ref().unwrap().to_string(),
+        "claude-code:agent-x"
+    );
     assert_eq!(out.events[0].data["agentType"], "Explore");
     assert!(out.links.is_empty(), "no toolUseId, no link");
 }

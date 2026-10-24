@@ -59,7 +59,7 @@ impl Reader<'_> {
             let (kind, at, after, start, end, data) = row?;
             let data: Json = crate::encoding::unpack_json(&data)?;
             out.push(Event {
-                session: id.clone(),
+                session: Some(id.clone()),
                 kind,
                 at: at.and_then(Timestamp::from_unix_ms),
                 after: after.and_then(|a| MessageId::parse(&a).ok()),

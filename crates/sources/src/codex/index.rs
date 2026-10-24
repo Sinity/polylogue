@@ -40,7 +40,7 @@ impl Parser for History {
             return Disposition::unknown("prompt without text");
         }
         out.events.push(Event {
-            session,
+            session: Some(session),
             kind: "prompt".into(),
             at: v.get("ts").and_then(time::epoch_seconds),
             after: None,

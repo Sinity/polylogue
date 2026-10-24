@@ -5,6 +5,7 @@ mod reparse;
 mod snapshots;
 
 use super::*;
+use std::collections::BTreeMap;
 
 /// The retained version owns both its encoded block and its text reference.
 struct StoredBlock {
@@ -129,8 +130,36 @@ pub(super) fn write_rows(
         )?
         .execute(params![session_pk, at, counter])?;
     }
+    let mut event_occurrences = BTreeMap::<(u64, u64), u64>::new();
     for (i, e) in p.output.events.iter().enumerate() {
-        let session_pk = ctx.session_pk(&mut sessions, &e.session)?;
+        let occurrence = if e.session.is_none() {
+            if ctx.input_id.is_empty() {
+                return Err(StoreError::Invalid(
+                    "input-owned event has no retained input identity".into(),
+                ));
+            }
+            let range = e.range.filter(|(start, end)| start < end).ok_or_else(|| {
+                StoreError::Invalid("input-owned event has no record range".into())
+            })?;
+            if e.after.is_some() {
+                return Err(StoreError::Invalid(
+                    "input-owned event cannot follow a conversation message".into(),
+                ));
+            }
+            let next = event_occurrences.entry(range).or_default();
+            let occurrence = *next;
+            *next = next
+                .checked_add(1)
+                .ok_or_else(|| StoreError::Invalid("too many events in one record".into()))?;
+            occurrence
+        } else {
+            0
+        };
+        let session_pk = e
+            .session
+            .as_ref()
+            .map(|id| ctx.session_pk(&mut sessions, id))
+            .transpose()?;
         let prepared;
         let packed = match p.prepared.events.get(i) {
             Some(prepared) if p.prepared.events.len() == p.output.events.len() => prepared,
@@ -139,8 +168,10 @@ pub(super) fn write_rows(
                 &prepared
             }
         };
-        ctx.write_event(e, session_pk, packed, p.order_from)?;
-        if ctx.snapshot_current(session_pk)? {
+        ctx.write_event(e, session_pk, packed, p.order_from, occurrence)?;
+        if let Some(session_pk) = session_pk
+            && ctx.snapshot_current(session_pk)?
+        {
             crate::live::apply(tx, session_pk, e, counter)?;
         }
     }
@@ -960,11 +991,31 @@ impl Ctx<'_, '_> {
     fn write_event(
         &self,
         e: &Event,
-        session_pk: i64,
+        session_pk: Option<i64>,
         packed: &(String, Vec<u8>),
         order: Option<u64>,
+        occurrence: u64,
     ) -> Result<()> {
-        let (id, data) = packed;
+        let (content_id, data) = packed;
+        // Bound facts keep their existing cross-input identity. Unbound facts
+        // belong to an exact input record occurrence, including repeated
+        // identical observations emitted by that one record.
+        let id = if e.session.is_none() {
+            let (start, end) = e.range.ok_or_else(|| {
+                StoreError::Invalid("input-owned event has no record range".into())
+            })?;
+            let mut hash = blake3::Hasher::new_derive_key("polylogue input-owned event v1");
+            hash.update(&(self.input_id.len() as u64).to_le_bytes());
+            hash.update(self.input_id.as_bytes());
+            hash.update(&self.chain.to_le_bytes());
+            hash.update(&start.to_le_bytes());
+            hash.update(&end.to_le_bytes());
+            hash.update(&occurrence.to_le_bytes());
+            hash.update(content_id.as_bytes());
+            std::borrow::Cow::Owned(hash.finalize().to_hex().to_string())
+        } else {
+            std::borrow::Cow::Borrowed(content_id.as_str())
+        };
         let after: Option<(i64, i64)> = match &e.after {
             Some(id) => self
                 .tx
@@ -987,7 +1038,7 @@ impl Ctx<'_, '_> {
              VALUES (?1,?2,?3,?4,?5,?6)",
             )?
             .execute(params![
-                id,
+                &*id,
                 session_pk,
                 after.map(|a| a.0),
                 e.kind,
@@ -1003,8 +1054,8 @@ impl Ctx<'_, '_> {
                source_end=CASE WHEN event_source.parser_version<>excluded.parser_version OR excluded.source_order>=event_source.source_order THEN excluded.source_end ELSE event_source.source_end END,
                source_order=CASE WHEN event_source.parser_version<>excluded.parser_version OR excluded.source_order>=event_source.source_order THEN excluded.source_order ELSE event_source.source_order END,
                parser_version=excluded.parser_version"
-        )?.execute(params![id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64),
-            i64::from(self.snapshot_current(session_pk)?),self.parser_version,order.map_or(seq,|order|order as i64),
+        )?.execute(params![&*id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64),
+            i64::from(session_pk.map(|pk| self.snapshot_current(pk)).transpose()?.unwrap_or(true)),self.parser_version,order.map_or(seq,|order|order as i64),
             e.range.map(|range|range.0 as i64),e.range.map(|range|range.1 as i64)])?;
         Ok(())
     }

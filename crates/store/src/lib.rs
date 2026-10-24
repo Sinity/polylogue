@@ -13,6 +13,7 @@ pub mod context;
 pub mod derive;
 pub mod documents;
 mod encoding;
+mod events;
 pub mod excise;
 pub mod export_items;
 pub mod fault;

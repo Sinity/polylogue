@@ -304,17 +304,7 @@ fn tool_call(call: &Json) -> Block {
         Some(value) => value.clone(),
         None => Json::Null,
     };
-    let action = match tool.as_deref() {
-        Some("terminal" | "shell" | "exec_command") => ToolAction::Shell,
-        Some("python" | "run_code") => ToolAction::Code,
-        Some("read_file") => ToolAction::FileRead,
-        Some("write_file") => ToolAction::FileWrite,
-        Some("edit_file") => ToolAction::FileEdit,
-        Some("search_files" | "list_directory") => ToolAction::Search,
-        Some("web_search" | "web_fetch") => ToolAction::Web,
-        Some("delegate_task") => ToolAction::Subagent,
-        _ => ToolAction::Other,
-    };
+    let action = action(tool.as_deref());
     let command = input
         .get("command")
         .or_else(|| input.get("cmd"))
@@ -328,5 +318,19 @@ fn tool_call(call: &Json) -> Block {
         input,
         command,
         path,
+    }
+}
+
+pub(super) fn action(tool: Option<&str>) -> ToolAction {
+    match tool {
+        Some("terminal" | "shell" | "exec_command") => ToolAction::Shell,
+        Some("python" | "run_code") => ToolAction::Code,
+        Some("read_file") => ToolAction::FileRead,
+        Some("write_file") => ToolAction::FileWrite,
+        Some("edit_file") => ToolAction::FileEdit,
+        Some("search_files" | "list_directory") => ToolAction::Search,
+        Some("web_search" | "web_fetch") => ToolAction::Web,
+        Some("delegate_task") => ToolAction::Subagent,
+        _ => ToolAction::Other,
     }
 }

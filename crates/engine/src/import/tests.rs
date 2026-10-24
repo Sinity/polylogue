@@ -277,6 +277,21 @@ fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
             "otel-genai"
         );
     }
+    for (name, head) in [
+        (
+            "/backup/synthetic.atof.jsonl",
+            br#"{"atof_version":"0.1","kind":"mark"}"#.as_slice(),
+        ),
+        (
+            "/backup/verification_evidence.db.jsonl",
+            br#"{"schema":{}}"#.as_slice(),
+        ),
+    ] {
+        assert_eq!(
+            recognize_import(Path::new(name), head).unwrap().name,
+            "hermes"
+        );
+    }
     let claude = br#"{"type":"user","sessionId":"s1"}"#;
     assert_eq!(
         recognize_import(Path::new("/backup/s1.jsonl"), claude)

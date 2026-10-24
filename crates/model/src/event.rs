@@ -1,11 +1,12 @@
 use crate::{Json, MessageId, SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-/// Something on a session's timeline that is not a message: a compaction,
-/// a mode change, a hook run, a title record.
+/// A retained observation, optionally associated with a conversation.
+/// Without that association, its Input and record range own the fact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
-    pub session: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionId>,
     /// Plain snake_case name: `compaction`, `permission_mode`, `hook_run`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

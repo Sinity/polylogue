@@ -10,7 +10,7 @@ fn reverse_event_replay_cannot_regress_an_already_observed_logical_position() {
     };
     let mut seed = batch("array", 2, 0, vec![row], &["s"]);
     seed.parse[0].output.events.push(Event {
-        session: sid("s"),
+        session: Some(sid("s")),
         kind: "active_leaf".into(),
         at: None,
         after: Some(MessageId::parse("claude-code:a").unwrap()),

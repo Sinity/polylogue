@@ -180,7 +180,7 @@ impl Parser for Database {
                     )
                 };
                 out.events.push(Event {
-                    session,
+                    session: Some(session),
                     kind: kind.into(),
                     at,
                     after: None,

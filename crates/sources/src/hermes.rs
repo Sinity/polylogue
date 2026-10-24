@@ -2,7 +2,10 @@
 //! and record identities are metadata; message bodies are decoded one at a time.
 mod identity;
 mod message;
+mod observer;
 mod outcome;
+mod trajectory;
+mod verification;
 
 use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
@@ -16,10 +19,16 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
-pub const LOCATIONS: &[&str] = &[".hermes/state.db"];
+pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evidence.db"];
 pub const ORIGIN: &str = "hermes";
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
+    if observer::recognize(path, head)
+        || verification::recognize(path)
+        || trajectory::recognize(path, head)
+    {
+        return true;
+    }
     path.file_name()
         .is_some_and(|name| name == "state.db.jsonl")
         && head
@@ -28,8 +37,19 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|byte| *byte == b'{')
 }
 
-pub fn open(_: &Path) -> Option<Parse> {
-    Some(Parse::Export(Box::new(Database::default())))
+pub fn open(path: &Path) -> Option<Parse> {
+    if path
+        .file_name()
+        .is_some_and(|name| name == "state.db.jsonl")
+    {
+        Some(Parse::Export(Box::new(Database::default())))
+    } else if verification::recognize(path) {
+        Some(verification::open())
+    } else if path.extension().is_some_and(|s| s == "json") {
+        Some(trajectory::open())
+    } else {
+        observer::open(path)
+    }
 }
 
 #[derive(Default)]
@@ -473,7 +493,7 @@ impl ExportParser for Database {
                 }
                 if !limits.is_empty() {
                     sink.out.events.push(Event {
-                        session: id.clone(),
+                        session: Some(id.clone()),
                         kind: "hermes_session_diagnostic".into(),
                         at: None,
                         after: None,
@@ -518,7 +538,7 @@ impl ExportParser for Database {
                 }
                 if let Some(end) = text(row, "end_reason") {
                     sink.out.events.push(Event {
-                        session: id,
+                        session: Some(id),
                         kind: "session_end".into(),
                         at: row.get("ended_at").and_then(crate::time::epoch_seconds),
                         after: facts.leaf.clone(),
@@ -572,7 +592,7 @@ impl ExportParser for Database {
                             .or_else(|| facts.system.then(|| self.mid(raw, "system")).flatten());
                         for (kind, data) in diagnostics {
                             sink.out.events.push(Event {
-                                session: sid.clone(),
+                                session: Some(sid.clone()),
                                 kind,
                                 at: message.at,
                                 after: Some(id.clone()),
@@ -588,7 +608,7 @@ impl ExportParser for Database {
                         });
                         if facts.activity_known && facts.leaf.as_ref() == Some(id) {
                             sink.out.events.push(Event {
-                                session: sid,
+                                session: Some(sid),
                                 kind: "active_leaf".into(),
                                 at: None,
                                 after: Some(id.clone()),

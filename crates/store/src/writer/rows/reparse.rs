@@ -14,6 +14,13 @@ impl Ctx<'_, '_> {
         if !pending {
             return Ok(());
         }
+        self.tx.execute(
+            "DELETE FROM event_source WHERE input_pk=?1 AND chain=?2 AND parser_version<?3
+            AND event_id IN (SELECT id FROM event WHERE session_pk IS NULL)",
+            params![self.input_pk, self.chain, self.parser_version],
+        )?;
+        self.refresh_input_events()?;
+        self.tx.execute("DELETE FROM event WHERE session_pk IS NULL AND NOT EXISTS(SELECT 1 FROM event_source WHERE event_id=event.id)",[])?;
         let affected = self.ready_sessions()?;
         let mut scopes=affected.db.prepare("SELECT session_pk,input_pk,chain,version,input_id FROM scope ORDER BY session_pk,input_pk,chain")?;
         let mut rows = scopes.query([])?;
@@ -259,7 +266,7 @@ impl Affected {
 const CONTRIBUTIONS:&str="SELECT session_pk,input_pk,chain,parser_version FROM parsed
     UNION ALL SELECT session_pk,input_pk,chain,parser_version FROM session_record
     UNION ALL SELECT session_pk,input_pk,chain,parser_version FROM message_source
-    UNION ALL SELECT e.session_pk,s.input_pk,s.chain,s.parser_version FROM event_source s JOIN event e ON e.id=s.event_id
+    UNION ALL SELECT e.session_pk,s.input_pk,s.chain,s.parser_version FROM event_source s JOIN event e ON e.id=s.event_id WHERE e.session_pk IS NOT NULL
     UNION ALL SELECT c.session_pk,s.input_pk,s.chain,s.parser_version FROM snapshot s JOIN snapshot_session c ON c.snapshot_pk=s.pk
     UNION ALL SELECT t.pk,s.input_pk,s.chain,s.parser_version FROM link_source s JOIN link l ON l.pk=s.link_pk JOIN session t ON t.id=l.parent_id OR t.id=l.child_id";
 

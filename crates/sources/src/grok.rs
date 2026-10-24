@@ -295,7 +295,7 @@ impl Export {
             warnings.sort();
             warnings.dedup();
             sink.out.events.push(Event {
-                session: sid,
+                session: Some(sid),
                 kind: "grok_import_diagnostic".into(),
                 at: None,
                 after: None,

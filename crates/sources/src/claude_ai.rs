@@ -158,7 +158,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         sink.out.events.push(Event {
-            session: sid.clone(),
+            session: Some(sid.clone()),
             kind: "conversation_settings".into(),
             at: conv.get("updated_at").and_then(time_of),
             after: None,
@@ -181,7 +181,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                     .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
                 {
                     sink.out.events.push(Event {
-                        session: sid.clone(),
+                        session: Some(sid.clone()),
                         kind: "compaction".into(),
                         at: msg.at,
                         after: msg.parent.clone(),
@@ -211,7 +211,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         && let Some(id) = message_id(ORIGIN, leaf)
     {
         sink.out.events.push(Event {
-            session: sid,
+            session: Some(sid),
             kind: "active_leaf".into(),
             at: None,
             after: Some(id),
@@ -536,7 +536,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     sink.records.record("chat", &Disposition::Materialized);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
         sink.out.events.push(Event {
-            session: sid.clone(),
+            session: Some(sid.clone()),
             kind: "design_project".into(),
             at: None,
             after: None,

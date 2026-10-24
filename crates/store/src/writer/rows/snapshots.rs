@@ -15,8 +15,8 @@ impl Ctx<'_, '_> {
         let Some(snapshot) = &p.snapshot else {
             return Ok(Vec::new());
         };
-        self.tx.execute("INSERT INTO snapshot(input_pk,chain,source_start,source_end,accounting,parser_version) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,source_start) DO UPDATE SET source_end=excluded.source_end,accounting=excluded.accounting,parser_version=excluded.parser_version",
-            params![self.input_pk,self.chain,snapshot.start as i64,snapshot.end as i64,pack_json(&p.accounting)?,self.parser_version])?;
+        self.tx.execute("INSERT INTO snapshot(input_pk,chain,source_start,source_end,accounting,parser_version,complete) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,source_start) DO UPDATE SET source_end=excluded.source_end,accounting=excluded.accounting,parser_version=excluded.parser_version,complete=excluded.complete",
+            params![self.input_pk,self.chain,snapshot.start as i64,snapshot.end as i64,pack_json(&p.accounting)?,self.parser_version,snapshot.complete as i64])?;
         let snapshot_pk: i64 = self.tx.query_row(
             "SELECT pk FROM snapshot WHERE input_pk=?1 AND chain=?2 AND source_start=?3",
             params![self.input_pk, self.chain, snapshot.start as i64],
@@ -71,6 +71,7 @@ impl Ctx<'_, '_> {
         for pk in affected {
             self.promote_current(pk)?;
         }
+        self.refresh_input_events()?;
         for id in &snapshot.covered {
             let links: Vec<i64> = self
                 .tx
@@ -108,6 +109,18 @@ impl Ctx<'_, '_> {
             );
             self.tx.execute(&sql, params![self.input_pk, session_pk])?;
         }
+        Ok(())
+    }
+
+    /// Input-owned observations follow complete snapshot replacement without
+    /// acquiring a synthetic conversation population.
+    pub(super) fn refresh_input_events(&self) -> Result<()> {
+        self.tx.execute("UPDATE event_source AS s SET current=
+            NOT EXISTS(SELECT 1 FROM snapshot h WHERE h.input_pk=s.input_pk AND h.complete=1
+                AND (h.chain>s.chain OR (h.chain=s.chain AND h.source_start>s.source_snapshot)))
+            AND NOT EXISTS(SELECT 1 FROM event_source n WHERE n.input_pk=s.input_pk AND n.event_id=s.event_id
+                AND (n.chain>s.chain OR (n.chain=s.chain AND n.source_snapshot>s.source_snapshot)))
+            WHERE s.input_pk=?1 AND s.event_id IN (SELECT id FROM event WHERE session_pk IS NULL)", [self.input_pk])?;
         Ok(())
     }
 

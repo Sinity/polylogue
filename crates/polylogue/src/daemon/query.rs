@@ -446,6 +446,15 @@ fn present(program: &Program, row: &mut Value) -> Result<(), Failure> {
 
 fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
     match kind {
+        ColKind::Json => {
+            if let Some(text) = v.as_str() {
+                *v = serde_json::from_str(text).map_err(|_| Failure {
+                    kind: "store".into(),
+                    message: "invalid retained JSON value".into(),
+                    detail: None,
+                })?;
+            }
+        }
         ColKind::Ids => {
             if v.is_null() {
                 return Ok(());

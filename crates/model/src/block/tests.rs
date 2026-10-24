@@ -48,3 +48,28 @@ fn text_covers_prose_and_thinking_only() {
     };
     assert_eq!(call.text(), None);
 }
+
+#[test]
+fn explicit_unknown_attachment_direction_preserves_legacy_known_wire_values() {
+    for (direction, wire) in [
+        (AttachmentDirection::Input, "input"),
+        (AttachmentDirection::Output, "output"),
+        (AttachmentDirection::Unknown, "unknown"),
+    ] {
+        let value = Attachment {
+            source_id: Some("images/neutral.png".into()),
+            direction,
+            ..Attachment::default()
+        };
+        let encoded = serde_json::to_value(&value).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"source_id":"images/neutral.png","direction":wire})
+        );
+        assert_eq!(
+            serde_json::from_value::<Attachment>(encoded).unwrap(),
+            value
+        );
+    }
+    assert_eq!(Attachment::default().direction, AttachmentDirection::Input);
+}

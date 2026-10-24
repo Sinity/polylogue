@@ -222,7 +222,7 @@ impl ExportParser for AiStudio {
             self.state.model = str_of(&settings, "model")
                 .map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
             sink.out.events.push(Event {
-                session: sid.clone(),
+                session: Some(sid.clone()),
                 kind: "run_settings".into(),
                 at: None,
                 after: None,

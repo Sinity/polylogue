@@ -266,7 +266,11 @@ pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
 fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
     let data = serde_json::to_vec(&e.data)?;
     let mut h = blake3::Hasher::new();
-    h.update(e.session.to_string().as_bytes());
+    if let Some(session) = &e.session {
+        h.update(session.to_string().as_bytes());
+    } else {
+        h.update(b"\0input-event-content-v1\0");
+    }
     h.update(b"\0");
     h.update(e.kind.as_bytes());
     h.update(b"\0");
@@ -276,7 +280,13 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
             .unwrap_or(i64::MIN)
             .to_le_bytes(),
     );
-    h.update(&data);
+    if e.session.is_none() {
+        let mut canonical = e.data.clone();
+        canonical.sort_all_objects();
+        h.update(&serde_json::to_vec(&canonical)?);
+    } else {
+        h.update(&data);
+    }
     if let Some(after) = &e.after {
         h.update(b"\0after\0");
         h.update(after.to_string().as_bytes());

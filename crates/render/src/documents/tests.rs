@@ -1,5 +1,5 @@
 use super::*;
-use crate::model_pages::{DocumentPager, Position};
+use crate::model_pages::{BlockPager, Position};
 use polylogue_model::{Block, DocumentId, DocumentPurpose};
 use std::ops::ControlFlow;
 
@@ -36,7 +36,7 @@ fn role_free_formats_mask_before_hidden_block_projection_and_page_splitting() {
     let mut position = None;
     let mut text = String::new();
     loop {
-        let mut pager = DocumentPager::new(View::Dialogue, 2, position, "[memory]\n".into());
+        let mut pager = BlockPager::new(View::Dialogue, 2, position, "[memory]\n".into());
         for block in doc.blocks.clone() {
             if pager.push(block).unwrap() == ControlFlow::Break(()) {
                 break;
@@ -51,7 +51,7 @@ fn role_free_formats_mask_before_hidden_block_projection_and_page_splitting() {
     }
     assert!(!text.contains("synthetic-secret-tail"));
     assert!(text.contains("Visible λ🙂"));
-    let mut pager = DocumentPager::new(
+    let mut pager = BlockPager::new(
         View::Full,
         2,
         Some(Position {

@@ -421,3 +421,5 @@ mod openai_chat;
 mod polylogue_export;
 
 mod openrouter;
+
+mod input_events;

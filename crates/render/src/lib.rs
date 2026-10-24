@@ -4,6 +4,7 @@
 //! also masked at the application boundary.
 
 pub mod documents;
+pub mod events;
 pub mod html;
 pub mod measures;
 pub use polylogue_model::masking::{mask, mask_json};
@@ -241,6 +242,7 @@ pub fn session(
 /// Export JSON uses the model's importable Document codec, including fields
 /// such as links that have no prose rendering. It never serializes Pieces.
 pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io::Result<Value> {
+    doc.validate().map_err(io::Error::other)?;
     for session in &mut doc.sessions {
         let mut masker = polylogue_model::masking::MessageMasker::default();
         for message in &mut session.messages {
@@ -251,6 +253,14 @@ pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io:
         documents::mask(document);
     }
     if format == Format::Json {
+        for session in &mut doc.sessions {
+            for event in &mut session.events {
+                polylogue_model::masking::mask_json(&mut event.data);
+            }
+        }
+        for event in &mut doc.events {
+            polylogue_model::masking::mask_json(&mut event.event.data);
+        }
         return serde_json::to_value(&doc).map_err(io::Error::other);
     }
     let mut items = Vec::new();
@@ -263,6 +273,7 @@ pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io:
         items.extend(session.events.iter().map(Rendered::Event));
     }
     items.extend(doc.documents.iter().map(Rendered::Document));
+    items.extend(doc.events.iter().map(|e| Rendered::Event(&e.event)));
     formatted(&items, format, View::Full)
 }
 
@@ -350,14 +361,7 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 writeln!(out)?;
             }
             Rendered::Document(doc) => documents::terminal(doc, view, out)?,
-            Rendered::Event(e) if view == View::Full => {
-                writeln!(
-                    out,
-                    "\x1b[2m· {} {}\x1b[0m",
-                    e.kind,
-                    e.at.map(|t| t.to_string()).unwrap_or_default()
-                )?;
-            }
+            Rendered::Event(e) if view == View::Full => events::terminal(e, out)?,
             Rendered::Event(_) => {}
             Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
         }
@@ -421,7 +425,7 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 }
             }
             Rendered::Document(doc) => documents::markdown(doc, view, out)?,
-            Rendered::Event(e) if view == View::Full => writeln!(out, "*· {}*\n", e.kind)?,
+            Rendered::Event(e) if view == View::Full => events::markdown(e, out)?,
             Rendered::Event(_) => {}
             Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
         }

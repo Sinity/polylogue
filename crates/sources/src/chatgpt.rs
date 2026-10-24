@@ -200,7 +200,7 @@ fn conversation_with_owners(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     sink.out.events.push(Event {
-        session: sid.clone(),
+        session: Some(sid.clone()),
         kind: "conversation_settings".into(),
         at: conv.get("update_time").and_then(time_of),
         after: None,
@@ -283,7 +283,7 @@ fn conversation_with_owners(
         && let Some(id) = message_id(ORIGIN, &leaf)
     {
         sink.out.events.push(Event {
-            session: sid,
+            session: Some(sid),
             kind: "active_leaf".into(),
             at: None,
             after: Some(id),

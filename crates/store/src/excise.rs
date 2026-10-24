@@ -368,7 +368,9 @@ impl<'a> Plan<'a> {
                 "SELECT EXISTS (SELECT 1 FROM parsed WHERE input_pk = ?1 AND session_pk <> ?2)
                      OR EXISTS (SELECT 1 FROM message_source s JOIN message m ON m.pk = s.message_pk
                                 WHERE s.input_pk = ?1 AND m.session_pk <> ?2)
-                     OR EXISTS(SELECT 1 FROM document_source WHERE input_pk=?1)",
+                     OR EXISTS(SELECT 1 FROM document_source WHERE input_pk=?1)
+                     OR EXISTS (SELECT 1 FROM event_source s JOIN event e ON e.id=s.event_id
+                                WHERE s.input_pk=?1 AND (e.session_pk IS NULL OR e.session_pk<>?2))",
                 params![ipk, pk],
                 |r| r.get(0),
             )?;

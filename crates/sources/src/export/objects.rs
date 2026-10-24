@@ -10,9 +10,12 @@ pub(crate) enum FieldShape {
     Value,
     Array,
     Map,
+    Objects,
 }
 pub(crate) struct ObjectFields {
     pub start: u64,
+    pub end: u64,
+    pub parent: Option<u64>,
     pub fields: Json,
 }
 
@@ -29,35 +32,32 @@ pub(crate) fn scan_objects(
         tap: Rc::clone(&tap),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
-    let mut objects = Vec::new();
+    let objects = RefCell::new(Vec::new());
     let object = Object {
         tap: &tap,
         frames,
         keep,
         item: &mut item,
+        objects: &objects,
+        parent: None,
     };
     let result = if array {
-        Objects {
-            object,
-            out: &mut objects,
-        }
-        .deserialize(&mut de)
+        Objects { object }.deserialize(&mut de)
     } else {
         object
             .deserialize(&mut de)
-            .map(|object| objects.push(object))
+            .map(|object| objects.borrow_mut().push(object))
     };
     result.map_err(|error| scan_error(error, &tap))?;
     let stats = finish_scan(de.end(), &tap)?;
-    Ok((objects, stats))
+    Ok((objects.into_inner(), stats))
 }
 
-struct Objects<'a, 'b, F> {
+struct Objects<'a, F> {
     object: Object<'a, F>,
-    out: &'b mut Vec<ObjectFields>,
 }
 impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>>
-    DeserializeSeed<'de> for Objects<'_, '_, F>
+    DeserializeSeed<'de> for Objects<'_, F>
 {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
@@ -65,7 +65,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
     }
 }
 impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>>
-    Visitor<'de> for Objects<'_, '_, F>
+    Visitor<'de> for Objects<'_, F>
 {
     type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,8 +77,10 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             frames: self.object.frames,
             keep: self.object.keep,
             item: &mut *self.object.item,
+            objects: self.object.objects,
+            parent: self.object.parent,
         })? {
-            self.out.push(fields);
+            self.object.objects.borrow_mut().push(fields);
         }
         Ok(())
     }
@@ -88,6 +90,8 @@ struct Object<'a, F> {
     frames: &'a [(&'a str, FieldShape)],
     keep: &'a [&'a str],
     item: &'a mut F,
+    objects: &'a RefCell<Vec<ObjectFields>>,
+    parent: Option<u64>,
 }
 impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>>
     DeserializeSeed<'de> for Object<'_, F>
@@ -121,6 +125,19 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                         map_value(&mut map, self.tap, &mut emit)?;
                         Json::Null
                     }
+                    FieldShape::Objects => {
+                        map.next_value_seed(Objects {
+                            object: Object {
+                                tap: self.tap,
+                                frames: self.frames,
+                                keep: self.keep,
+                                item: &mut *self.item,
+                                objects: self.objects,
+                                parent: Some(start),
+                            },
+                        })?;
+                        Json::Array(Vec::new())
+                    }
                     FieldShape::Array | FieldShape::Map => map.next_value_seed(Collection {
                         tap: self.tap,
                         shape: *shape,
@@ -144,8 +161,14 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 fields.insert(key, Json::Null);
             }
         }
+        let end = self.tap.borrow().position;
+        if self.tap.borrow().last != Some((end - 1, b'}')) {
+            return Err(A::Error::custom("missing export object end boundary"));
+        }
         Ok(ObjectFields {
             start,
+            end,
+            parent: self.parent,
             fields: Json::Object(fields),
         })
     }

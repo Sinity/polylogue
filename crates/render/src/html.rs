@@ -62,9 +62,7 @@ pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> 
             Rendered::Message(value) => {
                 write!(out, "{}", message(value, view, &results, &mut paired))?;
             }
-            Rendered::Event(event) if view == View::Full => {
-                write!(out, "<p class=\"event\">{}</p>", escape(&event.kind))?;
-            }
+            Rendered::Event(event) if view == View::Full => super::events::html(event, out)?,
             Rendered::Event(_) => {}
             Rendered::Notice(notice) => write!(out, "<aside>{}</aside>", escape(notice))?,
         }

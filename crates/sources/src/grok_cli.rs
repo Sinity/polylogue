@@ -187,7 +187,7 @@ impl Parser for GrokCli {
         if kind == "backend_tool_call" {
             // A tool the provider ran itself (web search).
             out.events.push(Event {
-                session: sid,
+                session: Some(sid),
                 kind: "backend_tool_call".into(),
                 at: None,
                 after: carry.last.clone(),

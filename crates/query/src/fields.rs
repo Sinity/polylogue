@@ -120,6 +120,11 @@ impl Field {
         self.sql.map(|e| e.render(a, now))
     }
 
+    const fn json(mut self) -> Self {
+        self.value_kind = Some(ColKind::Json);
+        self
+    }
+
     /// The kind of the field's value as a column.
     pub fn column_kind(&self) -> ColKind {
         if let Some(k) = self.value_kind {
@@ -338,7 +343,7 @@ pub static FIELDS: &[Field] = &[
     // documents have no conversation role, session or usage defaults.
     f(Documents,"id",Prefix,"document ID or a unique prefix").sql_ref("{r}.id", ColumnReference::Document),
     f(Documents,"origin",Match,"the provider export family").sql("{r}.origin"),
-    v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context or memory").sql("{r}.purpose"),
+    v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context, memory or transcript").sql("{r}.purpose"),
     v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
     f(Documents,"title",Substring,"the supplied source title").sql("{r}.title"),
     f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),
@@ -616,6 +621,15 @@ pub static FIELDS: &[Field] = &[
     f(Files, "first_at", Time, "").sql("{r}.first_at"),
     f(Files, "last_at", Time, "").sql("{r}.last_at"),
     // events
+    f(Events, "id", Prefix, "the observation ID or its prefix").sql("{r}.id"),
+    sp(Events, "text", "a substring in one textual observation value", custom::event_text),
+    f(Events, "input", Match, "the retained input owning this observation").sql("{r}i.id"),
+    f(Events, "source", Match, "the input's source parser").sql("{r}i.format"),
+    f(Events, "origin", Match, "conversation origin, or source format when unbound").sql("COALESCE({s}.origin,{r}i.format)"),
+    f(Events, "data", Substring, "the retained observation payload").sql("pl_block({r}.data)").json(),
+    f(Events, "source_chain", Number, "the retained source revision").sql("{r}.source_chain"),
+    f(Events, "source_start", Number, "record byte start").sql("{r}.source_start"),
+    f(Events, "source_end", Number, "record byte end").sql("{r}.source_end"),
     f(
         Events,
         "kind",

@@ -217,9 +217,14 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
     );
     assert_eq!(readings(&child)[0].response, None);
     for scope in [PARENT, THREAD] {
-        assert!(child.output.events.iter().any(
-            |e| e.kind == "response_boundaries_unknown" && e.session.native().as_str() == scope
-        ));
+        assert!(
+            child
+                .output
+                .events
+                .iter()
+                .any(|e| e.kind == "response_boundaries_unknown"
+                    && e.session.as_ref().unwrap().native().as_str() == scope)
+        );
     }
     assert!(
         child
@@ -227,7 +232,7 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
             .events
             .iter()
             .filter(|e| e.kind != "response_boundaries_unknown")
-            .all(|e| e.session.native().as_str() == PARENT)
+            .all(|e| e.session.as_ref().unwrap().native().as_str() == PARENT)
     );
 }
 

@@ -209,7 +209,7 @@ impl OpenRouter {
 
         self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
         sink.out.events.push(Event {
-            session: sid.clone(),
+            session: Some(sid.clone()),
             kind: "room_models".into(),
             at: None,
             after: None,
@@ -232,7 +232,7 @@ impl OpenRouter {
         .collect();
         if !artifacts.is_empty() {
             sink.out.events.push(Event {
-                session: sid.clone(),
+                session: Some(sid.clone()),
                 kind: "artifacts".into(),
                 at: None,
                 after: None,

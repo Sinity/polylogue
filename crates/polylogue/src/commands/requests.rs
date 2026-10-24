@@ -76,6 +76,28 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
     if let Some(id) = v
         .text("session")
+        .and_then(|s| s.strip_prefix("event:").map(str::to_owned))
+    {
+        if id.is_empty() {
+            return Err("event reference requires an ID".into());
+        }
+        if v.flag("logical") {
+            return Err("an event has no conversation ancestry".into());
+        }
+        return Ok(Request::ReadEvent {
+            event: id,
+            view: v.text("view").unwrap_or_else(|| "full".into()),
+            format: v
+                .text("format")
+                .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
+            budget: v
+                .integer("budget")
+                .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
+            cursor: v.text("cursor"),
+        });
+    }
+    if let Some(id) = v
+        .text("session")
         .and_then(|text| text.strip_prefix("document:").map(str::to_owned))
     {
         if v.flag("logical") {
@@ -110,8 +132,14 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
 pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
     let mut sessions = Vec::new();
     let mut documents = Vec::new();
+    let mut events = Vec::new();
     for text in v.list("sessions") {
-        if let Some(id) = text.strip_prefix("document:") {
+        if let Some(id) = text.strip_prefix("event:") {
+            if id.is_empty() {
+                return Err("event reference requires an ID".into());
+            }
+            events.push(id.to_owned());
+        } else if let Some(id) = text.strip_prefix("document:") {
             documents.push(polylogue_model::DocumentId::parse(id).map_err(|e| e.to_string())?);
         } else {
             sessions.push(
@@ -120,12 +148,13 @@ pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
             );
         }
     }
-    if sessions.is_empty() && documents.is_empty() {
-        return Err("name at least one session or document".into());
+    if sessions.is_empty() && documents.is_empty() && events.is_empty() {
+        return Err("name at least one session, document or event".into());
     }
     Ok(Request::Export {
         sessions,
         documents,
+        events,
         format: v.text("format").unwrap_or_else(|| "json".into()),
     })
 }

@@ -87,6 +87,8 @@ pub enum ColKind {
     Text,
     /// Retained selection arrays, decoded from SQLite text at the result boundary.
     Ids,
+    /// A retained structured value decoded at the result boundary.
+    Json,
     Number,
     /// Dollars.
     Money,
@@ -689,9 +691,16 @@ fn parse_pr(v: &str) -> Option<(Option<String>, i64)> {
 mod tests;
 
 fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
-    if kind == ColKind::Ids {
+    if matches!(kind, ColKind::Ids | ColKind::Json) {
         return Err(QueryError::Invalid {
-            message: format!("{field} is a selection array, not a scalar field"),
+            message: format!(
+                "{field} is a {}, not a scalar field",
+                if kind == ColKind::Ids {
+                    "selection array"
+                } else {
+                    "structured value"
+                }
+            ),
             position: at,
         });
     }

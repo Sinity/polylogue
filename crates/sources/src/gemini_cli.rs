@@ -150,7 +150,7 @@ impl ExportParser for GeminiCli {
             "gemini" => Role::Assistant,
             "info" | "error" => {
                 sink.out.events.push(Event {
-                    session: sid.clone(),
+                    session: Some(sid.clone()),
                     kind: if kind == "error" {
                         "api_error"
                     } else {
@@ -237,7 +237,7 @@ impl GeminiCli {
         sink.records.record("session", &Disposition::Materialized);
         if let Some(hash) = str_of(doc, "projectHash") {
             sink.out.events.push(Event {
-                session: sid.clone(),
+                session: Some(sid.clone()),
                 kind: "project".into(),
                 at: None,
                 after: None,

@@ -636,7 +636,9 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Events,
         name: "events",
         singular: "event",
-        from: Expr::Template("current_event {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
+        from: Expr::Template(
+            "current_event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
+        ),
         key: "{r}.pk",
         columns: &[
             ("id", T("{r}.id"), Text),
@@ -645,8 +647,15 @@ pub static UNITS: &[UnitSpec] = &[
                 Expr::Reference("{s}.id", ColumnReference::Session),
                 Text,
             ),
+            ("input", T("{r}i.id"), Text),
+            ("source", T("{r}i.format"), Text),
             ("kind", T("{r}.kind"), Text),
             ("at", T("{r}.at"), Time),
+            (
+                "data",
+                T("pl_block({r}.data)"),
+                crate::compile::ColKind::Json,
+            ),
         ],
         time: "{r}.at",
         newest_first: false,

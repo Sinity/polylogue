@@ -12,5 +12,8 @@ mod codex_database_titles;
 mod codex_rollout;
 mod gemini_cli_tool_output;
 mod golden;
+mod hermes_exports;
 mod optional_numeric;
 mod support;
+
+mod hermes_trajectories;

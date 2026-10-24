@@ -175,7 +175,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             data: serde_json::json!({"opaque":[null, "Ω"]}),
         });
         let event = Event {
-            session: sid("s"),
+            session: Some(sid("s")),
             kind: "notice".into(),
             at: None,
             after: Some(message.id.clone()),

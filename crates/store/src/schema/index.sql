@@ -351,8 +351,8 @@ CREATE INDEX link_parent ON link(parent_id, kind);             -- lineage down; 
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- intrinsic event identity, independent of its sources
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  id                TEXT NOT NULL UNIQUE,   -- bound fact identity, or exact input-record occurrence when unbound
+  session_pk        INTEGER REFERENCES session(pk),
   after_message_pk  INTEGER REFERENCES message(pk),
   kind              TEXT NOT NULL,
   at                INTEGER,
@@ -648,6 +648,7 @@ CREATE TABLE snapshot (
   chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
+  complete INTEGER NOT NULL DEFAULT 0,
   accounting BLOB NOT NULL,
   UNIQUE(input_pk, chain, source_start)
 ) STRICT;

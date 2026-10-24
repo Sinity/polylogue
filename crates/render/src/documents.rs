@@ -21,7 +21,7 @@ pub(crate) fn mask(document: &mut Document) {
 }
 
 fn heading(doc: &Document) -> String {
-    crate::mask(doc.title.as_deref().unwrap_or(doc.id.native().as_str()))
+    crate::mask(doc.title.as_deref().unwrap_or(doc.purpose.as_str()))
 }
 fn pieces(doc: &Document, view: View) -> impl Iterator<Item = crate::Piece> + '_ {
     doc.blocks

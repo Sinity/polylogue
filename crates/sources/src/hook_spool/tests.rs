@@ -27,7 +27,7 @@ fn each_line_is_an_event_on_the_harness_session() {
     let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, ["hook_session_start", "hook_pre_tool_use"]);
     let pre = &step.output.events[1];
-    assert_eq!(pre.session.to_string(), "claude-code:s1");
+    assert_eq!(pre.session.as_ref().unwrap().to_string(), "claude-code:s1");
     assert_eq!(pre.data["event_id"], "e2");
     assert_eq!(pre.data["tool_input"]["command"], "ls");
     let (start, end) = pre.range.unwrap();
@@ -79,7 +79,7 @@ fn the_hook_commands_carrier_lines_are_read() {
     let step = run(&HookSpool, &mut carry, &input, 0).unwrap();
     let e = &step.output.events[0];
     assert_eq!(e.kind, "hook_pre_tool_use");
-    assert_eq!(e.session.to_string(), "claude-code:s9");
+    assert_eq!(e.session.as_ref().unwrap().to_string(), "claude-code:s9");
     assert_eq!(e.at.unwrap().unix_ms(), 1_792_400_000_123);
     assert!(
         step.accounting.unread_fields.is_empty(),

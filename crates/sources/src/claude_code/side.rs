@@ -149,7 +149,7 @@ fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) ->
         return Disposition::refused("session ID in the path is empty");
     };
     out.events.push(Event {
-        session,
+        session: Some(session),
         kind: kind.to_owned(),
         at: None,
         after: None,
@@ -360,7 +360,7 @@ impl Parser for History {
             return Disposition::refused("session ID is not valid");
         };
         out.events.push(Event {
-            session,
+            session: Some(session),
             kind: "prompt_history".to_owned(),
             at: v
                 .get("timestamp")

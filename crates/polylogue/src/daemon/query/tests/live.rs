@@ -39,7 +39,7 @@ fn hooks(w: &mut WriterWorld, lines: &[(&str, &str, i64, Json)]) {
         .iter()
         .enumerate()
         .map(|(i, (s, kind, min, data))| Event {
-            session: sid(s),
+            session: Some(sid(s)),
             kind: format!("hook_{kind}"),
             at: Timestamp::from_unix_ms(T0 + min * MIN),
             after: None,
