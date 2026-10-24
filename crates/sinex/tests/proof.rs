@@ -1,8 +1,8 @@
-//! The rebuild proof (joint #7, architecture 7.1): an archive converged in
-//! `standalone`, published to Sinex, restored from Sinex into an empty
-//! archive and converged there with no provider files present gives the same
-//! answers. It runs a real `sinexd` over a throwaway PostgreSQL and NATS, so
-//! it needs Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
+//! Rebuilding from Sinex (architecture 7.1): an archive converged in
+//! `standalone`, sent to Sinex, restored from Sinex into an empty archive and
+//! converged there with no provider files present gives the same answers.
+//! It runs a real `sinexd` over a throwaway PostgreSQL and NATS, so it needs
+//! Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
 //! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
 use async_nats::jetstream;
 use polylogue_engine::{Config, Engine};
@@ -12,10 +12,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
-
-#[cfg(feature = "faults")]
-#[path = "proof/retention.rs"]
-mod retention;
 
 #[path = "proof/assets.rs"]
 mod assets;
@@ -154,9 +150,10 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
             })
             .unwrap();
     });
+    assets::remove(&a, &home);
     fs::remove_file(&source).unwrap();
     let expected = answers(&a);
-    let source_basis = document_sources(&a);
+    let document_rows = document_sources(&a);
     assert!(expected.contains("Exact supplied document λ🙂"));
     assert!(!expected.contains("Remove this supplied text"));
     assert!(
@@ -214,7 +211,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // 3. Publish; a second pass sends nothing.
+    // 3. Send everything; a second pass sends nothing.
     let config = polylogue_sinex::Config {
         mode: Mode::Primary,
         nats: nats.url().into(),
@@ -236,60 +233,67 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
             other => panic!("producer have endpoint did not become ready: {other:?}"),
         }
     }
-    let first = sinex.publish(&a).await.unwrap();
-    assert!(first.units > 0 && first.held == 0, "{first:?}");
-    let second = sinex.publish(&a).await.unwrap();
-    assert_eq!((second.units, second.held), (0, first.units), "{second:?}");
+    let first = sinex.send_missing(&a).await.unwrap();
+    assert!(first.batches > 0 && first.blobs > 0, "{first:?}");
+    assert_eq!(
+        sinex.send_missing(&a).await.unwrap(),
+        polylogue_sinex::Sent::default()
+    );
+    let mut reconnected = Sinex::connect(&config).await.unwrap();
+    assert_eq!(
+        reconnected.send_missing(&a).await.unwrap(),
+        polylogue_sinex::Sent::default(),
+        "a new connection asks Sinex instead of sending again"
+    );
+    let asset_view = assets::verify(&a, &[]);
 
-    #[cfg(feature = "faults")]
-    retention::verify(&mut sinex, &a, &home, dir.path()).await;
-    assets::remove(&a, &home);
-    assert!(sinex.publish(&a).await.unwrap().units > 0);
-    let asset_basis = assets::verify(&a, &[]);
-    let expected = answers(&a);
-    let total = polylogue_store::sinex_rows::Published::open(&a)
-        .unwrap()
-        .inventory()
-        .unwrap()
-        .len();
+    // Once Sinex holds the archive, excision refuses.
+    polylogue_store::row_batches::mark_on_sinex(&Archive::at(&a)).unwrap();
+    converge(&a, &home, vec![], |engine| {
+        let refused = engine.excise(polylogue_store::excise::ExciseRequest {
+            id: "after-sinex".into(),
+            scope: polylogue_store::excise::Scope::Text("Exact supplied document".into()),
+            reason: None,
+            dry_run: false,
+        });
+        assert!(refused.is_err(), "{refused:?}");
+    });
+    assert_eq!(answers(&a), expected);
+    let total = first.batches;
 
-    // 4. Restore into an empty archive once every unit is confirmed.
-    let id = polylogue_store::sinex_rows::Published::open(&a)
+    // 4. Restore into an empty archive once Sinex has confirmed every batch.
+    // Earlier, a restore holds a prefix; each attempt uses a new archive.
+    let id = polylogue_store::row_batches::Snapshot::open(&a)
         .unwrap()
         .archive_id()
         .unwrap();
-    let b = dir.path().join("b");
     let started = Instant::now();
-    let restored = loop {
+    let mut attempt = 0;
+    let b = loop {
+        attempt += 1;
+        let b = dir.path().join(format!("b{attempt}"));
         let (archive, lock) = Archive::open_or_create(&b).unwrap();
-        let r = sinex.restore(&archive, &id).await.unwrap();
+        let restored = sinex.restore(&archive, &id).await.unwrap();
         drop(lock);
-        if r.units == total {
-            break r;
+        if restored.batches == total {
+            break b;
         }
         assert!(
             started.elapsed() < Duration::from_secs(20),
-            "only {r:?} of {first:?} confirmed"
+            "Sinex confirmed {restored:?} of {first:?}"
         );
         tokio::time::sleep(Duration::from_millis(300)).await;
     };
-    assert_eq!(restored.units, total);
 
     // 5. Converge with no provider files: every byte comes from Sinex's store.
     let empty = dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
     converge(&b, &empty, vec![store.clone()], |_| {});
     assert_eq!(answers(&b), expected);
-    assert_eq!(document_sources(&b), source_basis);
-    assert_eq!(
-        assets::verify(&b, std::slice::from_ref(&store)),
-        asset_basis
-    );
+    assert_eq!(document_sources(&b), document_rows);
+    assert_eq!(assets::verify(&b, std::slice::from_ref(&store)), asset_view);
     assets::refuse_reimport(&b, &empty, vec![store.clone()], dir.path());
-    assert_eq!(
-        assets::verify(&b, std::slice::from_ref(&store)),
-        asset_basis
-    );
+    assert_eq!(assets::verify(&b, std::slice::from_ref(&store)), asset_view);
     // A restored standing document selection refuses an original export again.
     let mut reimport = project.clone();
     reimport["docs"][0]["content"] = serde_json::json!("Attempt from a different immutable input");
@@ -306,6 +310,3 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     });
     assert_eq!(answers(&b), expected);
 }
-
-#[path = "proof/cross_uid.rs"]
-mod cross_uid;

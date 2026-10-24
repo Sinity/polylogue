@@ -177,8 +177,8 @@ pub(super) fn insert_observation(
         return Ok(());
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen, first_commit_seq) VALUES (?1, ?2, ?3, ?4)")?
-        .execute(params![o.machine, o.host, o.seen_at_ms, seq])?;
+    tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen) VALUES (?1, ?2, ?3)")?
+        .execute(params![o.machine, o.host, o.seen_at_ms])?;
     let f = o.facts;
     let id = observation_id(tx, seq, &b.input.id)?;
     tx.prepare_cached(

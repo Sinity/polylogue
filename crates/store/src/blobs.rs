@@ -13,7 +13,7 @@ mod chain;
 pub use chain::{ChainReader, StoredChain};
 
 mod copy;
-pub(crate) use copy::{copy_plain, copy_verified};
+pub(crate) use copy::copy_plain;
 
 pub const INLINE_LIMIT: usize = 128 * 1024;
 

@@ -205,11 +205,11 @@ fn writable_reads_pin_admission_and_data_then_release_the_snapshot() {
         Err(StoreError::ExcisionPending)
     ));
     assert!(matches!(vectors.status(), Err(StoreError::ExcisionPending)));
-    archive
-        .reconcile_vectors(
-            &mut open_write(&archive.archive_db(), crate::archive::cache::SETUP).unwrap(),
-        )
-        .unwrap();
+    crate::excise::vector_cleanup::recover(
+        &archive,
+        &mut open_write(&archive.archive_db(), crate::archive::cache::SETUP).unwrap(),
+    )
+    .unwrap();
     for _ in 0..2 {
         assert!(vectors.done("test").unwrap().is_empty());
         assert!(vectors.nearest("test", &[1.0], 1).unwrap().is_empty());

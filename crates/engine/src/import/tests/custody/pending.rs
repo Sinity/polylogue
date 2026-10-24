@@ -3,7 +3,7 @@ use polylogue_store::{
     StoreError,
     fault::{self, Action},
     retention::UnfinishedState,
-    sinex_rows::{Published, Unit},
+    row_batches::{RowBatch, Snapshot},
 };
 
 #[test]
@@ -36,15 +36,18 @@ fn reservation_and_installed_boundaries_keep_exact_custody_across_restart() {
             assert_eq!(status.unfinished_inputs.len(), 1);
             assert_eq!(status.unfinished_inputs[0].state, UnfinishedState::Writing);
             assert_eq!(status.stored_bytes, 0);
-            let rows = Published::open(&world.root).unwrap();
-            let unit = Unit {
+            let rows = Snapshot::open(&world.root).unwrap();
+            let batch = RowBatch {
                 commit_seq: world.count("SELECT max(commit_seq) AS n FROM a.revision"),
                 kind: "revision".into(),
                 key: format!("{id}/1"),
             };
             assert!(
-                matches!(rows.read(&unit), Err(StoreError::InputUnfinished { .. })),
-                "unfinished bytes must not be normalized into a present publication"
+                matches!(
+                    rows.rows(&batch, |_| Ok(())),
+                    Err(StoreError::InputUnfinished { .. })
+                ),
+                "unfinished bytes must not be sent to Sinex as present"
             );
             drop(rows);
         }

@@ -340,7 +340,7 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     let mut runtime = crate::daemon::service::start(
         &dir.path().join("archive"),
         config,
-        crate::daemon::service::Backing::Standalone,
+        crate::daemon::service::ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);

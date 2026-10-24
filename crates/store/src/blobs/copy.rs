@@ -60,7 +60,7 @@ pub(crate) fn copy_plain(
 
 /// Use the copied bytes only after this returns successfully. An error can
 /// leave an unverified prefix in the destination.
-pub(crate) fn copy_verified(
+fn copy_verified(
     mut reader: impl Read,
     mut output: impl Write,
     hash: BlobHash,

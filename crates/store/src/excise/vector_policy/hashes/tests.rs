@@ -7,9 +7,9 @@ fn old_digest(version: i64, json: &str) -> Option<blake3::Hash> {
     let names: Vec<String> = serde_json::from_str(json).ok()?;
     let mut previous = None;
     for name in &names {
-        let hash = crate::sinex_rows::unhex(name).ok()?;
+        let hash = crate::encoding::unhex(name).ok()?;
         if hash.len() != 32
-            || crate::sinex_rows::hex(&hash) != *name
+            || crate::encoding::hex(&hash) != *name
             || previous.as_ref().is_some_and(|previous| previous >= &hash)
         {
             return None;

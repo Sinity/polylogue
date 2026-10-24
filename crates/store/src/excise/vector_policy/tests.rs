@@ -38,7 +38,7 @@ impl World {
         let json = serde_json::to_string(
             &hashes
                 .iter()
-                .map(|h| crate::sinex_rows::hex(&[*h; 32]))
+                .map(|h| crate::encoding::hex(&[*h; 32]))
                 .collect::<Vec<_>>(),
         )
         .unwrap();
@@ -54,7 +54,7 @@ impl World {
         .unwrap();
     }
     fn recover(&self) -> Result<()> {
-        self.archive.reconcile_vectors(&mut self.canonical())
+        crate::excise::vector_cleanup::recover(&self.archive, &mut self.canonical())
     }
     fn count(&self, hash: u8) -> i64 {
         self.vectors()
@@ -222,7 +222,7 @@ fn noncanonical_or_changed_policies_refuse_without_deleting_paid_vectors() {
     w.canonical()
         .execute(
             "UPDATE vector_deletion_policy SET hashes_json=?1 WHERE excision_id='remove'",
-            [serde_json::to_string(&vec![crate::sinex_rows::hex(&[2; 32])]).unwrap()],
+            [serde_json::to_string(&vec![crate::encoding::hex(&[2; 32])]).unwrap()],
         )
         .unwrap();
     assert!(w.recover().is_err());

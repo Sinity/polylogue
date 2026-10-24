@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-sinex"
-description = "Polylogue on Sinex (primary mode): publishing archive rows and input bytes, and restoring an archive from Sinex"
+description = "Polylogue on Sinex (primary mode): the archive's row batches and input blobs sent to Sinex, and an empty archive restored from them"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 uuid.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
+polylogue-model.workspace = true
 hashed-blobs.workspace = true
 sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "c8a5e4b1eb7f9f6724d7d1da4ea8fe4c73722687" }
 sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "c8a5e4b1eb7f9f6724d7d1da4ea8fe4c73722687" }
@@ -21,19 +22,13 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml = "0.9"
+tempfile.workspace = true
 
 [dev-dependencies]
-zip.workspace = true
-polylogue-store = { workspace = true, features = ["fixture"] }
-rusqlite = { workspace = true, features = ["backup"] }
+rusqlite.workspace = true
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true
-polylogue-model.workspace = true
-tempfile.workspace = true
 devkit = { workspace = true, features = ["pg", "nats"] }
-
-[features]
-faults = ["polylogue-engine/faults"]
 
 [lints]
 workspace = true

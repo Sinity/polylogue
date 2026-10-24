@@ -18,7 +18,7 @@ started inside a queued job keeps that job occupied after the command exits.
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
   clippy of every target, tests included, with warnings denied. It enables
-  `polylogue/sinex` so the optional daemon publisher is compiled too. The pre-push
+  `polylogue/sinex` so the daemon's Sinex code is compiled too. The pre-push
   hook runs only its formatting and boundaries steps; clippy runs in the
   AgentCTL job so it queues with the rest of the machine's work.
 - **Full suite:** formatting, boundaries, clippy and
@@ -98,21 +98,12 @@ The spec's query examples run against it in
 `crates/polylogue/src/daemon/query/tests/spec_examples.rs`; examples waiting on unbuilt
 features are listed there with the reason.
 
-The Sinex rebuild proof (`crates/sinex/src/tests.rs`) runs a real `sinexd`,
+The Sinex rebuild test (`crates/sinex/tests/proof.rs`) runs a real `sinexd`,
 so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex
 checkout, then run it from Sinex's dev shell, which has PostgreSQL with
 TimescaleDB and `nats-server`:
 `SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
-nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(excision_restores_current_units_after_retired_payloads_and_unknown_ack)'`.
-
-The ignored `cli_publication_and_plain_restore_cross_distinct_uids` control also
-needs `POLYLOGUE_BIN` (built with `sinex`) and a fresh
-`POLYLOGUE_CROSS_UID_PROOF_DIR`. It starts owned PostgreSQL/NATS fixtures, then
-uses sudo and a private mount namespace for numeric UID actors. The command
-driver reuses existing executables; same-inode pins keep them stable without
-copying binaries. It exercises CLI import/note publication and exact plain
-restore with the provider absent. It does not activate installed services or
-create accounts. Use a declared operation and preserve its binary hashes.
+nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(an_archive_restored_from_sinex_gives_the_same_answers)'`.
 
 The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It checks formatting and crate

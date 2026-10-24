@@ -1,7 +1,7 @@
 use super::*;
 use crate::fault::{self, Action};
 use crate::retention::UnfinishedState;
-use crate::sinex_rows::{Catalog, Published, Restoring};
+use crate::row_batches::Snapshot;
 
 #[test]
 fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
@@ -25,13 +25,13 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
             .unwrap();
         assert!(outcomes.iter().any(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
-        let source = Published::open(&archive.root).unwrap();
-        let id = source.archive_id().unwrap();
-        let inventory = source.inventory().unwrap();
+        let source = Snapshot::open(&archive.root).unwrap();
         let mut refused = 0;
-        for position in 1..=inventory.len() {
-            let unit = inventory.unit(position).unwrap();
-            if matches!(source.read(&unit), Err(StoreError::InputUnfinished { .. })) {
+        for batch in source.batches(None, 10_000).unwrap() {
+            if matches!(
+                source.rows(&batch, |_| Ok(())),
+                Err(StoreError::InputUnfinished { .. })
+            ) {
                 refused += 1;
             }
         }
@@ -43,17 +43,8 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
             remove(&writer, Arc::clone(&store), "unfinished-removal"),
             Err(StoreError::InputUnfinished { .. })
         ));
-        drop(inventory);
         drop(source);
         drop(writer);
-        let selected = Catalog::new().unwrap().finish().unwrap();
-        assert!(
-            Restoring::open(&archive)
-                .unwrap()
-                .install::<std::io::Empty>(&id, &selected, |_| Ok(None))
-                .is_err(),
-            "older confirmed state must not discard linked reservations"
-        );
         let writer = Writer::start(&archive).unwrap();
         let reconciled = writer.reconcile_retained_bytes(Arc::clone(&store)).unwrap();
         if point == "import.reserved" {
@@ -69,10 +60,9 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
         } else {
             assert!(reconciled.unfinished.is_empty());
         }
-        let source = Published::open(&archive.root).unwrap();
-        let inventory = source.inventory().unwrap();
-        for position in 1..=inventory.len() {
-            source.read(&inventory.unit(position).unwrap()).unwrap();
+        let source = Snapshot::open(&archive.root).unwrap();
+        for batch in source.batches(None, 10_000).unwrap() {
+            source.rows(&batch, |_| Ok(())).unwrap();
         }
     }
 }

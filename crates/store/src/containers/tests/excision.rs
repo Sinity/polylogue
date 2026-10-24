@@ -1,4 +1,3 @@
-use super::publication::contents;
 use super::*;
 use crate::archive::{cache, open_read, open_write};
 use std::collections::BTreeSet;
@@ -56,19 +55,6 @@ fn shared_selected_input_retires_each_containing_acquisition_and_keeps_unrelated
     }
     admit(&writer, &store, group);
     writer.user(crate::user_writes::UserRequest::now("unrelated-note".into(), crate::user_writes::UserWrite::AddNote { note: serde_json::from_value(serde_json::json!({"kind":"note","value":"unrelated authored note","author":"operator","targets":["repo:synthetic"]})).unwrap() })).unwrap();
-    let source = crate::sinex_rows::Published::open(&archive.root).unwrap();
-    let before: Vec<_> = (1..=source.inventory().unwrap().len())
-        .filter_map(|position| {
-            let unit = source.inventory().unwrap().unit(position).unwrap();
-            let bytes = contents(&source.read(&unit).unwrap());
-            let keep = unit.kind == "note"
-                || (unit.kind == "revision"
-                    && (unit.key.starts_with(&id(sibling))
-                        || unit.key.starts_with(&id(unrelated))));
-            keep.then_some((unit, bytes))
-        })
-        .collect();
-    drop(source);
     let removed = remove(&writer, Arc::clone(&store), "shared-member").unwrap();
     assert_eq!(
         removed
@@ -86,10 +72,6 @@ fn shared_selected_input_retires_each_containing_acquisition_and_keeps_unrelated
     }
     for body in [sibling.as_slice(), unrelated.as_slice()] {
         assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(body).0)));
-    }
-    let source = crate::sinex_rows::Published::open(&archive.root).unwrap();
-    for (unit, bytes) in before {
-        assert_eq!(contents(&source.read(&unit).unwrap()), bytes);
     }
     let db = open_read(&archive.archive_db()).unwrap();
     assert_eq!(

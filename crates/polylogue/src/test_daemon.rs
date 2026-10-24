@@ -40,7 +40,7 @@ pub fn start(text: &str) -> TestDaemon {
     let runtime = service::start(
         &dir.path().join("archive"),
         config,
-        service::Backing::Standalone,
+        service::ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);

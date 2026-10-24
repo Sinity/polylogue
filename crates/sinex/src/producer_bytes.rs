@@ -1,264 +1,244 @@
-//! Reserve the receiver's ownership of exact private bytes before installation.
-use super::*;
-use sinex_protocol::producer_bytes::{Bytes, Material, Publication, encode_frame};
-use sinex_transport::spool::{self, Frozen};
+//! Sending bytes through Sinex's producer protocol on the same host. The
+//! message and its bytes are first written to this producer's spool under
+//! Sinex's store root; Sinex then takes ownership of them, copies them and
+//! acknowledges the message. A retry after an interruption reuses the
+//! spooled request, so it never reads the source again or names a new
+//! material.
+use crate::{Error, Result, Sinex, checked};
+use sinex_model::{Class, InputRef, MaterialId};
+use sinex_protocol::producer_bytes::{Bytes, Material, Publication, Role, encode_frame};
+use sinex_protocol::{Acknowledgment, Ingress, MaterialFrame};
+use sinex_transport::spool::{self, Frozen as Spooled};
+use std::io::Read;
 
 impl Sinex {
-    pub(super) fn check_message(&self, frame: &Ingress) -> Result<()> {
-        if encode_frame(frame).len().saturating_add(4096) > self.max_message {
+    pub(crate) fn check_message(&self, message: &Ingress) -> Result<()> {
+        if encode_frame(message).len().saturating_add(4096) > self.max_message {
             return Err(Error::Invalid(
-                "producer control frame exceeds negotiated NATS payload".into(),
+                "a producer message exceeds the NATS server's message size".into(),
             ));
         }
         Ok(())
     }
 
-    fn freeze_bytes(
-        &self,
-        frame: Ingress,
-        class: Class,
-        material: Option<&mut std::fs::File>,
-    ) -> Result<Frozen> {
-        if class == Class::Sealed {
-            return Err(Error::Invalid(
-                "sealed producer byte publication is unsupported".into(),
-            ));
-        }
-        let body = encode_frame(&frame);
+    /// Writes the message, and the material's bytes when it has one, to the
+    /// spool. A message too large for one NATS message travels as an
+    /// envelope.
+    fn spool(&self, message: Ingress, material: Option<&mut dyn Read>) -> Result<Spooled> {
+        let body = encode_frame(&message);
         let envelope = (body.len().saturating_add(4096) > self.max_message).then(|| Bytes {
             blob: format!("blake3:{}", blake3::hash(&body)),
             length: body.len() as u64,
         });
-        let declaration = match &frame {
+        let declaration = match &message {
             Ingress::Material { material, .. } => Some(Material::from_frame(material)),
             _ => None,
         };
-        let publication = Publication {
+        let request = Publication {
             version: 1,
-            frame: frame.frame().to_owned(),
-            class,
+            frame: message.frame().to_owned(),
+            class: Class::Open,
             material: declaration,
             envelope,
         };
-        publication.validate().map_err(Error::Invalid)?;
-        let frozen = spool::freeze(
-            &self.spool_root,
+        request.validate().map_err(Error::Invalid)?;
+        let spooled = spool::freeze(
+            &self.store_root,
             &self.producer,
-            &Frozen { publication, frame },
+            &Spooled {
+                publication: request,
+                frame: message,
+            },
         )
         .map_err(Error::Invalid)?;
-        let publication = &frozen.publication;
+        let request = &spooled.publication;
         if let Some(bytes) = material {
             spool::stage(
-                &self.spool_root,
+                &self.store_root,
                 &self.producer,
-                publication,
-                sinex_protocol::producer_bytes::Role::Material,
+                request,
+                Role::Material,
                 bytes,
             )
             .map_err(Error::Invalid)?;
         }
-        if publication.envelope.is_some() {
+        if request.envelope.is_some() {
             spool::stage(
-                &self.spool_root,
+                &self.store_root,
                 &self.producer,
-                publication,
-                sinex_protocol::producer_bytes::Role::Envelope,
+                request,
+                Role::Envelope,
                 body.as_slice(),
             )
             .map_err(Error::Invalid)?;
         }
-        Ok(frozen)
+        Ok(spooled)
     }
 
-    fn final_ack(publication: &Publication, ack: Acknowledgment) -> Result<Acknowledgment> {
-        let ack = checked(ack)?;
-        if ack.frame != publication.frame
-            || ack.material != publication.material.as_ref().map(|m| m.id)
+    fn final_acknowledgment(
+        request: &Publication,
+        acknowledgment: Acknowledgment,
+    ) -> Result<Acknowledgment> {
+        let acknowledgment = checked(acknowledgment)?;
+        if acknowledgment.frame != request.frame
+            || acknowledgment.material != request.material.as_ref().map(|m| m.id)
         {
             return Err(Error::Invalid(
-                "final acknowledgment differs from frozen producer ownership".into(),
+                "the final acknowledgment differs from the spooled request".into(),
             ));
         }
-        Ok(ack)
+        Ok(acknowledgment)
     }
 
-    /// Recover sender cleanup after an unobserved final ACK. The iterator reads
-    /// only this producer's actual artifacts, independent of held archive size.
-    pub(super) async fn cleanup_completed(&mut self) -> Result<()> {
-        let mut pending =
-            spool::pending(&self.spool_root, &self.producer).map_err(Error::Invalid)?;
+    /// Removes spooled requests Sinex has acknowledged, for example when the
+    /// final acknowledgment arrived after a stop. Reads only this producer's
+    /// spool, whatever the archive's size.
+    pub(crate) async fn finish_staged(&mut self) -> Result<()> {
+        let mut spooled =
+            spool::pending(&self.store_root, &self.producer).map_err(Error::Invalid)?;
         loop {
-            let mut publications = Vec::with_capacity(500);
-            for artifact in pending.by_ref().take(500) {
-                // Drop the potentially large typed frame before loading another.
-                publications.push(artifact.map_err(Error::Invalid)?.publication);
+            let mut requests = Vec::with_capacity(500);
+            for entry in spooled.by_ref().take(500) {
+                // Drop the possibly large message before loading the next one.
+                requests.push(entry.map_err(Error::Invalid)?.publication);
             }
-            if publications.is_empty() {
+            if requests.is_empty() {
                 return Ok(());
             }
-            let frames = publications
+            let names = requests
                 .iter()
-                .map(|p| p.frame.clone())
+                .map(|request| request.frame.clone())
                 .collect::<Vec<_>>();
-            let held = self.have(&frames).await?;
-            for publication in &publications {
-                if let Some(ack) = held.get(&publication.frame) {
-                    Self::final_ack(publication, ack.clone())?;
+            let held = self.have(&names).await?;
+            for request in &requests {
+                if let Some(acknowledgment) = held.get(&request.frame) {
+                    Self::final_acknowledgment(request, acknowledgment.clone())?;
                 }
             }
-            for publication in publications {
-                if held.contains_key(&publication.frame) {
-                    spool::discard(&self.spool_root, &self.producer, &publication)
+            for request in requests {
+                if held.contains_key(&request.frame) {
+                    spool::discard(&self.store_root, &self.producer, &request)
                         .map_err(Error::Invalid)?;
                 }
             }
         }
     }
 
-    async fn deliver_frozen(&mut self, frozen: Frozen) -> Result<Acknowledgment> {
-        let reservation = Ingress::Reserve {
+    async fn deliver(&mut self, spooled: Spooled) -> Result<Acknowledgment> {
+        let announce = Ingress::Reserve {
             frame: format!(
                 "{}/reserve/{}",
-                frozen.publication.frame,
+                spooled.publication.frame,
                 uuid::Uuid::now_v7()
             ),
-            publication: frozen.publication.clone(),
+            publication: spooled.publication.clone(),
         };
-        self.check_message(&reservation)?;
-        let reserved = self.transmit(&reservation).await?;
-        if reserved.outcome["producer_bytes"] != 1
-            || !reserved
+        self.check_message(&announce)?;
+        let answer = self.transmit(&announce).await?;
+        if answer.outcome["producer_bytes"] != 1
+            || !answer
                 .outcome
                 .as_object()
                 .is_some_and(|o| o.contains_key("complete"))
         {
             return Err(Error::Invalid(
-                "receiver does not support durable producer byte custody".into(),
+                "this Sinex does not accept spooled producer bytes".into(),
             ));
         }
-        let done = if reserved.outcome["complete"].is_null() {
-            for (role, _) in frozen.publication.roles() {
-                // Receiver cleanup may already have removed these after a lost
-                // final ack; the completed reservation above needs no bytes.
-                spool::snapshot(&self.spool_root, &self.producer, &frozen.publication, role)
+        let done = if answer.outcome["complete"].is_null() {
+            for (role, _) in spooled.publication.roles() {
+                // Sinex may already have removed these after a lost final
+                // acknowledgment; a completed request needs no bytes.
+                spool::snapshot(&self.store_root, &self.producer, &spooled.publication, role)
                     .map_err(Error::Invalid)?;
             }
-            let wire = frozen.wire_frame();
+            let wire = spooled.wire_frame();
             self.check_message(&wire)?;
             self.transmit(&wire).await?
         } else {
-            checked(serde_json::from_value(
-                reserved.outcome["complete"].clone(),
-            )?)?
+            checked(serde_json::from_value(answer.outcome["complete"].clone())?)?
         };
-        let done = Self::final_ack(&frozen.publication, done)?;
-        spool::discard(&self.spool_root, &self.producer, &frozen.publication)
+        let done = Self::final_acknowledgment(&spooled.publication, done)?;
+        spool::discard(&self.store_root, &self.producer, &spooled.publication)
             .map_err(Error::Invalid)?;
         Ok(done)
     }
 
-    /// Inline events retain their existing path; byte-bearing frames have one
-    /// canonical frozen owner, even when a material itself needs indirection.
-    pub(super) async fn send(&mut self, frame: &Ingress) -> Result<Acknowledgment> {
-        let class = match frame {
-            Ingress::Events { events, .. } => {
-                events.iter().map(|e| e.class).max().unwrap_or(Class::Open)
-            }
-            _ => {
-                return Err(Error::Invalid(
-                    "byte-bearing frames require their frozen source snapshot".into(),
-                ));
-            }
-        };
-        if let Some(frozen) =
-            spool::load(&self.spool_root, &self.producer, frame.frame()).map_err(Error::Invalid)?
-        {
-            if frozen.publication.class != class {
-                return Err(Error::Invalid("frozen frame classification differs".into()));
-            }
-            return self.deliver_frozen(frozen).await;
-        }
-        if encode_frame(frame).len().saturating_add(4096) <= self.max_message {
-            return self.transmit(frame).await;
-        }
-        let frozen = self.freeze_bytes(frame.clone(), class, None)?;
-        self.deliver_frozen(frozen).await
-    }
-
-    pub(super) async fn material(
-        &mut self,
-        frame: String,
-        known: Option<&Acknowledgment>,
-        hash: &hashed_blobs::Hash,
-        source: impl FnOnce() -> Result<sinex_rows::BlobSnapshot>,
-        manifest: serde_json::Value,
-        class: Class,
-    ) -> Result<MaterialId> {
-        if class == Class::Sealed {
+    /// Sends a message of events: directly when it fits one NATS message,
+    /// otherwise as a spooled envelope.
+    pub(crate) async fn send(&mut self, message: &Ingress) -> Result<Acknowledgment> {
+        if !matches!(message, Ingress::Events { .. }) {
             return Err(Error::Invalid(
-                "sealed producer byte publication is unsupported".into(),
+                "only messages of events are sent directly".into(),
             ));
         }
-        let frozen =
-            spool::load(&self.spool_root, &self.producer, &frame).map_err(Error::Invalid)?;
-        if let Some(known) = known {
-            let done = checked(known.clone())?;
-            if done.frame != frame {
-                return Err(Error::Invalid("held acknowledgment frame differs".into()));
-            }
-            if let Some(frozen) = frozen {
-                Self::final_ack(&frozen.publication, done.clone())?;
-                spool::discard(&self.spool_root, &self.producer, &frozen.publication)
-                    .map_err(Error::Invalid)?;
-            }
-            return done
-                .material
-                .ok_or_else(|| Error::Invalid(format!("{} registered no material", done.frame)));
+        if let Some(spooled) = spool::load(&self.store_root, &self.producer, message.frame())
+            .map_err(Error::Invalid)?
+        {
+            return self.deliver(spooled).await;
         }
-        let frozen = if let Some(frozen) = frozen {
-            if frozen.publication.class != class
-                || frozen
-                    .publication
-                    .material
-                    .as_ref()
-                    .is_none_or(|m| m.bytes.blob != format!("blake3:{}", hash.hex()))
-            {
-                return Err(Error::Invalid(
-                    "frozen material differs from requested bytes or class".into(),
-                ));
-            }
-            frozen
-        } else {
-            let mut source = source()?;
-            let material = MaterialFrame {
-                id: MaterialId::new(),
-                input: InputRef {
-                    kind: "polylogue".into(),
-                    locator: frame.clone(),
-                    host: String::new(),
-                },
-                blob: format!("blake3:{}", hash.hex()),
-                length: source.length,
-                parser: "polylogue".into(),
-                parser_version: 1,
-                part_index: 0,
-                previous_part: None,
-                manifest,
+        if encode_frame(message).len().saturating_add(4096) <= self.max_message {
+            return self.transmit(message).await;
+        }
+        let spooled = self.spool(message.clone(), None)?;
+        self.deliver(spooled).await
+    }
+
+    /// Places `bytes` as the material sent under `name`. A request already
+    /// in the spool is resent as it is; `bytes` is then not read.
+    pub(crate) async fn material<R: Read>(
+        &mut self,
+        name: String,
+        hash: &hashed_blobs::Hash,
+        length: u64,
+        bytes: &mut R,
+        manifest: serde_json::Value,
+    ) -> Result<MaterialId> {
+        let content = format!("blake3:{}", hash.hex());
+        let spooled =
+            match spool::load(&self.store_root, &self.producer, &name).map_err(Error::Invalid)? {
+                Some(spooled) => {
+                    if spooled
+                        .publication
+                        .material
+                        .as_ref()
+                        .is_none_or(|m| m.bytes.blob != content)
+                    {
+                        return Err(Error::Invalid(format!(
+                            "the spooled request for {name} names other bytes"
+                        )));
+                    }
+                    spooled
+                }
+                None => {
+                    let material = MaterialFrame {
+                        id: MaterialId::new(),
+                        input: InputRef {
+                            kind: "polylogue".into(),
+                            locator: name.clone(),
+                            host: String::new(),
+                        },
+                        blob: content,
+                        length,
+                        parser: "polylogue".into(),
+                        parser_version: 1,
+                        part_index: 0,
+                        previous_part: None,
+                        manifest,
+                    };
+                    self.spool(
+                        Ingress::Material {
+                            frame: name,
+                            material: Box::new(material),
+                        },
+                        Some(bytes),
+                    )?
+                }
             };
-            self.freeze_bytes(
-                Ingress::Material {
-                    frame,
-                    material: Box::new(material),
-                },
-                class,
-                Some(&mut source.file),
-            )?
-        };
-        self.deliver_frozen(frozen)
+        self.deliver(spooled)
             .await?
             .material
-            .ok_or_else(|| Error::Invalid("material publication registered no identity".into()))
+            .ok_or_else(|| Error::Invalid("a placed material has no identity".into()))
     }
 }
 

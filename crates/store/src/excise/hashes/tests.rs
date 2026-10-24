@@ -16,7 +16,7 @@ fn hash_policy_bytes_and_counts_match_the_previous_sorted_set() {
         }
         let old: Vec<_> = expected
             .iter()
-            .map(|hash| crate::sinex_rows::hex(hash))
+            .map(|hash| crate::encoding::hex(hash))
             .collect();
         let old_json = serde_json::to_string(&old).unwrap();
         assert_eq!(hashes.text_policy_json().unwrap(), old_json);
@@ -55,7 +55,7 @@ fn blob_candidates_are_distinct_from_text_exclusion_authority() {
     assert_eq!(hashes.text_count().unwrap(), 1);
     assert_eq!(
         hashes.text_policy_json().unwrap(),
-        serde_json::to_string(&vec![crate::sinex_rows::hex(&[4; 32])]).unwrap()
+        serde_json::to_string(&vec![crate::encoding::hex(&[4; 32])]).unwrap()
     );
     hashes.finish().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
