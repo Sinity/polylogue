@@ -15,6 +15,7 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-
 pool = "normal"
 result = "exit"
 timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
 
 [operations.check]
@@ -42,6 +43,7 @@ arguments = "required"
 pool = "normal"
 result = "exit"
 timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
 
 [operations.focused]
