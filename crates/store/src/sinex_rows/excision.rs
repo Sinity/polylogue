@@ -200,6 +200,8 @@ fn triggers() -> Vec<(&'static str, &'static str, String)> {
              INSERT OR IGNORE INTO excision_units SELECT commit_seq,'revision',input||'/'||number FROM revision WHERE input=OLD.input AND number=OLD.revision;
  INSERT OR IGNORE INTO excision_units SELECT commit_seq,'excision',id FROM excision WHERE id=OLD.excision AND id<>(SELECT id FROM excision_request);".into()));
     }
+    out.push(("observation_container", "BEFORE DELETE",
+        "INSERT OR IGNORE INTO excision_units SELECT commit_seq,'observation',id FROM observation WHERE id=OLD.observation_id AND commit_seq>0;".into()));
     out.push(("revision", "BEFORE DELETE", "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq, 'revision', OLD.input || '/' || OLD.number;".into()));
     out
 }

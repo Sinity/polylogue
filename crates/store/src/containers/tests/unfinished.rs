@@ -41,7 +41,7 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
         );
         assert!(matches!(
             remove(&writer, Arc::clone(&store), "unfinished-removal"),
-            Err(StoreError::ExcisionFormat { .. })
+            Err(StoreError::InputUnfinished { .. })
         ));
         drop(inventory);
         drop(source);

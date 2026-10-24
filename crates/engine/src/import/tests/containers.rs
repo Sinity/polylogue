@@ -62,33 +62,6 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
 }
 
 #[test]
-fn zip_member_excision_refuses_before_removing_any_representation() {
-    let w = ClaudeHome::new();
-    let (path, _) = archive(&w);
-    let (mut engine, _lock) = engine(&w, 1024);
-    assert!(engine.import(&[path]).unwrap().pass.errors.is_empty());
-    let before = w.count("SELECT count(*) AS n FROM a.extent");
-    let id = blake3::hash(b"first member").to_hex().to_string();
-    let result = engine.excise(ExciseRequest {
-        id: "remove-member".into(),
-        scope: ExciseScope::Input(id),
-        reason: None,
-        dry_run: false,
-    });
-    assert!(
-        matches!(
-            result,
-            Err(EngineError::Store(
-                polylogue_store::StoreError::ExcisionFormat { .. }
-            ))
-        ),
-        "member removal must refuse while its original ZIP representation remains: {result:?}"
-    );
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.extent"), before);
-}
-
-#[test]
 fn a_refused_zip_member_prevents_container_and_sibling_publication() {
     let w = ClaudeHome::new();
     let source = w.dir.path().join("file-one.dat");
@@ -179,7 +152,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
 }
 
 #[test]
-fn session_document_and_container_removal_refuse_but_unrelated_input_still_removes() {
+fn session_and_document_removal_retire_original_while_unrelated_input_still_removes() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let path = w.dir.path().join("scoped.zip");
@@ -219,29 +192,38 @@ fn session_document_and_container_removal_refuse_but_unrelated_input_still_remov
         .as_str()
         .unwrap()
         .to_owned();
-    let before = w.count("SELECT count(*) AS n FROM a.extent");
+    let original_id = blake3::hash(&bytes).to_hex().to_string();
     for (index, scope) in [
         ExciseScope::Session(polylogue_model::SessionId::parse("claude-code:zip-session").unwrap()),
         ExciseScope::Document(polylogue_model::DocumentId::parse(&doc).unwrap()),
-        ExciseScope::Input(blake3::hash(&bytes).to_hex().to_string()),
     ]
     .into_iter()
     .enumerate()
     {
-        assert!(matches!(
-            e.excise(ExciseRequest {
-                id: format!("refuse-scope-{index}"),
+        let removed = e
+            .excise(ExciseRequest {
+                id: format!("remove-scope-{index}"),
                 scope,
                 reason: None,
-                dry_run: false
-            }),
-            Err(EngineError::Store(
-                polylogue_store::StoreError::ExcisionFormat { .. }
-            ))
-        ));
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.extent"), before);
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+                dry_run: false,
+            })
+            .unwrap();
+        if index == 0 {
+            assert_eq!(
+                removed.containers_retired.as_slice(),
+                std::slice::from_ref(&original_id)
+            );
+        }
+        assert!(
+            e.reads
+                .reader()
+                .unwrap()
+                .retained_input(&original_id)
+                .unwrap()
+                .is_none()
+        );
     }
+    let before = w.count("SELECT count(*) AS n FROM a.extent");
     let unrelated = w.dir.path().join("unrelated.dat");
     std::fs::write(&unrelated, b"unrelated retained bytes").unwrap();
     assert!(e.import(&[unrelated]).unwrap().pass.errors.is_empty());
@@ -325,3 +307,5 @@ fn identical_and_changed_containers_keep_acquisitions_while_sharing_member_bytes
     );
     assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.acquisition')) AS n FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id"),3);
 }
+
+mod excision;

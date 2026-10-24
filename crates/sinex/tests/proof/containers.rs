@@ -62,7 +62,7 @@ fn check(root: &Path, roots: &[PathBuf], original: &[u8]) {
     );
 }
 
-fn refuse_removal(root: &Path, home: &Path, roots: Vec<PathBuf>, original: &[u8]) {
+fn plan_removal(root: &Path, home: &Path, roots: Vec<PathBuf>, original: &[u8]) {
     converge(root, home, roots, |engine| {
         for (index, scope) in [
             polylogue_store::excise::Scope::Input(BlobHash::of(ASSET).to_string()),
@@ -72,17 +72,19 @@ fn refuse_removal(root: &Path, home: &Path, roots: Vec<PathBuf>, original: &[u8]
         .into_iter()
         .enumerate()
         {
-            assert!(matches!(
-                engine.excise(polylogue_store::excise::ExciseRequest {
-                    id: format!("zip-removal-refusal-{index}"),
+            let planned = engine
+                .excise(polylogue_store::excise::ExciseRequest {
+                    id: format!("zip-removal-plan-{index}"),
                     scope,
                     reason: None,
-                    dry_run: false
-                }),
-                Err(polylogue_engine::EngineError::Store(
-                    polylogue_store::StoreError::ExcisionFormat { .. }
-                ))
-            ));
+                    dry_run: true,
+                })
+                .unwrap();
+            assert!(planned.dry_run);
+            assert_eq!(
+                planned.containers_retired,
+                [BlobHash::of(original).to_string()]
+            );
         }
     });
 }
@@ -197,11 +199,15 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
         );
     }
     check(&root, &[], &original);
-    refuse_removal(&root, &home, vec![], &original);
+    plan_removal(&root, &home, vec![], &original);
     let expected = answers(&root);
     let id = Published::open(&root).unwrap().archive_id().unwrap();
     let first = sinex.publish(&root).await.unwrap();
     assert!(first.units > 0);
+    let physical = hashed_blobs::Store::open(config.store.clone(), vec![], 0o600).unwrap();
+    for body in [original.as_slice(), ASSET] {
+        assert!(physical.contains(&hashed_blobs::Hash(BlobHash::of(body).0)));
+    }
     let before = blake3::hash(&fs::read(root.join("archive.db")).unwrap());
     let mut old_writer = upgrade::command(&old, &root, &home, &cfg);
     old_writer.arg("daemon");
@@ -227,8 +233,80 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
     converge(&target, &home, vec![config.store.clone()], |_| {});
     assert_eq!(answers(&target), expected);
     check(&target, std::slice::from_ref(&config.store), &original);
-    refuse_removal(&target, &home, vec![config.store.clone()], &original);
+    plan_removal(&target, &home, vec![config.store.clone()], &original);
     old_decoder(&old, config, &id, &home, dir);
+    converge(&target, &home, vec![config.store.clone()], |engine| {
+        let removed = engine
+            .excise(polylogue_store::excise::ExciseRequest {
+                id: "restored-zip-member".into(),
+                scope: polylogue_store::excise::Scope::Input(BlobHash::of(ASSET).to_string()),
+                reason: None,
+                dry_run: false,
+            })
+            .unwrap();
+        assert_eq!(
+            removed.containers_retired,
+            [BlobHash::of(&original).to_string()]
+        );
+        let pool = ReadPool::open(&engine.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert!(
+            reader
+                .retained_input(&BlobHash::of(&original).to_string())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reader
+                .retained_input(&BlobHash::of(ASSET).to_string())
+                .unwrap()
+                .is_none()
+        );
+    });
+    let published = sinex.publish(&target).await.unwrap();
+    assert!(published.units > 0);
+    assert_eq!(
+        published.physical_retirement,
+        polylogue_sinex::PhysicalRetirement::Completed
+    );
+    for body in [original.as_slice(), ASSET] {
+        assert!(!physical.contains(&hashed_blobs::Hash(BlobHash::of(body).0)));
+    }
+    let total = Published::open(&target).unwrap().inventory().unwrap().len();
+    let after = dir.join("zip-retirement-restored");
+    let started = Instant::now();
+    loop {
+        let (archive, lock) = Archive::open_or_create(&after).unwrap();
+        let restored = sinex.restore(&archive, &id).await.unwrap();
+        drop(lock);
+        if restored.units == total {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    converge(&after, &home, vec![config.store.clone()], |_| {});
+    let pool = ReadPool::open(&Archive::at(&after)).unwrap();
+    let reader = pool.reader().unwrap();
+    for body in [original.as_slice(), ASSET] {
+        assert!(
+            reader
+                .retained_input(&BlobHash::of(body).to_string())
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM a.observation_container", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+    let descriptor = reader
+        .attachment(&MessageId::parse(MESSAGE).unwrap(), 0, 0)
+        .unwrap();
+    assert_eq!(descriptor.state, AttachmentState::Unavailable);
+    assert!(descriptor.candidates.is_empty());
 }
 
 fn old_decoder(old: &Path, config: &polylogue_sinex::Config, id: &str, home: &Path, dir: &Path) {

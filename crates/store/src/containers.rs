@@ -1,7 +1,10 @@
 //! Canonical container custody belongs to member observations, independently of the index.
 use crate::{Batch, ImportContainer, Result, StoreError};
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
+
+mod excision;
+pub(crate) use excision::{containing, detach, require_removable};
 
 pub(crate) fn require_authority(conn: &Connection) -> Result<()> {
     if crate::schema::version(conn)? >= 10 {
@@ -88,29 +91,6 @@ pub(crate) fn record(
         "INSERT INTO observation_container VALUES (?1,?2,?3)",
         params![observation, container.input, index],
     )?;
-    Ok(())
-}
-
-pub(crate) fn refuse_excision(conn: &Connection, input: &str) -> Result<()> {
-    let related: Option<String> = conn
-        .query_row(
-            "SELECT CASE WHEN o.input=?1 THEN c.container_input ELSE o.input END
-        FROM observation_container c JOIN observation o ON o.id=c.observation_id
-        WHERE (o.input=?1 AND EXISTS(SELECT 1 FROM extent WHERE input=c.container_input))
-            OR (c.container_input=?1 AND EXISTS(SELECT 1 FROM extent WHERE input=o.input)) LIMIT 1",
-            [input],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(related) = related {
-        return Err(StoreError::ExcisionFormat {
-            input: input.into(),
-            format: "zip".into(),
-            detail: format!(
-                "original container and member bytes are both retained ({related}); coordinated ZIP removal is unsupported"
-            ),
-        });
-    }
     Ok(())
 }
 
