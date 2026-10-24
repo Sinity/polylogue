@@ -41,7 +41,7 @@ enum Cli {
     },
     /// Crate dependency boundaries only.
     Boundaries,
-    /// The first build on a frozen representative sample of the corpus.
+    /// Corpus builds and native interactive read measurements.
     #[command(subcommand)]
     Bench(bench::Bench),
     #[command(flatten)]

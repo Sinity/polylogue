@@ -16,6 +16,8 @@
 //! the largest Codex database, which a sample of a few GB cannot hold; it
 //! measures peak memory and throughput on one huge input and predicts
 //! nothing.
+mod reads;
+
 use devkit::bench::{self, Candidate, LoadMonitor, Manifest};
 use devkit::history::Store;
 use serde_json::{Value, json};
@@ -105,6 +107,12 @@ pub enum Bench {
         #[arg(long)]
         incremental: bool,
     },
+    /// Native cold/warm CLI and bounded session-page measurements on synthetic inputs.
+    Reads {
+        /// Warm repetitions after each operation's first request.
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+        repetitions: u32,
+    },
     /// Compare the latest linear estimate with a supplied full-run result.
     /// Candidate/input matching and multi-size calibration remain unchecked.
     Validate { result: PathBuf },
@@ -126,6 +134,7 @@ pub fn execute(command: Bench) -> ExitCode {
             storage,
             incremental,
         } => run(target, &storage, incremental),
+        Bench::Reads { repetitions } => return reads::execute(repetitions),
         Bench::Validate { result } => validate(&result),
         Bench::Shared(b) => return devkit::cli::bench("polylogue", b),
     };
