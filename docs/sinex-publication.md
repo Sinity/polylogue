@@ -8,12 +8,13 @@ verifies the private roles under its durable ownership. Polylogue's current
 archive publication uses `Open`; sealed byte publication refuses before reading
 or staging plaintext. Receivers without the versioned reservation response refuse.
 
-This caller uses same-host private placement. Its native qualification runs the
-publisher and receiver under the same UID. The shared transport and store support
-declared group roots (2770 directories and 0640 files); upstream distinct-UID
-controls cover that handoff and plain readback. Installed Polylogue cross-UID
-operation needs separate qualification. Remote byte upload belongs to the Source
-drivers.
+This caller uses same-host private placement. Native qualification includes the
+actual CLI publisher, receiver and fresh provider-free restore under three
+synthetic UIDs in one protected group. The original ZIP bytes and note rows
+remain exact, including after receiver crash/restart. The shared transport and
+store support declared group roots (2770 directories and 0640 files). Installed
+Polylogue cross-UID operation still needs separate qualification; remote byte
+upload belongs to the Source drivers.
 
 [Store](../crates/store/src/sinex_rows.rs) exports source blobs as anonymous,
 hash-verified plain snapshots. Publication never writes public Sinex CAS directly.
@@ -42,7 +43,9 @@ independently checked by the ordinary verified restore path.
 
 [Caller controls](../crates/sinex/src/producer_bytes/tests.rs) exercise reservation,
 cancellation, exact identity reuse, private envelopes and missing evidence through
-real NATS. The [native restore proof](../crates/sinex/src/tests.rs) uses the paired
+real NATS. The [cross-UID command proof](../crates/sinex/tests/proof/cross_uid.rs)
+uses existing binaries in an isolated mount namespace and reaps its owned actor
+process groups. The [native restore proof](../crates/sinex/src/tests.rs) uses the paired
 Sinex receiver and schema tools. Its historical machine control uses actual old8
 Writer data with a consistent SQLite snapshot and the current reserved publisher;
 it does not establish compatibility of old8's unreserved primary transport.
