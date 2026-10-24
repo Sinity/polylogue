@@ -256,7 +256,7 @@ pub(super) async fn proof(sinex: &mut Sinex, root: &Path) {
         .collect::<Vec<_>>();
     let held_before = sinex.have(&positions).await.unwrap();
     let report = sinex.publish(&source).await;
-    let receipt = serde_json::json!({"original":blake3::hash(&original).to_hex().to_string(),"current":blake3::hash(&changed).to_hex().to_string(),"result":format!("{report:?}"),"source_version":9,"writer_version":8,"publisher":"current reserved transport","snapshot":"SQLite consistent backup"});
+    let receipt = serde_json::json!({"original":blake3::hash(&original).to_hex().to_string(),"current":blake3::hash(&changed).to_hex().to_string(),"result":format!("{report:?}"),"source_version":10,"writer_version":8,"publisher":"current reserved transport","snapshot":"SQLite consistent backup"});
     fs::write(
         root.join("receipt.json"),
         serde_json::to_vec_pretty(&receipt).unwrap(),
