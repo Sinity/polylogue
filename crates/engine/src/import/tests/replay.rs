@@ -109,19 +109,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let (mut e, lock) = engine(&w, 1024);
     let opaque = e.import(std::slice::from_ref(&unknown)).unwrap();
     assert_eq!(opaque.imported.as_slice(), std::slice::from_ref(&unknown));
-    let published = polylogue_store::sinex_rows::Published::open(&w.root).unwrap();
-    let inventory = published.inventory().unwrap();
-    let prior: Vec<_> = (1..=inventory.len())
-        .map(|position| {
-            let unit = inventory.unit(position).unwrap();
-            let mut batch = published.read(&unit).unwrap();
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut batch.file, &mut bytes).unwrap();
-            (unit, bytes)
-        })
-        .collect();
-    drop(inventory);
-    drop(published);
+    let prior = row_batches(&w.root);
     let parsed = e.import(std::slice::from_ref(&standard)).unwrap();
     assert!(parsed.pass.errors.is_empty(), "{:?}", parsed.pass.errors);
     assert_eq!(
@@ -143,17 +131,12 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
             .unwrap()[0]["format"],
         "export-file"
     );
-    let published = polylogue_store::sinex_rows::Published::open(&w.root).unwrap();
-    for (unit, expected) in prior {
-        let mut batch = published.read(&unit).unwrap();
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut batch.file, &mut bytes).unwrap();
-        assert_eq!(
-            bytes, expected,
-            "recognition must not mutate acknowledged source units"
-        );
-    }
-    drop(published);
+    let after = row_batches(&w.root);
+    assert_eq!(
+        after[..prior.len()],
+        prior[..],
+        "recognition must not change row batches Sinex may already hold"
+    );
     let refused = e
         .excise(ExciseRequest {
             id: "promoted-text".into(),
@@ -258,4 +241,26 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
             .any(|error| error.contains("competing parsed origin"))
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), before);
+}
+
+/// Every row batch and its rows, in write order.
+fn row_batches(
+    root: &std::path::Path,
+) -> Vec<(polylogue_store::row_batches::RowBatch, Vec<String>)> {
+    let snapshot = polylogue_store::row_batches::Snapshot::open(root).unwrap();
+    snapshot
+        .batches(None, 10_000)
+        .unwrap()
+        .into_iter()
+        .map(|batch| {
+            let mut rows = Vec::new();
+            snapshot
+                .rows(&batch, |row| {
+                    rows.push(format!("{} {:?} {:?}", row.table, row.columns, row.values));
+                    Ok(())
+                })
+                .unwrap();
+            (batch, rows)
+        })
+        .collect()
 }

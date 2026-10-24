@@ -50,13 +50,9 @@ pub(crate) fn recover(archive: &Archive, conn: &Connection) -> Result<()> {
     })
 }
 
-fn require_unreferenced(
-    conn: &Connection,
-    current: &crate::sinex_rows::CurrentBatches,
-    hash: &BlobHash,
-) -> Result<()> {
-    let retained: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 OR base=?1) OR EXISTS(SELECT 1 FROM extent WHERE blob=?1) OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)", [&hash.0[..]], |row| row.get(0))?;
-    if retained || current.contains(hash)? {
+fn require_unreferenced(conn: &Connection, hash: &BlobHash) -> Result<()> {
+    let referenced: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 OR base=?1) OR EXISTS(SELECT 1 FROM extent WHERE blob=?1) OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)", [&hash.0[..]], |row| row.get(0))?;
+    if referenced {
         return Err(StoreError::ExcisionBlobReferenced(*hash));
     }
     Ok(())
@@ -68,11 +64,6 @@ fn delete_pending(
     conn: &Connection,
     mut delete: impl FnMut(&BlobHash) -> Result<()>,
 ) -> Result<()> {
-    // Startup owns ArchiveLock; normal cleanup runs synchronously inside the
-    // serial Writer's excision. Search writes only index.db and paid-vector
-    // writers only embeddings.db, so no replacement manifest changes while
-    // this caller retains canonical writer custody.
-    let current = crate::sinex_rows::CurrentBatches::new(conn)?;
     loop {
         let pending: Vec<(Vec<u8>, String)> = conn
             .prepare("SELECT hash,excision_id FROM pending_blob_excision ORDER BY hash LIMIT 500")?
@@ -89,7 +80,7 @@ fn delete_pending(
                     .try_into()
                     .map_err(|_| StoreError::Invalid("invalid pending blob hash".into()))?,
             );
-            require_unreferenced(conn, &current, &hash)?;
+            require_unreferenced(conn, &hash)?;
             delete(&hash)?;
             deleted.push((hash, operation));
         }
@@ -107,7 +98,7 @@ fn delete_pending(
                     "pending blob cleanup changed during deletion".into(),
                 ));
             }
-            require_unreferenced(&tx, &current, &hash)?;
+            require_unreferenced(&tx, &hash)?;
             tx.execute(
                 "DELETE FROM pending_blob_excision WHERE hash=?1",
                 [&hash.0[..]],

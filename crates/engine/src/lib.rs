@@ -1,7 +1,7 @@
 //! The convergence loop (architecture 5). One loop runs in the daemon:
 //!
 //! ```text
-//! collect -> store -> parse -> derive -> excise -> publish (Sinex primary) -> wait
+//! collect -> store -> parse -> derive -> excise -> wait
 //! ```
 //!
 //! Each step finds its work by comparing what exists with what should

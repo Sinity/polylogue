@@ -179,57 +179,5 @@ pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Restore may delete and reinsert identical rows. Only the resulting excision
-/// state should invalidate an index, not those intermediate trigger executions.
-pub(crate) fn fingerprint(conn: &Connection) -> Result<blake3::Hash> {
-    use rusqlite::types::ValueRef;
-    let mut hash = blake3::Hasher::new();
-    let mut stmt = conn.prepare("SELECT * FROM excision ORDER BY id")?;
-    let columns = stmt.column_count();
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        hash.update(b"row");
-        for i in 0..columns {
-            match row.get_ref(i)? {
-                ValueRef::Null => {
-                    hash.update(&[0]);
-                }
-                ValueRef::Integer(n) => {
-                    hash.update(&[1]);
-                    hash.update(&n.to_be_bytes());
-                }
-                ValueRef::Real(n) => {
-                    hash.update(&[2]);
-                    hash.update(&n.to_bits().to_be_bytes());
-                }
-                ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
-                    hash.update(&[if matches!(row.get_ref(i)?, ValueRef::Text(_)) {
-                        3
-                    } else {
-                        4
-                    }]);
-                    hash.update(&(bytes.len() as u64).to_be_bytes());
-                    hash.update(bytes);
-                }
-            }
-        }
-    }
-    hash.update(super::vector_policy::fingerprint(conn)?.as_bytes());
-    let has_documents:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='excision_document' AND type='table')",[],|r|r.get(0))?;
-    if has_documents {
-        let mut stmt=conn.prepare("SELECT excision_id,document_id FROM excision_document ORDER BY excision_id,document_id")?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            hash.update(b"document_exclusion_v1");
-            for column in 0..2 {
-                let text: String = row.get(column)?;
-                hash.update(&(text.len() as u64).to_be_bytes());
-                hash.update(text.as_bytes());
-            }
-        }
-    }
-    Ok(hash.finalize())
-}
-
 #[cfg(test)]
 mod tests;

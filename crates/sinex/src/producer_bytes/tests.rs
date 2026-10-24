@@ -1,5 +1,10 @@
 use super::*;
-use std::io::{Seek, Write};
+use crate::{Config, Mode, parse_content_name};
+use async_nats::jetstream;
+use futures_util::StreamExt;
+use sinex_protocol::{Have, ProducerEvent};
+use std::path::Path;
+use std::time::Duration;
 use tokio::sync::oneshot;
 
 async fn setup(
@@ -32,13 +37,12 @@ async fn setup(
     (config, sinex, ingress)
 }
 
-fn source(bytes: &[u8]) -> sinex_rows::BlobSnapshot {
-    let mut file = tempfile::tempfile().unwrap();
-    file.write_all(bytes).unwrap();
-    file.rewind().unwrap();
-    sinex_rows::BlobSnapshot {
-        file,
-        length: bytes.len() as u64,
+/// A source that must not be read: the spooled request is reused.
+struct Unread(&'static str);
+
+impl std::io::Read for Unread {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        panic!("{}", self.0)
     }
 }
 
@@ -66,7 +70,7 @@ async fn ack(client: &async_nats::Client, subject: &str, ack: &Acknowledgment) {
 }
 
 #[tokio::test]
-async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_needs_no_bytes() {
+async fn a_cancelled_send_is_resent_from_the_spool_and_a_completed_request_needs_no_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (config, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
@@ -80,24 +84,24 @@ async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_nee
     let worker = tokio::spawn(async move {
         let Ingress::Reserve {
             frame: first_attempt,
-            publication,
+            publication: request,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("reserve first")
+            panic!("the request comes first")
         };
-        assert_eq!(publication.class, Class::Open);
-        assert_eq!(publication.frame, "stable-material");
-        assert!(publication.material.is_some() && publication.envelope.is_some());
-        let frozen = spool::load(&root, "polylogue", &publication.frame)
+        assert_eq!(request.class, Class::Open);
+        assert_eq!(request.frame, "stable-material");
+        assert!(request.material.is_some() && request.envelope.is_some());
+        let spooled = spool::load(&root, "polylogue", &request.frame)
             .unwrap()
             .unwrap();
-        let id = publication.material.as_ref().unwrap().id;
-        for (role, _) in publication.roles() {
-            spool::snapshot(&root, "polylogue", &publication, role).unwrap();
+        let id = request.material.as_ref().unwrap().id;
+        for (role, _) in request.roles() {
+            spool::snapshot(&root, "polylogue", &request, role).unwrap();
         }
-        // Nothing has reached public CAS before receiver reservation.
+        // Nothing reaches Sinex's content store before Sinex takes the request.
         let public = hashed_blobs::Store::open(root.clone(), vec![], 0o600).unwrap();
-        let hash = parse_hash(&publication.material.as_ref().unwrap().bytes.blob).unwrap();
+        let hash = parse_content_name(&request.material.as_ref().unwrap().bytes.blob).unwrap();
         assert!(!public.contains(&hash));
         ack(
             &client,
@@ -110,22 +114,22 @@ async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_nee
         )
         .await;
         let wire: Ingress = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap();
-        assert_eq!(wire, frozen.wire_frame());
+        assert_eq!(wire, spooled.wire_frame());
         assert!(matches!(wire, Ingress::Indirect { .. }));
-        observed.send((frozen.clone(), id)).unwrap();
-        // Simulate committed admission with lost final ack: receiver cleaned
+        observed.send((spooled.clone(), id)).unwrap();
+        // Sinex committed the frame but its final acknowledgment was lost: it removed
         // its roles, but cannot remove the sender's durable typed identity.
-        spool::discard_bytes(&root, "polylogue", &publication).unwrap();
+        spool::discard_bytes(&root, "polylogue", &request).unwrap();
         let Ingress::Reserve {
             frame: retry_attempt,
             publication: retry,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("retry reserve")
+            panic!("the retried request comes first")
         };
         assert_ne!(retry_attempt, first_attempt);
-        assert_eq!(retry, publication);
-        let done = acknowledgment(publication.frame.clone(), Some(id), serde_json::json!({}));
+        assert_eq!(retry, request);
+        let done = acknowledgment(request.frame.clone(), Some(id), serde_json::json!({}));
         ack(
             &client,
             &subject,
@@ -143,11 +147,10 @@ async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_nee
         sinex
             .material(
                 "stable-material".into(),
-                None,
                 &hash,
-                || Ok(source(bytes)),
+                bytes.len() as u64,
+                &mut &bytes[..],
                 serde_json::json!({"large":"x".repeat(16000)}),
-                Class::Open,
             )
             .await
     });
@@ -163,11 +166,10 @@ async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_nee
     let got = retry
         .material(
             "stable-material".into(),
-            None,
             &hash,
-            || panic!("retry must reuse frozen bytes and UUIDv7 without reopening source"),
-            serde_json::json!({"changed":"must not replace frozen manifest"}),
-            Class::Open,
+            0,
+            &mut Unread("a retry reuses the spooled bytes and material ID"),
+            serde_json::json!({"changed":"must not replace the spooled manifest"}),
         )
         .await
         .unwrap();
@@ -181,26 +183,7 @@ async fn cancellation_after_reserve_reuses_frozen_identity_and_completed_ack_nee
 }
 
 #[tokio::test]
-async fn sealed_material_refuses_before_source_or_plaintext_spool() {
-    let dir = tempfile::tempdir().unwrap();
-    let nats = devkit::nats::Server::start().unwrap();
-    let (_, mut sinex, _) = setup(dir.path(), &nats).await;
-    let result = sinex
-        .material(
-            "sealed".into(),
-            None,
-            &hashed_blobs::Hash([0; 32]),
-            || panic!("sealed source must not be read"),
-            serde_json::json!({}),
-            Class::Sealed,
-        )
-        .await;
-    assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("sealed")));
-    assert!(!dir.path().join("incoming").exists());
-}
-
-#[tokio::test]
-async fn missing_reservation_version_refuses_and_preserves_private_retry_artifact() {
+async fn a_sinex_without_spooled_bytes_refuses_and_the_request_stays_spooled() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (_, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
@@ -227,14 +210,13 @@ async fn missing_reservation_version_refuses_and_preserves_private_retry_artifac
     let result = sinex
         .material(
             "unsupported".into(),
-            None,
             &hash,
-            || Ok(source(bytes)),
+            bytes.len() as u64,
+            &mut &bytes[..],
             serde_json::json!({}),
-            Class::Open,
         )
         .await;
-    assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("does not support")));
+    assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("does not accept")));
     assert!(
         spool::load(dir.path(), "polylogue", "unsupported")
             .unwrap()
@@ -246,35 +228,36 @@ async fn missing_reservation_version_refuses_and_preserves_private_retry_artifac
 }
 
 #[tokio::test]
-async fn cancellation_with_incomplete_reservation_reuses_exact_material_and_private_body() {
+async fn a_cancelled_incomplete_request_resends_the_same_material_and_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (config, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
-    sinex.store_root = dir.path().join("unavailable-restore-reader");
     let client = sinex.client.clone();
     let subject = sinex.subjects.ack(&sinex.producer);
-    let (reserved, wait_reservation) = oneshot::channel();
+    let (requested, wait_request) = oneshot::channel();
     let root = dir.path().to_owned();
     let worker = tokio::spawn(async move {
-        let Ingress::Reserve { publication, .. } =
-            serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
+        let Ingress::Reserve {
+            publication: request,
+            ..
+        } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("reserve first")
+            panic!("the request comes first")
         };
-        assert!(publication.envelope.is_none());
-        let frozen = spool::load(&root, "polylogue", &publication.frame)
+        assert!(request.envelope.is_none());
+        let spooled = spool::load(&root, "polylogue", &request.frame)
             .unwrap()
             .unwrap();
-        reserved.send(frozen.clone()).unwrap();
-        // The reservation was committed, but its acknowledgment was lost.
+        requested.send(spooled.clone()).unwrap();
+        // Sinex committed the request, but its acknowledgment was lost.
         let Ingress::Reserve {
             frame,
             publication: retry,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("retry reserve")
+            panic!("the retried request comes first")
         };
-        assert_eq!(retry, publication);
+        assert_eq!(retry, request);
         ack(
             &client,
             &subject,
@@ -286,22 +269,22 @@ async fn cancellation_with_incomplete_reservation_reuses_exact_material_and_priv
         )
         .await;
         let sent: Ingress = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap();
-        assert_eq!(sent, frozen.frame);
+        assert_eq!(sent, spooled.frame);
         let mut body = spool::snapshot(
             &root,
             "polylogue",
-            &publication,
+            &request,
             sinex_protocol::producer_bytes::Role::Material,
         )
         .unwrap();
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut body, &mut bytes).unwrap();
         assert_eq!(bytes, b"original private bytes");
-        let id = publication.material.as_ref().unwrap().id;
+        let id = request.material.as_ref().unwrap().id;
         ack(
             &client,
             &subject,
-            &acknowledgment(publication.frame, Some(id), serde_json::json!({})),
+            &acknowledgment(request.frame, Some(id), serde_json::json!({})),
         )
         .await;
         id
@@ -312,30 +295,28 @@ async fn cancellation_with_incomplete_reservation_reuses_exact_material_and_priv
         sinex
             .material(
                 "incomplete".into(),
-                None,
                 &hash,
-                || Ok(source(body)),
+                body.len() as u64,
+                &mut &body[..],
                 serde_json::json!({"manifest":"original"}),
-                Class::Open,
             )
             .await
     });
-    let frozen = wait_reservation.await.unwrap();
+    let spooled = wait_request.await.unwrap();
     call.abort();
     assert!(call.await.unwrap_err().is_cancelled());
     let mut retry = Sinex::connect(&config).await.unwrap();
     let actual = retry
         .material(
             "incomplete".into(),
-            None,
             &hash,
-            || panic!("must not reopen changed source"),
+            0,
+            &mut Unread("must not reopen changed source"),
             serde_json::json!({"manifest":"changed"}),
-            Class::Open,
         )
         .await
         .unwrap();
-    assert_eq!(Some(actual), frozen.publication.material.map(|m| m.id));
+    assert_eq!(Some(actual), spooled.publication.material.map(|m| m.id));
     assert_eq!(actual, worker.await.unwrap());
     assert!(
         spool::load(dir.path(), "polylogue", "incomplete")
@@ -345,14 +326,14 @@ async fn cancellation_with_incomplete_reservation_reuses_exact_material_and_priv
 }
 
 #[tokio::test]
-async fn missing_frozen_body_refuses_without_reopening_source_or_sending_final_frame() {
+async fn missing_spooled_bytes_refuse_without_reading_the_source_again() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (_, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
     let body = b"private bytes";
     let hash = hashed_blobs::Hash(*blake3::hash(body).as_bytes());
-    let frozen = sinex
-        .freeze_bytes(
+    let spooled = sinex
+        .spool(
             Ingress::Material {
                 frame: "missing".into(),
                 material: Box::new(MaterialFrame {
@@ -371,18 +352,17 @@ async fn missing_frozen_body_refuses_without_reopening_source_or_sending_final_f
                     manifest: serde_json::json!({}),
                 }),
             },
-            Class::Open,
-            Some(&mut source(body).file),
+            Some(&mut &body[..]),
         )
         .unwrap();
-    spool::discard_bytes(dir.path(), "polylogue", &frozen.publication).unwrap();
+    spool::discard_bytes(dir.path(), "polylogue", &spooled.publication).unwrap();
     let client = sinex.client.clone();
     let subject = sinex.subjects.ack(&sinex.producer);
     let worker = tokio::spawn(async move {
         let Ingress::Reserve { frame, .. } =
             serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("reserve first")
+            panic!("the request comes first")
         };
         ack(
             &client,
@@ -403,23 +383,22 @@ async fn missing_frozen_body_refuses_without_reopening_source_or_sending_final_f
     let result = sinex
         .material(
             "missing".into(),
-            None,
             &hash,
-            || panic!("lost frozen bytes must not be replaced"),
+            0,
+            &mut Unread("lost spooled bytes must not be replaced from the source"),
             serde_json::json!({}),
-            Class::Open,
         )
         .await;
     assert!(matches!(result,Err(Error::Invalid(message)) if message.contains("spool unavailable")));
     assert_eq!(
         spool::load(dir.path(), "polylogue", "missing").unwrap(),
-        Some(frozen)
+        Some(spooled)
     );
     worker.await.unwrap();
 }
 
 #[tokio::test]
-async fn oversized_row_event_uses_private_envelope_under_original_final_frame() {
+async fn an_oversized_events_frame_travels_as_a_spooled_envelope() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (_, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
@@ -435,7 +414,7 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
             ordinal: 0,
             parents: vec![],
             reading_order: 1,
-            class: Class::Guarded,
+            class: Class::Open,
         }],
     };
     let expected = frame.clone();
@@ -446,18 +425,18 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
     let worker = tokio::spawn(async move {
         let Ingress::Reserve {
             frame: attempt,
-            publication,
+            publication: request,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
-            panic!("reserve first")
+            panic!("the request comes first")
         };
-        assert_eq!(publication.class, Class::Guarded);
-        assert_eq!(publication.frame, expected.frame());
-        assert!(publication.material.is_none() && publication.envelope.is_some());
+        assert_eq!(request.class, Class::Open);
+        assert_eq!(request.frame, expected.frame());
+        assert!(request.material.is_none() && request.envelope.is_some());
         let mut body = spool::snapshot(
             &root,
             "polylogue",
-            &publication,
+            &request,
             sinex_protocol::producer_bytes::Role::Envelope,
         )
         .unwrap();
@@ -484,7 +463,7 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
         ack(
             &client,
             &subject,
-            &acknowledgment(publication.frame, None, serde_json::json!({})),
+            &acknowledgment(request.frame, None, serde_json::json!({})),
         )
         .await;
     });
@@ -497,11 +476,10 @@ async fn oversized_row_event_uses_private_envelope_under_original_final_frame() 
     );
 }
 
-fn frozen_material(sinex: &Sinex, name: &str) -> Frozen {
+fn spooled_material(sinex: &Sinex, name: &str) -> Spooled {
     let body = b"synthetic pending body";
-    let mut bytes = source(body);
     sinex
-        .freeze_bytes(
+        .spool(
             Ingress::Material {
                 frame: name.into(),
                 material: Box::new(MaterialFrame {
@@ -520,19 +498,18 @@ fn frozen_material(sinex: &Sinex, name: &str) -> Frozen {
                     manifest: serde_json::json!({}),
                 }),
             },
-            Class::Open,
-            Some(&mut bytes.file),
+            Some(&mut &body[..]),
         )
         .unwrap()
 }
 
 #[tokio::test]
-async fn pending_cleanup_checks_only_own_artifacts_and_never_resends_unconfirmed_frames() {
+async fn finishing_the_spool_asks_only_about_its_own_requests_and_resends_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (_, mut sinex, mut ingress) = setup(dir.path(), &nats).await;
-    let done = frozen_material(&sinex, "done");
-    let waiting = frozen_material(&sinex, "waiting");
+    let done = spooled_material(&sinex, "done");
+    let waiting = spooled_material(&sinex, "waiting");
     let mut unrelated = waiting.clone();
     unrelated.publication.frame = "another-producer".into();
     if let Ingress::Material { frame, .. } = &mut unrelated.frame {
@@ -573,7 +550,7 @@ async fn pending_cleanup_checks_only_own_artifacts_and_never_resends_unconfirmed
                 .is_err()
         );
     });
-    sinex.cleanup_completed().await.unwrap();
+    sinex.finish_staged().await.unwrap();
     worker.await.unwrap();
     assert!(
         spool::load(dir.path(), "polylogue", "done")
@@ -591,11 +568,11 @@ async fn pending_cleanup_checks_only_own_artifacts_and_never_resends_unconfirmed
 }
 
 #[tokio::test]
-async fn pending_cleanup_preserves_identity_on_refused_or_different_final_ack() {
+async fn finishing_the_spool_keeps_a_request_on_a_refused_or_different_acknowledgment() {
     let dir = tempfile::tempdir().unwrap();
     let nats = devkit::nats::Server::start().unwrap();
     let (_, mut sinex, _) = setup(dir.path(), &nats).await;
-    let frozen = frozen_material(&sinex, "pending");
+    let spooled = spooled_material(&sinex, "pending");
     let mut requests = sinex
         .client
         .subscribe(sinex.subjects.have(&sinex.producer))
@@ -624,19 +601,19 @@ async fn pending_cleanup_preserves_identity_on_refused_or_different_final_ack() 
         }
     });
     assert!(matches!(
-        sinex.cleanup_completed().await,
+        sinex.finish_staged().await,
         Err(Error::Refused { .. })
     ));
     assert_eq!(
         spool::load(dir.path(), "polylogue", "pending").unwrap(),
-        Some(frozen.clone())
+        Some(spooled.clone())
     );
     assert!(
-        matches!(sinex.cleanup_completed().await,Err(Error::Invalid(message)) if message.contains("differs from frozen"))
+        matches!(sinex.finish_staged().await,Err(Error::Invalid(message)) if message.contains("differs from the spooled"))
     );
     assert_eq!(
         spool::load(dir.path(), "polylogue", "pending").unwrap(),
-        Some(frozen)
+        Some(spooled)
     );
     worker.await.unwrap();
 }

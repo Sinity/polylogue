@@ -214,7 +214,6 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
     }
 }
 
-mod publication;
 #[cfg(feature = "faults")]
 mod unfinished;
 

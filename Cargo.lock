@@ -2619,7 +2619,6 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
- "zip",
 ]
 
 [[package]]

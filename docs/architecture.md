@@ -20,7 +20,7 @@ operations, which read through Store and present through Query and Render.
 | [Query](../crates/query/src/lib.rs) | Bind the query language and compile parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) executes it through a Store reader and prepares answers. |
 | [Render](../crates/render/src/lib.rs) | Project typed content into views and produce terminal text, Markdown, HTML and structured output. It owns content presentation; callers own transport and surrounding navigation. |
 | [Application](../crates/polylogue/src/daemon/service.rs) | Own typed requests, configuration, convergence and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares arguments, capabilities and output actions for CLI, MCP and HTTP. The [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
-| [Sinex adapter](../crates/sinex/src/lib.rs) | Optional primary backing: publish canonical archive units and retained bytes, and restore confirmed selections through Store. |
+| [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: send the archive's row batches and input blobs to Sinex, and restore an empty archive from them. Store lists the batches and visits their rows; this crate encodes them. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real ingestion loop. Store-private row fixtures remain behind its [fixture feature](../crates/store/src/fixture.rs). |
 
 Add a source through the origin/parser framework, a command through the command
@@ -39,7 +39,7 @@ recovery and preservation rules:
 | [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. [`schema.rs`](../crates/store/src/schema.rs) creates it at version 1, the only version, and refuses any other. |
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents, source associations and retained content versions; search and derived products. It rebuilds from canonical retained inputs when its format changes or recovery requires replacement. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
-| [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes and published replacement batches. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
+| [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
 
 Index rebuilds use retained source versions, including immutable manual imports
 whose provider files have disappeared. Parsed content versions are derived;
@@ -75,11 +75,10 @@ watched inputs and parse-pool groups.
 
 [Extracted blobs](../crates/store/src/retention/extracted.rs), such as decoded
 inline media, cite a retained input/chain, exact enclosing source range and hash,
-and parser version. They have independent durable owners and publication units.
+and parser version. They have independent durable owners and row batches.
 Editing or excising source bytes invalidates affected associations; surviving
 owners retain shared bytes. Recovery does not sweep unregistered historical CAS
-files. [Extracted ownership tests](../crates/store/src/sinex_rows/tests/extracted.rs)
-cover publication and restore.
+files.
 
 [Export attachments](attachments.md) resolve through acquisition/member facts in
 retained observations and the [derived asset lookup](../crates/store/src/assets.rs).
@@ -207,17 +206,18 @@ response paths. [Masking tests](../crates/model/src/masking/tests.rs) and
 shared content behavior.
 
 The daemon owns archive access; CLI archive commands require it in either
-backing mode. Startup receives explicit standalone or Sinex backing. The
-application runtime owns convergence, signal workers, the optional publisher
-and archive lock; transports own listeners and client work. Shutdown stops
+mode. Startup receives the standalone or primary mode explicitly. The
+application runtime owns convergence, signal workers, the thread that sends
+to Sinex and the archive lock; transports own listeners and client work. Shutdown stops
 admission and closes the read pool before joining transports/workers, then
 releases the writer lock. Already admitted writes finish; pinned readers live
 until dropped. Transport restart is separate from application shutdown.
 [TestDaemon](../crates/polylogue/src/daemon/service/tests.rs) uses the same
-lifetime boundary. Publisher cancellation leaves unacknowledged remote outcomes
-unknown; synchronous archive/blob work has no hard shutdown deadline.
+lifetime boundary. Stopping the Sinex thread leaves what Sinex has not
+confirmed to the next pass; synchronous archive/blob work has no hard
+shutdown deadline.
 
-## Excision and Sinex backing
+## Excision
 
 [Excision](excision.md) owns supported removals, standing refusals and known
 representation limits. It preserves unrelated shared content and canonical
@@ -230,39 +230,29 @@ Each new excision records an immutable exact vector-deletion policy. Embeddings
 reconciliation commits deletion and its archive-bound receipt together; repeated
 restore preserves later repurchases. Legacy missing policies mean unknown
 coverage, not an empty deletion set, and cannot retrospectively identify vectors
-to remove. [Vector cleanup](../crates/store/src/excise/vector_cleanup.rs) and
-[policy restore tests](../crates/store/src/sinex_rows/tests/vector_policies.rs)
-own this distinction.
+to remove. [Vector cleanup](../crates/store/src/excise/vector_cleanup.rs)
+owns this distinction.
 
-[Store's Sinex row interface](../crates/store/src/sinex_rows.rs) publishes
-commit-ordered units, each with checked identity, row count and content hash.
-Observations, delivery events and extracted blobs are independent units, so
-later facts do not mutate acknowledged parent batches. Machine alias dependencies
-include only aliases eligible at the unit's recorded commit position. [Machine alias tests](../crates/store/src/sinex_rows/tests/machine_alias.rs)
-and [append-fact tests](../crates/store/src/sinex_rows/tests/append_facts.rs)
-cover ordering and closure preservation. The
-[machine publication contract](machine-publication.md) owns legacy held-frame
-reporting and its cached-comparison limits.
-[Producer byte publication](sinex-publication.md) owns private staging,
-receiver reservation and exact interrupted-delivery retries.
+## Sinex primary mode
 
-[Restore](../crates/store/src/sinex_rows/restore.rs) validates confirmations,
-gaps, replacements, source bytes and row ownership before atomically installing
-the selected state. It refuses a different nonempty archive, missing local
-independent facts or omitted/changed removal rules. A stale confirmed view
-cannot reopen removed content. Its [catalog](../crates/store/src/sinex_rows/restore/catalog.rs)
-keeps operation-wide selection on disk; payloads are verified through EOF and
-applied row by row. The largest descriptor, JSON row or manifest remains an
-individual memory bound. [Restore tests](../crates/store/src/sinex_rows/restore/batch/tests.rs)
-cover malformed payloads and rollback.
+With the `sinex` feature and `mode = "primary"` in `sinex.toml`, Sinex holds
+the archive: Polylogue's raw inputs and user state. A
+[row batch](../crates/store/src/row_batches.rs) is what one archive write
+added: a revision with its input, extents, blob rows and observations; a note
+with its targets and relations; an excision; a setting; a delivery; or a
+later observation, delivery event or extracted blob. Batches are ordered by
+the write counter, then kind and key. Store lists them and visits their rows;
+the [Sinex client](../crates/sinex/src/lib.rs) encodes each batch as JSON
+lines and sends it, after the blobs its rows cite, as a `polylogue.rows`
+event under the name `rows:<archive>:<position>`. Each pass asks Sinex which
+names it holds and sends the rest in order, so Sinex holds a prefix of the
+archive. A batch whose bytes are still being written waits for a later pass.
 
-Excision publishes exact replacement batches or tombstones. After row-frame
-acknowledgment, the [Sinex adapter](../crates/sinex/src/lib.rs) requests retirement
-using the latest confirmed owner and manifest digest, including on retries that
-already hold every frame. Shared current references retain their backing.
-Logical publication does not prove physical removal: results distinguish
-completed cleanup, shared retention, pending unlink and unsupported older
-servers. Legacy excisions without replacement metadata refuse primary
-publication/restore. The [native backing control](../crates/sinex/src/tests.rs)
-exercises real publication, restore and retirement; primary-mode qualification
-remains a separate operational acceptance decision.
+Once Sinex holds the archive, the archive only appends batches: excision
+refuses, and Sinex never deletes what it holds. An empty archive with
+`archive = "<id>"` configured is restored from every batch Sinex has
+confirmed, in one transaction, after checking each batch and blob against its
+content name and that positions 1 to the last are all present. The loop then
+builds `index.db` from the restored rows, reading blobs from Sinex's content
+store. The [rebuild test](../crates/sinex/tests/proof.rs) runs this against a
+real `sinexd`.

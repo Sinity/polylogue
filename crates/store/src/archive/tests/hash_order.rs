@@ -51,7 +51,7 @@ fn canonical_message_hash_generation_preserves_authored_scope_exclusions_and_vec
     drop(vectors);
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     crate::excise::recovery::acknowledge(&canonical, &index).unwrap();
-    archive.reconcile_vectors(&mut canonical).unwrap();
+    crate::excise::vector_cleanup::recover(&archive, &mut canonical).unwrap();
     assert!(
         !crate::excise::recovery::needs_rebuild(&canonical, &index).unwrap(),
         "the generation change, rather than a changed removal rule, must retire this index"

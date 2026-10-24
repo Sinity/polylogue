@@ -20,64 +20,64 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn stop(mut publisher: Publisher) -> std::io::Result<()> {
+fn stop(mut sending: Sending) -> std::io::Result<()> {
     let (done, wait) = sync_channel(1);
     let thread = std::thread::spawn(move || {
-        done.send(publisher.shutdown()).unwrap();
+        done.send(sending.shutdown()).unwrap();
     });
     let result = wait
         .recv_timeout(Duration::from_secs(5))
-        .expect("publisher did not join");
+        .expect("the Sinex thread did not join");
     thread.join().unwrap();
     result
 }
 
-fn pending() -> (Publisher, Receiver<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
+fn pending() -> (Sending, Receiver<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
     let (started, wait) = sync_channel(1);
     let dropped = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);
     let success = Arc::clone(&completed);
-    let publisher = Publisher::spawn(runtime(), move || async move {
+    let sending = Sending::spawn(runtime(), move || async move {
         let _held = Dropped(held);
         started.send(()).unwrap();
         std::future::pending::<()>().await;
         success.store(true, Ordering::SeqCst);
     })
     .unwrap();
-    (publisher, wait, dropped, completed)
+    (sending, wait, dropped, completed)
 }
 
 #[test]
 fn stopping_a_pending_pass_drops_it_without_recording_success() {
-    let (publisher, started, dropped, completed) = pending();
+    let (sending, started, dropped, completed) = pending();
     started.recv_timeout(Duration::from_secs(5)).unwrap();
-    stop(publisher).unwrap();
+    stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
     assert!(!completed.load(Ordering::SeqCst));
 }
 
 #[test]
-fn stopping_the_publisher_wakes_its_periodic_wait() {
+fn stopping_the_sinex_thread_wakes_its_periodic_wait() {
     let (started, wait) = sync_channel(1);
     let dropped = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);
-    let publisher = Publisher::spawn(runtime(), move || async move {
+    let sending = Sending::spawn(runtime(), move || async move {
         let _held = Dropped(held);
-        let sleep = tokio::time::sleep(PUBLISH_EVERY);
+        let sleep = tokio::time::sleep(SEND_EVERY);
         started.send(()).unwrap();
         sleep.await;
     })
     .unwrap();
     wait.recv_timeout(Duration::from_secs(5)).unwrap();
-    stop(publisher).unwrap();
+    stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
 }
 
 #[test]
-fn a_later_startup_error_drops_the_started_publisher() {
+fn a_later_startup_error_drops_the_started_sinex_thread() {
     fn fail(dropped: &mut Option<Arc<AtomicBool>>) -> std::io::Result<()> {
-        let (_publisher, started, held, _) = pending();
+        let (_sinex_thread, started, held, _) = pending();
         *dropped = Some(held);
         started.recv_timeout(Duration::from_secs(5)).unwrap();
         Err(std::io::Error::other("synthetic later startup failure"))
@@ -88,7 +88,7 @@ fn a_later_startup_error_drops_the_started_publisher() {
 }
 
 #[test]
-fn a_publisher_panic_is_reported_when_joined() {
+fn a_sinex_thread_panic_is_reported_when_joined() {
     struct PanicCleanup {
         unwinding: std::sync::mpsc::SyncSender<()>,
         release: Receiver<()>,
@@ -106,27 +106,27 @@ fn a_publisher_panic_is_reported_when_joined() {
     let (unwinding, wait) = sync_channel(1);
     let (release, held) = sync_channel(1);
     let (cleaned, cleanup) = sync_channel(1);
-    let publisher = Publisher::spawn(runtime(), move || async move {
+    let sending = Sending::spawn(runtime(), move || async move {
         let _cleanup = PanicCleanup {
             unwinding,
             release: held,
             cleaned,
         };
-        panic!("synthetic publisher failure");
+        panic!("synthetic Sinex thread failure");
     })
     .unwrap();
 
     // Panic handling and future cleanup precede the bounded shutdown check.
     // Nextest's process guard also bounds these synchronization waits.
     wait.recv().unwrap();
-    assert!(!publisher.thread.as_ref().unwrap().is_finished());
+    assert!(!sending.thread.as_ref().unwrap().is_finished());
     release.send(()).unwrap();
     cleanup.recv().unwrap();
     assert!(
-        stop(publisher)
+        stop(sending)
             .unwrap_err()
             .to_string()
-            .contains("publisher panicked")
+            .contains("Sinex thread panicked")
     );
 }
 
@@ -135,7 +135,7 @@ fn a_thread_local_snapshot_can_span_the_pending_pass() {
     let (started, wait) = sync_channel(1);
     let dropped = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);
-    let publisher = Publisher::spawn(runtime(), move || async move {
+    let sending = Sending::spawn(runtime(), move || async move {
         let local = std::rc::Rc::new(Dropped(held));
         started.send(()).unwrap();
         std::future::pending::<()>().await;
@@ -143,6 +143,6 @@ fn a_thread_local_snapshot_can_span_the_pending_pass() {
     })
     .unwrap();
     wait.recv_timeout(Duration::from_secs(5)).unwrap();
-    stop(publisher).unwrap();
+    stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
 }

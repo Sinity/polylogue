@@ -321,5 +321,24 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
+/// Lowercase hexadecimal.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Bytes from even-length hexadecimal of either case.
+pub(crate) fn unhex(text: &str) -> Result<Vec<u8>> {
+    if !text.is_ascii() || !text.len().is_multiple_of(2) {
+        return Err(StoreError::Invalid(format!("bad hex {text}")));
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&text[i..i + 2], 16)
+                .map_err(|_| StoreError::Invalid(format!("bad hex {text}")))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;

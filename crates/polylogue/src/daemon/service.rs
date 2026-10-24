@@ -25,7 +25,7 @@ pub struct Daemon {
     pub config: Config,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
-    backing: BackingState,
+    mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
     status: Arc<Mutex<Pass>>,
     started: Instant,
@@ -119,13 +119,13 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
 }
 
 fn writes_paused(d: &Daemon) -> Response {
-    match &d.backing {
-        BackingState::Blocked {
+    match &d.mode {
+        ModeState::Blocked {
             path,
             error: reason,
             ..
         } => Response::Error {
-            kind: "backing_unavailable".into(),
+            kind: "sinex_unavailable".into(),
             message: format!("archive writes are paused: {reason}"),
             detail: Some(serde_json::json!({ "config_path": path, "error": reason })),
         },
@@ -206,7 +206,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if let Err(response) = admit(d) {
         return response;
     }
-    if matches!(d.backing, BackingState::Blocked { .. }) && !request.read_only() {
+    if matches!(d.mode, ModeState::Blocked { .. }) && !request.read_only() {
         return writes_paused(d);
     }
     let read_epoch = d.read_checkpoints.epoch();
@@ -283,7 +283,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "store": store,
                 "last_pass": last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
-                "backing": d.backing,
+                "mode": d.mode,
             }))
         }
         Request::Query {
@@ -642,7 +642,7 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     #[cfg(feature = "sinex")]
-    publisher: Option<crate::sinex::Publisher>,
+    sinex: Option<crate::sinex::Sending>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
 
@@ -683,8 +683,8 @@ impl Runtime {
             }
         }
         #[cfg(feature = "sinex")]
-        if let Some(mut publisher) = self.publisher.take()
-            && let Err(error) = publisher.shutdown()
+        if let Some(mut sinex) = self.sinex.take()
+            && let Err(error) = sinex.shutdown()
         {
             failure.get_or_insert(error);
         }
@@ -703,16 +703,18 @@ impl Drop for Runtime {
     }
 }
 
-/// The persistence choice or a configuration failure, never a fallback mode.
-pub enum Backing {
+/// Standalone, primary on Sinex, or blocked by a Sinex configuration or
+/// restore failure; never a fallback to another mode.
+pub enum ArchiveMode {
     Standalone,
     #[cfg(feature = "sinex")]
-    Sinex {
+    Primary {
         config: polylogue_sinex::Config,
         path: std::path::PathBuf,
     },
     Blocked {
-        mode: Option<&'static str>,
+        /// The mode the configuration asked for, when it could be read.
+        configured: Option<&'static str>,
         path: std::path::PathBuf,
         error: String,
     },
@@ -720,12 +722,12 @@ pub enum Backing {
 
 #[derive(serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
-enum BackingState {
+enum ModeState {
     Standalone,
     #[cfg(feature = "sinex")]
     Primary,
     Blocked {
-        mode: Option<&'static str>,
+        configured: Option<&'static str>,
         path: std::path::PathBuf,
         error: String,
     },
@@ -733,34 +735,46 @@ enum BackingState {
 
 /// Opens the archive and starts owned application workers. Startup errors
 /// join any workers already started before releasing the archive lock.
-pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::io::Result<Runtime> {
+pub fn start(
+    root: &std::path::Path,
+    config: Config,
+    mode: ArchiveMode,
+) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
     let paths = config.clone();
     #[allow(unused_mut)]
     let mut config = config;
     #[cfg(feature = "sinex")]
-    let mut publisher = None;
-    let backing = match backing {
-        Backing::Standalone => BackingState::Standalone,
-        Backing::Blocked { mode, path, error } => BackingState::Blocked { mode, path, error },
+    let mut sinex_thread = None;
+    let mode = match mode {
+        ArchiveMode::Standalone => ModeState::Standalone,
+        ArchiveMode::Blocked {
+            configured,
+            path,
+            error,
+        } => ModeState::Blocked {
+            configured,
+            path,
+            error,
+        },
         #[cfg(feature = "sinex")]
-        Backing::Sinex {
+        ArchiveMode::Primary {
             config: sinex,
             path,
         } => match crate::sinex::start(&archive, &mut config, sinex) {
             Ok(started) => {
-                publisher = Some(started);
-                BackingState::Primary
+                sinex_thread = Some(started);
+                ModeState::Primary
             }
-            Err(error) => BackingState::Blocked {
-                mode: Some("primary"),
+            Err(error) => ModeState::Blocked {
+                configured: Some("primary"),
                 path,
                 error: error.to_string(),
             },
         },
     };
-    let mut engine = if matches!(backing, BackingState::Blocked { .. }) {
+    let mut engine = if matches!(mode, ModeState::Blocked { .. }) {
         None
     } else {
         Some(Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?)
@@ -783,7 +797,7 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
         read_checkpoints: read::checkpoints::Cache::default(),
         config: paths,
         writes,
-        backing,
+        mode,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
         started: Instant::now(),
@@ -796,7 +810,7 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
         signals: None,
         engine: None,
         #[cfg(feature = "sinex")]
-        publisher,
+        sinex: sinex_thread,
         lock: Some(lock),
     };
     let Some(mut engine) = engine.take() else {

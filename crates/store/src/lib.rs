@@ -29,11 +29,11 @@ mod publication;
 pub mod read;
 mod repo_lookup;
 pub mod retention;
+pub mod row_batches;
 pub mod schema;
 pub mod search;
 pub mod session_export;
 mod session_row;
-pub mod sinex_rows;
 pub mod sql_functions;
 mod text_rows;
 pub mod timing;
@@ -96,6 +96,8 @@ pub enum StoreError {
         "archive excision history conflicts with the index (archive revision {archive}, index revision {index}); preserve both for reconciliation"
     )]
     ExcisionConflict { archive: u64, index: u64 },
+    #[error("excision is not supported while Sinex holds this archive (primary mode)")]
+    ExcisionOnSinex,
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("session ancestry is incomplete: {0}")]

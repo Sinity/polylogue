@@ -69,7 +69,7 @@ impl<'a> RemovalHashes<'a> {
         let mut serializer = serde_json::Serializer::new(&mut bytes);
         let mut sequence = serializer.serialize_seq(None)?;
         self.visit_texts(|hash| {
-            sequence.serialize_element(&crate::sinex_rows::hex(hash))?;
+            sequence.serialize_element(&crate::encoding::hex(hash))?;
             Ok(())
         })?;
         sequence.end()?;

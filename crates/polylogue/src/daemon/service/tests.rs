@@ -94,7 +94,7 @@ fn config(home: &std::path::Path) -> Config {
 fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
+    let mut runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     assert!(daemon.archive.lock_held());
     let (done, stopped) = sync_channel(1);
@@ -122,7 +122,7 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
     let root = dir.path().join("archive");
     let weak;
     {
-        let runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
+        let runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
@@ -160,7 +160,7 @@ fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
 fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
+    let mut runtime = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
     assert!(matches!(handle(Request::Status, &old), Response::Ok { .. }));
     runtime.shutdown().unwrap();
@@ -168,7 +168,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
         old.reads.reader(),
         Err(StoreError::ReadPoolClosed)
     ));
-    let mut next = start(&root, config(dir.path()), Backing::Standalone).unwrap();
+    let mut next = start(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     assert!(matches!(
         handle(Request::Status, &next.daemon),
         Response::Ok { .. }
@@ -181,21 +181,21 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
 
 #[cfg(feature = "sinex")]
 #[test]
-fn standalone_start_does_not_resolve_operator_backing() {
+fn standalone_start_does_not_read_the_sinex_configuration() {
     const CHILD: &str = "POLYLOGUE_TEST_STANDALONE_CHILD";
     if std::env::var_os(CHILD).is_some() {
         assert!(
-            matches!(crate::sinex::configured(), Backing::Sinex { .. }),
+            matches!(crate::sinex::configured(), ArchiveMode::Primary { .. }),
             "synthetic primary configuration was not loaded"
         );
         let dir = tempfile::tempdir().unwrap();
         let runtime = start(
             &dir.path().join("archive"),
             config(dir.path()),
-            Backing::Standalone,
+            ArchiveMode::Standalone,
         )
         .unwrap();
-        assert!(runtime.publisher.is_none());
+        assert!(runtime.sinex.is_none());
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -214,7 +214,7 @@ fn standalone_start_does_not_resolve_operator_backing() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "daemon::service::tests::standalone_start_does_not_resolve_operator_backing",
+            "daemon::service::tests::standalone_start_does_not_read_the_sinex_configuration",
             "--nocapture",
         ])
         .env(CHILD, "1")
@@ -240,7 +240,7 @@ fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers
     let mut runtime = start(
         &dir.path().join("archive"),
         config(dir.path()),
-        Backing::Standalone,
+        ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
@@ -278,7 +278,7 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
         let mut config = config(dir.path());
         config.workers = workers;
         config.reader_memory_bytes = memory;
-        assert!(start(&root, config, Backing::Standalone).is_err());
+        assert!(start(&root, config, ArchiveMode::Standalone).is_err());
         assert!(Archive::open_or_create(&root).is_ok());
     }
 }
@@ -341,7 +341,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
 }
 
 #[cfg(feature = "sinex")]
-mod backing;
+mod mode;
 
 mod read_pages;
 

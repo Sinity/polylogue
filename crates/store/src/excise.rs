@@ -24,6 +24,7 @@
 //! observed); its blobs are what it is verified by afterwards.
 
 use crate::blobs::{Piece, Stored};
+use crate::encoding::hex;
 use crate::encoding::unpack_text;
 use crate::{Result, StoreError};
 use polylogue_model::{BlobHash, SessionId};
@@ -203,8 +204,6 @@ struct RefusedJson {
     revisions: Vec<String>,
     #[serde(default)]
     blobs: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    publication: Option<crate::sinex_rows::ExcisionPublication>,
 }
 
 impl RefusedJson {
@@ -253,6 +252,9 @@ pub struct Transactions<'a, 'b> {
 /// Runs an excision and records local file cleanup with its canonical rows.
 /// The writer replays that cleanup after all database transactions commit.
 pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
+    if !req.dry_run && crate::row_batches::on_sinex(t.archive)? {
+        return Err(StoreError::ExcisionOnSinex);
+    }
     let mut done = Excised {
         dry_run: req.dry_run,
         ..Excised::default()
@@ -470,11 +472,6 @@ impl<'a> Plan<'a> {
             .as_ref()
             .map(|text| stored_text::find(t, text))
             .transpose()?;
-        let capture = if req.dry_run {
-            None
-        } else {
-            Some(crate::sinex_rows::Capture::start(t.archive, &req.id)?)
-        };
         let mut refused = RefusedJson::default();
         let hashes = RemovalHashes::new(t.index)?;
         if !req.dry_run {
@@ -651,13 +648,6 @@ impl<'a> Plan<'a> {
             .map(|l| format!("{}:{}", l.machine, l.path))
             .collect();
 
-        if let Some(capture) = capture {
-            let publication = capture.finish(t.archive, t.store)?;
-            crate::sinex_rows::visit_retired_local_batches(t.archive, &publication, |hash| {
-                blob_cleanup::record(t.archive, &req.id, &hash)
-            })?;
-            refused.publication = Some(publication);
-        }
         if !req.dry_run {
             t.archive.execute(
                 "UPDATE excision SET refused_json = ?2, message_ids_json = ?3 WHERE id = ?1",
@@ -717,10 +707,6 @@ impl<'a> Plan<'a> {
         done.on_disk = on_disk.into_iter().collect();
         Ok(())
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn now_ms() -> i64 {

@@ -9,7 +9,6 @@ CREATE TABLE machine (
   id            TEXT NOT NULL,           -- /etc/machine-id
   host          TEXT NOT NULL,           -- host name: a label for display, never a key
   first_seen    INTEGER NOT NULL,
-  first_commit_seq INTEGER NOT NULL DEFAULT 0 CHECK(first_commit_seq>=0),
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
@@ -52,12 +51,8 @@ CREATE TABLE revision (
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
-  commit_seq    INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in `primary` mode
-                                         --   the revision event carries it, and Sinex holds the archive up to the
-                                         --   largest W with every revision at or below W complete; the event also carries
-                                         --   prev_commit_seq, the commit_seq of the revision stored just before it in
-                                         --   this archive's write order (0 for the first), so a gap left by a note or
-                                         --   excision is told apart from a missing revision
+  commit_seq    INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; orders the
+                                         --   row batches sent to Sinex in `primary` mode
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_commit_seq ON revision(commit_seq);
@@ -222,6 +217,7 @@ CREATE TABLE excision (
                                          --   ID scanned; 'end' once every input was. A union resets it to NULL.
   commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
 ) STRICT;
+CREATE INDEX excision_commit_seq ON excision(commit_seq);
 
 -- Variants: transformed copies of content (model.md, Variant). Content, not
 -- claims, so not notes. A new version of a variant is a new row revising the old.
@@ -273,9 +269,10 @@ CREATE TABLE setting (
   value         TEXT NOT NULL,
   author        TEXT NOT NULL,           -- 'operator' or the agent session that set it (user-data.md, who the author is)
   set_at        INTEGER NOT NULL,        -- the writer's clock, shown by `polylogue setting`
-  commit_seq    INTEGER NOT NULL         -- local order (Rules): publication only, never a key or an order
+  commit_seq    INTEGER NOT NULL         -- local order (Rules): orders row batches only, never a key
 ) STRICT;
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
+CREATE INDEX setting_commit_seq ON setting(commit_seq);
 
 -- Exactly what was put into a model's context, kept because it cannot be
 -- recomputed (architecture 4.3). Prepared, delivered and used are
@@ -299,6 +296,7 @@ CREATE TABLE delivery (
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
 CREATE INDEX delivery_sender ON delivery(sender, at);   -- signal notices; the evaluator's history
 CREATE INDEX delivery_content ON delivery(content_hash);
+CREATE INDEX delivery_commit_seq ON delivery(commit_seq);
 
 -- What happened to a prepared delivery: delivered | failed | not_sent | used.
 CREATE TABLE delivery_event (
@@ -380,7 +378,7 @@ CREATE TRIGGER document_policy_delete AFTER DELETE ON excision_document BEGIN
 END;
 
 -- Decoded bytes belong to their actual retained source envelope, separately
--- from raw byte extents. Late extraction owns an independent publication unit.
+-- from raw byte extents. A late extraction is its own row batch.
 CREATE TABLE extracted_blob (
   input TEXT NOT NULL REFERENCES input(id),
   chain INTEGER NOT NULL,
@@ -397,7 +395,7 @@ CREATE INDEX extracted_blob_hash ON extracted_blob(blob);
 CREATE INDEX extracted_blob_sequence ON extracted_blob(commit_seq);
 
 -- A physical member interpretation belongs to this exact original container.
--- The member observation owns the relationship in its publication unit.
+-- The relationship travels in the member observation's row batch.
 CREATE TABLE observation_container (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
     container_input TEXT NOT NULL REFERENCES input(id),

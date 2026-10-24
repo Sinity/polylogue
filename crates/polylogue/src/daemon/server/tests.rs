@@ -10,7 +10,7 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
     let runtime = service::start(
         &dir.path().join("archive"),
         config,
-        service::Backing::Standalone,
+        service::ArchiveMode::Standalone,
     )
     .unwrap();
     let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
@@ -38,7 +38,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let mut runtime = service::start(&root, config, service::Backing::Standalone).unwrap();
+    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = Request::Setting {
@@ -76,7 +76,7 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let first = service::start(&root, config, service::Backing::Standalone).unwrap();
+    let first = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut old = Server::start(Arc::clone(&first.daemon)).unwrap();
     old.shutdown().unwrap();
     let _server = Server::start(Arc::clone(&first.daemon)).unwrap();
@@ -94,7 +94,7 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
     let mut runtime = service::start(
         &dir.path().join("archive"),
         config,
-        service::Backing::Standalone,
+        service::ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
@@ -124,7 +124,7 @@ fn listener_wait_stops_application_admission_before_joining_clients() {
     let runtime = service::start(
         &dir.path().join("archive"),
         config,
-        service::Backing::Standalone,
+        service::ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);

@@ -52,13 +52,13 @@ impl<'de, F: FnMut(&[u8; 32]) -> Result<()>> Visitor<'de> for Hashes<'_, F> {
             .map_err(|_| noncanonical(self.error))?;
         let mut previous = None;
         while let Some(name) = sequence.next_element::<String>()? {
-            let hash = crate::sinex_rows::unhex(&name)
+            let hash = crate::encoding::unhex(&name)
                 .and_then(|bytes| {
                     <[u8; 32]>::try_from(bytes)
                         .map_err(|_| super::invalid("vector deletion hash is not 32 bytes"))
                 })
                 .map_err(|error| refused(self.error, error))?;
-            if crate::sinex_rows::hex(&hash) != name
+            if crate::encoding::hex(&hash) != name
                 || previous.is_some_and(|previous| previous >= hash)
             {
                 return Err(refused(

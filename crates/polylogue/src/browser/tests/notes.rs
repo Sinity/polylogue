@@ -19,7 +19,8 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let mut runtime = service::start(&root, config.clone(), service::Backing::Standalone).unwrap();
+    let mut runtime =
+        service::start(&root, config.clone(), service::ArchiveMode::Standalone).unwrap();
     let ctx = Arc::new(Ctx::at(&config, &runtime.daemon.archive).unwrap());
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     assert_eq!(
@@ -55,7 +56,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
     drop(runtime);
-    let mut runtime = service::start(&root, config, service::Backing::Standalone).unwrap();
+    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let retry = exchange(
         &ctx,

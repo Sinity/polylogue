@@ -1,16 +1,17 @@
-//! Import membership survives the same durable row path as retained asset bytes.
+//! Export attachments: one kept, one removed by excision before Sinex holds
+//! the archive. Both outcomes survive a restore.
 use super::*;
 use polylogue_model::{BlobHash, MessageId};
 use polylogue_store::assets::AttachmentState;
 
-const KEPT: &[u8] = b"synthetic retained asset\0\xff";
+const KEPT: &[u8] = b"synthetic kept asset\0\xff";
 const REMOVED: &[u8] = b"synthetic removed asset\0\xfe";
 const MESSAGE: &str = "chatgpt:native-asset-message";
 
 pub(super) fn seed(engine: &mut Engine, dir: &Path) {
     let source = dir.join("chatgpt-assets");
     fs::create_dir(&source).unwrap();
-    let conversation = serde_json::json!([{"id":"native-asset-session","title":"Synthetic retained assets","mapping":{"n":{"id":"n","parent":null,"children":[],"message":{"id":"native-asset-message","author":{"role":"user"},"content":{"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Native"},{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Removed"}]},"metadata":{}}}},"current_node":"n"}]);
+    let conversation = serde_json::json!([{"id":"native-asset-session","title":"Synthetic kept assets","mapping":{"n":{"id":"n","parent":null,"children":[],"message":{"id":"native-asset-message","author":{"role":"user"},"content":{"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Native"},{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Removed"}]},"metadata":{}}}},"current_node":"n"}]);
     fs::write(
         source.join("conversations.json"),
         serde_json::to_vec(&conversation).unwrap(),

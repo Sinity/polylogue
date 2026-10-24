@@ -122,7 +122,7 @@ inputs with interpretation diagnostics.
 JSON exports containing documents use `polylogue-export` version 2; session-only
 exports retain version 1. Both can be imported. Document removals use
 `excise document:ID --yes`, keep unaffected sibling values readable and retain a
-standing exclusion through rebuild and Sinex restore.
+standing exclusion through rebuild.
 
 Logical reads (`read SESSION --logical`) include only proven inherited prefixes.
 A fork's anchor is resolved in its parent's composed history, including that
@@ -171,7 +171,7 @@ raw source ranges.
   and JSON, and pages sized for models.
 - `crates/polylogue`: the binary: daemon, CLI, MCP, web reader, hooks and the
   browser extension's host.
-- `crates/sinex`: the Sinex backend, behind the `sinex` feature.
+- `crates/sinex`: primary mode on Sinex, behind the `sinex` feature.
 - `crates/testkit`: test archives built through the real loop, including
   the synthetic example archive in `examples/morrow/`.
 - `examples/sources/`: golden parser cases, one directory per origin.
@@ -186,19 +186,22 @@ shared with Sinex.
 and [docs/REPLACEMENT.md](docs/REPLACEMENT.md) says what replaced the Python
 version.
 
-## Sinex startup failures
+## Sinex primary mode
 
-With the `sinex` feature, `sinex.toml` selects the backing. A missing file uses
-standalone. Malformed configuration, an unreadable local publication inventory,
-or a failed required restore pauses startup work without choosing another
-backing. `status.backing` shows `state: blocked`, the configuration path and the
-error. Existing reads, queries, exports, notes, read-only settings and context
-without a delivery sender remain available. Archive mutations return
-`backing_unavailable`; collection, signals and publishing do not start.
+With the `sinex` feature, `$XDG_CONFIG_HOME/polylogue/sinex.toml` selects the
+mode. A missing file means standalone. With `mode = "primary"`, the daemon
+sends Sinex every archive write it does not hold yet, once a minute, and an
+empty archive is restored from Sinex when the file names `archive = "<id>"`.
+Once Sinex holds an archive, excision refuses.
 
-Correct the configuration or restore failure and restart the daemon. Source
-capture spools remain pending until collection can run. An existing nonempty
-primary archive can start and serve reads while Sinex is offline.
+Malformed configuration, an unreadable local archive or a failed restore
+pauses startup work without choosing another mode. `status.mode` shows
+`state: blocked`, the configuration path and the error. Reads, queries,
+exports, notes, read-only settings and context without a delivery sender
+remain available. Archive mutations return `sinex_unavailable`; collection,
+signals and sending to Sinex do not start. Correct the configuration or the
+restore failure and restart the daemon. An existing archive in primary mode
+starts and serves reads while Sinex is offline.
 
 Hermes imports ATIF 1.7 trajectories as Transcript Documents and ATOF 0.1
 records as input-owned observations. Its native verification database uses the

@@ -24,14 +24,14 @@ fn same_transaction_observations_replay_in_insertion_order_despite_nonmonotonic_
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let published = crate::sinex_rows::Published::open(&w.archive.root).unwrap();
-    let inventory = published.inventory().unwrap();
-    assert_eq!(
-        (1..=inventory.len())
-            .map(|p| inventory.unit(p).unwrap().key)
-            .collect::<Vec<_>>(),
-        actual
-    );
+    let snapshot = crate::row_batches::Snapshot::open(&w.archive.root).unwrap();
+    let batches: Vec<String> = snapshot
+        .batches(None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|batch| batch.key)
+        .collect();
+    assert_eq!(batches, actual);
     assert_eq!(
         db.query_row(
             "SELECT path FROM observation ORDER BY rowid DESC LIMIT 1",

@@ -158,17 +158,6 @@ impl Archive {
         retired::validate(self, canonical)
     }
 
-    pub(crate) fn reconcile_vectors(&self, canonical: &mut Connection) -> Result<()> {
-        if !crate::excise::vector_policy::exists(canonical)? {
-            return Ok(());
-        }
-        self.validate_excision_indexes(canonical)?;
-        let e = open_write(&self.embeddings_db(), cache::SETUP)?;
-        schema::ensure_embeddings(&e)?;
-        drop(e);
-        crate::excise::vector_cleanup::recover(self, canonical)
-    }
-
     /// The caller holds the archive lock. A newly created index has no old
     /// content; future parses use the archive's standing excision rules.
     pub(crate) fn prepare_index(&self) -> Result<()> {
@@ -325,7 +314,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     Ok(conn)
 }
 
-/// The canonical writer also captures changed unit keys in temporary tables.
+/// The writer's `archive.db` connection; its temporary tables spill to disk.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
     let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
     conn.pragma_update(None, "temp_store", "file")?;

@@ -1,4 +1,5 @@
 //! Text documents, their retained versions and reads on the admitted Store view.
+use crate::encoding::hex;
 use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
@@ -242,8 +243,4 @@ pub struct DocumentSource {
     pub parser_version: i64,
     pub current: bool,
     pub locations: Vec<Json>,
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -129,30 +129,6 @@ impl Key {
 }
 pub(crate) const MATCH: &str = "input=?1 AND chain=?2 AND source_start=?3 AND source_end=?4 AND source_hash=?5 AND parser_version=?6 AND blob=?7";
 
-pub(crate) fn verify_all(conn: &Connection, store: &hashed_blobs::Store) -> Result<()> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='extracted_blob')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !exists {
-        return Ok(());
-    }
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM extracted_blob x ORDER BY input,chain,source_start,source_end",
-        key_sql("x")
-    ))?;
-    let mut checked = std::collections::BTreeSet::new();
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let key = Key::parse(&row.get::<_, String>(0)?)?;
-        if checked.insert((key.input.clone(), key.chain, key.start, key.end, key.source)) {
-            check_source(conn, store, &key.input, key.chain, &key.extraction())?;
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn candidates(
     conn: &Connection,
     input: Option<(&str, i64, u64, u64)>,
