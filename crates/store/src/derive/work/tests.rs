@@ -130,7 +130,7 @@ fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
     let attrs: Json = serde_json::from_str(attempt[0]["attrs_json"].as_str().unwrap()).unwrap();
     assert_eq!(
         attrs,
-        json!({"checks_passed": 1, "checks_failed": 1, "artifacts": 2})
+        json!({"checks_passed": 1, "checks_failed": 1, "checks_unknown": 0, "artifacts": 2})
     );
 
     let checks = w.rows(
@@ -506,4 +506,126 @@ fn compound_artifact_commands_keep_text_and_legacy_packed_result_provenance() {
             vec![json!({"repo":"Sinity/polylogue", "number":6300, "evidence":"gh-output"})]
         );
     }
+}
+
+fn checks_with_unknown_outcomes() -> WriterWorld {
+    use polylogue_model::{Block, ToolOutcome, UnknownReason};
+    let mut w = WriterWorld::new();
+    let mut messages = bash("s", 1, 1_000, "bd update plnext-9 --claim", true, "claimed");
+    for (n, outcome) in [
+        (2, None),
+        (3, Some(ToolOutcome::NoResult)),
+        (
+            4,
+            Some(ToolOutcome::Unknown {
+                reason: UnknownReason::StatusFieldUnreadable,
+            }),
+        ),
+        (
+            5,
+            Some(ToolOutcome::Unknown {
+                reason: UnknownReason::RunningInBackground,
+            }),
+        ),
+    ] {
+        let mut check = bash(
+            "s",
+            n,
+            i64::from(n) * 1_000,
+            "cargo test",
+            true,
+            "status output",
+        );
+        if let Some(value) = outcome {
+            let Block::ToolResult { outcome, .. } = &mut check[1].blocks[0] else {
+                unreachable!()
+            };
+            *outcome = value;
+        } else {
+            check.truncate(1);
+        }
+        messages.extend(check);
+    }
+    messages.extend(bash("s", 6, 6_000, "cargo check", true, "ok"));
+    messages.extend(bash("s", 7, 7_000, "cargo clippy", false, "error"));
+    w.write("s", messages);
+    w
+}
+
+fn attempt_totals(w: &WriterWorld) -> Json {
+    let rows = w.rows("SELECT attrs_json FROM work_node WHERE kind='attempt'");
+    assert_eq!(rows.len(), 1);
+    serde_json::from_str(rows[0]["attrs_json"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn unknown_checks_stay_separate_from_failures_and_later_completion_updates_totals() {
+    use polylogue_model::{Block, Role, ToolOutcome};
+    let mut w = checks_with_unknown_outcomes();
+    assert_eq!(
+        attempt_totals(&w),
+        json!({"checks_passed":1,"checks_failed":1,"checks_unknown":4,"artifacts":0})
+    );
+    assert_eq!(w.rows("SELECT t.call_id,n.state,n.tool_call_pk=t.pk AS original_call FROM work_node n JOIN tool_call t ON t.pk=n.tool_call_pk WHERE n.kind='verification' ORDER BY t.at"), vec![
+        json!({"call_id":"t2","state":"unknown","original_call":1}),
+        json!({"call_id":"t3","state":"unknown","original_call":1}),
+        json!({"call_id":"t4","state":"unknown","original_call":1}),
+        json!({"call_id":"t5","state":"unknown","original_call":1}),
+        json!({"call_id":"t6","state":"ok","original_call":1}),
+        json!({"call_id":"t7","state":"error","original_call":1}),
+    ]);
+    w.write(
+        "s",
+        vec![message(
+            "completed",
+            "s",
+            Role::User,
+            8_000,
+            vec![Block::ToolResult {
+                call_id: Some("t5".into()),
+                outcome: ToolOutcome::Ok,
+                output: Some("finished".into()),
+                data: None,
+                attachments: vec![],
+            }],
+        )],
+    );
+    assert_eq!(
+        attempt_totals(&w),
+        json!({"checks_passed":2,"checks_failed":1,"checks_unknown":3,"artifacts":0})
+    );
+    assert_eq!(w.rows("SELECT n.state,n.tool_call_pk=t.pk AS original_call FROM work_node n JOIN tool_call t ON t.pk=n.tool_call_pk WHERE t.call_id='t5'"),vec![json!({"state":"ok","original_call":1})]);
+}
+
+#[test]
+fn ordinary_derivation_corrects_attempt_totals_from_the_previous_work_rule() {
+    let w = checks_with_unknown_outcomes();
+    let mut old = super::DERIVATION;
+    old.version = crate::derive::Version::Rules(1);
+    let old_version = crate::derive::versions(
+        &[crate::derive::tool_calls::DERIVATION, old],
+        polylogue_model::Catalog::builtin(),
+    )
+    .unwrap()
+    .pop()
+    .unwrap();
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    index
+        .execute(
+            "UPDATE work_node SET attrs_json=?1 WHERE kind='attempt'",
+            [json!({"checks_passed":1,"checks_failed":5,"artifacts":0}).to_string()],
+        )
+        .unwrap();
+    index
+        .execute(
+            "UPDATE derive_state SET version=?1 WHERE name='work'",
+            [old_version],
+        )
+        .unwrap();
+    assert_eq!(w.writer.derive().unwrap(), 1);
+    assert_eq!(
+        attempt_totals(&w),
+        json!({"checks_passed":1,"checks_failed":1,"checks_unknown":4,"artifacts":0})
+    );
+    assert_eq!(w.writer.derive().unwrap(), 0);
 }

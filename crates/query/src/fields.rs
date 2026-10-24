@@ -907,6 +907,12 @@ pub static FIELDS: &[Field] = &[
     ).sql("json_extract({r}.attrs_json, '$.checks_failed')"),
     f(
         Work,
+        "checks_unknown",
+        Number,
+        "attempt: checks without a known outcome while it was open",
+    ).sql("json_extract({r}.attrs_json, '$.checks_unknown')"),
+    f(
+        Work,
         "artifacts",
         Number,
         "attempt: commits and pull requests made while it was open",

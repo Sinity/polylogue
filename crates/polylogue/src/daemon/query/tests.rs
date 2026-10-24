@@ -1131,3 +1131,82 @@ mod titles;
 mod page_binding;
 
 mod input_events;
+
+#[test]
+fn work_queries_distinguish_unknown_check_totals_from_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    let s = fx
+        .session(SessionFacts {
+            id: "claude-code:unknown-work",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    let m = fx
+        .message(
+            s,
+            msg("unknown-work-call", "assistant", "model", "", at(2, 12)),
+        )
+        .unwrap();
+    for (n, (command, outcome)) in [
+        ("bd update plnext-7 --claim", "ok"),
+        ("cargo test", "unknown"),
+        ("cargo check", "error"),
+        ("cargo clippy", "ok"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fx.tool_call(
+            s,
+            m,
+            CallFacts {
+                tool: "Bash",
+                action: "shell",
+                command: Some(command),
+                outcome,
+                at: at(2, 12).map(|t| t + n as i64 * 60_000),
+                ..CallFacts::default()
+            },
+        )
+        .unwrap();
+    }
+    fx.derive().unwrap();
+    let w = World { _dir: dir, fx };
+    let fields = ["checks_passed", "checks_failed", "checks_unknown"].map(str::to_owned);
+    let totals = run_q(
+        &w,
+        Ask {
+            fields: &fields,
+            ..ask("work where kind:attempt")
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        totals["rows"],
+        json!([{"checks_passed":1,"checks_failed":1,"checks_unknown":1}])
+    );
+    assert_eq!(
+        q(
+            &w,
+            "work where kind:attempt checks_passed:1 checks_failed:1 checks_unknown:1"
+        )["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        q(&w, "work where kind:attempt checks_failed:2")["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        q(&w, r#"work where kind:verification state:"unknown""#)["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
