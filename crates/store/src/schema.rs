@@ -11,8 +11,8 @@ pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// Bumped when the index schema or row format changes; a different version means the
-/// index is rebuilt into a new file.
+/// A different version rebuilds the index into a new file. Required retained-source
+/// replay, including canonical ownership learned by parsing, also uses this boundary.
 pub const INDEX_VERSION: u32 = 33;
 
 /// Migrations for `archive.db`, applied in order after the base schema.

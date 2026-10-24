@@ -3,6 +3,12 @@ use super::*;
 use crate::retention::PreparedBatch;
 use std::collections::{BTreeMap, BTreeSet};
 
+struct Reservation {
+    retained: Vec<Retained>,
+    ready: BTreeSet<BlobHash>,
+    checked: BTreeSet<crate::retention::extracted::SourceKey>,
+}
+
 impl Inner {
     pub(in crate::writer) fn retain_group(
         &mut self,
@@ -27,7 +33,11 @@ impl Inner {
             return errors(&group, error.into());
         }
         let reserved = self.reserve_group(&mut group, &store);
-        let (_seq, retained, ready) = match reserved {
+        let Reservation {
+            retained,
+            ready,
+            mut checked,
+        } = match reserved {
             Ok(value) => value,
             Err(error) => {
                 let _ = self.archive.pragma_update(None, "synchronous", previous);
@@ -95,10 +105,10 @@ impl Inner {
         let mut installed = ready;
         let mut failed = BTreeMap::<BlobHash, String>::new();
         for hash in &raw {
-            if permitted_raw.contains(hash) {
-                if let Some(file) = files.remove(hash) {
-                    install(file, &mut installed, &mut failed, &group);
-                }
+            if permitted_raw.contains(hash)
+                && let Some(file) = files.remove(hash)
+            {
+                install(file, &mut installed, &mut failed, &group);
             }
         }
         for (index, (item, retained)) in group.iter().zip(&retained).enumerate() {
@@ -106,26 +116,20 @@ impl Inner {
                 continue;
             }
             let result = (|| {
-                if let Some(piece) = &item.batch.piece {
-                    if let Some(error) = failed.get(&piece.hash) {
-                        return Err(StoreError::Invalid(error.clone()));
-                    }
+                if let Some(piece) = &item.batch.piece
+                    && let Some(error) = failed.get(&piece.hash)
+                {
+                    return Err(StoreError::Invalid(error.clone()));
                 }
-                let mut checked = BTreeSet::new();
                 for extraction in &item.extracted {
-                    if checked.insert((
-                        extraction.range.start,
-                        extraction.range.end,
-                        extraction.source_hash,
-                    )) {
-                        crate::retention::extracted::check_source(
-                            &self.archive,
-                            &store,
-                            &item.batch.input.id,
-                            retained.chain,
-                            extraction,
-                        )?;
-                    }
+                    crate::retention::extracted::check_once(
+                        &self.archive,
+                        &store,
+                        &item.batch.input.id,
+                        retained.chain,
+                        extraction,
+                        &mut checked,
+                    )?;
                 }
                 Ok(())
             })();
@@ -224,7 +228,7 @@ impl Inner {
         }
         drop(publication);
         let mut parsed = Vec::new();
-        for ((item, retained), outcome) in group.iter_mut().zip(&retained).zip(&outcomes) {
+        for ((mut item, retained), outcome) in group.into_iter().zip(&retained).zip(&outcomes) {
             if outcome.is_none() && !item.batch.parse.is_empty() {
                 item.batch.change = Change::Reparse {
                     chain: retained.chain,
@@ -233,26 +237,26 @@ impl Inner {
                 item.batch.piece = None;
                 item.batch.observation = None;
                 item.batch.blobs.clear();
-                parsed.push(Box::new(item.batch.clone()));
+                parsed.push(Box::new(item.batch));
             }
         }
         if !parsed.is_empty() {
             self.write_group(&parsed);
         }
-        group
+        drop(parsed);
+        retained
             .into_iter()
-            .zip(retained)
             .zip(outcomes)
-            .map(|((item, retained), error)| {
+            .map(|(retained, error)| {
                 if let Some(reason) = error {
                     Err(StoreError::InputUnfinished {
-                        input: item.batch.input.id,
+                        input: retained.input,
                         reason,
                     })
-                } else if self.report.failed_inputs.contains(&item.batch.input.id) {
+                } else if self.report.failed_inputs.contains(&retained.input) {
                     Err(StoreError::Invalid(format!(
                         "input {}: parsed rows were refused",
-                        item.batch.input.id
+                        retained.input
                     )))
                 } else {
                     Ok(retained)
@@ -265,7 +269,8 @@ impl Inner {
         &mut self,
         group: &mut [PreparedBatch],
         store: &hashed_blobs::Store,
-    ) -> Result<(i64, Vec<Retained>, BTreeSet<BlobHash>)> {
+    ) -> Result<Reservation> {
+        let mut checked = BTreeSet::new();
         let mut inputs = BTreeSet::new();
         let mut ready = BTreeSet::new();
         for item in group.iter_mut() {
@@ -278,7 +283,63 @@ impl Inner {
             i64::try_from(b.length).map_err(|_| {
                 StoreError::Invalid("retained input exceeds archive address space".into())
             })?;
+            if b.input.id.is_empty() {
+                return Err(StoreError::Invalid(
+                    "retention needs an input identity".into(),
+                ));
+            }
+            for piece in b.piece.iter().chain(&b.blobs) {
+                let size = usize::try_from(piece.size).map_err(|_| {
+                    StoreError::Invalid("retained piece exceeds address space".into())
+                })?;
+                i64::try_from(piece.size).map_err(|_| {
+                    StoreError::Invalid("retained piece exceeds archive address space".into())
+                })?;
+                match &piece.stored {
+                    Stored::Inline(encoded) => {
+                        let bytes = zstd::bulk::decompress(encoded, size)?;
+                        if bytes.len() != size || BlobHash::of(&bytes) != piece.hash {
+                            return Err(StoreError::BlobCorrupt(piece.hash));
+                        }
+                    }
+                    Stored::File { .. } => {
+                        if !item
+                            .files
+                            .iter()
+                            .any(|file| file.hash() == piece.hash && file.len() == piece.size)
+                        {
+                            return Err(StoreError::Invalid(
+                                "file piece has no matching private stage".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            for piece in &b.blobs {
+                if !item.extracted.iter().any(|x| x.blob == piece.hash) {
+                    return Err(StoreError::Invalid(
+                        "decoded piece has no source association".into(),
+                    ));
+                }
+            }
+            for extraction in &item.extracted {
+                if !b.blobs.iter().any(|p| p.hash == extraction.blob) {
+                    return Err(StoreError::Invalid(
+                        "decoded association has no matching piece".into(),
+                    ));
+                }
+            }
             for file in &item.files {
+                if !b
+                    .piece
+                    .iter()
+                    .chain(&b.blobs)
+                    .any(|piece| piece.hash == file.hash() && piece.size == file.len())
+                {
+                    return Err(StoreError::Invalid(
+                        "private stage has no source owner".into(),
+                    ));
+                }
                 if file.owner != self.location.root {
                     return Err(StoreError::Invalid(
                         "private stage belongs to another archive".into(),
@@ -336,12 +397,13 @@ impl Inner {
                     }
                 };
                 for extraction in &item.extracted {
-                    crate::retention::extracted::check_source(
+                    crate::retention::extracted::check_once(
                         &self.archive,
                         store,
                         &b.input.id,
                         chain,
                         extraction,
+                        &mut checked,
                     )?;
                 }
             }
@@ -360,7 +422,10 @@ impl Inner {
                             "retained blob length differs from its hash".into(),
                         ));
                     }
-                    if state == "present" {
+                    if state == "present"
+                        || place == "inline"
+                        || matches!(piece.stored, Stored::Inline(_))
+                    {
                         let valid = if place == "inline" {
                             let bytes = crate::blobs::read(&self.archive, store, &piece.hash)?;
                             BlobHash::of(&bytes) == piece.hash && bytes.len() as u64 == piece.size
@@ -433,8 +498,28 @@ impl Inner {
         let mut retained = Vec::new();
         for item in group.iter() {
             let b = &item.batch;
+            for piece in b.piece.iter().chain(&b.blobs) {
+                if let Stored::Inline(bytes) = &piece.stored
+                    && !ready.contains(&piece.hash)
+                {
+                    tx.execute("UPDATE blob SET place='inline',encoding='plain',base=NULL,data=?2,stored_size=?3,state='present' WHERE hash=?1",params![&piece.hash.0[..],bytes,bytes.len() as i64])?;
+                }
+            }
             let chain = write_bytes(&tx, b, seq)?
                 .ok_or_else(|| StoreError::Invalid("retention produced no source chain".into()))?;
+            for file in &item.files {
+                if !item.extracted.iter().any(|x| x.blob == file.hash()) {
+                    let offset = b.length.checked_sub(file.len()).ok_or_else(|| {
+                        StoreError::Invalid("captured bytes exceed input length".into())
+                    })?;
+                    let owned:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM extent WHERE input=?1 AND chain=?2 AND offset=?3 AND length=?4 AND blob_offset=0 AND blob=?5)",params![b.input.id,chain,offset as i64,file.len() as i64,&file.hash().0[..]],|r|r.get(0))?;
+                    if !owned {
+                        return Err(StoreError::Invalid(
+                            "private stage is not retained by its source extent".into(),
+                        ));
+                    }
+                }
+            }
             for extraction in &item.extracted {
                 if extraction.range.start >= extraction.range.end || extraction.range.end > b.length
                 {
@@ -466,7 +551,11 @@ impl Inner {
         tx.commit()?;
         self.report.transactions += 1;
         self.report.batches += group.iter().filter(|g| g.batch.parse.is_empty()).count() as u64;
-        Ok((seq, retained, ready))
+        Ok(Reservation {
+            retained,
+            ready,
+            checked,
+        })
     }
 }
 

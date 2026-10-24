@@ -95,6 +95,7 @@ impl Inner {
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             drop(stmt);
+            let mut checked = std::collections::BTreeSet::new();
             for value in keys {
                 let key = crate::retention::extracted::Key::parse(&value)?;
                 if matches!(
@@ -109,12 +110,13 @@ impl Inner {
                 ) {
                     continue;
                 }
-                crate::retention::extracted::check_source(
+                crate::retention::extracted::check_once(
                     &tx,
                     store,
                     &key.input,
                     key.chain,
                     &key.extraction(),
+                    &mut checked,
                 )?;
                 let present: bool = tx.query_row(
                     "SELECT state='present' FROM blob WHERE hash=?1",

@@ -499,12 +499,7 @@ fn retiring_a_pending_batch_preserves_identical_cataloged_file_or_inline_bytes()
 fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change() {
     let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
-    target
-        .execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut target).unwrap();
     target
         .execute(
             "INSERT INTO meta(key,value) VALUES ('archive_id','unrelated-archive')",
@@ -519,14 +514,9 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
             [],
         )
         .unwrap();
-    let source = Connection::open_in_memory().unwrap();
+    let mut source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
-    source
-        .execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut source).unwrap();
     source.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note1','note1','note','source body','operator','test',1,1)",[]).unwrap();
     let unit = Unit {
         commit_seq: 1,
@@ -580,12 +570,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     // which preserves a locally retained row outside the publication catalog.
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
-    empty
-        .execute_batch(concat!(
-            include_str!("../schema/migrations/005-append-facts.sql"),
-            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
-        ))
-        .unwrap();
+    crate::schema::migrate_archive(&mut empty).unwrap();
     assert_eq!(
         restore::install_fixture(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
             std::io::Cursor::new(batch.contents())
@@ -834,3 +819,5 @@ mod append_facts;
 mod vector_policies;
 
 mod document_policy;
+
+mod extracted;

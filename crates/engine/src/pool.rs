@@ -388,6 +388,10 @@ fn run(
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_piece(roots, &blob.bytes)) {
                                 Ok((p, file)) => {
+                                    if p.hash!=blob.hash || p.size!=blob.size {
+                                        out.error=Some("decoded bytes differ from their declared hash or length".into());
+                                        return Vec::new();
+                                    }
                                     files.extend(file);
                                     extracted.push(Extraction {
                                         range: range.clone(),

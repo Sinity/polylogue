@@ -381,5 +381,75 @@ pub(super) async fn verify(sinex: &mut Sinex, config: &polylogue_sinex::Config, 
         vec![vec![Value::Integer(0)]]
     );
     drop(daemon);
+
+    // Canonical ownership also drives removal without any derived index.
+    let input = match &source_versions[0][0] {
+        Value::Text(input) => input.clone(),
+        other => panic!("unexpected source identity {other:?}"),
+    };
     drop(archive);
+    fs::remove_file(root.join("index.db")).unwrap();
+    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    let writer = polylogue_store::Writer::start(&archive).unwrap();
+    let removed = writer
+        .excise(
+            polylogue_store::excise::ExciseRequest {
+                id: "remove-upgraded-images".into(),
+                scope: polylogue_store::excise::Scope::Input(input),
+                reason: None,
+                dry_run: false,
+            },
+            std::sync::Arc::new(hashed_blobs::Store::open(root.clone(), vec![], 0o600).unwrap()),
+        )
+        .unwrap();
+    drop(writer);
+    drop(lock);
+    assert_eq!(removed.inputs_removed.len(), 1);
+    assert_eq!(
+        rows(
+            &root.join("archive.db"),
+            "SELECT count(*) FROM extracted_blob"
+        ),
+        vec![vec![Value::Integer(0)]]
+    );
+    assert!(sinex.publish(&root).await.unwrap().units > 0);
+    let final_restore = dir.join("excised-upgrade-restore");
+    let start = Instant::now();
+    loop {
+        let (target, lock) = Archive::open_or_create(&final_restore).unwrap();
+        sinex.restore(&target, &id).await.unwrap();
+        drop(lock);
+        if !rows(
+            &final_restore.join("archive.db"),
+            "SELECT id FROM excision WHERE id='remove-upgraded-images'",
+        )
+        .is_empty()
+        {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        rows(
+            &final_restore.join("archive.db"),
+            "SELECT count(*) FROM extracted_blob"
+        ),
+        vec![vec![Value::Integer(0)]]
+    );
+    replay(
+        &final_restore,
+        &empty,
+        &machine,
+        &host,
+        vec![config.store.clone()],
+    );
+    assert!(versions(&final_restore).is_empty());
+    assert_eq!(
+        rows(
+            &final_restore.join("archive.db"),
+            "SELECT count(*) FROM extracted_blob"
+        ),
+        vec![vec![Value::Integer(0)]]
+    );
 }

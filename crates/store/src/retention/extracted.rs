@@ -47,6 +47,30 @@ pub(crate) fn check_source(
     Ok(())
 }
 
+pub(crate) type SourceKey = (String, i64, u64, u64, BlobHash);
+
+pub(crate) fn check_once(
+    conn: &Connection,
+    store: &hashed_blobs::Store,
+    input: &str,
+    chain: i64,
+    source: &Extraction,
+    checked: &mut std::collections::BTreeSet<SourceKey>,
+) -> Result<()> {
+    let key = (
+        input.to_owned(),
+        chain,
+        source.range.start,
+        source.range.end,
+        source.source_hash,
+    );
+    if !checked.contains(&key) {
+        check_source(conn, store, input, chain, source)?;
+        checked.insert(key);
+    }
+    Ok(())
+}
+
 pub(crate) struct Key {
     pub input: String,
     pub chain: i64,
@@ -155,17 +179,31 @@ pub(crate) fn invalidate(
     keys: Vec<Key>,
 ) -> Result<Vec<BlobHash>> {
     let mut retired = std::collections::BTreeSet::new();
+    let mut checked = std::collections::BTreeMap::new();
     for key in keys {
-        match check_source(conn, store, &key.input, key.chain, &key.extraction()) {
-            Ok(()) => {}
-            Err(StoreError::Conflict(_)) => {
+        let source = (key.input.clone(), key.chain, key.start, key.end, key.source);
+        let changed = match checked.get(&source) {
+            Some(changed) => *changed,
+            None => {
+                let changed =
+                    match check_source(conn, store, &key.input, key.chain, &key.extraction()) {
+                        Ok(()) => false,
+                        Err(StoreError::Conflict(_)) => true,
+                        Err(error) => return Err(error),
+                    };
+                checked.insert(source, changed);
+                changed
+            }
+        };
+        match changed {
+            false => {}
+            true => {
                 conn.execute(
                     &format!("DELETE FROM extracted_blob WHERE {MATCH}"),
                     rusqlite::params_from_iter(key.args().iter()),
                 )?;
                 retired.insert(key.blob);
             }
-            Err(error) => return Err(error),
         }
     }
     Ok(retired.into_iter().collect())

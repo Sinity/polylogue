@@ -63,7 +63,7 @@ pub(super) async fn parent_retirement(sinex: &mut Sinex, store: &Path, root: &Pa
             .unwrap(),
         0
     );
-    db.execute_batch("DROP TABLE vector_deletion_policy;
+    db.execute_batch("DROP TABLE extracted_blob; DROP TABLE excision_document; DROP TABLE vector_deletion_policy;
         DELETE FROM meta WHERE key='vector_policy_revision';
         DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
         ALTER TABLE observation DROP COLUMN commit_seq; ALTER TABLE delivery_event DROP COLUMN commit_seq;
