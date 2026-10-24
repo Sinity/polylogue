@@ -1,4 +1,4 @@
-import { selectionNotePayload } from "../notes.js";
+import { selectionNotePayload } from "./notes.js";
 import { AttachmentSha256 } from "../actions/sha256.js";
 import { NativeCaptureNormalizer } from "../capture/native.js";
 import { prepareNativeCapture as prepareNativeTransport } from "../capture/native_transport.js";

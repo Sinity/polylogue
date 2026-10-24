@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectionNotePayload } from "../src/notes.js";
+import { selectionNotePayload } from "../src/background/notes.js";
 const source = { provider: "chatgpt", conversation_id: "c1", message_id: "m1", page_url: "https://chatgpt.com/c/c1", selected_at: "2026-10-24T00:00:00Z" };
 const note = { request_id: "019c6e27-e55b-73d1-87d8-4e01f1f75043", body: "My note", quote: "Exact  provider\nquote", source };
 const sender = { tab: { id: 1, url: source.page_url }, frameId: 0, url: source.page_url };
