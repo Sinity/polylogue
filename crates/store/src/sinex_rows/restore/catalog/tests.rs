@@ -357,3 +357,48 @@ fn source_verification_deduplicates_canonical_hashes() {
     assert_eq!(calls, 1);
     selected.begin_install().unwrap();
 }
+
+#[test]
+fn machine_frames_require_the_actual_acknowledged_event_and_exact_unit() {
+    let mut observation = unit(1, "seen");
+    observation.unit.kind = "observation".into();
+    for (event, key) in [
+        ("different-event", "seen"),
+        ("acknowledged-event", "different-unit"),
+    ] {
+        let mut catalog = Catalog::new().unwrap();
+        catalog
+            .expect_machine_frame(1, &observation.unit, &["acknowledged-event".into()])
+            .unwrap();
+        let mut received = observation.clone();
+        received.unit.key = key.into();
+        assert!(catalog.push_evidence(1, &received, event).is_err());
+        assert!(catalog.finish().is_err());
+    }
+    let mut missing = Catalog::new().unwrap();
+    missing
+        .expect_machine_frame(1, &observation.unit, &["acknowledged-event".into()])
+        .unwrap();
+    missing.push(1, &observation).unwrap();
+    assert!(
+        matches!(missing.finish(),Err(crate::StoreError::Invalid(message)) if message.contains("no confirmed descriptor evidence"))
+    );
+    let mut verified = Catalog::new().unwrap();
+    verified
+        .expect_machine_frame(1, &observation.unit, &["acknowledged-event".into()])
+        .unwrap();
+    verified
+        .push_evidence(1, &observation, "acknowledged-event")
+        .unwrap();
+    let selected = verified.finish().unwrap();
+    let mut count = 0;
+    selected
+        .each_machine_frame(|position, unit| {
+            assert_eq!(position, 1);
+            assert_eq!(unit, &observation);
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}

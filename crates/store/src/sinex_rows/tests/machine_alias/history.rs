@@ -128,3 +128,45 @@ fn omitted_local_machine_unit_refuses_before_partial_alias_import_and_later_writ
         held_bytes
     );
 }
+
+#[test]
+fn history_state_binds_all_candidate_alias_fields_and_ignores_other_machines() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    observe(&writer, "host-a", 1, Change::First);
+    observe(&writer, "host-b", 2, Change::Unchanged);
+    observe(&writer, "host-c", 3, Change::Unchanged);
+    drop(writer);
+    let db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    db.execute(
+        "UPDATE machine SET first_commit_seq=0 WHERE host IN ('host-a','host-b')",
+        [],
+    )
+    .unwrap();
+    let state = || {
+        Published::open(&archive.root)
+            .unwrap()
+            .machine_history_state()
+            .unwrap()
+            .unwrap()
+    };
+    let mut prior = state();
+    db.execute(
+        "INSERT INTO machine(id,host,first_seen,first_commit_seq) VALUES ('other','unrelated',4,4)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(state(), prior);
+    for sql in [
+        "UPDATE machine SET first_seen=first_seen+1 WHERE host='host-c'",
+        "UPDATE machine SET first_commit_seq=first_commit_seq+1 WHERE host='host-c'",
+        "UPDATE machine SET host='renamed-c' WHERE host='host-c'",
+        "UPDATE machine SET id='renamed-machine' WHERE id='machine'",
+    ] {
+        db.execute(sql, []).unwrap();
+        let changed = state();
+        assert_ne!(changed, prior);
+        prior = changed;
+    }
+}

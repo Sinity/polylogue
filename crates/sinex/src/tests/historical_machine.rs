@@ -227,6 +227,10 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
     let changed = bytes(&current, &unit);
     fs::write(root.join("current-observation.jsonl"), &changed).unwrap();
     assert_ne!(original, changed);
+    let positions = (1..=current.inventory().unwrap().len())
+        .map(|p| format!("rows:{id}:{p}"))
+        .collect::<Vec<_>>();
+    let held_before = sinex.have(&positions).await.unwrap();
     let report = sinex.publish(&source).await;
     let receipt = serde_json::json!({"original":blake3::hash(&original).to_hex().to_string(),"current":blake3::hash(&changed).to_hex().to_string(),"result":format!("{report:?}"),"source_version":9,"producer_version":8});
     fs::write(
@@ -236,7 +240,111 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
     .unwrap();
     eprintln!("pre9 actual held-frame drift: {receipt}");
     assert!(
-        report.is_err(),
-        "held original machine payload changed but publication reported success"
+        matches!(report,Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message))) if message.contains("machine dependencies conflict"))
     );
+    assert_eq!(sinex.have(&positions).await.unwrap(), held_before);
+    let read_root = sinex.store_root.clone();
+    sinex.store_root = root.join("unavailable-original-evidence");
+    let unavailable = sinex.publish(&source).await;
+    sinex.store_root = read_root;
+    assert!(
+        matches!(unavailable,Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message))) if message.contains("evidence") && message.contains("unavailable"))
+    );
+    assert_eq!(
+        sinex
+            .have(&old_ack.keys().cloned().collect::<Vec<_>>())
+            .await
+            .unwrap(),
+        old_ack
+    );
+}
+
+pub(super) async fn cached_comparison(sinex: &mut Sinex, root: &Path) {
+    use polylogue_store::writer::{Batch, InFlight, InputKey, Observation};
+    use polylogue_store::{Change, UserRequest, UserWrite, Writer};
+    let root = root.join("valid-legacy-machine-history");
+    let (archive, _lock) = Archive::open_or_create(&root).unwrap();
+    let observe = |writer: &Writer, host: &str, change| {
+        writer
+            .send(Batch {
+                input: InputKey {
+                    id: "synthetic-legacy-machine".into(),
+                    format: "synthetic-text".into(),
+                    route_rank: 0,
+                },
+                change,
+                observation: Some(Observation {
+                    machine: "synthetic-machine".into(),
+                    host: host.into(),
+                    path: "synthetic".into(),
+                    facts: None,
+                    seen_at_ms: 1,
+                }),
+                continues: false,
+                piece: None,
+                blobs: vec![],
+                length: 0,
+                parse: vec![],
+                release: InFlight::default(),
+            })
+            .unwrap();
+        assert!(writer.flush().unwrap().errors.is_empty());
+    };
+    let writer = Writer::start(&archive).unwrap();
+    observe(&writer, "host-a", Change::First);
+    observe(&writer, "host-b", Change::Unchanged);
+    drop(writer);
+    // Both aliases existed before the first publication. Baseline0 is the
+    // exact migration representation and changes no previously held frame.
+    let db = polylogue_store::archive::open_write(
+        &archive.archive_db(),
+        polylogue_store::archive::cache::SETUP,
+    )
+    .unwrap();
+    db.execute("UPDATE machine SET first_commit_seq=0", [])
+        .unwrap();
+    assert_eq!(sinex.publish(&root).await.unwrap().units, 3);
+    let start = Instant::now();
+    loop {
+        match sinex.publish(&root).await {
+            Ok(done) if done.held == 3 && done.units == 0 => break,
+            Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message)))
+                if message.contains("no confirmed descriptor")
+                    && start.elapsed() < Duration::from_secs(10) =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            other => panic!("valid legacy comparison: {other:?}"),
+        }
+    }
+    assert!(sinex.machine_memo.is_some());
+    // Reusing a historical verdict does not require or assert current payload
+    // availability. Move only this test reader's root; retain all actual bytes.
+    let read_root = sinex.store_root.clone();
+    sinex.store_root = root.join("unavailable-reader-root");
+    assert_eq!(sinex.publish(&root).await.unwrap().units, 0);
+    let writer = Writer::start(&archive).unwrap();
+    writer
+        .user(UserRequest::now(
+            "unrelated-setting".into(),
+            UserWrite::SetSetting {
+                key: "synthetic-setting".into(),
+                value: "value".into(),
+                author: polylogue_model::Author::Operator,
+                machine: None,
+            },
+        ))
+        .unwrap();
+    drop(writer);
+    assert_eq!(sinex.publish(&root).await.unwrap().units, 1);
+    assert_eq!(sinex.publish(&root).await.unwrap().units, 0);
+    let writer = Writer::start(&archive).unwrap();
+    observe(&writer, "host-c", Change::Unchanged);
+    drop(writer);
+    let unavailable = sinex.publish(&root).await;
+    assert!(
+        matches!(unavailable,Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message))) if message.contains("unavailable"))
+    );
+    sinex.store_root = read_root;
+    assert_eq!(sinex.publish(&root).await.unwrap().units, 1);
 }

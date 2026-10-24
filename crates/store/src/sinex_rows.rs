@@ -239,6 +239,49 @@ impl Published {
     }
 
     /// The archive's identity.
+    /// None means no machine has several aliases with unknown pre9 ordering.
+    pub fn machine_history_state(&self) -> crate::Result<Option<[u8; 32]>> {
+        let legacy:bool=self.conn.query_row("SELECT EXISTS(SELECT 1 FROM machine WHERE first_commit_seq=0 GROUP BY id HAVING COUNT(*)>1)",[],|r|r.get(0))?;
+        if !legacy {
+            return Ok(None);
+        }
+        let mut digest = blake3::Hasher::new();
+        let mut statement = self
+            .conn
+            .prepare("SELECT id,host,first_seen,first_commit_seq FROM machine WHERE id IN (SELECT id FROM machine WHERE first_commit_seq=0 GROUP BY id HAVING COUNT(*)>1) ORDER BY id,host")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            serde_json::to_writer(
+                &mut digest,
+                &(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ),
+            )?;
+        }
+        let mut statement=self.conn.prepare("SELECT key,value FROM meta WHERE key IN ('sinex_restored_view','excision_revision') ORDER BY key")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            serde_json::to_writer(
+                &mut digest,
+                &(row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+            )?;
+        }
+        Ok(Some(*digest.finalize().as_bytes()))
+    }
+
+    /// Read-only comparison against one hash-verified selected observation batch.
+    pub fn verify_machine_frame(
+        &self,
+        selected: &Selection,
+        unit: &RestoreUnit,
+        payload: impl std::io::Read,
+    ) -> crate::Result<()> {
+        restore::verify_machine_frame(&self.conn, selected, unit, payload)
+    }
+
     pub fn archive_id(&self) -> crate::Result<String> {
         Ok(self
             .conn

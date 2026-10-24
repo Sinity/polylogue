@@ -194,7 +194,10 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
             other => panic!("producer have endpoint did not become ready: {other:?}"),
         }
     }
-    historical_machine::proof(&mut sinex, &config, dir.path()).await;
+    if std::env::var_os("POLYLOGUE_OLD8").is_some() {
+        historical_machine::proof(&mut sinex, &config, dir.path()).await;
+    }
+    historical_machine::cached_comparison(&mut sinex, dir.path()).await;
     let first = sinex.publish(&a).await.unwrap();
     assert!(first.units > 0 && first.held == 0, "{first:?}");
     let second = sinex.publish(&a).await.unwrap();

@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blake3.workspace = true
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
 sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "de3fe0241ba3d113dac1f4f0404f3fd136e2eb64" }
@@ -23,7 +24,6 @@ toml = "0.9"
 polylogue-store = { workspace = true, features = ["fixture"] }
 rusqlite.workspace = true
 polylogue-testkit.workspace = true
-blake3.workspace = true
 polylogue-engine.workspace = true
 polylogue-model.workspace = true
 tempfile.workspace = true

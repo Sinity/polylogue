@@ -24,16 +24,16 @@ impl<'a> Inventory<'a> {
         let db = Connection::open("")?;
         db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-            CREATE TABLE unit(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
+            CREATE TABLE unit(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,machine TEXT,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
             CREATE TABLE replacement(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,data TEXT NOT NULL,owner_seq INTEGER NOT NULL,owner_key TEXT NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
-            CREATE TABLE position(position INTEGER PRIMARY KEY,seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL);
+            CREATE TABLE position(position INTEGER PRIMARY KEY,seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,machine TEXT);
             CREATE TABLE held(position INTEGER PRIMARY KEY);
             BEGIN;")?;
         let mut has_excision = false;
         {
-            let mut insert = db.prepare("INSERT OR IGNORE INTO unit VALUES (?1,?2,?3)")?;
+            let mut insert = db.prepare("INSERT OR IGNORE INTO unit VALUES (?1,?2,?3,?4)")?;
             let mut current = db.prepare(
                 "INSERT INTO replacement VALUES (?1,?2,?3,?4,?5,?6)
                 ON CONFLICT(seq,kind,key) DO UPDATE SET data=excluded.data,
@@ -42,14 +42,14 @@ impl<'a> Inventory<'a> {
             )?;
             // Leave ordering to the on-disk primary key, not an in-memory source sort.
             let mut source_units = source.conn.prepare(
-                "SELECT commit_seq,'revision',input||'/'||number FROM revision WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'note',id FROM note WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'excision',id FROM excision WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'setting',id FROM setting WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'delivery',id FROM delivery WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'extracted_blob',json_array(input,chain,source_start,source_end,lower(hex(source_hash)),parser_version,lower(hex(blob))) FROM extracted_blob WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0",
+                "SELECT commit_seq,'revision',input||'/'||number,NULL FROM revision WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'note',id,NULL FROM note WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'excision',id,NULL FROM excision WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'setting',id,NULL FROM setting WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'delivery',id,NULL FROM delivery WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'extracted_blob',json_array(input,chain,source_start,source_end,lower(hex(source_hash)),parser_version,lower(hex(blob))),NULL FROM extracted_blob WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'observation',id,machine FROM observation WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at),NULL FROM delivery_event WHERE commit_seq>0",
             )?;
             let mut rows = source_units.query([])?;
             while let Some(row) = rows.next()? {
@@ -59,7 +59,12 @@ impl<'a> Inventory<'a> {
                         "invalid publication unit identity".into(),
                     ));
                 }
-                insert.execute(params![unit.commit_seq, unit.kind, unit.key])?;
+                insert.execute(params![
+                    unit.commit_seq,
+                    unit.kind,
+                    unit.key,
+                    row.get::<_, Option<String>>(3)?
+                ])?;
             }
             excision::visit_publications(&source.conn, |owner, publication| {
                 if owner.commit_seq < 1 || owner.key.is_empty() {
@@ -73,7 +78,12 @@ impl<'a> Inventory<'a> {
                             "replacement names no earlier unit identity".into(),
                         ));
                     }
-                    insert.execute(params![unit.commit_seq, unit.kind, unit.key])?;
+                    insert.execute(params![
+                        unit.commit_seq,
+                        unit.kind,
+                        unit.key,
+                        None::<String>
+                    ])?;
                     current.execute(params![
                         unit.commit_seq,
                         unit.kind,
@@ -86,7 +96,7 @@ impl<'a> Inventory<'a> {
                 })
             })?;
         }
-        db.execute_batch("INSERT INTO position SELECT ROW_NUMBER() OVER (ORDER BY seq,kind,key),seq,kind,key FROM unit ORDER BY seq,kind,key;
+        db.execute_batch("INSERT INTO position SELECT ROW_NUMBER() OVER (ORDER BY seq,kind,key),seq,kind,key,machine FROM unit ORDER BY seq,kind,key;
             DROP TABLE unit; COMMIT;")?;
         let length =
             db.query_row("SELECT COUNT(*) FROM position", [], |r| r.get::<_, i64>(0))? as u64;
@@ -97,6 +107,45 @@ impl<'a> Inventory<'a> {
             held: 0,
             has_excision,
         })
+    }
+
+    /// Classify only legacy machines whose pre9 alias ordering is unknown.
+    pub fn enable_machine_history(&self) -> Result<()> {
+        self.db
+            .execute_batch("CREATE TABLE legacy_machine(id TEXT PRIMARY KEY) WITHOUT ROWID")?;
+        let mut rows = self._source.conn.prepare(
+            "SELECT id FROM machine WHERE first_commit_seq=0 GROUP BY id HAVING COUNT(*)>1",
+        )?;
+        for id in rows.query_map([], |r| r.get::<_, String>(0))? {
+            self.db
+                .execute("INSERT INTO legacy_machine VALUES (?1)", [id?])?;
+        }
+        Ok(())
+    }
+
+    /// One existing Have request's bounded candidate positions.
+    pub fn machine_candidates(&self, after: u64, end: u64) -> Result<Vec<(u64, Unit)>> {
+        if end < after || end - after > 500 {
+            return Err(StoreError::Invalid(
+                "machine candidate request exceeds500 positions".into(),
+            ));
+        }
+        let mut rows=self.db.prepare("SELECT position,seq,kind,key FROM position WHERE position>?1 AND position<=?2 AND kind='observation' AND machine IN (SELECT id FROM legacy_machine) ORDER BY position")?;
+        Ok(rows
+            .query_map(
+                params![position_number(after)?, position_number(end)?],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)? as u64,
+                        Unit {
+                            commit_seq: r.get(1)?,
+                            kind: r.get(2)?,
+                            key: r.get(3)?,
+                        },
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn len(&self) -> u64 {
