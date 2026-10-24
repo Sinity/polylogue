@@ -35,6 +35,7 @@ struct Counts {
     bytes: u64,
     accounting: Accounting,
     messages: u64,
+    documents: u64,
     events: u64,
     links: u64,
     background: u64,
@@ -163,6 +164,7 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
             consumed = consumed.max(step.consumed as usize);
             counts.accounting.merge(&step.accounting);
             counts.messages += step.output.messages.len() as u64;
+            counts.documents += step.output.documents.len() as u64;
             counts.events += step.output.events.len() as u64;
             counts.links += step.output.links.len() as u64;
             counts.background += step.output.background.len() as u64;
@@ -255,6 +257,7 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
         total.bytes += result.counts.bytes;
         total.accounting.merge(&result.counts.accounting);
         total.messages += result.counts.messages;
+        total.documents += result.counts.documents;
         total.events += result.counts.events;
         total.links += result.counts.links;
         total.background += result.counts.background;
@@ -274,7 +277,7 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
             "materialized": total.accounting.materialized.values().sum::<u64>(),
             "unknown": total.accounting.unknown.values().sum::<u64>(),
             "refused": total.accounting.refused.values().sum::<u64>(),
-            "messages": total.messages, "events": total.events, "links": total.links,
+            "messages": total.messages, "documents": total.documents, "events": total.events, "links": total.links,
             "background_updates": total.background, "sessions": total.sessions,
             "unknown_by_reason": top(&total.accounting.unknown),
             "refused_by_reason": top(&total.accounting.refused),
