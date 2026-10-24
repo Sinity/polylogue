@@ -133,13 +133,12 @@ pub(super) async fn proof(sinex: &mut Sinex, config: &crate::Config, root: &Path
         let raw = stream.get_raw_message(position).await.unwrap();
         if let sinex_protocol::Confirmed::Event(event) =
             serde_json::from_slice(&raw.payload).unwrap()
+            && let Some(payload) = event.payload
+            && payload["archive"] == id
+            && payload["key"] == unit.key
         {
-            if let Some(payload) = event.payload {
-                if payload["archive"] == id && payload["key"] == unit.key {
-                    descriptor = Some((payload, event.id));
-                    break;
-                }
-            }
+            descriptor = Some((payload, event.id));
+            break;
         }
     }
     let (descriptor, event_id) = descriptor.expect("original held observation descriptor");

@@ -29,7 +29,8 @@ bound to archive/producer identity, all relevant alias fields and cutoffs,
 local restore/excision state, and candidate acknowledgments and selected batch
 proofs. Unchanged polls and newly held unrelated frames do not refold that
 history. Newly held candidate observations, relevant state changes and a new
-connection require another fold. Failed checks are not cached.
+connection require another fold. Changed candidate acknowledgments may repeat
+only their bounded frame lookups to bind that new proof. Failed checks are not cached.
 
 A cached historical comparison does not establish current batch-file
 availability. Payload availability is checked when the proof is read again;

@@ -386,11 +386,22 @@ impl Sinex {
         let id = archive
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
-        let machine_state = archive.machine_history_state()?;
+        let machine_identity = archive
+            .machine_history_state()?
+            .map(|state| self.machine_identity(&id, state))
+            .transpose()?;
         let mut inventory = archive.inventory()?;
-        let machine_catalog = if machine_state.is_some() {
+        let machine_catalog = if let Some(identity) = machine_identity {
             inventory.enable_machine_history()?;
-            Some(sinex_rows::Catalog::new()?)
+            if self
+                .machine_memo
+                .as_ref()
+                .is_some_and(|memo| memo.identity == identity)
+            {
+                None
+            } else {
+                Some(sinex_rows::Catalog::new()?)
+            }
         } else {
             None
         };
@@ -411,35 +422,30 @@ impl Sinex {
                     held.push(after + offset as u64 + 1);
                 }
             }
-            if let Some(catalog) = machine_catalog.as_ref() {
-                for (position, unit) in inventory.machine_candidates(after, end)? {
-                    let frame = format!("rows:{id}:{position}");
-                    if let Some(ack) = known.get(&frame) {
-                        let events = ack
-                            .admitted
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>();
-                        catalog.expect_machine_frame(position, &unit, &events)?;
-                        serde_json::to_writer(&mut machine_acks, &(position, &unit, ack))?;
-                        machine_frames += 1;
-                    }
-                }
+            if machine_identity.is_some() {
+                machine_frames += machine_history::record(
+                    &id,
+                    machine_catalog.as_ref(),
+                    &mut machine_acks,
+                    inventory.machine_candidates(after, end)?,
+                    &known,
+                )?;
             }
             inventory.mark_held(&held)?;
             after = end;
         }
-        if let (Some(state), Some(catalog)) = (machine_state, machine_catalog) {
-            if machine_frames > 0 {
-                self.check_machine_history(
-                    &archive,
-                    &id,
-                    state,
-                    *machine_acks.finalize().as_bytes(),
-                    catalog,
-                )
-                .await?;
-            }
+        if let Some(identity) = machine_identity
+            && machine_frames > 0
+        {
+            self.check_machine_history(
+                &archive,
+                &id,
+                identity,
+                *machine_acks.finalize().as_bytes(),
+                machine_catalog,
+                &inventory,
+            )
+            .await?;
         }
         let mut done = Published {
             held: inventory.held(),
