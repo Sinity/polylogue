@@ -514,3 +514,5 @@ fn receiver_preparation_and_asset_routes_are_not_native_host_capabilities() {
 }
 
 mod snapshots;
+
+mod notes;

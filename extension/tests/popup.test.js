@@ -491,7 +491,7 @@ describe("popup capture", () => {
     expect(document.getElementById("timeline").textContent).toContain("background_capture_throttled");
   });
 
-  it("keeps assertion persistence disabled when only the receiver seam is advertised", async () => {
+  it("explains explicit in-page note saving", async () => {
     await loadPopup({}, [CHATGPT_TAB], async (message) => {
       if (message.type === "polylogue.missionControl.status") return {
         ok: true,
@@ -505,8 +505,8 @@ describe("popup capture", () => {
       return { ok: true };
     });
 
-    expect(document.getElementById("assertion-status").textContent).toContain("no authenticated write handler");
-    expect(document.getElementById("assertion-status").textContent).toContain("Save remains disabled");
+    expect(document.getElementById("assertion-status").textContent).toContain("Save note");
+    expect(document.getElementById("assertion-status").textContent).toContain("daemon must acknowledge");
   });
 
   it("binds the active card and timeline to the current tab instead of stale global state", async () => {

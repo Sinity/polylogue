@@ -1,3 +1,4 @@
+import { selectionNotePayload } from "./notes.js";
 import { AttachmentSha256 } from "../actions/sha256.js";
 import { NativeCaptureNormalizer } from "../capture/native.js";
 import { prepareNativeCapture as prepareNativeTransport } from "../capture/native_transport.js";
@@ -1360,7 +1361,9 @@ async function postJson(path, payload, serializedBody = null, requireReceiverReq
       artifact_ref: body.artifact_ref || null,
     });
     if (!response.ok) {
-      const error = new Error(body.error || `HTTP ${response.status}`);
+      const error = new Error(path === "/v1/notes/selection" && body.message
+        ? `${body.error || "save_failed"}: ${body.message}`
+        : body.error || `HTTP ${response.status}`);
       error.receiverRequestId = receiverRequestId;
       error.status = response.status;
       throw error;
@@ -3202,13 +3205,13 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, NATIVE_HOST) : null;
-  let assertionCapability = false;
-  if (includeIntelligence && receiverOnline) {
+  let selectionNotes = false;
+  if (receiverOnline) {
     try {
       const capabilities = await getJson("/v1/browser-captures/capabilities");
       // Only the declared top-level field is authoritative; any other shape
       // fails closed and leaves Save unavailable.
-      assertionCapability = capabilities?.assertion_candidates === true;
+      selectionNotes = capabilities?.selection_notes === true;
     } catch { /* An unreachable capability probe fails closed. */ }
   }
   // Queued behind the startup migration and any capture's identity write.
@@ -3248,10 +3251,11 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     ambient,
     assertions: {
       selection_candidate_supported: true,
-      persistence_supported: assertionCapability,
+      persistence_supported: false,
       accepted_identities: acceptedIdentities,
-      reason: assertionCapability ? "candidate_assertion_route" : "receiver_capability_unavailable",
+      reason: "receiver_capability_unavailable",
     },
+    notes: { persistence_supported: selectionNotes },
     ...(includeIntelligence ? { intelligence } : {}),
   };
 }
@@ -3405,30 +3409,14 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, ambient: settings });
       return;
     }
-    if (message.type === "polylogue.assertion.capture") {
-      const candidate = message.candidate;
-      if (!candidate || candidate.context_policy?.inject !== false) {
-        sendResponse({ ok: false, error: "assertion_candidate_policy_required" });
-        return;
-      }
-      if (!candidate.evidence_ref || !candidate.message_ref || !candidate.source_observation) {
-        sendResponse({ ok: false, error: "exact_message_evidence_required" });
-        return;
-      }
+    if (message.type === "polylogue.note.saveSelection") {
       try {
-
-        const result = await postJson("/v1/assertion-candidates", {
-          body_text: candidate.body,
-          kind: candidate.kind,
-          evidence_refs: [candidate.evidence_ref],
-          target_ref: candidate.message_ref,
-          source_observation: candidate.source_observation,
-          author_ref: "user:browser-extension",
-          author_kind: "user",
-          idempotency_key: candidate.idempotency_key,
-          context_policy: { inject: false },
-        });
-        sendResponse({ ok: true, idempotent: result.status === "already_satisfied", candidate: result });
+        const payload = selectionNotePayload(message.note, sender);
+        const result = await postJson("/v1/notes/selection", payload);
+        if (result?.ok !== true || result?.note?.id !== payload.request_id || typeof result.note.repeat !== "boolean") {
+          throw new Error("note_acknowledgement_missing; save outcome unknown, retry this draft");
+        }
+        sendResponse({ ok: true, note: result.note });
       } catch (error) {
         sendResponse({ ok: false, error: String(error?.message || error) });
       }

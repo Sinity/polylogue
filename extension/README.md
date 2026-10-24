@@ -44,6 +44,24 @@ there is no token or pairing step.
    `polylogue install-agent chrome --remove` takes it out again.
 3. Run the daemon (`polylogue daemon`) so captures are ingested.
 
+## Save a selected passage as a note
+
+Select up to 2,000 characters inside one identified provider message and open
+Polylogue's in-page panel (Alt+P). Edit **Note body**, then choose **Save note**.
+The quote is kept separately from your note, with the supplied provider,
+conversation ID, message ID, page URL and selection time. The daemon verifies
+that the exact message belongs to the supplied archived conversation. Missing
+or ambiguous identity is shown as a save failure; capture the conversation
+before retrying. The quoted passage is a browser observation, not a claim about
+an archived source version or what a model received.
+
+**Note saved** appears only after the daemon acknowledges the ordinary operator
+note. An uncertain reply keeps the draft and its note ID: retrying it creates no
+duplicate, including after a native-host or daemon restart. Editing the body
+creates another note ID. Drafts live in the page; reloading the page discards an
+unsaved draft. Read saved notes with `polylogue note list session:ORIGIN:ID` or
+the reader's ordinary note API. Notes survive daemon restarts.
+
 ## Local backups and recovery
 
 Backfill jobs and pending bytes live in IndexedDB and OPFS across worker
@@ -61,8 +79,8 @@ encoded bytes, while parsing; large individual files can use substantial memory.
 
 The old HTTP receiver, pairing and server checkpoint protocol are retired.
 There is no server or automatic cross-profile recovery. Local file import is
-an explicit backup operation. Mission intelligence and assertion persistence
-remain unavailable on the native host; their UI must not report success.
+an explicit backup operation. Mission intelligence remains unavailable on the native host. Selected passages
+use the ordinary note owner rather than the predecessor assertion route.
 Real browser/account workflows remain to be exercised independently of the
 synthetic transport and parser tests.
 
