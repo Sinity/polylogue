@@ -25,7 +25,6 @@ impl Sinex {
     /// bytes are still being written ends the pass; the next pass sends it.
     pub async fn send_missing(&mut self, root: &Path) -> Result<Sent> {
         let batch_reader = BatchReader::open(root)?;
-        self.finish_staged().await?;
         let archive = batch_reader
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
@@ -94,7 +93,7 @@ impl Sinex {
         };
         let reading_order = i64::try_from(position)
             .map_err(|_| Error::Invalid("a batch position exceeds the wire order range".into()))?;
-        self.send(&Ingress::Events {
+        self.send(Ingress::Events {
             frame: name,
             failures: vec![],
             events: vec![ProducerEvent {
@@ -134,12 +133,12 @@ impl Sinex {
                 checked(acknowledgment.clone())?;
                 continue;
             }
-            let (length, mut bytes) = batch_reader.blob(&polylogue_model::BlobHash(hash.0))?;
+            let (length, bytes) = batch_reader.blob(&polylogue_model::BlobHash(hash.0))?;
             self.material(
                 name,
                 hash,
                 length,
-                &mut bytes,
+                bytes,
                 serde_json::json!({ "archive": archive }),
             )
             .await?;
@@ -177,3 +176,6 @@ impl Sinex {
 fn batch_name(archive: &str, position: u64) -> String {
     format!("rows:{archive}:{position}")
 }
+
+#[cfg(test)]
+mod tests;

@@ -202,7 +202,11 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     let client = async_nats::connect(nats.url()).await.unwrap();
     let js = jetstream::new(client);
     let started = Instant::now();
-    while js.get_stream("PROOF_INGRESS").await.is_err() {
+    while js
+        .get_stream(sinex_protocol::Subjects::new("rebuild").ingress_stream())
+        .await
+        .is_err()
+    {
         assert!(
             started.elapsed() < Duration::from_secs(60),
             "sinexd did not start"

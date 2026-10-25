@@ -62,11 +62,22 @@ nextest's slow timeout ends a hung test; under plain `cargo test` it would
 wait forever.
 
 The Sinex rebuild test in `crates/sinex/tests/` runs a real `sinexd`, so it
-is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex checkout,
-then run it from Sinex's dev shell, which has PostgreSQL with TimescaleDB and
-`nats-server`:
-`SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
-nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(an_archive_restored_from_sinex_gives_the_same_answers)'`.
+is ignored by default. It runs from a checkout of the Sinex revision this
+workspace pins, in Sinex's dev shell, which has PostgreSQL with TimescaleDB
+and `nats-server`. Sinex's queries are checked against its schema database
+at build time, so build its binaries under `xtask db exec`:
+
+```
+agentctl job start sinex exec --workspace <sinex> --wait -- \
+  cargo run --locked -q -p xtask -- db exec -- cargo build --locked -p sinexd -p sinex-schema
+agentctl job start sinex exec --workspace <sinex> --wait -- \
+  CARGO_TARGET_DIR=<polylogue>/target/sinex-shell \
+  SINEXD=<sinex target>/debug/sinexd SINEX_SCHEMA=<sinex target>/debug/sinex-schema \
+  cargo nextest run --locked --manifest-path <polylogue>/Cargo.toml -p polylogue-sinex \
+  --run-ignored only -E 'test(an_archive_restored_from_sinex_gives_the_same_answers)'
+```
+
+`<sinex target>` is the dev shell's `CARGO_TARGET_DIR`.
 
 ## Build speed
 
