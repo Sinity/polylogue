@@ -74,7 +74,7 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
     // shared by multiple sessions must not silently choose one occurrence.
     let query = Request::Query {
         text: format!(
-            "messages where id:{} active:* inherited:* hidden:*",
+            "messages where id:{} active:* inherited:* duplicate:* hidden:*",
             serde_json::to_string(&message.to_string()).expect("string")
         ),
         cursor: None,

@@ -57,6 +57,10 @@ a plain name here before it gets code.
   **document**, **attachment**, **run**, **process**, **work graph**: the
   parsed things. A message seen in several inputs is stored once, with one
   **shown version**.
+- **duplicate**: a message another route of its session holds under a
+  different ID, matched by exact evidence; the session shows the other one.
+- **record position**: a message's place among the messages its record
+  holds; it orders messages that share an input and byte offset.
 - **derivation**: a product computed from parsed rows, with a rule version
   (cost, the work graph, session facts, measures).
 

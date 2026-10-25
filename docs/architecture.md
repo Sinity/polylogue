@@ -106,6 +106,16 @@ different one refused. Each capture restates the conversation, so the latest
 capture's version of a message is shown, and a message missing from a later
 capture stays.
 
+A Gemini page capture and a Takeout export of one conversation are one
+session, but they share no turn ID: the capture has the page's text with
+no times, the export has times and no message IDs. Both routes stay
+stored. The [duplicates derivation](../crates/store/src/derive/duplicates.rs)
+shows a turn once, from the export, when its prompt text occurs once in
+each route, the matched prompts keep one order, and the replies have the
+same roles; the capture's messages then name the export message
+(`duplicate_of`) and the reason. Other turns show from both routes, and
+`duplicate:*` lists the hidden copies.
+
 Text that is not a conversation is a [Document](../crates/model/src/document.rs)
 in Store's [document rows](../crates/store/src/documents.rs), with one shown
 version chosen by source time. `read document:ID` and `export` read it; the

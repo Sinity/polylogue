@@ -134,7 +134,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          JOIN message xm ON xm.pk = xb.message_pk \
-         WHERE {}{} AND xm.inherited_from IS NULL \
+         WHERE {}{} AND xm.inherited_from IS NULL AND xm.duplicate_of IS NULL \
          AND COALESCE(xm.on_active_path, 1) = 1 \
          AND xm.session_pk IN ({})",
         h.block_kind("xb"),
@@ -329,6 +329,11 @@ const MESSAGE_DEFAULTS: &[Default] = &[
     d(
         Expr::Template("{m}.inherited_from IS NULL"),
         &["inherited"],
+        true,
+    ),
+    d(
+        Expr::Template("{m}.duplicate_of IS NULL"),
+        &["duplicate"],
         true,
     ),
     d(
@@ -575,6 +580,11 @@ pub static UNITS: &[UnitSpec] = &[
             d(
                 Expr::Template("{m}.inherited_from IS NULL"),
                 &["inherited"],
+                true,
+            ),
+            d(
+                Expr::Template("{m}.duplicate_of IS NULL"),
+                &["duplicate"],
                 true,
             ),
             d(
@@ -1064,6 +1074,7 @@ const TURNS: &str = "(SELECT g.*, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
            FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
+             AND m.duplicate_of IS NULL \
              AND m.written_by IN ('human', 'model')) o) tm \
      GROUP BY tm.session_pk, tm.turn) g)";
 

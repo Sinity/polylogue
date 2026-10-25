@@ -116,6 +116,9 @@ CREATE TABLE message (
                                             --   always written, no default
   inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
   copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
+  duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another route's message the
+                                            --   session shows for the same turn (no shared turn ID, matched by prompt text)
+  duplicate_reason  TEXT,                   --   and why that route's message is the one shown
   from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
   from_name         TEXT,                   --   and the sender's name as the provider wrote it
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own

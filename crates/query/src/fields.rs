@@ -538,6 +538,12 @@ pub static FIELDS: &[Field] = &[
         Bool,
         "a copy of an earlier session's message",
     ).sql("({m}.inherited_from IS NOT NULL)"),
+    f(
+        Messages,
+        "duplicate",
+        Bool,
+        "a turn another route of the session also holds, shown from that route",
+    ).sql("({m}.duplicate_of IS NOT NULL)"),
     f(Messages, "active", Bool, "on the active path").sql("COALESCE({m}.on_active_path, 1)"),
     sv(Messages, "has", &MESSAGE_HAS_NAMES, "the message has thinking, tool calls, attachments or code", custom::has),
     f(Messages, "words", Number, "words in its text").sql("{m}.words"),
@@ -989,10 +995,11 @@ impl Aliases {
     }
 }
 
-/// Own messages of session `s`: not inherited, on the active path.
+/// Own messages of session `s`: not inherited, not a duplicate, on the active path.
 pub fn own_messages(s: &str, x: &str) -> String {
     format!(
-        "{x}.session_pk = {s}.pk AND {x}.inherited_from IS NULL AND COALESCE({x}.on_active_path, 1) = 1"
+        "{x}.session_pk = {s}.pk AND {x}.inherited_from IS NULL AND {x}.duplicate_of IS NULL \
+         AND COALESCE({x}.on_active_path, 1) = 1"
     )
 }
 
@@ -1008,7 +1015,7 @@ fn own_calls(s: &str, x: &str, extra: &str) -> String {
     format!(
         "(SELECT count(*) FROM tool_call {x} JOIN block {x}b ON {x}b.pk = {x}.call_block_pk \
          JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
-         WHERE {x}.session_pk = {s}.pk AND {x}m.inherited_from IS NULL \
+         WHERE {x}.session_pk = {s}.pk AND {x}m.inherited_from IS NULL AND {x}m.duplicate_of IS NULL \
          AND COALESCE({x}m.on_active_path, 1) = 1 AND {}{extra})",
         counted_call(x)
     )
@@ -1202,7 +1209,7 @@ fn sessions_cost(a: &Aliases) -> String {
 
 fn sessions_tree_cost(a: &Aliases) -> String {
     format!(
-        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL \
+        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL AND x.duplicate_of IS NULL \
          AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
         subtree(&a.s)
     )
