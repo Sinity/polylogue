@@ -112,7 +112,7 @@
           OPERATOR_STATUS.catching_up,
           state.capture_freshness.last_error
             ? `Freshness check will retry: ${state.capture_freshness.last_error}`
-            : "A provider change was observed and canonical capture is checking the latest turn.",
+            : "A provider change was observed and capture is checking the latest turn.",
         );
       } else if (["spooled_only", "ingest_pending", "stale"].includes(archiveState)) {
         status = withDetail(OPERATOR_STATUS.catching_up);
@@ -470,7 +470,7 @@
     }
 
     // A submit_once reply posts one real, provider-visible turn into an
-    // EXISTING conversation with no automatic undo (polylogue-yyvg.7). The
+    // EXISTING conversation with no automatic undo. The
     // receiver holds it at "awaiting_approval" instead of dispatching it, so
     // this is the one attention category the popup must never auto-resolve:
     // the operator explicitly approves or declines, there is no third option.

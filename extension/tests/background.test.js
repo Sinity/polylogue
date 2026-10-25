@@ -427,7 +427,7 @@ describe("background receiver diagnostics", () => {
     await store.pinNativeCache({ owner, provider: "chatgpt", nativeId: "cached-session", rawRef: raw,
       headers: { id: "cached-session" }, observedAt: "2026-01-01T00:00:00Z", acquisitionSequence: 1 });
     await store.releaseNativeAcquisition(raw.id);
-    await staging.save({ ...await staging.metadata(raw.id), retired: true });
+    await staging.save({ ...await staging.metadata(raw.id), released: true });
     globalThis.chrome.tabs.get.mockRejectedValue(new Error("synthetic_tab_lookup_unavailable"));
     vi.resetModules(); await import("../src/background.js");
     await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([

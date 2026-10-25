@@ -27,8 +27,8 @@ function validateFile(evidence) {
   return meta;
 }
 
-/** Import the existing export format. Publication is one paused IDB transaction.
- * The tokenizer retains one acquired entry at a time, including that entry's
+/** Import the existing export format. The commit is one paused IDB transaction.
+ * The tokenizer holds one acquired entry at a time, including that entry's
  * encoded file bytes; it does not promise a fixed memory bound for a large file.
  */
 export async function importCheckpoint(file, { staging, store, signal = null }) {

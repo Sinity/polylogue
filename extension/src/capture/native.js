@@ -10,7 +10,7 @@ function cancelNativeReader(reader, signal) {
   return () => signal?.removeEventListener("abort", cancel);
 }
 
-/** Retains raw reply custody and delegates canonical preparation to receiver.
+/** Owns raw replies and leaves preparing the capture to the receiver.
  * The vetted tokenizer selects acquisition header facts for identity/cache
  * control. A selected header scalar can still be arbitrarily large.
  */
@@ -35,9 +35,9 @@ export class NativeCaptureNormalizer {
       const raw = await this.staging.metadata(bundle.replies.responses.id);
       const pinned = await this.store.pinNativeCache({ owner, provider: bundle.provider, nativeId: bundle.native_id,
         rawRef: bundle.replies.responses, relatedRefs, acquisition, headers, observedAt: raw.created_at, acquisitionSequence: bundle.acquisition_sequence });
-      for (const ref of pinned.retired) await this.staging.discardUnreferenced(ref?.id || ref);
+      for (const ref of pinned.replaced) await this.staging.discardUnreferenced(ref?.id || ref);
       // The cache may already own a newer revision. This acquisition still
-      // belongs to its bundle until normalization publishes its own custody.
+      // belongs to its bundle until normalization commits its own owner.
     }
     return { headers, rawRef: bundle.replies.responses, relatedRefs, acquisition, acquisition_sequence: bundle.acquisition_sequence };
   }
@@ -82,7 +82,7 @@ export class NativeCaptureNormalizer {
     let capture = await this.store.getCapture(captureId);
     if (capture && (capture.provider !== provider || capture.native_id !== nativeId || JSON.stringify(capture.owner) !== JSON.stringify(raw.owner))) throw new Error("native_preparation_owner_mismatch");
     if (!capture) {
-      // Preparation identity is independently retained. Missing historical
+      // Preparation identity is stored separately. Missing historical
       // observation identity stays absent even after a worker/profile reload.
       capture = { id: captureId, state: "normalizing", raw_ref: rawRef.id,
         source_refs: [rawRef.id, ...Object.values(relatedRefs).map((ref) => ref.id)], owner: raw.owner,

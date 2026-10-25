@@ -13,7 +13,7 @@ function captureRecordRow(record) {
 
 function releaseRawOwner(captures, rawId) {
   // Late callbacks may hold metadata from before the ownership transfer.
-  // This marker owns no bytes and shares the publication transaction lock.
+  // This marker owns no bytes and shares the commit's transaction lock.
   captures.put({ id: `released-native:${rawId}`, kind: "native-acquisition-released" });
   captures.delete(`raw:${rawId}`);
 }
@@ -111,7 +111,7 @@ export function nativeCacheOrder(current, incoming) {
     return incoming.acquisition_sequence - current.acquisition_sequence;
   }
   // Passive responses carry the background's observation time. Do not
-  // substitute publication order for an acquisition sequence.
+  // substitute commit order for an acquisition sequence.
   const priorObserved = Date.parse(current.observed_at || ""); const nextObserved = Date.parse(incoming.observed_at || "");
   return Number.isFinite(priorObserved) && Number.isFinite(nextObserved) ? nextObserved - priorObserved : 0;
 }
@@ -144,7 +144,7 @@ function recoveryCheckpointJob(job, hasRecoveryRequiredQueueItem = false, preser
 }
 
 // Conversion of disposable pre-streaming queue state. This is invoked only
-// while publishing an old database/checkpoint into the current queue format.
+// while committing an older database or checkpoint into the current queue format.
 function convertAcquisitionRefusal(item) {
   if (item.state !== "bridge_oversize") return item;
   const acquired = Boolean(item.envelope || item.body_ref || item.receiver_receipt || item.capture_ref);
@@ -247,7 +247,7 @@ export class IndexedDbBackfillStore {
           records.put(metadata);
           tx.objectStore("capture_retry_bodies").put({ id: metadata.id, envelope });
         }
-        // Cache publication may fail. This same transaction prevents a stale
+        // Writing the cache may fail. This same transaction prevents a stale
         // old cache from resurrecting an already delivered body on restart.
         state.put(true, "local_storage_transferred");
       }
@@ -259,8 +259,8 @@ export class IndexedDbBackfillStore {
     }
   }
 
-  // Separate stores keep queue/status reads independent of retained capture
-  // size. One transaction admits both the original body and its retry owner.
+  // Separate stores keep queue/status reads independent of stored capture
+  // size. One transaction writes both the original body and its retry owner.
   async putCaptureRetry(metadata, envelope) {
     const db = await this.database();
     const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
@@ -340,10 +340,10 @@ export class IndexedDbBackfillStore {
     settled.catch(() => undefined);
     try {
       const records = tx.objectStore("capture_retry_metadata");
-      const retained = new Set(entries.map((entry) => entry.id));
+      const kept = new Set(entries.map((entry) => entry.id));
       const existing = await requestResult(records.getAll());
       for (const entry of existing) {
-        if (!retained.has(entry.id)) {
+        if (!kept.has(entry.id)) {
           records.delete(entry.queue_order);
           tx.objectStore("capture_retry_bodies").delete(entry.id);
         }
@@ -484,11 +484,11 @@ export class IndexedDbBackfillStore {
     if (!queueContext) {
       let pending = null; let conflict = false;
       await visitCursor(captures.index("native_bundle_scope").openCursor(globalThis.IDBKeyRange.only(["native-bundle", owner.tab_id, provider, nativeId])), (cursor) => {
-        const candidate = cursor.value;
-        if (candidate.kind !== "native-bundle" || candidate.queue_context || candidate.provider !== provider || candidate.native_id !== nativeId ||
-            JSON.stringify(candidate.owner) !== JSON.stringify(owner) || candidate.state === "ready") return;
-        if (pending && pending !== candidate.id) conflict = true;
-        pending = candidate.id;
+        const bundle = cursor.value;
+        if (bundle.kind !== "native-bundle" || bundle.queue_context || bundle.provider !== provider || bundle.native_id !== nativeId ||
+            JSON.stringify(bundle.owner) !== JSON.stringify(owner) || bundle.state === "ready") return;
+        if (pending && pending !== bundle.id) conflict = true;
+        pending = bundle.id;
       });
       if (conflict) { tx.abort(); throw new Error("native_bundle_pending_identity_conflict"); }
       if (pending) id = pending;
@@ -531,7 +531,7 @@ export class IndexedDbBackfillStore {
       const queue = tx.objectStore("queue"); const item = await requestResult(queue.get(row.queue_context.itemId));
       const job = await requestResult(tx.objectStore("jobs").get(row.queue_context.jobId));
       // Keep fully received response bytes when execution ownership changes.
-      // Only the current execution may publish progress into the queue item.
+      // Only the current execution may write progress into the queue item.
       if (item?.capture_bundle_ref === row.id && item.claimed_by === row.queue_context.owner &&
           job?.status === "running" && job.execution_owner === row.queue_context.owner &&
           job.execution_generation === row.queue_context.generation) {
@@ -637,12 +637,12 @@ export class IndexedDbBackfillStore {
       source_refs: [rawRef?.id || rawRef, ...Object.values(relatedRefs).map((ref) => ref?.id || ref)] };
     // Compare only this page/provider identity, with provider revision first.
     if (previous && nativeCacheOrder(previous, row) <= 0 && previous.raw_ref?.id !== rawRef?.id) {
-      await transactionDone(tx); return { current: previous, retired: [] };
+      await transactionDone(tx); return { current: previous, replaced: [] };
     }
     // This key has exactly one current-page owner. Do not enumerate unrelated
     // captures to replace the row we just read in this transaction.
-    const retired = previous ? [previous.raw_ref, ...Object.values(previous.related_refs || {})] : [];
-    store.put(row); await transactionDone(tx); return { current: row, retired };
+    const replaced = previous ? [previous.raw_ref, ...Object.values(previous.related_refs || {})] : [];
+    store.put(row); await transactionDone(tx); return { current: row, replaced };
   }
 
   async *releaseNativeCaches(owner) {
@@ -761,12 +761,12 @@ export class IndexedDbBackfillStore {
 
   async hasNormalizedNativeSource(stageId) {
     const db = await this.database(); const tx = db.transaction("captures", "readonly");
-    let retained = false;
+    let found = false;
     await visitCursor(tx.objectStore("captures").index("source_refs").openCursor(globalThis.IDBKeyRange.only(stageId)), (cursor) => {
       const row = cursor.value;
-      if (row.state === "ready" && row.raw_ref === stageId) retained = true;
+      if (row.state === "ready" && row.raw_ref === stageId) found = true;
     });
-    return retained;
+    return found;
   }
 
   async commitForegroundNativeCapture(capture, bundleId = null) {
@@ -780,17 +780,17 @@ export class IndexedDbBackfillStore {
           !bundle.source_refs.every((ref) => capture.source_refs.includes(ref)))) {
         tx.abort(); throw new Error("native_bundle_owner_change_invalid");
       }
-      // A resumed normalization may follow a completed publication of the
+      // A resumed normalization may follow a completed commit of the
       // same immutable raw input. Its source roots remain independently owned.
       if (!bundle) {
-        let retained = false;
+        let owned = false;
         await visitCursor(captures.index("source_refs").openCursor(globalThis.IDBKeyRange.only(capture.raw_ref)), (cursor) => {
           const row = cursor.value;
           if ((row.kind === "native-cache" || row.state === "ready") && row.provider === capture.provider &&
               row.native_id === capture.native_id && JSON.stringify(row.owner) === JSON.stringify(capture.owner) &&
-              capture.source_refs.every((ref) => row.source_refs?.includes(ref))) retained = true;
+              capture.source_refs.every((ref) => row.source_refs?.includes(ref))) owned = true;
         });
-        if (!retained) { tx.abort(); throw new Error("native_bundle_owner_change_missing"); }
+        if (!owned) { tx.abort(); throw new Error("native_bundle_owner_change_missing"); }
       }
       captures.delete(bundleId);
     }
@@ -867,8 +867,8 @@ export class IndexedDbBackfillStore {
     const done = transactionDone(tx); const records = tx.objectStore("captures");
     if (capture.kind === "native-acquisition") {
       const rawId = capture.raw_ref?.id || capture.raw_ref;
-      const retired = await requestResult(records.get(`released-native:${rawId}`));
-      if (retired) { await done; return retired; }
+      const released = await requestResult(records.get(`released-native:${rawId}`));
+      if (released) { await done; return released; }
     }
     if (capture.kind === "native-acquisition" && capture.state === "acquiring") {
       const current = await requestResult(records.get(capture.id));
@@ -881,7 +881,7 @@ export class IndexedDbBackfillStore {
         }
       }
       // Startup may have read acquiring metadata before the producer sealed it.
-      // Its delayed publication cannot revoke already committed raw custody.
+      // Its delayed commit cannot revoke the already committed raw owner.
       if (current?.kind === "native-acquisition" && current.state === "pending-normalization") {
         if (JSON.stringify(current.owner) !== JSON.stringify(capture.owner) ||
             current.raw_ref?.id !== capture.raw_ref?.id || current.raw_ref?.token !== capture.raw_ref?.token) {
@@ -944,7 +944,7 @@ export class IndexedDbBackfillStore {
     const current = await requestResult(store.get(jobId));
     if (!current) { tx.abort(); await done.catch(() => undefined); throw new Error(`backfill_job_not_found:${jobId}`); }
     // Derived checkpoint observation updates only this field. It cannot
-    // overwrite concurrent operator status, execution claim or acquired custody.
+    // overwrite concurrent operator status, execution claim or acquired bytes.
     store.put({ ...current, recovery_checkpoint_outcome: outcome });
     await done;
   }
@@ -954,8 +954,8 @@ export class IndexedDbBackfillStore {
     const tx = db.transaction("jobs", "readwrite");
     const store = tx.objectStore("jobs");
     const index = store.index("provider_status");
-    const candidates = await Promise.all(["running", "paused"].map((status) => requestResult(index.get([job.provider, status]))));
-    const existing = candidates.find(Boolean);
+    const matches = await Promise.all(["running", "paused"].map((status) => requestResult(index.get([job.provider, status]))));
+    const existing = matches.find(Boolean);
     if (existing) {
       tx.abort();
       throw new Error(`backfill_job_already_active:${job.provider}:${existing.id}`);
@@ -1244,7 +1244,7 @@ export class IndexedDbBackfillStore {
     if (!["checkpoint-snapshot", "checkpoint-export"].includes(kind)) throw new Error("checkpoint_snapshot_owner_mismatch");
     const db = await this.database();
     // Copy under one transaction; no filesystem or network await occurs
-    // before these source and custody records commit together.
+    // before these source and owner records commit together.
     const tx = db.transaction(["jobs", "queue", "revisions", "captures", "capture_records"], "readwrite");
     const done = transactionDone(tx);
     const captures = tx.objectStore("captures");
@@ -1259,7 +1259,7 @@ export class IndexedDbBackfillStore {
     if (!job) { tx.abort(); await done.catch(() => undefined); throw new Error(`unknown_backfill_job:${jobId}`); }
     const records = tx.objectStore("capture_records");
     let occurrence = 0;
-    const publish = (collection, key, value, original = null, exportCapture = null) => {
+    const copy = (collection, key, value, original = null, exportCapture = null) => {
       records.put({ capture_id: snapshotId, key: `${collection}:${key}`, record_kind: `checkpoint:${collection}`,
         order_time: 0, order_id: "", occurrence: occurrence++, checkpoint_value: value,
         export_capture: exportCapture,
@@ -1267,15 +1267,15 @@ export class IndexedDbBackfillStore {
         asset_refs: original ? [original.body_ref, ...(original.source_refs || original.capture_source_refs || []),
           ...(exportCapture?.source_refs || [])].filter(Boolean) : [] });
     };
-    publish("jobs", job.id, checkpointJob(job));
+    copy("jobs", job.id, checkpointJob(job));
     await visitCursor(tx.objectStore("queue").index("job_id").openCursor(globalThis.IDBKeyRange.only(jobId)), async (cursor) => {
       const original = cursor.value;
       const captureId = original.record_ref || original.capture_record_ref || original.capture_bundle_ref;
       const exportCapture = kind === "checkpoint-export" && captureId ? await requestResult(captures.get(captureId)) : null;
-      publish("queue", original.id, kind === "checkpoint-export" ? globalThis.structuredClone(original) : checkpointQueueItem(original), original, exportCapture);
+      copy("queue", original.id, kind === "checkpoint-export" ? globalThis.structuredClone(original) : checkpointQueueItem(original), original, exportCapture);
     });
     await visitCursor(tx.objectStore("revisions").openCursor(), (cursor) => {
-      if (cursor.value.provider === job.provider) publish("revisions", cursor.value.id, checkpointRevision(cursor.value));
+      if (cursor.value.provider === job.provider) copy("revisions", cursor.value.id, checkpointRevision(cursor.value));
     });
     const snapshot = { id: snapshotId, kind, token, state: "ready", job_id: jobId,
       provider: job.provider, job: checkpointJob(job), version: BACKFILL_RECOVERY_CHECKPOINT_VERSION,
@@ -1319,7 +1319,7 @@ export class IndexedDbBackfillStore {
         request.onsuccess = () => {
           const cursor = request.result;
           if (!cursor) return resolve();
-          // Keep exact copy references until the staging owner retires each
+          // Keep exact copy references until the staging owner releases each
           // file. Restart cleanup must not rediscover a whole directory.
           if (cursor.value.record_kind !== "checkpoint:evidence") cursor.delete();
           cursor.continue();
@@ -1367,7 +1367,7 @@ export class IndexedDbBackfillStore {
     const marker = await this.getCapture(`checkpoint-conversion:${collection}:${original.id}:${recoveryValueDigest(original)}`);
     if (!marker) return false;
     if (marker.original_digest !== recoveryValueDigest(original)) throw new Error("checkpoint_conversion_source_conflict");
-    return marker.state === "published";
+    return marker.state === "committed";
   }
 
   async convertLocalCheckpointRecord(collection, original, replacement = original) {
@@ -1401,7 +1401,7 @@ export class IndexedDbBackfillStore {
           : recoveryRequiredItem(converted)) : replacement;
       target.put(collection === "jobs" ? jobRow(value) : value);
     }
-    captures.put({ id: markerId, kind: "checkpoint-conversion", original_digest: originalDigest, state: "published" });
+    captures.put({ id: markerId, kind: "checkpoint-conversion", original_digest: originalDigest, state: "committed" });
     await done;
   }
 
@@ -1425,13 +1425,13 @@ export class IndexedDbBackfillStore {
     const db = await this.database();
     const tx = db.transaction("queue", "readwrite");
     const store = tx.objectStore("queue");
-    let targetProvider = null; let candidate = null;
+    let targetProvider = null; let next = null;
     await visitCursor(store.index("job_id").openCursor(globalThis.IDBKeyRange.only(jobId)), (cursor) => {
       const item = cursor.value;
       targetProvider ||= item.provider;
       const eligible = receiverOnly ? item.state === "captured_waiting_receiver" : ["eligible", "retry_wait"].includes(item.state);
       if (eligible && (!item.claimed_by || item.claim_expires_ms <= nowMs) && (item.next_eligible_at_ms || 0) <= nowMs &&
-          (!candidate || (item.next_eligible_at_ms || 0) < (candidate.next_eligible_at_ms || 0))) candidate = item;
+          (!next || (item.next_eligible_at_ms || 0) < (next.next_eligible_at_ms || 0))) next = item;
     });
     let providerBusy = false;
     if (targetProvider) await visitCursor(store.index("provider_state").openCursor(globalThis.IDBKeyRange.only([targetProvider, "claimed"])), (cursor) => {
@@ -1441,10 +1441,11 @@ export class IndexedDbBackfillStore {
       await transactionDone(tx);
       return null;
     }
-    if (candidate) {
+    if (next) {
       const claimed = {
-        ...candidate,
-        resume_state: candidate.state,
+        ...next,
+        resume_state: next.state,
+
         state: "claimed",
         claimed_by: owner,
         claim_expires_ms: nowMs + claimMs,

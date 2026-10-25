@@ -6,13 +6,13 @@ function entryKey(provider, nativeId) {
   return `${provider}:${nativeId}`;
 }
 
-function isNewerProviderRevision(previous, candidate) {
-  if (!candidate) return false;
+function isNewerProviderRevision(previous, incoming) {
+  if (!incoming) return false;
   if (!previous) return true;
   const previousMs = Date.parse(previous);
-  const candidateMs = Date.parse(candidate);
-  if (Number.isFinite(previousMs) && Number.isFinite(candidateMs)) return candidateMs > previousMs;
-  return candidate !== previous;
+  const incomingMs = Date.parse(incoming);
+  if (Number.isFinite(previousMs) && Number.isFinite(incomingMs)) return incomingMs > previousMs;
+  return incoming !== previous;
 }
 
 export function normalizeFreshnessQueue(value) {

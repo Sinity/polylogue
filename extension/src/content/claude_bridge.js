@@ -73,7 +73,7 @@
         error: "conversation_api_url_not_found"
       };
     }
-    beforeAwait("admission");
+    beforeAwait("start");
     const prepared = await window.polylogueAssetStream.prepareResponse("claude-ai", signal, url, null, "native-response", false, null, null, false, null, ownerId);
     let response; let bodyRef;
     try {

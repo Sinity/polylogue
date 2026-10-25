@@ -158,7 +158,7 @@
     const requestId = window.crypto.randomUUID();
     const ready = waitResponse(requestId, "polylogue.responseReady", signal, ownerId);
     // A provider request may start only after the background owner has
-    // durably admitted this acquisition. The terminal response also drains
+    // durably accepted this acquisition. The terminal response also drains
     // cancellation; it is not rejected merely because the producer aborted.
     const terminalController = new AbortController();
     const sealed = waitResponse(requestId, "polylogue.responseSealed", terminalController.signal, ownerId);
@@ -216,7 +216,7 @@
       const prepared = await prepareResponse(provider, signal, sourceUrl, captureBundle, kind, !captureBundle, null, null, true, null, ownerId);
       return await prepared.consume(response);
     } catch (error) {
-      // A refused admission never enters consume, but still owns this clone.
+      // A refused start never enters consume, but still owns this clone.
       // Its app-owned tee may remain unread, so request cancellation without
       // waiting on that branch or altering the original response.
       void response.body?.cancel().catch(() => undefined);

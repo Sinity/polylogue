@@ -2,7 +2,7 @@
   if (window.__polylogueChatgptCaptureInstalled === 2) return;
   window.__polylogueChatgptCaptureInstalled = 2;
 
-  // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
+  // In-page Layer 1: capture-status dot + save action mounted
   // next to each detected message. Reused across every capture trigger below
   // (badge click, popup, background auto-capture) so the dots always reflect
   // the most recent capture outcome for the whole session.
@@ -27,7 +27,7 @@
   let freshnessSuspended = false;
   let lastDomFreshnessSignature = null;
 
-  const nativeProgressStages = new Set(["throttle", "pending_header", "restore", "staging", "provider_auth", "provider_response", "body", "header", "canonical", "publication"]);
+  const nativeProgressStages = new Set(["throttle", "pending_header", "restore", "staging", "provider_auth", "provider_response", "body", "header", "envelope", "send"]);
   function rememberNativeAttempt(diagnostic, diagnostics) {
     if (!diagnostics || diagnostics.cancelled) return;
     diagnostics.entries.push(Object.hasOwn(diagnostic, "state") ? diagnostic : { attempted_at: new Date().toISOString(), ...diagnostic });
@@ -49,9 +49,9 @@
 
   function observeNativePreparation(rawRef, nativeRequestId, signal, diagnostics) {
     // This is the already-created MAIN fetch request, not a staging UUID or
-    // invocation authority. Missing correlation leaves diagnostics unknown.
+    // invocation owner. Missing correlation leaves diagnostics unknown.
     if (typeof nativeRequestId !== "string" || !/^polylogue-native-fetch-\d+-[a-z0-9]+$/.test(nativeRequestId)) return () => {};
-    let admitted = false; let stopped = false;
+    let started = false; let stopped = false;
     const equal = (a, b) => ["at", "stage", "phase", "state", "acquisition_ref", "native_request_id"].every(key => a?.[key] === b?.[key]);
     const changed = (changes, area) => {
       if (stopped || signal.aborted || area !== "local") return;
@@ -63,15 +63,15 @@
             row.acquisition_ref !== rawRef?.id || row.native_request_id !== nativeRequestId ||
             !backgroundProgressStages.has(row.phase) || !["BEGIN", "END"].includes(row.state) || prior.some(old => equal(old, row))) continue;
         if (row.phase === "normalize_start" && row.state === "BEGIN") {
-          // Repeated admission for the same request is ambiguous. Retained
-          // oldValue rows do not count as another observed admission.
-          if (admitted) {
+          // A repeated start for the same request is ambiguous. Earlier
+          // oldValue rows do not count as another observed start.
+          if (started) {
             diagnostics.entries = diagnostics.entries.filter(entry => entry.source !== "background_debug_log");
             stop(); return;
           }
-          admitted = true;
+          started = true;
         }
-        if (!admitted) continue;
+        if (!started) continue;
         rememberNativeAttempt({ stage: row.phase, state: row.state, source: "background_debug_log" }, diagnostics);
       }
     };
@@ -355,10 +355,9 @@
     const minimumMs = nativePayloadUpdatedAt({ update_time: minimumUpdatedAt });
     const cachedMs = nativePayloadUpdatedAt(payload);
     if (!Number.isFinite(minimumMs) || !Number.isFinite(cachedMs) || cachedMs < minimumMs) return null;
-    const candidate = nativeCapture;
-    const summary = await window.polylogueAssetStream.nativeEnvelope({ provider: "chatgpt", capture: candidate, nativeId: expectedConversationId, signal, attribution, summaryOnly: true });
+    const summary = await window.polylogueAssetStream.nativeEnvelope({ provider: "chatgpt", capture: nativeCapture, nativeId: expectedConversationId, signal, attribution, summaryOnly: true });
     if (typeof summary?.needs_follow_up !== "boolean") throw new Error("native_capture_summary_invalid");
-    return summary.needs_follow_up === false ? { capture: candidate, headers: payload } : null;
+    return summary.needs_follow_up === false ? { capture: nativeCapture, headers: payload } : null;
   }
 
   async function requestNativeCaptureFromPage(conversationId, signal, invocationRef = null, diagnostics = null) {
@@ -425,12 +424,9 @@
   // ChatGPT does not update the URL to /c/<id> until the backend accepts the
   // first turn of a brand-new conversation. A capture triggered in that
   // narrow window (in-page save button, DOM-mutation freshness observer) has
-  // no id to fetch by yet and no intercepted response either -- this was the
-  // only case where DOM scraping ever produced real captures (2026-07-17:
-  // every chatgpt-dom-v1 capture landed inside one such window, and every
-  // one was a degraded 3-turn shadow of a conversation the native path
-  // picked up moments later with the full turn history). Wait for the SPA
-  // router to publish the id instead of falling back to a DOM scrape.
+  // no id to fetch by yet and no intercepted response either. A DOM scrape
+  // here yields only a partial copy of a conversation the native path reads
+  // in full moments later, so wait for the SPA router to set the id.
   async function waitForConversationId(signal) {
     let id = conversationIdFromUrl();
     while (!id) {
@@ -614,19 +610,19 @@
     const source = acquired.capture;
     if (!source) return { ok: false, error: "native_capture_unavailable", native_attempts: diagnostics.entries.slice(), native_attempts_dropped: diagnostics.dropped };
     const nativeId = String(acquired.headers?.conversation_id || acquired.headers?.id || requestedConversationId || conversationIdFromUrl() || "");
-    nativeProgress(diagnostics, "canonical", "BEGIN");
+    nativeProgress(diagnostics, "envelope", "BEGIN");
     const stopPreparationProgress = observeNativePreparation(source.bodyRef, source.nativeRequestId, signal, diagnostics);
     let finalEnvelope;
     try {
       finalEnvelope = await window.polylogueAssetStream.nativeEnvelope({ provider: "chatgpt", capture: source, nativeId, signal,
         attribution: nativeId === selectedId ? attribution : observationsFor(nativeId) });
     } finally { stopPreparationProgress(); }
-    nativeProgress(diagnostics, "canonical", "END");
+    nativeProgress(diagnostics, "envelope", "END");
     signal.throwIfAborted();
     if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
-    nativeProgress(diagnostics, "publication", "BEGIN");
+    nativeProgress(diagnostics, "send", "BEGIN");
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason, signal);
-    nativeProgress(diagnostics, "publication", "END");
+    nativeProgress(diagnostics, "send", "END");
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false });
       return { ok: false, envelope: finalEnvelope, captureResult, error: captureResult?.error || "capture_rejected", timelineRecorded: true };
@@ -705,7 +701,7 @@
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
       identityForNode: (node) => window.polylogueCapture.identityObservation({
         provider: "chatgpt", conversationId: conversationIdFromUrl() || latestNativePayload()?.conversation_id || latestNativePayload()?.id || null,
-        // Only an explicit provider-native message id is authoritative. A
+        // Only an explicit provider-native message id identifies a message. A
         // turn test id, DOM ordinal, and visible text are diagnostic hints.
         messageId: node.getAttribute("data-message-id"),
         text: node.innerText || node.textContent || "", adapterName: nativeAdapterName,

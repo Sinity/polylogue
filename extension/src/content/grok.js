@@ -24,7 +24,7 @@
     }
   }
 
-  // grok.com conversation URLs are /c/<uuid> (verified live 2026-07-31).
+  // grok.com conversation URLs are /c/<uuid>.
   function conversationIdFromUrl(url = window.location.href) {
     const parsed = new URL(url);
     const parts = parsed.pathname.split("/").filter(Boolean);

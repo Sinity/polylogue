@@ -2,7 +2,7 @@
   if (window.__polylogueClaudeCaptureInstalled === 2) return;
   window.__polylogueClaudeCaptureInstalled = 2;
 
-  // In-page Layer 1 (polylogue-ys30): capture-status dot + save action mounted
+  // In-page Layer 1: capture-status dot + save action mounted
   // next to each detected message. Reused across every capture trigger below
   // (badge click, popup, background auto-capture) so the dots always reflect
   // the most recent capture outcome for the whole session.
@@ -43,7 +43,7 @@
     if (!pending) return;
     nativeFetchResponses.delete(data.requestId);
     pending.resolve({ capture: data.capture || null, error: data.error || null, requestId: data.requestId,
-      failure_stage: data.error && ["admission", "provider_fetch", "staging"].includes(data.failure_stage) ? data.failure_stage : "unknown" });
+      failure_stage: data.error && ["start", "provider_fetch", "staging"].includes(data.failure_stage) ? data.failure_stage : "unknown" });
   });
 
   async function requestNativeCaptureFromPage(conversationId, signal) {
@@ -120,7 +120,7 @@
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
       identityForNode: (node) => window.polylogueCapture.identityObservation({
         provider: "claude-ai", conversationId: conversationIdFromUrl(),
-        // Only an explicit provider-native message id is authoritative. DOM
+        // Only an explicit provider-native message id identifies a message. DOM
         // order, test ids, and visible text cannot authorize a badge.
         messageId: node.getAttribute("data-message-id"),
         text: node.innerText || node.textContent || "", adapterName: nativeAdapterName,

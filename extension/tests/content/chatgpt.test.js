@@ -800,7 +800,7 @@ it.each(["success", "failure", "cancel"])("retains exact native progress without
     expect(result.native_progress.at(-1)).toEqual({ stage: "header", state: "END" });
   } else {
     expect(result.ok).toBe(true);
-    expect(result.native_progress.at(-1)).toEqual({ stage: "canonical", state: "END" });
+    expect(result.native_progress.at(-1)).toEqual({ stage: "envelope", state: "END" });
     // The provider's existing auth fallback and original terminal capture remain unchanged.
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
   }
@@ -865,14 +865,14 @@ it.each(["success", "cancel"])("marks the actual suspended native body before se
   } else {
     expect(result.ok).toBe(true);
     expect(frames).toContainEqual({ stage: "body", state: "END" });
-    expect(result.native_progress.at(-1)).toEqual({ stage: "canonical", state: "END" });
+    expect(result.native_progress.at(-1)).toEqual({ stage: "envelope", state: "END" });
   }
 });
 
 it.each([
   ["throttle", "polylogue.providerThrottle"],
   ["restore", "polylogue.restoreNativeCapture"],
-  ["canonical", "polylogue.normalizeNativeCapture"],
+  ["envelope", "polylogue.normalizeNativeCapture"],
 ])("freezes the exact original %s await on cancellation", async (stage, messageType) => {
   let release;
   const { sendRuntimeMessage } = installChatgpt({

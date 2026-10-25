@@ -38,7 +38,7 @@ function missionFixture(overrides = {}) {
       reason: "tab_activated",
       detail: "already_safe",
     }],
-    assertions: { selection_candidate_supported: true, persistence_supported: false },
+    assertions: { selection_supported: true, persistence_supported: false },
     intelligence: {
       status: "available",
       archive: {

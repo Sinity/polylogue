@@ -311,7 +311,7 @@ describe("durable capture staging", () => {
     await store.pinNativeCache({ ...common, rawRef: next, acquisitionSequence: nextMeta.acquisition_sequence });
     const delayed = await store.pinNativeCache({ ...common, rawRef: old, acquisitionSequence: oldMeta.acquisition_sequence });
     expect(delayed.current.raw_ref).toEqual(next);
-    expect(delayed.retired).toEqual([]);
+    expect(delayed.replaced).toEqual([]);
     expect(await store.captureReferences(next.id)).toBe(true);
   });
 

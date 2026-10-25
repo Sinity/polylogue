@@ -51,7 +51,7 @@
     if (!text.trim() || !provider || !message) return null;
     let identity = null;
     try { identity = identityForNode?.(message) || null; } catch { identity = null; }
-    const candidate = {
+    const note = {
       kind: "selection_note",
       provider,
       source_url: url,
@@ -60,8 +60,8 @@
       truncated: text.length > MAX_SELECTION_CHARS,
       persistence: identity ? "draft" : "not_supported",
     };
-    if (identity) candidate.identity_observation = identity;
-    return candidate;
+    if (identity) note.identity_observation = identity;
+    return note;
   }
 
   function createElement(doc, tag, className = "", text = "") {
@@ -243,7 +243,7 @@
     const intelligenceSection = createElement(doc, "section", "section");
     intelligenceSection.appendChild(createElement(doc, "h3", "", "Conversation intelligence"));
     const intelligenceStatus = createElement(doc, "div", "status-line", "Checking archive projection…");
-    const intelligenceDetail = createElement(doc, "p", "meta", "The receiver is resolving canonical evidence.");
+    const intelligenceDetail = createElement(doc, "p", "meta", "The receiver is looking up the archived session.");
     const costLine = createElement(doc, "p", "meta", "Session cost: unknown");
     const assertionList = createElement(doc, "div", "list");
     const archiveLink = createElement(doc, "a", "secondary", "Open Polylogue");
@@ -353,7 +353,7 @@
 
     // Layer 2 renders only what the receiver asserts. Every field is written
     // through textContent, so archived material is displayed as text and can
-    // never acquire markup or instruction authority by being shown here.
+    // never become markup or instructions by being shown here.
     function renderIntelligence(projection) {
       const intelligence = projection || {};
       const archive = intelligence.archive || {};
@@ -363,13 +363,13 @@
         available: "Archive projection available",
         offline: "Offline — archive projection unavailable",
         unauthorized: "Unauthorized — archive projection unavailable",
-        uncaptured: "Not captured — no canonical archive yet",
+        uncaptured: "Not captured — not in the archive yet",
         unknown: "Archive projection unknown",
       };
       intelligenceStatus.textContent = labels[intelligence.status] || labels.unknown;
       intelligenceDetail.textContent = archive.status === "available"
-        ? `Canonical session ${archive.session_id || "unknown"}`
-        : "No canonical archive facts are available from the receiver.";
+        ? `Archived session ${archive.session_id || "unknown"}`
+        : "No archive facts are available from the receiver.";
       const total = cost.status === "unknown" || cost.total_usd === null || cost.total_usd === undefined
         ? "unknown"
         : `$${Number(cost.total_usd).toFixed(3)}`;
@@ -601,7 +601,7 @@
     }
 
     // Page scripts can dispatch synthetic clicks into this surface; every
-    // control acts only on a real operator gesture (polylogue-l6v61).
+    // control acts only on a real operator gesture.
     const onGesture = (handler) => (event) => {
       if (!event.isTrusted) return;
       handler(event);

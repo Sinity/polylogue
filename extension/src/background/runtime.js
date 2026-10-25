@@ -142,16 +142,16 @@ function serializeCaptureQueueMutation(mutation, signal = null) {
 function extensionInstanceId() {
   if (!extensionInstanceIdPromise) {
     const key = "polylogueExtensionInstanceId";
-    const candidate = (async () => {
+    const pending = (async () => {
       const stored = await runtimeChrome.storage.local.get({ [key]: "" });
       if (stored[key]) return stored[key];
       const created = globalThis.crypto?.randomUUID?.() || `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await runtimeChrome.storage.local.set({ [key]: created });
       return created;
     })();
-    extensionInstanceIdPromise = candidate;
-    void candidate.catch(() => {
-      if (extensionInstanceIdPromise === candidate) extensionInstanceIdPromise = null;
+    extensionInstanceIdPromise = pending;
+    void pending.catch(() => {
+      if (extensionInstanceIdPromise === pending) extensionInstanceIdPromise = null;
     });
   }
   return extensionInstanceIdPromise;
@@ -160,7 +160,7 @@ function extensionInstanceId() {
 function browserActionExecutorId() {
   if (!browserActionExecutorIdPromise) {
     const key = "polylogueBrowserActionExecutorId";
-    const candidate = (async () => {
+    const pending = (async () => {
       const session = runtimeChrome.storage.session;
       if (!session?.get || !session?.set) return `browser-action-${BACKFILL_WORKER_EPOCH}`;
       const stored = await session.get({ [key]: "" });
@@ -169,9 +169,9 @@ function browserActionExecutorId() {
       await session.set({ [key]: created });
       return created;
     })();
-    browserActionExecutorIdPromise = candidate;
-    void candidate.catch(() => {
-      if (browserActionExecutorIdPromise === candidate) browserActionExecutorIdPromise = null;
+    browserActionExecutorIdPromise = pending;
+    void pending.catch(() => {
+      if (browserActionExecutorIdPromise === pending) browserActionExecutorIdPromise = null;
     });
   }
   return browserActionExecutorIdPromise;
@@ -230,20 +230,20 @@ async function convertAcquiredBackfillRow(store, original) {
 async function backfillCoordinator() {
   const initializing = !backfillCoordinatorPromise;
   if (initializing) {
-    const candidate = (async () => {
+    const pending = (async () => {
       const store = captureStore;
       const instanceId = await extensionInstanceId();
       const stored = await runtimeChrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      const predecessor = stored[BACKFILL_RECOVERY_CHECKPOINT_KEY];
-      if (predecessor !== null) {
-        if (predecessor.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION ||
-            !["jobs", "queue", "revisions"].every((key) => Array.isArray(predecessor[key]))) {
+      const previous = stored[BACKFILL_RECOVERY_CHECKPOINT_KEY];
+      if (previous !== null) {
+        if (previous.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION ||
+            !["jobs", "queue", "revisions"].every((key) => Array.isArray(previous[key]))) {
           throw new Error("checkpoint_conversion_shape_invalid");
         }
         // This is the sole read of the shipped whole-ledger cache. Keep the
-        // original until each record and acquired body has durable custody.
+        // original until each record and acquired body is stored durably.
         for (const collection of ["jobs", "queue", "revisions"]) {
-          for (const original of predecessor[collection]) {
+          for (const original of previous[collection]) {
             if (await store.localCheckpointRecordCommitted(collection, original)) continue;
             let replacement = original;
             if (collection === "queue" && original.envelope) {
@@ -285,9 +285,9 @@ async function backfillCoordinator() {
       });
       return coordinator;
     })();
-    backfillCoordinatorPromise = candidate;
-    void candidate.catch(() => {
-      if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
+    backfillCoordinatorPromise = pending;
+    void pending.catch(() => {
+      if (backfillCoordinatorPromise === pending) backfillCoordinatorPromise = null;
     });
   }
   return backfillCoordinatorPromise;
@@ -342,7 +342,7 @@ async function startBackfill(request) {
 // Acquired bodies and delivery references remain durable in OPFS and the
 // indexed queue until an actual receiver ACK or an explicit terminal refusal.
 // Chrome storage holds only the completed conversion marker; delivery cursors
-// are authoritative for counts, ordering, and retries.
+// decide counts, ordering, and retries.
 const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
 const CAPTURE_QUEUE_EMPTY = Object.freeze({ version: 3, dropped_count: 0 });
 let queueConversionPromise = null;
@@ -386,14 +386,12 @@ function injectionPlanForUrl(url) {
       ];
     }
     if (parsed.hostname === "grok.com" || parsed.hostname.endsWith(".grok.com")) {
-      // grok.com now has a MAIN-world bridge (native REST capture,
-      // polylogue Grok native-capture upgrade 2026-07-31) mirroring
-      // chatgpt/claude above. x.com/twitter.com were dropped here: Grok's
+      // grok.com has a MAIN-world bridge (native REST capture) mirroring
+      // chatgpt/claude above. x.com/twitter.com are not listed: Grok's
       // embedded surface on X is served through X's own API, not
       // grok.com's /rest/app-chat/* REST surface this bridge calls, and
-      // this upgrade deleted the DOM-only capture path that used to be the
-      // (lossy) fallback for those origins. See manifest.json's matching
-      // content_scripts change and this repo's Grok-on-X follow-up bead.
+      // there is no DOM-only capture path to fall back on for those origins.
+      // manifest.json's content_scripts match the same hosts.
       return [
         { files: ["src/content/asset_stream.js", "src/content/grok_bridge.js"], world: "MAIN" },
         { files: ["src/content/asset_stream.js", "src/common.js", "src/content/grok.js"] },
@@ -495,7 +493,7 @@ function captureRetryMetadata(entry) {
 
 async function cacheCaptureQueueState(queue) {
   // The atomic IDB import marker and delivery roots own acquired bytes. A
-  // failed derived Chrome cache must not prevent their retry admission.
+  // failed derived Chrome cache must not prevent their retry.
   try { await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue }); }
   catch (error) {
     await appendDebugLog({ stage: "capture_queue_cache_failed", error: String(error.message || error) }).catch(() => undefined);
@@ -523,8 +521,8 @@ async function initializeCaptureRetries() {
 
 async function getCaptureQueue() {
   if (!queueConversionPromise) queueConversionPromise = (async () => {
-    // Import the original local inputs once under5918's existing atomic marker.
-    // A metadata-only cache is never the authority for their acquired bodies.
+    // Import the original local inputs once under the existing atomic marker.
+    // A metadata-only cache never decides what happens to their acquired bodies.
     const dropped = await initializeCaptureRetries();
     for await (const metadata of captureRetryStore.captureRetryInputs()) {
       const envelope = await captureRetryStore.getCaptureRetryEnvelope(metadata.id);
@@ -536,15 +534,15 @@ async function getCaptureQueue() {
       if (existing && existing.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_conflict");
       if (prepared.acknowledgedReceipt) {
         // Original exact body receipt prevents a restart from resurrecting a
-        // delivery settled before source retirement completed.
+        // delivery settled before the source was deleted.
         await captureStore.deleteDelivery(converted.id);
       } else {
         if (!existing) await captureStore.putDelivery(converted);
-        const published = await captureStore.getDelivery(converted.id);
-        if (published?.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_uncommitted");
+        const committed = await captureStore.getDelivery(converted.id);
+        if (committed?.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_uncommitted");
       }
-      // Published custody precedes atomic source retirement. Any failure keeps
-      // either the original input or its exact idempotently published delivery.
+      // The committed delivery precedes atomic deletion of the source. Any
+      // failure keeps either the original input or its exact delivery.
       await captureRetryStore.deleteCaptureRetry(metadata.id);
       if (prepared.acknowledgedReceipt) await captureStaging.acknowledge(converted.body_ref);
     }
@@ -587,8 +585,8 @@ async function recoverStagedDeliveries() {
 async function tabIfPresent(tabId) {
   try { return await runtimeChrome.tabs.get(tabId); }
   catch (error) {
-    // Only Chrome's positive absence result permits custody retirement or
-    // forgetting an owned transport. Read/extension faults preserve both.
+    // Only Chrome's positive absence result permits releasing owned bytes or
+    // forgetting an owned transport. Read/extension faults keep both.
     const absent = String(error?.message || error).match(/^No tab with id:\s*(\d+)\.?$/i);
     if (absent && Number(absent[1]) === tabId) return null;
     throw error;
@@ -644,14 +642,14 @@ async function reconcileCaptureRoots() {
         if (item && ["complete", "superseded", "cancelled"].includes(item.state)) await captureStaging.acknowledge(meta.id);
       }
     }
-    // Unpublished acquisition remains owned while its document exists, and
-    // failed normalization rows retain their evidence for a visible retry.
+    // An uncommitted acquisition remains owned while its document exists, and
+    // failed normalization rows keep their bytes for a visible retry.
     if ((meta.acquisition && meta.acquisition_result) || (meta.capture_bundle && meta.state === "sealed")) {
       try { await captureStaging.seal({ id: meta.id, token: meta.token }, meta.owner); }
       catch (error) { await appendDebugLog({ stage: "capture_acquisition_recovery_pending", ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }); }
     }
     if (meta.import_staged && !await captureStaging.referenced(meta.id)) { await captureStaging.discard(meta.id); continue; }
-    if (meta.retired) { await captureStaging.discardUnreferenced(meta.id); continue; }
+    if (meta.released) { await captureStaging.discardUnreferenced(meta.id); continue; }
     if (!meta.owner?.tab_id || await captureStaging.referenced(meta.id)) continue;
     const tab = await tabIfPresent(meta.owner.tab_id);
     if (!tab) await captureStaging.discardUnreferenced(meta.id);
@@ -670,7 +668,7 @@ async function captureQueuePage({ cursor: after = null, pageSize = 50 } = {}) {
   for await (const { entry, cursor } of captureStore.deliveries({ after })) {
     if (entries.length === pageSize) { nextCursor = entries.at(-1).cursor; break; }
     let tabOrigin = null;
-    try { tabOrigin = entry.tab_url ? new globalThis.URL(entry.tab_url).origin : null; } catch { /* No origin for an invalid retained locator. */ }
+    try { tabOrigin = entry.tab_url ? new globalThis.URL(entry.tab_url).origin : null; } catch { /* No origin for an invalid stored locator. */ }
     entries.push({ id: entry.id, reason: entry.reason, enqueued_at: entry.enqueued_at,
       attempts: entry.attempts, next_attempt_at: entry.next_attempt_at, last_error: entry.last_error,
       tab_origin: tabOrigin,
@@ -736,9 +734,9 @@ async function storeCaptureForDelivery({ envelope, reason, tab = null, signal = 
       if (meta.state === "receiver-preparing") meta = await captureStaging.completePreparedBody(meta.id, signal);
       if (!meta.delivery || !["receiver-ready", "receiver-acknowledged"].includes(meta.state)) throw new Error("capture_delivery_preparation_missing");
       if (meta.state === "receiver-acknowledged") throw new Error("capture_delivery_already_acknowledged");
-      const retained = { ...meta.delivery, body_ref: meta.id, capture_record_ref: envelope.capture_record_ref };
-      if (operation) operation.deliveryId = retained.id;
-      await captureStore.putDelivery(retained); await refreshCaptureQueueCount(); await ensureRetryAlarm(); return retained;
+      const stored = { ...meta.delivery, body_ref: meta.id, capture_record_ref: envelope.capture_record_ref };
+      if (operation) operation.deliveryId = stored.id;
+      await captureStore.putDelivery(stored); await refreshCaptureQueueCount(); await ensureRetryAlarm(); return stored;
     }
   }
   const entry = {
@@ -804,10 +802,10 @@ async function recordCaptureDeliveryFailure(entry, error) {
   });
 }
 
-async function retireCaptureDelivery(entry) {
+async function finishCaptureDelivery(entry) {
   return serializeCaptureQueueMutation(async () => {
     await getCaptureQueue();
-    // ACK publication precedes retirement of the delivery root.
+    // The committed ACK precedes deletion of the delivery root.
     await captureStore.deleteDelivery(entry.id);
     await refreshCaptureQueueCount();
     if (entry.receiver_native) return captureStaging.acknowledgeNative(entry.capture_record_ref);
@@ -821,7 +819,7 @@ async function completeForegroundDelivery(delivery, signal) {
   signal.throwIfAborted();
   let completion = foregroundDeliveryCompletions.get(delivery.id);
   if (completion?.controller.signal.aborted && !completion.settled) {
-    // Closing admission belongs to the cancelled physical attempt. A new
+    // Closing entry belongs to the cancelled physical attempt. A new
     // invocation waits its settlement without becoming an owner of that abort.
     const receipt = await new Promise((resolve, reject) => {
       const abort = () => reject(signal.reason);
@@ -840,9 +838,9 @@ async function completeForegroundDelivery(delivery, signal) {
     foregroundDeliveryCompletions.set(delivery.id, completion);
     completion.promise = Promise.resolve().then(async () => {
       const receipt = await postJson("/v1/browser-captures", delivery.receiver_native ? { receiver_native: delivery.receiver_native, capture_record_ref: delivery.capture_record_ref } : { capture_body_ref: delivery.body_ref }, null, true, completion.controller.signal);
-      // ACK is durable already. Retirement may be queued behind an unrelated
+      // ACK is durable already. Cleanup may be queued behind an unrelated
       // upload and must not make this invocation own that physical settlement.
-      void retireCaptureDelivery(delivery).catch((error) => appendDebugLog({
+      void finishCaptureDelivery(delivery).catch((error) => appendDebugLog({
         stage: "capture_ack_cleanup_pending", error: String(error.message || error),
       }).catch(() => undefined));
       return receipt;
@@ -978,7 +976,7 @@ async function drainCaptureQueue(trigger = "alarm") {
     } catch (error) {
       if (acknowledged) {
         // A post-ACK cleanup or telemetry failure cannot recreate delivery.
-        // The durable receipt lets startup finish retirement without another POST.
+        // The durable receipt lets startup finish cleanup without another POST.
         await appendDebugLog({ event: "capture_ack_cleanup_pending", stage_id: entry.body_ref, error: String(error.message || error) });
         continue;
       }
@@ -1138,7 +1136,7 @@ async function appendDebugLog(entry) {
   return next;
 }
 
-// Best-effort private tracing only: no receipt, identity or effect authority.
+// Best-effort private tracing only: it records no receipt or identity and has no effect.
 function nativePreparationProgress(context, phase, state) {
   if (!context || typeof context.native_request_id !== "string" || !/^polylogue-native-fetch-\d+-[a-z0-9]+$/.test(context.native_request_id) || !["normalize_start", "native_prepare", "native_assets", "native_finalize"].includes(phase) || !["BEGIN", "END"].includes(state)) return;
   void appendDebugLog({ stage: "native_preparation_progress", ...context, phase, state }).catch(() => undefined);
@@ -1310,7 +1308,7 @@ async function restoreNativeEnvelope(recordRef, signal) {
     instanceId: capture.preparation_instance_id || await extensionInstanceId(), signal });
 }
 
-// Retained deliveries from the receiver-job client keep their raw reply roots.
+// Stored deliveries from the receiver-job client keep their raw reply roots.
 // Convert them through the native parser before posting; never discard or send
 // the obsolete remote preparation reference as a conversation body.
 async function commitNativeCapture(reference, recordRef, signal) {
@@ -1318,8 +1316,8 @@ async function commitNativeCapture(reference, recordRef, signal) {
   if (capture?.receiver_receipt) return capture.receiver_receipt;
   const envelope = await restoreNativeEnvelope(recordRef, signal);
   const receipt = await postJson("/v1/browser-captures", envelope, null, true, signal);
-  const retained = await captureStore.getCapture(recordRef);
-  if (retained) await captureStore.putCapture({ ...retained, receiver_receipt: receipt,
+  const stored = await captureStore.getCapture(recordRef);
+  if (stored) await captureStore.putCapture({ ...stored, receiver_receipt: receipt,
     receiver_native: { ...reference, sha256: receipt.content_hash } });
   return receipt;
 }
@@ -1461,8 +1459,8 @@ async function getJson(path, timeoutMs = null) {
 }
 
 // Layer 2 is a read-only projection. It deliberately uses the daemon's
-// canonical session id and typed read routes; provider DOM text and local
-// storage ledgers are not authority for cost, assertions, or archive links.
+// session id and typed read routes. Cost, assertions and archive links come
+// only from the daemon, never from provider DOM text or local storage.
 async function missionIntelligenceProjection(state) {
   const indexedSessionId = state?.archive_state?.indexed_session_id || null;
   const unavailable = (status, reason) => ({
@@ -1654,8 +1652,8 @@ async function observedProviderTab(provider) {
 async function acquireProviderTab(provider, { allowCreate = false } = {}) {
   // Passive capture and inventory use a normal provider page only when the
   // operator already has one open. They must never materialize a root tab.
-  // Creating a background transport is reserved for an explicit queued
-  // browser action that needs to mutate the provider UI.
+  // Only an explicit queued browser action that needs to change the provider
+  // UI may create a background transport.
   if (!allowCreate) {
     const observed = await observedProviderTab(provider);
     if (!observed) throw providerTransportNoSurfaceError();
@@ -1707,8 +1705,8 @@ function providerTab(provider, { allowCreate = false } = {}) {
   const transportKey = `${provider}:${allowCreate ? "action" : "observe"}`;
   const inFlight = providerTransportPromises.get(transportKey);
   if (inFlight) return inFlight;
-  const candidate = acquireProviderTab(provider, { allowCreate });
-  const tracked = candidate.finally(() => {
+  const acquiring = acquireProviderTab(provider, { allowCreate });
+  const tracked = acquiring.finally(() => {
     if (providerTransportPromises.get(transportKey) === tracked) providerTransportPromises.delete(transportKey);
   });
   providerTransportPromises.set(transportKey, tracked);
@@ -2053,7 +2051,7 @@ async function cleanupBackfillTransportTab(alarmName) {
     await forgetProviderTransport(provider, tabId);
     await runtimeChrome.alarms.clear(alarmName);
   } catch (error) {
-    // Failed lookup/removal does not prove physical closure. Preserve the
+    // Failed lookup/removal does not show the tab closed. Keep the
     // original persisted owner for a later cleanup or acquisition attempt.
     // Chrome consumes one-shot alarms when they fire. Re-arm the same owner
     // so cleanup can resume even when no later action acquires this tab.
@@ -2583,7 +2581,7 @@ async function updateBrowserAction(actionId, ownerInstanceId, patch) {
 }
 
 // The operator's explicit approve/decline decision on an action the receiver
-// is holding at "awaiting_approval" (polylogue-yyvg.7). Unlike
+// is holding at "awaiting_approval". Unlike
 // updateBrowserAction this carries no claim -- an awaiting_approval action
 // has never been claimed, and approving it is what makes it claimable for the
 // first time.
@@ -2908,9 +2906,9 @@ function conversationIdForUrl(url) {
         parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1] || null;
     }
     if (provider === "grok") {
-      // grok.com's own conversation URLs are /c/<uuid> (verified live,
-      // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
-      // and /grok/ segment guesses below predate that verification.
+      // grok.com's own conversation URLs are /c/<uuid>, the same convention
+      // as ChatGPT/Claude above. The /chat/ and /grok/ segments below are
+      // unverified fallbacks.
       const marker = parts.indexOf("c");
       if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
       const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
@@ -2936,7 +2934,7 @@ async function capturedConversationIdForTab(tab) {
   const id = conversationIdForUrl(url);
   if (id !== TEMPORARY_CHAT_SENTINEL) return id;
   // Ask the original document's existing native capture reader. The URL
-  // sentinel admits capture, but cannot name an archived conversation.
+  // sentinel allows capture, but cannot name an archived conversation.
   await ensureCaptureScripts(tab);
   const identity = await runtimeChrome.tabs.sendMessage(tab.id, { type: "polylogue.captureIdentity", expectedUrl: url });
   const capturedId = identity?.provider_session_id;
@@ -3209,7 +3207,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   if (receiverOnline) {
     try {
       const capabilities = await getJson("/v1/browser-captures/capabilities");
-      // Only the declared top-level field is authoritative; any other shape
+      // Only the declared top-level field counts; any other shape
       // fails closed and leaves Save unavailable.
       selectionNotes = capabilities?.selection_notes === true;
     } catch { /* An unreachable capability probe fails closed. */ }
@@ -3250,7 +3248,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     },
     ambient,
     assertions: {
-      selection_candidate_supported: true,
+      selection_supported: true,
       persistence_supported: false,
       accepted_identities: acceptedIdentities,
       reason: "receiver_capability_unavailable",
@@ -3264,7 +3262,7 @@ export function startBackgroundRuntime(adapters) {
   // A test harness (and a browser profile that reloads an unpacked worker)
   // can evaluate the composition root more than once while this module stays
   // cached. Recreate process-local coordination so durable storage remains
-  // the only recovery authority.
+  // the only source for recovery.
   recentBackgroundCaptures.clear();
   recentActiveTabStateChecks.clear();
   providerTransportPromises.clear();
@@ -3279,7 +3277,7 @@ export function startBackgroundRuntime(adapters) {
   captureQueueMutationQueue = Promise.resolve();
     cachedQueueLength = 0;
   runtimeChrome = adapters;
-  // Retire stored credentials without reading or transferring their value.
+  // Delete stored credentials without reading or transferring their value.
   void runtimeChrome.storage.local.remove("receiverAuthToken");
   runtimeNetwork = adapters.network;
   captureStore = captureRetryStore;
@@ -3596,8 +3594,8 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (Object.values(row.outcomes).some((outcome) => outcome.status === 429)) continue;
           const result = await nativeNormalizer.finishBundle(row.id, owner, { pin: true, signal: controller.signal });
           const raw = await captureStaging.metadata(result.rawRef.id);
-          const candidate = { ...result, source_url: raw.source_url, observed_at: raw.observed_at };
-          if (!selected || nativeCacheOrder(selected, candidate) > 0) selected = candidate;
+          const found = { ...result, source_url: raw.source_url, observed_at: raw.observed_at };
+          if (!selected || nativeCacheOrder(selected, found) > 0) selected = found;
         } else if (row.kind === "native-cache" && (!selected || nativeCacheOrder(selected, row) > 0)) {
           selected = { headers: row.headers, rawRef: row.raw_ref, relatedRefs: row.related_refs, acquisition: row.acquisition,
             acquisition_sequence: row.acquisition_sequence, observed_at: row.observed_at };
@@ -3610,9 +3608,9 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const ref = { id: meta.id, token: meta.token }; const headers = await nativeNormalizer.headers(ref, controller.signal);
           const id = nativeSessionIdFromHeaders(provider, headers);
           if (String(id || "") !== message.native_id) continue;
-          const candidate = { headers, rawRef: ref, relatedRefs: {}, acquisition: null,
+          const found = { headers, rawRef: ref, relatedRefs: {}, acquisition: null,
             acquisition_sequence: meta.acquisition_sequence, source_url: meta.source_url, observed_at: meta.observed_at };
-          if (!selected || nativeCacheOrder(selected, candidate) > 0) selected = candidate;
+          if (!selected || nativeCacheOrder(selected, found) > 0) selected = found;
         }
         controller.signal.throwIfAborted();
         if (selected) await captureStore.pinNativeCache({ owner, provider, nativeId: message.native_id, rawRef: selected.rawRef,
@@ -3654,7 +3652,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } else if (pageId === TEMPORARY_CHAT_SENTINEL ? headers.is_temporary !== true : pageId !== String(nativeId)) throw new Error("native_capture_identity_mismatch");
           const pinned = await captureStore.pinNativeCache({ owner, provider, nativeId: String(nativeId), rawRef: message.raw_ref,
             relatedRefs: message.related_refs || {}, acquisition: message.acquisition || null, headers, observedAt: meta.observed_at, acquisitionSequence: meta.acquisition_sequence });
-          for (const retired of pinned.retired) await captureStaging.discardUnreferenced(retired?.id || retired);
+          for (const replaced of pinned.replaced) await captureStaging.discardUnreferenced(replaced?.id || replaced);
           const current = pinned.current; const selectedMeta = await captureStaging.metadata(current.raw_ref.id);
           controller.signal.throwIfAborted();
           const describe = (ref, relatedRefs, acquisition, revisionHeaders, revisionMeta) => ({
@@ -3714,7 +3712,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const headers = await nativeNormalizer.headers(message.related_refs?.conversation || message.raw_ref, controller.signal);
         const pinned = await captureStore.pinNativeCache({ owner, provider, nativeId: envelope.session.provider_session_id, rawRef: message.raw_ref,
           relatedRefs: message.related_refs || {}, acquisition: message.acquisition || null, headers, observedAt: meta.created_at, acquisitionSequence: meta.acquisition_sequence });
-        for (const retired of pinned.retired) await captureStaging.discardUnreferenced(retired?.id || retired);
+        for (const replaced of pinned.replaced) await captureStaging.discardUnreferenced(replaced?.id || replaced);
         controller.signal.throwIfAborted();
         sendResponse({ ok: true, envelope });
       }
@@ -3768,15 +3766,16 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         if (message.queue_context) await captureStore.bindNativeAcquisition(ref, owner, message.queue_context);
         if (identity) {
-          // Publish a single acquisition owner before granting provider traffic.
+          // Commit a single acquisition owner before granting provider traffic.
           // A retransmitted begin recovers that owner's immutable staged bytes.
           const claim = await captureStore.claimAcquisition(identity, ref, message.request_id);
           if (claim.ref.id !== ref.id) await captureStaging.discard(ref.id);
           const asset = await captureStaging.metadata(claim.ref.id);
           if (asset.state === "sealed" || asset.acquisition_result) {
             await captureStaging.seal(claim.ref, owner);
-            const published = await captureStore.getCapture(claim.id);
-            sendResponse({ ok: true, result: published.result }); return;
+            const committed = await captureStore.getCapture(claim.id);
+            sendResponse({ ok: true, result: committed.result }); return;
+
           }
           if (claim.producer_id !== message.request_id) {
             sendResponse({ ok: false, error: "capture_acquisition_in_progress" }); return;

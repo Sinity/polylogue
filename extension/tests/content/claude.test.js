@@ -109,7 +109,7 @@ afterEach(() => {
 });
 
 describe("claude.js native capture (real source)", () => {
-  it.each(["admission", "provider_fetch", "staging", "post_staging"])("retains the original caught %s boundary through real bridge/content and strict proof filtering", async (stage) => {
+  it.each(["start", "provider_fetch", "staging", "post_staging"])("retains the original caught %s boundary through real bridge/content and strict proof filtering", async (stage) => {
     const secret = "https://private.invalid/conversation?token=neutral-private-error";
     const fetch = vi.fn(async () => {
       if (stage === "provider_fetch") throw new Error(secret);
@@ -129,13 +129,13 @@ describe("claude.js native capture (real source)", () => {
     });
     const originalSend = dom.__captureRuntime.sendMessage.bind(dom.__captureRuntime);
     dom.__captureRuntime.sendMessage = async message => {
-      if (message.type === (stage === "admission" ? "polylogue.asset.begin" : stage === "staging" ? "polylogue.asset.seal" : "never")) return { ok: false, error: secret };
+      if (message.type === (stage === "start" ? "polylogue.asset.begin" : stage === "staging" ? "polylogue.asset.seal" : "never")) return { ok: false, error: secret };
       return originalSend(message);
     };
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage" });
     const expectedStage = stage === "post_staging" ? "unknown" : stage;
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable", native_attempts: [{ stage: "page_bridge_fetch", failure_stage: expectedStage, error: secret, accepted: false }] });
-    if (stage === "admission") expect(fetch).not.toHaveBeenCalled();
+    if (stage === "start") expect(fetch).not.toHaveBeenCalled();
   });
 
   it("keeps a cancelled suspended provider read distinct from a caught acquisition failure and drains original work", async () => {
@@ -158,7 +158,7 @@ describe("claude.js native capture (real source)", () => {
     expect((await capture).native_attempts).toBeUndefined();
   });
 
-  it.each([undefined, "foreign", { stage: "admission", private: "neutral-secret" }, null])("refuses malformed or missing bridge stage while preserving original error", async (stage) => {
+  it.each([undefined, "foreign", { stage: "start", private: "neutral-secret" }, null])("refuses malformed or missing bridge stage while preserving original error", async (stage) => {
     const { dom, sendRuntimeMessage } = installClaude();
     const originalPost = dom.window.postMessage;
     dom.window.postMessage = data => {

@@ -264,10 +264,10 @@ export class BackfillCoordinator {
     const adapter = this.adapters[job.provider];
     adapter.configure?.(job.provider_options || {});
     const requestCost = adapter.requestCost?.("enumerate") || 1;
-    const reserved = await this.spendProviderRequests(job, now, requestCost);
-    if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
-    if (reserved.status !== "running") return reserved;
-    job = reserved;
+    const charged = await this.spendProviderRequests(job, now, requestCost);
+    if (!charged) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (charged.status !== "running") return charged;
+    job = charged;
     try {
       result = await adapter.enumerate(job.inventory_cursor, job.cutoff, this.executionSignal(job));
     } catch (error) {
@@ -314,10 +314,10 @@ export class BackfillCoordinator {
 
   async processItem(job, item, now, requestCost = 1) {
     if (item.envelope && (item.resume_state === "captured_waiting_receiver" || item.capture_record_ref)) return this.submitReceiver(job, item, item.envelope, now);
-    const reserved = await this.spendProviderRequests(job, now, requestCost);
-    if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
-    if (reserved.status !== "running") return reserved;
-    job = reserved;
+    const charged = await this.spendProviderRequests(job, now, requestCost);
+    if (!charged) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (charged.status !== "running") return charged;
+    job = charged;
     let response;
     try {
       response = await this.adapters[job.provider].fetchNative(item.native_id, this.executionSignal(job), { item, jobId: job.id, owner: this.instanceId, generation: job.execution_generation });
@@ -387,7 +387,7 @@ export class BackfillCoordinator {
     const firstPersistence = item.resume_state !== "captured_waiting_receiver" || !item.envelope;
     if (firstPersistence) {
       try {
-        // Retain acquired records before serializing the receiver body. Disk
+        // Store acquired records before serializing the receiver body. Disk
         // quota or worker loss here must not require another provider read.
         await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash,
           capture_fidelity: captureFidelity, claimed_by: this.instanceId, claim_expires_ms: this.clock() + job.policy.claimMs, last_response_class: "captured" });
@@ -504,7 +504,7 @@ export class BackfillCoordinator {
     if (count === 0) return this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
     const currentDay = dayKey(now);
     const jitter = Math.floor(this.random() * Math.max(1, job.learned_cadence_ms / 4));
-    const reserved = await this.store.spendProviderRequests(
+    const charged = await this.store.spendProviderRequests(
       job.id,
       this.instanceId,
       job.execution_generation,
@@ -512,11 +512,11 @@ export class BackfillCoordinator {
       currentDay,
       now + job.learned_cadence_ms + jitter,
     );
-    if (!reserved) return null;
+    if (!charged) return null;
     this.checkpointDirty = true;
     await this.persistCheckpoint();
     const checkpointError = await this.checkpointErrorForJob(job.id);
-    return checkpointError ? this.requireJob(job.id) : reserved;
+    return checkpointError ? this.requireJob(job.id) : charged;
   }
 
   async resetDailyBudget(job, now) {

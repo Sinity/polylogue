@@ -38,8 +38,8 @@ export class CaptureStaging {
     catch (error) {
       if (error?.name === "NotFoundError" || error instanceof SyntaxError) {
         const interrupted = stageError("capture_staging_interrupted");
-        // Recovery distinguishes an unpublished file from malformed existing
-        // metadata. Preserve the filesystem classification beside our token.
+        // Recovery distinguishes an uncommitted file from malformed existing
+        // metadata. Keep the filesystem classification beside our token.
         interrupted.name = error.name;
         throw interrupted;
       }
@@ -61,7 +61,7 @@ export class CaptureStaging {
     const directory = await this.directory();
     const file = await (await directory.getFileHandle(`${stageId}.json`)).getFile();
     // OPFS creates an empty entry before the first writable close. Recreate
-    // only that exact unpublished state, never malformed acquired metadata.
+    // only that exact uncommitted state, never malformed acquired metadata.
     if (file.size !== 0) return false;
     for await (const [name] of directory.entries()) {
       if (name.startsWith(`${stageId}.`) && name !== `${stageId}.json`) return false;
@@ -217,8 +217,8 @@ export class CaptureStaging {
         controller.signal.throwIfAborted();
         await writer.close();
       } catch (error) { await writer.abort().catch(() => undefined); throw error; }
-      // Until this publication succeeds every committed part remains the
-      // recovery authority. A sealed restart reads final bytes without rewrite.
+      // Until this commit succeeds, recovery reads the committed parts. A
+      // sealed restart reads final bytes without rewrite.
       meta.sha256 = hash.hex(); meta.state = "sealed"; await this.save(meta);
       await commitAcquisition();
       await this.discardParts(meta.id);
@@ -243,7 +243,7 @@ export class CaptureStaging {
     return this.serialize(ref.id, async () => {
       const meta = await this.metadata(ref.id); this.requireOwner(meta, ref, owner);
       // An acquired result is immutable evidence even if its seal response was
-      // lost. Only removal of its durable roots can retire sealed bytes.
+      // lost. Only removal of its durable roots can release sealed bytes.
       if (meta.state === "sealed" || meta.acquisition_result || sealing) return;
       if (meta.kind === "native-response" && !meta.capture_bundle) await this.records.releaseNativeAcquisition(meta.id);
       if (meta.acquisition) await this.records.releaseAcquisition(meta.acquisition, meta.id);
@@ -260,7 +260,7 @@ export class CaptureStaging {
   }
   async commitNativeAcquisition(meta) {
     const existing = await this.records.getCapture(`raw:${meta.id}`);
-    if (meta.retired || (!existing && await this.records.hasNormalizedNativeSource(meta.id))) return;
+    if (meta.released || (!existing && await this.records.hasNormalizedNativeSource(meta.id))) return;
     await this.records.putCapture({ id: `raw:${meta.id}`, kind: "native-acquisition", owner: meta.owner, provider: meta.owner.provider,
       raw_ref: { id: meta.id, token: meta.token }, source_refs: [meta.id], state: meta.state === "sealed" ? "pending-normalization" : "acquiring",
       observed_at: meta.observed_at, acquisition_sequence: meta.acquisition_sequence, source_url: meta.source_url,
@@ -273,18 +273,18 @@ export class CaptureStaging {
       if (error?.name !== "NotFoundError") throw error;
     })));
   }
-  async *json(value, signal = null, canonical = false) {
+  async *json(value, signal = null, sorted = false) {
     signal?.throwIfAborted();
     if (Array.isArray(value)) {
       yield "[";
-      for (let i = 0; i < value.length; i++) { if (i) yield ","; yield* this.json(value[i] ?? null, signal, canonical); }
+      for (let i = 0; i < value.length; i++) { if (i) yield ","; yield* this.json(value[i] ?? null, signal, sorted); }
       yield "]";
     } else if (value && typeof value === "object") {
       yield "{"; let first = true;
-      for (const key of canonical ? Object.keys(value).sort() : Object.keys(value)) {
+      for (const key of sorted ? Object.keys(value).sort() : Object.keys(value)) {
         const child = value[key];
         if (child === undefined) continue;
-        if (!first) yield ","; first = false; yield `${JSON.stringify(key)}:`; yield* this.json(child, signal, canonical);
+        if (!first) yield ","; first = false; yield `${JSON.stringify(key)}:`; yield* this.json(child, signal, sorted);
       }
       yield "}";
     } else {
@@ -296,15 +296,15 @@ export class CaptureStaging {
       }
     }
   }
-  async *assetJson(asset, signal = null, canonical = false) {
+  async *assetJson(asset, signal = null, sorted = false) {
     const keys = Object.keys(asset).filter((key) => key !== "staged_asset" && asset[key] !== undefined)
       .map((key) => key === "inline_base64" ? "content_base64" : key);
     if (asset.staged_asset && !keys.includes("content_base64")) keys.push("content_base64");
-    if (canonical) keys.sort();
+    if (sorted) keys.sort();
     yield "{"; let first = true;
     for (const key of keys) {
       if (!first) yield ","; first = false; yield `${JSON.stringify(key)}:`;
-      if (key !== "content_base64" || !asset.staged_asset) { yield* this.json(key === "content_base64" ? asset.content_base64 ?? asset.inline_base64 : asset[key], signal, canonical); continue; }
+      if (key !== "content_base64" || !asset.staged_asset) { yield* this.json(key === "content_base64" ? asset.content_base64 ?? asset.inline_base64 : asset[key], signal, sorted); continue; }
       const ref = asset.staged_asset; const meta = await this.metadata(ref.id);
       if (meta.token !== ref.token || meta.state !== "sealed") throw stageError("capture_staging_asset_unsealed");
       yield '"';
@@ -317,10 +317,10 @@ export class CaptureStaging {
     }
     yield "}";
   }
-  async *attachmentsJson(attachments, signal = null, canonical = false) {
+  async *attachmentsJson(attachments, signal = null, sorted = false) {
     yield "[";
     for (let i = 0; i < attachments.length; i++) {
-      if (i) yield ","; yield* this.assetJson(attachments[i], signal, canonical);
+      if (i) yield ","; yield* this.assetJson(attachments[i], signal, sorted);
     }
     yield "]";
   }
@@ -446,8 +446,8 @@ export class CaptureStaging {
         record = { capture_id: snapshot.id, key, record_kind: "checkpoint:evidence", order_time: 0,
           order_id: sourceId, occurrence: 0, original_metadata: current, copied_id: copiedId,
           asset_refs: [sourceId, copiedId], state: "copying" };
-        // The original metadata and both custody roots commit before any OPFS
-        // await. A retry freezes this same prefix even after its source seals.
+        // The original metadata and both owner roots commit before any OPFS
+        // await. A retry keeps this same prefix even after its source seals.
         await this.records.putCaptureRecord(record);
       }
       const original = record.original_metadata;
@@ -593,7 +593,7 @@ export class CaptureStaging {
             };
             for (const ref of record.asset_refs || []) await evidence(ref);
             // The snapshot's record-root index pins all original normalized
-            // records and their asset custody until the exact export ACK.
+            // records and their asset owners until the exact export ACK.
             if (record.record_ref) {
               for await (const native of this.records.captureRecords(record.record_ref)) {
                 for (const ref of native.asset_refs || []) await evidence(ref);
@@ -620,17 +620,17 @@ export class CaptureStaging {
       const meta = await this.metadata(snapshot.artifact_id);
       await this.save({ ...meta, state: "checkpoint-acknowledged", receiver_receipt: receipt });
     }
-    // The receipt is committed before releasing source custody. Removing a
-    // snapshot does not retire the raw/assets it borrowed from delivery roots.
+    // The receipt is committed before releasing the source owners. Removing a
+    // snapshot does not release the raw/assets it borrowed from delivery roots.
     if (snapshot.kind === "checkpoint-export") {
       for await (const record of this.records.captureRecords(snapshot.id)) {
         if (record.record_kind !== "checkpoint:evidence") continue;
         const copy = await this.metadata(record.copied_id);
-        await this.save({ ...copy, retired: true });
+        await this.save({ ...copy, released: true });
       }
       await this.records.acknowledgeExportSnapshot(snapshot, receipt);
-      // A crash after the ACK leaves retired copies for the existing orphan
-      // sweep; no original acquisition or borrowed delivery is retired here.
+      // A crash after the ACK leaves released copies for the existing orphan
+      // sweep; no original acquisition or borrowed delivery is released here.
       for await (const record of this.records.captureRecords(snapshot.id)) {
         if (record.record_kind === "checkpoint:evidence") await this.discardUnreferenced(record.copied_id);
       }
@@ -746,7 +746,7 @@ export class CaptureStaging {
       let meta;
       try { meta = await this.metadata(stageId); }
       catch (error) { if (error?.name !== "NotFoundError") throw error; }
-      if (meta?.kind === "checkpoint-export-evidence" && meta.retired) {
+      if (meta?.kind === "checkpoint-export-evidence" && meta.released) {
         const root = await this.records.getCapture(meta.owner.checkpoint_snapshot_id);
         if (root?.kind === "checkpoint-export" && root.state === "acknowledged" && meta.export_record_key) {
           const record = await this.records.getCaptureRecord(root.id, meta.export_record_key);
@@ -770,9 +770,9 @@ export class CaptureStaging {
     if (await this.records.recordRootCount(captureId)) return;
     await this.discardFailedNormalizations(capture.raw_ref, capture.id);
     for (const ref of capture.source_refs) {
-      const meta = await this.metadata(ref); await this.save({ ...meta, retired: true });
+      const meta = await this.metadata(ref); await this.save({ ...meta, released: true });
     }
-    // Persist retirement before dropping the last owner. Restart's existing
+    // Persist the release before dropping the last owner. Restart's existing
     // orphan sweep can finish physical cleanup after any interruption here.
     await this.records.discardCapture(captureId);
     for (const ref of capture.source_refs) await this.discardUnreferenced(ref);
@@ -780,7 +780,7 @@ export class CaptureStaging {
   async acknowledge(stageId) {
     const meta = await this.metadata(stageId);
     if (meta.state !== "receiver-acknowledged" || receiverAckContractError(meta.receiver_receipt, meta.sha256)) throw stageError("capture_staging_ack_required");
-    // Source retirement can fail after delivery publication. Its original input
+    // Deleting the source can fail after the delivery commits. Its original input
     // still owns the acknowledged bytes/receipt until conversion settles.
     if (meta.delivery?.source_retry_id && await this.records.hasCaptureRetry(meta.delivery.source_retry_id)) return;
     if (meta.record_ref) {
@@ -790,7 +790,7 @@ export class CaptureStaging {
     if (meta.record_ref && await this.records.recordRootCount(meta.record_ref) <= 1) {
       for await (const record of this.records.captureRecords(meta.record_ref)) {
         for (const asset of record.asset_refs || []) {
-          const acquired = await this.metadata(asset); await this.save({ ...acquired, retired: true });
+          const acquired = await this.metadata(asset); await this.save({ ...acquired, released: true });
         }
         await this.records.deleteCaptureRecord(meta.record_ref, record.key);
         for (const asset of record.asset_refs || []) await this.discardUnreferenced(asset);
@@ -799,7 +799,7 @@ export class CaptureStaging {
     }
     await this.records.discardCapture(`body:${stageId}`);
     for (const asset of meta.assets || []) {
-      const source = await this.metadata(asset); await this.save({ ...source, retired: true });
+      const source = await this.metadata(asset); await this.save({ ...source, released: true });
       await this.discardUnreferenced(asset);
     }
     await this.discard(stageId);
@@ -814,7 +814,7 @@ export class CaptureStaging {
       for await (const record of this.records.captureRecords(failed.id)) {
         signal?.throwIfAborted();
         for (const asset of record.asset_refs || []) {
-          const metadata = await this.metadata(asset); await this.save({ ...metadata, retired: true });
+          const metadata = await this.metadata(asset); await this.save({ ...metadata, released: true });
         }
         await this.records.deleteCaptureRecord(failed.id, record.key);
         for (const asset of record.asset_refs || []) await this.discardUnreferenced(asset);

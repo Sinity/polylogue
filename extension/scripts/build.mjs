@@ -12,7 +12,7 @@
 //
 // Side effect: rewrites extension/manifest.json + package.json + package-lock.json
 // "version" fields to match the resolved version so the committed source
-// stays in sync with the published artifact. The Firefox artifact uses a
+// stays in sync with the released artifact. The Firefox artifact uses a
 // dedicated manifest with browser_specific_settings.gecko populated.
 
 import { execFileSync } from "node:child_process";
