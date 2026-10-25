@@ -127,7 +127,7 @@
           requestId: data.requestId,
           error: String(error && error.message ? error.message : error),
           // Original acquisition boundary that began unwinding, not cleanup
-          // progress or proof of the exception cause. No private value is added.
+          // progress or evidence of the exception cause. No private value is added.
           failure_stage: failureStage
         },
         data.ownerId

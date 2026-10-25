@@ -1,4 +1,4 @@
-// Actual native-host stdio framing for the neutral Python integration fixture.
+// Actual native-host stdio framing for the native receiver integration script.
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
 

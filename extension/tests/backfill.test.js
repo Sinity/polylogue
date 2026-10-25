@@ -1041,11 +1041,9 @@ describe("provider adapter contracts", () => {
     await expect(drifted.enumerate()).rejects.toThrow("provider_contract_drift:chatgpt_inventory.items_must_be_array");
   });
 
-  // polylogue-ah21: a code-interpreter call/result pair must land as a
-  // matched tool_use/tool_result block pair, not two independent prose
-  // turns. This is the exact shape (content_type "code" then
-  // "execution_output") that used to be indistinguishable from ordinary
-  // assistant text once BrowserCaptureTurn had no blocks channel.
+  // A code-interpreter call/result pair must land as a matched
+  // tool_use/tool_result block pair, not two independent prose turns. This
+  // is the exact shape (content_type "code" then "execution_output").
   it("keeps a ChatGPT code-interpreter call and output for the shared source parser", async () => {
     const native = {
       id: "gpt-ci",

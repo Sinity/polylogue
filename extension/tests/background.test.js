@@ -2179,13 +2179,10 @@ describe("background receiver diagnostics", () => {
   });
 
   it("captures a ChatGPT temporary chat instead of silently skipping it (background.js conversationIdForUrl asymmetry)", async () => {
-    // background.js's own conversationIdForUrl used to return null for a
-    // temporary-chat URL (?temporary-chat=true), which made captureTab's
-    // automatic-capture gate (`!conversationIdForUrl(conversationUrl)`)
-    // treat every temporary chat tab as having no session and silently
-    // never send it a polylogue.capturePage message at all -- content
-    // script capture code was ready for temporary chats the whole time.
-    // Zero temporary chats had ever landed in the archive because of this.
+    // conversationIdForUrl returns a sentinel for a temporary-chat URL
+    // (?temporary-chat=true), so captureTab's automatic-capture gate
+    // (`!conversationIdForUrl(conversationUrl)`) still sends the tab a
+    // polylogue.capturePage message.
     expect(activatedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
     stored.polylogueReceiverPairing = {
@@ -2411,11 +2408,9 @@ describe("background receiver diagnostics", () => {
     // background.js's conversationIdForUrl returns TEMPORARY_CHAT_SENTINEL
     // for a ChatGPT temporary-chat URL (there is no /c/<id> to read), but
     // chatgpt.js's freshness hints always carry the conversation's true
-    // ephemeral id (read from the intercepted native payload). Before this
-    // fix, the sender-identity check compared the sentinel against that real
-    // id, found a mismatch, and threw -- rejecting every freshness hint a
-    // temporary chat ever sent after its first capture, so later turns were
-    // never re-captured (P1 finding on PR #3411's Codex review).
+    // ephemeral id (read from the intercepted native payload). Comparing
+    // the sentinel against that real id would reject every freshness hint a
+    // temporary chat sends after its first capture.
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     const response = await sendRuntimeMessage(
       {
@@ -2879,13 +2874,11 @@ describe("background receiver diagnostics", () => {
     });
   });
 
-  // Grok's native REST capture (polylogue Grok native-capture upgrade,
-  // 2026-07-31) is only reachable from grok.com itself -- x.com's embedded
-  // Grok surface is served through X's own API, not grok.com's
-  // /rest/app-chat/* this bridge calls. The DOM-only fallback that used to
-  // give x.com/twitter.com tabs a (lossy) capture path was removed in the
-  // same change, so those tabs now correctly get no injection at all rather
-  // than a script that would silently produce nothing.
+  // Grok's native REST capture is only reachable from grok.com itself --
+  // x.com's embedded Grok surface is served through X's own API, not
+  // grok.com's /rest/app-chat/* this bridge calls. There is no DOM-only
+  // capture path, so those tabs get no injection at all rather than a
+  // script that would silently produce nothing.
   it("does not inject any Grok capture script for x.com/twitter.com tabs", async () => {
     tabs = [{ id: 78, url: "https://x.com/i/grok", title: "Grok" }];
 

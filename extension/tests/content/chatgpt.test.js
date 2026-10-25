@@ -7,15 +7,9 @@ import { stagingRuntime } from "../infra/capture-staging.js";
  * tests/content/grok.test.js already use) rather than hand-copied function
  * bodies.
  *
- * This file used to keep local copies of conversationIdFromUrl,
- * fetchNativePayloadOnDemand, collectAssetDescriptors, and
- * sandboxPathsFromText that had to be manually kept in sync with the
- * source. That divergence risk is exactly how src/common.js's buildEnvelope
- * silently dropping every turn's `blocks` field (polylogue-ah21 regressed)
- * went unnoticed for as long as it did in the sibling content-script test
- * files -- a copy tests itself, not the production code. All coverage here
- * now exercises window.polylogueCapture.capturePage (the one function the
- * content script IIFE actually exposes) against the real IIFE bodies.
+ * A local copy of a function tests itself, not the production code, so all
+ * coverage here exercises window.polylogueCapture.capturePage (the one
+ * function the content script IIFE exposes) against the real IIFE bodies.
  */
 
 import { Buffer } from "node:buffer";

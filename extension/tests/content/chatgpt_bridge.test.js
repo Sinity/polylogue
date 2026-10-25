@@ -552,10 +552,9 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
     // at /?temporary-chat=true for the whole session -- but the page still
     // fetches /backend-api/conversation/<ephemeral-id> to render it, and
     // window.fetch is intercepted the same way for any conversation path.
-    // Before this fix every id-matching step (parseNativeCapture,
-    // fetchNativePayloadOnDemand, and background.js's own
-    // conversationIdForUrl gate) treated "no id in the URL" as "no
-    // conversation on this page", so zero temporary chats ever landed.
+    // Every id-matching step (parseNativeCapture, fetchNativePayloadOnDemand,
+    // and background.js's conversationIdForUrl gate) must not treat "no id
+    // in the URL" as "no conversation on this page".
     const ephemeralId = "temp-conv-ephemeral-1";
     const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true", summary: { session_kind: "temporary" } });
 

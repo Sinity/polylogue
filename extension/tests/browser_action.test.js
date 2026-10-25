@@ -34,7 +34,7 @@ function installPage(url = "https://chatgpt.com/") {
 
 // Free-tier accounts have no composer-pill/effort surface at all: a flat
 // top-level model switcher with one always-checked radio item is the entire
-// selection UI (see polylogue-ptx live-smoke notes, 2026-07-18).
+// selection UI.
 function installFreeTierPage(url = "https://chatgpt.com/") {
   // No Chat/Work toggle at all: that mode split is itself a paid/team
   // feature. There is no data-testid="model-switcher-dropdown-button" data

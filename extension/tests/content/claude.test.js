@@ -8,20 +8,9 @@ import { webcrypto } from "node:crypto";
  * tests/content/chatgpt_bridge.test.js and tests/content/grok.test.js
  * already use) rather than hand-copied function bodies.
  *
- * This file used to keep local copies of roleFromNode (a DOM-scrape
- * function deleted from src/content/claude.js entirely -- native capture
- * now covers everything the DOM fallback used to), conversationIdFromUrl,
- * textFromMessage, roleFromNativeMessage, collectNativeTurns,
- * parseNativeCapture, and a `conversationApiUrlFromResources` +
- * `organizationIdFromStorageKeys` pair that had ALREADY silently drifted
- * from the real functions (which live in claude_bridge.js, are named
- * `conversationApiUrlFromResources`/`organizationIdFromLocalStorage`, and
- * take different parameters) with zero test failures, because the copies
- * only ever tested themselves. That is precisely the failure mode that let
- * src/common.js's buildEnvelope silently drop every turn's `blocks` field
- * (polylogue-ah21 regressed) go unnoticed. All coverage here now exercises
- * window.polylogueCapture.capturePage and the real message-bridge protocol
- * against the real IIFE bodies.
+ * All coverage here exercises window.polylogueCapture.capturePage and the
+ * real message-bridge protocol against the real IIFE bodies; a local copy
+ * of a function would test only itself.
  */
 
 import { readFileSync } from "node:fs";

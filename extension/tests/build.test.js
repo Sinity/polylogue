@@ -162,9 +162,9 @@ describe("build.mjs full archive emission", () => {
       }) });
     // Passive/automatic backfill work is observe-only: it must find an
     // already-open, operator-owned provider tab via chrome.tabs.query and
-    // never call chrome.tabs.create itself (fix(extension): avoid automatic
-    // provider transport tabs, #2974; background.test.js's "never creates a
-    // transport tab when passive backfill has no provider page" pins this).
+    // never call chrome.tabs.create itself (background.test.js's "never
+    // creates a transport tab when passive backfill has no provider page"
+    // tests this).
     // Seed one open ChatGPT tab up front so this fixture models that real
     // precondition instead of a permanently empty tab list, and make
     // chrome.tabs.query reflect it dynamically like background.test.js does.
