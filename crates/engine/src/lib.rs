@@ -650,6 +650,11 @@ impl Engine {
             errors,
             ..Pass::default()
         };
+        // The asset lookup comes from stored observations and sidecars, so
+        // after an index rebuild it is in place before any message that
+        // names an asset is parsed. Imports stored in this pass add theirs
+        // at its end.
+        self.refresh_import_assets(&mut pass)?;
         if discover {
             self.replay_imports(None, &mut pass)?;
             self.restore_history(&mut pass)?;

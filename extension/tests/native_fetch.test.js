@@ -32,7 +32,10 @@ describe("one owned native receiver operation", () => {
     expect(f.port.disconnect).toHaveBeenCalledOnce();
   });
   it.each(["string", "blob", "bytes", "buffer"])("preserves exact %s body above native frame size, paced by ACK", async kind => {
-    const bytes = new TextEncoder().encode("neutral α content ".repeat(90000));
+    // Three frames, the first ending inside the two bytes of "α".
+    const bytes = new TextEncoder().encode("neutral prefix " + "neutral α content ".repeat(8000));
+    expect(bytes.length).toBeGreaterThan(2 * 64 * 1024);
+    expect([bytes[64 * 1024 - 1], bytes[64 * 1024]]).toEqual([0xce, 0xb1]);
     const body = kind === "string" ? new globalThis.TextDecoder().decode(bytes) : kind === "blob" ? new globalThis.Blob([bytes]) : kind === "buffer" ? bytes.buffer : bytes;
     const f = fixture(frame => { if (frame.type === "body_end") f.emit(headers); });
     const pending = nativeFetch(f.runtime, "http://127.0.0.1:8765/v1/capture-jobs?after=3", {

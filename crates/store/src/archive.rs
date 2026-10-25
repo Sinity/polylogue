@@ -142,9 +142,13 @@ impl Archive {
         let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        // Blob files an excision marked for deletion before a stop.
+        // Whatever a stop left of blob writes: files not yet moved under
+        // their content names, rows still `writing` or `deleting`.
         let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
-        crate::blobs::delete_marked(&a, &store)?;
+        let blob_lock = crate::write_lock::hold(&a)?;
+        clear_directory(&archive.blobs_dir().join("tmp"))?;
+        crate::blobs::settle(&a, &store)?;
+        drop(blob_lock);
         archive.prepare_index()?;
         generation::open(&archive)?;
         Ok((archive, ArchiveLock { _file: file }))
@@ -188,6 +192,25 @@ impl Archive {
             || schema::unsynced(&index)?
             || crate::excise::index_behind(archive, &index)?)
     }
+}
+
+/// Deletes every file in `dir`. Blob files are written there before they
+/// are moved under their content names; only the lock holder writes there,
+/// so when the archive opens anything in it is left from a stop.
+fn clear_directory(dir: &Path) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        match fs::remove_file(entry?.path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Turns copy-on-write off for a new, empty directory on btrfs, so files

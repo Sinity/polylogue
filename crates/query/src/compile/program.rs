@@ -642,7 +642,11 @@ impl<'a> Compiler<'a> {
             o.push(format!("{}.order_input_id", a.m));
             o.push(format!("{}.seq", a.m));
         }
-        o.push(format!("{}{desc}", a.expand(spec.identity)));
+        o.extend(
+            spec.identity
+                .iter()
+                .map(|term| format!("{}{desc}", a.expand(term))),
+        );
         o
     }
 }

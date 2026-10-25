@@ -144,9 +144,54 @@ pub(crate) fn refuse_delta_base(archive: &rusqlite::Connection, hash: &BlobHash)
     Ok(())
 }
 
+/// Brings every blob row a stop or a failed install left behind to a final
+/// state, and returns how many became `present`. A `writing` row that an
+/// extent or a delta refers to becomes `present` when its file is under its
+/// content name (installation is a rename, so a file there is whole);
+/// without the file it stays `writing`, is reported, and the loop reads its
+/// input again. A `writing` row nothing in the archive refers to is an
+/// extracted blob whose parsed rows never committed, because they are
+/// written only after it is `present`: it is marked `deleting`, and parsing
+/// its record again stores it again. Rows marked `deleting` then go with
+/// their files ([`delete_marked`]). The caller holds the archive writer.
+pub(crate) fn settle(archive: &rusqlite::Connection, store: &hashed_blobs::Store) -> Result<u64> {
+    let tx = archive.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE blob SET state = 'deleting' WHERE state = 'writing'
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE extent.blob = blob.hash)
+         AND NOT EXISTS (SELECT 1 FROM blob AS delta WHERE delta.base = blob.hash)",
+        [],
+    )?;
+    let waiting: Vec<Vec<u8>> = tx
+        .prepare("SELECT hash FROM blob WHERE state = 'writing'")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut completed = 0;
+    for hash in waiting {
+        let file = hashed_blobs::Hash(
+            hash.as_slice()
+                .try_into()
+                .map_err(|_| crate::StoreError::Invalid("invalid blob hash".into()))?,
+        );
+        if !store.contains(&file) {
+            continue;
+        }
+        let stored_size = i64::try_from(store.stored_size(&file)?)
+            .map_err(|_| crate::StoreError::Invalid("blob exceeds archive address space".into()))?;
+        completed += tx.execute(
+            "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
+            rusqlite::params![hash, stored_size],
+        )? as u64;
+    }
+    tx.commit()?;
+    delete_marked(archive, store)?;
+    Ok(completed)
+}
+
 /// Deletes the files of blobs marked for deletion, then their rows. The
-/// writer runs it after each excision and when it starts, so a stop between
-/// the commit and the file deletion leaves nothing behind.
+/// writer runs it after each excision, and [`settle`] runs it when the
+/// archive opens, so a stop between the commit and the file deletion leaves
+/// nothing behind.
 pub(crate) fn delete_marked(
     archive: &rusqlite::Connection,
     store: &hashed_blobs::Store,

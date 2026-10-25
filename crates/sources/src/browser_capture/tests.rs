@@ -76,8 +76,8 @@ fn without_provider_json_the_extension_turns_are_read() {
     assert_eq!(
         got,
         [
-            ("gemini:g1#0".to_string(), "question".to_string()),
-            ("gemini:g1#1".to_string(), "answer".to_string())
+            ("gemini-app:g1#0".to_string(), "question".to_string()),
+            ("gemini-app:g1#1".to_string(), "answer".to_string())
         ]
     );
 }
@@ -221,4 +221,37 @@ fn inspection_preserves_literal_staging_names_inside_provider_data() {
         inspect::inspect(&bytes).unwrap()["summary"]["turn_count"],
         0
     );
+}
+
+#[test]
+fn a_gemini_capture_and_a_gemini_app_export_of_one_conversation_are_one_session() {
+    let link = "https://gemini.google.com/app/abc123";
+    let html = format!(
+        "<html><body><div class=\"outer-cell mdl-cell\"><div class=\"mdl-grid\">\
+         <div class=\"header-cell\"><p>Gemini Apps<br></p></div>\
+         <div class=\"content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1\">\
+         Prompted\u{a0}question<br>Jul 27, 2026, 10:59:30\u{202f}PM CEST<br><p>answer</p></div>\
+         <div class=\"content-cell mdl-cell mdl-cell--12-col mdl-typography--caption\">\
+         Products:<br>&emsp;Gemini Apps<br>Details:<br>&emsp;{link}: <a href=\"{link}\">{link}</a><br>\
+         </div></div></div></body></html>"
+    );
+    let export = crate::export::fixture::parse(
+        &mut crate::gemini_app::open(std::path::Path::new("MyActivity.html")).unwrap(),
+        html.as_bytes(),
+    )
+    .unwrap();
+    let captured = run_document(
+        &Capture,
+        &capture(
+            json!({}),
+            json!({"provider": "gemini", "provider_session_id": "abc123",
+                   "turns": [{"role": "user", "text": "question", "ordinal": 0, "blocks": []}]}),
+        ),
+    )
+    .unwrap();
+    let exported = &export.output.sessions[0].id;
+    assert_eq!(exported.to_string(), "gemini-app:abc123");
+    assert_eq!(&captured.output.sessions[0].id, exported);
+    assert_eq!(&captured.output.messages[0].message.session, exported);
+    assert_eq!(session_for("gemini", "abc123").as_ref(), Some(exported));
 }

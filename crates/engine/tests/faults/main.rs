@@ -126,6 +126,7 @@ fn law_45_a_failed_read_is_never_empty() {
     assert_eq!(ok[0]["n"], 8);
 }
 
+mod asset_lookup;
 mod excision;
 mod exclusion_cache;
 

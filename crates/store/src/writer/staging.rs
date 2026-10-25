@@ -1,7 +1,7 @@
 //! Bytes into the archive in one order: the blob's row first, in state
 //! `writing`, then the file under its content name, then the row `present`.
 //! A stop between them leaves `writing` rows, which [`Inner::finish_writing`]
-//! completes when the file is there and otherwise reports.
+//! settles.
 use super::*;
 use crate::staging::{Finished, PreparedBatch, PreparedBytes, StoredInput};
 use polylogue_model::BlobHash;
@@ -351,41 +351,21 @@ impl Inner {
         Ok(())
     }
 
-    /// Completes the blobs a stop left `writing`: one whose file is under its
-    /// content name becomes `present` (installation is a rename, so a file
-    /// there is whole); the others are reported, and the loop reads their
-    /// inputs again.
+    /// Settles the blob rows a stop or a failed install left behind
+    /// ([`crate::blobs::settle`]) and reports the inputs whose bytes are
+    /// still `writing` without a file; the loop reads them again.
     pub(super) fn finish_writing(&mut self, store: &hashed_blobs::Store) -> Result<Finished> {
         let write = crate::write_lock::hold(&self.archive)?;
-        let mut report = Finished::default();
-        let waiting = crate::staging::pending_blobs(&self.archive, "")?;
-        let mut missing = BTreeSet::new();
-        let tx = self.archive.transaction()?;
-        for item in &waiting {
-            let hash = hashed_blobs::Hash(item.blob.0);
-            if !store.contains(&hash) {
-                missing.insert(item.blob);
-                continue;
-            }
-            let size = i64::try_from(store.stored_size(&hash)?)
-                .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
-            report.completed += tx.execute(
-                "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1 AND state = 'writing'",
-                params![&item.blob.0[..], size],
-            )? as u64;
-        }
-        tx.commit()?;
+        let completed = crate::blobs::settle(&self.archive, store)?;
         drop(write);
-        if report.completed > 0 {
+        if completed > 0 {
             self.report.transactions += 1;
         }
-        report.pending = crate::staging::pending_blobs(&self.archive, "")?;
-        for item in &mut report.pending {
-            if missing.contains(&item.blob) {
-                item.state = crate::staging::PendingState::Missing;
-            }
+        let mut pending = crate::staging::pending_blobs(&self.archive, "")?;
+        for item in &mut pending {
+            item.state = crate::staging::PendingState::Missing;
         }
-        Ok(report)
+        Ok(Finished { completed, pending })
     }
 }
 

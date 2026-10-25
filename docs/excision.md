@@ -71,13 +71,13 @@ transaction per database, and marks the new blobs it uses `present`:
    records how many excisions it holds.
 4. **Files.** Blob files marked `deleting` are deleted, then their rows.
 
-A stop between steps needs no recovery code. Reopening the archive deletes
-the files of blobs still marked `deleting`, and an index that holds fewer
-excisions than the archive is deleted and rebuilt from the already excised
-stored inputs. While an index is behind, the embeddings writer refuses to
-store vectors, and it never stores a vector for a text the index no longer
-holds. A failed commit stops the writer until the
-archive is reopened.
+A stop between steps needs no recovery code. Reopening the archive clears
+`blobs/tmp/` and deletes the files of blobs still marked `deleting`, and an
+index that holds fewer excisions than the archive is deleted and rebuilt from
+the already excised stored inputs. While an index is behind, the embeddings
+writer refuses to store vectors, and it never stores a vector for a text the
+index no longer holds. A failed commit stops the writer until the archive is
+reopened.
 
 The text scan keeps its matches, frames and the decoded blobs it reads in the
 operation's memory and private scratch files, released when it ends. The

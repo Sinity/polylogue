@@ -129,6 +129,7 @@ pub fn origin_of(provider: &str) -> &str {
     match provider {
         "chatgpt" => crate::chatgpt::ORIGIN,
         "claude-ai" | "claude" => crate::claude_ai::ORIGIN,
+        "gemini" => crate::gemini_app::ORIGIN,
         other => other,
     }
 }
