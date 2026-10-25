@@ -74,11 +74,20 @@ fn excision_format_refusal_has_a_distinct_public_error() {
     let error = StoreError::ExcisionFormat {
         input: "input1".into(),
         format: "export-file".into(),
-        detail: "ZIP members need decoding".into(),
+        detail: "an opaque file".into(),
     };
     assert!(
         matches!(store_error(&error), Response::Error { kind, detail: Some(detail), .. }
         if kind == "unsupported_excision" && detail["input"] == "input1" && detail["format"] == "export-file")
+    );
+    let error = StoreError::ExcisionInsideZip {
+        input: "input2".into(),
+        file: "/exports/chat.zip".into(),
+    };
+    assert!(
+        matches!(store_error(&error), Response::Error { kind, message, detail: Some(detail) }
+        if kind == "unsupported_excision" && message.starts_with("/exports/chat.zip is an export ZIP")
+            && detail["input"] == "input2" && detail["file"] == "/exports/chat.zip")
     );
     let error = StoreError::BlobCorrupt(polylogue_model::BlobHash::of(b"synthetic"));
     assert!(matches!(store_error(&error), Response::Error { kind, .. } if kind == "store"));

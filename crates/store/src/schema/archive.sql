@@ -83,9 +83,8 @@ CREATE INDEX extent_blob ON extent(blob);
 -- share a seen_at. Like commit_seq, that order is local and never compared
 -- across archives. Its location is the path of its latest observation at a
 -- location path: a filesystem path, 'drive:<file id>' (a Drive file) or
--- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads);
--- a 'zip:' or 'copy:' observation records where older bytes came from and is
--- never a location. The current chain of an input
+-- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads).
+-- The current chain of an input
 -- is the chain of the revision its location's latest observation produced or
 -- confirmed, for every kind of location.
 CREATE TABLE observation (
@@ -93,7 +92,7 @@ CREATE TABLE observation (
   input         TEXT NOT NULL REFERENCES input(id),
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
-                                         --   'zip:<input>/<member>', 'copy:<origin>', or 'capture:<id>'
+                                         --   or 'capture:<id>'
   class         TEXT NOT NULL,           -- first | appended | head_rewritten | replaced | rewritten | renamed
                                          -- | deleted | back | imported | excised | download_attempt
   revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)

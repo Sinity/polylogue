@@ -39,7 +39,7 @@ pub(super) fn scan(
         || prefix.starts_with(b"PK\x05\x06")
         || prefix.starts_with(b"PK\x07\x08")
     {
-        return Err(unsupported("ZIP containers need member decoding and rewriting; imported plain member inputs are supported".into()));
+        return Err(crate::containers::inside_zip(archive, key.0.clone())?);
     }
     if prefix.starts_with(b"%PDF-") {
         return Err(unsupported(

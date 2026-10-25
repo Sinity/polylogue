@@ -29,23 +29,31 @@ texts are blanked. The `excision` row keeps the removed session and message
 IDs, locations and hashes (never the content); the writer refuses those rows
 and the loop stops collecting those locations from then on.
 
-Bytes read from a ZIP were also stored as the original ZIP. Removing them
-removes that ZIP input and its blob (`zips_removed`); the ZIP's other members
-stay as their own inputs.
+## What cannot be excised
 
-## What refuses
+An excision removes only the thing it names. Anything it cannot remove without
+also removing or changing something else refuses with `unsupported_excision`
+before anything changes, a dry run included:
 
-The design overwrites bytes in place and parses again. Anything it cannot do
-that way refuses with `unsupported_excision`, naming the input and format,
-before anything changes:
-
-- a text inside a ZIP container, SQLite page image, PDF or gzip stream, a
-  non-UTF-8 representation, a delta-encoded blob, or an input stored as an
-  opaque file;
+- **Anything inside an export ZIP.** The original ZIP is kept as imported, and
+  it holds other, unrelated conversations whose bytes cannot be rewritten
+  apart from the excised one. A session, document or text read from a ZIP,
+  a file read from one, and the ZIP input itself all refuse with a message
+  naming the ZIP file: excision inside it is not supported, because removing
+  it would also remove unrelated conversations. A text excision refuses while
+  the archive holds any export ZIP, since the text may be in its compressed
+  bytes.
+- a text inside a SQLite page image, PDF or gzip stream, a non-UTF-8
+  representation, a delta-encoded blob, or an input stored as an opaque file;
 - a text matching a JSON object key;
 - a session whose records cut through scalar values or share bytes with an
-  input outside the excision, or overlap a surviving session's records;
-- a ZIP whose bytes another kept input or a shown attachment also uses.
+  input outside the excision, or overlap a surviving session's records.
+
+Everything else can be excised: sessions, documents and inputs from watched
+files and from imported files that are not ZIPs, and texts in them. In an
+input shared with other sessions only the excised records' bytes change;
+every other byte keeps its value and offset, and the other sessions' rows are
+untouched.
 
 Provider files are never edited. `on_disk` lists the locations whose stored
 history held a text match; clean those files by hand, or a later full read

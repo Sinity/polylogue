@@ -97,7 +97,7 @@ pub(super) fn remove_input(
         .archive
         .prepare(
             "SELECT DISTINCT machine, path, device, inode FROM observation
-             WHERE input = ?1 AND path NOT LIKE 'zip:%' AND path NOT LIKE 'copy:%'",
+             WHERE input = ?1",
         )?
         .query_map([input], |r| {
             Ok(Location {

@@ -13,6 +13,8 @@
 //!   writer refuses the session's and its messages' rows from then on, and
 //!   the loop stops collecting a removed input's paths.
 //! - **Input:** the input whole, with every session only it produced.
+//! - **Inside an export ZIP:** refused before anything changes; the ZIP also
+//!   holds unrelated conversations ([`crate::containers`]).
 //! - **Text:** every stored occurrence of a string (a leaked secret), as
 //!   written and as JSON escapes it, overwritten with spaces. The sessions
 //!   built from those records lose every index row, and their inputs are
@@ -122,10 +124,6 @@ pub struct Excised {
     pub texts: u64,
     /// Inputs removed whole.
     pub inputs_removed: Vec<String>,
-    /// ZIPs removed because bytes read from them were removed; their other
-    /// members stay.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub zips_removed: Vec<String>,
     /// Inputs whose bytes were overwritten in place, and how many spans.
     pub inputs_overwritten: BTreeMap<String, u64>,
     /// Shared whole documents (exports) where some of the session's texts
@@ -463,21 +461,7 @@ impl<'a> Plan<'a> {
             selected.insert(input.into());
             Ok(())
         })?;
-        let mut originals = crate::containers::containing(t.archive, &selected)?;
-        // Direct original-only removal keeps its independent member Inputs.
-        for input in &self.whole {
-            let original: bool = t.archive.query_row(
-                "SELECT EXISTS(SELECT 1 FROM observation_container WHERE container_input=?1)",
-                [input],
-                |r| r.get(0),
-            )?;
-            if original {
-                originals.insert(input.clone());
-            }
-        }
-        self.whole.extend(originals.iter().cloned());
-        crate::containers::require_removable(t.archive, t.index, &originals, &self.whole)?;
-        done.zips_removed = originals.iter().cloned().collect();
+        crate::containers::refuse_inside_zip(t.archive, &selected)?;
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
@@ -496,10 +480,6 @@ impl<'a> Plan<'a> {
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![req.id, req.scope.label(), req.reason, now_ms(), t.seq],
             )?;
-        }
-
-        if !req.dry_run {
-            crate::containers::detach(t.archive, &originals)?;
         }
 
         if let Some(text) = self.text.take() {
@@ -681,10 +661,7 @@ impl<'a> Plan<'a> {
         for input in &reparse {
             let paths: Vec<(String, String)> = t
                 .archive
-                .prepare(
-                    "SELECT DISTINCT machine, path FROM observation WHERE input = ?1
-                     AND path NOT LIKE 'zip:%' AND path NOT LIKE 'copy:%'",
-                )?
+                .prepare("SELECT DISTINCT machine, path FROM observation WHERE input = ?1")?
                 .query_map([input], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             on_disk.extend(paths.into_iter().map(|(m, p)| format!("{m}:{p}")));

@@ -5,7 +5,7 @@ use crate::{Batch, ImportContainer, Result, StoreError};
 use rusqlite::{Connection, params};
 
 mod excision;
-pub(crate) use excision::{containing, detach, require_removable};
+pub(crate) use excision::{inside_zip, refuse_inside_zip};
 
 /// The ZIP a batch's member was read from.
 pub(crate) fn coordinate(batch: &Batch) -> Option<&ImportContainer> {

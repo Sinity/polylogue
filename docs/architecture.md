@@ -187,7 +187,8 @@ overwriting stored bytes in place and parsing the changed inputs again. It
 commits embeddings, then the archive, then the index, and deletes the files
 of blobs it marked `deleting` last; reopening the archive finishes a stopped
 excision. Provider files are never edited, and what cannot be overwritten in
-place refuses before anything changes.
+place, including anything inside an export ZIP, refuses before anything
+changes.
 
 ## Sinex primary mode
 

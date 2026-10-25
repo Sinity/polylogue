@@ -103,6 +103,10 @@ pub enum StoreError {
         format: String,
         detail: String,
     },
+    #[error(
+        "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
+    )]
+    ExcisionInsideZip { input: String, file: String },
     #[error("{0}")]
     Invalid(String),
 }

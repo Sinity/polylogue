@@ -152,7 +152,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
 }
 
 #[test]
-fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_goes() {
+fn session_and_document_excision_inside_a_zip_refuse_and_change_nothing() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let path = w.dir.path().join("scoped.zip");
@@ -177,7 +177,7 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
     output.finish().unwrap();
     let bytes = std::fs::read(&path).unwrap();
     let (mut e, _lock) = engine(&w, 1024);
-    let report = e.import(&[path]).unwrap();
+    let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     let doc = e
         .reads
@@ -189,37 +189,65 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
         .unwrap()
         .to_owned();
     let original_id = blake3::hash(&bytes).to_hex().to_string();
-    for (index, scope) in [
-        ExciseScope::Session(polylogue_model::SessionId::parse("claude-code:zip-session").unwrap()),
-        ExciseScope::Document(polylogue_model::DocumentId::parse(&doc).unwrap()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let removed = e
-            .excise(ExciseRequest {
-                id: format!("remove-scope-{index}"),
-                scope,
-                reason: None,
-                dry_run: false,
-            })
-            .unwrap();
-        if index == 0 {
-            assert_eq!(
-                removed.zips_removed.as_slice(),
-                std::slice::from_ref(&original_id)
+    let snapshot = |e: &Engine| {
+        let reader = e.reads.reader().unwrap();
+        let mut rows = Vec::new();
+        for table in [
+            "a.input",
+            "a.revision",
+            "a.extent",
+            "a.observation",
+            "a.observation_container",
+            "a.excision",
+            "session",
+            "message",
+            "block",
+            "document",
+            "document_block",
+        ] {
+            rows.push(
+                reader
+                    .query(&format!("SELECT * FROM {table}"), &[])
+                    .unwrap(),
             );
         }
-        assert!(
-            e.reads
-                .reader()
-                .unwrap()
-                .input_progress(&original_id)
-                .unwrap()
-                .is_none()
-        );
+        let stored = reader.input_progress(&original_id).unwrap().unwrap();
+        let zip = reader
+            .stored_range(&original_id, stored.chain, 0, stored.length, &e.blobs)
+            .unwrap();
+        (rows, zip)
+    };
+    let before = snapshot(&e);
+    assert_eq!(before.1, bytes);
+    for scope in [
+        ExciseScope::Session(polylogue_model::SessionId::parse("claude-code:zip-session").unwrap()),
+        ExciseScope::Document(polylogue_model::DocumentId::parse(&doc).unwrap()),
+    ] {
+        for dry_run in [true, false] {
+            let refused = e
+                .excise(ExciseRequest {
+                    id: format!("refused-{dry_run}"),
+                    scope: scope.clone(),
+                    reason: None,
+                    dry_run,
+                })
+                .unwrap_err();
+            assert!(
+                matches!(
+                    &refused,
+                    EngineError::Store(polylogue_store::StoreError::ExcisionInsideZip { input, file })
+                        if *input == original_id && file.ends_with("scoped.zip")
+                ),
+                "{refused}"
+            );
+            assert!(
+                refused.to_string().contains("unrelated conversations"),
+                "{refused}"
+            );
+            assert_eq!(snapshot(&e), before);
+        }
     }
-    let before = w.count("SELECT count(*) AS n FROM a.extent");
+    // An unrelated input beside the ZIP can still be excised.
     let unrelated = w.dir.path().join("unrelated.dat");
     std::fs::write(&unrelated, b"unrelated stored bytes").unwrap();
     assert!(e.import(&[unrelated]).unwrap().pass.errors.is_empty());
@@ -230,7 +258,9 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
         dry_run: false,
     })
     .unwrap();
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.extent"), before);
+    let after = snapshot(&e);
+    assert_eq!(after.1, bytes);
+    assert_eq!(after.0[2], before.0[2], "the ZIP's extents are unchanged");
 }
 
 #[test]
