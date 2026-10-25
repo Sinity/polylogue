@@ -1,4 +1,4 @@
-//! API-equivalent message cost from retained usage and the compiled price catalog.
+//! API-equivalent message cost from recorded usage and the compiled price catalog.
 
 use super::{Derivation, Version};
 use crate::Result;

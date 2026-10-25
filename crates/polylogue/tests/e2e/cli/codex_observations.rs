@@ -45,8 +45,8 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     assert!(daily.status.success(), "{daily:?}");
     let daily = json(&daily);
     let daily = &daily["data"];
-    assert_eq!(daily["basis"], "recorded_known_subset");
-    assert_eq!(daily["time_basis"], "source_record_time");
+    assert_eq!(daily["covers"], "recorded_known_values");
+    assert_eq!(daily["timed_by"], "source_record_time");
     assert_eq!(daily["incomplete"], true);
     assert_eq!(daily["unknown_spend_time"], true);
     assert_eq!(

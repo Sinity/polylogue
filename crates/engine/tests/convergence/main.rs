@@ -695,7 +695,7 @@ fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
     assert_eq!(row("read_file")["action"], "file_read");
     assert_eq!(row("read_file")["path"], "/work/g/src/main.rs");
 
-    let failing = polylogue_store::measure::analysis::failing_commands(
+    let failing = polylogue_store::measure::tool_calls::failing_commands(
         &reader,
         &polylogue_store::measure::Scope::default(),
     )

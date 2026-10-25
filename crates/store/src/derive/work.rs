@@ -1,11 +1,10 @@
-//! The work graph's derive step (spec model.md, The work graph): goals,
-//! attempts, verifications and artifacts from a session's tool calls,
-//! found by their structure. A Bead is claimed only by a successful `bd
-//! update <id> --claim` (or `--status in_progress`) and ends at a
-//! successful `bd close` or release in the same session; an ID mentioned in
-//! a prompt or a message never makes a claim (law 90). Todo and plan items
-//! are what the agent declared, shown as text and never turned into a task
-//! identity. Commits and pull requests come from the output of the commands
+//! The work graph's derive step: goals, attempts, verifications and
+//! artifacts from a session's tool calls, found by their structure. A Bead
+//! is claimed only by a successful `bd update <id> --claim` (or `--status
+//! in_progress`) and ends at a successful `bd close` or release in the same
+//! session; an ID mentioned in a prompt or a message never makes a claim.
+//! Todo and plan items are what the agent declared, shown as text and never
+//! turned into a task identity. Commits and pull requests come from the output of the commands
 //! that made them. The session's live task is its open claim.
 
 use crate::Result;
@@ -222,8 +221,8 @@ fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {
     Ok(out)
 }
 
-/// Only artifact-producing commands interpret their output. Checks and claims
-/// use the recorded command and outcome without reading retained result bodies.
+/// Only artifact-producing commands read their output. Checks and claims
+/// use the recorded command and outcome without reading stored result bodies.
 fn result(tx: &Transaction<'_>, call_pk: i64) -> Result<Option<String>> {
     let (text, body): (Option<Vec<u8>>, Option<Vec<u8>>) = tx
         .prepare_cached(

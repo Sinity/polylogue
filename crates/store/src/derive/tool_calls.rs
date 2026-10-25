@@ -1,6 +1,6 @@
-//! A shell call's normalized command (analysis.md), and the outcome reason
-//! a call without a result earns once its session moved on. The call's
-//! action comes from its origin's parser.
+//! A shell call's normalized command, and the outcome reason a call without
+//! a result earns once its session moved on. The call's action comes from
+//! its origin's parser.
 
 use super::{Derivation, Version};
 use crate::Result;
@@ -33,9 +33,9 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     passed_without_result(tx, session_pk)
 }
 
-/// Model 6 (outcome reasons): a call still without a result once a later
-/// model response exists in its session never gets one, since a harness
-/// answers only after every call of the earlier response has its result.
+/// A call still without a result once a later model response exists in its
+/// session never gets one, since a harness answers only after every call of
+/// the earlier response has its result.
 /// The reason is a fact of the records; whether a `no_result` call is
 /// pending is decided at read time from live state.
 fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {

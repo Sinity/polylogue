@@ -18,7 +18,7 @@
 //! - start: the earliest.
 //!
 //! Remaining ties between inputs with equal times go to the greater
-//! content, so the result is the same in every arrival order (law 4).
+//! content, so the result is the same in every arrival order.
 
 use super::{Derivation, Version};
 use crate::Result;

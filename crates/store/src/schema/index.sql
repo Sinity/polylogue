@@ -590,6 +590,18 @@ CREATE TABLE derive_state (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX derive_state_session ON derive_state(session_pk);
 
+-- Per-session facts the survival measures read (derived: session_survival).
+-- A session without messages has no row.
+CREATE TABLE session_survival (
+  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+  first_at          INTEGER,                -- the earliest message time
+  last_at           INTEGER,                -- the latest message time
+  first_failure_at  INTEGER,                -- the session's first failed tool call
+  prompts_to_failure INTEGER NOT NULL,      -- human prose prompts up to first_failure_at, else up to last_at
+  prompted          INTEGER NOT NULL,       -- 1 when a human typed a prose prompt
+  last_prompt_unanswered INTEGER NOT NULL   -- 1 when no model message follows the last prose prompt
+) STRICT;
+
 -- Files a session's tool calls touched, for the `changes` view.
 CREATE TABLE file_edit (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
