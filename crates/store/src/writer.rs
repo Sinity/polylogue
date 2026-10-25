@@ -707,7 +707,12 @@ impl Inner {
             Ok(())
         })();
         let done = installed.and_then(|()| {
-            self.run_excision(request, store, &crate::excise::Replacements::Installed, true)
+            self.run_excision(
+                request,
+                store,
+                &crate::excise::Replacements::Installed,
+                true,
+            )
         });
         match done {
             Ok(done) => {
