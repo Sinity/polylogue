@@ -200,7 +200,7 @@ fn committed_container_retirement_replays_pending_private_cleanup_after_restart(
         0
     );
     assert_eq!(
-        db.query_row("SELECT count(*) FROM pending_blob_excision", [], |r| r
+        db.query_row("SELECT count(*) FROM blob WHERE state = 'deleting'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         0

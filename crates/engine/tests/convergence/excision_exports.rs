@@ -173,7 +173,7 @@ fn revision(w: &ClaudeHome) -> String {
         .reader()
         .unwrap()
         .query(
-            "SELECT value FROM a.meta WHERE key='excision_revision'",
+            "SELECT count(*) || ':' || COALESCE(max(commit_seq), 0) AS value FROM a.excision",
             &[],
         )
         .unwrap()[0]["value"]

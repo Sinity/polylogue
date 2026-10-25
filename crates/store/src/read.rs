@@ -418,6 +418,13 @@ impl Reader<'_> {
                     self.snapshot.set(SnapshotState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
+                // One statement reads both databases while admission excludes
+                // writers, so the index and archive snapshots are a committed pair.
+                conn.query_row(
+                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM a.meta)",
+                    [],
+                    |_| Ok(()),
+                )?;
                 self.snapshot.set(SnapshotState::Ready);
             }
         }

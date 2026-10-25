@@ -1,5 +1,16 @@
 use super::*;
 
+/// Index text rows for `hashes`: vectors are stored only for texts the
+/// index holds.
+fn texts(archive: &Archive, hashes: &[&[u8]]) {
+    let index = crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    for hash in hashes {
+        index
+            .execute("INSERT INTO text(hash, body) VALUES (?1, x'00')", [hash])
+            .unwrap();
+    }
+}
+
 fn unit(v: &[f32]) -> Vec<f32> {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     v.iter().map(|x| x / n).collect()
@@ -9,6 +20,7 @@ fn unit(v: &[f32]) -> Vec<f32> {
 fn stores_scans_and_survives_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1], &[2], &[3]]);
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let mut v = reader.vectors_writer().unwrap();
@@ -91,9 +103,10 @@ fn admitted_readers_share_one_budget_with_their_single_optional_vector_connectio
 }
 
 #[test]
-fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
+fn vector_write_upgrade_keeps_its_cache_and_retains_read_results() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1]]);
     let pool = crate::ReadPool::with_budget(&archive, 1, 3 << 20).unwrap();
     let reader = pool.reader().unwrap();
     assert!(reader.vectors().unwrap().status().unwrap().keys.is_empty());
@@ -106,17 +119,7 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
         .conn
         .pragma_query_value(None, "mmap_size", |r| r.get(0))
         .unwrap();
-    assert_eq!(cache, -512);
-    let metadata_cache: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
-        .unwrap();
-    let metadata_mmap: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "mmap_size", |r| r.get(0))
-        .unwrap();
-    assert_eq!(metadata_cache, -512);
-    assert_eq!(metadata_mmap, 0);
+    assert_eq!(cache, -1024);
     assert_eq!(mmap, 0);
     vectors
         .put(
@@ -139,6 +142,7 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
 fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1; 32], &[2; 32]]);
     let pool = crate::ReadPool::with_budget(&archive, 1, 3 * 1024).unwrap();
     let reader = pool.reader().unwrap();
     let mut vectors = reader.vectors_writer().unwrap();
@@ -146,12 +150,7 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
         .conn
         .pragma_query_value(None, "cache_size", |r| r.get(0))
         .unwrap();
-    let canonical: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
-        .unwrap();
     assert_eq!(main, -1);
-    assert_eq!(canonical, 0);
     vectors
         .put(
             "synthetic",

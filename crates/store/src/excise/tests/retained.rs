@@ -377,12 +377,6 @@ fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes(
         0
     );
     assert_eq!(
-        a.query_row("SELECT count(*) FROM pending_blob_excision", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(
         a.query_row("SELECT base FROM blob WHERE hash=?1", [&child.0[..]], |r| r
             .get::<_, Vec<u8>>(0))
             .unwrap(),
