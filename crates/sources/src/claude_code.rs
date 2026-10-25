@@ -286,7 +286,14 @@ impl ClaudeCode {
         match (&self.file, record_session.kind) {
             (File::Main { stem }, SessionKind::Main) if record_session.native != *stem => {
                 if let Some(child) = session_id(stem) {
-                    link(parser_state, out, LinkKind::Copy, id.clone(), child, "sessionId");
+                    link(
+                        parser_state,
+                        out,
+                        LinkKind::Copy,
+                        id.clone(),
+                        child,
+                        "sessionId",
+                    );
                 }
             }
             (_, SessionKind::Sidechain)
@@ -297,7 +304,14 @@ impl ClaudeCode {
                         SessionKind::Compaction => "agentId acompact",
                         _ => "agentId",
                     };
-                    link(parser_state, out, LinkKind::Spawn, parent, id.clone(), evidence);
+                    link(
+                        parser_state,
+                        out,
+                        LinkKind::Spawn,
+                        parent,
+                        id.clone(),
+                        evidence,
+                    );
                 }
             }
             _ => {}
@@ -344,7 +358,13 @@ impl ClaudeCode {
     /// session writes (`slug`, as `plans/<slug>.md`) and the agent team it
     /// belongs to (`teamName`). Each is sent as an event when it first
     /// appears or changes, so readers find it from the session.
-    fn names(&self, parser_state: &mut ParserState, record: Record<'_>, v: &Json, out: &mut Output) {
+    fn names(
+        &self,
+        parser_state: &mut ParserState,
+        record: Record<'_>,
+        v: &Json,
+        out: &mut Output,
+    ) {
         if let Some(slug) = str_field(v, "slug") {
             let data = serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") });
             self.name_event(parser_state, record, v, out, "plan", slug, data);
@@ -704,7 +724,13 @@ impl ClaudeCode {
         }
     }
 
-    fn title(&self, parser_state: &mut ParserState, v: &Json, field: &str, source: TitleSource) -> RecordOutcome {
+    fn title(
+        &self,
+        parser_state: &mut ParserState,
+        v: &Json,
+        field: &str,
+        source: TitleSource,
+    ) -> RecordOutcome {
         let Some(text) = str_field(v, field) else {
             return RecordOutcome::skipped(format!("no {field}"));
         };

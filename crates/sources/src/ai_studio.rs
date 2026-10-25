@@ -349,7 +349,8 @@ impl AiStudio {
             Some(id) => format!("{}#{id}", self.native),
             None => format!("{}#{position}", self.native),
         };
-        let id = message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
+        let id =
+            message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
         let thought = chunk.get("isThought").and_then(Json::as_bool) == Some(true);
 
         let mut blocks = text_blocks(chunk, thought);
@@ -709,7 +710,8 @@ impl ExportParser for Listing {
         let f = &f;
         sink.records.fields("file", f, &LISTING_FIELDS);
         let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
-            sink.records.record("file", &RecordOutcome::unreadable("no id"));
+            sink.records
+                .record("file", &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
         let mut session = Session::new(sid, SessionKind::Main);

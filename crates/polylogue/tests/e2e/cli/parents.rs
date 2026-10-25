@@ -16,7 +16,14 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Val
 fn with_parents(env: &[(&str, &Path)], session: &str, format: &str) -> Value {
     let out = cli(
         env,
-        &["--json", "read", session, "--with-parents", "--format", format],
+        &[
+            "--json",
+            "read",
+            session,
+            "--with-parents",
+            "--format",
+            format,
+        ],
     );
     assert!(out.status.success(), "{out:?}");
     json(&out)

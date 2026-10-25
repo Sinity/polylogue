@@ -29,14 +29,8 @@ pub fn router(host: Arc<BrowserHost>) -> Router {
         )
         // A conversation's provider reply has no size bound; axum's default
         // 2 MB limit refused long conversations.
-        .route(
-            "/v1/browser-captures",
-            post(capture),
-        )
-        .route(
-            "/v1/browser-captures/inspect",
-            post(inspect_capture),
-        )
+        .route("/v1/browser-captures", post(capture))
+        .route("/v1/browser-captures/inspect", post(inspect_capture))
         .route("/v1/archive-state", get(archive_state))
         .route("/v1/notes/selection", post(selection_note))
         .route("/v1/capture-health", get(health_list).post(health_report))
@@ -179,7 +173,11 @@ fn capture_identity(v: &Value) -> Option<(String, String)> {
 /// Accepts one capture into the spool. Identical bytes already there are a
 /// no-op; anything else replaces the conversation's file. The answer is
 /// sent only after the file and its directory are synced.
-async fn capture(State(host): State<Arc<BrowserHost>>, headers: HeaderMap, body: Bytes) -> HttpResponse {
+async fn capture(
+    State(host): State<Arc<BrowserHost>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> HttpResponse {
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v @ Value::Object(_)) => v,
         _ => return bad(StatusCode::BAD_REQUEST, "invalid_envelope"),
@@ -241,7 +239,10 @@ fn sql_text(s: &str) -> String {
 /// What the archive holds for one conversation: spooled, archived with its
 /// message count, or missing. When the daemon is not running, what the
 /// index holds is unknown, not missing.
-async fn archive_state(State(host): State<Arc<BrowserHost>>, Query(q): Query<StateQuery>) -> HttpResponse {
+async fn archive_state(
+    State(host): State<Arc<BrowserHost>>,
+    Query(q): Query<StateQuery>,
+) -> HttpResponse {
     let rel = artifact_ref(&q.provider, &q.provider_session_id);
     let spooled = host.spool.join(&rel).exists();
     let session_id =
@@ -287,7 +288,10 @@ async fn archive_state(State(host): State<Arc<BrowserHost>>, Query(q): Query<Sta
 }
 
 /// The latest capture-health report per provider, for the popup.
-async fn health_report(State(host): State<Arc<BrowserHost>>, Json(mut report): Json<Value>) -> HttpResponse {
+async fn health_report(
+    State(host): State<Arc<BrowserHost>>,
+    Json(mut report): Json<Value>,
+) -> HttpResponse {
     let provider = report["provider"]
         .as_str()
         .map_or_else(|| "all".into(), super::safe_token);
@@ -374,7 +378,10 @@ async fn ask_chat(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box
 
 /// Lists actions, or with `claim_by` hands one queued action to that
 /// extension instance while chat actions are on.
-async fn actions_list(State(host): State<Arc<BrowserHost>>, Query(q): Query<ListQuery>) -> HttpResponse {
+async fn actions_list(
+    State(host): State<Arc<BrowserHost>>,
+    Query(q): Query<ListQuery>,
+) -> HttpResponse {
     let request = match q.claim_by.filter(|o| !o.is_empty()) {
         None => Request::ChatActions,
         Some(by) => Request::ChatClaim { by },
@@ -400,7 +407,10 @@ async fn actions_list(State(host): State<Arc<BrowserHost>>, Query(q): Query<List
     }
 }
 
-async fn action_read(State(host): State<Arc<BrowserHost>>, UrlPath(id): UrlPath<String>) -> HttpResponse {
+async fn action_read(
+    State(host): State<Arc<BrowserHost>>,
+    UrlPath(id): UrlPath<String>,
+) -> HttpResponse {
     match ask_chat(host, Request::ChatAction { id }).await {
         Ok(v) => Json(v).into_response(),
         Err(r) => *r,

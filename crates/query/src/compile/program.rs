@@ -17,7 +17,11 @@ impl<'a> Compiler<'a> {
             }
             Source::Unit { unit, cond } => {
                 let top = cond.as_ref().map(top_level).unwrap_or_default();
-                (RowContext::plain(*unit), cond.iter().cloned().collect(), top)
+                (
+                    RowContext::plain(*unit),
+                    cond.iter().cloned().collect(),
+                    top,
+                )
             }
         };
         let mut where_sql: Vec<String> = self.defaults(&scope, &top);

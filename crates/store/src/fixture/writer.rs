@@ -5,8 +5,9 @@
 use crate::writer::{Batch, InputKey, Observation, ParseStep};
 use crate::{Archive, ReadPool, Writer};
 use polylogue_model::{
-    RecordCounts, Block, RecordOutcome, ErrorReason, Json, Message, MessageId, MessageRow, Output,
-    PromptKind, Role, Session, SessionId, SessionKind, Timestamp, ToolAction, ToolOutcome, Usage,
+    Block, ErrorReason, Json, Message, MessageId, MessageRow, Output, PromptKind, RecordCounts,
+    RecordOutcome, Role, Session, SessionId, SessionKind, Timestamp, ToolAction, ToolOutcome,
+    Usage,
 };
 
 /// An archive in a temporary directory with its writer running.

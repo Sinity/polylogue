@@ -608,9 +608,7 @@ impl Runtime {
                     failure.get_or_insert(error);
                 }
                 Err(_) => {
-                    failure.get_or_insert_with(|| {
-                        std::io::Error::other("loop thread panicked")
-                    });
+                    failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
                 }
             }
         }

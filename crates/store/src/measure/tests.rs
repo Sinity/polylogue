@@ -467,7 +467,11 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     let own: u64 = all.iter().map(|s| s.own.tokens.input.tokens).sum();
     assert_eq!(
         own,
-        usage(&r, &Selection::default()).unwrap().tokens.input.tokens
+        usage(&r, &Selection::default())
+            .unwrap()
+            .tokens
+            .input
+            .tokens
     );
     // Priced under the current catalog, at both grains.
     assert!(c.with_parents.api_cost.known_usd.unwrap() > c.own.api_cost.known_usd.unwrap());

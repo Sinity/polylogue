@@ -220,7 +220,11 @@ impl<'a> Compiler<'a> {
     }
 
     /// The alias of the session a row of this unit belongs to.
-    pub(super) fn session_alias(&self, scope: &RowContext, span: Span) -> Result<String, QueryError> {
+    pub(super) fn session_alias(
+        &self,
+        scope: &RowContext,
+        span: Span,
+    ) -> Result<String, QueryError> {
         if scope.unit == Unit::Sessions || fields::has_session(scope.unit) {
             Ok(scope.a.s.clone())
         } else {

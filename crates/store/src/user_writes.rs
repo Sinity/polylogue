@@ -358,9 +358,11 @@ pub(crate) fn first_note_of_request(
 }
 
 fn first_note_of(tx: &Transaction<'_>, note: &str) -> Result<String> {
-    tx.query_row("SELECT first_note FROM note WHERE id = ?1", [note], |r| r.get(0))
-        .optional()?
-        .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
+    tx.query_row("SELECT first_note FROM note WHERE id = ?1", [note], |r| {
+        r.get(0)
+    })
+    .optional()?
+    .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
 }
 
 fn add_note(

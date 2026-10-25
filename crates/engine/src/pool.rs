@@ -244,7 +244,10 @@ fn flush(
         .iter()
         .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
     if durable {
-        let queued: Vec<bool> = waiting.iter().map(|(batch, _, _)| batch.is_some()).collect();
+        let queued: Vec<bool> = waiting
+            .iter()
+            .map(|(batch, _, _)| batch.is_some())
+            .collect();
         let mut batches = Vec::new();
         for (batch, _, size) in &mut waiting {
             if let Some(mut batch) = batch.take() {
@@ -291,7 +294,8 @@ fn flush(
         }
     }
     group.bytes = 0;
-    waiting.into_iter()
+    waiting
+        .into_iter()
         .all(|(_, result, _)| done.send(result).is_ok())
 }
 

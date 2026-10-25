@@ -1,7 +1,7 @@
 use super::*;
 use crate::ReadPool;
 use polylogue_model::{
-    RecordOutcome, Json, LinkKind, MessageId, PromptKind, SessionKind, TitleSource, Usage,
+    Json, LinkKind, MessageId, PromptKind, RecordOutcome, SessionKind, TitleSource, Usage,
 };
 
 mod input_events;

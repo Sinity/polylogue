@@ -141,10 +141,7 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 2);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 3);
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.observation_zip"),
-        2
-    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 2);
 }
 
 #[test]

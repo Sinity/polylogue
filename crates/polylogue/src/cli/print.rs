@@ -123,7 +123,11 @@ fn plan(data: &Value) -> String {
     };
     let mut out = String::new();
     if !data["harness_command"].is_null() {
-        let _ = writeln!(out, "harness command:    {}", line(&data["harness_command"]));
+        let _ = writeln!(
+            out,
+            "harness command:    {}",
+            line(&data["harness_command"])
+        );
     }
     let _ = writeln!(
         out,

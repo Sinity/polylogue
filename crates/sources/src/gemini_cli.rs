@@ -172,7 +172,8 @@ impl ExportParser for GeminiCli {
             }
         };
         let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
-            sink.records.record(&kind, &RecordOutcome::unreadable("no id"));
+            sink.records
+                .record(&kind, &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
         let message = Message {

@@ -18,13 +18,13 @@ pub mod codex;
 pub mod document;
 pub mod export;
 pub mod fields;
-pub mod lines;
 pub mod gemini_app;
 pub mod gemini_cli;
 pub mod grok;
 pub mod grok_cli;
 pub mod hermes;
 pub mod hook_spool;
+pub mod lines;
 pub mod openai_chat;
 pub mod openrouter;
 pub mod origin;
@@ -36,7 +36,7 @@ pub mod repo_lookup;
 pub mod time;
 
 pub use lines::Record;
-pub use origin::{Capture, ORIGINS, OriginSpec, Root, Arrival, Support};
+pub use origin::{Arrival, Capture, ORIGINS, OriginSpec, Root, Support};
 pub use parse::{
     BackgroundUpdate, DocumentParser, ExtractedBlob, MessageRow, Output, Parse, ParseError, Parser,
     Step, StepParser, run, run_document,

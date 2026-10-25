@@ -113,7 +113,12 @@ pub static DAILY_METRICS: &[&str] = &DAILY_NAMES;
 
 /// A daily series of `metric` (one of [`DAILY_METRICS`]) over logical
 /// days. A day with no activity is 0.
-pub fn daily(reader: &Reader<'_>, selection: &Selection, metric: &str, day: &LogicalDay) -> Result<Series> {
+pub fn daily(
+    reader: &Reader<'_>,
+    selection: &Selection,
+    metric: &str,
+    day: &LogicalDay,
+) -> Result<Series> {
     let (cond, params) = selection.condition();
     let Some((_, expr, from)) = DAILY.iter().find(|(name, _, _)| *name == metric) else {
         return Err(crate::StoreError::Invalid(format!(

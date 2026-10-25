@@ -132,8 +132,10 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         return;
     };
     let Some(messages) = conv.get("chat_messages").and_then(Json::as_array) else {
-        sink.records
-            .record("conversation", &RecordOutcome::unreadable("no chat_messages"));
+        sink.records.record(
+            "conversation",
+            &RecordOutcome::unreadable("no chat_messages"),
+        );
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -147,8 +149,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.records
-        .record("conversation", &RecordOutcome::Used);
+    sink.records.record("conversation", &RecordOutcome::Used);
 
     // Account, project, settings and model are kept whole as one event.
     if let Some(obj) = conv.as_object() {
@@ -241,7 +242,8 @@ fn message(
             format!("{conversation}#{place}")
         }
     };
-    let id = message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable uuid"))?;
+    let id =
+        message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable uuid"))?;
     let (role, prompt_kind, direction) = match str_of(m, "sender") {
         Some("human") => (
             Role::User,

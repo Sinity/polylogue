@@ -89,7 +89,11 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<Extracte
 }
 
 /// An image or document block. Inline base64 bytes become a blob.
-fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<ExtractedBlob>) -> Attachment {
+fn image(
+    item: &Json,
+    direction: AttachmentDirection,
+    blobs: &mut Vec<ExtractedBlob>,
+) -> Attachment {
     let source = item.get("source").unwrap_or(&Json::Null);
     let mut attachment = Attachment {
         media_type: string(source, "media_type"),

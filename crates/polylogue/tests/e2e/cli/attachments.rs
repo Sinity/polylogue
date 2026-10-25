@@ -352,7 +352,8 @@ mod promoted;
 
 #[test]
 fn original_container_name_is_not_a_member_attachment_identity() {
-    let fixture = TestArchive::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
+    let fixture =
+        TestArchive::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
     let descriptor = fixture.descriptor();
     assert_eq!(descriptor["matches"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -369,10 +370,7 @@ fn excision_inside_a_zip_is_refused_in_the_cli_json_and_changes_nothing() {
     let original = pool
         .reader()
         .unwrap()
-        .query(
-            "SELECT DISTINCT zip_input FROM a.observation_zip",
-            &[],
-        )
+        .query("SELECT DISTINCT zip_input FROM a.observation_zip", &[])
         .unwrap()[0]["zip_input"]
         .as_str()
         .unwrap()
@@ -384,13 +382,7 @@ fn excision_inside_a_zip_is_refused_in_the_cli_json_and_changes_nothing() {
         (
             json(&read),
             fixture.descriptor(),
-            [
-                "a.input",
-                "a.extent",
-                "a.observation_zip",
-                "a.excision",
-            ]
-            .map(|table| {
+            ["a.input", "a.extent", "a.observation_zip", "a.excision"].map(|table| {
                 reader
                     .query(&format!("SELECT * FROM {table}"), &[])
                     .unwrap()

@@ -456,7 +456,12 @@ impl ExportParser for Database {
                         .parent(&raw)
                         .is_some_and(|(_, kind)| kind == LinkKind::Continuation)
                 {
-                    sink.records.record(table,&RecordOutcome::skipped("empty compression intermediary; parents use its nearest stored source"));
+                    sink.records.record(
+                        table,
+                        &RecordOutcome::skipped(
+                            "empty compression intermediary; parents use its nearest stored source",
+                        ),
+                    );
                     return Ok(());
                 }
                 let mut session = Session::new(id.clone(), facts.kind);

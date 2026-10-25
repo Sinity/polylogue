@@ -304,7 +304,11 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    pub(super) fn attach(&mut self, child: &Child, parent: &RowContext) -> Result<Attach, QueryError> {
+    pub(super) fn attach(
+        &mut self,
+        child: &Child,
+        parent: &RowContext,
+    ) -> Result<Attach, QueryError> {
         let saved = std::mem::take(&mut self.params);
         let saved_ctes = std::mem::take(&mut self.ctes);
         let saved_shown = std::mem::take(&mut self.shown);

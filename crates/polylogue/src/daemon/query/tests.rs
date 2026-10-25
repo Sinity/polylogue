@@ -768,7 +768,10 @@ fn links_and_parents() {
     );
     // 25.
     assert_eq!(
-        ids(&q(&w, "connected:codex:01a20000-0005-7000-8000-000000000005")),
+        ids(&q(
+            &w,
+            "connected:codex:01a20000-0005-7000-8000-000000000005"
+        )),
         ["#6", "#5"]
     );
     // 36.

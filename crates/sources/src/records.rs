@@ -1,7 +1,7 @@
 //! Record and wire-field counts shared by line and document parsers.
 
 use crate::fields::{Fields, unaccounted};
-use polylogue_model::{RecordCounts, CountMismatch, RecordOutcome, Json};
+use polylogue_model::{CountMismatch, Json, RecordCounts, RecordOutcome};
 
 /// A parse step's record counts. Parsers supply record outcomes and field
 /// declarations; only the framework can finish and expose the counts.

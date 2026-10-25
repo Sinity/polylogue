@@ -447,18 +447,20 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
     let sent = exchange(&host, "POST", "/v1/browser-captures", streamed.as_bytes());
     assert_eq!(sent.status, 200);
     loop {
-        if let Some(crate::daemon::Response::Ok { data }) = host.ask(&crate::daemon::Request::Read {
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
-            ),
-            view: "full".into(),
-            format: "markdown".into(),
-            with_parents: false,
-            budget: None,
-            cursor: None,
-        }) && data["content"]
-            .as_str()
-            .is_some_and(|text| text.contains("raw provider question"))
+        if let Some(crate::daemon::Response::Ok { data }) =
+            host.ask(&crate::daemon::Request::Read {
+                target: crate::daemon::ReadTarget::Session(
+                    polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+                ),
+                view: "full".into(),
+                format: "markdown".into(),
+                with_parents: false,
+                budget: None,
+                cursor: None,
+            })
+            && data["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("raw provider question"))
         {
             break;
         }

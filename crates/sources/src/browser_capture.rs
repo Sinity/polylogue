@@ -199,8 +199,10 @@ impl DocumentParser for Capture {
 /// conversation JSON.
 fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     let Some(native) = str_of(session, "provider_session_id") else {
-        sink.records
-            .record("session", &RecordOutcome::unreadable("no provider_session_id"));
+        sink.records.record(
+            "session",
+            &RecordOutcome::unreadable("no provider_session_id"),
+        );
         return;
     };
     let Some(sid) = session_id(origin, native) else {

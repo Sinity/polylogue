@@ -129,10 +129,8 @@ impl InputRecord {
                 o.excision,
             ])?;
             if let Some((zip, index)) = &o.zip {
-                tx.prepare_cached(
-                    "INSERT OR IGNORE INTO observation_zip VALUES (?1, ?2, ?3)",
-                )?
-                .execute(params![o.id, zip, index])?;
+                tx.prepare_cached("INSERT OR IGNORE INTO observation_zip VALUES (?1, ?2, ?3)")?
+                    .execute(params![o.id, zip, index])?;
             }
         }
         Ok(())

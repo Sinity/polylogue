@@ -39,11 +39,7 @@ fn a_refused_import_installs_no_file() {
         if changed {
             std::fs::write(
                 &path,
-                claude_user(
-                    "u2",
-                    "replacement-session",
-                    "synthetic replacement import",
-                ),
+                claude_user("u2", "replacement-session", "synthetic replacement import"),
             )
             .unwrap();
         }

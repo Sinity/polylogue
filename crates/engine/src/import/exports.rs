@@ -1,6 +1,6 @@
 //! A whole export, stored, then split into records and ordered before its items are written.
 use super::*;
-use polylogue_model::{RecordCounts, Output};
+use polylogue_model::{Output, RecordCounts};
 use polylogue_sources::export::{self, ExportParser, ExportState};
 use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
 
@@ -117,16 +117,7 @@ impl Engine {
                 return Err(std::io::Error::other(error).into());
             };
             let step = export::refused(error.to_string(), plan.size);
-            self.write_export_step(
-                plan,
-                step.output,
-                step.counts,
-                0,
-                true,
-                true,
-                false,
-                pass,
-            )?;
+            self.write_export_step(plan, step.output, step.counts, 0, true, true, false, pass)?;
             plan.parse_pos = plan.size;
             return Ok(());
         }
@@ -283,12 +274,7 @@ impl Engine {
                 blobs.push(new_blob);
             }
         }
-        let mut parse = ParseStep::new(
-            output,
-            counts,
-            0..if done { plan.size } else { 0 },
-            done,
-        );
+        let mut parse = ParseStep::new(output, counts, 0..if done { plan.size } else { 0 }, done);
         parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;

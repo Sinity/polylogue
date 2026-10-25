@@ -6,7 +6,7 @@
 //! backlog.
 
 use crate::Config;
-use polylogue_sources::{ORIGINS, OriginSpec, Arrival, Support};
+use polylogue_sources::{Arrival, ORIGINS, OriginSpec, Support};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

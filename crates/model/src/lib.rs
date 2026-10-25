@@ -25,8 +25,8 @@ mod usage;
 mod work;
 
 pub use batch::{
-    RecordCounts, BackgroundUpdate, CountMismatch, RecordOutcome, DocumentRow, ExtractedBlob, MessageRow,
-    OrderKey, Output, RepoLookup,
+    BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, MessageRow, OrderKey, Output,
+    RecordCounts, RecordOutcome, RepoLookup,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,

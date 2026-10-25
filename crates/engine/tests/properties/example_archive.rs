@@ -275,7 +275,12 @@ fn appended_steps_reassemble_exactly() {
         new_blobs.run_pass();
     }
     for (f, bytes) in files.iter().zip(&full) {
-        assert_eq!(&new_blobs.stored_bytes(f).unwrap(), bytes, "{}", f.display());
+        assert_eq!(
+            &new_blobs.stored_bytes(f).unwrap(),
+            bytes,
+            "{}",
+            f.display()
+        );
     }
     assert_eq!(new_blobs.view(), whole.view());
 }

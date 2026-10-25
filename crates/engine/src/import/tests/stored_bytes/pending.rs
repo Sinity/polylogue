@@ -71,10 +71,7 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             "{:?}",
             replacement.pass.errors
         );
-        assert_eq!(
-            home.texts("replacement-session"),
-            ["synthetic replacement"]
-        );
+        assert_eq!(home.texts("replacement-session"), ["synthetic replacement"]);
         assert_eq!(engine.blobs.contains(&hash), physically_installed);
     }
 }

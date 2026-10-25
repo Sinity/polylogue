@@ -15,8 +15,8 @@ use crate::archive::{Archive, bump_counter, open_write};
 use crate::blobs::{Change, FileFacts, NewBlob, Stored};
 use crate::{Result, StoreError};
 use polylogue_model::{
-    RecordCounts, BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, Role,
-    Session, SessionId, Timestamp, ToolAction, ToolOutcome,
+    BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, RecordCounts,
+    Role, Session, SessionId, Timestamp, ToolAction, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, pack_event, unpack_block};
 pub use batch::{
-    Batch, InZip, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
 };
 pub(crate) use bytes::observation_id;
 use bytes::*;

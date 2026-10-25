@@ -175,8 +175,7 @@ impl Export {
         }
         session.started = time(conversation, &mut warnings);
         sink.out.sessions.push(session);
-        sink.records
-            .record("conversation", &RecordOutcome::Used);
+        sink.records.record("conversation", &RecordOutcome::Used);
         let mut occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {

@@ -16,7 +16,7 @@
 #[path = "scan/input.rs"]
 mod input;
 
-use polylogue_sources::{RecordCounts, Parse, ParseError};
+use polylogue_sources::{Parse, ParseError, RecordCounts};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;

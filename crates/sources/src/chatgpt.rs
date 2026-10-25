@@ -166,8 +166,10 @@ fn conversation_with_owners(
         return Ok(());
     }
     let Some(native) = str_of(conv, "conversation_id").or_else(|| str_of(conv, "id")) else {
-        sink.records
-            .record("conversation", &RecordOutcome::unreadable("no conversation ID"));
+        sink.records.record(
+            "conversation",
+            &RecordOutcome::unreadable("no conversation ID"),
+        );
         return Ok(());
     };
     let Some(sid) = session_id(ORIGIN, native) else {
@@ -191,8 +193,7 @@ fn conversation_with_owners(
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.records
-        .record("conversation", &RecordOutcome::Used);
+    sink.records.record("conversation", &RecordOutcome::Used);
 
     // The conversation's own settings (custom GPT, archive and star state,
     // memory scope) are kept whole as one event.

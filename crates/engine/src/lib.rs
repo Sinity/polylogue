@@ -20,7 +20,7 @@ mod watch;
 
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
-pub use polylogue_store::excise::{ExciseRequest, Excised, ExciseTarget};
+pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
 use polylogue_store::tool_databases::Captures;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,

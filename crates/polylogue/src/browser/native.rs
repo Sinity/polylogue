@@ -51,7 +51,11 @@ fn fail(out: &mut impl Write, code: &str) -> io::Result<()> {
 }
 
 /// Serves one exchange from `input` to `out`.
-pub fn serve(host: Arc<BrowserHost>, input: &mut impl Read, out: &mut impl Write) -> io::Result<()> {
+pub fn serve(
+    host: Arc<BrowserHost>,
+    input: &mut impl Read,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let Some(request) = read_frame(input)? else {
         return Ok(());
     };

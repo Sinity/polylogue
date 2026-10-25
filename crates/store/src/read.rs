@@ -21,7 +21,7 @@ mod parents;
 pub use behind_index::{BehindChain, ImportedAs};
 mod rows;
 
-pub use parents::{Parents, ParentIssue, MessageSelection};
+pub use parents::{MessageSelection, ParentIssue, Parents};
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {

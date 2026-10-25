@@ -126,8 +126,10 @@ impl ExportParser for OtelGenAi {
             .and_then(Json::as_str)
             .unwrap_or(span.trace);
         let Some(sid) = session_id(ORIGIN, conversation) else {
-            sink.records
-                .record("span", &RecordOutcome::unreadable("unusable conversation ID"));
+            sink.records.record(
+                "span",
+                &RecordOutcome::unreadable("unusable conversation ID"),
+            );
             return Ok(());
         };
         if owners

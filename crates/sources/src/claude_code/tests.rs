@@ -69,7 +69,13 @@ fn conversation() -> Vec<Json> {
 #[test]
 fn a_response_split_over_records_is_one_message() {
     let mut parser_state = ParserState::default();
-    let step = run(&main_file("s1"), &mut parser_state, &jsonl(&conversation()), 0).unwrap();
+    let step = run(
+        &main_file("s1"),
+        &mut parser_state,
+        &jsonl(&conversation()),
+        0,
+    )
+    .unwrap();
     let msgs = final_messages(&[step]);
     let ids: Vec<_> = msgs.iter().map(|m| m.id.native().as_str()).collect();
     assert_eq!(ids, ["u1", "a1", "u2", "a4"]);
@@ -184,7 +190,9 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
                               "message":{"role":"user","content":"do the subtask"}}),
     ];
     let mut parser_state = ParserState::default();
-    let out = run(&sub, &mut parser_state, &jsonl(&records), 0).unwrap().output;
+    let out = run(&sub, &mut parser_state, &jsonl(&records), 0)
+        .unwrap()
+        .output;
     assert_eq!(
         out.messages[0].message.session.native().as_str(),
         "agent-x1"

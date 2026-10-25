@@ -8,8 +8,8 @@
 
 pub mod daily;
 pub mod drift;
-mod reports;
 pub mod quota;
+mod reports;
 pub mod survival;
 pub mod tool_calls;
 mod usage;

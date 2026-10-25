@@ -9,13 +9,7 @@ pub(crate) use excision::refuse_inside_zip;
 
 /// The ZIP a batch's member was read from.
 pub(crate) fn zip_of(batch: &Batch) -> Option<&InZip> {
-    batch
-        .observation
-        .as_ref()?
-        .import
-        .as_ref()?
-        .zip
-        .as_ref()
+    batch.observation.as_ref()?.import.as_ref()?.zip.as_ref()
 }
 
 /// Refuses unless `input` is a stored import named by its bytes.
@@ -35,11 +29,7 @@ pub(crate) fn require_original(conn: &Connection, input: &str) -> Result<()> {
 
 /// The ZIP a member observation of `input` was read from, and its index
 /// there; the ZIP must be stored already, and is never its own member.
-pub(crate) fn check(
-    conn: &Connection,
-    input: &str,
-    zip: &crate::InZip,
-) -> Result<(String, i64)> {
+pub(crate) fn check(conn: &Connection, input: &str, zip: &crate::InZip) -> Result<(String, i64)> {
     require_original(conn, &zip.input)?;
     if input == zip.input {
         return Err(StoreError::Invalid("a ZIP cannot be its own member".into()));

@@ -160,7 +160,8 @@ fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) ->
 }
 
 fn json(bytes: &[u8]) -> Result<Json, RecordOutcome> {
-    serde_json::from_slice(bytes).map_err(|e| RecordOutcome::unreadable(format!("malformed JSON: {e}")))
+    serde_json::from_slice(bytes)
+        .map_err(|e| RecordOutcome::unreadable(format!("malformed JSON: {e}")))
 }
 
 impl DocumentParser for SideFile {

@@ -1,7 +1,13 @@
 use super::*;
 use base64::Engine as _;
 
-fn page(d: &Daemon, session: &str, with_parents: bool, view: &str, cursor: Option<&str>) -> Response {
+fn page(
+    d: &Daemon,
+    session: &str,
+    with_parents: bool,
+    view: &str,
+    cursor: Option<&str>,
+) -> Response {
     handle(
         Request::Read {
             target: crate::daemon::ReadTarget::Session(

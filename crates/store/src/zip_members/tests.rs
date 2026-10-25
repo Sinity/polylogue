@@ -2,7 +2,7 @@ use super::*;
 use crate::blobs::Stored;
 use crate::staging::PreparedBatch;
 use crate::writer::{InFlight, InputKey};
-use crate::{Archive, Change, ImportMember, Observation, NewBlob, Writer};
+use crate::{Archive, Change, ImportMember, NewBlob, Observation, Writer};
 use polylogue_model::BlobHash;
 use std::sync::{Arc, Barrier};
 
@@ -132,10 +132,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         ),
         (2, 2, 2, 2)
     );
-    assert_eq!(
-        (count("observation"), count("observation_zip")),
-        (6, 4)
-    );
+    assert_eq!((count("observation"), count("observation_zip")), (6, 4));
     assert_eq!(
         db.query_row(
             "SELECT count(DISTINCT member_index) FROM observation_zip",

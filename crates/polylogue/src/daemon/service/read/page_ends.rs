@@ -87,9 +87,11 @@ impl Cache {
         {
             return;
         }
-        if let Some(at) = state.entries.iter().position(|(entry, previous)| {
-            entry == &key && previous.message() == page_end.message()
-        }) {
+        if let Some(at) = state
+            .entries
+            .iter()
+            .position(|(entry, previous)| entry == &key && previous.message() == page_end.message())
+        {
             state.entries.remove(at);
         }
         state.entries.push_back((key, page_end));

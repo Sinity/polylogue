@@ -180,9 +180,7 @@ pub(super) fn run(
     // The epoch taken when the read began stops a read that overlaps a write
     // from restoring or saving cached state after that write clears it.
     let page_end = cache.get(&key, epoch, position.map_or(0, |at| at.message));
-    let from = page_end
-        .as_ref()
-        .map_or(0, |page_end| page_end.message());
+    let from = page_end.as_ref().map_or(0, |page_end| page_end.message());
     let mut pager = match (position, page_end) {
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),

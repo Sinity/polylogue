@@ -53,7 +53,11 @@ fn content_block(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Block {
 
 /// An image item: a `data:` URL becomes a blob; any other URL is kept as a
 /// reference.
-fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<ExtractedBlob>) -> Attachment {
+fn image(
+    item: &Json,
+    direction: AttachmentDirection,
+    blobs: &mut Vec<ExtractedBlob>,
+) -> Attachment {
     let url = str_field(item, "image_url").or_else(|| str_field(item, "url"));
     let mut attachment = Attachment {
         direction,

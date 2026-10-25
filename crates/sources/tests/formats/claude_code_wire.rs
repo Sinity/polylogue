@@ -113,12 +113,7 @@ fn the_team_name_is_captured_once_per_session() {
     let teams = events(&p, "team");
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0]["data"]["team"], "structural-consolidation");
-    assert!(
-        p["counts"]["unread_fields"]
-            .as_object()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(p["counts"]["unread_fields"].as_object().unwrap().is_empty());
 }
 
 #[test]

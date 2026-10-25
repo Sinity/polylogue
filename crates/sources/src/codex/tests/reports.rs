@@ -181,7 +181,13 @@ fn observation_state_survives_every_eof_restart_without_holding_item_bodies() {
         let used = first.consumed;
         let mut parser_state: ParserState =
             serde_json::from_value(serde_json::to_value(parser_state).unwrap()).unwrap();
-        let second = run(&rollout(), &mut parser_state, &trace[used as usize..], used as u64).unwrap();
+        let second = run(
+            &rollout(),
+            &mut parser_state,
+            &trace[used as usize..],
+            used as u64,
+        )
+        .unwrap();
         let mut got = readings(&first);
         got.extend(readings(&second));
         assert_eq!(got, expected, "split {cut}");

@@ -295,7 +295,12 @@ impl Rollout {
         parser_state.session.as_ref().map(|s| s.id.clone())
     }
 
-    fn session_meta(&self, parser_state: &mut ParserState, p: &Json, out: &mut Output) -> RecordOutcome {
+    fn session_meta(
+        &self,
+        parser_state: &mut ParserState,
+        p: &Json,
+        out: &mut Output,
+    ) -> RecordOutcome {
         let Some(thread) = str_field(p, "id").or(self.thread.as_deref()) else {
             return RecordOutcome::unreadable("session_meta without a thread ID");
         };
@@ -462,7 +467,8 @@ impl Rollout {
         let session = if copied {
             // Stored once, in the parent; only items with an ID can be
             // recognized there.
-            let (Some(parent), Some(_)) = (parser_state.copied_from.clone(), str_field(item, "id")) else {
+            let (Some(parent), Some(_)) = (parser_state.copied_from.clone(), str_field(item, "id"))
+            else {
                 return RecordOutcome::skipped("copied from the parent thread, which stores it");
             };
             match session_id(&parent) {
@@ -472,7 +478,9 @@ impl Rollout {
         } else {
             match self.own(parser_state) {
                 Some(s) => s,
-                None => return RecordOutcome::unreadable("no thread ID in the file name or its header"),
+                None => {
+                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
+                }
             }
         };
         let native = str_field(item, "id")
@@ -481,7 +489,8 @@ impl Rollout {
         let Some(id) = message_id(&native) else {
             return RecordOutcome::unreadable("item ID is empty");
         };
-        let Some((role, prompt_kind, blocks)) = self.item_blocks(parser_state, &session, ty, item, out)
+        let Some((role, prompt_kind, blocks)) =
+            self.item_blocks(parser_state, &session, ty, item, out)
         else {
             return RecordOutcome::skipped("item with no content");
         };
@@ -604,7 +613,8 @@ impl Rollout {
                     .or_else(|| item.get("tools"))
                     .unwrap_or(&Json::Null);
                 let (text, attachments) = items::output_parts(raw, &mut out.blobs);
-                let (outcome, duration) = self.answer(parser_state, session, id.as_deref(), &text, out);
+                let (outcome, duration) =
+                    self.answer(parser_state, session, id.as_deref(), &text, out);
                 let block = Block::ToolResult {
                     call_id: id,
                     outcome,
@@ -748,7 +758,9 @@ impl Rollout {
             }
             "CommandExecution" | "FileChange" | "McpToolCall" | "WebSearch" | "ImageView" => {
                 let Some(session) = self.own(parser_state) else {
-                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
+                    return RecordOutcome::unreadable(
+                        "no thread ID in the file name or its header",
+                    );
                 };
                 let id = str_field(item, "id").unwrap_or("");
                 if let Some(call) = parser_state.calls.get_mut(id) {
@@ -839,15 +851,19 @@ impl Rollout {
                 // rate-only and context-size reports. Its time is emission time.
                 self.unanchored_event(parser_state, p, "token_count", at, out);
                 let Some(session) = self.own(parser_state) else {
-                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
+                    return RecordOutcome::unreadable(
+                        "no thread ID in the file name or its header",
+                    );
                 };
                 let session = parser_state.copied_session.clone().unwrap_or(session);
                 let report_id = usage::identity(&(session, at, p));
                 if let Some(info) = p.get("info").filter(|info| !info.is_null())
-                    && let Some(reading) =
-                        parser_state
-                            .usage
-                            .read(info, report_id, parser_state.model.clone(), parser_state.tier.clone())
+                    && let Some(reading) = parser_state.usage.read(
+                        info,
+                        report_id,
+                        parser_state.model.clone(),
+                        parser_state.tier.clone(),
+                    )
                 {
                     self.unanchored_event(
                         parser_state,
@@ -887,7 +903,9 @@ impl Rollout {
             "exec_command_end" | "patch_apply_end" | "mcp_tool_call_end" => {
                 // Older rollouts: how a call ended, before item_completed.
                 let id = str_field(p, "call_id").unwrap_or("");
-                if let (Some(call), Some(done)) = (parser_state.calls.get_mut(id), items::completed(p)) {
+                if let (Some(call), Some(done)) =
+                    (parser_state.calls.get_mut(id), items::completed(p))
+                {
                     if call.answered
                         && let Some(session) = parser_state.session.as_ref().map(|s| s.id.clone())
                     {
@@ -919,7 +937,8 @@ impl Rollout {
                 self.event(parser_state, p, sub, at, out)
             }
             "thread_name_updated" => {
-                if let (Some(name), Some(s)) = (str_field(p, "thread_name"), parser_state.session.as_mut())
+                if let (Some(name), Some(s)) =
+                    (str_field(p, "thread_name"), parser_state.session.as_mut())
                 {
                     s.offer_title(name, TitleSource::Generated);
                 }
@@ -1040,15 +1059,23 @@ impl Parser for Rollout {
             .flatten();
         let token_observation =
             rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
-        if Self::copied(parser_state, rec.ordinal) && token_observation && parser_state.copied_from.is_none() {
+        if Self::copied(parser_state, rec.ordinal)
+            && token_observation
+            && parser_state.copied_from.is_none()
+        {
             if let Some(info) = p.get("info").filter(|info| !info.is_null()) {
                 // Advance the observed counters without charging an unknown
                 // original owner as usage of the child.
-                parser_state.usage.read(info, usage::identity(p), None, None);
+                parser_state
+                    .usage
+                    .read(info, usage::identity(p), None, None);
             }
             return self.unanchored_event(parser_state, p, "copied_token_count", rec.at, out);
         }
-        if Self::copied(parser_state, rec.ordinal) && rec.ty != "response_item" && !token_observation {
+        if Self::copied(parser_state, rec.ordinal)
+            && rec.ty != "response_item"
+            && !token_observation
+        {
             return RecordOutcome::skipped("copied from the parent thread, which stores it");
         }
         let prev = parser_state.prompt.take();
@@ -1098,7 +1125,15 @@ impl Parser for Rollout {
             if let Some(id) = str_field(p, "client_id") {
                 item["id"] = Json::String(id.to_owned());
             }
-            let d = self.response_item(parser_state, record, &item, rec.at, rec.ordinal, out, records);
+            let d = self.response_item(
+                parser_state,
+                record,
+                &item,
+                rec.at,
+                rec.ordinal,
+                out,
+                records,
+            );
             if d == RecordOutcome::Used {
                 parser_state.prompt = Some(Prompt {
                     text,
@@ -1110,7 +1145,9 @@ impl Parser for Rollout {
         match rec.ty {
             "session_meta" => self.session_meta(parser_state, p, out),
             "older_header" => self.older_header(parser_state, p),
-            "state" => RecordOutcome::skipped("turn-state marker of 2025 rollouts; holds no content"),
+            "state" => {
+                RecordOutcome::skipped("turn-state marker of 2025 rollouts; holds no content")
+            }
             "response_item" => {
                 self.response_item(parser_state, record, p, rec.at, rec.ordinal, out, records)
             }
@@ -1139,7 +1176,9 @@ impl Parser for Rollout {
                 parser_state.settings = Some(d);
                 self.event(parser_state, p, "turn_context", rec.at, out)
             }
-            "token_usage_record" => self.unanchored_event(parser_state, p, "token_usage_record", rec.at, out),
+            "token_usage_record" => {
+                self.unanchored_event(parser_state, p, "token_usage_record", rec.at, out)
+            }
             "compacted" => {
                 // A fork starts from its parent's history: the last
                 // identified item is where it branched. Keep that history

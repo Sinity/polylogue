@@ -269,7 +269,8 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 ));
             }
         }
-        let boundaries_unknown = usage::unknown_scope(reader, &Selection::default().for_tool(tool))?;
+        let boundaries_unknown =
+            usage::unknown_scope(reader, &Selection::default().for_tool(tool))?;
         let mut windows = vec![];
         for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine

@@ -150,8 +150,7 @@ fn incomplete_parents_notices_are_visible_and_html_escaped() {
         SessionId::parse("claude-code:s").unwrap(),
         SessionKind::Main,
     );
-    let notices =
-        ["Parents incomplete: parent <unknown> & its anchor are unavailable".to_owned()];
+    let notices = ["Parents incomplete: parent <unknown> & its anchor are unavailable".to_owned()];
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let rendered =
             crate::session(&session, None, vec![], View::Prompts, format, &notices).unwrap();

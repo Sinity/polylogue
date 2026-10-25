@@ -355,11 +355,13 @@ impl MessageSelection<'_, '_> {
     pub fn attachment_fingerprint(&self) -> Result<String> {
         let conn = self.reader.conn()?;
         let mut scopes = std::collections::BTreeSet::new();
-        let mut selected=conn.prepare_cached("SELECT DISTINCT own.import_id FROM message_source ms
+        let mut selected = conn.prepare_cached(
+            "SELECT DISTINCT own.import_id FROM message_source ms
             JOIN message_source shown ON shown.message_pk=ms.message_pk AND shown.shown=1
             JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.version_hash=shown.version_hash")?;
+            WHERE ms.message_pk=?1 AND ms.version_hash=shown.version_hash",
+        )?;
         for pk in self.keys()? {
             for scope in selected.query_map([pk], |row| row.get::<_, String>(0))? {
                 scopes.insert(scope?);

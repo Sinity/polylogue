@@ -87,7 +87,11 @@ fn recall_finds_prose_then_tool_output_as_a_query_sees_them() {
     assert!(p.text.contains("(output) quokka.txt"), "{}", p.text);
     let search_summary = p.search_summary.unwrap();
     assert_eq!(
-        (search_summary.hits, search_summary.sessions, search_summary.more),
+        (
+            search_summary.hits,
+            search_summary.sessions,
+            search_summary.more
+        ),
         (2, 1, false)
     );
 }

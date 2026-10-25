@@ -410,8 +410,7 @@ impl RowWriter<'_, '_> {
             })
             .optional()?;
 
-        let Some((pk, (order_input, order_seq, order_id), shown, (cur_session, cur_kind))) =
-            cur
+        let Some((pk, (order_input, order_seq, order_id), shown, (cur_session, cur_kind))) = cur
         else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             self.upsert_source(pk, &new, true)?;
@@ -927,7 +926,9 @@ impl RowWriter<'_, '_> {
         let seq = order
             .map(|order| order as i64)
             .or(e.range.map(|(start, _)| start as i64))
-            .or(self.repeats_whole_conversations.then_some(step_start as i64))
+            .or(self
+                .repeats_whole_conversations
+                .then_some(step_start as i64))
             .or(after.map(|a| a.1))
             .unwrap_or(0);
         // The first input to state an event keeps it; within that input the

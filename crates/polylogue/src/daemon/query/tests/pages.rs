@@ -270,7 +270,9 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         changes["count"], 0,
         "index availability did not edit session records"
     );
-    assert!(changes["read_at"]["index"].as_i64().unwrap() > first["read_at"]["index"].as_i64().unwrap());
+    assert!(
+        changes["read_at"]["index"].as_i64().unwrap() > first["read_at"]["index"].as_i64().unwrap()
+    );
     assert_eq!(fixture.commit_search().unwrap(), 0);
     assert_eq!(
         fixture_query(&fixture, "sessions", None, 100).unwrap()["read_at"],

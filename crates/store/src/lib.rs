@@ -11,7 +11,6 @@ pub mod archive;
 pub mod assets;
 pub mod blobs;
 pub mod chat_actions;
-mod zip_members;
 pub mod context;
 pub mod derive;
 pub mod documents;
@@ -43,6 +42,7 @@ pub mod user_writes;
 pub mod vectors;
 mod write_lock;
 pub mod writer;
+mod zip_members;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
@@ -50,8 +50,8 @@ pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use read::{BehindChain, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status};
 pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
-    Batch, InZip, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
-    Writer, WriterSender,
+    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,
+    WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]

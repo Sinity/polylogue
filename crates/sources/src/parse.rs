@@ -5,8 +5,8 @@
 use crate::Records;
 use crate::lines::{self, Record};
 use polylogue_model::Json;
-use polylogue_model::{RecordCounts, CountMismatch, RecordOutcome};
 pub use polylogue_model::{BackgroundUpdate, DocumentRow, ExtractedBlob, MessageRow, Output};
+use polylogue_model::{CountMismatch, RecordCounts, RecordOutcome};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Parser {
@@ -80,7 +80,10 @@ pub fn run<P: Parser>(
                     parser.parse_record(parser_state, record, &value, &mut output, &mut sink);
                 sink.record(&kind, &outcome);
             }
-            Err(e) => sink.record("?", &RecordOutcome::unreadable(format!("malformed JSON: {e}"))),
+            Err(e) => sink.record(
+                "?",
+                &RecordOutcome::unreadable(format!("malformed JSON: {e}")),
+            ),
         }
     }
     parser.flush(parser_state, &mut output);

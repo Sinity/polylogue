@@ -58,7 +58,10 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         );
     }
     let fresh = run(&reader, ask("sessions", T0)).unwrap();
-    assert_ne!(fresh["read_at"]["generation"], initial["read_at"]["generation"]);
+    assert_ne!(
+        fresh["read_at"]["generation"],
+        initial["read_at"]["generation"]
+    );
     let after = format!(
         "changes where after:{}",
         fresh["read_at"]["cursor"].as_str().unwrap()
@@ -119,12 +122,17 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
-    assert_eq!(changes["read_at"]["generation"], initial["read_at"]["generation"]);
-    assert!(
-        changes["read_at"]["index"].as_i64().unwrap() > initial["read_at"]["index"].as_i64().unwrap()
+    assert_eq!(
+        changes["read_at"]["generation"],
+        initial["read_at"]["generation"]
     );
     assert!(
-        changes["read_at"]["archive"].as_i64().unwrap() > initial["read_at"]["archive"].as_i64().unwrap()
+        changes["read_at"]["index"].as_i64().unwrap()
+            > initial["read_at"]["index"].as_i64().unwrap()
+    );
+    assert!(
+        changes["read_at"]["archive"].as_i64().unwrap()
+            > initial["read_at"]["archive"].as_i64().unwrap()
     );
     let rows = changes["rows"].as_array().unwrap();
     assert!(

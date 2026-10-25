@@ -52,14 +52,11 @@ impl Engine {
         unchanged(&file, facts, original.len())?;
         let original_id = original.hash().to_string();
         for (_, index, member) in &mut members {
-            member
-                .member
-                .as_mut()
-                .expect("captured membership")
-                .zip = Some(polylogue_store::InZip {
-                input: original_id.clone(),
-                member_index: *index,
-            });
+            member.member.as_mut().expect("captured membership").zip =
+                Some(polylogue_store::InZip {
+                    input: original_id.clone(),
+                    member_index: *index,
+                });
         }
         let kept = polylogue_sources::origin::by_name(KEPT).expect("declared origin");
         let zip = Captured {

@@ -220,7 +220,9 @@ fn session_and_document_excision_inside_a_zip_refuse_and_change_nothing() {
     let before = snapshot(&e);
     assert_eq!(before.1, bytes);
     for scope in [
-        ExciseTarget::Session(polylogue_model::SessionId::parse("claude-code:zip-session").unwrap()),
+        ExciseTarget::Session(
+            polylogue_model::SessionId::parse("claude-code:zip-session").unwrap(),
+        ),
         ExciseTarget::Document(polylogue_model::DocumentId::parse(&doc).unwrap()),
     ] {
         for dry_run in [true, false] {
@@ -319,10 +321,7 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 4);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 4);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 9);
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.observation_zip"),
-        6
-    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 6);
     assert_eq!(
         w.count("SELECT count(DISTINCT zip_input) AS n FROM a.observation_zip"),
         2

@@ -363,8 +363,12 @@ impl Inner {
             && let Some(observation) = &b.observation
         {
             for new_blob in b.new_blob.iter().chain(&b.blobs) {
-                if crate::excise::raw_import(&self.archive, &b.input.id, &new_blob.hash, observation)?
-                {
+                if crate::excise::raw_import(
+                    &self.archive,
+                    &b.input.id,
+                    &new_blob.hash,
+                    observation,
+                )? {
                     return Err(StoreError::InputRefused {
                         input: b.input.id.clone(),
                     });
@@ -425,20 +429,22 @@ pub(super) fn send_to_sinex(
         return Ok(());
     };
     let (index, previous) = crate::primary::next_part(tx, &record.input, extent.chain)?;
-    let mut bytes: Box<dyn std::io::Read> = match (file.map(|f| &f.file), new_blob.map(|p| &p.stored))
-    {
-        (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
-        (_, Some(Stored::Inline(data))) => Box::new(std::io::Cursor::new(zstd::bulk::decompress(
-            data,
-            usize::try_from(extent.length)
-                .map_err(|_| StoreError::Invalid("a new blob exceeds memory".into()))?,
-        )?)),
-        _ => {
-            return Err(StoreError::Invalid(
-                "a part for Sinex has no bytes to send".into(),
-            ));
-        }
-    };
+    let mut bytes: Box<dyn std::io::Read> =
+        match (file.map(|f| &f.file), new_blob.map(|p| &p.stored)) {
+            (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
+            (_, Some(Stored::Inline(data))) => {
+                Box::new(std::io::Cursor::new(zstd::bulk::decompress(
+                    data,
+                    usize::try_from(extent.length)
+                        .map_err(|_| StoreError::Invalid("a new blob exceeds memory".into()))?,
+                )?))
+            }
+            _ => {
+                return Err(StoreError::Invalid(
+                    "a part for Sinex has no bytes to send".into(),
+                ));
+            }
+        };
     let material = sinex.send_part(
         &crate::primary::Part {
             input,

@@ -62,7 +62,11 @@ fn recognizes_only_its_own_format() {
 fn steps(bytes: &[u8]) -> Vec<Step> {
     struct NoOwners;
     impl ExportState for NoOwners {
-        fn record_first_session(&mut self, _: &str, _: &SessionId) -> Result<Option<SessionId>, String> {
+        fn record_first_session(
+            &mut self,
+            _: &str,
+            _: &SessionId,
+        ) -> Result<Option<SessionId>, String> {
             panic!("Polylogue export must preserve its authored message ownership")
         }
         fn last_message(

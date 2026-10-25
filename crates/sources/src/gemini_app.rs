@@ -87,8 +87,10 @@ impl ExportParser for GeminiApp {
             .clone()
             .unwrap_or_else(|| format!("entry-{stamp}"));
         let Some(sid) = session_id(ORIGIN, &native) else {
-            sink.records
-                .record(&e.verb, &RecordOutcome::unreadable("unusable conversation ID"));
+            sink.records.record(
+                &e.verb,
+                &RecordOutcome::unreadable("unusable conversation ID"),
+            );
             return Ok(());
         };
         if state.record_first_session(&native, &sid)?.is_none() {

@@ -353,7 +353,12 @@ impl Engine {
                     || st.parsed_upto == 0
                     || (st.origin.open)(path).is_some_and(|p| p.is_capture_log());
                 if resumable && !never_parsed {
-                    (st.stored, st.parsed_upto, st.parser_state.take(), Priority::Live)
+                    (
+                        st.stored,
+                        st.parsed_upto,
+                        st.parser_state.take(),
+                        Priority::Live,
+                    )
                 } else {
                     (st.stored, 0, None, Priority::Live)
                 }
