@@ -39,10 +39,7 @@ fn messages_one_record_holds_read_in_record_order() {
         200,
         record(
             200,
-            &[
-                ("y", Role::User, "fifth"),
-                ("b", Role::Assistant, "sixth"),
-            ],
+            &[("y", Role::User, "fifth"), ("b", Role::Assistant, "sixth")],
         ),
         &["s"],
     );
