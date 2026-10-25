@@ -22,13 +22,20 @@
 
   function conversationApiUrlFromResources(conversationId, urls = resourceUrls()) {
     const escapedId = String(conversationId);
+    // Only the conversation itself, never one of its sub-resources such as
+    // `/chat_conversations/<id>/composer_notices`.
     const observed = urls.find((url) => {
       try {
         const parsed = new URL(url, currentOrigin);
+        const parts = parsed.pathname.split("/");
         return (
           parsed.origin === currentOrigin &&
-          parsed.pathname.includes(`/chat_conversations/${escapedId}`) &&
-          /\/api\/organizations\/[^/]+\/chat_conversations\/[^/]+/.test(parsed.pathname)
+          parts.length === 6 &&
+          parts[1] === "api" &&
+          parts[2] === "organizations" &&
+          parts[3] !== "" &&
+          parts[4] === "chat_conversations" &&
+          parts[5] === escapedId
         );
       } catch {
         return false;

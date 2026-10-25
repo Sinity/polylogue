@@ -311,6 +311,26 @@ describe("claude.js native capture (real source)", () => {
     expect(requestedUrl).toBe(observedUrl);
   });
 
+  it("never takes a conversation sub-resource such as composer_notices for the conversation", async () => {
+    const noticesUrl = "https://claude.ai/api/organizations/org-observed/chat_conversations/conversation-1/composer_notices";
+    let requestedUrl = null;
+    const fetch = vi.fn(async (input) => {
+      requestedUrl = String(input);
+      return jsonResponse({ uuid: "conversation-1", name: "Derived", chat_messages: [{ uuid: "u1", sender: "human", text: "hi" }] });
+    });
+    const { sendRuntimeMessage } = installClaude({
+      url: "https://claude.ai/chat/conversation-1",
+      resourceUrls: [noticesUrl],
+      localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "00000000-0000-4000-8000-000000000042" }) },
+      fetch,
+    });
+
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result.ok).toBe(true);
+    expect(new URL(requestedUrl).pathname).toBe("/api/organizations/00000000-0000-4000-8000-000000000042/chat_conversations/conversation-1");
+  });
+
   it("returns native_capture_unavailable when no conversation API URL can be resolved at all", async () => {
     const { sendRuntimeMessage } = installClaude({ url: "https://claude.ai/chat/conversation-1" });
 
