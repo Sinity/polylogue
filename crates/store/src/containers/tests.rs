@@ -212,7 +212,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
 }
 
 #[cfg(feature = "faults")]
-mod unfinished;
+mod pending;
 
 #[test]
 fn a_container_in_one_acquisition_can_be_a_real_member_in_another() {

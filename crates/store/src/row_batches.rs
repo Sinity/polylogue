@@ -354,14 +354,14 @@ impl Snapshot {
 
     /// Refuses until every blob the query names is completely written.
     fn require_present(&self, input: &str, blobs: &str, args: &[Sql]) -> Result<()> {
-        let unfinished: bool = self.conn.query_row(
+        let pending: bool = self.conn.query_row(
             &format!(
                 "SELECT EXISTS(SELECT 1 FROM blob WHERE hash IN ({blobs}) AND state <> 'present')"
             ),
             params_from_iter(args),
             |r| r.get(0),
         )?;
-        if unfinished {
+        if pending {
             return Err(pending_input(input));
         }
         Ok(())

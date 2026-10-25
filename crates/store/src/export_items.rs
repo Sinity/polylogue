@@ -74,7 +74,7 @@ impl ExportItems {
     pub fn next_item(&mut self) -> Result<Option<Item>> {
         if self.scan_group.is_some() {
             return Err(StoreError::Invalid(
-                "export scan group is unfinished".into(),
+                "export scan group is incomplete".into(),
             ));
         }
         let (sort, ordinal) = self.cursor.clone().unwrap_or((vec![], -1));

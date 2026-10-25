@@ -21,7 +21,7 @@ impl Engine {
         let started = Instant::now();
         let mut report = ImportReport::default();
         let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
-        report.pass.pending_inputs = finished.unfinished;
+        report.pass.pending_inputs = finished.pending;
         if finished.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
         }

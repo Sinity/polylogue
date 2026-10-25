@@ -47,7 +47,7 @@ impl Catalog {
                         break;
                     }
                     if bytes.last() != Some(&b'\n') {
-                        return Err(invalid("unfinished SQLite export line"));
+                        return Err(invalid("incomplete SQLite export line"));
                     }
                     let value: Value =
                         serde_json::from_slice(&bytes).map_err(std::io::Error::from)?;

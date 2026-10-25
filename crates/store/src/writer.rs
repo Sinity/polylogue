@@ -428,7 +428,7 @@ impl Inner {
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
-        let mut unfinished = Vec::new();
+        let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
@@ -446,7 +446,7 @@ impl Inner {
                         false
                     }
                     Msg::FinishWriting(store, reply) => {
-                        unfinished.push((store, reply));
+                        finish_writing.push((store, reply));
                         false
                     }
                     Msg::Assets(staged, reply) => {
@@ -514,7 +514,7 @@ impl Inner {
             for (group, store, reply) in file_groups.drain(..) {
                 let _ = reply.send(self.store_group(group, store));
             }
-            for (store, reply) in unfinished.drain(..) {
+            for (store, reply) in finish_writing.drain(..) {
                 let _ = reply.send(self.finish_writing(&store));
             }
             for (request, reply) in users.drain(..) {

@@ -632,7 +632,7 @@ impl Engine {
         let pending_inputs = self
             .writer
             .finish_writing(Arc::clone(&self.blobs))?
-            .unfinished;
+            .pending;
         self.load()?;
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
@@ -732,11 +732,11 @@ impl Engine {
                     },
                 );
             }
-            let unfinished = pass
+            let pending = pass
                 .pending_inputs
                 .iter()
                 .any(|u| u.input == self.inputs[&f.path].input_id);
-            if let Some(plan) = self.plan(&f.path, now, unfinished)? {
+            if let Some(plan) = self.plan(&f.path, now, pending)? {
                 plans.push(plan);
             }
         }
@@ -812,7 +812,7 @@ impl Engine {
         &mut self,
         path: &Path,
         now: FileFacts,
-        unfinished: bool,
+        pending: bool,
     ) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
@@ -825,7 +825,7 @@ impl Engine {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
         }
-        if unfinished && let Some(chain) = st.chain {
+        if pending && let Some(chain) = st.chain {
             match self
                 .reads
                 .reader()?

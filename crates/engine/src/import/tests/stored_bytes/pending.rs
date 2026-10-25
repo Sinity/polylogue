@@ -47,7 +47,7 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
                     rows.rows(&batch, |_| Ok(())),
                     Err(StoreError::InputPending { .. })
                 ),
-                "unfinished bytes must not be sent to Sinex as present"
+                "pending bytes must not be sent to Sinex as present"
             );
             drop(rows);
         }
@@ -143,7 +143,7 @@ fn whole_input_excision_removes_bytes_never_installed_and_refuses_their_retry() 
 fn text_excision_can_remove_installed_bytes_still_writing() {
     let world = ClaudeHome::new();
     let path = world.dir.path().join("manual.jsonl");
-    let marker = "synthetic installed unfinished text";
+    let marker = "synthetic pending text";
     let original = claude_user("text-user", "text-session", marker);
     std::fs::write(&path, &original).unwrap();
     let hash = hashed_blobs::Hash::of(original.as_bytes());

@@ -1,5 +1,6 @@
 //! Bytes hashed and compressed off the writer thread into a private file,
-//! waiting for the writer to give them a blob row and install them.
+//! waiting for the writer to give them a blob row and move them into the
+//! blob store.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
@@ -131,7 +132,7 @@ pub struct PendingBlob {
 #[derive(Debug, Default)]
 pub struct Finished {
     pub completed: u64,
-    pub unfinished: Vec<PendingBlob>,
+    pub pending: Vec<PendingBlob>,
 }
 
 pub(crate) fn require_present(
@@ -189,7 +190,7 @@ fn check(
     Ok(())
 }
 
-pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<PendingBlob>> {
+pub(crate) fn pending_blobs(conn: &Connection, schema: &str) -> Result<Vec<PendingBlob>> {
     let sql=format!("SELECT input,hash,size FROM (
         SELECT DISTINCT i.id AS input,b.hash,b.size FROM {schema}input i JOIN {schema}revision r ON r.input=i.id
         JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob WHERE b.state='writing')
@@ -204,10 +205,10 @@ pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<PendingB
             input: row.get(0)?,
             blob: BlobHash(
                 hash.try_into()
-                    .map_err(|_| StoreError::Invalid("invalid unfinished blob hash".into()))?,
+                    .map_err(|_| StoreError::Invalid("invalid pending blob hash".into()))?,
             ),
             length: u64::try_from(length)
-                .map_err(|_| StoreError::Invalid("negative unfinished source length".into()))?,
+                .map_err(|_| StoreError::Invalid("negative pending blob length".into()))?,
             state: PendingState::Writing,
         });
     }

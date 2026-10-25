@@ -141,12 +141,12 @@ fn an_appended_ai_studio_suffix_reuses_the_retained_prefix_without_duplicate_byt
     let w = ClaudeHome::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("unfinished.json");
+    let path = dir.join("incomplete.json");
     let full = br#"{"chunkedPrompt":{"chunks":[{"role":"user","text":"now complete"}]}}"#;
     fs::write(&path, &full[..full.len() - 1]).unwrap();
     let (mut e, _lock) = engine(&w, 8);
     assert!(e.converge().unwrap().errors.is_empty());
-    assert!(texts(&w, "ai-studio:unfinished").is_empty());
+    assert!(texts(&w, "ai-studio:incomplete").is_empty());
     use std::io::Write;
     fs::OpenOptions::new()
         .append(true)
@@ -157,7 +157,7 @@ fn an_appended_ai_studio_suffix_reuses_the_retained_prefix_without_duplicate_byt
     let pass = e.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.bytes_stored, 1);
-    assert_eq!(texts(&w, "ai-studio:unfinished"), ["now complete"]);
+    assert_eq!(texts(&w, "ai-studio:incomplete"), ["now complete"]);
     assert_eq!(
         w.count("SELECT SUM(length) AS n FROM a.extent"),
         full.len() as i64

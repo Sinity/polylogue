@@ -57,7 +57,7 @@ pub use writer::{
 pub enum StoreError {
     #[error("input {input} is excluded by the archive's removal policy")]
     InputRefused { input: String },
-    #[error("input {input} has unfinished retained bytes: {reason}")]
+    #[error("input {input} has bytes still being written: {reason}")]
     InputPending { input: String, reason: String },
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),

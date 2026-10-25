@@ -358,7 +358,7 @@ impl Inner {
     pub(super) fn finish_writing(&mut self, store: &hashed_blobs::Store) -> Result<Finished> {
         let write = crate::write_lock::hold(&self.archive)?;
         let mut report = Finished::default();
-        let waiting = crate::staging::unfinished(&self.archive, "")?;
+        let waiting = crate::staging::pending_blobs(&self.archive, "")?;
         let mut missing = BTreeSet::new();
         let tx = self.archive.transaction()?;
         for item in &waiting {
@@ -379,8 +379,8 @@ impl Inner {
         if report.completed > 0 {
             self.report.transactions += 1;
         }
-        report.unfinished = crate::staging::unfinished(&self.archive, "")?;
-        for item in &mut report.unfinished {
+        report.pending = crate::staging::pending_blobs(&self.archive, "")?;
+        for item in &mut report.pending {
             if missing.contains(&item.blob) {
                 item.state = crate::staging::PendingState::Missing;
             }

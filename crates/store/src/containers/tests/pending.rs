@@ -22,7 +22,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
         let outcomes = writer
             .sender()
             .unwrap()
-            .store_group(linked(&archive, "unfinished", false), Arc::clone(&store))
+            .store_group(linked(&archive, "pending", false), Arc::clone(&store))
             .unwrap();
         assert!(outcomes.iter().any(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
@@ -38,16 +38,16 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
         }
         assert!(
             refused >= 2,
-            "an unfinished ZIP and its member are not sent to Sinex"
+            "a pending ZIP and its member are not sent to Sinex"
         );
         drop(source);
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
         let finished = writer.finish_writing(Arc::clone(&store)).unwrap();
         if point == "import.install" {
-            assert_eq!(finished.unfinished.len(), 1);
-            assert_eq!(finished.unfinished[0].blob, BlobHash::of(ORIGINAL));
-            assert_eq!(finished.unfinished[0].state, PendingState::Missing);
+            assert_eq!(finished.pending.len(), 1);
+            assert_eq!(finished.pending[0].blob, BlobHash::of(ORIGINAL));
+            assert_eq!(finished.pending[0].state, PendingState::Missing);
             let outcomes = writer
                 .sender()
                 .unwrap()
@@ -55,7 +55,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
                 .unwrap();
             assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
         } else {
-            assert!(finished.unfinished.is_empty());
+            assert!(finished.pending.is_empty());
         }
         let source = Snapshot::open(&archive.root).unwrap();
         for batch in source.batches(None, 10_000).unwrap() {

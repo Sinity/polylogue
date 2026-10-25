@@ -532,7 +532,7 @@ fn revisions_extents_and_parse_state_follow_appends() {
     assert_eq!(known.len(), 1);
     assert_eq!(known[0].stored, 25);
     assert_eq!(known[0].parsed_upto, 18);
-    assert!(!known[0].waiting, "an unfinished chunk still has work");
+    assert!(!known[0].waiting, "an incomplete chunk still has work");
     let state = r.query("SELECT status FROM parse_state", &[]).unwrap();
     assert_eq!(state[0]["status"], "parsing");
 }
