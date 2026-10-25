@@ -419,10 +419,10 @@ describe("durable capture staging", () => {
     await staging.acknowledge(prepared.ref); expect(storage.files.size).toBe(0);
   });
 
-  it("commits a resumable conversion once and reports a missing immutable file", async () => {
+  it("commits a resumable stage once and reports a missing immutable file", async () => {
     const storage = memoryOriginStorage(); const { store } = stagingRuntime(storage); let staging = new CaptureStaging(storage, store);
     const original = { session: { turns: [{ text: "acquired offline evidence" }] } };
-    const id = staging.conversionId("polylogue-ext-synthetic");
+    const id = staging.queueStageId("polylogue-ext-synthetic");
     const first = await staging.prepare(globalThis.structuredClone(original), id);
     const writes = storage.writes.length;
     staging = new CaptureStaging(storage, store);
@@ -433,11 +433,11 @@ describe("durable capture staging", () => {
     await expect(staging.prepare({ capture_body_ref: id })).rejects.toMatchObject({ code: "capture_staging_missing_bytes", cause: expect.objectContaining({ name: "NotFoundError" }) });
   });
 
-  it("does not recommit an ACKed delivery while resuming its conversion", async () => {
+  it("does not recommit an ACKed delivery while resuming its stage", async () => {
     const { staging, storage, store } = stagingRuntime();
     const envelope = { session: { turns: [{ text: "already delivered" }] } };
-    const delivery = { id: "converted-delivery", delivery_kind: "foreground", queued_at: "2026-01-01T00:00:00Z" };
-    const id = staging.conversionId(delivery.id);
+    const delivery = { id: "staged-delivery", delivery_kind: "foreground", queued_at: "2026-01-01T00:00:00Z" };
+    const id = staging.queueStageId(delivery.id);
     const first = await staging.prepare(globalThis.structuredClone(envelope), id, delivery);
     const receipt = acceptedReceipt("actual-ack", first.contentHash);
     await staging.markAcknowledged(id, receipt);

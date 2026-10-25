@@ -6,7 +6,7 @@ const AUTO_REFRESH_MS = 8000;
 // the sole cross-script binding and call through it instead.
 const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
-let currentCaptureQueue = { entries: [], dropped_count: 0 };
+let currentCaptureQueue = { entries: [] };
 let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
 let currentBackfillJobs = [];
 let currentReceiverOnline = true;
@@ -347,12 +347,11 @@ function renderFreshnessQueue(queue) {
 }
 
 function renderQueue(queue) {
-  currentCaptureQueue = queue && typeof queue === "object" ? queue : { entries: [], dropped_count: 0 };
+  currentCaptureQueue = queue && typeof queue === "object" ? queue : { entries: [] };
   const countNode = document.getElementById("queue-count");
   const listNode = document.getElementById("queue-log");
   const entries = Array.isArray(currentCaptureQueue.entries) ? currentCaptureQueue.entries : [];
-  const droppedCount = Number(currentCaptureQueue.dropped_count) || 0;
-  countNode.textContent = droppedCount ? `${entries.length} (+${droppedCount} dropped)` : String(entries.length);
+  countNode.textContent = String(entries.length);
   if (!entries.length) {
     listNode.innerHTML = '<div class="log-meta">No captures queued for retry.</div>';
     renderWorkQueue();
@@ -620,7 +619,6 @@ async function render() {
   const stored = await chrome.storage.local.get({
     polylogueCaptureLog: [],
     polylogueDebugLog: [],
-    polylogueCaptureQueue: { entries: [], dropped_count: 0 },
     polylogueCaptureFreshnessQueue: { entries: {}, dropped_count: 0 },
     polylogueState: null,
     polylogueSessionLedger: {},
@@ -749,10 +747,10 @@ async function render() {
   renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id, currentReceiverOnline);
 
   if (mission?.work) {
-    renderQueue(mission.work.capture_queue || stored.polylogueCaptureQueue);
+    renderQueue(mission.work.capture_queue);
     renderFreshnessQueue(mission.work.freshness_queue || stored.polylogueCaptureFreshnessQueue);
   } else {
-    renderQueue(stored.polylogueCaptureQueue);
+    renderQueue(null);
     renderFreshnessQueue(stored.polylogueCaptureFreshnessQueue);
   }
   renderBackfillControls(mission?.work?.backfill_jobs || []);
@@ -890,7 +888,6 @@ function supportPacketOrigin(url) {
 function supportPacketCaptureQueue(queue) {
   const entries = Array.isArray(queue?.entries) ? queue.entries : [];
   return {
-    dropped_count: Number(queue?.dropped_count) || 0,
     entry_count: entries.length,
     entries: entries.map((entry) => {
       return {
@@ -944,7 +941,6 @@ document.getElementById("debug-export").addEventListener("click", async () => {
       chrome.storage.local.get({
         polylogueDebugLog: [],
         polylogueCaptureLog: [],
-        polylogueCaptureQueue: { entries: [], dropped_count: 0 },
         polylogueCaptureFreshnessQueue: { entries: {}, dropped_count: 0 },
         polylogueState: null,
       }),
@@ -957,7 +953,7 @@ document.getElementById("debug-export").addEventListener("click", async () => {
       receiver: snapshot?.receiver || null,
       extension: snapshot?.extension || null,
       automatic_capture: {
-        capture_queue: supportPacketCaptureQueue(stored.polylogueCaptureQueue),
+        capture_queue: supportPacketCaptureQueue(snapshot?.work?.capture_queue),
         freshness_queue: stored.polylogueCaptureFreshnessQueue,
       },
       browser_actions: (Array.isArray(actionStatus) ? actionStatus : []).map(supportPacketAction),

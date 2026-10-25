@@ -4,7 +4,7 @@ import { NativeCaptureNormalizer } from "../capture/native.js";
 import { prepareNativeCapture as prepareNativeTransport } from "../capture/native_transport.js";
 import { CaptureStaging } from "../capture/staging.js";
 import { BackfillCoordinator } from "../backfill/coordinator.js";
-import { BACKFILL_RECOVERY_CHECKPOINT_VERSION, DURABLE_RECEIVER_ACK_FIELDS, retryAfterMs, receiverAckContractError } from "../backfill/models.js";
+import { DURABLE_RECEIVER_ACK_FIELDS, retryAfterMs, receiverAckContractError } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore, nativeCacheOrder } from "../backfill/storage.js";
@@ -68,10 +68,8 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
 const ACCEPTED_MESSAGE_IDENTITIES_KEY = "polylogueAcceptedMessageIdentities";
-// Version 2 keys each session's accepted identities by message ref.
-const ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY = "polylogueAcceptedMessageIdentitiesVersion";
+// Each session's accepted identities, keyed by message ref.
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
-const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
 const BROWSER_ACTION_ALARM = BACKGROUND_ALARMS.browserActions;
@@ -102,21 +100,6 @@ function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
   storageMutationQueue = result.then(() => undefined, () => undefined);
   return result;
-}
-
-function resetVersionOneAcceptedMessageIdentities() {
-  // The accepted-identity cache is derived from receiver responses. A cache
-  // written in the version 1 scalar shape is dropped rather than read; the
-  // capture the extension runs on install or update rewrites it keyed by
-  // message ref.
-  return serializeStorageMutation(async () => {
-    const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 1 });
-    if (Number(current[ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]) >= 2) return;
-    await runtimeChrome.storage.local.set({
-      [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {},
-      [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 2,
-    });
-  });
 }
 
 function serializeCaptureQueueMutation(mutation, signal = null) {
@@ -213,50 +196,12 @@ async function withExtensionInstanceAttribution(envelope, sender = null) {
   };
 }
 
-async function convertAcquiredBackfillRow(store, original) {
-  if (await store.localCheckpointRecordCommitted("queue", original)) return;
-  const envelope = globalThis.structuredClone(original.envelope);
-  const prepared = await captureStaging.prepare(envelope, captureStaging.conversionId(`checkpoint:${original.id}`),
-    { delivery_kind: "backfill", id: original.id, job_id: original.job_id });
-  await captureStaging.file(prepared.ref);
-  const replacement = { ...original, body_ref: prepared.ref, envelope: {
-    capture_body_ref: prepared.ref,
-    session: { provider: original.provider, provider_session_id: original.native_id },
-    provider_meta: { capture_fidelity: original.envelope.provider_meta?.capture_fidelity || "native_full" },
-  } };
-  await store.convertLocalCheckpointRecord("queue", original, replacement);
-}
-
 async function backfillCoordinator() {
   const initializing = !backfillCoordinatorPromise;
   if (initializing) {
     const pending = (async () => {
       const store = captureStore;
       const instanceId = await extensionInstanceId();
-      const stored = await runtimeChrome.storage.local.get({ [BACKFILL_RECOVERY_CHECKPOINT_KEY]: null });
-      const previous = stored[BACKFILL_RECOVERY_CHECKPOINT_KEY];
-      if (previous !== null) {
-        if (previous.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION ||
-            !["jobs", "queue", "revisions"].every((key) => Array.isArray(previous[key]))) {
-          throw new Error("checkpoint_conversion_shape_invalid");
-        }
-        // This is the sole read of the shipped whole-ledger cache. Keep the
-        // original until each record and acquired body is stored durably.
-        for (const collection of ["jobs", "queue", "revisions"]) {
-          for (const original of previous[collection]) {
-            if (await store.localCheckpointRecordCommitted(collection, original)) continue;
-            let replacement = original;
-            if (collection === "queue" && original.envelope) {
-              await convertAcquiredBackfillRow(store, original);
-              continue;
-            }
-            if (collection === "queue" && replacement.body_ref) await captureStaging.file(replacement.body_ref);
-            await store.convertLocalCheckpointRecord(collection, original, replacement);
-          }
-        }
-        await runtimeChrome.storage.local.remove(BACKFILL_RECOVERY_CHECKPOINT_KEY);
-      }
-      for await (const original of store.unconvertedBackfillBodies()) await convertAcquiredBackfillRow(store, original);
       const adapters = providerAdapters(providerPageFetch, { requirePageContext: true, nativeBundleOwner: backfillNativeBundleOwner() });
       const coordinator = new BackfillCoordinator({
         prepareCapture: async (envelope, item, signal) => {
@@ -265,7 +210,7 @@ async function backfillCoordinator() {
             delete envelope.receiver_native;
             Object.assign(envelope, restored);
           }
-          return captureStaging.prepare(envelope, captureStaging.conversionId(`backfill:${item.id}`),
+          return captureStaging.prepare(envelope, captureStaging.queueStageId(`backfill:${item.id}`),
             { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal);
         },
         receiverAcked: (envelope) => envelope.receiver_native ? captureStaging.acknowledgeNative(envelope.capture_record_ref) : captureStaging.acknowledge(envelope.capture_body_ref),
@@ -341,11 +286,7 @@ async function startBackfill(request) {
 //
 // Acquired bodies and delivery references remain durable in OPFS and the
 // indexed queue until an actual receiver ACK or an explicit terminal refusal.
-// Chrome storage holds only the completed conversion marker; delivery cursors
-// decide counts, ordering, and retries.
-const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
-const CAPTURE_QUEUE_EMPTY = Object.freeze({ version: 3, dropped_count: 0 });
-let queueConversionPromise = null;
+// Delivery cursors decide counts, ordering, and retries.
 const CAPTURE_RETRY_ALARM = BACKGROUND_ALARMS.captureRetry;
 const CAPTURE_RETRY_BASE_DELAY_MS = 30000;
 const CAPTURE_RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
@@ -479,81 +420,9 @@ function envelopeSessionSummary(envelope) {
   };
 }
 
-const captureRetryStore = new IndexedDbBackfillStore();
-let captureRetryInitialization = null;
-
-function captureRetryMetadata(entry) {
-  const { envelope, ...metadata } = entry;
-  if (!envelope) return metadata;
-  const summary = envelopeSessionSummary(envelope);
-  return { ...metadata, provider: summary.provider, provider_session_id: summary.providerSessionId,
-    title: envelope.session?.title || null, capture_fidelity: summary.captureMode,
-    turn_count: summary.turnCount, attachment_count: summary.attachmentCount };
-}
-
-async function cacheCaptureQueueState(queue) {
-  // The atomic IDB import marker and delivery roots own acquired bytes. A
-  // failed derived Chrome cache must not prevent their retry.
-  try { await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue }); }
-  catch (error) {
-    await appendDebugLog({ stage: "capture_queue_cache_failed", error: String(error.message || error) }).catch(() => undefined);
-  }
-}
-
-async function initializeCaptureRetries() {
-  if (!captureRetryInitialization) {
-    captureRetryInitialization = (async () => {
-      const stored = await runtimeChrome.storage.local.get({ [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY });
-      const previous = stored[CAPTURE_QUEUE_KEY];
-      // Transfer original retry inputs once, atomically with the completion
-      // marker. The body-free local value is only a derived status cache.
-      await captureRetryStore.importCaptureRetries((previous?.entries || []).map((entry) => ({
-        metadata: captureRetryMetadata(entry), envelope: entry.envelope,
-      })));
-      const entries = await captureRetryStore.listCaptureRetries();
-      const queue = { entries, dropped_count: previous?.dropped_count || 0 };
-      await cacheCaptureQueueState(queue);
-      return queue.dropped_count;
-    })().catch((error) => { captureRetryInitialization = null; throw error; });
-  }
-  return captureRetryInitialization;
-}
-
-async function getCaptureQueue() {
-  if (!queueConversionPromise) queueConversionPromise = (async () => {
-    // Import the original local inputs once under the existing atomic marker.
-    // A metadata-only cache never decides what happens to their acquired bodies.
-    const dropped = await initializeCaptureRetries();
-    for await (const metadata of captureRetryStore.captureRetryInputs()) {
-      const envelope = await captureRetryStore.getCaptureRetryEnvelope(metadata.id);
-      const delivery = { ...metadata, delivery_kind: "foreground", source_retry_id: metadata.id, summary: envelopeSessionSummary(envelope) };
-      const prepared = await captureStaging.prepare(envelope, captureStaging.conversionId(metadata.id), delivery);
-      const converted = { ...delivery, body_ref: prepared.ref };
-      await captureStaging.file(converted.body_ref);
-      const existing = await captureStore.getDelivery(converted.id);
-      if (existing && existing.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_conflict");
-      if (prepared.acknowledgedReceipt) {
-        // Original exact body receipt prevents a restart from resurrecting a
-        // delivery settled before the source was deleted.
-        await captureStore.deleteDelivery(converted.id);
-      } else {
-        if (!existing) await captureStore.putDelivery(converted);
-        const committed = await captureStore.getDelivery(converted.id);
-        if (committed?.body_ref !== converted.body_ref) throw new Error("capture_queue_conversion_uncommitted");
-      }
-      // The committed delivery precedes atomic deletion of the source. Any
-      // failure keeps either the original input or its exact delivery.
-      await captureRetryStore.deleteCaptureRetry(metadata.id);
-      if (prepared.acknowledgedReceipt) await captureStaging.acknowledge(converted.body_ref);
-    }
-    await cacheCaptureQueueState({ version: 3, dropped_count: dropped });
-    return { version: 3, total: await captureStore.deliveryCount(), dropped_count: dropped };
-  })();
-  try { return await queueConversionPromise; } finally { queueConversionPromise = null; }
-}
+const defaultCaptureStore = new IndexedDbBackfillStore();
 
 async function recoverStagedDeliveries() {
-  await getCaptureQueue();
   for await (const { entry } of captureStore.deliveries()) {
     if (!entry.preparing || entry.held) continue;
     try { await captureStaging.resumeDelivery(entry); }
@@ -657,7 +526,7 @@ async function reconcileCaptureRoots() {
 }
 
 async function captureQueuePage({ cursor: after = null, pageSize = 50 } = {}) {
-  const queue = await getCaptureQueue();
+  const total = await captureStore.deliveryCount();
   if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new Error("capture_queue_page_size_invalid");
   const entries = [];
   let pendingAcquisitions = 0;
@@ -675,7 +544,7 @@ async function captureQueuePage({ cursor: after = null, pageSize = 50 } = {}) {
       summary: entry.summary, provider: entry.summary?.provider || null,
       provider_session_id: entry.summary?.providerSessionId || null, cursor });
   }
-  return { total: queue.total, dropped_count: queue.dropped_count, pending_acquisition_count: pendingAcquisitions, entries, next_cursor: nextCursor };
+  return { total, pending_acquisition_count: pendingAcquisitions, entries, next_cursor: nextCursor };
 }
 
 async function refreshQueueBadge() {
@@ -686,10 +555,9 @@ async function refreshQueueBadge() {
 }
 
 async function refreshCaptureQueueCount() {
-  const queue = await getCaptureQueue();
-  cachedQueueLength = queue.total;
+  cachedQueueLength = await captureStore.deliveryCount();
   await refreshQueueBadge();
-  return queue.total;
+  return cachedQueueLength;
 }
 
 async function ensureRetryAlarm() {
@@ -761,7 +629,6 @@ async function storeCaptureForDelivery({ envelope, reason, tab = null, signal = 
   try { prepared = await captureStaging.prepare(envelope, null, entry, signal); }
   catch (error) { error.captureDeliveryId = entry.id; await refreshCaptureQueueCount(); throw error; }
   entry.body_ref = prepared.ref;
-  await getCaptureQueue();
   await captureStore.putDelivery(entry);
   await refreshCaptureQueueCount();
   await ensureRetryAlarm();
@@ -790,7 +657,6 @@ async function drainOwnedNativeBundles(owner, nativeId, beforeSequence, signal) 
 
 async function recordCaptureDeliveryFailure(entry, error) {
   return serializeCaptureQueueMutation(async () => {
-    await getCaptureQueue();
     const failure = String(error.message || error);
     const current = await captureStore.getDelivery(entry.id);
     if (!current) throw new Error("capture_delivery_reference_missing");
@@ -804,7 +670,6 @@ async function recordCaptureDeliveryFailure(entry, error) {
 
 async function finishCaptureDelivery(entry) {
   return serializeCaptureQueueMutation(async () => {
-    await getCaptureQueue();
     // The committed ACK precedes deletion of the delivery root.
     await captureStore.deleteDelivery(entry.id);
     await refreshCaptureQueueCount();
@@ -890,8 +755,7 @@ async function recordSupersededCapture(summary, receipt, reason) {
 
 async function drainCaptureQueue(trigger = "alarm") {
   return serializeCaptureQueueMutation(async () => {
-  const queue = await getCaptureQueue();
-  if (!queue.total) {
+  if (!await captureStore.deliveryCount()) {
     await clearRetryAlarm();
     return { drained: 0, remaining: 0 };
   }
@@ -1032,10 +896,9 @@ async function drainCaptureQueue(trigger = "alarm") {
 }
 
 async function loadCaptureQueueIntoCache() {
-  const queue = await getCaptureQueue();
-  cachedQueueLength = queue.total;
-  if (queue.total) await ensureRetryAlarm();
-  return queue;
+  cachedQueueLength = await captureStore.deliveryCount();
+  if (cachedQueueLength) await ensureRetryAlarm();
+  return cachedQueueLength;
 }
 
 async function probeReceiverStatus(baseUrl) {
@@ -3179,7 +3042,6 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
       polylogueState: null,
       polylogueSessionLedger: {},
       [CONVERSATION_TIMELINE_KEY]: {},
-      [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY,
       [CAPTURE_FRESHNESS_QUEUE_KEY]: null,
     }),
     backfillStatusPromise,
@@ -3212,7 +3074,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
       selectionNotes = capabilities?.selection_notes === true;
     } catch { /* An unreachable capability probe fails closed. */ }
   }
-  // Queued behind the startup migration and any capture's identity write.
+  // Queued behind any capture's identity write.
   const acceptedIdentityMap = await serializeStorageMutation(
     () => runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} }),
   );
@@ -3277,15 +3139,12 @@ export function startBackgroundRuntime(adapters) {
   captureQueueMutationQueue = Promise.resolve();
     cachedQueueLength = 0;
   runtimeChrome = adapters;
-  // Delete stored credentials without reading or transferring their value.
-  void runtimeChrome.storage.local.remove("receiverAuthToken");
   runtimeNetwork = adapters.network;
-  captureStore = captureRetryStore;
+  captureStore = defaultCaptureStore;
   captureStaging = adapters.captureStaging || new CaptureStaging(globalThis.navigator?.storage, captureStore);
   runtimeWorkerId = globalThis.crypto.randomUUID();
   nativeNormalizer = new NativeCaptureNormalizer({ staging: captureStaging, store: captureStore, prepareNative: prepareNativeCapture });
 void reconcileCaptureRoots().then(loadCaptureQueueIntoCache).catch((error) => appendDebugLog({ stage: "capture_staging_recovery_failed", error: String(typeof error.code === "string" ? error.code : (error.message || error)) }));
-void resetVersionOneAcceptedMessageIdentities();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
 

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { IDBFactory, IDBKeyRange, indexedDB } from "fake-indexeddb";
+import { IDBKeyRange, indexedDB } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -482,48 +482,6 @@ describe("build.mjs full archive emission", () => {
       }
     } finally { startGate = null; beginSpy.mockRestore(); }
 
-    // A fresh profile has a new storage factory and worker module graph.
-    // A query on the old composition-root URL still caches its imported runtime.
-    globalThis.indexedDB = new IDBFactory();
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: memoryOriginStorage() } });
-    const recoveryUnpacked = join(smokeRoot, "recovery-unpacked");
-    execFileSync("python3", ["-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, recoveryUnpacked]);
-    expect(readFileSync(join(recoveryUnpacked, "src", "background", "runtime.js")))
-      .toEqual(readFileSync(join(unpacked, "src", "background", "runtime.js")));
-    stored = {
-      receiverBaseUrl: "http://127.0.0.1:8765",
-      polylogueBackfillRecoveryCheckpoint: {
-        version: 1,
-        jobs: [{
-          id: "packaged-recovered", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "17", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
-          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
-        }],
-        queue: [{ id: "packaged-recovered-item", job_id: "packaged-recovered", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
-        revisions: [],
-      },
-    };
-    const pageWorkCount = pageRequests.filter((request) => request.operation !== "identity").length;
-    const recoveredWorkerUrl = `${pathToFileURL(join(recoveryUnpacked, "src", "background.js")).href}?recovery=${Date.now()}`;
-    await import(/* @vite-ignore */ recoveredWorkerUrl);
-    const recoveredStatus = await send({ type: "polylogue.backfill.status" });
-    expect(recoveredStatus).toMatchObject({ ok: true });
-    // Original checkpoint input transfers to durable ownership, but missing
-    // acquired bytes remain an actionable refusal, never a completed capture.
-    expect(recoveredStatus.jobs.find(job => job.id === "packaged-recovered")).toMatchObject({
-      id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",
-      inventory_cursor: "17", daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
-      progress: expect.objectContaining({ operator_action: 1 }),
-      recovery_checkpoint_error: null,
-    });
-    expect(recoveredStatus.jobs.some(job => job.id === started.job.id)).toBe(false);
-    const { IndexedDbBackfillStore: RecoveredStore } = await import(/* @vite-ignore */ pathToFileURL(join(recoveryUnpacked, "src", "backfill", "storage.js")).href);
-    const convertedStore = new RecoveredStore();
-    expect(await convertedStore.getQueue("packaged-recovered-item")).toMatchObject({
-      state: "recovery_required", last_response_class: "browser_profile_recovery_required",
-    });
-    expect(stored.polylogueBackfillRecoveryCheckpoint).toBeUndefined();
-    expect(pageRequests.filter((request) => request.operation !== "identity")).toHaveLength(pageWorkCount);
     pageDom.window.close();
     rmSync(smokeRoot, { recursive: true, force: true });
   }, 120_000);
