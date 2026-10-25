@@ -322,7 +322,7 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let excised = conn
+    let excised: Vec<(String, String)> = conn
         .prepare("SELECT kind, value FROM excised WHERE excision_id = ?1 ORDER BY kind, value")?
         .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
