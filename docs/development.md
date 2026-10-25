@@ -137,8 +137,8 @@ everything that depends on them.
 `agentctl job start polylogue bench --workspace <worktree> -- run` measures a
 first build and incremental updates; `-- reads --repetitions 3` measures
 interactive reads. `agentctl job start polylogue measure --workspace
-<worktree> -- <command>` runs another performance driver. Both use the normal
-queue and refuse to start while host I/O pressure (`full avg60`) is above 5%,
+<worktree> -- <command>` runs another performance driver. Both use the
+one-slot measure queue, so they never hold a slot a check needs, and refuse to start while host I/O pressure (`full avg60`) is above 5%,
 because timings taken under load are not valid; start them again when the
 host is quiet. Record the pool and resource limits with the timings.
 
