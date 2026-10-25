@@ -196,7 +196,7 @@ describe("connected capture recovery", () => {
     const { dom, sendRuntimeMessage } = installChatgpt({ fetch });
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", deferReceiver: true, providerSessionId: "conversation-1" });
     expect(result.ok).toBe(true);
-    expect(await dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(native);
+    expect(await dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(native);
     expect(result.envelope.raw_provider_payload.staged_raw_json).toEqual(expect.any(String));
     // Canonical thinking/text blocks: test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end.
     expect(result.envelope.session.turns).toEqual([]);
@@ -246,7 +246,7 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     const { dom, sendRuntimeMessage } = installChatgpt({ fetch });
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "backfill_exact_capture", providerSessionId: "conversation-1", deferReceiver: true });
     expect(result).toMatchObject({ ok: true, deferred: true, envelope: { session: { provider_session_id: "conversation-1", turns: [] }, raw_provider_payload: expect.any(Object) } });
-    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
     expect(retained).toEqual(payload);
     expect(retained.mapping.reasoning.message.content.thoughts.map(item => item.content || item.summary).join("\n")).toBe(text);
     expect(fetch.mock.calls.map(([url]) => new globalThis.URL(url).pathname)).toEqual(["/api/auth/session", "/backend-api/conversation/conversation-1"]);
@@ -514,7 +514,7 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
 
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
-    expect(result).toMatchObject({ ok: false, error: "provider_throttle_authority_unavailable" });
+    expect(result).toMatchObject({ ok: false, error: "provider_throttle_unavailable" });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -531,7 +531,7 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
 
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
-    expect(result).toMatchObject({ ok: false, error: "provider_throttle_authority_unavailable" });
+    expect(result).toMatchObject({ ok: false, error: "provider_throttle_unavailable" });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -903,22 +903,22 @@ it.each(["success", "failure", "cancel", "ambiguous", "observer_failure"])("filt
   expect(storageListeners.size).toBe(outcome === "observer_failure" ? 0 : 2);
   expect(nativeRequestId).toMatch(/^polylogue-native-fetch-\d+-[a-z0-9]+$/);
   const marker=(phase,state,extra={})=>({at:new Date().toISOString(),stage:"native_preparation_progress",phase,state,acquisition_ref:rawRef.id,native_request_id:nativeRequestId,...extra});
-  const historical=marker("normalize_admission","BEGIN");
+  const historical=marker("normalize_start","BEGIN");
   emitStorage({polylogueDebugLog:{oldValue:[historical],newValue:[historical]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","BEGIN")]}}); // No fresh admission.
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{acquisition_ref:"other"})]}});
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{native_request_id:"polylogue-native-fetch-1-foreign"})]}});
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{native_request_id:undefined})]}});
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{native_request_id:"staging-uuid"})]}});
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{started_at:Date.now()+1000})]}});
-  const admission=marker("normalize_admission","BEGIN");
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{acquisition_ref:"other"})]}});
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:"polylogue-native-fetch-1-foreign"})]}});
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:undefined})]}});
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:"staging-uuid"})]}});
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{started_at:Date.now()+1000})]}});
+  const admission=marker("normalize_start","BEGIN");
   // Use an actually fresh row, not retained matching fields.
   admission.at="2099-01-01T00:00:01.000Z";
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[admission]}});
   const preparation=marker("native_prepare","BEGIN");
   emitStorage({polylogueDebugLog:{oldValue:[admission],newValue:[preparation,admission]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","END",{token:"private"})]}});
-  if(outcome==="ambiguous") emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_admission","BEGIN",{at:"2099-01-01T00:00:02.000Z"})]}});
+  if(outcome==="ambiguous") emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{at:"2099-01-01T00:00:02.000Z"})]}});
   let cancellation;
   if(outcome==="cancel") cancellation=sendRuntimeMessage({type:"polylogue.cancelCapture"});
   release();
@@ -926,7 +926,7 @@ it.each(["success", "failure", "cancel", "ambiguous", "observer_failure"])("filt
   if(cancellation) await cancellation;
   expect(storageListeners.size).toBe(outcome === "observer_failure" ? 0 : 1);
   const rows=result.native_progress.filter(row=>row.source==="background_debug_log");
-  expect(rows).toEqual(["ambiguous","observer_failure"].includes(outcome)?[]:[{stage:"normalize_admission",state:"BEGIN",source:"background_debug_log"},{stage:"native_prepare",state:"BEGIN",source:"background_debug_log"}]);
+  expect(rows).toEqual(["ambiguous","observer_failure"].includes(outcome)?[]:[{stage:"normalize_start",state:"BEGIN",source:"background_debug_log"},{stage:"native_prepare",state:"BEGIN",source:"background_debug_log"}]);
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","END")]}});
   expect(result.native_progress.filter(row=>row.source==="background_debug_log")).toEqual(rows);
   expect(JSON.stringify(result.native_progress)).not.toContain(rawRef.id);

@@ -40,7 +40,7 @@
   function nativeProgress(diagnostics, stage, state) {
     rememberNativeAttempt({ stage, state }, diagnostics);
   }
-  const backgroundProgressStages = new Set(["normalize_admission", "native_prepare", "native_assets", "native_finalize"]);
+  const backgroundProgressStages = new Set(["normalize_start", "native_prepare", "native_assets", "native_finalize"]);
   function nativeProgressSnapshot(diagnostics) {
     return diagnostics.entries.filter((entry) => ["BEGIN", "END"].includes(entry.state) &&
       ((Object.keys(entry).length === 2 && nativeProgressStages.has(entry.stage)) ||
@@ -62,7 +62,7 @@
         if (!row || Object.keys(row).length !== 6 || row.stage !== "native_preparation_progress" ||
             row.acquisition_ref !== rawRef?.id || row.native_request_id !== nativeRequestId ||
             !backgroundProgressStages.has(row.phase) || !["BEGIN", "END"].includes(row.state) || prior.some(old => equal(old, row))) continue;
-        if (row.phase === "normalize_admission" && row.state === "BEGIN") {
+        if (row.phase === "normalize_start" && row.state === "BEGIN") {
           // Repeated admission for the same request is ambiguous. Retained
           // oldValue rows do not count as another observed admission.
           if (admitted) {
@@ -403,7 +403,7 @@
     try {
       return await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "chatgpt" });
     } catch {
-      return { outcome: "provider_throttle_authority_unavailable" };
+      return { outcome: "provider_throttle_unavailable" };
     }
   }
 
@@ -416,7 +416,7 @@
         retry_after_seconds: retryAfterMs === null ? null : Math.ceil(retryAfterMs / 1000),
       });
     } catch {
-      return { ok: false, outcome: "provider_throttle_authority_unavailable" };
+      return { ok: false, outcome: "provider_throttle_unavailable" };
     }
   }
 
@@ -593,7 +593,7 @@
     nativeProgress(diagnostics, "throttle", "BEGIN");
     const throttle = await providerThrottle();
     nativeProgress(diagnostics, "throttle", "END");
-    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_authority_unavailable",
+    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_unavailable",
       outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
     const selectedId = requestedConversationId || conversationIdFromUrl();
     const observationsFor = (id) => {
@@ -608,7 +608,7 @@
       preferCachedTerminal: reason === "freshness_convergence", minimumUpdatedAt: providerUpdatedAt, signal, invocationRef, attribution, diagnostics });
     if (acquired.rateLimited) {
       const recorded = await recordProviderRateLimit(acquired.retryAfterMs, acquired.providerResponse, acquired.requestId);
-      if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
+      if (!recorded?.ok) return { ok: false, error: "provider_throttle_unavailable" };
       return { ok: false, error: "rate_limited", outcome: "rate_limited", retry_after_seconds: acquired.retryAfterMs === null ? null : Math.ceil(acquired.retryAfterMs / 1000), native_attempts: diagnostics.entries.slice(), native_attempts_dropped: diagnostics.dropped };
     }
     const source = acquired.capture;

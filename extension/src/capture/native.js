@@ -104,8 +104,8 @@ export class NativeCaptureNormalizer {
       session_kind: prepared.summary.session_kind,
       headers: { ...capture.headers, needs_follow_up: prepared.summary.needs_follow_up } };
     const envelope = this.envelope(capture);
-    if (queueContext) await this.store.publishNativeCapture(capture, envelope, queueContext);
-    else await this.store.publishForegroundNativeCapture(capture, raw.capture_bundle?.id || null);
+    if (queueContext) await this.store.commitNativeCapture(capture, envelope, queueContext);
+    else await this.store.commitForegroundNativeCapture(capture, raw.capture_bundle?.id || null);
     return envelope;
   }
   envelope(capture) {

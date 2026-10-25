@@ -15,9 +15,9 @@ describe("durable capture staging", () => {
     const acquiring = await staging.metadata(ref.id);
     await staging.append(ref, owner, 0, globalThis.Buffer.from('{"id":"session","mapping":{}}').toString("base64"));
     await staging.seal(ref, owner); const sealed = await staging.metadata(ref.id);
-    await store.retireNativeAcquisition(ref.id);
-    await staging.publishNativeAcquisition(acquiring);
-    await staging.publishNativeAcquisition(sealed);
+    await store.releaseNativeAcquisition(ref.id);
+    await staging.commitNativeAcquisition(acquiring);
+    await staging.commitNativeAcquisition(sealed);
     expect(await store.getCapture(`raw:${ref.id}`)).toBeUndefined();
     expect(await store.captureReferences(ref.id)).toBe(false);
     expect(await (await staging.file(ref.id)).text()).toContain('"id":"session"');
@@ -30,9 +30,9 @@ describe("durable capture staging", () => {
     const ref = await staging.begin(owner, { kind: "native-response" });
     await staging.append(ref, owner, 0, globalThis.Buffer.from("raw").toString("base64"));
     await staging.seal(ref, owner); const sealed = await staging.metadata(ref.id);
-    await store.publishForegroundNativeCapture({ id: "ready", state: "ready", raw_ref: ref.id,
+    await store.commitForegroundNativeCapture({ id: "ready", state: "ready", raw_ref: ref.id,
       owner, provider: "chatgpt", native_id: "session", source_refs: [ref.id] });
-    await staging.publishNativeAcquisition(sealed);
+    await staging.commitNativeAcquisition(sealed);
     expect(await store.getCapture(`raw:${ref.id}`)).toBeUndefined();
     expect(await store.captureReferences(ref.id)).toBe(true);
   });
@@ -79,7 +79,7 @@ describe("durable capture staging", () => {
 
   it("binds raw admission to the durable invocation and retains acquired bytes after invocation close", async () => {
     const { staging, store } = stagingRuntime();
-    const invocation = await store.reserveCaptureObservation(owner, "requested-session", "native-invocation", "synthetic-worker");
+    const invocation = await store.openCaptureObservation(owner, "requested-session", "native-invocation", "synthetic-worker");
     const claim = await store.getCapture(invocation.id);
     const purpose = { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/requested-session", invocation_ref: invocation };
     const raw = await staging.begin(owner, purpose, "synthetic-native-request");
@@ -168,7 +168,7 @@ describe("durable capture staging", () => {
     const stale = await staging.metadata(raw.id);
     await staging.append(raw, owner, 0, globalThis.Buffer.from('{"conversation_id":"session","mapping":{}}').toString("base64"));
     await staging.seal(raw, owner);
-    await staging.publishNativeAcquisition(stale);
+    await staging.commitNativeAcquisition(stale);
     expect(await store.getCapture(`raw:${raw.id}`)).toMatchObject({ state: "pending-normalization" });
     const cancelled = await staging.begin(owner, { kind: "native-response", source_url: "https://synthetic.invalid/native" });
     await staging.cancel(cancelled, owner);
@@ -180,12 +180,12 @@ describe("durable capture staging", () => {
     const { staging, store, storage } = stagingRuntime();
     const raw = await staging.begin(owner, { kind: "native-response", source_url: "https://synthetic.invalid/session" });
     await staging.append(raw, owner, 0, globalThis.Buffer.from('{"conversation_id":"session","mapping":{}}').toString("base64"));
-    const publish = staging.publishNativeAcquisition.bind(staging); let interrupted = true;
-    staging.publishNativeAcquisition = async (meta) => {
-      if (meta.state === "sealed" && interrupted) { interrupted = false; throw new Error("synthetic_publication_interrupted"); }
+    const publish = staging.commitNativeAcquisition.bind(staging); let interrupted = true;
+    staging.commitNativeAcquisition = async (meta) => {
+      if (meta.state === "sealed" && interrupted) { interrupted = false; throw new Error("synthetic_commit_interrupted"); }
       return publish(meta);
     };
-    await expect(staging.seal(raw, owner)).rejects.toThrow("synthetic_publication_interrupted");
+    await expect(staging.seal(raw, owner)).rejects.toThrow("synthetic_commit_interrupted");
     const writes = storage.writes.length;
     const restarted = new CaptureStaging(storage, store);
     await restarted.seal(raw, owner);
@@ -284,13 +284,13 @@ describe("durable capture staging", () => {
     const ref = await staging.begin(grokOwner, { kind: "native-response", source_url: "https://synthetic.invalid/native", capture_bundle: { id: bundle.id, name: "conversation" } });
     const bytes = JSON.stringify({ conversationId: "session" });
     await staging.append(ref, grokOwner, 0, globalThis.Buffer.from(bytes).toString("base64"));
-    const publish = store.publishNativeBundleReply.bind(store);
-    store.publishNativeBundleReply = async () => { throw new Error("synthetic-worker-loss"); };
+    const publish = store.commitNativeBundleReply.bind(store);
+    store.commitNativeBundleReply = async () => { throw new Error("synthetic-worker-loss"); };
     await expect(staging.seal(ref, grokOwner)).rejects.toThrow("synthetic-worker-loss");
     expect((await staging.metadata(ref.id)).state).toBe("sealed");
     expect((await store.getCapture(bundle.id)).replies).toEqual({});
     const writes = storage.writes.filter((name) => name.endsWith(".bytes")).length;
-    store.publishNativeBundleReply = publish;
+    store.commitNativeBundleReply = publish;
     const restarted = new CaptureStaging(storage, store);
     await restarted.seal(ref, grokOwner);
     expect((await store.getCapture(bundle.id)).replies.conversation).toEqual(ref);
@@ -315,18 +315,18 @@ describe("durable capture staging", () => {
     expect(await store.captureReferences(next.id)).toBe(true);
   });
 
-  it("retains sealed bundle replies after lease loss and atomically transfers resumed custody", async () => {
+  it("retains sealed bundle replies after claim loss and atomically transfers resumed custody", async () => {
     const storage = memoryOriginStorage(); const { staging, store } = stagingRuntime(storage);
     const grokOwner = { ...owner, provider: "grok" };
     const job = { id: "bundle-job", provider: "grok", status: "running", execution_owner: "first", execution_generation: 1 };
-    const item = { id: "bundle-item", job_id: job.id, provider: "grok", native_id: "synthetic-conversation", state: "fetching", lease_owner: "first" };
+    const item = { id: "bundle-item", job_id: job.id, provider: "grok", native_id: "synthetic-conversation", state: "fetching", claimed_by: "first" };
     await store.putJob(job); await store.putQueue(item);
     const context = { jobId: job.id, itemId: item.id, owner: "first", generation: 1 };
     const bundle = await store.beginNativeBundle({ owner: grokOwner, provider: "grok", nativeId: item.native_id, bundleId: "operation",
       requiredReplies: ["conversation", "responses"], queueContext: context });
     expect((await store.getQueue(item.id)).capture_bundle_ref).toBe(bundle.id);
     await store.putJob({ ...job, execution_owner: "second", execution_generation: 2 });
-    await store.putQueue({ ...await store.getQueue(item.id), lease_owner: "second" });
+    await store.putQueue({ ...await store.getQueue(item.id), claimed_by: "second" });
     const refs = {};
     for (const [name, value] of Object.entries({ conversation: { conversationId: item.native_id }, responses: { responses: [] } })) {
       const ref = await staging.begin(grokOwner, { kind: "native-response", source_url: "https://synthetic.invalid/native", capture_bundle: { id: bundle.id, name } });
@@ -465,7 +465,7 @@ describe("durable capture staging", () => {
     const identity = ["chatgpt", "raw-revision", "native-session", "native-record", "attachment"];
     const ref = await staging.begin(owner, { acquisition: identity }, "request-nonce");
     expect(await staging.begin(owner, { acquisition: identity }, "request-nonce")).toEqual(ref);
-    await store.reserveAcquisition(identity, ref, "request-nonce");
+    await store.claimAcquisition(identity, ref, "request-nonce");
     const parts = [globalThis.Buffer.from("first"), globalThis.Buffer.from("second"), globalThis.Buffer.from("last")];
     for (let sequence = 0; sequence < parts.length; sequence++) await staging.append(ref, owner, sequence, parts[sequence].toString("base64"));
     const result = { status: "acquired", asset: { streamed: true, media_type: "text/plain" } };
@@ -474,13 +474,13 @@ describe("durable capture staging", () => {
     expect((await staging.metadata(ref.id)).state).toBe("acquiring");
     expect(parts.every((_part, sequence) => storage.files.has(`${ref.id}.${sequence}.part`))).toBe(true);
     storage.directory.failClose = null;
-    const publish = store.publishAcquisition.bind(store);
-    store.publishAcquisition = async () => { throw new Error("synthetic_worker_loss"); };
+    const publish = store.commitAcquisition.bind(store);
+    store.commitAcquisition = async () => { throw new Error("synthetic_worker_loss"); };
     staging = new CaptureStaging(storage, store);
     await expect(staging.seal(ref, owner)).rejects.toThrow("synthetic_worker_loss");
     expect((await staging.metadata(ref.id)).state).toBe("sealed");
     const finalWrites = storage.writes.filter((name) => name === `${ref.id}.bytes`).length;
-    store.publishAcquisition = publish;
+    store.commitAcquisition = publish;
     staging = new CaptureStaging(storage, store);
     await staging.seal(ref, owner);
     expect(storage.writes.filter((name) => name === `${ref.id}.bytes`)).toHaveLength(finalWrites);
@@ -493,7 +493,7 @@ describe("durable capture staging", () => {
     const { staging, store, storage } = stagingRuntime();
     const identity = [owner.provider, "raw-revision", "session", "record", "attachment"];
     const ref = await staging.begin(owner, { acquisition: identity }, "cancel-seal");
-    await store.reserveAcquisition(identity, ref, "cancel-seal");
+    await store.claimAcquisition(identity, ref, "cancel-seal");
     await staging.append(ref, owner, 0, "Zmlyc3Q=");
     await staging.append(ref, owner, 1, "c2Vjb25k");
     let started; const writing = new Promise((resolve) => { started = resolve; });
@@ -539,7 +539,7 @@ describe("durable capture staging", () => {
     await staging.acknowledge(prepared.ref);
     const identity = [owner.provider, raw.id, "session", "message", "attachment"];
     const asset = await staging.begin(owner, { acquisition: identity }, "asset-request");
-    await store.reserveAcquisition(identity, asset, "asset-request");
+    await store.claimAcquisition(identity, asset, "asset-request");
     await staging.append(asset, owner, 0, "Ynl0ZXM=");
     const sealed = await staging.seal(asset, owner, { status: "acquired", asset: { streamed: true } });
     const first = await staging.prepare({ session: { turns: [{ text: "one", attachments: [sealed] }] } });
@@ -557,12 +557,12 @@ describe("durable capture staging", () => {
     const identity = [owner.provider, "raw", "session", "message", "asset"];
     const first = await staging.begin(owner, { acquisition: identity }, "first");
     const second = await staging.begin(owner, { acquisition: identity }, "second");
-    const initial = await store.reserveAcquisition(identity, first, "first");
-    const competing = await store.reserveAcquisition(identity, second, "second");
+    const initial = await store.claimAcquisition(identity, first, "first");
+    const competing = await store.claimAcquisition(identity, second, "second");
     expect(competing.ref).toEqual(initial.ref); expect(competing.producer_id).toBe("first");
     await staging.cancel(first, owner);
     expect(await store.getCapture(initial.id)).toBeUndefined();
-    expect((await store.reserveAcquisition(identity, second, "second")).producer_id).toBe("second");
+    expect((await store.claimAcquisition(identity, second, "second")).producer_id).toBe("second");
     await staging.append(second, owner, 0, "YQ==");
     await staging.seal(second, owner, { status: "acquired", asset: { streamed: true } });
     await staging.cancel(second, owner);
@@ -576,7 +576,7 @@ describe("durable capture staging", () => {
     for (let index = 0; index < 64; index++) {
       const id = `failed-${String(index).padStart(3, "0")}`;
       await store.putCapture({ ...current, id, state: "failed" }); expected.push(id);
-      await store.reserveAcquisition(["chatgpt", `raw-${index}`, "session", `message-${index}`, "attachment"], { id: "shared-asset" }, `producer-${index}`);
+      await store.claimAcquisition(["chatgpt", `raw-${index}`, "session", `message-${index}`, "attachment"], { id: "shared-asset" }, `producer-${index}`);
     }
     expect(await store.captureReferences("shared-asset")).toBe(false);
     await store.putCapture({ id: "last-live-root", source_refs: ["raw-63"] });
@@ -716,7 +716,7 @@ describe("durable capture staging", () => {
       const originalRoot = store.putCapture.bind(store);
       const originalDelivery = store.putDelivery.bind(store);
       let failed = false;
-      const fail = () => { failed = true; throw new Error("synthetic_publication_loss"); };
+      const fail = () => { failed = true; throw new Error("synthetic_commit_loss"); };
       staging.save = async (meta) => {
         if (!failed && boundary === "before-close" && meta.state === "receiver-preparing") fail();
         if (!failed && boundary === "ready-metadata" && meta.state === "receiver-ready") fail();
@@ -731,7 +731,7 @@ describe("durable capture staging", () => {
         return originalDelivery(row, root);
       };
       await expect(staging.prepare({ session: { turns: [{ text: "retained transcript" }], attachments: [asset] } }, bodyId, delivery))
-        .rejects.toThrow("synthetic_publication_loss");
+        .rejects.toThrow("synthetic_commit_loss");
       const entry = await store.getDelivery(delivery.id);
       expect(entry).toMatchObject({ preparing: true, body_ref: bodyId });
       expect(await store.captureReferences(bodyId)).toBe(true);

@@ -3,7 +3,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { AttachmentSha256 } from "../src/actions/sha256.js";
 import { transferBrowserActionAttachmentInPage } from "../src/actions/chatgpt.js";
 
-const transfer = (...args) => transferBrowserActionAttachmentInPage("action", "lease-owner", ...args);
+const transfer = (...args) => transferBrowserActionAttachmentInPage("action", "claim-owner", ...args);
 afterEach(() => { delete globalThis.__polylogueBrowserActionAttachments; });
 
 describe("streamed action attachment integrity", () => {
@@ -33,7 +33,7 @@ describe("streamed action attachment integrity", () => {
     const item = { attachment_id: "a1", name: "neutral.txt", mime_type: "text/plain", sha256: "11".repeat(32), size_bytes: 3 };
     transfer("begin");
     transfer("start", item);
-    expect(() => transferBrowserActionAttachmentInPage("foreign", "lease-owner", "discard")).toThrow("owner_mismatch");
+    expect(() => transferBrowserActionAttachmentInPage("foreign", "claim-owner", "discard")).toThrow("owner_mismatch");
     expect(() => transfer("append", item, 1, btoa("abc"))).toThrow("chunk_mismatch");
     expect(() => transfer("finish", item)).toThrow("size_mismatch");
     transfer("append", item, 0, btoa("abc"));

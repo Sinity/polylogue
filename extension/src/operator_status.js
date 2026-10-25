@@ -342,7 +342,7 @@
         status: backfillWorkStatus(job, receiverOnline),
         phase,
         cadence: cadenceSeconds ? `${cadenceSeconds}s cadence` : "Adaptive cadence",
-        owner: job.lease_owner || job.owner_instance_id || "This extension",
+        owner: job.claimed_by || job.owner_instance_id || "This extension",
         cooldown: job.cooldown_reason || job.last_error || null,
         receipt: job.last_ack?.receiver_request_id
           ? `Last receiver ACK ${job.last_ack.receiver_request_id}`
@@ -363,10 +363,10 @@
       title: `${providerLabel(entry.provider)} conversation ${entry.native_id}`,
       status: receiverOnline === false
         ? { ...OPERATOR_STATUS.receiver_offline }
-        : { ...(entry.lease_owner ? WORK_STATUS.running : WORK_STATUS.queued) },
-      phase: entry.lease_owner ? "Checking latest provider turn" : "Waiting for freshness check",
+        : { ...(entry.claimed_by ? WORK_STATUS.running : WORK_STATUS.queued) },
+      phase: entry.claimed_by ? "Checking latest provider turn" : "Waiting for freshness check",
       cadence: nextAttemptLabel(new Date(entry.next_attempt_at_ms || 0).toISOString()),
-      owner: entry.lease_owner || "This extension",
+      owner: entry.claimed_by || "This extension",
       cooldown: entry.last_error || null,
       receipt: (entry.reasons || []).join(", ") || "Provider change observed",
       updated_at: entry.hinted_at || null,
@@ -427,7 +427,7 @@
   function actionPresentation(action = {}) {
     const labels = {
       queued: "Browser action queued",
-      leased: "Browser action claimed",
+      claimed: "Browser action claimed",
       preparing: "Browser action preparing",
       submit_intent: "Browser action ready to submit",
       awaiting_approval: "Browser action awaiting approval",
@@ -504,7 +504,7 @@
   }
 
   function pendingBrowserActionCount(browserActions = []) {
-    const pendingStatuses = new Set(["queued", "leased", "preparing", "submit_intent"]);
+    const pendingStatuses = new Set(["queued", "claimed", "preparing", "submit_intent"]);
     return (Array.isArray(browserActions) ? browserActions : [])
       .filter((action) => pendingStatuses.has(action?.status)).length;
   }

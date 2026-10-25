@@ -187,7 +187,7 @@ describe("Grok native capture end to end", () => {
     expect(response.envelope.raw_provider_payload).toBeTruthy();
     expect(response.envelope.session.provider_session_id).toBe(conversationId);
     expect(response.envelope.session.session_kind).toBe("standard");
-    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
     expect(retained.responses.responses).toEqual([humanResponse(), assistantResponse()]);
     expect(response.envelope.raw_provider_payload).toBeDefined();
     expect(response.envelope.session.turns).toEqual([]);
@@ -203,7 +203,7 @@ describe("Grok native capture end to end", () => {
 
     expect(response.ok).toBe(true);
     expect(response.envelope.session.session_kind).toBe("temporary");
-    expect((await dom.__captureRuntime.retainedNativeReplies(response.envelope)).conversation.temporary).toBe(true);
+    expect((await dom.__captureRuntime.storedNativeReplies(response.envelope)).conversation.temporary).toBe(true);
   });
 
   it("acquires a file attachment's bytes through assets.grok.com and verifies its sha256", async () => {
@@ -235,7 +235,7 @@ describe("Grok native capture end to end", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
     expect(response.ok).toBe(true);
-    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
     expect(retained.responses.responses[1].toolResponses).toEqual(withOddTool.toolResponses);
     expect(response.envelope.raw_provider_payload).toBeDefined();
   });
@@ -250,7 +250,7 @@ describe("Grok native capture end to end", () => {
     const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [searchResponse, assistantResponse({ parentResponseId: "r-search" })] }));
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
-    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
     expect(retained.responses.responses[0]).toEqual(searchResponse);
     expect(response.envelope.raw_provider_payload).toBeDefined();
   });

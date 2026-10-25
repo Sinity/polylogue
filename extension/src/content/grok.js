@@ -132,8 +132,8 @@
   async function performCapture(reason = null, requestedConversationId = null, deferReceiver = false, signal) {
     let throttle;
     try { throttle = await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "grok" }); }
-    catch { return { ok: false, error: "provider_throttle_authority_unavailable" }; }
-    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_authority_unavailable", outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
+    catch { return { ok: false, error: "provider_throttle_unavailable" }; }
+    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_unavailable", outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
     const nativeId = requestedConversationId || conversationIdFromUrl();
     if (!nativeId) return { ok: false, error: "native_capture_unavailable" };
     nativeCapture = await window.polylogueAssetStream.restoreNative("grok", nativeId, signal);

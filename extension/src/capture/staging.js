@@ -1,6 +1,6 @@
 import { createSha256 } from "../vendor/sha256.js";
 import { receiverAckContractError } from "../backfill/models.js";
-import { canonicalJson } from "../backfill/encoding.js";
+import { sortedJson } from "../backfill/encoding.js";
 
 const CHUNK_BYTES = 48 * 1024;
 const encoder = new TextEncoder();
@@ -57,7 +57,7 @@ export class CaptureStaging {
       }
     }
   }
-  async unpublishedMetadata(stageId, owner, purpose) {
+  async uncommittedMetadata(stageId, owner, purpose) {
     const directory = await this.directory();
     const file = await (await directory.getFileHandle(`${stageId}.json`)).getFile();
     // OPFS creates an empty entry before the first writable close. Recreate
@@ -107,7 +107,7 @@ export class CaptureStaging {
         }
         return { id: existing.id, token: existing.token };
       } catch (error) {
-        if (error.name !== "NotFoundError" && !(error.name === "SyntaxError" && await this.unpublishedMetadata(stageId, owner, purpose))) throw error;
+        if (error.name !== "NotFoundError" && !(error.name === "SyntaxError" && await this.uncommittedMetadata(stageId, owner, purpose))) throw error;
       }
     const bundle = purpose.capture_bundle ? await this.records.getCapture(purpose.capture_bundle.id) : null;
     const invocation = purpose.invocation_ref ? await this.records.getCapture(purpose.invocation_ref.id) : null;
@@ -125,7 +125,7 @@ export class CaptureStaging {
       queue_context: purpose.queue_context || null, kind: purpose.kind || "asset", acquisition: purpose.acquisition || null,
       capture_bundle: purpose.capture_bundle || null, source_url: purpose.source_url || null, created_at: createdAt };
     await this.save(meta);
-    if (meta.kind === "native-response" && !meta.capture_bundle) await this.publishNativeAcquisition(meta);
+    if (meta.kind === "native-response" && !meta.capture_bundle) await this.commitNativeAcquisition(meta);
     return { id: meta.id, token: meta.token };
     });
   }
@@ -170,23 +170,23 @@ export class CaptureStaging {
         if (acquisitionResult.status !== "acquired" || acquisitionResult.asset?.streamed !== true) throw stageError("capture_acquisition_result_invalid");
         meta.acquisition_result = acquisitionResult; await this.save(meta);
       }
-      const publishAcquisition = async () => {
-        if (meta.kind === "native-response" && !meta.capture_bundle) await this.publishNativeAcquisition(meta);
+      const commitAcquisition = async () => {
+        if (meta.kind === "native-response" && !meta.capture_bundle) await this.commitNativeAcquisition(meta);
         if (meta.capture_bundle) {
           const bundle = await this.records.getCapture(meta.capture_bundle.id);
-          if (bundle) await this.records.publishNativeBundleReply(meta.capture_bundle.id, owner, meta.capture_bundle.name,
+          if (bundle) await this.records.commitNativeBundleReply(meta.capture_bundle.id, owner, meta.capture_bundle.name,
             ref, { ok: true, status: meta.response_metadata?.status || 200 });
           else if (!await this.referenced(meta.id)) throw stageError("native_bundle_recovery_missing");
         }
         if (!meta.acquisition) return;
         if (!meta.acquisition_result || !this.records) throw stageError("capture_acquisition_result_missing");
-        await this.records.publishAcquisition(meta.acquisition, { ...meta.acquisition_result,
+        await this.records.commitAcquisition(meta.acquisition, { ...meta.acquisition_result,
           asset: { ...meta.acquisition_result.asset, staged_asset: ref, size_bytes: meta.bytes, sha256: meta.sha256 } });
       };
       if (meta.state === "sealed") {
         const file = await this.file(meta.id);
         if (file.size !== meta.bytes) throw stageError("capture_staging_incomplete");
-        await publishAcquisition();
+        await commitAcquisition();
         await this.discardParts(meta.id);
         return { staged_asset: ref, size_bytes: meta.bytes, sha256: meta.sha256 };
       }
@@ -220,7 +220,7 @@ export class CaptureStaging {
       // Until this publication succeeds every committed part remains the
       // recovery authority. A sealed restart reads final bytes without rewrite.
       meta.sha256 = hash.hex(); meta.state = "sealed"; await this.save(meta);
-      await publishAcquisition();
+      await commitAcquisition();
       await this.discardParts(meta.id);
       return { staged_asset: ref, size_bytes: meta.bytes, sha256: meta.sha256 };
     }); } finally { active.delete(controller); if (!active.size) this.seals.delete(ref.id); }
@@ -245,7 +245,7 @@ export class CaptureStaging {
       // An acquired result is immutable evidence even if its seal response was
       // lost. Only removal of its durable roots can retire sealed bytes.
       if (meta.state === "sealed" || meta.acquisition_result || sealing) return;
-      if (meta.kind === "native-response" && !meta.capture_bundle) await this.records.retireNativeAcquisition(meta.id);
+      if (meta.kind === "native-response" && !meta.capture_bundle) await this.records.releaseNativeAcquisition(meta.id);
       if (meta.acquisition) await this.records.releaseAcquisition(meta.acquisition, meta.id);
       await this.discard(meta.id);
     });
@@ -255,10 +255,10 @@ export class CaptureStaging {
       let meta;
       try { meta = await this.metadata(stageId); }
       catch (error) { if (error?.name === "NotFoundError") return; throw error; }
-      await this.publishNativeAcquisition(meta);
+      await this.commitNativeAcquisition(meta);
     });
   }
-  async publishNativeAcquisition(meta) {
+  async commitNativeAcquisition(meta) {
     const existing = await this.records.getCapture(`raw:${meta.id}`);
     if (meta.retired || (!existing && await this.records.hasNormalizedNativeSource(meta.id))) return;
     await this.records.putCapture({ id: `raw:${meta.id}`, kind: "native-acquisition", owner: meta.owner, provider: meta.owner.provider,
@@ -567,12 +567,12 @@ export class CaptureStaging {
             await append(first ? "" : ",");
             if (exporting) {
               for await (const text of this.json(record.checkpoint_value, signal)) await append(text);
-            } else await append(canonicalJson(record.checkpoint_value));
+            } else await append(sortedJson(record.checkpoint_value));
             first = false;
           }
           await append("]");
         }
-        await append(`,"version":${canonicalJson(snapshot.version)}}`);
+        await append(`,"version":${sortedJson(snapshot.version)}}`);
         if (exporting) {
           await append(',"acquired":['); let first = true;
           for await (const record of this.records.captureRecords(snapshot.id)) {
@@ -768,7 +768,7 @@ export class CaptureStaging {
     if (!capture) return;
     if (receiverAckContractError(capture.receiver_receipt, capture.receiver_native?.sha256)) throw stageError("capture_staging_ack_required");
     if (await this.records.recordRootCount(captureId)) return;
-    await this.retireFailedNormalizations(capture.raw_ref, capture.id);
+    await this.discardFailedNormalizations(capture.raw_ref, capture.id);
     for (const ref of capture.source_refs) {
       const meta = await this.metadata(ref); await this.save({ ...meta, retired: true });
     }
@@ -785,7 +785,7 @@ export class CaptureStaging {
     if (meta.delivery?.source_retry_id && await this.records.hasCaptureRetry(meta.delivery.source_retry_id)) return;
     if (meta.record_ref) {
       const capture = await this.records.getCapture(meta.record_ref);
-      if (capture?.state === "ready" && capture.raw_ref) await this.retireFailedNormalizations(capture.raw_ref, capture.id);
+      if (capture?.state === "ready" && capture.raw_ref) await this.discardFailedNormalizations(capture.raw_ref, capture.id);
     }
     if (meta.record_ref && await this.records.recordRootCount(meta.record_ref) <= 1) {
       for await (const record of this.records.captureRecords(meta.record_ref)) {
@@ -804,10 +804,10 @@ export class CaptureStaging {
     }
     await this.discard(stageId);
   }
-  async retireFailedNormalizations(rawId, currentId, signal = null) {
+  async discardFailedNormalizations(rawId, currentId, signal = null) {
     signal?.throwIfAborted();
     const current = await this.records.getCapture(currentId);
-    if (!current || current.raw_ref !== rawId || current.state !== "ready") throw stageError("native_normalization_publication_missing");
+    if (!current || current.raw_ref !== rawId || current.state !== "ready") throw stageError("native_normalization_commit_missing");
     for await (const failed of this.records.failedNativeCaptures(current)) {
       signal?.throwIfAborted();
       if (await this.records.recordRootCount(failed.id)) continue;

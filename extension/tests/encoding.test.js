@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { canonicalJson, deriveAccountScope } from "../src/backfill/encoding.js";
+import { sortedJson, deriveAccountScope } from "../src/backfill/encoding.js";
 
 describe("local checkpoint encoding", () => {
   it("orders Unicode scalar keys and rejects ambiguous normalized keys and numbers", () => {
-    expect(canonicalJson({ "\u{10000}": 2, "\uE000": 1 })).toBe('{"\uE000":1,"\u{10000}":2}');
-    expect(() => canonicalJson({ "é": 1, "e\u0301": 2 })).toThrow("key_collision");
-    expect(() => canonicalJson({ value: 1.5 })).toThrow("number");
+    expect(sortedJson({ "\u{10000}": 2, "\uE000": 1 })).toBe('{"\uE000":1,"\u{10000}":2}');
+    expect(() => sortedJson({ "é": 1, "e\u0301": 2 })).toThrow("key_collision");
+    expect(() => sortedJson({ value: 1.5 })).toThrow("number");
   });
   it("isolates local provider accounts and profiles without exposing account handles", async () => {
     const scope = await deriveAccountScope("profile", "chatgpt", "neutral@example.test");

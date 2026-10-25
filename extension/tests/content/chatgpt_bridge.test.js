@@ -1054,8 +1054,8 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
     const result = await harness.capturePage();
 
-    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).title).toBe("Authenticated capture fixture");
-    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).mapping["assistant-node"].message.id).toBe("assistant-message-1");
+    expect((await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).title).toBe("Authenticated capture fixture");
+    expect((await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).mapping["assistant-node"].message.id).toBe("assistant-message-1");
     expect(
       adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
     ).toHaveLength(1);
@@ -1171,7 +1171,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(receipts.map(({ result }) => result.outcome.acquired)).toEqual([0, 0, 0, 1]);
     expect(receipts.map(({ result }) => result.outcome.failed[0]?.status || "acquired")).toEqual(["signed_url_expired", "signed_url_expired", "signed_url_expired", "acquired"]);
     expect(receipts.at(-1).result.attachments[0]).toMatchObject({ provider_attachment_id: `sandbox:current-message:${targetPath}`, provider_meta: { content_sha256: expectedSha256 } });
-    expect(await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(payload);
+    expect(await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(payload);
     const metadataPaths = calls
       .filter((call) => call.url.pathname.endsWith("/interpreter/download"))
       .map((call) => call.url.searchParams.get("sandbox_path"));

@@ -296,7 +296,7 @@ describe("build.mjs full archive emission", () => {
       expect((await invocationStore.getJob(started.job.id)).execution_owner).toBeNull(), { timeout: 15000 });
     for (let inventoryCount = 2; inventoryCount <= 4; inventoryCount += 1) {
       // A request being observed does not mean its owned physical operation
-      // has settled. An alarm during that lease joins the current wake.
+      // has settled. An alarm during that claim joins the current wake.
       await waitForJobIdle();
       alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
       await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount), { timeout: 15000 });
@@ -342,7 +342,7 @@ describe("build.mjs full archive emission", () => {
     const foregroundRequest = tabs.sendMessage.mock.calls.find(([, message]) => message.type === "polylogue.capturePage");
     expect(foregroundRequest[1].invocationRef).toEqual({ id: expect.any(String), token: expect.any(String) });
     await vi.waitFor(async () => expect(await invocationStore.getCapture(foregroundRequest[1].invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     let foregroundCache = null;
     for await (const capture of invocationStore.captures()) {
       if (capture.kind === "native-cache" && capture.owner.document_id === "packaged-document") foregroundCache = capture;
@@ -369,8 +369,8 @@ describe("build.mjs full archive emission", () => {
     await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.last_error)
       .toBe("native_capture_identity_mismatch"), { timeout: 15000 });
     expect(receiverPosts).toBe(3);
-    const retainedCache = await invocationStore.getCapture(foregroundCache.id);
-    expect(retainedCache.raw_ref).toEqual(foregroundCache.raw_ref);
+    const keptCache = await invocationStore.getCapture(foregroundCache.id);
+    expect(keptCache.raw_ref).toEqual(foregroundCache.raw_ref);
     expect(await (await new CaptureStaging(globalThis.navigator.storage, invocationStore).file(foregroundRaw.id)).text()).toContain('"id":"fixture-1"');
 
     let entered;
@@ -395,7 +395,7 @@ describe("build.mjs full archive emission", () => {
     expect(await cancellation).toMatchObject({ ok: true, drained: 1 });
     heldNativeFetch = null;
     await vi.waitFor(async () => expect(await invocationStore.getCapture(cancelledRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     expect((await invocationStore.getCapture(foregroundCache.id)).raw_ref).toEqual(foregroundCache.raw_ref);
 
     let navigationEntered;
@@ -443,7 +443,7 @@ describe("build.mjs full archive emission", () => {
     expect(receiverPosts).toBe(3);
     restartRelease();
     await vi.waitFor(async () => expect(await invocationStore.getCapture(interruptedRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     heldNativeFetch = null;
     expect((await invocationStore.getCapture(restartCache.id)).raw_ref).toEqual(restartCache.raw_ref);
     expect(await (await new CaptureStaging(globalThis.navigator.storage, invocationStore).file(restartRaw.id)).text()).toBe(restartBytes);
@@ -474,7 +474,7 @@ describe("build.mjs full archive emission", () => {
         admissionRelease();
         expect(await cancelledAdmission).toMatchObject({ ok: true });
         await vi.waitFor(async () => expect(await invocationStore.getCapture(admissionRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-        await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+        await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
         expect(pageFetchCalls).toHaveLength(readsBeforeAdmission);
         expect(receiverPosts).toBe(3);
         expect((await invocationStore.getCapture(restartCache.id)).raw_ref).toEqual(restartCache.raw_ref);
@@ -496,7 +496,7 @@ describe("build.mjs full archive emission", () => {
         version: 1,
         jobs: [{
           id: "packaged-recovered", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          inventory_cursor: "17", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
           learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
         }],
         queue: [{ id: "packaged-recovered-item", job_id: "packaged-recovered", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],

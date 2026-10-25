@@ -57,7 +57,7 @@ export async function prepareNativeCapture({ capture, staging, store, inspect, a
     const retained = await store.getCaptureRecord(capture.id, key);
     if (retained?.session_attachment) continue;
     const result = descriptor.provider_meta?.native_inline_sha256
-      ? { attachments: [], outcome: { failed: [], retained_native_bytes: true } }
+      ? { attachments: [], outcome: { failed: [], stored_native_bytes: true } }
       : await acquire(descriptor, ordinal, signal);
     const attachment = result.attachments?.[0] || null;
     if (attachment?.staged_asset) {

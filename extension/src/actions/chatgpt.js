@@ -26,7 +26,7 @@ export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
 }
 
 // This function is serialized into the same MAIN document as the executor.
-// The original action/lease tuple owns the transient provider File parts.
+// The original action/claim tuple owns the transient provider File parts.
 export function transferBrowserActionAttachmentInPage(actionId, ownerId, command, item = null, offset = 0, encoded = "") {
   const key = "__polylogueBrowserActionAttachments";
   const owned = () => {

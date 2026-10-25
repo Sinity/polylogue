@@ -1,4 +1,4 @@
-import { canonicalJson } from "./encoding.js";
+import { sortedJson } from "./encoding.js";
 import { createSha256 } from "../vendor/sha256.js";
 import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, BACKFILL_RECOVERY_CHECKPOINT_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
 
@@ -11,10 +11,10 @@ function captureRecordRow(record) {
 }
 
 
-function retireRawOwner(captures, rawId) {
+function releaseRawOwner(captures, rawId) {
   // Late callbacks may hold metadata from before the ownership transfer.
   // This marker owns no bytes and shares the publication transaction lock.
-  captures.put({ id: `retired-native:${rawId}`, kind: "native-acquisition-retired" });
+  captures.put({ id: `released-native:${rawId}`, kind: "native-acquisition-released" });
   captures.delete(`raw:${rawId}`);
 }
 
@@ -81,9 +81,9 @@ function checkpointQueueItem(item) {
   delete safe.recovery_source_checkpoint;
   delete safe.envelope;
   delete safe.receiver_receipt;
-  delete safe.lease_owner;
-  delete safe.lease_expires_at_ms;
-  if (safe.state === "leased") safe.state = safe.resume_state || "recovery_required";
+  delete safe.claimed_by;
+  delete safe.claim_expires_ms;
+  if (safe.state === "claimed") safe.state = safe.resume_state || "recovery_required";
   return globalThis.structuredClone(recoveryRequiredItem(safe));
 }
 
@@ -97,7 +97,7 @@ function recoveryValueDigest(value) {
   const safe = { ...value };
   delete safe.recovery_source_checkpoint;
   delete safe.recovery_checkpoint_outcome;
-  return createSha256().update(canonicalJson(safe)).hex();
+  return createSha256().update(sortedJson(safe)).hex();
 }
 
 export function nativeCacheOrder(current, incoming) {
@@ -117,17 +117,17 @@ export function nativeCacheOrder(current, incoming) {
 }
 
 function recoveryRequiredItem(item) {
-  if (item.state === "leased") item = { ...item, state: item.resume_state || "recovery_required" };
+  if (item.state === "claimed") item = { ...item, state: item.resume_state || "recovery_required" };
   if (item.state !== "captured_waiting_receiver" && !item.capture_bundle_ref && !item.capture_record_ref && !item.body_ref) return item;
-  if (item.state === "cancelled") return { ...item, last_response_class: "browser_profile_recovery_required", last_error: "acquired_custody_not_present_in_recovery_checkpoint" };
+  if (item.state === "cancelled") return { ...item, last_response_class: "browser_profile_recovery_required", last_error: "acquired_bytes_not_in_recovery_checkpoint" };
   return {
     ...item,
     state: "recovery_required",
     resume_state: "recovery_required",
     last_response_class: "browser_profile_recovery_required",
     last_error: "captured_envelope_not_present_in_recovery_checkpoint",
-    lease_owner: null,
-    lease_expires_at_ms: null,
+    claimed_by: null,
+    claim_expires_ms: null,
   };
 }
 
@@ -150,9 +150,9 @@ function convertAcquisitionRefusal(item) {
   const acquired = Boolean(item.envelope || item.body_ref || item.receiver_receipt || item.capture_ref);
   return { ...item, state: acquired ? "recovery_required" : "eligible",
     resume_state: acquired ? "recovery_required" : null,
-    next_eligible_at_ms: 0, lease_owner: null, lease_expires_at_ms: null,
+    next_eligible_at_ms: 0, claimed_by: null, claim_expires_ms: null,
     last_response_class: acquired ? "browser_profile_recovery_required" : "discovered",
-    last_error: acquired ? "capture_refusal_retains_acquired_evidence" : null };
+    last_error: acquired ? "capture_refusal_keeps_acquired_bytes" : null };
 }
 
 export class IndexedDbBackfillStore {
@@ -303,7 +303,7 @@ export class IndexedDbBackfillStore {
     }
   }
 
-  async retireCaptureRetry(id) {
+  async deleteCaptureRetry(id) {
     const db = await this.database();
     const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
     const settled = transactionDone(tx);
@@ -360,11 +360,11 @@ export class IndexedDbBackfillStore {
   async putDelivery(entry, bodyRoot = null) {
     const db = await this.database(); const tx = db.transaction(["captures", "queue"], "readwrite");
     const done = transactionDone(tx);
-    try { const row = await this.publishDelivery(tx, entry, bodyRoot); await done; return row; }
+    try { const row = await this.commitDelivery(tx, entry, bodyRoot); await done; return row; }
     catch (error) { try { tx.abort(); } catch { /* A completed transaction cannot be aborted again. */ } await done.catch(() => undefined); throw error; }
   }
 
-  async publishDelivery(tx, entry, bodyRoot = null) {
+  async commitDelivery(tx, entry, bodyRoot = null) {
     const queue = tx.objectStore("queue"); const captures = tx.objectStore("captures");
     if (bodyRoot && bodyRoot.id !== `body:${entry.body_ref}`) { tx.abort(); throw new Error("capture_delivery_body_root_mismatch"); }
     const previous = await requestResult(queue.get(entry.id));
@@ -409,7 +409,7 @@ export class IndexedDbBackfillStore {
           session_attachment: attachments[ordinal], turn: null, asset_failures: [] })));
       }
       signal?.throwIfAborted();
-      if (delivery) await this.publishDelivery(tx, delivery, bodyRoot);
+      if (delivery) await this.commitDelivery(tx, delivery, bodyRoot);
       else tx.objectStore("captures").put(bodyRoot);
       signal?.throwIfAborted();
       await done;
@@ -475,7 +475,7 @@ export class IndexedDbBackfillStore {
       const job = await requestResult(tx.objectStore("jobs").get(queueContext.jobId));
       item = await requestResult(tx.objectStore("queue").get(queueContext.itemId));
       if (!job || job.status !== "running" || job.execution_owner !== queueContext.owner || job.execution_generation !== queueContext.generation ||
-          !item || item.job_id !== job.id || item.native_id !== nativeId || item.provider !== provider || item.lease_owner !== queueContext.owner) {
+          !item || item.job_id !== job.id || item.native_id !== nativeId || item.provider !== provider || item.claimed_by !== queueContext.owner) {
         tx.abort(); throw new Error(`stale_backfill_execution:${queueContext.jobId}`);
       }
       id = item.capture_bundle_ref || id;
@@ -515,7 +515,7 @@ export class IndexedDbBackfillStore {
     await transactionDone(tx); return row;
   }
 
-  async publishNativeBundleReply(bundleId, owner, name, ref, outcome) {
+  async commitNativeBundleReply(bundleId, owner, name, ref, outcome) {
     if (!["conversation", "responses", "response_nodes"].includes(name)) throw new Error("native_bundle_reply_invalid");
     const db = await this.database(); const tx = db.transaction(["captures", "queue", "jobs"], "readwrite");
     const captures = tx.objectStore("captures"); const row = await requestResult(captures.get(bundleId));
@@ -532,7 +532,7 @@ export class IndexedDbBackfillStore {
       const job = await requestResult(tx.objectStore("jobs").get(row.queue_context.jobId));
       // Keep fully received response bytes when execution ownership changes.
       // Only the current execution may publish progress into the queue item.
-      if (item?.capture_bundle_ref === row.id && item.lease_owner === row.queue_context.owner &&
+      if (item?.capture_bundle_ref === row.id && item.claimed_by === row.queue_context.owner &&
           job?.status === "running" && job.execution_owner === row.queue_context.owner &&
           job.execution_generation === row.queue_context.generation) {
         queue.put(queueRow({ ...item, capture_bundle_replies: Object.keys(replies) }));
@@ -568,8 +568,8 @@ export class IndexedDbBackfillStore {
     const raw = await requestResult(tx.objectStore("captures").get(`raw:${ref.id}`));
     if (!job || !item || !raw || raw.kind !== "native-acquisition" || job.status !== "running" ||
         job.execution_owner !== context.owner || job.execution_generation !== context.generation ||
-        !(job.execution_expires_at_ms > Date.now()) || !(item.lease_expires_at_ms > Date.now()) ||
-        item.job_id !== job.id || item.lease_owner !== context.owner || item.state !== "leased" ||
+        !(job.execution_expires_at_ms > Date.now()) || !(item.claim_expires_ms > Date.now()) ||
+        item.job_id !== job.id || item.claimed_by !== context.owner || item.state !== "claimed" ||
         item.native_id !== context.nativeId || job.provider !== owner.provider || item.provider !== owner.provider ||
         JSON.stringify(raw.owner) !== JSON.stringify(owner) || raw.raw_ref.token !== ref.token ||
         !/^h1:[A-Za-z0-9_-]{43}$/.test(job.account_scope || "")) {
@@ -584,7 +584,7 @@ export class IndexedDbBackfillStore {
     await done;
   }
 
-  async retireNativeAcquisition(rawId) {
+  async releaseNativeAcquisition(rawId) {
     const db = await this.database(); const tx = db.transaction(["captures", "queue"], "readwrite");
     const done = transactionDone(tx); const queue = tx.objectStore("queue");
     await visitCursor(queue.index("source_refs").openCursor(globalThis.IDBKeyRange.only(rawId)), (cursor) => {
@@ -593,11 +593,11 @@ export class IndexedDbBackfillStore {
       cursor.update({ ...item, raw_acquisition_ref: null, source_refs: (item.source_refs || []).filter((ref) => ref !== rawId) });
     });
     const captures = tx.objectStore("captures");
-    retireRawOwner(captures, rawId);
+    releaseRawOwner(captures, rawId);
     await done;
   }
 
-  async reserveCaptureObservation(owner, nativeId, kind = "dom-observation", workerOwner = null, extensionInstanceId = null) {
+  async openCaptureObservation(owner, nativeId, kind = "dom-observation", workerOwner = null, extensionInstanceId = null) {
     if (!["dom-observation", "native-invocation"].includes(kind)) throw new Error("capture_observation_kind_invalid");
     const db = await this.database(); const tx = db.transaction("captures", "readwrite");
     const captures = tx.objectStore("captures");
@@ -700,7 +700,7 @@ export class IndexedDbBackfillStore {
     }
   }
 
-  async reserveAcquisition(identity, ref, producerId) {
+  async claimAcquisition(identity, ref, producerId) {
     const id = `asset:${JSON.stringify(identity)}`;
     const db = await this.database(); const tx = db.transaction("captures", "readwrite");
     const store = tx.objectStore("captures");
@@ -722,7 +722,7 @@ export class IndexedDbBackfillStore {
     await transactionDone(tx);
   }
 
-  async publishAcquisition(identity, result) {
+  async commitAcquisition(identity, result) {
     const id = `asset:${JSON.stringify(identity)}`;
     const previous = await this.getCapture(id);
     if (!previous || previous.ref.id !== result.asset.staged_asset.id) throw new Error("capture_acquisition_owner_mismatch");
@@ -769,7 +769,7 @@ export class IndexedDbBackfillStore {
     return retained;
   }
 
-  async publishForegroundNativeCapture(capture, bundleId = null) {
+  async commitForegroundNativeCapture(capture, bundleId = null) {
     const db = await this.database(); const tx = db.transaction("captures", "readwrite");
     const captures = tx.objectStore("captures");
     if (bundleId) {
@@ -778,7 +778,7 @@ export class IndexedDbBackfillStore {
           bundle.provider !== capture.provider || bundle.native_id !== capture.native_id ||
           JSON.stringify(bundle.owner) !== JSON.stringify(capture.owner) ||
           !bundle.source_refs.every((ref) => capture.source_refs.includes(ref)))) {
-        tx.abort(); throw new Error("native_bundle_custody_transfer_invalid");
+        tx.abort(); throw new Error("native_bundle_owner_change_invalid");
       }
       // A resumed normalization may follow a completed publication of the
       // same immutable raw input. Its source roots remain independently owned.
@@ -790,25 +790,25 @@ export class IndexedDbBackfillStore {
               row.native_id === capture.native_id && JSON.stringify(row.owner) === JSON.stringify(capture.owner) &&
               capture.source_refs.every((ref) => row.source_refs?.includes(ref))) retained = true;
         });
-        if (!retained) { tx.abort(); throw new Error("native_bundle_custody_transfer_missing"); }
+        if (!retained) { tx.abort(); throw new Error("native_bundle_owner_change_missing"); }
       }
       captures.delete(bundleId);
     }
     const rawAcquisition = await requestResult(captures.get(`raw:${capture.raw_ref}`));
     if (rawAcquisition && (JSON.stringify(rawAcquisition.owner) !== JSON.stringify(capture.owner) || rawAcquisition.state !== "pending-normalization")) {
-      tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
+      tx.abort(); throw new Error("native_acquisition_owner_change_invalid");
     }
     captures.put({ ...capture, delivery_kind: "foreground" });
-    retireRawOwner(captures, capture.raw_ref);
+    releaseRawOwner(captures, capture.raw_ref);
     await transactionDone(tx);
   }
 
-  async publishNativeCapture(capture, envelope, context) {
+  async commitNativeCapture(capture, envelope, context) {
     const db = await this.database(); const tx = db.transaction(["captures", "queue", "jobs"], "readwrite");
     const job = await requestResult(tx.objectStore("jobs").get(context.jobId));
     const queue = tx.objectStore("queue"); const item = await requestResult(queue.get(context.itemId));
     if (!job || job.status !== "running" || job.execution_owner !== context.owner || job.execution_generation !== context.generation ||
-        !item || item.job_id !== job.id || item.native_id !== capture.native_id || item.provider !== capture.provider || item.lease_owner !== context.owner) {
+        !item || item.job_id !== job.id || item.native_id !== capture.native_id || item.provider !== capture.provider || item.claimed_by !== context.owner) {
       tx.abort(); throw new Error(`stale_backfill_execution:${context.jobId}`);
     }
     const captures = tx.objectStore("captures");
@@ -816,15 +816,15 @@ export class IndexedDbBackfillStore {
       const bundle = await requestResult(captures.get(item.capture_bundle_ref));
       if (!bundle || bundle.kind !== "native-bundle" || bundle.native_id !== capture.native_id || bundle.provider !== capture.provider ||
           !bundle.source_refs.every((ref) => capture.source_refs.includes(ref))) {
-        tx.abort(); throw new Error("native_bundle_custody_transfer_invalid");
+        tx.abort(); throw new Error("native_bundle_owner_change_invalid");
       }
     }
     const rawAcquisition = await requestResult(captures.get(`raw:${capture.raw_ref}`));
     if (rawAcquisition && (JSON.stringify(rawAcquisition.owner) !== JSON.stringify(capture.owner) || rawAcquisition.state !== "pending-normalization")) {
-      tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
+      tx.abort(); throw new Error("native_acquisition_owner_change_invalid");
     }
     captures.put(capture);
-    retireRawOwner(captures, capture.raw_ref);
+    releaseRawOwner(captures, capture.raw_ref);
     queue.put(queueRow({ ...item, envelope, capture_record_ref: capture.id, capture_source_refs: capture.source_refs,
       capture_bundle_ref: null, capture_bundle_replies: null, resume_state: "captured_waiting_receiver" }));
     if (item.capture_bundle_ref) captures.delete(item.capture_bundle_ref);
@@ -867,7 +867,7 @@ export class IndexedDbBackfillStore {
     const done = transactionDone(tx); const records = tx.objectStore("captures");
     if (capture.kind === "native-acquisition") {
       const rawId = capture.raw_ref?.id || capture.raw_ref;
-      const retired = await requestResult(records.get(`retired-native:${rawId}`));
+      const retired = await requestResult(records.get(`released-native:${rawId}`));
       if (retired) { await done; return retired; }
     }
     if (capture.kind === "native-acquisition" && capture.state === "acquiring") {
@@ -944,7 +944,7 @@ export class IndexedDbBackfillStore {
     const current = await requestResult(store.get(jobId));
     if (!current) { tx.abort(); await done.catch(() => undefined); throw new Error(`backfill_job_not_found:${jobId}`); }
     // Derived checkpoint observation updates only this field. It cannot
-    // overwrite concurrent operator status, execution lease or acquired custody.
+    // overwrite concurrent operator status, execution claim or acquired custody.
     store.put({ ...current, recovery_checkpoint_outcome: outcome });
     await done;
   }
@@ -965,7 +965,7 @@ export class IndexedDbBackfillStore {
     return job;
   }
 
-  async acquireJobExecution(jobId, owner, nowMs, leaseMs) {
+  async acquireJobExecution(jobId, owner, nowMs, claimMs) {
     const db = await this.database();
     const tx = db.transaction("jobs", "readwrite");
     const store = tx.objectStore("jobs");
@@ -974,26 +974,26 @@ export class IndexedDbBackfillStore {
       await transactionDone(tx);
       return null;
     }
-    const leased = {
+    const claimed = {
       ...job,
       execution_owner: owner,
-      execution_expires_at_ms: nowMs + leaseMs,
+      execution_expires_at_ms: nowMs + claimMs,
       execution_generation: (job.execution_generation || 0) + 1,
     };
-    store.put(jobRow(leased));
+    store.put(jobRow(claimed));
     await transactionDone(tx);
-    return leased;
+    return claimed;
   }
 
-  async renewJobExecution(jobId, owner, generation, nowMs, leaseMs) {
+  async renewJobExecution(jobId, owner, generation, nowMs, claimMs) {
     const db = await this.database(); const tx = db.transaction(["jobs", "queue"], "readwrite");
     const jobs = tx.objectStore("jobs"); const current = await requestResult(jobs.get(jobId));
     if (!current || current.status !== "running" || current.execution_owner !== owner || current.execution_generation !== generation) {
       tx.abort(); throw new Error(`stale_backfill_execution:${jobId}`);
     }
-    jobs.put(jobRow({ ...current, execution_expires_at_ms: nowMs + leaseMs }));
+    jobs.put(jobRow({ ...current, execution_expires_at_ms: nowMs + claimMs }));
     await visitCursor(tx.objectStore("queue").index("job_id").openCursor(globalThis.IDBKeyRange.only(jobId)), (cursor) => {
-      if (cursor.value.state === "leased" && cursor.value.lease_owner === owner) cursor.update({ ...cursor.value, lease_expires_at_ms: nowMs + leaseMs });
+      if (cursor.value.state === "claimed" && cursor.value.claimed_by === owner) cursor.update({ ...cursor.value, claim_expires_ms: nowMs + claimMs });
     });
     await transactionDone(tx);
   }
@@ -1021,7 +1021,7 @@ export class IndexedDbBackfillStore {
     return next;
   }
 
-  async reserveProviderRequests(jobId, owner, generation, count, dailyKey, nextRequestAtMs) {
+  async spendProviderRequests(jobId, owner, generation, count, dailyKey, nextRequestAtMs) {
     const db = await this.database();
     const tx = db.transaction("jobs", "readwrite");
     const store = tx.objectStore("jobs");
@@ -1080,8 +1080,8 @@ export class IndexedDbBackfillStore {
             ...item,
             state: "eligible",
             resume_state: "eligible",
-            lease_owner: null,
-            lease_expires_at_ms: null,
+            claimed_by: null,
+            claim_expires_ms: null,
             next_eligible_at_ms: resumeQueueAtMs,
             last_response_class: null,
             last_error: null,
@@ -1093,7 +1093,7 @@ export class IndexedDbBackfillStore {
       await visitCursor(queueStore.index("job_id").openCursor(globalThis.IDBKeyRange.only(jobId)), (cursor) => {
         const item = cursor.value;
         if (item.job_id === jobId && !["complete", "unchanged", "superseded", "no_turns"].includes(item.state)) {
-          queueStore.put({ ...item, state: "cancelled", lease_owner: null, lease_expires_at_ms: null });
+          queueStore.put({ ...item, state: "cancelled", claimed_by: null, claim_expires_ms: null });
         }
       });
     }
@@ -1329,7 +1329,7 @@ export class IndexedDbBackfillStore {
     await done;
   }
 
-  async publishImportedCheckpoint({ job, queue, revisions, captures, records }, signal = null) {
+  async commitImportedCheckpoint({ job, queue, revisions, captures, records }, signal = null) {
     const db = await this.database();
     const tx = db.transaction(["jobs", "queue", "revisions", "captures", "capture_records"], "readwrite");
     const done = transactionDone(tx);
@@ -1363,7 +1363,7 @@ export class IndexedDbBackfillStore {
     }
   }
 
-  async localCheckpointRecordPublished(collection, original) {
+  async localCheckpointRecordCommitted(collection, original) {
     const marker = await this.getCapture(`checkpoint-conversion:${collection}:${original.id}:${recoveryValueDigest(original)}`);
     if (!marker) return false;
     if (marker.original_digest !== recoveryValueDigest(original)) throw new Error("checkpoint_conversion_source_conflict");
@@ -1390,14 +1390,14 @@ export class IndexedDbBackfillStore {
     const current = await requestResult(target.get(original.id));
     const replaceOriginal = collection === "queue" && current && replacement.body_ref && recoveryValueDigest(queueRow(original)) === recoveryValueDigest(current);
     if (collection === "queue" && current && replacement.body_ref && current.body_ref !== replacement.body_ref && !replaceOriginal) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_conversion_custody_conflict");
+      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_conversion_owner_conflict");
     }
     if (!current || replaceOriginal) {
       const converted = convertAcquisitionRefusal(replacement);
       const value = collection === "jobs" ? recoveryCheckpointJob(checkpointJob(replacement), false, true)
         : collection === "queue" ? queueRow(converted.body_ref
-          ? { ...converted, state: converted.state === "leased" ? converted.resume_state || "captured_waiting_receiver" : converted.state,
-            lease_owner: null, lease_expires_at_ms: null }
+          ? { ...converted, state: converted.state === "claimed" ? converted.resume_state || "captured_waiting_receiver" : converted.state,
+            claimed_by: null, claim_expires_ms: null }
           : recoveryRequiredItem(converted)) : replacement;
       target.put(collection === "jobs" ? jobRow(value) : value);
     }
@@ -1405,15 +1405,15 @@ export class IndexedDbBackfillStore {
     await done;
   }
 
-  async recoverExpiredLeases(jobId, nowMs) {
+  async releaseExpiredClaims(jobId, nowMs) {
     const db = await this.database();
     const tx = db.transaction("queue", "readwrite");
     const store = tx.objectStore("queue");
     let recovered = 0;
     await visitCursor(store.index("job_id").openCursor(globalThis.IDBKeyRange.only(jobId)), (cursor) => {
       const item = cursor.value;
-      if (item.job_id === jobId && item.state === "leased" && item.lease_expires_at_ms <= nowMs) {
-        store.put({ ...item, state: item.resume_state || "eligible", lease_owner: null, lease_expires_at_ms: null });
+      if (item.job_id === jobId && item.state === "claimed" && item.claim_expires_ms <= nowMs) {
+        store.put({ ...item, state: item.resume_state || "eligible", claimed_by: null, claim_expires_ms: null });
         recovered += 1;
       }
     });
@@ -1421,7 +1421,7 @@ export class IndexedDbBackfillStore {
     return recovered;
   }
 
-  async acquireNextLease(jobId, owner, nowMs, leaseMs, receiverOnly = false) {
+  async claimNextItem(jobId, owner, nowMs, claimMs, receiverOnly = false) {
     const db = await this.database();
     const tx = db.transaction("queue", "readwrite");
     const store = tx.objectStore("queue");
@@ -1430,28 +1430,28 @@ export class IndexedDbBackfillStore {
       const item = cursor.value;
       targetProvider ||= item.provider;
       const eligible = receiverOnly ? item.state === "captured_waiting_receiver" : ["eligible", "retry_wait"].includes(item.state);
-      if (eligible && (!item.lease_owner || item.lease_expires_at_ms <= nowMs) && (item.next_eligible_at_ms || 0) <= nowMs &&
+      if (eligible && (!item.claimed_by || item.claim_expires_ms <= nowMs) && (item.next_eligible_at_ms || 0) <= nowMs &&
           (!candidate || (item.next_eligible_at_ms || 0) < (candidate.next_eligible_at_ms || 0))) candidate = item;
     });
     let providerBusy = false;
-    if (targetProvider) await visitCursor(store.index("provider_state").openCursor(globalThis.IDBKeyRange.only([targetProvider, "leased"])), (cursor) => {
-      if (cursor.value.lease_expires_at_ms > nowMs) providerBusy = true;
+    if (targetProvider) await visitCursor(store.index("provider_state").openCursor(globalThis.IDBKeyRange.only([targetProvider, "claimed"])), (cursor) => {
+      if (cursor.value.claim_expires_ms > nowMs) providerBusy = true;
     });
     if (providerBusy) {
       await transactionDone(tx);
       return null;
     }
     if (candidate) {
-      const leased = {
+      const claimed = {
         ...candidate,
         resume_state: candidate.state,
-        state: "leased",
-        lease_owner: owner,
-        lease_expires_at_ms: nowMs + leaseMs,
+        state: "claimed",
+        claimed_by: owner,
+        claim_expires_ms: nowMs + claimMs,
       };
-      store.put(queueRow(leased));
+      store.put(queueRow(claimed));
       await transactionDone(tx);
-      return leased;
+      return claimed;
     }
     await transactionDone(tx);
     return null;
@@ -1464,7 +1464,7 @@ function emptyQueueSummary() {
 }
 function includeQueueSummary(summary, item, nowMs) {
   const buckets = summary.progress; buckets.total += 1;
-  if (["discovered", "eligible", "leased"].includes(item.state)) buckets.eligible += 1;
+  if (["discovered", "eligible", "claimed"].includes(item.state)) buckets.eligible += 1;
   if (["complete", "unchanged"].includes(item.state)) buckets.complete += 1;
   if (item.state === "superseded") buckets.superseded += 1;
   if (item.state === "no_turns") buckets.no_turns += 1;
@@ -1474,5 +1474,5 @@ function includeQueueSummary(summary, item, nowMs) {
   if (!TERMINAL_QUEUE_STATES.has(item.state)) summary.finished = false;
   if (item.state === "recovery_required") summary.recoveryRequired = true;
   if (item.state === "captured_waiting_receiver") summary.receiverDue = Math.min(summary.receiverDue, item.next_eligible_at_ms || nowMs);
-  if (["eligible", "retry_wait", "leased"].includes(item.state)) summary.providerDue = Math.min(summary.providerDue, item.next_eligible_at_ms || 0);
+  if (["eligible", "retry_wait", "claimed"].includes(item.state)) summary.providerDue = Math.min(summary.providerDue, item.next_eligible_at_ms || 0);
 }

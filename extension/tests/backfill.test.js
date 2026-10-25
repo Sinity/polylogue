@@ -35,8 +35,8 @@ function coordinatorFixture(options) {
   });
 }
 
-async function retainedNativeCapture(envelope) {
-  return captureOwners.get(envelope.capture_record_ref).retainedNativeReplies(envelope);
+async function storedNativeCapture(envelope) {
+  return captureOwners.get(envelope.capture_record_ref).storedNativeReplies(envelope);
 }
 
 function response(body, { status = 200, retryAfter = null, provider: declaredProvider = null, refusal = null } = {}) {
@@ -92,7 +92,7 @@ function stagedGrokAdapter(fetchImpl, summary = {}) {
   }, { nativeBundleOwner: {
     begin: (nativeId) => store.beginNativeBundle({ owner, provider: "grok", nativeId, bundleId: globalThis.crypto.randomUUID(), requiredReplies: ["conversation", "responses"] }),
     response: async (bundleId, name, result) => {
-      if (!result.ok) await store.publishNativeBundleReply(bundleId, owner, name, null, { ok: false, status: result.status });
+      if (!result.ok) await store.commitNativeBundleReply(bundleId, owner, name, null, { ok: false, status: result.status });
     },
     restoreReply: (ref) => responses.get(ref.id),
     finish: (bundleId, signal) => normalizer.finishBundle(bundleId, owner, { signal }),
@@ -186,11 +186,11 @@ describe("background backfill coordinator", () => {
     expect((await h.store.getJob(job.id)).recovery_checkpoint_outcome.error).toBe("old remote checkpoint unavailable");
   });
 
-  it("renews a progressing capture past multiple recovery leases with IndexedDB", async () => {
-    // Leave IndexedDB scheduling on real immediates while controlling lease timers.
+  it("renews a progressing capture past multiple recovery claims with IndexedDB", async () => {
+    // Leave IndexedDB scheduling on real immediates while controlling claim timers.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
-      const adapter = new FixtureAdapter(["one"]); const h = harness({ adapter, store: makeStore(), policy: { leaseMs: 900 } });
+      const adapter = new FixtureAdapter(["one"]); const h = harness({ adapter, store: makeStore(), policy: { claimMs: 900 } });
       const job = await startJob(h); await enumerateThenAdvance(h, job);
       let release; let started;
       const began = new Promise((resolve) => { started = resolve; });
@@ -302,7 +302,7 @@ describe("background backfill coordinator", () => {
     expect(status.progress.complete).toBe(2);
     expect(h.adapter.fetchCalls).toEqual(["one", "two"]);
     expect(h.receiver).toHaveBeenCalledTimes(2);
-    expect((await retainedNativeCapture(h.receiver.mock.calls[0][0])).id).toBe("one");
+    expect((await storedNativeCapture(h.receiver.mock.calls[0][0])).id).toBe("one");
   });
 
   it("recovers the durable job, queue, revision, and ACK ledgers from real IndexedDB after a worker restart", async () => {
@@ -406,7 +406,7 @@ describe("background backfill coordinator", () => {
     const job = await startJob(h);
     expect(job).toMatchObject({
       status: "paused",
-      cooldown_reason: "receiver_capture_job_authority_unavailable",
+      cooldown_reason: "receiver_capture_jobs_unavailable",
       recovery_checkpoint_error: "storage_local_quota",
     });
     await h.coordinator.wake(job.id);
@@ -670,14 +670,14 @@ describe("background backfill coordinator", () => {
     native.current_node = "second";
     const adapter = new ChatGptBackfillAdapter();
     const capture = await adapter.normalizeCapture(response(native), { native_id: native.id }, { job_id: "job" });
-    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(await storedNativeCapture(capture)).toEqual(native);
     expect(capture.provider_meta.capture_fidelity).toBe("native_full");
     expect(capture.session.turns).toEqual([]);
     expect(capture.raw_provider_payload).toBeDefined();
     const fixture = new FixtureAdapter([native.id]); fixture.responses = [response(native)];
     const h = harness({ adapter: fixture }); const job = await startJob(h);
     await enumerateThenAdvance(h, job); await h.coordinator.wake(job.id);
-    expect(await retainedNativeCapture(h.receiver.mock.calls[0][0])).toEqual(native);
+    expect(await storedNativeCapture(h.receiver.mock.calls[0][0])).toEqual(native);
     expect((await h.store.queuePage(job.id)).items).toMatchObject([{ state: "complete", capture_fidelity: "native_full" }]);
   });
 
@@ -834,8 +834,8 @@ describe("background backfill coordinator", () => {
     expect(resumed).toMatchObject({
       state: "eligible",
       resume_state: "eligible",
-      lease_owner: null,
-      lease_expires_at_ms: null,
+      claimed_by: null,
+      claim_expires_ms: null,
       next_eligible_at_ms: h.now(),
       last_response_class: null,
       last_error: null,
@@ -861,23 +861,23 @@ describe("background backfill coordinator", () => {
     expect((await store.queuePage(job.id)).items).toMatchObject([{ state: "eligible", resume_state: "eligible", next_eligible_at_ms: h.now(), last_error: null }]);
   });
 
-  it("grants only one lease across simultaneous extension instances", async () => {
+  it("grants only one claim across simultaneous extension instances", async () => {
     const store = makeStore();
     await store.putQueue({ id: "q1", job_id: "j1", provider: "chatgpt", native_id: "one", state: "eligible", next_eligible_at_ms: 0 });
     const [left, right] = await Promise.all([
-      store.acquireNextLease("j1", "instance-left", 100, 1000),
-      store.acquireNextLease("j1", "instance-right", 100, 1000),
+      store.claimNextItem("j1", "instance-left", 100, 1000),
+      store.claimNextItem("j1", "instance-right", 100, 1000),
     ]);
     expect([left, right].filter(Boolean)).toHaveLength(1);
-    expect(((await store.queuePage("j1")).items)[0].state).toBe("leased");
+    expect(((await store.queuePage("j1")).items)[0].state).toBe("claimed");
   });
 
-  it("serializes leases across separate jobs for the same provider", async () => {
+  it("serializes claims across separate jobs for the same provider", async () => {
     const store = makeStore();
     await store.putQueue({ id: "q1", job_id: "j1", provider: "chatgpt", native_id: "one", state: "eligible", next_eligible_at_ms: 0 });
     await store.putQueue({ id: "q2", job_id: "j2", provider: "chatgpt", native_id: "two", state: "eligible", next_eligible_at_ms: 0 });
-    expect(await store.acquireNextLease("j1", "instance-left", 100, 1000)).not.toBeNull();
-    expect(await store.acquireNextLease("j2", "instance-right", 100, 1000)).toBeNull();
+    expect(await store.claimNextItem("j1", "instance-left", 100, 1000)).not.toBeNull();
+    expect(await store.claimNextItem("j2", "instance-right", 100, 1000)).toBeNull();
   });
 
   it("invalidates an expired execution even when the stable instance id reacquires it", async () => {
@@ -1032,7 +1032,7 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(fetchImpl);
     const inventory = await adapter.enumerate("0", "2020-01-01T00:00:00Z");
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("gpt-1"), inventory.items[0], { job_id: "j", queue_id: "q", instance_id: "i" });
-    expect(await retainedNativeCapture(capture)).toEqual(chatGptNative("gpt-1"));
+    expect(await storedNativeCapture(capture)).toEqual(chatGptNative("gpt-1"));
     expect(capture.session.turns).toEqual([]);
     expect(capture.raw_provider_payload).toBeDefined();
     expect(capture.session.provider_meta.backfill.instance_id).toBe("i");
@@ -1059,7 +1059,7 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-ci", title: "Code interpreter run" }, {});
 
-    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(await storedNativeCapture(capture)).toEqual(native);
     expect(capture.raw_provider_payload).toBeDefined();
     // Canonical pairing: native-rich-blocks-v1.json through actual receiver
     // parity and test_code_interpreter_call_and_result_share_a_tool_id.
@@ -1091,7 +1091,7 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-reasoning-only", title: "Reasoning only" }, {});
 
-    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(await storedNativeCapture(capture)).toEqual(native);
     expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
     expect(capture.raw_provider_payload).toBeDefined();
   });
@@ -1112,7 +1112,7 @@ describe("provider adapter contracts", () => {
     const adapter = new ClaudeBackfillAdapter(vi.fn(), "org-1");
     const capture = await adapter.normalizeCapture(response(body), { native_id: "claude-reasoning-only", title: "Reasoning only" }, {});
 
-    expect(await retainedNativeCapture(capture)).toEqual(body);
+    expect(await storedNativeCapture(capture)).toEqual(body);
     expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
     expect(capture.raw_provider_payload).toBeDefined();
   });
@@ -1128,7 +1128,7 @@ describe("provider adapter contracts", () => {
     const adapter = new ChatGptBackfillAdapter(vi.fn());
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-tool", title: "Web search" }, {});
 
-    expect(await retainedNativeCapture(capture)).toEqual(native);
+    expect(await storedNativeCapture(capture)).toEqual(native);
     expect(capture.raw_provider_payload).toBeDefined();
   });
 
@@ -1249,7 +1249,7 @@ describe("provider adapter contracts", () => {
     const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("claude-1"), inventory.items[0], { job_id: "j" });
     expect(capture.session.provider).toBe("claude-ai");
-    expect((await retainedNativeCapture(capture)).chat_messages[0]).toMatchObject({
+    expect((await storedNativeCapture(capture)).chat_messages[0]).toMatchObject({
       sender: "claude", parent_message_uuid: "parent", model: "claude-opus",
     });
     expect(capture.raw_provider_payload).toBeDefined();
@@ -1324,7 +1324,7 @@ describe("provider adapter contracts", () => {
     expect(capture.session.turns).toEqual([]);
     expect(capture.raw_provider_payload).toBeDefined();
     expect(fetchImpl.mock.calls[1][0]).toContain("/responses");
-    const retained = await retainedNativeCapture(capture);
+    const retained = await storedNativeCapture(capture);
     expect(retained.conversation).toMatchObject({ conversationId: "g-1", temporary: true });
     expect(retained.responses.responses).toHaveLength(2);
     expect(retained.responses.responses[1]).toMatchObject({ sender: "ASSISTANT", message: "hi there", parentResponseId: "r-1", model: "grok-3" });
@@ -1347,7 +1347,7 @@ describe("provider adapter contracts", () => {
 });
 
 describe("disposable pre-streaming refusal conversion", () => {
-  const refusal = { id: "old-refusal", job_id: "paused-job", provider: "chatgpt", native_id: "native-old", state: "bridge_oversize", lease_owner: null };
+  const refusal = { id: "old-refusal", job_id: "paused-job", provider: "chatgpt", native_id: "native-old", state: "bridge_oversize", claimed_by: null };
   const paused = { id: "paused-job", provider: "chatgpt", status: "paused", cooldown_reason: "operator_pause" };
 
   it.each([2, 3])("atomically converts v%s after an aborted upgrade and preserves paused/acquired custody", async (oldVersion) => {
@@ -1380,11 +1380,11 @@ describe("disposable pre-streaming refusal conversion", () => {
       request.onsuccess = () => { request.result.close(); reject(new Error("aborted_upgrade_published")); };
     });
     const owner = new IndexedDbBackfillStore(indexedDB, name);
-    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible", next_eligible_at_ms: 0, lease_owner: null });
+    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible", next_eligible_at_ms: 0, claimed_by: null });
     expect(await owner.getJob(paused.id)).toMatchObject(paused);
     expect(await owner.getQueue("acquired-old-refusal")).toMatchObject({
       state: "recovery_required", envelope: { retained: "original bytes" },
-      last_error: "capture_refusal_retains_acquired_evidence",
+      last_error: "capture_refusal_keeps_acquired_bytes",
     });
     (await owner.database()).close();
     const restarted = new IndexedDbBackfillStore(indexedDB, name);
@@ -1401,7 +1401,7 @@ describe("disposable pre-streaming refusal conversion", () => {
       for (const item of checkpoint.queue) await owner.convertLocalCheckpointRecord("queue", item);
     }
     expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
-    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "retained-body", last_error: "capture_refusal_retains_acquired_evidence" });
+    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "retained-body", last_error: "capture_refusal_keeps_acquired_bytes" });
     expect(await owner.getJob(paused.id)).toMatchObject({ status: "paused", cooldown_reason: "operator_pause" });
     expect(((await owner.queuePage(paused.id)).items).every((item) => item.state !== "bridge_oversize")).toBe(true);
   });

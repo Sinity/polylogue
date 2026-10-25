@@ -195,8 +195,8 @@ describe("claude.js native capture (real source)", () => {
     expect(String(fetch.mock.calls[0][0])).toBe(`${url}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`);
     if (available) {
       expect(result.ok).toBe(true);
-      expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages.map(message => message.uuid)).toEqual(["u1", "a1", "u2"]);
-      expect(await dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(fresh);
+      expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages.map(message => message.uuid)).toEqual(["u1", "a1", "u2"]);
+      expect(await dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(fresh);
     } else {
       expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
       expect(send.mock.calls.filter(([message]) => message.type === "polylogue.capture")).toEqual([]);
@@ -226,10 +226,10 @@ describe("claude.js native capture (real source)", () => {
       localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch,
     });
     const first = await sendRuntimeMessage({ type: "polylogue.capturePage" });
-    expect((await dom.__captureRuntime.retainedNativeReplies(first.envelope)).chat_messages).toEqual(messages);
+    expect((await dom.__captureRuntime.storedNativeReplies(first.envelope)).chat_messages).toEqual(messages);
     messages = [...messages, { uuid: "a1", sender: "assistant", text: "new turn" }];
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
-    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages).toEqual(messages);
+    expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages).toEqual(messages);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -260,7 +260,7 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
     expect(retained.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
     expect(retained.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
     expect(retained.chat_messages[2].text).toBe("");
@@ -378,7 +378,7 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
     expect(result.ok).toBe(true);
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
-    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages[0].text).toBe("fresh-current-text");
+    expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages[0].text).toBe("fresh-current-text");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -406,7 +406,7 @@ describe("Claude original native attachment custody", () => {
       localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch });
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-custody" });
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
+    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
     expect(retained).toEqual(payload);
     expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);

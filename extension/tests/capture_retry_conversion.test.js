@@ -52,9 +52,9 @@ describe("original retry input conversion through the background worker", () => 
       { metadata: { id: "z-first" }, envelope: input("first") },
       { metadata: { id: "a-second" }, envelope: input("second") },
     ]);
-    const retire = store.retireCaptureRetry.bind(store);
+    const retire = store.deleteCaptureRetry.bind(store);
     const seen = [];
-    vi.spyOn(store.constructor.prototype, "retireCaptureRetry").mockImplementation(async function (id) {
+    vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockImplementation(async function (id) {
       const delivery = await this.getDelivery(id);
       const file = storage.files.get(`${delivery.body_ref}.bytes`);
       const envelope = JSON.parse(new globalThis.TextDecoder().decode(file));
@@ -89,7 +89,7 @@ describe("original retry input conversion through the background worker", () => 
   it("restarts after source retirement failure without rewriting or duplicating published bytes", async () => {
     const { store, storage, start } = await setup();
     await store.importCaptureRetries([{ metadata: { id: "kept" }, envelope: input("exact original") }]);
-    const fault = vi.spyOn(store.constructor.prototype, "retireCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
+    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
     const first = await start();
     expect(await first.page()).toMatchObject({ ok: false });
     const before = await store.getDelivery("kept");
@@ -106,7 +106,7 @@ describe("original retry input conversion through the background worker", () => 
   it.each(["accepted", "noop", "superseded"])("retains the %s receipt until source retirement settles, then removes only owned bytes", async (outcome) => {
     const { store, storage, network, start } = await setup();
     await store.importCaptureRetries([{ metadata: { id: "kept" }, envelope: input("exact original") }]);
-    const fault = vi.spyOn(store.constructor.prototype, "retireCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
+    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
     const first = await start();
     expect(await first.page()).toMatchObject({ ok: false });
     const delivery = await store.getDelivery("kept");

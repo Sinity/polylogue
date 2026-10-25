@@ -1,4 +1,4 @@
-function compareCanonicalKeys(left, right) {
+function compareJsonKeys(left, right) {
   // Checkpoint encoding orders Unicode scalar values, whereas JavaScript
   // string comparison orders UTF-16 code units. Keep supplementary keys equal
   // across checkpoint exports.
@@ -11,22 +11,22 @@ function compareCanonicalKeys(left, right) {
   return leftIndex < left.length ? 1 : rightIndex < right.length ? -1 : 0;
 }
 
-export function canonicalJson(value) {
+export function sortedJson(value) {
   if (value === null || typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "string") return JSON.stringify(value.normalize("NFC"));
   if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) throw new Error("capture_job_non_canonical_number");
+    if (!Number.isSafeInteger(value)) throw new Error("capture_job_unsafe_number");
     return String(value);
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (!value || typeof value !== "object") throw new Error("capture_job_non_canonical_json");
+  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+  if (!value || typeof value !== "object") throw new Error("capture_job_unsupported_json");
   const entries = Object.keys(value)
     .map((key) => [key.normalize("NFC"), value[key]])
-    .sort(([left], [right]) => compareCanonicalKeys(left, right));
+    .sort(([left], [right]) => compareJsonKeys(left, right));
   if (entries.some(([key], index) => index > 0 && entries[index - 1][0] === key)) {
-    throw new Error("capture_job_non_canonical_key_collision");
+    throw new Error("capture_job_key_collision");
   }
-  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${sortedJson(entry)}`).join(",")}}`;
 }
 
 async function hmac(token, message) {

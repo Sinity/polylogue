@@ -78,9 +78,9 @@ export function scheduleFreshnessHint(queueValue, {
     attempt_count: previous?.attempt_count || 0,
     running_poll_count: previous?.running_poll_count || 0,
     // New evidence belongs to the pending generation; it does not release
-    // the capture already holding this identity's lease.
-    lease_owner: previous?.lease_owner ?? null,
-    lease_expires_at_ms: previous?.lease_expires_at_ms ?? null,
+    // the capture already holding this identity's claim.
+    claimed_by: previous?.claimed_by ?? null,
+    claim_expires_ms: previous?.claim_expires_ms ?? null,
     last_error: previous?.last_error || null,
   };
   const entries = { ...queue.entries, [key]: entry };
@@ -98,13 +98,13 @@ export function extendProviderCooldown(queueValue, { provider, untilMs, nowMs = 
 
 }
 
-export function claimDueFreshness(queueValue, { nowMs, owner, leaseMs }) {
+export function claimDueFreshness(queueValue, { nowMs, owner, claimMs }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const due = Object.values(queue.entries)
     .filter((entry) => (
       (queue.provider_cooldowns[entry.provider] || 0) <= nowMs
       &&
-      (entry.lease_owner === null || (entry.lease_expires_at_ms || 0) <= nowMs)
+      (entry.claimed_by === null || (entry.claim_expires_ms || 0) <= nowMs)
       && (entry.next_attempt_at_ms || 0) <= nowMs
     ))
     .sort((left, right) => (
@@ -114,8 +114,8 @@ export function claimDueFreshness(queueValue, { nowMs, owner, leaseMs }) {
   if (!due) return { queue, claim: null };
   const claimed = {
     ...due,
-    lease_owner: owner,
-    lease_expires_at_ms: nowMs + leaseMs,
+    claimed_by: owner,
+    claim_expires_ms: nowMs + claimMs,
   };
   return {
     queue: { ...queue, entries: { ...queue.entries, [claimed.key]: claimed } },
@@ -131,9 +131,9 @@ export function completeFreshnessClaim(queueValue, claim, {
 }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const current = queue.entries[claim.key];
-  if (!current || !claim.lease_owner
-    || current.lease_owner !== claim.lease_owner
-    || current.lease_expires_at_ms !== claim.lease_expires_at_ms) return queue;
+  if (!current || !claim.claimed_by
+    || current.claimed_by !== claim.claimed_by
+    || current.claim_expires_ms !== claim.claim_expires_ms) return queue;
   const entries = { ...queue.entries };
   if (current.generation === claim.generation && !needsFollowUp && !error) {
     delete entries[claim.key];
@@ -146,8 +146,8 @@ export function completeFreshnessClaim(queueValue, claim, {
       : current.next_attempt_at_ms,
     attempt_count: error ? (current.attempt_count || 0) + 1 : current.attempt_count || 0,
     running_poll_count: needsFollowUp ? (current.running_poll_count || 0) + 1 : current.running_poll_count || 0,
-    lease_owner: null,
-    lease_expires_at_ms: null,
+    claimed_by: null,
+    claim_expires_ms: null,
     last_error: error ? String(error) : null,
   };
   return { ...queue, entries };

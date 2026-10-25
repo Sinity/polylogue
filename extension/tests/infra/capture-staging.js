@@ -101,7 +101,7 @@ export function stagingRuntime(storage = memoryOriginStorage(), owner = { tab_id
   return {
     staging, storage, store,
     nativeContract: contract,
-    async retainedNativeReplies(envelope) {
+    async storedNativeReplies(envelope) {
       const capture = await store.getCapture(envelope.capture_record_ref);
       const read = async (ref) => JSON.parse(await (await staging.file(ref.id || ref)).text());
       if (capture.provider !== "grok") return read(capture.raw_ref);
@@ -135,7 +135,7 @@ export function stagingRuntime(storage = memoryOriginStorage(), owner = { tab_id
         return { ok: true, bundle_ref: bundle.id, replies: bundle.replies };
       }
       if (message.type === "polylogue.nativeBundle.outcome") {
-        await store.publishNativeBundleReply(message.bundle_ref, owner, message.name, null, message.outcome);
+        await store.commitNativeBundleReply(message.bundle_ref, owner, message.name, null, message.outcome);
         await store.finishNativeBundle(message.bundle_ref, owner); return { ok: true };
       }
       if (message.type === "polylogue.nativeBundle.finish") {
@@ -208,7 +208,7 @@ export function stagingRuntime(storage = memoryOriginStorage(), owner = { tab_id
             acquisition.attachment_id, acquisition.attachment_ordinal] : null;
           const ref = await staging.begin(owner, { ...message, acquisition: identity }, message.request_id);
           if (identity) {
-            const claim = await store.reserveAcquisition(identity, ref, message.request_id);
+            const claim = await store.claimAcquisition(identity, ref, message.request_id);
             if (claim.result) return { ok: true, result: claim.result };
             if (claim.producer_id !== message.request_id) return { ok: false, error: "capture_acquisition_in_progress" };
           }

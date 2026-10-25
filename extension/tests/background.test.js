@@ -107,8 +107,8 @@ function installChromeMock(storagePatch = {}) {
       const [url, options = {}] = args;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/capture-jobs/synthetic-receiver-job" || path === "/v1/capture-jobs/synthetic-receiver-job/adopt") {
-        return responseJson({ job: { job_id: "synthetic-receiver-job", provider: "chatgpt", revision: 1, lease_generation: 1 },
-          lease: { lease_id: "synthetic-lease", generation: 1, proof: "synthetic-proof" } });
+        return responseJson({ job: { job_id: "synthetic-receiver-job", provider: "chatgpt", revision: 1, claim_generation: 1 },
+          claim: { claim_id: "synthetic-claim", generation: 1, proof: "synthetic-proof" } });
       }
       const response = await globalThis.fetch(...args);
       if (response.ok && options.method === "POST" && path === "/v1/browser-captures") {
@@ -400,8 +400,8 @@ describe("background receiver diagnostics", () => {
     const scope = await deriveAccountScope(namespace, "chatgpt", "account-A");
     await store.putJob({ id: "job", provider: "chatgpt", account_scope: scope, status: "running",
       execution_owner: "worker", execution_generation: 1, execution_expires_at_ms: Date.now() + 60_000 });
-    const item = { id: "item", job_id: "job", provider: "chatgpt", native_id: "session", state: "leased",
-      lease_owner: "worker", lease_expires_at_ms: Date.now() + 60_000, body_ref: body.ref };
+    const item = { id: "item", job_id: "job", provider: "chatgpt", native_id: "session", state: "claimed",
+      claimed_by: "worker", claim_expires_ms: Date.now() + 60_000, body_ref: body.ref };
     await store.putQueue(item);
     const result = await sendRuntimeMessage({ type: "polylogue.asset.begin", provider: "chatgpt", request_id: "account-race",
       kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session", account_handle: "account-B",
@@ -426,7 +426,7 @@ describe("background receiver diagnostics", () => {
     await staging.append(raw, owner, 0, globalThis.Buffer.from(payload).toString("base64")); await staging.seal(raw, owner);
     await store.pinNativeCache({ owner, provider: "chatgpt", nativeId: "cached-session", rawRef: raw,
       headers: { id: "cached-session" }, observedAt: "2026-01-01T00:00:00Z", acquisitionSequence: 1 });
-    await store.retireNativeAcquisition(raw.id);
+    await store.releaseNativeAcquisition(raw.id);
     await staging.save({ ...await staging.metadata(raw.id), retired: true });
     globalThis.chrome.tabs.get.mockRejectedValue(new Error("synthetic_tab_lookup_unavailable"));
     vi.resetModules(); await import("../src/background.js");
@@ -646,7 +646,7 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls[0].options.headers["Content-Type"]).toBe("application/json");
     expect(fetchCalls[0].options.headers["X-Request-ID"]).toMatch(/^polylogue-ext-/);
     expect(fetchCalls[0].options.headers["X-Polylogue-Extension-Contract"])
-      .toBe("canonical-capture-mission-control-v1");
+      .toBe("capture-status-v1");
     expect(stored.polylogueState.last_receiver_request_id).toBe("receiver-request-1");
     expect(stored.polylogueState.last_capture.receiver_request_id).toBe("receiver-request-1");
   });
@@ -1447,7 +1447,7 @@ describe("background receiver diagnostics", () => {
     const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
     const action = { action_id: "transport-fault", receiver_id: "rx-transport", provider: "chatgpt",
       operation: "conversation.create", target: {}, text: "Neutral transport fixture", attachments: [],
-      presentation: {}, submit_policy: "submit_once", status: "leased" };
+      presentation: {}, submit_policy: "submit_once", status: "claimed" };
     const updates = [];
     let claimed = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
@@ -1596,7 +1596,7 @@ describe("background receiver diagnostics", () => {
         version: 1,
         jobs: [{
           id: "recovered-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          inventory_cursor: "17", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
           learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
         }],
         queue: [{ id: "recovered-item", job_id: "recovered-job", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
@@ -1771,8 +1771,8 @@ describe("background receiver diagnostics", () => {
       }
       // The four partitions all resolve to the same single native id, so the
       // Submitting the reassembled capture to the receiver is its own wake
-      // step (acquireNextLease for "captured_waiting_receiver" happens
-      // before the provider-fetch loop in runLeasedJob), so it can still be
+      // step (claimNextItem for "captured_waiting_receiver" happens
+      // before the provider-fetch loop in runClaimedJob), so it can still be
       // pending after the wake that only just finished the provider fetch.
       for (let submitWake = 0; submitWake < 3; submitWake += 1) {
         if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
@@ -1860,9 +1860,9 @@ describe("background receiver diagnostics", () => {
         fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
       // The coordinator advances one step per wake, so wakes -- not elapsed
       // real time -- are what drive it forward. Wake it again as soon as the
-      // previous wake has released the job's execution lease, and never while
-      // that lease is held: a wake arriving mid-execution acquires nothing,
-      // and the simulated clock it advances can outrun the lease of the work
+      // previous wake has released the job's execution claim, and never while
+      // that claim is held: a wake arriving mid-execution acquires nothing,
+      // and the simulated clock it advances can outrun the claim of the work
       // still in flight. Progress, not a wake count, ends the loop, so a host
       // slow enough to need longer per wake gets longer and one that needs
       // more wakes gets more; this test's own timeout is the only bound.
@@ -1901,7 +1901,7 @@ describe("background receiver diagnostics", () => {
         version: 1,
         jobs: [{
           id: "local-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "3", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          inventory_cursor: "3", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
           learned_cadence_ms: 40000, daily_requests: 1, last_ack: null,
         }],
         queue: [],
@@ -3118,12 +3118,12 @@ describe("capture retry queue", () => {
       envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [{ text: `retained ${id}` }] } },
     })) };
     const settings = { enabled: true, automatic_capture_enabled: false, disabled_sites: [] };
-    let allowPublication = false;
+    let allowCommit = false;
     await loadBackground({ polylogueCaptureQueue: globalThis.structuredClone(queue), polylogueAmbientSettings: settings }, () => {
       const publish = globalThis.chrome.storage.local.set.getMockImplementation();
       globalThis.chrome.storage.local.set.mockImplementation(async (patch) => {
-        if (patch.polylogueCaptureQueue?.version === 3 && !allowPublication) {
-          throw new Error("synthetic_publication_interruption");
+        if (patch.polylogueCaptureQueue?.version === 3 && !allowCommit) {
+          throw new Error("synthetic_commit_interruption");
         }
         return publish(patch);
       });
@@ -3131,7 +3131,7 @@ describe("capture retry queue", () => {
     expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ ok: true, total: 2 });
     expect(stored.polylogueCaptureQueue.entries.every(entry => entry.envelope === undefined)).toBe(true);
     expect(stored.polylogueAmbientSettings).toEqual(settings);
-    allowPublication = true;
+    allowCommit = true;
     const published = await deliveryEntries();
     expect(published.map((entry) => entry.id)).toEqual(["first", "second"]);
     const staging = new CaptureStaging(globalThis.navigator.storage);
@@ -3309,7 +3309,7 @@ describe("provider-neutral browser action worker", () => {
         effort_label: "Pro",
       },
       submit_policy: "submit_once",
-      status: "leased",
+      status: "claimed",
     };
     let claimed = false;
     const updates = [];
@@ -3361,7 +3361,7 @@ describe("provider-neutral browser action worker", () => {
     expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99);
   });
 
-  it("renews the receiver lease while provider execution remains in flight", async () => {
+  it("renews the receiver claim while provider execution remains in flight", async () => {
     const action = {
       action_id: "action-slow",
       receiver_id: "rx-action-test",
@@ -3377,7 +3377,7 @@ describe("provider-neutral browser action worker", () => {
         effort_label: "Pro",
       },
       submit_policy: "submit_once",
-      status: "leased",
+      status: "claimed",
     };
     const updates = [];
     let claimed = false;
@@ -3429,7 +3429,7 @@ describe("provider-neutral browser action worker", () => {
       expect.objectContaining({
         outcome: "progress",
         phase: "submit_intent",
-        detail: "renewed browser action lease during provider execution",
+        detail: "renewed browser action claim during provider execution",
       }),
     ])));
     expect(finishExecution).toBeTypeOf("function");
@@ -3449,7 +3449,7 @@ describe("provider-neutral browser action worker", () => {
       attachments: [],
       presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
       submit_policy: "submit_once",
-      status: "leased",
+      status: "claimed",
     };
     const updates = [];
     let claimed = false;
@@ -3491,7 +3491,7 @@ describe("provider-neutral browser action worker", () => {
       attachments: [],
       presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
       submit_policy: "submit_once",
-      status: "leased",
+      status: "claimed",
     };
     const updates = [];
     let claimed = false;
@@ -3535,7 +3535,7 @@ describe("provider-neutral browser action worker", () => {
       action_id: "action-stream", receiver_id: "rx-action-test", provider: "chatgpt", operation: "conversation.create",
       target: { conversation_id: "new" }, text: "Neutral streaming fixture", attachments: [item],
       presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
-      submit_policy: "stage_only", status: "leased",
+      submit_policy: "stage_only", status: "claimed",
     };
     const updates = [];
     let claimed = false;
@@ -3588,7 +3588,7 @@ describe("provider-neutral browser action worker", () => {
       action_id: "action-integrity", receiver_id: "rx-action-test", provider: "chatgpt", operation: "conversation.create",
       target: { conversation_id: "new" }, text: "Neutral integrity fixture", attachments: [item],
       presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
-      submit_policy: "submit_once", status: "leased",
+      submit_policy: "submit_once", status: "claimed",
     };
     const updates = [];
     let claimed = false, read = false, cancelled = false, released = false;
@@ -3643,7 +3643,7 @@ describe("provider-neutral browser action worker", () => {
       }],
       presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
       submit_policy: "stage_only",
-      status: "leased",
+      status: "claimed",
     };
     const updates = [];
     let claimed = false;

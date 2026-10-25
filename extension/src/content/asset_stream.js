@@ -300,7 +300,7 @@
         const recorded = await runtimeRequest({ type: "polylogue.providerRateLimited", provider, claim: ref,
           request_id: requestId, retry_after: result.retry_after || null,
           provider_response: { status: 429, url: result.response_url || null } }, signal);
-        if (!recorded?.ok) throw new Error(recorded?.error || "provider_throttle_authority_unavailable");
+        if (!recorded?.ok) throw new Error(recorded?.error || "provider_throttle_unavailable");
       }
       if (result?.status !== "acquired" || result.asset?.streamed !== true) return result;
       const complete = await runtimeRequest({ type: "polylogue.asset.seal", ref, result }, signal);

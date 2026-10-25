@@ -258,7 +258,7 @@ describe("popup capture", () => {
           ok: true,
           actions: [
             { action_id: "a1", status: "queued" },
-            { action_id: "a2", status: "leased" },
+            { action_id: "a2", status: "claimed" },
             {
               action_id: "a3",
               status: "outcome_unknown",

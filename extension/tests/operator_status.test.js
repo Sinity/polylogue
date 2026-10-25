@@ -113,7 +113,7 @@ describe("shared operator status vocabulary", () => {
         status: "running",
         phase: "conversation_capture",
         learned_cadence_ms: 15000,
-        lease_owner: "extension-backfill",
+        claimed_by: "extension-backfill",
         updated_at: "2026-07-16T11:59:00Z",
         last_ack: { receiver_request_id: "ack-22" },
       }],
@@ -144,20 +144,20 @@ describe("shared operator status vocabulary", () => {
       receipt: "provider_push_new_message",
     });
 
-    const leased = api.normalizeWorkItems({
+    const claimed = api.normalizeWorkItems({
       receiverOnline: true,
       freshnessQueue: {
         entries: {
-          "chatgpt:leased": {
+          "chatgpt:claimed": {
             provider: "chatgpt",
-            native_id: "leased",
-            lease_owner: "extension-two",
+            native_id: "claimed",
+            claimed_by: "extension-two",
             next_attempt_at_ms: Date.parse("2026-07-16T12:02:00Z"),
           },
         },
       },
     }).find((item) => item.kind === "freshness");
-    expect(leased).toMatchObject({ status: { code: "running", label: "Running" } });
+    expect(claimed).toMatchObject({ status: { code: "running", label: "Running" } });
     vi.useRealTimers();
   });
 
@@ -276,7 +276,7 @@ describe("shared operator status vocabulary", () => {
     expect(api.pendingBrowserActionCount()).toBe(0);
     expect(api.pendingBrowserActionCount([
       { status: "queued" },
-      { status: "leased" },
+      { status: "claimed" },
       { status: "preparing" },
       { status: "submit_intent" },
       { status: "outcome_unknown" },
