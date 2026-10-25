@@ -178,7 +178,7 @@ fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {
     let mut stmt = tx.prepare_cached(
         "SELECT t.pk, t.at, t.tool, t.command, t.outcome
          FROM tool_call t
-         WHERE t.session_pk = ?1 AND t.inherited = 0
+         WHERE t.session_pk = ?1
          ORDER BY t.at IS NULL, t.at, t.pk",
     )?;
     let rows = stmt.query_map([session_pk], |r| {

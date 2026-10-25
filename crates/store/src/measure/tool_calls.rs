@@ -32,7 +32,7 @@ pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
                         AND coalesce(t.outcome_reason, '') NOT IN ('no_result', 'passed_without_result'))
              FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
              JOIN message m ON m.pk = b.message_pk
-             WHERE t.inherited = 0 AND {cond}"
+             WHERE {cond}"
         ),
         rusqlite::params_from_iter(params),
         |r| {
@@ -90,7 +90,7 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
         "SELECT s.id, t.action, coalesce(t.command_norm, t.tool), t.outcome, t.at
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
          JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
-         WHERE t.inherited = 0 AND {cond}
+         WHERE {cond}
          ORDER BY m.session_pk, m.order_input_id, m.seq, b.pk"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -196,7 +196,7 @@ pub fn failing_commands(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Failin
                   t.pk AS call, s.id AS session
            FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
            JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = t.session_pk
-           WHERE t.command_norm IS NOT NULL AND t.inherited = 0 AND t.outcome IN ('ok', 'error')
+           WHERE t.command_norm IS NOT NULL AND t.outcome IN ('ok', 'error')
              AND coalesce(s.repo_root, s.cwd) IS NOT NULL AND {cond}),
          ranked AS (
            SELECT *, row_number() OVER (PARTITION BY repository, command

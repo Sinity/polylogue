@@ -3,7 +3,7 @@
 //! branch (0). An explicit empty-path marker puts every message off the path.
 //! Without a valid path marker activity stays NULL: unknown, read as on the path.
 //!
-//! Repeated markers share an event row. Revision, snapshot and record order
+//! Repeated markers share an event row. Revision, capture and record order
 //! choose each input's latest marker; known event time and content identity
 //! resolve different inputs without depending on row insertion order.
 

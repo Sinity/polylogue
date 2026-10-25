@@ -115,7 +115,6 @@ CREATE TABLE message (
                                             --   always written, no default
   inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
   copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
-  counted_as        TEXT,                   -- for a copy, the message counted in its place
   from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
   from_name         TEXT,                   --   and the sender's name as the provider wrote it
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
@@ -270,7 +269,6 @@ CREATE TABLE tool_call (
   exit_code         INTEGER,
   duration_ms       INTEGER,                -- NULL (unknown) when the times are equal or reversed
   child_session_id  TEXT,                   -- natural id of a spawned subagent (may arrive later)
-  inherited         INTEGER NOT NULL DEFAULT 0, -- part of an inherited message
   FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk),
   FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk)
 ) STRICT;
