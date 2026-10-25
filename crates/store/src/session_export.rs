@@ -1,7 +1,7 @@
 //! Reading whole sessions back in the export format: the session, its own
 //! messages (not inherited ones, which are exported with the session they
-//! came from), its events and the links naming it. Importing the document into a fresh archive gives
-//! the same sessions and IDs.
+//! came from), its events and the links naming it. Importing the document
+//! into a fresh archive gives the same sessions and IDs.
 
 use crate::Result;
 use crate::read::Reader;
