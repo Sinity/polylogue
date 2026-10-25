@@ -167,7 +167,7 @@ fn dictionary_rows_and_plain_sorted_frames_remain_distinct() {
     assert_eq!(unpack_json::<Message>(&row).unwrap(), message);
     for plain in [
         pack_json(&message).unwrap(),
-        pack_text("archive_conn text").unwrap(),
+        pack_text("archive text").unwrap(),
     ] {
         assert!(zstd::zstd_safe::get_dict_id_from_frame(&plain).is_none());
         assert_eq!(

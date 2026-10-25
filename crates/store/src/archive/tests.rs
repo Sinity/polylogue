@@ -90,7 +90,7 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     index.pragma_update(None, "user_version", 26).unwrap();
     index
         .execute(
-            "INSERT INTO meta VALUES ('old-format-marker', 'stored')",
+            "INSERT INTO meta VALUES ('previous-index-marker', 'present')",
             [],
         )
         .unwrap();
@@ -106,7 +106,7 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM meta WHERE key='old-format-marker'",
+                "SELECT count(*) FROM meta WHERE key='previous-index-marker'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
