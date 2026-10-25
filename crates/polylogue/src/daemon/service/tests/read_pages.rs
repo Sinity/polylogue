@@ -4,7 +4,7 @@ use base64::Engine as _;
 fn page(d: &Daemon, session: &str, logical: bool, view: &str, cursor: Option<&str>) -> Response {
     handle(
         Request::Read {
-            session: polylogue_model::SessionId::parse(session).unwrap(),
+            target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse(session).unwrap()),
             logical,
             view: view.into(),
             format: "json".into(),

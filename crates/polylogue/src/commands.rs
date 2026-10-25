@@ -718,7 +718,7 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Request(requests::changes),
+        action: Action::Local(crate::cli::changes::run),
         ..CLI
     },
     Command {

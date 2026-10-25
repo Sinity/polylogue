@@ -127,22 +127,9 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
 
 #[test]
 fn actual_command_builder_socket_and_cli_consumer_deliver_one_finite_batch() {
-    use crate::commands::{Action, Caller, Surface};
     let world = crate::test_daemon::start("synthetic feed source");
-    let (command, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
-    let Action::Request(build) = command.action else {
-        panic!("feed is not a typed request")
-    };
-    let request = build(
-        command,
-        &values,
-        &Caller {
-            surface: Surface::Cli,
-            cwd: None,
-            json: true,
-        },
-    )
-    .unwrap();
+    let (_, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
+    let request = super::request(&values).unwrap();
     assert!(matches!(request, Request::Changes { since: None }));
     let mut output = Vec::new();
     assert!(send(&world.daemon.archive, &request, &mut output).unwrap());
@@ -168,13 +155,6 @@ fn actual_command_builder_socket_and_cli_consumer_deliver_one_finite_batch() {
     let end = completed(&again);
     assert_eq!(end.len(), 1);
     assert_eq!(end[0]["count"], 0);
-    // One-response helpers reject streams instead of returning only the header.
-    assert_eq!(
-        crate::cli::send(&world.daemon.archive.socket(), &request)
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::Unsupported
-    );
 }
 
 #[test]
@@ -314,7 +294,6 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
 
 #[test]
 fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments() {
-    use crate::commands::{Action, Caller, Surface};
     for suffix in [
         vec!["--cursor", "opaque"],
         vec!["--fields", "ref"],
@@ -322,22 +301,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
     ] {
         let mut argv = vec!["polylogue", "changes"];
         argv.extend(suffix);
-        let (command, values) = crate::cli::parse(&argv).unwrap();
-        let Action::Request(build) = command.action else {
-            unreachable!()
-        };
-        assert!(
-            build(
-                command,
-                &values,
-                &Caller {
-                    surface: Surface::Cli,
-                    cwd: None,
-                    json: false
-                }
-            )
-            .is_err(),
-            "{argv:?}"
-        );
+        let (_, values) = crate::cli::parse(&argv).unwrap();
+        assert!(super::request(&values).is_err(), "{argv:?}");
     }
 }

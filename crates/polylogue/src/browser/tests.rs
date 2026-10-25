@@ -432,7 +432,7 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(crate::daemon::Response::Ok { data }) = ctx.ask(&crate::daemon::Request::Read {
-            session: polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+            target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("grok:native-raw").unwrap()),
             view: "full".into(),
             format: "markdown".into(),
             logical: false,

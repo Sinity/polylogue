@@ -3,7 +3,7 @@
 //! everything else. Every command takes `--json` for programs and agents.
 
 pub(crate) mod attachment;
-mod changes;
+pub mod changes;
 pub mod local;
 pub mod print;
 
@@ -195,13 +195,6 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
     let root = Archive::default_root();
-    if matches!(request, Request::Changes { .. }) {
-        return match changes::send(&Archive::at(&root), &request, &mut std::io::stdout().lock()) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(e) => fail(true, "io", &e.to_string(), 1),
-        };
-    }
     let response = match send_when_ready(&Archive::at(&root), &request) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
@@ -351,12 +344,6 @@ fn when_ready<T>(
 
 /// Sends one request and reads its response.
 pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
-    if matches!(request, Request::Changes { .. }) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "the change feed requires its finite stream consumer",
-        ));
-    }
     let mut stream = UnixStream::connect(socket)?;
     let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
     line.push('\n');

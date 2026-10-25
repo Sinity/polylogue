@@ -10,4 +10,4 @@ pub mod request;
 pub mod server;
 pub mod service;
 
-pub use request::{Request, Response};
+pub use request::{ReadTarget, Request, Response};

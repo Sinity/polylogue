@@ -394,7 +394,7 @@ async fn session(
         return failed(StatusCode::BAD_REQUEST, "bad_request", "not a session ID");
     };
     let request = Request::Read {
-        session: session_id,
+        target: crate::daemon::ReadTarget::Session(session_id),
         view: view_name.clone(),
         format: "json".into(),
         logical: true,
@@ -485,8 +485,9 @@ async fn document(
     };
     match ask(
         &web,
-        Request::ReadDocument {
-            document: id,
+        Request::Read {
+            target: crate::daemon::ReadTarget::Document(id),
+            logical: false,
             view: view_name.clone(),
             format: "json".into(),
             budget: None,

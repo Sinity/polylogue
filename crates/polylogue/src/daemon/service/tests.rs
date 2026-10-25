@@ -10,7 +10,7 @@ fn read(
 ) -> Response {
     handle(
         Request::Read {
-            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+            target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),
             view: view.into(),
             format: format.into(),
             logical: false,
@@ -292,9 +292,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
     let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
     let export = || match handle(
         Request::Export {
-            events: Vec::new(),
-            documents: Vec::new(),
-            sessions: vec![id.clone()],
+            targets: vec![crate::daemon::ReadTarget::Session(id.clone())],
             format: "json".into(),
         },
         &w.daemon,

@@ -1,7 +1,7 @@
 //! Application operations and their shared archive state. Socket, HTTP and
 //! MCP adapters use the same typed requests; transport framing stays outside.
 
-use super::{Request, Response};
+use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, Pass};
 use polylogue_model::Author;
@@ -333,60 +333,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             Err(e) => error("sql", e),
         },
         Request::Read {
-            session,
+            target,
             view,
             format,
             logical,
             budget,
             cursor,
-        } => read::run(
-            &reader,
-            &session,
-            read::Options {
+        } => {
+            let options = read::Options {
                 view: &view,
                 format: &format,
                 logical,
                 budget,
                 cursor: cursor.as_deref(),
-            },
-            &d.read_checkpoints,
-            read_epoch,
-        ),
-
-        Request::ReadDocument {
-            document,
-            view,
-            format,
-            budget,
-            cursor,
-        } => read::document(
-            &reader,
-            &document,
-            read::Options {
-                view: &view,
-                format: &format,
-                logical: false,
-                budget,
-                cursor: cursor.as_deref(),
-            },
-        ),
-        Request::ReadEvent {
-            event,
-            view,
-            format,
-            budget,
-            cursor,
-        } => read::event(
-            &reader,
-            &event,
-            read::Options {
-                view: &view,
-                format: &format,
-                logical: false,
-                budget,
-                cursor: cursor.as_deref(),
-            },
-        ),
+            };
+            match &target {
+                ReadTarget::Session(session) => {
+                    read::run(&reader, session, options, &d.read_checkpoints, read_epoch)
+                }
+                ReadTarget::Document(document) => read::document(&reader, document, options),
+                ReadTarget::Event(event) => read::event(&reader, event, options),
+            }
+        }
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -404,12 +372,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
-        Request::Export {
-            sessions,
-            documents,
-            events,
-            format,
-        } => export(&reader, &sessions, &documents, &events, &format),
+        Request::Export { targets, format } => export(&reader, &targets, &format),
         Request::Embed {
             what,
             query,
@@ -593,13 +556,14 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
 fn export(
     reader: &polylogue_store::Reader<'_>,
-    ids: &[polylogue_model::SessionId],
-    document_ids: &[polylogue_model::DocumentId],
-    event_ids: &[String],
+    targets: &[ReadTarget],
     format: &str,
 ) -> Response {
     let mut sessions = Vec::new();
-    for id in ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Session(id) => Some(id),
+        _ => None,
+    }) {
         match reader.session_export(id) {
             Ok(Some(s)) => sessions.push(s),
             Ok(None) => return error("not_found", format!("no session {id}")),
@@ -607,7 +571,10 @@ fn export(
         }
     }
     let mut documents = Vec::new();
-    for id in document_ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Document(id) => Some(id),
+        _ => None,
+    }) {
         match reader.document(id) {
             Ok(Some(doc)) => documents.push(doc),
             Ok(None) => return error("not_found", format!("no document {id}")),
@@ -615,7 +582,10 @@ fn export(
         }
     }
     let mut events = Vec::new();
-    for id in event_ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Event(id) => Some(id),
+        _ => None,
+    }) {
         match reader.event_export(id) {
             Ok(Some(event)) => events.push(event),
             Ok(None) => return error("not_found", format!("no event {id}")),
