@@ -97,7 +97,11 @@ fn sort_takes_tie_breaking_keys() {
         &p.sql[..end]
     };
     assert!(term(1).ends_with("END))"), "live_rank first: {}", p.sql);
-    assert!(term(3).ends_with("live_last_event_at)"), "then last_event_at: {}", p.sql);
+    assert!(
+        term(3).ends_with("live_last_event_at)"),
+        "then last_event_at: {}",
+        p.sql
+    );
     assert!(compile_err("sessions | group by repo | sort by count, repo").contains("one key"));
 }
 

@@ -272,7 +272,11 @@ impl Program {
             sql.push_str(" ORDER BY ");
             sql.push_str(&order_by(&self.order));
         }
-        let limit = if after { n + self.order.len() + 1 } else { n + 1 };
+        let limit = if after {
+            n + self.order.len() + 1
+        } else {
+            n + 1
+        };
         sql.push_str(&format!(" LIMIT ?{limit}"));
         sql
     }

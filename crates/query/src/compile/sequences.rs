@@ -328,10 +328,7 @@ impl<'a> Compiler<'a> {
         Ok(MatchRel {
             sql,
             columns,
-            order: vec![
-                OrderKey::ascending("session"),
-                OrderKey::ascending("match"),
-            ],
+            order: vec![OrderKey::ascending("session"), OrderKey::ascending("match")],
             recursive: true,
         })
     }

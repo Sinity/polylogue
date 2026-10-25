@@ -110,12 +110,10 @@ impl<'a> Compiler<'a> {
                     ));
                 }
                 Via::Exists { value: None, .. } => {
-                    return Err(not_built(
-                        &format!(
-                            "grouping or sorting by {prefix}.{rest} on {}",
-                            scope.unit.name()
-                        ),
-                    ));
+                    return Err(not_built(&format!(
+                        "grouping or sorting by {prefix}.{rest} on {}",
+                        scope.unit.name()
+                    )));
                 }
             };
             return self.expr(rest, &sub, at);
@@ -347,9 +345,11 @@ impl<'a> Compiler<'a> {
         let session = if parent.unit == Unit::Sessions {
             Ok("?PARENT".to_owned())
         } else {
-            Err(not_built(
-                &format!("attaching {} to {}", child.unit.name(), parent.unit.name()),
-            ))
+            Err(not_built(&format!(
+                "attaching {} to {}",
+                child.unit.name(),
+                parent.unit.name()
+            )))
         };
         let parent_link = self.under_parent(parent.unit, &sc, "?PARENT", session)?;
         w.push(parent_link);

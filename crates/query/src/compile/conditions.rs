@@ -275,9 +275,10 @@ impl<'a> Compiler<'a> {
                     position: 0,
                 });
             }
-            return Err(not_built(
-                &format!("scoping {} to sessions", scope.unit.name()),
-            ));
+            return Err(not_built(&format!(
+                "scoping {} to sessions",
+                scope.unit.name()
+            )));
         };
         Ok(scope.a.expand(t).replace("{sessions}", sessions))
     }

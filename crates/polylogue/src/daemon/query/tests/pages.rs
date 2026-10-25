@@ -140,7 +140,10 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.converge().unwrap().errors.is_empty());
-            assert_eq!(page(&home, Some(cursor)).unwrap()["rows"][0]["id"], "claude-code:c");
+            assert_eq!(
+                page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
+                "claude-code:c"
+            );
         } else {
             std::fs::write(
                 home.file("b.jsonl"),
@@ -148,7 +151,10 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             )
             .unwrap();
             assert!(engine.converge().unwrap().errors.is_empty());
-            assert_eq!(page(&home, Some(cursor)).unwrap()["rows"][0]["id"], "claude-code:c");
+            assert_eq!(
+                page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
+                "claude-code:c"
+            );
         }
     }
 }
@@ -200,8 +206,8 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     let change_cursor = first["view"]["cursor"].as_str().unwrap();
     assert!(fixture.derive().unwrap() > 0);
     assert_eq!(
-        fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1).unwrap()["rows"]
-            [0]["id"],
+        fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1).unwrap()["rows"][0]
+            ["id"],
         "claude-code:b"
     );
     let changes = fixture_query(
@@ -246,8 +252,8 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
     assert_eq!(fixture.publish_search().unwrap(), 1);
     assert_eq!(
-        fixture_query(&fixture, "sessions | sort by id", first["next"].as_str(), 1).unwrap()
-            ["rows"][0]["id"],
+        fixture_query(&fixture, "sessions | sort by id", first["next"].as_str(), 1).unwrap()["rows"]
+            [0]["id"],
         "claude-code:b"
     );
     let changes = fixture_query(

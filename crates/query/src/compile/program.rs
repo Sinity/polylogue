@@ -109,7 +109,9 @@ impl<'a> Compiler<'a> {
                         order = Some(sorted);
                     }
                     _ => {
-                        return Err(not_built("this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)"));
+                        return Err(not_built(
+                            "this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)",
+                        ));
                     }
                 }
                 continue;

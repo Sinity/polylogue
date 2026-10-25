@@ -36,12 +36,7 @@ impl Cursor {
     }
 
     /// The cursor for the page after `row`, from its order-key columns.
-    pub fn after_row(
-        program: &Program,
-        row: &Value,
-        seed: u64,
-        question: String,
-    ) -> Self {
+    pub fn after_row(program: &Program, row: &Value, seed: u64, question: String) -> Self {
         let after = program
             .order
             .iter()
