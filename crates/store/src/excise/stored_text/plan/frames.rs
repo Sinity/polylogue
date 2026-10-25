@@ -1,7 +1,7 @@
 use super::{Plan, position};
 use crate::excise::stored_text::Chain;
 use crate::{Result, StoreError};
-use polylogue_model::snapshot_log::Header;
+use polylogue_model::capture_log::Header;
 use rusqlite::params;
 
 impl Plan {

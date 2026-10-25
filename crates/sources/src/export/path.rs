@@ -7,29 +7,29 @@ pub fn scan_path(
     path: &[&str],
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
-    let tap = Rc::new(RefCell::new(Tap::default()));
-    let input = Tapped {
+    let scan_state = Rc::new(RefCell::new(ScanState::default()));
+    let input = PositionReader {
         reader: BufReader::new(reader),
-        tap: Rc::clone(&tap),
+        scan_state: Rc::clone(&scan_state),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = (|| {
         Node {
             path,
             arrays: false,
-            tap: &tap,
+            scan_state: &scan_state,
             item: &mut item,
         }
         .deserialize(&mut de)?;
         de.end()
     })();
-    finish_scan(result, &tap)
+    finish_scan(result, &scan_state)
 }
 
 struct Node<'a, F> {
     path: &'a [&'a str],
     arrays: bool,
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -56,7 +56,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
                 map.next_value_seed(Node {
                     path: &self.path[1..],
                     arrays: true,
-                    tap: self.tap,
+                    scan_state: self.scan_state,
                     item: &mut *self.item,
                 })?;
             } else {
@@ -68,7 +68,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         if self.arrays && self.path.is_empty() {
             return ArraySeed {
-                tap: self.tap,
+                scan_state: self.scan_state,
                 item: self.item,
             }
             .visit_seq(seq);
@@ -78,7 +78,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
                 .next_element_seed(Node {
                     path: self.path,
                     arrays: false,
-                    tap: self.tap,
+                    scan_state: self.scan_state,
                     item: &mut *self.item,
                 })?
                 .is_some()

@@ -128,20 +128,20 @@ fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
         )),
         Err(ScanError::Callback(_))
     ));
-    let tap = Rc::new(RefCell::new(Tap {
+    let scan_state = Rc::new(RefCell::new(ScanState {
         last: Some((0, b'!')),
         ..Default::default()
     }));
     let mut callback = |_: Range<u64>, _: &RawValue| Ok(());
     assert!(
         ItemSeed {
-            tap: &tap,
+            scan_state: &scan_state,
             item: &mut callback
         }
         .deserialize(&mut serde_json::Deserializer::from_str("{}"))
         .is_err()
     );
-    assert!(matches!(tap.borrow().failure, Some(ScanError::Span)));
+    assert!(matches!(scan_state.borrow().failure, Some(ScanError::Span)));
 }
 
 #[test]

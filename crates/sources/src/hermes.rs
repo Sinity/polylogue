@@ -402,7 +402,7 @@ impl ExportParser for Database {
             start: 0,
             consumed: length,
             // Rows restate their whole record: a later row replaces an earlier one.
-            snapshot: self.refusal.is_none() && self.view.is_some(),
+            restates: self.refusal.is_none() && self.view.is_some(),
         }))
     }
     fn item(

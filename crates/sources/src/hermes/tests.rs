@@ -404,7 +404,7 @@ fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
             .begin(raw.len() as u64, None)
             .unwrap()
             .unwrap()
-            .snapshot
+            .restates
     );
     assert_eq!(count, records.len());
     let parsed = parse(records);

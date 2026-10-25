@@ -109,7 +109,7 @@ impl ExportParser for OpenAiChat {
             accounting: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: false,
+            restates: false,
         }))
     }
     fn item(

@@ -1,4 +1,4 @@
-//! Export records and conversation state, with Serde framing for JSON arrays.
+//! Export records and conversation scan_state, with Serde framing for JSON arrays.
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
@@ -8,32 +8,32 @@ use std::ops::Range;
 use std::rc::Rc;
 
 #[derive(Default)]
-struct Tap {
+struct ScanState {
     position: u64,
     last: Option<(u64, u8)>,
-    captured: Option<(u64, Vec<u8>)>,
+    copied: Option<(u64, Vec<u8>)>,
     stats: ScanStats,
     failure: Option<ScanError>,
 }
 
-struct Tapped<R> {
+struct PositionReader<R> {
     reader: R,
-    tap: Rc<RefCell<Tap>>,
+    scan_state: Rc<RefCell<ScanState>>,
 }
-impl<R: Read> Read for Tapped<R> {
+impl<R: Read> Read for PositionReader<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);
         }
         let n = self.reader.read(&mut out[..1])?;
         if n == 1 {
-            let mut tap = self.tap.borrow_mut();
-            let at = tap.position;
-            tap.position += 1;
-            tap.last = Some((at, out[0]));
-            if let Some((start, bytes)) = &mut tap.captured {
-                // Map capture starts before its colon and whitespace; array
-                // capture already contains the value's first byte.
+            let mut scan_state = self.scan_state.borrow_mut();
+            let at = scan_state.position;
+            scan_state.position += 1;
+            scan_state.last = Some((at, out[0]));
+            if let Some((start, bytes)) = &mut scan_state.copied {
+                // Copying a map value starts after its colon and whitespace; copying
+                // an array element already contains the value's first byte.
                 if bytes.is_empty() && (out[0].is_ascii_whitespace() || out[0] == b':') {
                     *start = at + 1;
                 } else {
@@ -81,33 +81,33 @@ pub fn scan(
     reader: impl Read,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
-    let tap = Rc::new(RefCell::new(Tap::default()));
-    let input = Tapped {
+    let scan_state = Rc::new(RefCell::new(ScanState::default()));
+    let input = PositionReader {
         reader: BufReader::new(reader),
-        tap: Rc::clone(&tap),
+        scan_state: Rc::clone(&scan_state),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = (|| {
         ArraySeed {
-            tap: &tap,
+            scan_state: &scan_state,
             item: &mut item,
         }
         .deserialize(&mut de)?;
         de.end()
     })();
-    finish_scan(result, &tap)
+    finish_scan(result, &scan_state)
 }
 
 fn finish_scan(
     result: Result<(), serde_json::Error>,
-    tap: &Rc<RefCell<Tap>>,
+    scan_state: &Rc<RefCell<ScanState>>,
 ) -> Result<ScanStats, ScanError> {
-    result.map_err(|error| scan_error(error, tap))?;
-    Ok(tap.borrow().stats)
+    result.map_err(|error| scan_error(error, scan_state))?;
+    Ok(scan_state.borrow().stats)
 }
 
-fn scan_error(error: serde_json::Error, tap: &Rc<RefCell<Tap>>) -> ScanError {
-    tap.borrow_mut().failure.take().unwrap_or_else(|| {
+fn scan_error(error: serde_json::Error, scan_state: &Rc<RefCell<ScanState>>) -> ScanError {
+    scan_state.borrow_mut().failure.take().unwrap_or_else(|| {
         if error.is_io() {
             ScanError::Input(error)
         } else {
@@ -122,37 +122,37 @@ fn map_value<
     F: FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 >(
     map: &mut A,
-    tap: &Rc<RefCell<Tap>>,
+    scan_state: &Rc<RefCell<ScanState>>,
     item: &mut F,
 ) -> Result<(), A::Error> {
     use serde::de::Error;
-    let start = tap.borrow().position;
-    tap.borrow_mut().captured = Some((start, Vec::new()));
+    let start = scan_state.borrow().position;
+    scan_state.borrow_mut().copied = Some((start, Vec::new()));
     let raw = map.next_value::<Box<RawValue>>()?;
-    let (start, captured) = tap.borrow_mut().captured.take().expect("capture started");
-    if !captured.starts_with(raw.get().as_bytes()) {
-        tap.borrow_mut().failure = Some(ScanError::Span);
+    let (start, copied) = scan_state.borrow_mut().copied.take().expect("copy started");
+    if !copied.starts_with(raw.get().as_bytes()) {
+        scan_state.borrow_mut().failure = Some(ScanError::Span);
         return Err(A::Error::custom(
             "Serde map value differs from observed source bytes",
         ));
     }
     {
-        let mut tap = tap.borrow_mut();
-        tap.stats.elements += 1;
-        tap.stats.peak_element_bytes = tap
+        let mut scan_state = scan_state.borrow_mut();
+        scan_state.stats.elements += 1;
+        scan_state.stats.peak_element_bytes = scan_state
             .stats
             .peak_element_bytes
-            .max(captured.len() + raw.get().len());
+            .max(copied.len() + raw.get().len());
     }
-    drop(captured);
+    drop(copied);
     item(start..start + raw.get().len() as u64, &raw).map_err(|error| {
-        tap.borrow_mut().failure = Some(ScanError::Callback(error));
+        scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
         A::Error::custom("export callback failed")
     })
 }
 
 struct ArraySeed<'a, F> {
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -170,14 +170,14 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         while let Some(()) = seq.next_element_seed(ItemSeed {
-            tap: self.tap,
+            scan_state: self.scan_state,
             item: self.item,
         })? {}
         Ok(())
     }
 }
 struct ItemSeed<'a, F> {
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -189,36 +189,36 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
         // Serde's IoRead presents the element's first byte to SeqAccess before
         // invoking the seed. Verify that byte and every subsequent byte against
         // RawValue; incompatible read-ahead fails instead of inventing a span.
-        let last = self.tap.borrow().last;
+        let last = self.scan_state.borrow().last;
         let Some((start, first)) = last else {
-            self.tap.borrow_mut().failure = Some(ScanError::Span);
+            self.scan_state.borrow_mut().failure = Some(ScanError::Span);
             return Err(D::Error::custom("missing array element byte"));
         };
-        self.tap.borrow_mut().captured = Some((start, vec![first]));
+        self.scan_state.borrow_mut().copied = Some((start, vec![first]));
         let raw = Box::<RawValue>::deserialize(de)?;
-        let (_, captured) = self
-            .tap
+        let (_, copied) = self
+            .scan_state
             .borrow_mut()
-            .captured
+            .copied
             .take()
-            .expect("capture started");
-        if !captured.starts_with(raw.get().as_bytes()) {
-            self.tap.borrow_mut().failure = Some(ScanError::Span);
+            .expect("copy started");
+        if !copied.starts_with(raw.get().as_bytes()) {
+            self.scan_state.borrow_mut().failure = Some(ScanError::Span);
             return Err(D::Error::custom(
                 "Serde element bytes differ from observed source bytes",
             ));
         }
         {
-            let mut tap = self.tap.borrow_mut();
-            tap.stats.elements += 1;
-            tap.stats.peak_element_bytes = tap
+            let mut scan_state = self.scan_state.borrow_mut();
+            scan_state.stats.elements += 1;
+            scan_state.stats.peak_element_bytes = scan_state
                 .stats
                 .peak_element_bytes
-                .max(captured.len() + raw.get().len());
+                .max(copied.len() + raw.get().len());
         }
-        drop(captured);
+        drop(copied);
         (self.item)(start..start + raw.get().len() as u64, &raw).map_err(|error| {
-            self.tap.borrow_mut().failure = Some(ScanError::Callback(error));
+            self.scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
             D::Error::custom("export callback failed")
         })
     }
@@ -278,8 +278,8 @@ where
     }
 }
 
-/// A stable retained view that can reopen from its beginning. Rewinding does
-/// not re-observe the provider's file or change which bytes are interpreted.
+/// A stored input that can reopen from its beginning. Rewinding does not
+/// read the provider's file again or change which bytes are parsed.
 pub trait Input: std::io::BufRead {
     fn rewind(&mut self) -> io::Result<()>;
 }
@@ -295,7 +295,7 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
     }
 }
 
-/// Frames original records, then interprets each in staged order. The default
+/// Frames original records, then parses each in staged order. The default
 /// scanner reads JSON array elements; other origins supply their own framing.
 pub trait ExportParser: Send {
     fn scan(
@@ -310,8 +310,8 @@ pub trait ExportParser: Send {
     }
     /// File-level output after validation and ordering, before its items. `first`
     /// is the selected first record after any keyed replacements. A step with
-    /// `snapshot` set makes every later item restate whole records; owning
-    /// Session facts precede message-only items, whose ranges stay unchanged.
+    /// `restates` set makes every later item restate whole records; the owning
+    /// session's facts precede message-only items, whose ranges stay unchanged.
     fn begin(
         &mut self,
         _length: u64,
@@ -331,7 +331,7 @@ pub trait ExportParser: Send {
     ) -> Result<(), String>;
 }
 
-/// Conversation state within one export operation. A new ownership key returns
+/// Conversation scan_state within one export operation. A new ownership key returns
 /// None; an existing key returns its first owner. Previous-message links are
 /// stored separately so chronological records can interleave conversations.
 pub trait ExportState {
@@ -380,7 +380,7 @@ pub fn parse_item(
         accounting: records.finish().map_err(|e| e.to_string())?,
         start: range.start,
         consumed: range.end,
-        snapshot: false,
+        restates: false,
     })
 }
 
@@ -395,7 +395,7 @@ pub fn refused(error: String, length: u64) -> crate::parse::Step {
         accounting: records.finish().expect("refusal accounted"),
         start: 0,
         consumed: length,
-        snapshot: false,
+        restates: false,
     }
 }
 

@@ -15,7 +15,7 @@ pub fn mask(text: &str) -> String {
 
 /// Preserve JSON types and all values, including empty fields. Credential-shaped
 /// keys are masked too. If keys collapse to one label, append a number rather
-/// than overwriting a value; ordinary keys retain their original names.
+/// than overwriting a value; ordinary keys keep their original names.
 pub fn mask_json(value: &mut Value) {
     mask_json_values(value, mask);
 }
@@ -206,7 +206,7 @@ impl MessageMasker {
 
 fn mask_alias(value: &mut Value, alias: &(String, String)) {
     // A projected command/output is not a second authored fragment. All other
-    // structured values retain complete-value masking and their JSON types.
+    // structured values keep complete-value masking and their JSON types.
     mask_json_values(value, |text| {
         if text == alias.0 {
             alias.1.clone()

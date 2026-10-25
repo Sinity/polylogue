@@ -154,7 +154,7 @@ fn whole_documents_are_not_parsed_at_short_read_boundaries() {
 
 #[test]
 fn coalesced_snapshots_use_end_offsets_not_a_sum_of_ends() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
+    use polylogue_model::capture_log::{Header, MAGIC};
     let mut bytes = MAGIC.to_vec();
     for _ in 0..2 {
         bytes.extend(Header::of(b"{}").encode());

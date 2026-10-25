@@ -8,26 +8,26 @@ pub fn scan_map(
     field: &str,
     mut item: impl FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
-    let tap = Rc::new(RefCell::new(Tap::default()));
-    let input = Tapped {
+    let scan_state = Rc::new(RefCell::new(ScanState::default()));
+    let input = PositionReader {
         reader: BufReader::new(reader),
-        tap: Rc::clone(&tap),
+        scan_state: Rc::clone(&scan_state),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
     let metadata = MapDocument {
         field,
-        tap: &tap,
+        scan_state: &scan_state,
         item: &mut item,
     }
     .deserialize(&mut de)
-    .map_err(|e| scan_error(e, &tap))?;
-    let stats = finish_scan(de.end(), &tap)?;
+    .map_err(|e| scan_error(e, &scan_state))?;
+    let stats = finish_scan(de.end(), &scan_state)?;
     Ok((metadata, stats))
 }
 
 struct MapDocument<'a, F> {
     field: &'a str,
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -55,7 +55,7 @@ impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> Visitor<'
                 }
                 selected = true;
                 map.next_value_seed(Entries {
-                    tap: self.tap,
+                    scan_state: self.scan_state,
                     item: self.item,
                 })?;
                 Json::Object(Default::default())
@@ -69,7 +69,7 @@ impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> Visitor<'
 }
 
 struct Entries<'a, F> {
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -89,7 +89,7 @@ impl<'de, F: FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>> Visitor<'
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         while let Some(key) = map.next_key::<String>()? {
-            map_value(&mut map, self.tap, &mut |range, raw| {
+            map_value(&mut map, self.scan_state, &mut |range, raw| {
                 (self.item)(range, &key, raw)
             })?;
         }

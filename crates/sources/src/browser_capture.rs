@@ -33,7 +33,7 @@ const KIND_KEY: &str = "polylogue_capture_kind";
 /// captures, without treating an unrelated schema-versioned JSON file as one.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "json")
-        && (head.starts_with(polylogue_model::snapshot_log::MAGIC)
+        && (head.starts_with(polylogue_model::capture_log::MAGIC)
             || (first_byte(head) == Some(b'{')
                 && (matches!(first_key(head), Some(KIND_KEY | "capture_id"))
                     || (first_key(head) == Some("schema_version")

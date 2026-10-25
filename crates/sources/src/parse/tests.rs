@@ -100,7 +100,7 @@ fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
 
 #[test]
 fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
+    use polylogue_model::capture_log::{Header, MAGIC};
     let parser = Parse::Snapshots(Box::new(EmptyDocument));
     let body = b"{}";
     let mut bytes = MAGIC.to_vec();
@@ -140,7 +140,7 @@ impl DocumentParser for DocumentEvent {
 
 #[test]
 fn snapshot_event_ranges_name_the_payload_in_whole_and_incremental_reads() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
+    use polylogue_model::capture_log::{Header, MAGIC};
     let body = br#"{"kept":true}"#;
     let mut bytes = MAGIC.to_vec();
     let mut expected = Vec::new();

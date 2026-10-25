@@ -1,15 +1,16 @@
-//! Framed snapshots: a length and digest let readers skip old payloads without
-//! decoding them. Bodies start as exact submitted JSON bytes; text excision
-//! rehashes the active payload while preserving its observed identity.
+//! The browser capture log: each capture is a frame whose length and digest
+//! let readers skip earlier captures without decoding them. A frame starts as
+//! the exact submitted JSON bytes; text excision rehashes it and keeps the
+//! digest of the bytes as first seen.
 
-pub const MAGIC: &[u8] = b"POLYLOGUE-SNAPSHOTS/1\n";
+pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
 pub const HEADER_LEN: usize = 151;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub length: u64,
     pub digest: String,
-    /// Identity of the observed bytes, retained when payload text is excised.
+    /// Digest of the bytes as first seen, kept when text in them is excised.
     pub observed_digest: String,
 }
 
@@ -39,7 +40,7 @@ impl Header {
             || !bytes[..20].iter().all(u8::is_ascii_digit)
             || !bytes[21..85].iter().all(u8::is_ascii_hexdigit)
         {
-            return Err("invalid snapshot frame header".into());
+            return Err("invalid capture frame header".into());
         }
         let length = std::str::from_utf8(&bytes[..20])
             .map_err(|e| e.to_string())?

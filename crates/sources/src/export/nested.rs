@@ -39,22 +39,22 @@ fn scan_metadata(
     unique_fields: bool,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
-    let tap = Rc::new(RefCell::new(Tap::default()));
-    let input = Tapped {
+    let scan_state = Rc::new(RefCell::new(ScanState::default()));
+    let input = PositionReader {
         reader: BufReader::new(reader),
-        tap: Rc::clone(&tap),
+        scan_state: Rc::clone(&scan_state),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = Nested {
         path,
         root_array,
         unique_fields,
-        tap: &tap,
+        scan_state: &scan_state,
         item: &mut item,
     }
     .deserialize(&mut de);
-    let metadata = result.map_err(|error| scan_error(error, &tap))?;
-    let stats = finish_scan(de.end(), &tap)?;
+    let metadata = result.map_err(|error| scan_error(error, &scan_state))?;
+    let stats = finish_scan(de.end(), &scan_state)?;
     Ok((metadata, stats))
 }
 
@@ -62,7 +62,7 @@ struct Nested<'a, F> {
     path: &'a [&'a str],
     root_array: bool,
     unique_fields: bool,
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     item: &'a mut F,
 }
 impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed<'de>
@@ -94,7 +94,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
                     path: &self.path[1..],
                     root_array: false,
                     unique_fields: self.unique_fields,
-                    tap: self.tap,
+                    scan_state: self.scan_state,
                     item: self.item,
                 })?
             } else {
@@ -107,7 +107,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
         if self.path.is_empty() || self.root_array {
             ArraySeed {
-                tap: self.tap,
+                scan_state: self.scan_state,
                 item: self.item,
             }
             .visit_seq(seq)?;

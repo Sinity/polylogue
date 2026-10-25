@@ -47,7 +47,7 @@ pub enum Block {
     },
     Image(Attachment),
     File(Attachment),
-    /// A block kind this origin's parser does not interpret yet. Kept whole.
+    /// A block kind this origin's parser does not read yet. Kept whole.
     Other {
         type_name: String,
         data: Json,
