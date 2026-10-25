@@ -275,10 +275,9 @@ pub(super) fn blank_document(
     texts.missing()
 }
 
-/// Writes a replacement blob in the writer's order: its row as `writing`,
-/// then the file, then the row `present`. A file-sized blob whose row this
-/// call inserted is listed in [`Transactions::new_files`], so a rollback can
-/// delete the file that no committed row names.
+/// Stores a replacement blob. A small one is an inline row. A file-sized
+/// one is staged in `blobs/tmp/` in the first run and marked `present` under
+/// its committed row in the second ([`Replacements`]).
 pub(super) fn write_piece(
     t: &Transactions<'_, '_>,
     mut bytes: impl std::io::Read + std::io::Seek,
@@ -308,65 +307,51 @@ pub(super) fn write_piece(
             stored: Stored::Inline(compressed),
         });
     }
-    let inserted = t.archive.execute(
-        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-        VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
-        params![&hash.0[..], size as i64],
-    )? > 0;
-    if inserted {
-        t.new_files.borrow_mut().push(hash);
-    }
-    let present: bool = t.archive.query_row(
-        "SELECT state = 'present' FROM blob WHERE hash = ?1",
-        [&hash.0[..]],
-        |r| r.get(0),
-    )?;
-    if !present {
-        let written = t.store.put(&mut bytes, crate::blobs::LEVEL)?;
-        if written.0 != hash.0 {
-            return Err(StoreError::Invalid(
-                "replacement bytes changed while they were written".into(),
-            ));
+    let stored_size = match &t.replacements {
+        Replacements::Stage(staged) => {
+            if !staged.borrow().contains_key(&hash) {
+                let prepared = t.store.prepare_plain(&mut bytes, crate::blobs::LEVEL)?;
+                if prepared.hash().0 != hash.0 {
+                    return Err(StoreError::Invalid(
+                        "replacement bytes changed while they were written".into(),
+                    ));
+                }
+                staged.borrow_mut().insert(hash, prepared);
+            }
+            // This run is rolled back; the row only lets its extents refer
+            // to the blob.
+            t.archive.execute(
+                "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
+                VALUES (?1, ?2, 0, 'file', 'plain', 'present')",
+                params![&hash.0[..], size as i64],
+            )?;
+            0
         }
-        crate::fault::check("excision.after_piece_file", &hash.to_string())?;
-        t.archive.execute(
-            "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
-            params![&hash.0[..], t.store.stored_size(&written)? as i64],
-        )?;
-    }
-    let stored_size = t.archive.query_row(
-        "SELECT stored_size FROM blob WHERE hash = ?1",
-        [&hash.0[..]],
-        |r| r.get::<_, i64>(0),
-    )? as u64;
+        Replacements::Installed => {
+            let file = hashed_blobs::Hash(hash.0);
+            if !t.store.contains(&file) {
+                return Err(StoreError::Invalid(
+                    "a replacement blob differs from the one staged for it".into(),
+                ));
+            }
+            let stored_size = t.store.stored_size(&file)?;
+            let updated = t.archive.execute(
+                "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
+                params![&hash.0[..], stored_size as i64],
+            )?;
+            if updated == 0 {
+                return Err(StoreError::Invalid(
+                    "a replacement blob differs from the one staged for it".into(),
+                ));
+            }
+            stored_size
+        }
+    };
     Ok(Piece {
         hash,
         size,
         stored: Stored::File { stored_size },
     })
-}
-
-/// After a rolled-back excision, deletes the files it wrote whose blob rows
-/// did not commit. The caller holds the write lock.
-pub(crate) fn delete_uncommitted_files(
-    archive: &rusqlite::Connection,
-    store: &hashed_blobs::Store,
-    hashes: &[BlobHash],
-) -> Result<()> {
-    for hash in hashes {
-        let committed: bool = archive.query_row(
-            "SELECT EXISTS(SELECT 1 FROM blob WHERE hash = ?1)",
-            [&hash.0[..]],
-            |r| r.get(0),
-        )?;
-        if !committed {
-            match store.delete(&hashed_blobs::Hash(hash.0)) {
-                Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

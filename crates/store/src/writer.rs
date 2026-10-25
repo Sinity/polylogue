@@ -662,12 +662,81 @@ impl Inner {
         result
     }
 
+    /// Runs the excision twice ([`crate::excise::Replacements`]): once,
+    /// rolled back, to stage its replacement blob files; then, after their
+    /// rows are committed as `deleting` and the files installed, for real.
     fn write_excision_rows(
         &mut self,
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
         let lock = crate::write_lock::hold(&self.archive)?;
+        if !request.dry_run {
+            // Every `deleting` row below is then this excision's own.
+            crate::blobs::delete_marked(&self.archive, store)?;
+        }
+        let staged = crate::excise::Replacements::default();
+        let first = self.run_excision(request, store, &staged, false)?;
+        if request.dry_run {
+            return Ok(first);
+        }
+        let crate::excise::Replacements::Stage(staged) = staged else {
+            unreachable!("the first run stages");
+        };
+        let installed: Result<()> = (|| {
+            let staged = staged.into_inner();
+            if staged.is_empty() {
+                return Ok(());
+            }
+            let tx = self.archive.transaction()?;
+            bump_counter(&tx)?;
+            for (hash, file) in &staged {
+                tx.execute(
+                    "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
+                     VALUES (?1, ?2, 0, 'file', 'plain', 'deleting')",
+                    params![&hash.0[..], file.decoded_len() as i64],
+                )?;
+            }
+            tx.commit()?;
+            for (hash, file) in staged {
+                if !store.contains(&hashed_blobs::Hash(hash.0)) {
+                    file.install()?;
+                }
+                crate::fault::check("excision.after_piece_file", &hash.to_string())?;
+            }
+            Ok(())
+        })();
+        let done = installed.and_then(|()| {
+            self.run_excision(request, store, &crate::excise::Replacements::Installed, true)
+        });
+        match done {
+            Ok(done) => {
+                drop(lock);
+                if let Err(error) = crate::blobs::delete_marked(&self.archive, store) {
+                    return Err(StoreError::ExcisionInterrupted(Box::new(error)));
+                }
+                Ok(done)
+            }
+            Err(error) => {
+                // Rows still `deleting` are this excision's unused replacements.
+                if !matches!(error, StoreError::ExcisionInterrupted(_)) {
+                    let _ = crate::blobs::delete_marked(&self.archive, store);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// One run of an excision in one transaction per database, committed in
+    /// the order [`Self::write_excision`] describes when `commit` is set and
+    /// rolled back otherwise.
+    fn run_excision(
+        &mut self,
+        request: &crate::excise::ExciseRequest,
+        store: &hashed_blobs::Store,
+        replacements: &crate::excise::Replacements,
+        commit: bool,
+    ) -> Result<crate::excise::Excised> {
         let embeddings = if self.location.embeddings_db().exists() {
             let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
             e.pragma_update(None, "synchronous", "full")?;
@@ -689,31 +758,26 @@ impl Inner {
             store,
             seq,
             counter,
-            new_files: Default::default(),
+            replacements,
         };
         let applied = crate::excise::apply(&txs, request);
-        let new_files = txs.new_files.take();
         drop(txs);
+        let rollback = |embeddings: &Option<rusqlite::Connection>| {
+            if let Some(e) = embeddings {
+                let _ = e.execute_batch("ROLLBACK");
+            }
+        };
         let done = match applied {
             Ok(done) => done,
             Err(error) => {
-                if let Some(e) = &embeddings {
-                    let _ = e.execute_batch("ROLLBACK");
-                }
-                drop(itx);
-                drop(atx);
-                // The error that stopped the excision is the one to report.
-                let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
+                rollback(&embeddings);
                 return Err(error);
             }
         };
-        if request.dry_run {
+        if !commit {
             itx.rollback()?;
             atx.rollback()?;
-            if let Some(e) = &embeddings {
-                e.execute_batch("ROLLBACK")?;
-            }
-            crate::excise::delete_uncommitted_files(&self.archive, store, &new_files)?;
+            rollback(&embeddings);
             return Ok(done);
         }
         let refused = crate::excise::Refused::load(&atx)?;
@@ -730,13 +794,6 @@ impl Inner {
             crate::fault::check("excision.after_index_commit", &request.id)
         })();
         if let Err(error) = committed {
-            // A file whose blob row did not commit is deleted; one whose row
-            // did stays, since the archive now refers to it.
-            let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
-            return Err(StoreError::ExcisionInterrupted(Box::new(error)));
-        }
-        drop(lock);
-        if let Err(error) = crate::blobs::delete_marked(&self.archive, store) {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
         self.refused = refused;

@@ -53,7 +53,12 @@ collects the text again.
 
 ## The order of the work
 
-An excision runs in the writer in one pass, one transaction per database:
+An excision runs in the writer twice. The first run is rolled back; it only
+writes each new blob file the excision needs (the rewritten bytes) to
+`blobs/tmp/`. Their blob rows are then committed as `deleting` and the files
+moved under their content names, so a stop from here on leaves only files
+that their rows mark for deletion. The second run does the work, one
+transaction per database, and marks the new blobs it uses `present`:
 
 1. **Embeddings first.** Vectors and provider failures of the removed texts
    are deleted and committed. If anything later fails, nothing else changed
