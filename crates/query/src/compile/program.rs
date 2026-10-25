@@ -506,9 +506,8 @@ impl<'a> Compiler<'a> {
                 );
                 (sql, keys)
             } else {
-                let (hidden, mut keys) = hidden_order(&order, "_o");
+                let (hidden, keys) = hidden_order(&order, "_o");
                 select.extend(hidden);
-                keys.push(OrderKey::ascending("_pk"));
                 let sql = format!(
                     "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
                     select.join(", "),

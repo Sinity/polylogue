@@ -142,9 +142,8 @@ impl<'a> Compiler<'a> {
             select.push(format!("{e} AS {n}"));
             columns.push((n.clone(), *k));
         }
-        let (hidden, mut order) = hidden_order(&[owner_order, child_order].concat(), "_m");
+        let (hidden, order) = hidden_order(&[owner_order, child_order].concat(), "_m");
         select.extend(hidden);
-        order.push(OrderKey::ascending("_pk"));
         let sql = format!(
             "SELECT {} FROM {}, {} WHERE {} ORDER BY {}",
             select.join(", "),

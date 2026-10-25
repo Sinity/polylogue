@@ -25,8 +25,9 @@ pub struct UnitSpec {
     /// The row key, `_pk` in the output. It can change when the index is
     /// rebuilt.
     pub key: &'static str,
-    /// What names a row across index rebuilds; the last term of every
-    /// order, so pages continue after a rebuild.
+    /// What names one row, unchanged by an index rebuild where the source
+    /// gives the row a position; the last term of every order, so the
+    /// order is total and pages continue after a rebuild.
     pub identity: &'static str,
     /// The default columns: name, SQL template, kind.
     pub columns: &'static [(&'static str, Expr, ColKind)],
@@ -484,7 +485,7 @@ pub static UNITS: &[UnitSpec] = &[
             "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
         key: "{b}.pk",
-        identity: "json_array({m}.id, {b}.idx, {b}.kind)",
+        identity: "json_array({m}.id, {b}.idx, CASE WHEN {b}.idx IS NULL THEN {b}.pk END)",
         columns: &[
             (
                 "session",
@@ -532,7 +533,7 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
         ),
         key: "{t}.pk",
-        identity: "json_array({m}.id, {cb}.idx)",
+        identity: "json_array({m}.id, {cb}.idx, CASE WHEN {cb}.idx IS NULL THEN {t}.pk END)",
         columns: &[
             (
                 "session",

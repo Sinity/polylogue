@@ -91,7 +91,7 @@ fn a_saved_query_that_cannot_stand_there_is_refused() {
 fn sort_takes_tie_breaking_keys() {
     let p = c("sessions | sort by live_rank, last_event_at desc");
     let directions: Vec<bool> = p.order.iter().map(|k| k.descending).collect();
-    assert_eq!(directions, [false, false, false, true, false, false]);
+    assert_eq!(directions, [false, false, false, true, false]);
     let term = |n: usize| {
         let end = p.sql.find(&format!(" AS _o{n},")).expect("order column");
         &p.sql[..end]
