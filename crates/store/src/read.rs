@@ -17,7 +17,7 @@ use std::thread::ThreadId;
 
 mod imports;
 mod lineage;
-pub use imports::RetainedImport;
+pub use imports::StoredImport;
 mod rows;
 
 pub use lineage::{Lineage, LineageIssue, MessageSelection};
@@ -96,7 +96,7 @@ pub struct KnownInput {
 /// The current retained revision and its parser progress, independent of a
 /// source path. Imports use this to retry parsing without retaining bytes twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetainedInput {
+pub struct ChainProgress {
     pub chain: i64,
     pub route_rank: u8,
     pub waiting: bool,
@@ -110,7 +110,7 @@ pub struct RetainedInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
-    pub unfinished_inputs: Vec<crate::staging::Unfinished>,
+    pub pending_inputs: Vec<crate::staging::PendingBlob>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -382,7 +382,7 @@ impl Reader<'_> {
                     return Err(StoreError::ReadPoolClosed);
                 }
                 let waiting = std::time::Instant::now();
-                let _admission = crate::publication::admit(&self.pool.archive, || {
+                let _admission = crate::write_lock::wait_shared(&self.pool.archive, || {
                     if conn.is_interrupted() {
                         return Err(rusqlite::Error::SqliteFailure(
                             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
@@ -686,7 +686,7 @@ impl Reader<'_> {
             unrecognized.push((w, n as u64));
         }
         Ok(Status {
-            unfinished_inputs: crate::staging::unfinished(c, "a.")?,
+            pending_inputs: crate::staging::unfinished(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM message")?,
             documents: count("SELECT COUNT(*) FROM document")?,
@@ -708,7 +708,7 @@ impl Reader<'_> {
     /// The stored bytes of an input's revision chain, for parsing them
     /// again without the file.
     /// Check canonical completion without copying the selected extent catalog.
-    pub fn check_retained_range(
+    pub fn check_bytes_present(
         &self,
         input: &str,
         chain: i64,
@@ -723,7 +723,7 @@ impl Reader<'_> {
         chain: i64,
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
-        self.check_retained_range(input, chain, 0..length)?;
+        self.check_bytes_present(input, chain, 0..length)?;
         crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
@@ -736,18 +736,18 @@ impl Reader<'_> {
         end: u64,
         store: &hashed_blobs::Store,
     ) -> Result<Vec<u8>> {
-        self.check_retained_range(input, chain, start..end)?;
+        self.check_bytes_present(input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
             .read_range(store, start, end)
     }
 
-    fn current_attachment(&self, asset: &crate::assets::AssetCandidate) -> Result<()> {
+    fn current_attachment(&self, asset: &crate::assets::AssetMatch) -> Result<()> {
         let current = self
-            .asset_basis(&asset.input)?
+            .asset_source(&asset.input)?
             .ok_or_else(|| StoreError::NotFound("retained attachment input".into()))?;
         if current.chain != asset.chain
             || current.length != asset.size
-            || current.hash != asset.basis
+            || current.version != asset.source_version
             || current.blob != asset.blob
         {
             return Err(StoreError::Conflict(
@@ -760,7 +760,7 @@ impl Reader<'_> {
     /// Read the selected retained asset range through this same admitted view.
     pub fn attachment_range(
         &self,
-        asset: &crate::assets::AssetCandidate,
+        asset: &crate::assets::AssetMatch,
         roots: &[std::path::PathBuf],
         range: std::ops::Range<u64>,
     ) -> Result<Vec<u8>> {
@@ -779,7 +779,7 @@ impl Reader<'_> {
     /// it once for an explicitly requested exact delivery, streaming the bytes.
     pub fn attachment_hash(
         &self,
-        asset: &crate::assets::AssetCandidate,
+        asset: &crate::assets::AssetMatch,
         roots: &[std::path::PathBuf],
     ) -> Result<polylogue_model::BlobHash> {
         self.current_attachment(asset)?;
@@ -917,13 +917,13 @@ impl Reader<'_> {
 
     /// The latest retained revision and any committed parse progress.
     /// Every retained physical chain, with rebuildable parser progress.
-    pub fn retained_chains(&self, id: &str) -> Result<Vec<(i64, RetainedInput)>> {
+    pub fn chain_progress(&self, id: &str) -> Result<Vec<(i64, ChainProgress)>> {
         let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.input_pk IS NOT NULL,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
         Ok(stmt
             .query_map([id], |r| {
                 Ok((
                     r.get(0)?,
-                    RetainedInput {
+                    ChainProgress {
                         chain: r.get(0)?,
                         length: r.get::<_, i64>(1)? as u64,
                         parsed_upto: r.get::<_, i64>(2)? as u64,
@@ -936,7 +936,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn retained_input(&self, id: &str) -> Result<Option<RetainedInput>> {
+    pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
         let row = self
             .conn()?
             .prepare_cached(
@@ -969,7 +969,7 @@ impl Reader<'_> {
                 )));
             }
         };
-        Ok(Some(RetainedInput {
+        Ok(Some(ChainProgress {
             chain,
             route_rank,
             waiting,

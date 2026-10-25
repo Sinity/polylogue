@@ -35,13 +35,13 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
         let mut canonical = open_write(&location.archive_db(), cache::SETUP).unwrap();
         let mut index = open_write(&location.index_db(), cache::SETUP).unwrap();
         let mut states = vec![(0, 0)];
-        for (canonical_write, counter) in [(true, 1), (false, 1), (true, 2), (false, 2)] {
-            let conn = if canonical_write {
+        for (archive_write, counter) in [(true, 1), (false, 1), (true, 2), (false, 2)] {
+            let conn = if archive_write {
                 &mut canonical
             } else {
                 &mut index
             };
-            let _publication = crate::publication::write(conn).unwrap();
+            let _lock = crate::write_lock::hold(conn).unwrap();
             let tx = conn.transaction().unwrap();
             tx.execute("INSERT INTO meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[counter.to_string()]).unwrap();
             tx.commit().unwrap();
@@ -141,7 +141,7 @@ fn interrupted_admission_does_not_wait_for_publication() {
 fn mark_index_unsynced(archive: &Archive) {
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
     let tx =
-        crate::publication::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
+        crate::write_lock::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
     tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
     tx.commit().unwrap();
     drop(conn);

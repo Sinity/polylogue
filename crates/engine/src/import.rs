@@ -21,7 +21,7 @@ impl Engine {
         let started = Instant::now();
         let mut report = ImportReport::default();
         let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
-        report.pass.unfinished_inputs = finished.unfinished;
+        report.pass.pending_inputs = finished.unfinished;
         if finished.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
         }
@@ -88,14 +88,14 @@ impl Engine {
             }
         }
         self.restore_failed_writes()?;
-        for pending in self.reads.reader()?.status()?.unfinished_inputs {
+        for pending in self.reads.reader()?.status()?.pending_inputs {
             if !report
                 .pass
-                .unfinished_inputs
+                .pending_inputs
                 .iter()
                 .any(|known| known.input == pending.input && known.blob == pending.blob)
             {
-                report.pass.unfinished_inputs.push(pending);
+                report.pass.pending_inputs.push(pending);
             }
         }
         self.refresh_import_assets(&mut report.pass)?;
@@ -159,7 +159,7 @@ impl Engine {
             report.imported.push(path.to_path_buf());
             report.pass.bytes_stored += size;
         }
-        self.admitted_import_plan(path, origin, input, &admitted, facts)
+        self.stored_import_plan(path, origin, input, &admitted, facts)
     }
 
     fn import_batch(
@@ -193,7 +193,7 @@ impl Engine {
         }
     }
 
-    fn admitted_import_plan(
+    fn stored_import_plan(
         &self,
         path: &Path,
         origin: &'static OriginSpec,
@@ -207,7 +207,7 @@ impl Engine {
         }
         let reader = self.reads.reader()?;
         let retained = reader
-            .retained_input(&input.id)?
+            .input_progress(&input.id)?
             .ok_or_else(|| std::io::Error::other("admitted import has no retained revision"))?;
         if (retained.parsed_upto == size || retained.waiting) && retained.parsed {
             return Ok(None);

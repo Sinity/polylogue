@@ -2,18 +2,18 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetainedImport {
+pub struct StoredImport {
     pub id: String,
     pub format: String,
     /// Captured parser context, never a provider file to reopen.
     pub path: Option<String>,
-    pub state: RetainedInput,
+    pub state: ChainProgress,
 }
 
 impl Reader<'_> {
     /// All retained immutable imports, even when several used the same path or
     /// were captured on another machine. Only metadata is decoded here.
-    pub fn retained_imports(&self) -> Result<Vec<RetainedImport>> {
+    pub fn stored_imports(&self) -> Result<Vec<StoredImport>> {
         let mut stmt=self.conn()?.prepare("WITH interpreted AS (
             SELECT o.input,o.path,json_extract(o.details_json,'$.import_format') AS format,
                 row_number() OVER (PARTITION BY o.input ORDER BY (json_extract(o.details_json,'$.import_format')='export-file'),o.rowid DESC) AS choice
@@ -30,11 +30,11 @@ impl Reader<'_> {
             ORDER BY i.id")?;
         Ok(stmt
             .query_map([], |r| {
-                Ok(RetainedImport {
+                Ok(StoredImport {
                     id: r.get(0)?,
                     format: r.get(1)?,
                     path: r.get(2)?,
-                    state: RetainedInput {
+                    state: ChainProgress {
                         chain: r.get(3)?,
                         length: r.get::<_, i64>(4)? as u64,
                         parsed_upto: r.get::<_, i64>(5)? as u64,

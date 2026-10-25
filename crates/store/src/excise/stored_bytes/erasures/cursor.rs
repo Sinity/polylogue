@@ -133,7 +133,7 @@ impl<'a> Cursor<'a> {
         self.flush()
     }
 
-    fn retain_error<T>(&mut self, result: Result<T, Error>) -> Result<T, String> {
+    fn keep_error<T>(&mut self, result: Result<T, Error>) -> Result<T, String> {
         result.map_err(|error| {
             self.error = Some(error);
             "record range planning failed".into()
@@ -144,14 +144,14 @@ impl<'a> Cursor<'a> {
 impl Ranges for Cursor<'_> {
     fn covered(&mut self, range: Range) -> Result<bool, String> {
         let result = self.advance(range.0);
-        self.retain_error(result)?;
+        self.keep_error(result)?;
         Ok(self
             .current
             .is_some_and(|r| r.0 <= range.0 && r.1 >= range.1))
     }
     fn touched(&mut self, range: Range) -> Result<bool, String> {
         let result = self.advance(range.0);
-        self.retain_error(result)?;
+        self.keep_error(result)?;
         Ok(self.current.is_some_and(|r| r.0 < range.1))
     }
     fn mark(&mut self, range: Range) {
@@ -161,6 +161,6 @@ impl Ranges for Cursor<'_> {
     }
     fn push(&mut self, range: Range) -> Result<(), String> {
         let result = self.emit(range);
-        self.retain_error(result)
+        self.keep_error(result)
     }
 }

@@ -224,7 +224,7 @@ pub(super) fn delete_session(
         return Ok(());
     }
     crate::session_row::remove_with_references(i, pk, id, |references| {
-        references.visit_blobs(|hash| hashes.blob_candidate(hash))?;
+        references.visit_blobs(|hash| hashes.blob_to_check(hash))?;
         i.execute(
             "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
          ON CONFLICT(session_id) DO UPDATE SET changed = excluded.changed",

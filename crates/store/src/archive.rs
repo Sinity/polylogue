@@ -130,7 +130,7 @@ impl Archive {
         let archive = Self::at(root);
         fs::create_dir_all(archive.blobs_dir())?;
         let a = open_write(&archive.archive_db(), cache::SETUP)?;
-        let identity_publication = crate::publication::write(&a)?;
+        let identity_lock = crate::write_lock::hold(&a)?;
         schema::ensure_archive(&a)?;
         // The archive's identity: Sinex keys this archive's published rows
         // by it, so two archives never collide (architecture 7.1).
@@ -138,7 +138,7 @@ impl Archive {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
             [uuid::Uuid::now_v7().to_string()],
         )?;
-        drop(identity_publication);
+        drop(identity_lock);
         let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
@@ -156,7 +156,7 @@ impl Archive {
     /// loop then rebuilds it from the stored inputs.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let archive = open_read(&self.archive_db())?;
-        let _write = crate::publication::write(&archive)?;
+        let _write = crate::write_lock::hold(&archive)?;
         if self.index_db().exists() && self.index_out_of_date(&archive)? {
             for suffix in ["", "-wal", "-shm"] {
                 match fs::remove_file(self.root.join(format!("index.db{suffix}"))) {

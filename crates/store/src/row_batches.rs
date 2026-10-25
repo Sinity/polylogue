@@ -196,7 +196,7 @@ impl Snapshot {
 
     /// Visits a batch's rows, parents before the rows that refer to them. A
     /// batch whose bytes are still being written returns
-    /// [`StoreError::InputUnfinished`]; a later pass sends it.
+    /// [`StoreError::InputPending`]; a later pass sends it.
     pub fn rows(
         &self,
         batch: &RowBatch,
@@ -362,7 +362,7 @@ impl Snapshot {
             |r| r.get(0),
         )?;
         if unfinished {
-            return Err(unfinished_input(input));
+            return Err(pending_input(input));
         }
         Ok(())
     }
@@ -377,7 +377,7 @@ impl Snapshot {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )?;
         if state != "present" {
-            return Err(unfinished_input(&hash.to_string()));
+            return Err(pending_input(&hash.to_string()));
         }
         if encoding != "plain" {
             return Err(invalid(&format!(
@@ -562,8 +562,8 @@ fn revision_key(key: &str) -> Result<(&str, i64)> {
         .ok_or_else(|| invalid("invalid revision batch key"))
 }
 
-fn unfinished_input(input: &str) -> StoreError {
-    StoreError::InputUnfinished {
+fn pending_input(input: &str) -> StoreError {
+    StoreError::InputPending {
         input: input.to_owned(),
         reason: "its bytes are still being written".into(),
     }

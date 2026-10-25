@@ -126,7 +126,7 @@ impl Vectors {
     ) -> Result<T> {
         let archive = open_read(&index.with_file_name("archive.db"))?;
         let index = open_read(index)?;
-        let _lock = crate::publication::write(&index)?;
+        let _lock = crate::write_lock::hold(&index)?;
         if crate::excise::index_behind(&archive, &index)? {
             return Err(StoreError::Invalid(
                 "an excision has not reached the index yet; reopen the archive".into(),

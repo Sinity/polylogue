@@ -3,7 +3,7 @@ use polylogue_testkit::{ClaudeHome, claude_user as user};
 use std::io::Read;
 use std::sync::Arc;
 
-fn exact_retained(w: &ClaudeHome, file: &str) {
+fn exactly_stored(w: &ClaudeHome, file: &str) {
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let known = r
@@ -43,7 +43,7 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         assert_eq!(w.texts("new"), ["new retained body"]);
         assert!(engine.converge().unwrap().errors.is_empty());
         assert_eq!(w.texts("new"), ["new retained body"]);
-        exact_retained(&w, "new.jsonl");
+        exactly_stored(&w, "new.jsonl");
     }
 }
 
@@ -98,7 +98,7 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
             );
         }
         assert_eq!(texts.len(), 12 + usize::from(!rewrite));
-        exact_retained(&w, "target.jsonl");
+        exactly_stored(&w, "target.jsonl");
         assert_eq!(w.texts("other"), ["other admitted"]);
     }
     fault::clear();
@@ -117,7 +117,7 @@ fn a_growing_rewrite_after_restart_checks_the_retained_prefix_before_appending()
     let (mut engine, _lock) = w.engine(256);
     assert!(engine.converge().unwrap().errors.is_empty());
     assert_eq!(w.texts("target"), [body]);
-    exact_retained(&w, "rewrite.jsonl");
+    exactly_stored(&w, "rewrite.jsonl");
     assert_eq!(
         w.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
         2

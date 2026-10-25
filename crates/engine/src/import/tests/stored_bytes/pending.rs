@@ -3,7 +3,7 @@ use polylogue_store::{
     StoreError,
     fault::{self, Action},
     row_batches::{RowBatch, Snapshot},
-    staging::UnfinishedState,
+    staging::PendingState,
 };
 
 #[test]
@@ -27,14 +27,14 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert!(!report.pass.errors.is_empty(), "{point}");
             assert_eq!(engine.blobs.contains(&hash), physically_installed);
             let reader = engine.reads.reader().unwrap();
-            let retained = reader.retained_input(&id).unwrap().unwrap();
+            let retained = reader.input_progress(&id).unwrap().unwrap();
             assert!(matches!(
                 reader.stored_chain(&id, retained.chain, retained.length),
-                Err(StoreError::InputUnfinished { .. })
+                Err(StoreError::InputPending { .. })
             ));
             let status = reader.status().unwrap();
-            assert_eq!(status.unfinished_inputs.len(), 1);
-            assert_eq!(status.unfinished_inputs[0].state, UnfinishedState::Writing);
+            assert_eq!(status.pending_inputs.len(), 1);
+            assert_eq!(status.pending_inputs[0].state, PendingState::Writing);
             assert_eq!(status.stored_bytes, 0);
             let rows = Snapshot::open(&world.root).unwrap();
             let batch = RowBatch {
@@ -45,7 +45,7 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert!(
                 matches!(
                     rows.rows(&batch, |_| Ok(())),
-                    Err(StoreError::InputUnfinished { .. })
+                    Err(StoreError::InputPending { .. })
                 ),
                 "unfinished bytes must not be sent to Sinex as present"
             );
@@ -66,7 +66,7 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
         let pass = engine.converge().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         if physically_installed {
-            assert!(pass.unfinished_inputs.is_empty());
+            assert!(pass.pending_inputs.is_empty());
             assert_eq!(
                 world.texts("pending-session"),
                 [format!("synthetic capture at {point}")]
@@ -76,8 +76,8 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
                 1
             );
         } else {
-            assert_eq!(pass.unfinished_inputs.len(), 1);
-            assert_eq!(pass.unfinished_inputs[0].state, UnfinishedState::Missing);
+            assert_eq!(pass.pending_inputs.len(), 1);
+            assert_eq!(pass.pending_inputs[0].state, PendingState::Missing);
             assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);
         }
         let replacement = engine.import(std::slice::from_ref(&path)).unwrap();

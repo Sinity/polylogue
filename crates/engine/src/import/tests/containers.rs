@@ -48,7 +48,7 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
         }
         let reader = engine.reads.reader().unwrap();
         let retained = reader
-            .retained_input(&id)
+            .input_progress(&id)
             .unwrap()
             .expect("original ZIP input must be retained");
         let bytes = reader
@@ -218,7 +218,7 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
             e.reads
                 .reader()
                 .unwrap()
-                .retained_input(&original_id)
+                .input_progress(&original_id)
                 .unwrap()
                 .is_none()
         );
@@ -258,7 +258,7 @@ fn original_bytes_and_ordinal_preserve_raw_names_separately_from_decoded_project
     assert!(e.import(&[path]).unwrap().pass.errors.is_empty());
     let reader = e.reads.reader().unwrap();
     let id = blake3::hash(&original).to_hex().to_string();
-    let input = reader.retained_input(&id).unwrap().unwrap();
+    let input = reader.input_progress(&id).unwrap().unwrap();
     let retained = reader
         .stored_range(&id, input.chain, 0, input.length, &e.blobs)
         .unwrap();

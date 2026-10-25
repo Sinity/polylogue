@@ -126,7 +126,7 @@ impl Engine {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += admitted.length;
             }
-            if let Some(plan) = self.admitted_import_plan(&at, origin, input, &admitted, facts)? {
+            if let Some(plan) = self.stored_import_plan(&at, origin, input, &admitted, facts)? {
                 self.execute(vec![plan], &mut report.pass)?;
             }
         }

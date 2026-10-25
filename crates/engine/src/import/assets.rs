@@ -35,12 +35,12 @@ impl Engine {
         let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
         for (input, member) in sidecars {
             let reader = self.reads.reader()?;
-            let Some(retained) = reader.retained_input(&input)? else {
+            let Some(retained) = reader.input_progress(&input)? else {
                 continue;
             };
-            let basis = reader
-                .asset_basis(&input)?
-                .ok_or_else(|| std::io::Error::other("retained sidecar has no byte basis"))?;
+            let source = reader
+                .asset_source(&input)?
+                .ok_or_else(|| std::io::Error::other("a stored sidecar has no current revision"))?;
             let chain = reader.stored_chain(&input, retained.chain, retained.length)?;
             let mut staged = ExportItems::new()?;
             stage(
@@ -91,7 +91,7 @@ impl Engine {
                 &AssetRow::Sidecar {
                     input,
                     sidecar: member,
-                    basis: basis.hash,
+                    source_version: source.version,
                     error,
                 },
             )?;

@@ -108,7 +108,7 @@ pub(in crate::excise) fn clear_for_reparse(
                     .execute([text])?;
                 Ok(())
             })?;
-            references.visit_blobs(|hash| hashes.blob_candidate(hash))
+            references.visit_blobs(|hash| hashes.blob_to_check(hash))
         })?;
         crate::fault::check("excision_reparse.after_session", "")?;
     }

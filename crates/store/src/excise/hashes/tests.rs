@@ -37,11 +37,11 @@ fn blob_candidates_are_kept_apart_from_texts() {
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes.text(&[4; 32]).unwrap();
     for hash in [[9; 32], [2; 32], [9; 32]] {
-        hashes.blob_candidate(&hash).unwrap();
+        hashes.blob_to_check(&hash).unwrap();
     }
     let mut blobs = Vec::new();
     hashes
-        .visit_blob_candidates(|hash| {
+        .visit_blobs_to_check(|hash| {
             blobs.push(hash.to_vec());
             Ok(())
         })
@@ -51,7 +51,7 @@ fn blob_candidates_are_kept_apart_from_texts() {
     hashes.finish().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes
-        .visit_blob_candidates(|_| panic!("stale candidate"))
+        .visit_blobs_to_check(|_| panic!("stale candidate"))
         .unwrap();
     hashes.visit_texts(|_| panic!("stale text")).unwrap();
     hashes.finish().unwrap();
@@ -63,21 +63,21 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     let tx = db.transaction().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes.text(&[1; 32]).unwrap();
-    hashes.blob_candidate(&[2; 32]).unwrap();
+    hashes.blob_to_check(&[2; 32]).unwrap();
     let error = hashes
         .visit_texts(|_| Err(StoreError::Invalid("visit failed".into())))
         .unwrap_err();
     assert!(matches!(error,StoreError::Invalid(s) if s=="visit failed"));
     let error = hashes
-        .visit_blob_candidates(|_| Err(StoreError::Invalid("blob visit failed".into())))
+        .visit_blobs_to_check(|_| Err(StoreError::Invalid("blob visit failed".into())))
         .unwrap_err();
     assert!(matches!(error,StoreError::Invalid(s) if s=="blob visit failed"));
     tx.execute_batch(
-        "DROP TABLE temp.excision_removed_text; DROP TABLE temp.excision_candidate_blob",
+        "DROP TABLE temp.excision_removed_text; DROP TABLE temp.excision_blob_to_check",
     )
     .unwrap();
     assert!(hashes.text(&[3; 32]).is_err());
-    assert!(hashes.blob_candidate(&[3; 32]).is_err());
+    assert!(hashes.blob_to_check(&[3; 32]).is_err());
     assert!(hashes.text_count().is_err());
     assert!(hashes.finish().is_err());
     tx.rollback().unwrap();
@@ -85,7 +85,7 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     let hashes = RemovalHashes::new(&tx).unwrap();
     assert_eq!(hashes.text_count().unwrap(), 0);
     hashes
-        .visit_blob_candidates(|_| panic!("failed operation leaked"))
+        .visit_blobs_to_check(|_| panic!("failed operation leaked"))
         .unwrap();
     hashes.text(&[8; 32]).unwrap();
     hashes.finish().unwrap();
@@ -94,7 +94,7 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     let tx = db.transaction().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes.text(&[9; 32]).unwrap();
-    hashes.blob_candidate(&[6; 32]).unwrap();
+    hashes.blob_to_check(&[6; 32]).unwrap();
     assert!(
         hashes
             .visit_texts(|_| Err(StoreError::Invalid("later failure".into())))
@@ -105,7 +105,7 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     let hashes = RemovalHashes::new(&tx).unwrap();
     assert_eq!(hashes.text_count().unwrap(), 0);
     hashes
-        .visit_blob_candidates(|_| panic!("stale failed candidate"))
+        .visit_blobs_to_check(|_| panic!("stale failed candidate"))
         .unwrap();
     hashes.finish().unwrap();
 }
@@ -123,7 +123,7 @@ fn accumulator_clears_rows_while_other_temp_cursors_remain_open() {
         let hashes = RemovalHashes::new(&tx).unwrap();
         assert_eq!(hashes.text_count().unwrap(), 0);
         hashes.text(&[id; 32]).unwrap();
-        hashes.blob_candidate(&[id; 32]).unwrap();
+        hashes.blob_to_check(&[id; 32]).unwrap();
         hashes.finish().unwrap();
     }
 }

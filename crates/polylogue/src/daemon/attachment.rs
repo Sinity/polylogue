@@ -98,10 +98,10 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         .or_else(|| decoded.as_ref().map(|cursor| cursor.asset.as_str()));
     let found = match chosen {
         Some(input) => resolution
-            .candidates
+            .matches
             .iter()
             .find(|found| found.input == input),
-        None if resolution.candidates.len() == 1 => resolution.candidates.first(),
+        None if resolution.matches.len() == 1 => resolution.matches.first(),
         None => None,
     };
     let Some(found) = found else {

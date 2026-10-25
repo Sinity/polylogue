@@ -7,7 +7,7 @@ impl Engine {
         selected: Option<&[String]>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        let imports = self.reads.reader()?.retained_imports()?;
+        let imports = self.reads.reader()?.stored_imports()?;
         for input in imports {
             if selected.is_some_and(|ids| !ids.contains(&input.id)) {
                 continue;
@@ -42,7 +42,7 @@ impl Engine {
                     .stored_chain(&input.id, state.chain, state.length)
                 {
                     Ok(chain) => chain,
-                    Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                    Err(polylogue_store::StoreError::InputPending { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 };
             let source = pool::Bytes::Stored(Arc::new(retained_chain));

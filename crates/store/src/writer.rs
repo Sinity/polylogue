@@ -172,7 +172,7 @@ impl Writer {
     /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        let _publication = crate::publication::write(&index)?;
+        let _lock = crate::write_lock::hold(&index)?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -587,7 +587,7 @@ impl Inner {
             return Ok(());
         }
         self.build_deferred()?;
-        let _publication = crate::publication::write(&self.index)?;
+        let _lock = crate::write_lock::hold(&self.index)?;
         let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
@@ -613,16 +613,16 @@ impl Inner {
         crate::text_rows::index_marked(&self.index)?;
         add(Stage::SearchIndex, started.elapsed());
         let started = std::time::Instant::now();
-        let publication = crate::publication::write(&self.index)?;
+        let lock = crate::write_lock::hold(&self.index)?;
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
             [],
         )?;
         add(Stage::TrigramIndex, started.elapsed());
-        drop(publication);
+        drop(lock);
         let started = std::time::Instant::now();
         for sql in std::mem::take(&mut self.deferred_indexes) {
-            let _publication = crate::publication::write(&self.index)?;
+            let _lock = crate::write_lock::hold(&self.index)?;
             self.index.execute(&sql, [])?;
         }
         add(Stage::SecondaryIndexes, started.elapsed());
@@ -667,7 +667,7 @@ impl Inner {
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
-        let publication = crate::publication::write(&self.archive)?;
+        let lock = crate::write_lock::hold(&self.archive)?;
         let embeddings = if self.location.embeddings_db().exists() {
             let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
             e.pragma_update(None, "synchronous", "full")?;
@@ -718,7 +718,7 @@ impl Inner {
             atx.commit()?;
             crate::fault::check("excision.after_archive_commit", &request.id)?;
             itx.commit()?;
-            drop(publication);
+            drop(lock);
             crate::fault::check("excision.after_index_commit", &request.id)
         })()
         .and_then(|()| crate::blobs::delete_marked(&self.archive, store).map(drop));
@@ -781,7 +781,7 @@ impl Inner {
         &mut self,
         request: &crate::user_writes::UserRequest,
     ) -> Result<crate::user_writes::UserOutcome> {
-        let tx = crate::publication::transaction(&self.archive, TransactionBehavior::Deferred)?;
+        let tx = crate::write_lock::transaction(&self.archive, TransactionBehavior::Deferred)?;
         let seq = bump_counter(&tx)?;
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
         if outcome.repeat {
@@ -805,7 +805,7 @@ impl Inner {
                 p.accounting.check()?;
             }
         }
-        let _publication = crate::publication::write(&self.archive)?;
+        let _lock = crate::write_lock::hold(&self.archive)?;
         let atx = self.archive.transaction()?;
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();

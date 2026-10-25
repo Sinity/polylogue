@@ -25,7 +25,7 @@ mod live;
 pub mod measure;
 pub mod notes;
 mod ordered_blocks;
-mod publication;
+mod write_lock;
 pub mod read;
 mod repo_lookup;
 pub mod row_batches;
@@ -46,7 +46,7 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use notes::NoteFilter;
-pub use read::{KnownInput, ReadPool, Reader, RetainedImport, SqlValue, Status};
+pub use read::{KnownInput, ReadPool, Reader, StoredImport, SqlValue, Status};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
@@ -58,7 +58,7 @@ pub enum StoreError {
     #[error("input {input} is excluded by the archive's removal policy")]
     InputRefused { input: String },
     #[error("input {input} has unfinished retained bytes: {reason}")]
-    InputUnfinished { input: String, reason: String },
+    InputPending { input: String, reason: String },
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]

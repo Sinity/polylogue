@@ -57,10 +57,10 @@ fn a_stopped_watched_export_finishes_only_its_stored_bytes() {
         let pass = engine.converge().unwrap();
         assert!(pass.errors.is_empty(), "{point}: {:?}", pass.errors);
         if point == "import.install" {
-            assert_eq!(pass.unfinished_inputs.len(), 1);
+            assert_eq!(pass.pending_inputs.len(), 1);
             assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);
         } else {
-            assert!(pass.unfinished_inputs.is_empty());
+            assert!(pass.pending_inputs.is_empty());
             assert_eq!(world.count("SELECT count(*) AS n FROM message"), 1);
         }
     }

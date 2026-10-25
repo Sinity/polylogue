@@ -1,11 +1,11 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, the write counter, unsynced, facts_version,
 -- the status counters count.sessions, count.messages, count.tool_calls,
--- count.tool_calls_failed, count.unrecognized (behavior.md, status totals),
+-- count.tool_calls_failed, count.unrecognized,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose
--- stored version differs (convergence.md, Derive).
+-- stored version differs.
 
 -- Inputs as index.db sees them: a small local key for each archive.db input.
 CREATE TABLE input_ref (
@@ -27,12 +27,11 @@ CREATE TABLE session (
   title_source      TEXT,                   -- title provenance; precedence is owned by model TitleSource
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
-  title_at          INTEGER,                -- the provider time of the title (model.md, Session, rule 6 input)
+  title_at          INTEGER,                -- the provider time of the title
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
   attrs_json        TEXT,                   -- provider fields with no column (account IDs, job facts: name, intent,
-                                            --   state); never exported where the spec says so
-  started_at        INTEGER,                -- from the messages and events the session counts as its own (model.md,
-                                            --   Session: a copy counts while its source is absent)
+                                            --   state); not all of them are exported
+  started_at        INTEGER,                -- from the messages and events the session counts as its own
   last_activity_at  INTEGER,
   cwd               TEXT,
   repo              TEXT,                   -- name or URL, for display: record_repo, else the remote of the
@@ -47,11 +46,11 @@ CREATE TABLE session (
   "commit"          TEXT,
   harness           TEXT,
   harness_version   TEXT,
-  machine           TEXT,                   -- machine.id the session ran on, when known (model.md, Session)
+  machine           TEXT,                   -- machine.id the session ran on, when known
   team              TEXT,                   -- agent team (Claude Code teamName), when the session ran in one
   agent_name        TEXT,                   -- its name in the team or its subagent name, as given
   temporary         INTEGER NOT NULL DEFAULT 0,
-  -- Live facts (model.md, Live state): updated in the session's write transaction
+  -- Live facts: updated in the session's write transaction
   -- when a hook line or process line for it is written, so they follow data, not
   -- the clock; the live state itself is computed at read time from these and now.
   live_last_event   TEXT,                   -- type of the latest hook event
@@ -62,9 +61,9 @@ CREATE TABLE session (
   live_waiting_on   TEXT,                   -- permission | question | notification | NULL
   live_waiting_since INTEGER,
   live_todo         TEXT,                   -- the harness's in-progress todo item, as text (Claude Code: the last TodoWrite)
-  live_task         TEXT,                   -- job ID or Bead ID (model.md, live task)
+  live_task         TEXT,                   -- job ID or Bead ID
   live_task_evidence TEXT,                  -- job_env | claim_command
-  changed           INTEGER NOT NULL,       -- write counter of the last records or derived-product publication
+  changed           INTEGER NOT NULL,       -- write counter of the last change to its rows or derived values
                                             --   or derived products (not its live columns)
   live_changed      INTEGER                 -- write counter value of the last change to its live columns
 ) STRICT;
@@ -80,7 +79,7 @@ CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL
 
 CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
+  id                TEXT NOT NULL UNIQUE,   -- inherited marking matches on it
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
@@ -88,14 +87,14 @@ CREATE TABLE message (
   route_rank        INTEGER NOT NULL DEFAULT 0, -- the preferred version's route: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
-  prompt_kind       TEXT,                   -- written_by human: prose | command (model.md, Message)
+  prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
   at                INTEGER,                -- provider time
   completed_at      INTEGER,                -- a message from several timed records: the last record's time
-  at_quality        TEXT,                   -- time_quality of `at` (model.md, Time): intrinsic | file_mtime | unknown
+  at_quality        TEXT,                   -- time_quality of `at`: intrinsic | file_mtime | unknown
   at_precision      TEXT,                   -- instant | second | minute | day | month | year | bounded
   at_until          INTEGER,                -- the end of a bounded `at`; NULL otherwise
-  first_seen        INTEGER,                -- when Polylogue first had its bytes (convergence.md); NULL for at
+  first_seen        INTEGER,                -- when Polylogue first had its bytes; NULL for at
                                             --   most a minute, until an observation covers them
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (preferred) version came from
@@ -103,20 +102,20 @@ CREATE TABLE message (
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
-  id_kind           TEXT,                   -- provider | provisional (model.md, provider and provisional IDs)
+  id_kind           TEXT,                   -- provider | provisional
   native_message_id TEXT,                   -- the provider's own message ID as written (a ChatGPT node ID, a uuid), stored
                                             --   whole so the derive step can find a copy across sessions; never split from id
   response_id       TEXT,                   -- a model message: the provider's response ID (Claude Code message.id)
   request_id        TEXT,                   --   and request ID (requestId), so the derive step can match a response a
-                                            --   fork re-emits under new uuids (model.md, Link); NULL elsewhere
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced (model.md)
-  pasted_spans_json TEXT,                   -- written_by human: pasted byte ranges with their basis (model.md, Message)
+                                            --   fork re-emits under new uuids; NULL elsewhere
+  in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced
+  pasted_spans_json TEXT,                   -- written_by human: pasted byte ranges
   authorship        TEXT,                   -- written_by human: authored | pasted | mixed | unknown
-  on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf; model.md);
+  on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
   inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
   copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
-  counted_as        TEXT,                   -- for a copy, the message counted in its place (model.md, Message)
+  counted_as        TEXT,                   -- for a copy, the message counted in its place
   from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
   from_name         TEXT,                   --   and the sender's name as the provider wrote it
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
@@ -133,7 +132,7 @@ CREATE TABLE message (
   speed             TEXT,                   -- e.g. 'fast', when the provider reports a mode priced differently
   service_tier      TEXT,                   -- batch | flex | priority | ..., when recorded
   provider_cost_nusd INTEGER,               -- the provider's own cost figure, when given
-  cost_nusd         INTEGER,                -- the one per-message cost (analysis.md); NULL = unknown
+  cost_nusd         INTEGER,                -- the one per-message cost; NULL = unknown
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
@@ -158,9 +157,9 @@ CREATE TABLE message_source (
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
-  preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
+  preferred         INTEGER NOT NULL,       -- 1 for the version the message shows
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
-  version_hash      BLOB,                   -- BLAKE3 of the version's canonical JSON: the last tie-break
+  version_hash      BLOB,                   -- BLAKE3 of the version's sorted-key JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
@@ -185,7 +184,7 @@ CREATE TABLE block (
                                             --   Codex counts non-reasoning items and reasoning in reasoning_idx; id = message id:idx
   reasoning_idx     INTEGER,                -- formats whose rewrites drop reasoning (Codex): position among its reasoning items; id = message id:r<reasoning_idx>
   attach_key        TEXT,                   -- attachment listed outside the content list: 'a:<id>' or 'a:~<hash>-<n>'
-                                            --   (model.md Identity); exactly one of idx, reasoning_idx and attach_key is set
+                                            --   exactly one of idx, reasoning_idx and attach_key is set
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
   body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
@@ -193,13 +192,13 @@ CREATE TABLE block (
   input_pk          INTEGER REFERENCES input_ref(pk),  -- only when a field came from another input than the message's
   source_chain      INTEGER,                -- with input_pk: the revision chain the range is in (as message.source_chain)
   source_start      INTEGER,                -- with input_pk: where the block's bytes are in that chain, for a
-  source_end        INTEGER,                --   field from another input or a value too large to index (blobs.md)
+  source_end        INTEGER,                --   field from another input or a value too large to index
   call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
   input_json        TEXT,                   -- tool_call: arguments as given (export field `input`)
   blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
   direction         TEXT,                   -- image/file: input | output | unknown
   member            TEXT,                   -- image/file inside an archive stored whole: 'zip:<input>/<member>', read in
-                                            --   place (blobs.md); blob_hash is then NULL
+                                            --   place; blob_hash is then NULL
   produced_by_pk    INTEGER,                -- image/file output: the block of the tool call or image request that made it
   media_type        TEXT,
   file_name         TEXT,                   -- export `name`
@@ -210,7 +209,7 @@ CREATE TABLE block (
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
   data_json         TEXT,                   -- other: payload as given; encrypted thinking data; tool_call and
                                             --   tool_result: structured tool output kept as given (export `data`)
-  looks_like_secret INTEGER NOT NULL DEFAULT 0, -- has:secret (behavior.md, privacy)
+  looks_like_secret INTEGER NOT NULL DEFAULT 0, -- has:secret
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -263,11 +262,11 @@ CREATE TABLE tool_call (
   tool              TEXT NOT NULL,
   action            TEXT,                   -- the parser's ToolAction: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
   command           TEXT,                   -- as given
-  command_norm      TEXT,                   -- derived (tool_calls): 'cargo test', 'git commit' (analysis.md)
+  command_norm      TEXT,                   -- derived (tool_calls): 'cargo test', 'git commit'
   path              TEXT,                   -- file path argument, when the tool has one
   outcome           TEXT NOT NULL,          -- ok | error | unknown: facts of the records, never of the clock;
-                                            --   `pending` is computed at read time from live state (model.md)
-  outcome_reason    TEXT,                   -- a reason code from model.md (no_result, background_never_reported, ...)
+                                            --   `pending` is computed at read time from live state
+  outcome_reason    TEXT,                   -- a reason code (no_result, background_never_reported, ...)
   exit_code         INTEGER,
   duration_ms       INTEGER,                -- NULL (unknown) when the times are equal or reversed
   child_session_id  TEXT,                   -- natural id of a spawned subagent (may arrive later)
@@ -295,8 +294,7 @@ CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('hashsize', 67108864);
 
--- Where two versions of one message disagree (sources/README.md, rule 2; model.md,
--- within-input conflicts; attachment conflicts): written by the writer in the
+-- Where two versions of one message disagree: written by the writer in the
 -- merge's transaction, rebuilt with the file. `status` counts them per input.
 CREATE TABLE message_disagreement (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
@@ -313,7 +311,7 @@ CREATE TABLE link (
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
   child_pk          INTEGER REFERENCES session(pk),  -- set once the child is stored; NULL while the link is pending
-  kind              TEXT NOT NULL,          -- subagent | continuation | reference (model.md, Link)
+  kind              TEXT NOT NULL,          -- subagent | continuation | reference
   how               TEXT NOT NULL,          -- subagent: fresh | copied | summarized; continuation: resume | fork
                                             -- | after_compaction; reference: briefing | ping | mention
   branch_point      TEXT,                   -- natural message id where the child branches off
@@ -321,13 +319,13 @@ CREATE TABLE link (
                                             --   derive step from spawning_call once the parent session is stored
   spawning_call     TEXT,                   -- the spawning call's ID as the evidence names it (a tool-use ID)
   spawn_evidence    TEXT,                   -- which input field named that call: meta.toolUseId, or the parent's
-                                            --   toolUseResult.agentId (model.md, link evidence)
-  evidence          TEXT NOT NULL,          -- which input field established the parent (model.md's closed list)
+                                            --   toolUseResult.agentId
+  evidence          TEXT NOT NULL,          -- which input field established the parent
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
   attrs_json        TEXT,                   -- provider facts as given: agent type, description, role, depth,
                                             --   worktree, stopped by user, Codex edge status
   retry_of          TEXT,                   -- natural block id of the spawning call this one retries (harness evidence only)
-  result_use        TEXT,                   -- returned | referenced | unknown (model.md, Link)
+  result_use        TEXT,                   -- returned | referenced | unknown
   UNIQUE (parent_id, child_id, kind, how)
 ) STRICT;
 CREATE INDEX link_child  ON link(child_pk);                    -- lineage up
@@ -336,7 +334,7 @@ CREATE INDEX link_parent ON link(parent_id, kind);             -- lineage down; 
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- computed by the parser from the raw record (model.md, Identity); an
+  id                TEXT NOT NULL UNIQUE,   -- computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
   seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
@@ -354,7 +352,7 @@ CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
--- Tasks and attempts a harness records (model.md, Run).
+-- Tasks and attempts a harness records.
 CREATE TABLE run (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native run id>'
@@ -376,8 +374,8 @@ CREATE TABLE run_session (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX run_session_session ON run_session(session_pk);
 
--- Harness processes and their descendants (model.md, Process), from the process
--- identity in hook lines and the daemon's process spool (sources/README.md).
+-- Harness processes and their descendants, from the process
+-- identity in hook lines and the daemon's process spool.
 CREATE TABLE process (
   pk                INTEGER PRIMARY KEY,
   boot_id           TEXT NOT NULL,
@@ -386,12 +384,12 @@ CREATE TABLE process (
   ppid              INTEGER,
   role              TEXT NOT NULL,          -- harness | child
   comm              TEXT,
-  argv_json         TEXT,                   -- as observed; flagged by has:secret like tool commands (behavior.md)
+  argv_json         TEXT,                   -- as observed; flagged by has:secret like tool commands
   cwd               TEXT,
   started_at        INTEGER,
   ended_at          INTEGER,                -- NULL while alive
   end_kind          TEXT,                   -- exited (seen gone between two samples) | gone_while_down (found gone at
-                                            --   daemon start or after a reboot) | NULL while alive (sources/README.md, process spool)
+                                            --   daemon start or after a reboot) | NULL while alive
   ended_after_ms    INTEGER,                -- for gone_while_down: the last time it was seen alive, a lower bound on its end
   cpu_ms            INTEGER,                -- user plus system CPU time at the last sample before it ended; NULL while alive or unknown (a lower bound)
   rss_peak_kb       INTEGER,                -- largest resident size seen by the samples (a lower bound)
@@ -417,7 +415,7 @@ CREATE INDEX process_tool_call ON process(tool_call_pk) WHERE tool_call_pk IS NO
 -- Which inputs produced which sessions.
 CREATE TABLE parsed (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,       -- the revision chain parsed (blobs.md)
+  chain             INTEGER NOT NULL,       -- the revision chain parsed
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   PRIMARY KEY (input_pk, chain, session_pk)
 ) STRICT, WITHOUT ROWID;
@@ -430,17 +428,15 @@ CREATE TABLE parse_state (
   chain             INTEGER NOT NULL,
   status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at observed EOF;
                                             --   done: at the stored length; companion: read with its main input
-                                            --   (detail: that input's id); no_sessions | refused | failed | no_parser_yet
+                                            --   (detail: that input's id); no_sessions | refused | failed
   companions_json   TEXT,                   -- [[companion input id, revision], ...] the companion revisions this
                                             --   chain was parsed with; a companion with a newer revision means the
-                                            --   chain is parsed again (convergence.md, companion files)
+                                            --   chain is parsed again
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  carry             BLOB,                   -- the parser's carried state at parsed_upto (sources/claude-code.md,
-                                            --   "what an incremental parse carries forward"); NULL = start over
+  carry             BLOB,                   -- the parser's carried state at parsed_upto; NULL = start over
   detail            TEXT,                   -- the reason for refused, failed and no_sessions; for
-                                            --   no_parser_yet, the slice that adds the parser, or 'none planned'
                                             --   waiting: the observed source-end offset, valid only at that stored length
-  framed            INTEGER NOT NULL DEFAULT 0,  -- law 120's accounting for this chain (sources/README.md): records
+  framed            INTEGER NOT NULL DEFAULT 0,  -- every framed record of this chain is counted:
   used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + ignored + unrecognized + undecodable; an append
   ignored           INTEGER NOT NULL DEFAULT 0,  --   adds to the counts, a whole parse replaces them; written in the
   unrecognized_n    INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
@@ -467,7 +463,7 @@ CREATE TABLE unrecognized (
   PRIMARY KEY (input_pk, chain, what)
 ) STRICT, WITHOUT ROWID;
 
--- Marker IDs the current parse extracts (user-data.md, inline markers): a marker
+-- Marker IDs the current parse extracts: a marker
 -- note is in force while its ID is here. Rebuilt with the messages.
 CREATE TABLE marker (
   note_id           TEXT PRIMARY KEY,       -- archive.db note.id
@@ -483,9 +479,9 @@ CREATE TABLE removed_session (
 ) STRICT;
 CREATE INDEX removed_session_changed ON removed_session(changed);
 
--- Git correlation (analysis.md): commits and pull requests linked to sessions
+-- Git correlation: commits and pull requests linked to sessions
 -- by evidence in the session. Commit details come from stored git-lookup
--- inputs, never from reading a repository at derive time (convergence.md).
+-- inputs, never from reading a repository at derive time.
 CREATE TABLE commit_link (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   commit_hash       TEXT NOT NULL,          -- full hash; the one place the commit is a key, so it is named
@@ -512,8 +508,7 @@ CREATE INDEX pr_link_number ON pr_link(number);                 -- pr:
 
 
 -- One per repository directory a session worked in, from the
--- polylogue-repo-lookup inputs the engine writes (spec sources/README.md, the
--- repo-lookup record). A session belongs to the lookup whose path is the
+-- polylogue-repo-lookup inputs the engine writes. A session belongs to the lookup whose path is the
 -- longest one at or above its cwd; the writer copies the identity onto the
 -- session (repo_root, and repo where no record names one).
 CREATE TABLE repo_lookup (
@@ -528,7 +523,7 @@ CREATE TABLE repo_lookup (
 
 
 -- The work graph (architecture 4.4), derived from structure
--- only (spec model.md, The work graph): goals are what a session declared it
+-- only: goals are what a session declared it
 -- would do (a Bead claimed by a `bd` command, a todo or plan item), attempts
 -- are a session pursuing a goal, verifications are check commands with their
 -- outcomes, artifacts are commits and pull requests. A claim, an observed
@@ -683,7 +678,7 @@ CREATE TABLE import_asset_sidecar (
   input TEXT NOT NULL,
   sidecar TEXT NOT NULL,
   version INTEGER NOT NULL,
-  basis TEXT NOT NULL,
+  source_version TEXT NOT NULL,
   error TEXT,
   PRIMARY KEY(input,sidecar)
 ) STRICT, WITHOUT ROWID;

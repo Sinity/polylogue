@@ -559,10 +559,10 @@ impl<'a> Plan<'a> {
             .iter()
             .filter_map(|hash| BlobHash::parse(hash).ok())
         {
-            hashes.blob_candidate(&hash.0)?;
+            hashes.blob_to_check(&hash.0)?;
         }
         if !req.dry_run {
-            hashes.visit_blob_candidates(|hash| {
+            hashes.visit_blobs_to_check(|hash| {
                 let used: bool = t.archive.query_row(
                     "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
                     [hash],

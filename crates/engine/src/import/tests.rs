@@ -40,7 +40,7 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         assert_eq!(w.texts("s1"), ["captured"]);
         let reader = engine.reads.reader().unwrap();
         let retained = reader
-            .retained_input(blake3::hash(original.as_bytes()).to_hex().as_ref())
+            .input_progress(blake3::hash(original.as_bytes()).to_hex().as_ref())
             .unwrap()
             .unwrap();
         assert_eq!(retained.length, original.len() as u64);
@@ -187,7 +187,7 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
             .reads
             .reader()
             .unwrap()
-            .retained_input(&id)
+            .input_progress(&id)
             .unwrap()
             .unwrap()
             .length,

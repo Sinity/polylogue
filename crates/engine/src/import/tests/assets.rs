@@ -110,7 +110,7 @@ fn directory_import_retains_attachment_bytes_after_provider_removal() {
     std::fs::remove_file(&path).unwrap();
     let reader = engine.reads.reader().unwrap();
     let id = blake3::hash(bytes).to_hex().to_string();
-    let retained = reader.retained_input(&id).unwrap();
+    let retained = reader.input_progress(&id).unwrap();
     assert!(
         retained.is_some(),
         "directory attachment bytes were not retained"

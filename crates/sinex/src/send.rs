@@ -55,7 +55,7 @@ impl Sinex {
                         .send_batch(&snapshot, &archive, position, &batch, name, &mut sent)
                         .await
                     {
-                        Err(Error::Store(StoreError::InputUnfinished { .. })) => return Ok(sent),
+                        Err(Error::Store(StoreError::InputPending { .. })) => return Ok(sent),
                         other => other?,
                     },
                 }

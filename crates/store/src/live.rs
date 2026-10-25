@@ -1,4 +1,4 @@
-//! Live facts (spec model.md, Live state): the latest hook evidence for a
+//! Live facts: the latest hook evidence for a
 //! session, kept in its live columns in the transaction that stores the
 //! hook line. The live state itself is computed when asked, from these
 //! columns and the time ([`polylogue_query`'s `live` field]); nothing here

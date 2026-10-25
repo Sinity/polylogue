@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 mod read;
-pub use read::{AssetCandidate, AttachmentResolution, AttachmentState};
+pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
 pub const RULES: u32 = 1;
 
@@ -16,14 +16,14 @@ pub(crate) fn invalidate_metadata(conn: &Connection, input: &str) -> Result<()> 
 }
 
 #[derive(Debug, Clone)]
-pub struct AssetBasis {
+pub struct AssetSource {
     pub chain: i64,
     pub length: u64,
-    pub hash: String,
+    pub version: String,
     pub blob: Option<polylogue_model::BlobHash>,
 }
 
-fn basis(conn: &Connection, schema: &str, input: &str) -> Result<Option<AssetBasis>> {
+fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<AssetSource>> {
     let revision: Option<(i64, i64)> = conn
         .query_row(
             &format!("SELECT chain,length FROM {schema}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
@@ -94,10 +94,10 @@ fn basis(conn: &Connection, schema: &str, input: &str) -> Result<Option<AssetBas
             "retained asset extent catalog is incomplete".into(),
         ));
     }
-    Ok(Some(AssetBasis {
+    Ok(Some(AssetSource {
         chain,
         length,
-        hash: hash.finalize().to_hex().to_string(),
+        version: hash.finalize().to_hex().to_string(),
         blob,
     }))
 }
@@ -129,7 +129,7 @@ pub enum AssetRow {
     Sidecar {
         input: String,
         sidecar: String,
-        basis: String,
+        source_version: String,
         error: Option<String>,
     },
     ResetMetadata {
@@ -142,8 +142,8 @@ pub enum AssetRow {
 }
 
 impl Reader<'_> {
-    pub fn asset_basis(&self, input: &str) -> Result<Option<AssetBasis>> {
-        basis(self.conn()?, "a.", input)
+    pub fn asset_source(&self, input: &str) -> Result<Option<AssetSource>> {
+        asset_source(self.conn()?, "a.", input)
     }
     /// Only unseen acquisition metadata is decoded. Content and observations
     /// remain separate: equal bytes can have several physical memberships.
@@ -216,7 +216,7 @@ impl Reader<'_> {
     pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT m.input,m.sidecar,s.version,s.basis FROM import_member m
+            "SELECT DISTINCT m.input,m.sidecar,s.version,s.source_version FROM import_member m
             LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
             WHERE m.sidecar IS NOT NULL
               AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
@@ -232,7 +232,7 @@ impl Reader<'_> {
             ))
         })? {
             let (input, sidecar, version, recorded) = row?;
-            let current = basis(conn, "a.", &input)?.map(|basis| basis.hash);
+            let current = asset_source(conn, "a.", &input)?.map(|source| source.version);
             if version != Some(RULES) || recorded != current {
                 pending.push((input, sidecar));
             }
@@ -246,7 +246,7 @@ pub(crate) fn install(
     archive: &Connection,
     mut staged: ExportItems,
 ) -> Result<()> {
-    let tx = crate::publication::transaction(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let tx = crate::write_lock::transaction(conn, rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {
         match serde_json::from_reader(item.reader)? {
             AssetRow::Member {
@@ -293,12 +293,12 @@ pub(crate) fn install(
             AssetRow::Sidecar {
                 input,
                 sidecar,
-                basis: recorded,
+                source_version: recorded,
                 error,
             } => {
-                if basis(archive, "", &input)?
+                if asset_source(archive, "", &input)?
                     .as_ref()
-                    .map(|basis| basis.hash.as_str())
+                    .map(|source| source.version.as_str())
                     != Some(recorded.as_str())
                 {
                     return Err(StoreError::Conflict(

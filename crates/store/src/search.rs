@@ -37,7 +37,7 @@ pub fn words(text: &str) -> Vec<String> {
 const WINDOW: usize = 12;
 
 /// A query result's snippet: about 12 words around the first match, with
-/// the matches' byte ranges (spec query.md, Full-text search, Snippets).
+/// the matches' byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snippet {
     /// The cut text, with `…` where it was cut.

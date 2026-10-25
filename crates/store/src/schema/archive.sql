@@ -44,14 +44,14 @@ CREATE TABLE revision (
   produced      TEXT NOT NULL,           -- first | imported | appended | head_rewritten | rewritten | snapshot;
                                          --   first: a location's first revision; head_rewritten starts a new chain
                                          --   whose extents are a new first line plus the previous chain's blob
-                                         --   ranges after its first line (nothing is copied; storage/blobs.md)
+                                         --   ranges after its first line (nothing is copied)
   chain         INTEGER NOT NULL,        -- the revision that started this revision chain (itself for first,
                                          --   imported, head_rewritten, rewritten and snapshot revisions)
   base          INTEGER,                 -- snapshot patch: the plain snapshot revision it overlays
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
-  commit_seq    INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; orders the
+  commit_seq    INTEGER NOT NULL,        -- local order: the write counter at the insert; orders the
                                          --   row batches sent to Sinex in `primary` mode
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
@@ -76,7 +76,7 @@ CREATE TABLE extent (
 CREATE INDEX extent_blob ON extent(blob);
 
 -- Each observation that found something (any class but unchanged). Insert-only.
--- The authority for which input a path belongs to (blobs.md, observing a file);
+-- The record of which input a path belongs to;
 -- locations, first_seen, source:gone and message.first_seen are queries over it.
 -- An input's latest observation is the last one inserted locally (the largest
 -- rowid), not the largest seen_at: a rename and an append found in one round
@@ -85,7 +85,7 @@ CREATE INDEX extent_blob ON extent(blob);
 -- location path: a filesystem path, 'drive:<file id>' (a Drive file) or
 -- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads);
 -- a 'zip:' or 'copy:' observation records where older bytes came from and is
--- never a location (blobs.md, order of chains). The current chain of an input
+-- never a location. The current chain of an input
 -- is the chain of the revision its location's latest observation produced or
 -- confirmed, for every kind of location.
 CREATE TABLE observation (
@@ -112,7 +112,7 @@ CREATE TABLE observation (
   details_json  TEXT,                    -- download_attempt: URL, outcome, error and retry_at; no content
   provider_version TEXT,                 -- when the content states it
   polylogue_version TEXT NOT NULL,
-  zone          TEXT,                    -- the collecting machine's IANA zone (model.md, Time: offsetless times)
+  zone          TEXT,                    -- the collecting machine's IANA zone
   seen_at       INTEGER NOT NULL,        -- Polylogue's clock
   commit_seq    INTEGER NOT NULL DEFAULT 0
 ) STRICT;
@@ -121,39 +121,39 @@ CREATE INDEX observation_commit_seq ON observation(commit_seq);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
 
 -- Notes, tags, titles, saved queries, withdrawals and everything else people
--- and agents add. Kinds and examples: user-data.md.
+-- and agents add.
 -- One row per client write request: its ID and the hash of its content, so a resent
 -- request (same ID, same content) writes nothing and a reused ID with other content is
--- refused as `conflict` (surfaces/README.md). Rows created by the request take their IDs
+-- refused as `conflict`. Rows created by the request take their IDs
 -- from it.
 CREATE TABLE client_request (
   id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
-  content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's canonical JSON, without the ID
+  content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's sorted-key JSON, without the ID
   created_at    INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE note (
   id            TEXT PRIMARY KEY,        -- the writing request's ID (UUIDv7, chosen by the client), with '.<n>' for
                                          --   its n-th further row; for an inline marker, derived from the record's
-                                         --   message ID, the marker line and its occurrence (user-data.md)
+                                         --   message ID, the marker line and its occurrence
   root          TEXT NOT NULL,           -- first note of its revision family; = id for a first note
   kind          TEXT NOT NULL,           -- tag | note | title | decision | claim | lesson | blocker | question
                                          -- | finding | judgment | outcome | hidden | withdrawal | saved_query
                                          -- | forecast | goal | problem | correction
                                          -- | rubric | distillate | signal
-                                         -- | comparison | page | slot | member | ping (user-data.md)
+                                         -- | comparison | page | slot | member | ping
   key           TEXT,                    -- key:value tags; a saved query's name
   value         TEXT,                    -- text or JSON; a saved query's text, plus `unit` and
-                                         --   `denominator` when it defines a reported figure (analysis.md §11)
+                                         --   `denominator` when it defines a reported figure
   check_json    TEXT,                    -- claim only: its check, {"query", "expect": "rows"|"no_rows"|{"count": op, "n"}
                                          --   |{"aggregate": column, "op": op, "n"}}
-                                         --   (user-data.md, checked claims); its state is computed at read, never stored
-  author        TEXT NOT NULL,           -- operator | agent session id | agent | script (user-data.md)
+                                         --   its state is computed at read, never stored
+  author        TEXT NOT NULL,           -- operator | agent session id | agent | script
   machine       TEXT NOT NULL,           -- where it was written
   created_at    INTEGER NOT NULL,        -- the writer's clock: display and the evidence cutoff only, never orders revisions
-  valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings (user-data.md)
+  valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings
   source        TEXT,                    -- for inline markers: the message it came from
-  commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
+  commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
 ) STRICT;
 CREATE INDEX note_commit_seq ON note(commit_seq);              -- the change feed
 CREATE INDEX note_root ON note(root);
@@ -167,7 +167,7 @@ CREATE TABLE note_target (
   anchor_input  TEXT,                    -- optional exact anchor for a citation: the input, the revision chain
   anchor_chain  INTEGER,                 --   and the byte range of the cited record in that chain (exact even if
   anchor_start  INTEGER,                 --   the index is rebuilt from another backend). Bytes excised since
-  anchor_end    INTEGER,                 --   resolve to "excised", never to the overwritten bytes (model.md, Identity)
+  anchor_end    INTEGER,                 --   resolve to "excised", never to the overwritten bytes
   PRIMARY KEY (note_id, ref)
 ) STRICT;
 CREATE INDEX note_target_ref ON note_target(ref);       -- notes about X; the hidden filter
@@ -189,10 +189,10 @@ CREATE TABLE kept_result (
   query         TEXT NOT NULL,
   query_note    TEXT,                    -- the saved_query revision it ran, when it ran one
   ran_at        INTEGER NOT NULL,
-  view          TEXT NOT NULL,           -- the view it read (storage/README.md: generation, index counter,
-                                         --   archive counter, embeddings high-water id) and up_to_date, as JSON
+  view          TEXT NOT NULL,           -- the view it read (index generation, index counter, archive
+                                         --   counter, embeddings high-water id) and up_to_date, as JSON
   rows_json     TEXT NOT NULL            -- row references (notes pinned to a revision), the displayed values,
-                                         -- and the match rows of each match (query.md, match rows)
+                                         -- and the match rows of each match
 ) STRICT;
 
 -- Content removed on purpose (how it works: below). The operator's standing
@@ -211,11 +211,11 @@ CREATE TABLE excision (
   message_ids_json TEXT NOT NULL DEFAULT '[]',  -- session scope: the excised session's message IDs (IDs only, never
                                          --   content), so copies of them elsewhere are counted nowhere, also after
                                          --   an index rebuild (How excision works)
-  commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
+  commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
 ) STRICT;
 CREATE INDEX excision_commit_seq ON excision(commit_seq);
 
--- Variants: transformed copies of content (model.md, Variant). Content, not
+-- Variants: transformed copies of content. Content, not
 -- claims, so not notes. A new version of a variant is a new row revising the old.
 CREATE TABLE variant (
   id            TEXT PRIMARY KEY,        -- UUIDv7
@@ -248,8 +248,7 @@ CREATE TABLE variant_alignment (
 -- Settings (day.zone, subscription.anthropic, embeddings, ...).
 -- The Sinex mode and address live in `$XDG_CONFIG_HOME/polylogue/sinex.toml`
 -- instead, so a rebuild from Sinex can start from an empty archive. Insert-only:
--- a change is a new row, so the value in force at any time is kept (analysis.md,
--- billing mode: a plan applies from the time it was set). Each key has a fixed
+-- a change is a new row, so the value in force at any time is kept. Each key has a fixed
 -- scope in code: per machine (embeddings, signal.interrupts_per_hour)
 -- or archive-wide under machine '*' (subscription.*, which belongs to a provider
 -- account; day.logical_start and day.zone, one setting for the operator).
@@ -263,9 +262,9 @@ CREATE TABLE setting (
                                          --   a union keeps every machine's rows
   key           TEXT NOT NULL,
   value         TEXT NOT NULL,
-  author        TEXT NOT NULL,           -- 'operator' or the agent session that set it (user-data.md, who the author is)
+  author        TEXT NOT NULL,           -- 'operator' or the agent session that set it
   set_at        INTEGER NOT NULL,        -- the writer's clock, shown by `polylogue setting`
-  commit_seq    INTEGER NOT NULL         -- local order (Rules): orders row batches only, never a key
+  commit_seq    INTEGER NOT NULL         -- local order: orders row batches only, never a key
 ) STRICT;
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 CREATE INDEX setting_commit_seq ON setting(commit_seq);
@@ -312,8 +311,8 @@ CREATE TABLE excision_document (
   PRIMARY KEY(excision_id,document_id)
 ) STRICT, WITHOUT ROWID;
 
--- A physical member interpretation belongs to this exact original container.
--- The relationship travels in the member observation's row batch.
+-- Which export ZIP a member observation was read from, and where in it.
+-- The row travels in the member observation's row batch.
 CREATE TABLE observation_container (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
     container_input TEXT NOT NULL REFERENCES input(id),

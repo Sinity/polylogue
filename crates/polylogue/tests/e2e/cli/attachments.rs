@@ -103,9 +103,9 @@ fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
         let world = World::new(zip);
         let descriptor = world.descriptor();
         assert_eq!(descriptor["state"], "available");
-        assert_eq!(descriptor["candidates"][0]["size"], SECRET.len());
+        assert_eq!(descriptor["matches"][0]["size"], SECRET.len());
         assert_eq!(
-            descriptor["candidates"][0]["names"],
+            descriptor["matches"][0]["names"],
             json!(["supplied λ🙂.png"])
         );
         assert!(descriptor.get("content_base64").is_none());
@@ -404,9 +404,9 @@ fn removing_a_zip_keeps_its_members_then_removing_a_member_succeeds() {
 fn original_container_name_is_not_a_member_attachment_identity() {
     let world = World::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
     let descriptor = world.descriptor();
-    assert_eq!(descriptor["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(descriptor["matches"].as_array().unwrap().len(), 1);
     assert_eq!(
-        descriptor["candidates"][0]["blob"],
+        descriptor["matches"][0]["blob"],
         json!(polylogue_model::BlobHash::of(SECRET))
     );
 }
@@ -441,7 +441,7 @@ fn removing_a_zip_member_removes_the_original_zip_and_marks_the_attachment_unava
     assert_eq!(json(&result)["zips_removed"], serde_json::json!([original]));
     let descriptor = world.descriptor();
     assert_eq!(descriptor["state"], "unavailable", "{descriptor}");
-    assert!(descriptor["candidates"].as_array().unwrap().is_empty());
+    assert!(descriptor["matches"].as_array().unwrap().is_empty());
     let read = cli(&world.env(), &["--json", "read", SESSION]);
     assert!(read.status.success(), "{read:?}");
 }

@@ -245,7 +245,7 @@ impl Engine {
         pass.bytes_stored += bytes;
         let r = self.reads.reader()?;
         let retained = r
-            .retained_input(&plan.input.id)?
+            .input_progress(&plan.input.id)?
             .ok_or_else(|| std::io::Error::other("export capture has no retained revision"))?;
         let chain = r.stored_chain(&plan.input.id, retained.chain, retained.length)?;
         plan.source = pool::Bytes::Stored(Arc::new(chain));

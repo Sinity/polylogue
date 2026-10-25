@@ -41,15 +41,15 @@ impl PreparedRows {
         Ok(())
     }
 
-    pub(in crate::writer) fn retain_messages(&mut self, keep: &[bool]) {
+    pub(in crate::writer) fn keep_messages(&mut self, keep: &[bool]) {
         retain(&mut self.messages, keep);
     }
 
-    pub(in crate::writer) fn retain_documents(&mut self, keep: &[bool]) {
+    pub(in crate::writer) fn keep_documents(&mut self, keep: &[bool]) {
         retain(&mut self.documents, keep);
     }
 
-    pub(in crate::writer) fn retain_events(&mut self, keep: &[bool]) {
+    pub(in crate::writer) fn keep_events(&mut self, keep: &[bool]) {
         retain(&mut self.events, keep);
     }
 }

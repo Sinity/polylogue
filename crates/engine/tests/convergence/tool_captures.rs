@@ -8,9 +8,9 @@ fn ordinary_inputs_are_serviced_between_database_capture_turns() {
     let source = rusqlite::Connection::open(&db).unwrap();
     source
         .execute_batch(
-            "CREATE TABLE retained_rows(id INTEGER PRIMARY KEY,n INTEGER);
+            "CREATE TABLE kept_rows(id INTEGER PRIMARY KEY,n INTEGER);
         WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<3000)
-        INSERT INTO retained_rows SELECT n,10 FROM ids;",
+        INSERT INTO kept_rows SELECT n,10 FROM ids;",
         )
         .unwrap();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
@@ -52,9 +52,9 @@ fn daemon_continues_capture_without_a_watcher_event() {
     rusqlite::Connection::open(db)
         .unwrap()
         .execute_batch(
-            "CREATE TABLE retained_rows(id INTEGER PRIMARY KEY);
+            "CREATE TABLE kept_rows(id INTEGER PRIMARY KEY);
          WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<4000)
-         INSERT INTO retained_rows SELECT n FROM ids;",
+         INSERT INTO kept_rows SELECT n FROM ids;",
         )
         .unwrap();
     let (mut engine, lock) = w.engine(64 << 20);

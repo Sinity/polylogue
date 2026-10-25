@@ -1,7 +1,7 @@
 use super::*;
 use crate::fault::{self, Action};
 use crate::row_batches::Snapshot;
-use crate::staging::UnfinishedState;
+use crate::staging::PendingState;
 use polylogue_model::BlobHash;
 
 #[test]
@@ -31,7 +31,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
         for batch in source.batches(None, 10_000).unwrap() {
             if matches!(
                 source.rows(&batch, |_| Ok(())),
-                Err(StoreError::InputUnfinished { .. })
+                Err(StoreError::InputPending { .. })
             ) {
                 refused += 1;
             }
@@ -47,7 +47,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
         if point == "import.install" {
             assert_eq!(finished.unfinished.len(), 1);
             assert_eq!(finished.unfinished[0].blob, BlobHash::of(ORIGINAL));
-            assert_eq!(finished.unfinished[0].state, UnfinishedState::Missing);
+            assert_eq!(finished.unfinished[0].state, PendingState::Missing);
             let outcomes = writer
                 .sender()
                 .unwrap()
