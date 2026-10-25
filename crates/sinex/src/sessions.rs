@@ -199,9 +199,12 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
         return Ok(Vec::new());
     };
     let session = reader.query(
-        "SELECT pk, origin, kind, coalesce(title, derived_title) AS title, cwd_json, repo, branch,
-                harness_version, mode, machine, agent_name, started_at, last_activity_at
-         FROM session WHERE id = ?1",
+        "SELECT s.pk, s.origin, s.kind, coalesce(s.title, s.derived_title) AS title, s.cwd_json,
+                s.repo, s.branch, s.harness_version, s.mode, s.started_at, s.last_activity_at,
+                (SELECT o.machine FROM message m JOIN input_ref i ON i.pk = m.input_pk
+                   JOIN a.observation o ON o.input = i.id
+                 WHERE m.session_pk = s.pk ORDER BY o.rowid DESC LIMIT 1) AS machine
+         FROM session s WHERE s.id = ?1",
         &[SqlValue::Text(id.to_string())],
     )?;
     let Some(session) = session.first() else {
@@ -280,7 +283,6 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
             tool_version: text(&session["harness_version"]),
             mode: text(&session["mode"]),
             machine: text(&session["machine"]),
-            agent_name: text(&session["agent_name"]),
             started: ms(&session["started_at"])?,
             last_activity: ms(&session["last_activity_at"])?,
             links: export
@@ -374,7 +376,7 @@ fn tool_calls(
 ) -> Result<Vec<ProducerEvent>> {
     let rows = reader.query(
         "SELECT t.call_id, t.tool, t.action, t.command, t.path, t.outcome, t.outcome_reason,
-                t.exit_code, t.at, t.duration_ms, t.child_session_id, cb.idx,
+                t.exit_code, t.at, cb.idx,
                 cm.id AS message, ci.id AS input, cm.source_chain AS chain, cm.source_start AS start,
                 ri.id AS result_input, rm.source_chain AS result_chain,
                 rm.source_start AS result_start
@@ -426,8 +428,6 @@ fn tool_calls(
                 outcome_reason: text(&row["outcome_reason"]),
                 exit_code: row["exit_code"].as_i64(),
                 at: ms(&row["at"])?,
-                duration_ms: row["duration_ms"].as_u64(),
-                child_session: text(&row["child_session_id"]),
                 result,
             },
             location,
