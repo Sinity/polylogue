@@ -145,11 +145,6 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         .unwrap(),
         2
     );
-    let removed = remove(&writer, store, "linked-member").unwrap();
-    assert_eq!(removed.zips_removed, [BlobHash::of(ORIGINAL).to_string()]);
-    assert_eq!(count("excision"), 1);
-    assert_eq!(count("extent"), 0);
-    assert_eq!(count("observation_container"), 0);
 }
 
 #[test]
@@ -201,13 +196,22 @@ fn prepared_linked_writes_and_member_exclusion_serialize_without_hidden_copies()
         };
         barrier.wait();
         let outcomes = writing.join().unwrap();
-        exclusion.join().unwrap().unwrap();
-        assert!(
-            outcomes.iter().all(Result::is_ok) || outcomes.iter().all(Result::is_err),
-            "{outcomes:?}"
-        );
-        assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-        assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
+        let excised = exclusion.join().unwrap();
+        // Either the excision ran first and the ZIP is refused whole, or the
+        // ZIP was stored first and the excision, now inside it, is refused.
+        match excised {
+            Ok(_) => {
+                assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
+                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
+            }
+            Err(StoreError::ExcisionInsideZip { .. }) => {
+                assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
+            }
+            Err(error) => panic!("{error}"),
+        }
     }
 }
 

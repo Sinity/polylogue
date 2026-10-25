@@ -211,7 +211,7 @@ pub enum LoopMsg {
     },
     Excise {
         request: ExciseRequest,
-        reply: SyncSender<Result<Excised, String>>,
+        reply: SyncSender<Result<Excised, EngineError>>,
     },
     Stop,
 }
@@ -1280,7 +1280,7 @@ impl Engine {
                         discover = true;
                     }
                     Ok(LoopMsg::Excise { request, reply }) => {
-                        let _ = reply.send(self.excise(request).map_err(|e| e.to_string()));
+                        let _ = reply.send(self.excise(request));
                         discover = true;
                     }
                     Ok(LoopMsg::Changed) => discover = true,

@@ -249,7 +249,7 @@ fn an_unsupported_stored_format_refuses_before_any_committed_change() {
         w.seed("unsupported", 1, &[bytes]);
         assert!(matches!(
             w.excise("secret", false),
-            Err(StoreError::ExcisionFormat { .. })
+            Err(StoreError::ExcisionFormat { .. } | StoreError::ExcisionInsideZip { .. })
         ));
         assert_eq!(w.bytes("ordinary", 1), b"secret");
         assert_eq!(w.bytes("unsupported", 1), bytes);
@@ -288,7 +288,7 @@ fn unsupported_signature_is_recognized_across_piece_boundaries() {
     w.seed("zip", 1, &[b"P", b"K", b"\x03", b"\x04secret"]);
     assert!(matches!(
         w.excise("secret", false),
-        Err(StoreError::ExcisionFormat { .. })
+        Err(StoreError::ExcisionInsideZip { input, file }) if input == "zip" && file == "zip"
     ));
     assert_eq!(w.bytes("zip", 1), b"PK\x03\x04secret");
 }

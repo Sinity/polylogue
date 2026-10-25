@@ -59,6 +59,11 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
             message: e.to_string(),
             detail: Some(serde_json::json!({"input": input, "format": format})),
         },
+        StoreError::ExcisionInsideZip { input, file } => Response::Error {
+            kind: "unsupported_excision".into(),
+            message: e.to_string(),
+            detail: Some(serde_json::json!({"input": input, "format": "zip", "file": file})),
+        },
         _ => error("store", e),
     }
 }
@@ -394,7 +399,11 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             }
             match wait.recv() {
                 Ok(Ok(done)) => ok(done),
-                Ok(Err(e)) if e.contains("not found") => error("not_found", e),
+                Ok(Err(polylogue_engine::EngineError::Store(
+                    e @ (StoreError::NotFound(_)
+                    | StoreError::ExcisionFormat { .. }
+                    | StoreError::ExcisionInsideZip { .. }),
+                ))) => store_error(&e),
                 Ok(Err(e)) => error("excise", e),
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }

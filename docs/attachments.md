@@ -63,11 +63,9 @@ lists the bytes in `pending_inputs` until the same bytes are imported again.
 
 ## Excision
 
-Excising a whole input removes it and refuses it on later imports. Removing a
-file that came from a ZIP, or rewriting its records for a session or document
-excision, also removes every ZIP it was read from, nested ZIPs included, and
-keeps their other files; `zips_removed` lists them (or would, in a dry run).
-Removing only a ZIP keeps its files. Polylogue never writes a rebuilt ZIP.
-If another stored input, attachment or delta uses the ZIP's bytes, the
-excision refuses before changing anything. Removing text from a file stored
-in a format Polylogue cannot parse refuses.
+Excising a whole input removes it and refuses it on later imports. Nothing
+inside an export ZIP can be excised: the ZIP, a file read from it, and a
+session or document parsed from such a file all refuse before changing
+anything, because the kept ZIP also holds unrelated conversations
+([excision.md](excision.md)). Removing text from a file stored in a format
+Polylogue cannot parse refuses.

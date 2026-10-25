@@ -356,51 +356,6 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
 mod promoted;
 
 #[test]
-fn removing_a_zip_keeps_its_members_then_removing_a_member_succeeds() {
-    let world = World::new(true);
-    let before = cli(&world.env(), &["--json", "read", SESSION]);
-    assert!(before.status.success(), "{before:?}");
-    let pool =
-        polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
-    let origins = pool
-        .reader()
-        .unwrap()
-        .query(
-            "SELECT DISTINCT container_input FROM a.observation_container",
-            &[],
-        )
-        .unwrap();
-    assert_eq!(origins.len(), 1);
-    let original = origins[0]["container_input"].as_str().unwrap();
-    let removed = cli(
-        &world.env(),
-        &["--json", "excise", &format!("input:{original}"), "--yes"],
-    );
-    assert!(removed.status.success(), "{removed:?}");
-    assert_eq!(
-        json(&removed)["zips_removed"],
-        serde_json::json!([original])
-    );
-    let after = cli(&world.env(), &["--json", "read", SESSION]);
-    assert!(after.status.success(), "{after:?}");
-    assert_eq!(json(&after), json(&before));
-    for target in [
-        format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
-        format!("session:{SESSION}"),
-    ] {
-        let result = cli(&world.env(), &["--json", "excise", &target, "--yes"]);
-        assert!(result.status.success(), "{result:?}");
-    }
-    assert_eq!(
-        pool.reader()
-            .unwrap()
-            .query("SELECT count(*) AS n FROM a.observation_container", &[])
-            .unwrap()[0]["n"],
-        0
-    );
-}
-
-#[test]
 fn original_container_name_is_not_a_member_attachment_identity() {
     let world = World::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
     let descriptor = world.descriptor();
@@ -412,36 +367,73 @@ fn original_container_name_is_not_a_member_attachment_identity() {
 }
 
 #[test]
-fn removing_a_zip_member_removes_the_original_zip_and_marks_the_attachment_unavailable() {
+fn excision_inside_a_zip_is_refused_in_the_cli_json_and_changes_nothing() {
     let world = World::new(true);
-    let original = {
-        let pool =
-            polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
-        pool.reader()
-            .unwrap()
-            .query(
-                "SELECT DISTINCT container_input FROM a.observation_container",
-                &[],
-            )
-            .unwrap()[0]["container_input"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+    let pool =
+        polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
+    let original = pool
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT DISTINCT container_input FROM a.observation_container",
+            &[],
+        )
+        .unwrap()[0]["container_input"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let state = || {
+        let reader = pool.reader().unwrap();
+        let read = cli(&world.env(), &["--json", "read", SESSION]);
+        assert!(read.status.success(), "{read:?}");
+        (
+            json(&read),
+            world.descriptor(),
+            [
+                "a.input",
+                "a.extent",
+                "a.observation_container",
+                "a.excision",
+            ]
+            .map(|table| {
+                reader
+                    .query(&format!("SELECT * FROM {table}"), &[])
+                    .unwrap()
+            }),
+        )
     };
-    let result = cli(
-        &world.env(),
-        &[
-            "--json",
-            "excise",
-            &format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
-            "--yes",
-        ],
-    );
-    assert!(result.status.success(), "{result:?}");
-    assert_eq!(json(&result)["zips_removed"], serde_json::json!([original]));
-    let descriptor = world.descriptor();
-    assert_eq!(descriptor["state"], "unavailable", "{descriptor}");
-    assert!(descriptor["matches"].as_array().unwrap().is_empty());
-    let read = cli(&world.env(), &["--json", "read", SESSION]);
-    assert!(read.status.success(), "{read:?}");
+    let before = state();
+    assert_eq!(before.1["state"], "available");
+    for target in [
+        format!("session:{SESSION}"),
+        format!("input:{}", polylogue_model::BlobHash::of(SECRET)),
+        format!("input:{original}"),
+    ] {
+        for confirm in [false, true] {
+            let mut args = vec!["--json", "excise", target.as_str()];
+            if confirm {
+                args.push("--yes");
+            }
+            let refused = cli(&world.env(), &args);
+            assert!(!refused.status.success(), "{refused:?}");
+            let error = &json(&refused)["error"];
+            assert_eq!(error["kind"], "unsupported_excision", "{error}");
+            assert_eq!(error["detail"]["input"], json!(original), "{error}");
+            assert!(
+                error["detail"]["file"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("export.zip"),
+                "{error}"
+            );
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("would also remove unrelated conversations"),
+                "{error}"
+            );
+            assert_eq!(state(), before);
+        }
+    }
 }
