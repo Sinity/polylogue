@@ -218,6 +218,11 @@ pub(crate) fn load(
     let seq = crate::archive::bump_counter(&tx)?;
     let mut after = 0;
     let mut loaded = 0;
+    // Where each part's bytes sit, with its observation and blob: a later
+    // part at the same place is the one whose rows committed, and the
+    // earlier one was sent by a write that stopped before its commit.
+    let mut placed: std::collections::HashMap<(String, i64, i64), (Option<String>, BlobHash)> =
+        std::collections::HashMap::new();
     loop {
         let page = sinex.held(after)?;
         let Some(last) = page.last() else {
@@ -242,6 +247,15 @@ pub(crate) fn load(
                     .execute(params![&hash.0[..], length as i64, stored_size as i64])?;
                     record.insert(&tx, seq)?;
                     part_material(&tx, &record, index, &material)?;
+                    if let Some(extent) = &record.extent {
+                        let place = (record.input.clone(), extent.chain, extent.offset);
+                        let observation = record.observation.as_ref().map(|o| o.id.clone());
+                        if let Some((earlier, blob)) =
+                            placed.insert(place, (observation, extent.blob))
+                        {
+                            forget_uncommitted(&tx, earlier.as_deref(), &blob, &extent.blob)?;
+                        }
+                    }
                 }
                 Held::Record {
                     material, record, ..
@@ -261,6 +275,30 @@ pub(crate) fn load(
     }
     tx.commit()?;
     Ok(loaded)
+}
+
+/// Drops the rows of a part a stopped write sent but never committed: its
+/// observation, and its blob unless the part that replaced it has the same.
+fn forget_uncommitted(
+    tx: &Connection,
+    observation: Option<&str>,
+    blob: &BlobHash,
+    replacing: &BlobHash,
+) -> Result<()> {
+    if let Some(id) = observation {
+        tx.execute(
+            "DELETE FROM observation_container WHERE observation_id = ?1",
+            [id],
+        )?;
+        tx.execute("DELETE FROM observation WHERE id = ?1", [id])?;
+    }
+    if blob != replacing {
+        tx.execute(
+            "DELETE FROM blob WHERE hash = ?1 AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
+            [&blob.0[..]],
+        )?;
+    }
+    Ok(())
 }
 
 /// The Sinex materials holding `inputs`: their parts and the records of
