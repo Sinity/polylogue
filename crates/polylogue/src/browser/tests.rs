@@ -401,6 +401,19 @@ fn native_inspection_uses_the_capture_parser_without_writing_a_spool() {
 }
 
 #[test]
+fn a_capture_larger_than_axums_default_body_limit_is_accepted() {
+    let w = test_daemon::start("x");
+    let ctx = ctx(&w);
+    let bytes = capture("conv-large", &"a long conversation ".repeat(200_000));
+    assert!(bytes.len() > 3 * 1024 * 1024);
+    let inspected = exchange(&ctx, "POST", "/v1/browser-captures/inspect", &bytes);
+    assert_eq!(inspected.status, 200, "{:?}", inspected.json());
+    let sent = exchange(&ctx, "POST", "/v1/browser-captures", &bytes);
+    assert_eq!(sent.status, 200, "{:?}", sent.json());
+    assert_eq!(sent.json()["outcome"], "accepted");
+}
+
+#[test]
 fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
     let w = test_daemon::start("fixture");
     let ctx = ctx(&w);

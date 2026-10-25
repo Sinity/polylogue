@@ -78,16 +78,23 @@ impl Ctx {
     /// Whether the operator switched chat actions on. Off when the daemon
     /// cannot say.
     pub fn actions_enabled(&self) -> bool {
+        self.actions_setting() == Some(true)
+    }
+
+    /// The chat actions setting, or `None` when the daemon does not answer.
+    /// The answer also shows the daemon is serving: a cheap read, unlike
+    /// `status`, which counts the whole archive.
+    pub fn actions_setting(&self) -> Option<bool> {
         let request = Request::Setting {
             request_id: None,
             key: "browser.actions".into(),
             value: None,
             machine: false,
         };
-        matches!(
-            self.ask(&request),
-            Some(Response::Ok { data }) if data["value"] == "on"
-        )
+        match self.ask(&request) {
+            Some(Response::Ok { data }) => Some(data["value"] == "on"),
+            _ => None,
+        }
     }
 }
 

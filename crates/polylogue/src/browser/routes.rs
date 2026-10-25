@@ -27,8 +27,16 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
             "/v1/browser-captures/capabilities",
             get(capture_capabilities),
         )
-        .route("/v1/browser-captures", post(capture))
-        .route("/v1/browser-captures/inspect", post(inspect_capture))
+        // A conversation's provider reply has no size bound; axum's default
+        // 2 MB limit refused long conversations.
+        .route(
+            "/v1/browser-captures",
+            post(capture).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/browser-captures/inspect",
+            post(inspect_capture).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/v1/archive-state", get(archive_state))
         .route(
             "/v1/notes/selection",
@@ -90,14 +98,10 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 
 async fn status(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
     let c = Arc::clone(&ctx);
-    let (daemon, enabled) = blocking(move || {
-        (
-            matches!(c.ask(&Request::Status), Some(Response::Ok { .. })),
-            c.actions_enabled(),
-        )
-    })
-    .await
-    .unwrap_or((false, false));
+    // The extension's health probe gives up after five seconds; a full
+    // daemon status takes longer while the loop is busy.
+    let setting = blocking(move || c.actions_setting()).await.flatten();
+    let (daemon, enabled) = (setting.is_some(), setting == Some(true));
     Json(json!({
         "ok": true,
         "receiver": RECEIVER,
