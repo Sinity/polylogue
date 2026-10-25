@@ -66,10 +66,13 @@ reports.
 anything parses them. The [writer](../crates/store/src/writer/staging.rs)
 checks them against excisions, commits the blob rows as `writing` with their
 revision and extents, writes the files, then marks the rows `present`. After a
-stop, the next pass marks `present` the rows whose file exists and lists the
-rest in `status` as `pending_inputs`; readers refuse their byte ranges, and
-only the same bytes can finish them. A provider file that changed meanwhile
-starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
+stop, opening the archive and every pass settle what is left: files not yet
+moved under their content names are deleted (on open), a `writing` row that
+stored bytes use becomes `present` when its file exists, and a `writing` row
+nothing in the archive uses (decoded bytes whose parsed rows never committed)
+is deleted with its file. The rest are listed in `status` as
+`pending_inputs`; readers refuse their byte ranges, and only the same bytes
+can finish them. A provider file that changed meanwhile starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
 cover imports, watched files and parse-pool groups. Bytes a parser decodes
 from inside a record, such as inline images, are stored as blobs of that
 input.

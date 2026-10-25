@@ -15,8 +15,9 @@ work and keeps its log.
 | Extension | `agentctl job start polylogue extension --workspace <worktree> -- ci`, then `-- test` | after extension changes |
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
-  Clippy over every target, tests included, with warnings denied. It enables
-  `polylogue/sinex`, so the Sinex code compiles too.
+  Clippy over every target, tests included, with warnings denied: once with
+  `polylogue/sinex`, so the Sinex code compiles too, and once over the
+  `polylogue` package without it.
 - **Full suite:** the fast check, then `cargo nextest run --workspace
   --features polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
   (configuration in `.config/nextest.toml`). Each test runs in its own

@@ -25,16 +25,18 @@ pub struct UnitSpec {
     /// The row key, `_pk` in the output. It can change when the index is
     /// rebuilt.
     pub key: &'static str,
-    /// What names one row, unchanged by an index rebuild where the source
-    /// gives the row a position; the last term of every order, so the
-    /// order is total and pages continue after a rebuild.
-    pub identity: &'static str,
+    /// The terms that name one row, unchanged by an index rebuild; the last
+    /// terms of every order, each compared by its own type, so the order is
+    /// total and pages continue after a rebuild. Never the row key, and
+    /// never bytes, which a cursor cannot carry.
+    pub identity: &'static [&'static str],
     /// The default columns: name, SQL template, kind.
     pub columns: &'static [(&'static str, Expr, ColKind)],
     /// The time rows are ordered by.
     pub time: &'static str,
     pub newest_first: bool,
-    /// Rows at the same time keep session order (message order, then seq).
+    /// Rows at the same time keep session order: the ordering input, the
+    /// record's offset in it, then the message ID.
     pub session_order: bool,
     /// `since:` and `until:`: a condition on `{v}`, the resolved instant.
     pub since: Option<&'static str>,
@@ -341,8 +343,8 @@ const MESSAGE_DEFAULTS: &[Default] = &[
 /// The session's next counted tool call after `{t}`, in session order.
 pub const NEXT_CALL: &str = "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
      JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
-     AND (qm.order_input_id, qm.seq, qb.idx) > ({m}.order_input_id, {m}.seq, {cb}.idx) \
-     ORDER BY qm.order_input_id, qm.seq, qb.idx LIMIT 1";
+     AND (qm.order_input_id, qm.seq, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.id, {cb}.idx) \
+     ORDER BY qm.order_input_id, qm.seq, qm.id, qb.idx LIMIT 1";
 
 const MESSAGE_RELATIONS: &[Relation] = &[rel("session", Unit::Sessions, Via::Same)];
 
@@ -353,7 +355,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "session",
         from: Expr::Template("session {s}"),
         key: "{s}.pk",
-        identity: "{s}.id",
+        identity: &["{s}.id"],
         columns: &[
             (
                 "id",
@@ -408,7 +410,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "document",
         from: Expr::Template("document {r}"),
         key: "{r}.pk",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             (
                 "id",
@@ -443,7 +445,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "message",
         from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
         key: "{m}.pk",
-        identity: "{m}.id",
+        identity: &["{m}.id"],
         columns: &[
             (
                 "id",
@@ -485,7 +487,7 @@ pub static UNITS: &[UnitSpec] = &[
             "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
         key: "{b}.pk",
-        identity: "json_array({m}.id, {b}.idx, CASE WHEN {b}.idx IS NULL THEN {b}.pk END)",
+        identity: &["{m}.id", "{b}.idx", "{b}.reasoning_idx", "{b}.attach_key"],
         columns: &[
             (
                 "session",
@@ -533,7 +535,12 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
         ),
         key: "{t}.pk",
-        identity: "json_array({m}.id, {cb}.idx, CASE WHEN {cb}.idx IS NULL THEN {t}.pk END)",
+        identity: &[
+            "{m}.id",
+            "{cb}.idx",
+            "{cb}.reasoning_idx",
+            "{cb}.attach_key",
+        ],
         columns: &[
             (
                 "session",
@@ -616,7 +623,7 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN session {s} ON {s}.pk = {r}.session_pk",
         ),
         key: "{r}.pk",
-        identity: "json_array({s}.id, {r}.path)",
+        identity: &["{s}.id", "{r}.path"],
         columns: &[
             (
                 "session",
@@ -651,7 +658,7 @@ pub static UNITS: &[UnitSpec] = &[
             "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
         ),
         key: "{r}.pk",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
             (
@@ -688,7 +695,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "note",
         from: Expr::Template("a.note {r}"),
         key: "{r}.rowid",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             ("id", Expr::Reference("{r}.id", ColumnReference::Note), Text),
             ("kind", T("{r}.kind"), Text),
@@ -736,7 +743,7 @@ pub static UNITS: &[UnitSpec] = &[
             "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
         ),
         key: "{r}.pk",
-        identity: "json_array({r}.parent_id, {r}.child_id, {r}.kind, {r}.how)",
+        identity: &["{r}.parent_id", "{r}.child_id", "{r}.kind", "{r}.how"],
         columns: &[
             (
                 "parent",
@@ -775,7 +782,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "turn",
         from: Expr::Fn(turns_from),
         key: "{r}.pk",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
             (
@@ -818,7 +825,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "run",
         from: Expr::Template("run {r}"),
         key: "{r}.pk",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
             ("kind", T("{r}.kind"), Text),
@@ -866,7 +873,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "delivery",
         from: Expr::Template("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
         key: "{r}.rowid",
-        identity: "{r}.id",
+        identity: &["{r}.id"],
         columns: &[
             ("id", T("{r}.id"), Text),
             ("recipient", T("{r}.recipient_id"), Text),
@@ -897,7 +904,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "process",
         from: Expr::Template("process {r}"),
         key: "{r}.pk",
-        identity: "json_array({r}.boot_id, {r}.pid, {r}.start_ticks)",
+        identity: &["{r}.boot_id", "{r}.pid", "{r}.start_ticks"],
         columns: &[
             ("role", T("{r}.role"), Text),
             ("comm", T("{r}.comm"), Text),
@@ -944,7 +951,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "work",
         from: Expr::Template("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
         key: "{r}.pk",
-        identity: "{r}.key",
+        identity: &["{r}.key"],
         columns: &[
             ("kind", T("{r}.kind"), Text),
             ("title", T("{r}.title"), Text),
@@ -989,7 +996,7 @@ pub static UNITS: &[UnitSpec] = &[
                (ce.refused_json -> '$.sessions'), ce.message_ids_json FROM a.excision ce) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
-        identity: "({r}.kind || ':' || {r}.ref)",
+        identity: &["{r}.kind", "{r}.ref"],
         columns: &[
             ("kind", T("{r}.kind"), Text),
             ("ref", T("{r}.ref"), Text),
@@ -1044,14 +1051,14 @@ const TURNS: &str = "(SELECT g.*, \
        sum(tm.cost_nusd) AS cost_nusd \
      FROM (SELECT o.*, \
          sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq \
+           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq) AS ord \
+         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id) AS ord \
        FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.written_by, m.prompt_kind, \
              m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.order_input_id, m.seq), 0) AS prev_hp, \
+               ORDER BY m.order_input_id, m.seq, m.id), 0) AS prev_hp, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \

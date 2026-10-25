@@ -45,6 +45,7 @@ fn templates_name_only_known_aliases() {
     for s in UNITS {
         for t in [s.key, s.time, s.session_pk]
             .into_iter()
+            .chain(s.identity.iter().copied())
             .chain(s.since)
             .chain(s.until)
         {
@@ -77,6 +78,16 @@ fn the_grammar_names_every_unit() {
         if !matches!(s.unit, Unit::Sessions | Unit::Changes) {
             let text = format!("exists {}(x)", s.singular);
             crate::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        }
+    }
+}
+
+#[test]
+fn identities_never_use_the_row_key() {
+    for s in UNITS {
+        for term in s.identity {
+            assert!(!term.contains(".pk"), "{:?}: {term}", s.unit);
+            assert_ne!(*term, s.key, "{:?}", s.unit);
         }
     }
 }

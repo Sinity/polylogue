@@ -135,8 +135,9 @@ fn boundaries_step(run: &mut Run) -> devkit::Result {
     })
 }
 
-/// Clippy over every target, warnings denied: it also compiles everything,
-/// so it replaces a separate `cargo check`.
+/// Clippy over every target, warnings denied: once with `polylogue/sinex`,
+/// which also compiles everything, so it replaces a separate `cargo check`;
+/// then the application without it, so neither build has dead code.
 fn clippy(run: &mut Run) -> devkit::Result {
     run.cargo(
         "clippy",
@@ -147,6 +148,19 @@ fn clippy(run: &mut Run) -> devkit::Result {
             "--all-targets",
             "--features",
             "polylogue/sinex",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
+    run.cargo(
+        "clippy-standalone",
+        &[
+            "clippy",
+            "--locked",
+            "-p",
+            "polylogue",
+            "--all-targets",
             "--",
             "-D",
             "warnings",

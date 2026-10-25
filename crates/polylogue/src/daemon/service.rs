@@ -118,23 +118,8 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
     ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
 }
 
-fn writes_paused(d: &Daemon) -> Response {
-    match &d.mode {
-        ModeState::Blocked {
-            path,
-            error: reason,
-            ..
-        } => Response::Error {
-            kind: "sinex_unavailable".into(),
-            message: format!("archive writes are paused: {reason}"),
-            detail: Some(serde_json::json!({ "config_path": path, "error": reason })),
-        },
-        _ => store_error(&StoreError::WriterGone),
-    }
-}
-
 fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
-    d.writes.as_ref().ok_or_else(|| writes_paused(d))
+    d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
 fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
@@ -207,8 +192,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if let Err(response) = accepting(d) {
         return response;
     }
-    if matches!(d.mode, ModeState::Blocked { .. }) && !request.read_only() {
-        return writes_paused(d);
+    if d.mode.blocked() && !request.read_only() {
+        return d.mode.write_refusal();
     }
     let read_epoch = d.read_checkpoints.epoch();
     let reader = match d.reads.reader() {
@@ -672,7 +657,8 @@ impl Drop for Runtime {
 }
 
 /// Standalone, primary on Sinex, or blocked by a Sinex configuration or
-/// restore failure; never a fallback to another mode.
+/// restore failure; never a fallback to another mode. Only a build with the
+/// `sinex` feature reads a Sinex configuration, so only it can be blocked.
 pub enum ArchiveMode {
     Standalone,
     #[cfg(feature = "sinex")]
@@ -680,6 +666,7 @@ pub enum ArchiveMode {
         config: polylogue_sinex::Config,
         path: std::path::PathBuf,
     },
+    #[cfg(feature = "sinex")]
     Blocked {
         /// The mode the configuration asked for, when it could be read.
         configured: Option<&'static str>,
@@ -694,11 +681,44 @@ enum ModeState {
     Standalone,
     #[cfg(feature = "sinex")]
     Primary,
+    #[cfg(feature = "sinex")]
     Blocked {
         configured: Option<&'static str>,
         path: std::path::PathBuf,
         error: String,
     },
+}
+
+impl ModeState {
+    /// Writes are paused until the Sinex configuration or restore is fixed.
+    fn blocked(&self) -> bool {
+        #[cfg(feature = "sinex")]
+        {
+            matches!(self, Self::Blocked { .. })
+        }
+        #[cfg(not(feature = "sinex"))]
+        {
+            false
+        }
+    }
+
+    /// The answer to a write the daemon cannot take.
+    fn write_refusal(&self) -> Response {
+        #[cfg(feature = "sinex")]
+        if let Self::Blocked {
+            path,
+            error: reason,
+            ..
+        } = self
+        {
+            return Response::Error {
+                kind: "sinex_unavailable".into(),
+                message: format!("archive writes are paused: {reason}"),
+                detail: Some(serde_json::json!({ "config_path": path, "error": reason })),
+            };
+        }
+        store_error(&StoreError::WriterGone)
+    }
 }
 
 /// Opens the archive and starts owned application workers. Startup errors
@@ -717,6 +737,7 @@ pub fn start(
     let mut sinex_thread = None;
     let mode = match mode {
         ArchiveMode::Standalone => ModeState::Standalone,
+        #[cfg(feature = "sinex")]
         ArchiveMode::Blocked {
             configured,
             path,
@@ -742,7 +763,7 @@ pub fn start(
             },
         },
     };
-    let mut engine = if matches!(mode, ModeState::Blocked { .. }) {
+    let mut engine = if mode.blocked() {
         None
     } else {
         Some(Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?)

@@ -566,7 +566,7 @@ fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>>
             "SELECT x.body FROM message m JOIN block b ON b.message_pk = m.pk
              JOIN text x ON x.id = b.text_id
              WHERE m.session_pk = ?1 AND m.role = 'user' AND b.kind = 'text'
-             ORDER BY m.order_input_id, m.seq, b.idx LIMIT 1",
+             ORDER BY m.order_input_id, m.seq, m.id, b.idx LIMIT 1",
         )?
         .query_row([session_pk], |r| r.get(0))
         .optional()?;

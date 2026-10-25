@@ -377,3 +377,113 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
     request.cursor = Some(&old);
     assert_eq!(run_q(&w, request).unwrap_err().kind, "bad_request");
 }
+
+#[test]
+fn blocks_of_one_message_page_in_position_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fx
+        .session(SessionFacts {
+            id: "claude-code:positions",
+            started: at(1, 9),
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    let message = fx
+        .message(
+            session,
+            MessageFacts {
+                id: "claude-code:positions-answer",
+                role: "assistant",
+                written_by: "model",
+                at: at(1, 9),
+                ..MessageFacts::default()
+            },
+        )
+        .unwrap();
+    // Twelve blocks: a call and its result six times.
+    for _ in 0..6 {
+        fx.tool_call(
+            session,
+            message,
+            CallFacts {
+                tool: "Bash",
+                action: "shell",
+                command: Some("true"),
+                outcome: "ok",
+                at: at(1, 9),
+                output: Some("done"),
+                ..CallFacts::default()
+            },
+        )
+        .unwrap();
+    }
+    let w = World { _dir: dir, fx };
+    let mut positions = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut request = ask("blocks");
+        request.page_size = Some(5);
+        request.cursor = cursor.as_deref();
+        let page = run_q(&w, request).unwrap();
+        positions.extend(
+            page["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["idx"].as_i64().unwrap()),
+        );
+        cursor = page["next"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(positions, (0..12).collect::<Vec<_>>());
+}
+
+#[test]
+fn no_sort_key_holds_bytes() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask("sessions");
+    let opts = options(&reader, &request, request.now, 7).unwrap();
+    let mut checked = 0;
+    for unit in polylogue_query::units::UNITS {
+        let questions = std::iter::once(unit.name.to_owned()).chain(
+            polylogue_query::fields::FIELDS
+                .iter()
+                .filter(|f| f.unit == unit.unit && f.sql.is_some())
+                .map(|f| format!("{} | sort by {}", unit.name, f.name)),
+        );
+        for question in questions {
+            let Ok(program) = polylogue_query::compile(&question, &opts) else {
+                continue;
+            };
+            if program.order.is_empty() {
+                continue;
+            }
+            let bytes = program
+                .order
+                .iter()
+                .map(|key| format!("typeof(\"{}\") = 'blob'", key.column))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut params = values(&program.params);
+            // The page's row limit.
+            params.push(SqlValue::Int(i64::MAX));
+            let rows = reader
+                .query(
+                    &format!(
+                        "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
+                        program.page_sql(false)
+                    ),
+                    &params,
+                )
+                .unwrap_or_else(|e| panic!("{question}: {e}"));
+            assert_eq!(rows[0]["n"], 0, "{question}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "{checked}");
+}

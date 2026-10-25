@@ -246,6 +246,7 @@ pub(crate) fn install(
     archive: &Connection,
     mut staged: ExportItems,
 ) -> Result<()> {
+    crate::fault::check("assets.install", "")?;
     let tx = crate::write_lock::transaction(conn, rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {
         match serde_json::from_reader(item.reader)? {

@@ -11,13 +11,22 @@ impl<'a> Compiler<'a> {
         scope: &Scope,
         at: usize,
     ) -> Result<Vec<String>, QueryError> {
-        let identity = scope.a.expand(units::spec(scope.unit).identity);
+        let identity: Vec<String> = units::spec(scope.unit)
+            .identity
+            .iter()
+            .map(|term| scope.a.expand(term))
+            .collect();
         Ok(match key {
             SortKey::Random { seed } => match seed.or(self.opts.random_seed) {
-                Some(seed) => vec![
-                    format!("pl_random(CAST({identity} AS TEXT), '{seed}')"),
-                    identity,
-                ],
+                Some(seed) => {
+                    let name = match identity.as_slice() {
+                        [one] => format!("CAST({one} AS TEXT)"),
+                        terms => format!("json_array({})", terms.join(", ")),
+                    };
+                    let mut order = vec![format!("pl_random({name}, '{seed}')")];
+                    order.extend(identity);
+                    order
+                }
                 None => vec!["random()".into()],
             },
             SortKey::Field { field } => {
@@ -25,11 +34,9 @@ impl<'a> Compiler<'a> {
                 scalar(kind, field, at)?;
                 self.show(field, &expr, kind, Self::field_reference(field, scope));
                 let dir = if desc { " DESC" } else { "" };
-                vec![
-                    format!("({expr}) IS NULL"),
-                    format!("({expr}){dir}"),
-                    format!("{identity}{dir}"),
-                ]
+                let mut order = vec![format!("({expr}) IS NULL"), format!("({expr}){dir}")];
+                order.extend(identity.iter().map(|term| format!("{term}{dir}")));
+                order
             }
         })
     }
