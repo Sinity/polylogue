@@ -385,7 +385,7 @@ fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes(
 }
 
 #[test]
-fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_changes() {
+fn a_late_corrupt_capture_payload_refuses_before_installing_earlier_text_changes() {
     use polylogue_model::capture_log::{Header, MAGIC};
     let w = World::new();
     w.seed("a-matched", 1, &[b"secret"]);
@@ -397,7 +397,7 @@ fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_change
     framed.extend(payload);
     w.seed("z-corrupt", 1, &[&framed[..27], &framed[27..]]);
     assert!(
-        matches!(w.excise("secret", false), Err(StoreError::Invalid(message)) if message.contains("snapshot payload digest mismatch"))
+        matches!(w.excise("secret", false), Err(StoreError::Invalid(message)) if message.contains("capture payload digest mismatch"))
     );
     assert_eq!(w.bytes("a-matched", 1), b"secret");
     assert_eq!(w.bytes("z-corrupt", 1), framed);

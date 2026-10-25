@@ -92,12 +92,12 @@ impl Error {
 
 type MatchResult<T> = std::result::Result<T, Error>;
 
-pub(super) struct Candidate {
+pub(super) struct HitGroup {
     pub(super) scope: Scope,
     has_hits: bool,
 }
 
-impl Candidate {
+impl HitGroup {
     fn new(sink: &mut impl HitSink) -> Result<Self> {
         Ok(Self {
             scope: sink.scope()?,
@@ -115,10 +115,10 @@ impl Candidate {
 pub(super) struct TextMatches {
     raw: Matcher,
     decoded: Matcher,
-    output: Candidate,
-    raw_candidate: Option<Candidate>,
-    string: Option<Candidate>,
-    pending_key: Option<Candidate>,
+    output: HitGroup,
+    raw_group: Option<HitGroup>,
+    string: Option<HitGroup>,
+    pending_key: Option<HitGroup>,
     json: Option<bool>,
     quoted: bool,
     escape: Vec<u8>,
@@ -147,8 +147,8 @@ impl TextMatches {
         Ok(Self {
             raw: Matcher::new(pattern.clone()),
             decoded: Matcher::new(pattern),
-            output: Candidate::new(sink)?,
-            raw_candidate: Some(Candidate::new(sink)?),
+            output: HitGroup::new(sink)?,
+            raw_group: Some(HitGroup::new(sink)?),
             string: None,
             pending_key: None,
             json: None,
@@ -214,7 +214,7 @@ impl TextMatches {
                 Ok(()) => {}
                 Err(Error::Syntax(_)) => {
                     // Invalid embedded JSON still contributes direct outer
-                    // string matches, but none of its decoded candidate hits.
+                    // string matches, but none of its decoded hits.
                     self.nested.take().unwrap().discard(sink)?;
                 }
                 Err(error @ Error::Sink(_)) => return Err(error),
@@ -227,13 +227,13 @@ impl TextMatches {
         if self.json != Some(true)
             && let Some((start, end)) = self.raw.push(byte, at, end)
         {
-            let candidate = self.raw_candidate.as_mut().unwrap_or(&mut self.output);
-            sink.hit(candidate.scope, start, end)?;
-            candidate.has_hits = true;
+            let group = self.raw_group.as_mut().unwrap_or(&mut self.output);
+            sink.hit(group.scope, start, end)?;
+            group.has_hits = true;
         }
         if self.json.is_none() && !byte.is_ascii_whitespace() {
             self.json = Some(matches!(byte, b'{' | b'[' | b'"'));
-            let raw = self.raw_candidate.take().unwrap();
+            let raw = self.raw_group.take().unwrap();
             if self.json == Some(true) {
                 sink.discard(raw.scope)?;
             } else {
@@ -261,7 +261,7 @@ impl TextMatches {
             if byte == b'"' {
                 self.quoted = true;
                 self.nested_mode = None;
-                self.string = Some(Candidate::new(sink)?);
+                self.string = Some(HitGroup::new(sink)?);
                 self.decoded.reset();
             }
             return Ok(());
@@ -303,7 +303,7 @@ impl TextMatches {
         } else if byte == b'"' {
             if let Some(nested) = self.nested.take() {
                 match nested.finish(sink) {
-                    Ok(candidate) => candidate.accept(self.string.as_mut().unwrap(), sink)?,
+                    Ok(group) => group.accept(self.string.as_mut().unwrap(), sink)?,
                     Err(Error::Syntax(_)) => {}
                     Err(error @ Error::Sink(_)) => return Err(error),
                 }
@@ -357,21 +357,21 @@ impl TextMatches {
         if let Some(nested) = self.nested {
             nested.discard(sink)?;
         }
-        for candidate in [self.raw_candidate, self.string, self.pending_key]
+        for group in [self.raw_group, self.string, self.pending_key]
             .into_iter()
             .flatten()
         {
-            sink.discard(candidate.scope)?;
+            sink.discard(group.scope)?;
         }
         sink.discard(self.output.scope)
     }
 
-    pub(super) fn finish(mut self, sink: &mut impl HitSink) -> MatchResult<Candidate> {
+    pub(super) fn finish(mut self, sink: &mut impl HitSink) -> MatchResult<HitGroup> {
         if let Err(error) = self.validate() {
             self.discard(sink)?;
             return Err(error);
         }
-        if let Some(raw) = self.raw_candidate.take() {
+        if let Some(raw) = self.raw_group.take() {
             raw.accept(&mut self.output, sink)?;
         }
         if let Some(value) = self.pending_key.take() {

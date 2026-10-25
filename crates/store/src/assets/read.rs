@@ -145,7 +145,7 @@ impl Reader<'_> {
                         JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
                         JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
                         WHERE m.acquisition=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
-                          AND EXISTS(SELECT 1 FROM a.revision retained WHERE retained.input=m.input)
+                          AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
                         ORDER BY m.input,x.ordinal")?;
                     for row in meta.query_map(params![scope, source_id], |r| {
                         Ok((

@@ -1,5 +1,5 @@
-//! Derived import associations. Source interpretation is supplied by the
-//! engine; reads join the admitted archive state before returning any bytes.
+//! Derived import associations. The engine parses the sources; reads check
+//! the archive's current state before returning any bytes.
 use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,7 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
             })
         {
             return Err(StoreError::Invalid(
-                "retained asset extent catalog is incomplete".into(),
+                "the asset's stored extents are incomplete".into(),
             ));
         }
         let bytes: Vec<u8> = row.get(2)?;
@@ -91,7 +91,7 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
     }
     if end != length || count == 0 {
         return Err(StoreError::Invalid(
-            "retained asset extent catalog is incomplete".into(),
+            "the asset's stored extents are incomplete".into(),
         ));
     }
     Ok(Some(AssetSource {
@@ -302,7 +302,7 @@ pub(crate) fn install(
                     != Some(recorded.as_str())
                 {
                     return Err(StoreError::Conflict(
-                        "asset sidecar changed while it was interpreted".into(),
+                        "asset sidecar changed while it was parsed".into(),
                     ));
                 }
                 tx.execute(

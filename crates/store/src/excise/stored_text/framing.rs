@@ -1,4 +1,4 @@
-//! Snapshot headers are structural bytes. Payloads share the operation's verified
+//! Capture headers are structural bytes. Payloads share the operation's verified
 //! plaintext owner; each header and digest is checked before replacement begins.
 use super::*;
 use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
@@ -66,7 +66,7 @@ pub(super) fn scan(
                     .position()
                     .checked_add(header.length)
                     .filter(|end| *end <= length)
-                    .ok_or_else(|| StoreError::Invalid("incomplete snapshot payload".into()))?;
+                    .ok_or_else(|| StoreError::Invalid("incomplete capture payload".into()))?;
                 plan.frame(key, at, &header)?;
                 feed(&[b' '; HEADER_LEN])?;
                 let mut before = blake3::Hasher::new();
@@ -74,20 +74,20 @@ pub(super) fn scan(
                     let take = buffer.len().min((end - reader.position()) as usize);
                     let n = reader.read(&mut buffer[..take])?;
                     if n == 0 {
-                        return Err(StoreError::Invalid("incomplete snapshot payload".into()));
+                        return Err(StoreError::Invalid("incomplete capture payload".into()));
                     }
                     before.update(&buffer[..n]);
                     feed(&buffer[..n])?;
                 }
                 if before.finalize().to_hex().as_str() != header.digest {
                     return Err(StoreError::Invalid(
-                        "snapshot payload digest mismatch".into(),
+                        "capture payload digest mismatch".into(),
                     ));
                 }
             }
         } else {
             if !prefix.is_empty() && MAGIC.starts_with(prefix) {
-                return Err(StoreError::Invalid("incomplete snapshot log magic".into()));
+                return Err(StoreError::Invalid("incomplete capture log marker".into()));
             }
             feed(prefix)?;
             loop {

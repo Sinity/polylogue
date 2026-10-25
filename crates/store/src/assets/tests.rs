@@ -1,4 +1,4 @@
-//! Range delivery uses the admitted current chain, including segmented bytes.
+//! Range delivery reads the current chain, including bytes in several pieces.
 use super::*;
 use crate::{Archive, Batch, Change, InputKey, ReadPool, Writer};
 use polylogue_model::BlobHash;
