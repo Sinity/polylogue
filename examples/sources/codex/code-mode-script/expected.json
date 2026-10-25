@@ -64,6 +64,7 @@
                 "cwd": "file:///work/repo",
                 "parsed_cmd": []
               },
+              "run_by_script": true,
               "tool": "exec_command",
               "type": "tool_call"
             },

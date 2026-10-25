@@ -86,10 +86,15 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         "a withdrawal takes the whole family out, and is not listed itself"
     );
     assert_eq!(
-        list(&reader, &format!("{about} withdrawn:true"), now)
+        values(
+            &list(
+                &reader,
+                &format!("{about} withdrawn:true current:true"),
+                now
+            )
             .unwrap()
-            .len(),
-        1
+        ),
+        ["run cargo nextest"]
     );
 }
 
