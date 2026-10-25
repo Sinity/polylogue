@@ -227,6 +227,15 @@ queries always read `index.db`.
   the loop then rebuilds `index.db` from the stored bytes. The
   [rebuild test](../crates/sinex/tests/rebuild/main.rs) runs this on the
   Morrow example against a real `sinexd`.
-- **Excision** in primary mode is Sinex's excision of the input's materials,
-  with Polylogue as the actor. Until Sinex takes that request, excision in
-  primary mode refuses.
+- **Excision** removes the same whole inputs as in standalone mode. Before
+  it commits, Sinex excises their parts and records, and the requests of the
+  notes it removes (`<root>.excise.<producer>`, Polylogue as the actor); Sinex
+  refuses the whole request when it cannot remove one cleanly, and nothing
+  changes. The excision itself is then sent as a record, so a rebuild keeps
+  refusing what it removed. Polylogue never deletes from Sinex's content
+  store.
+- **Moving an archive to primary** uses no tool of its own: start primary
+  mode on a new archive directory, and the loop collects every provider file
+  again into Sinex; what the standalone archive holds besides its provider
+  files comes over by `polylogue export` from it and `polylogue import` into
+  the primary one.
