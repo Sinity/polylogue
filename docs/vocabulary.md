@@ -28,7 +28,7 @@ a plain name here before it gets code.
 - **extracted blob**: bytes decoded from inside a record, such as inline
   media, stored with the record's byte range.
 - **write counter** (`commit_seq`): incremented once per archive transaction;
-  orders the change feed and row batches.
+  orders the change feed.
 - **stored**: kept in the archive. Prefer no word at all: an input is stored
   by definition.
 
@@ -85,8 +85,13 @@ a plain name here before it gets code.
   of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
 - **mode**: `standalone`, or `primary` with Sinex holding the archive.
-- **row batch**: the rows one archive write added, sent to Sinex in primary
-  mode under the name `rows:<archive>:<position>`.
+- **register**: the archive's rows for inputs and for what people and agents
+  wrote: `archive.db` in standalone mode, `sinex.db` (a copy of what Sinex
+  holds) in primary mode.
+- **part**: in primary mode, one piece of an input's bytes as a Sinex
+  material, with the register rows that place it.
+- **record**: in primary mode, a small Sinex material holding a look at an
+  input that found no new bytes, a request, or an excision.
 
 ## Queries and output
 
