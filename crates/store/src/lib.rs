@@ -21,7 +21,7 @@ pub mod export_items;
 pub mod fault;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
-pub mod input_record;
+pub mod input_rows;
 mod live;
 pub mod measure;
 pub mod notes;

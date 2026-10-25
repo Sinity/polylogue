@@ -2,14 +2,14 @@ use super::*;
 
 /// Records `b`'s observation as a disappearance.
 fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
-    let record = crate::input_record::InputRecord {
+    let rows = crate::input_rows::InputRows {
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,
         extent: None,
         observation: bytes::observation(tx, b, "deleted", None, seq).unwrap(),
     };
-    record.insert(tx, seq).unwrap();
+    rows.insert(tx, seq).unwrap();
 }
 
 #[test]

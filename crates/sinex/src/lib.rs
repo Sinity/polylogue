@@ -2,12 +2,13 @@
 //! used. In `primary` mode Sinex holds the archive and Polylogue is one of its
 //! producers:
 //!
-//! - each piece of a captured file is a material of its real input (origin,
-//!   path, host), a growing file a chain of parts, named with the Polylogue
-//!   parser that reads it ([`parts`]);
-//! - a look at a file that found no new bytes, and each request a person or
-//!   agent makes, is a small record material, with a typed event for notes,
-//!   settings, kept results and deliveries ([`records`]);
+//! - each step of a captured file's appended bytes is a part: a material of
+//!   its real input (origin, path, host), a growing file a chain of parts,
+//!   named with the Polylogue parser that reads it ([`parts`]);
+//! - a look at a file that found no new bytes, each request a person or agent
+//!   makes and each excision is a small register material, with a typed event
+//!   for notes, settings, kept results, deliveries and excisions
+//!   ([`register`]);
 //! - parsed sessions, messages, tool calls and turns are events keyed by
 //!   Polylogue's IDs and anchored at their records ([`sessions`]).
 //!
@@ -19,7 +20,7 @@ use std::sync::Mutex;
 
 mod client;
 mod parts;
-mod records;
+mod register;
 mod sessions;
 
 use client::Client;
@@ -69,18 +70,18 @@ pub struct Config {
     /// NATS server URL, with the producer's credentials when required.
     pub nats: String,
     /// Subject root (`sinex` when deployed).
-    #[serde(default = "default_subjects")]
-    pub subjects: String,
+    #[serde(default = "default_subject_root")]
+    pub subject_root: String,
     /// This producer's name on the ingress.
     #[serde(default = "default_producer")]
     pub producer: String,
     /// Sinex's store root on this host. Polylogue writes the bytes it sends
-    /// into spool directories under it and reads stored bytes from its
+    /// into frame directories under it and reads stored bytes from its
     /// content store.
     pub store: PathBuf,
 }
 
-fn default_subjects() -> String {
+fn default_subject_root() -> String {
     "sinex".into()
 }
 
@@ -122,7 +123,7 @@ pub struct Sinex {
     runtime: tokio::runtime::Runtime,
     /// `None` only while dropping.
     client: Mutex<Option<Client>>,
-    /// This host's name, for the records Polylogue writes.
+    /// This host's name, for the register materials of requests.
     host: String,
     /// Where the sessions last sent stand, beside the index they were read
     /// from ([`sessions`]).
@@ -166,7 +167,12 @@ impl Sinex {
 
     /// Whether Sinex answers.
     pub fn reachable(&self) -> Result<()> {
-        self.with(async |client| client.have(&["polylogue-reachable".into()]).await.map(drop))
+        self.with(async |client| {
+            client
+                .recorded(&["polylogue-reachable".into()])
+                .await
+                .map(drop)
+        })
     }
 }
 
@@ -190,11 +196,11 @@ impl polylogue_store::primary::Sinex for Sinex {
         Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
     }
 
-    fn send_record(
+    fn send_change(
         &self,
-        record: &polylogue_store::primary::Record,
+        change: &polylogue_store::primary::RegisterChange,
     ) -> polylogue_store::Result<String> {
-        Ok(self.with(async |client| records::send(client, &self.host, record).await)?)
+        Ok(self.with(async |client| register::send(client, &self.host, change).await)?)
     }
 
     fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {

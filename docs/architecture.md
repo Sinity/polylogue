@@ -193,27 +193,28 @@ finishes a stopped excision. Provider files are never edited.
 
 With the `sinex` feature and `mode = "primary"` in `sinex.toml`, Sinex holds
 the archive and Polylogue is one of its producers. The modes differ only
-where the archive's records go ([primary](../crates/store/src/primary.rs));
+where the register's rows go ([primary](../crates/store/src/primary.rs));
 capture, parsing, the index, queries and every surface are the same, and
 queries always read `index.db`.
 
 | | standalone | primary |
 |---|---|---|
 | input bytes | `blobs/` and inline rows | Sinex's content store, read-only |
-| register of inputs, notes, settings, deliveries | `archive.db`, the record | `sinex.db`, a copy of what Sinex holds |
+| register of inputs, notes, settings, deliveries | `archive.db`, the archive's own | `sinex.db`, a copy of what Sinex holds |
 | parsed sessions, search, derived rows | `index.db` | `index.db` |
 | embedding vectors | `embeddings.db` | `embeddings.db` |
 
-- **Inputs.** Each piece of a captured file is sent as one material of its
-  real input: its origin, path and host, a growing file a chain of parts,
-  named with the parser `polylogue-<origin>` and its version. The material's
-  manifest holds the [register rows](../crates/store/src/input_record.rs)
-  that place the piece. A look that found no new bytes (a file gone or back,
-  an import of bytes already stored) is sent as a small record material.
-- **Records.** Each request a person or agent makes is sent as a record
-  material; notes, settings, kept results and deliveries also become their
-  typed `polylogue.*` events.
-- **Order.** The writer sends a piece or record and waits for Sinex's
+- **Parts.** Each step of a captured file's appended bytes is sent as one
+  part: a material of its real input (origin, path and host), a growing file
+  a chain of parts, named with the parser `polylogue-<origin>` and its
+  version. The material's manifest holds the
+  [register rows](../crates/store/src/input_rows.rs) that place the part.
+- **Register materials.** Every other change to the register is sent as a
+  small register material: a look that found no new bytes (a file gone or
+  back, an import of bytes already stored), each request a person or agent
+  makes, and each excision. Notes, settings, kept results, deliveries and
+  excisions also become their typed `polylogue.*` events.
+- **Order.** The writer sends a part or register material and waits for Sinex's
   acknowledgment before the transaction that writes its rows commits, so
   `sinex.db` and `index.db` hold only what Sinex holds. Bytes wait in
   `parts/` until then. An outage fails the write; the loop tries again.
@@ -228,12 +229,12 @@ queries always read `index.db`.
   [rebuild test](../crates/sinex/tests/rebuild/main.rs) runs this on the
   Morrow example against a real `sinexd`.
 - **Excision** removes the same whole inputs as in standalone mode. Before
-  it commits, Sinex excises their parts and records, and the requests of the
-  notes it removes (`<root>.excise.<producer>`, Polylogue as the actor); Sinex
-  refuses the whole request when it cannot remove one cleanly, and nothing
-  changes. The excision itself is then sent as a record, so a rebuild keeps
-  refusing what it removed. Polylogue never deletes from Sinex's content
-  store.
+  it commits, Sinex excises their parts and register materials, and those of
+  the requests behind the notes it removes (`<root>.excise.<producer>`,
+  Polylogue as the actor); Sinex refuses the whole request when it cannot
+  remove one cleanly, and nothing changes. The excision itself is then sent
+  as a register material, so a rebuild keeps refusing what it removed.
+  Polylogue never deletes from Sinex's content store.
 - **Moving an archive to primary** uses no tool of its own: start primary
   mode on a new archive directory, and the loop collects every provider file
   again into Sinex; what the standalone archive holds besides its provider

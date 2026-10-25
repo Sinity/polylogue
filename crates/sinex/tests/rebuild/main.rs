@@ -71,7 +71,7 @@ fn sinex(dir: &Path) -> Running {
                 .args(["--database", &url])
                 .arg("--store")
                 .arg(&store)
-                .args(["--nats", nats.url(), "--subjects", "rebuild"])
+                .args(["--nats", nats.url(), "--subject-root", "rebuild"])
                 .arg("--tokens")
                 .arg(&tokens)
                 .arg("--socket")
@@ -82,7 +82,7 @@ fn sinex(dir: &Path) -> Running {
     let config = Config {
         mode: Mode::Primary,
         nats: nats.url().into(),
-        subjects: "rebuild".into(),
+        subject_root: "rebuild".into(),
         producer: "polylogue".into(),
         store,
     };
@@ -232,10 +232,20 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     );
 
     // Sinex answers its own query language about the sessions.
-    assert!(sinex_rows(&running.socket, "events where kind = polylogue.session") >= 8);
-    assert!(sinex_rows(&running.socket, "events where kind = polylogue.message") > 0);
+    assert!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.session"
+        ) >= 8
+    );
+    assert!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.message"
+        ) > 0
+    );
     assert_eq!(
-        sinex_rows(&running.socket, "events where kind = polylogue.note"),
+        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
         1
     );
 
@@ -278,11 +288,17 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     }
     phase("excised");
     assert_eq!(
-        sinex_rows(&running.socket, "events where kind = polylogue.session"),
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.session"
+        ),
         7
     );
     assert_eq!(
-        sinex_rows(&running.socket, "events where kind = polylogue.excision"),
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.excision"
+        ),
         1
     );
     let (after, _) = answers(&on_sinex);

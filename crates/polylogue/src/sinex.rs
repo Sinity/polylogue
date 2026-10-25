@@ -9,7 +9,7 @@
 //! local copy and writes pause.
 use crate::daemon::service::ArchiveMode;
 use polylogue_sinex::{Config as SinexConfig, Mode, Sinex};
-use polylogue_store::primary::{Held, Part, Record};
+use polylogue_store::primary::{Held, Part, RegisterChange};
 use polylogue_store::{Archive, ArchiveLock, ReadPool, StoreError};
 use std::path::Path;
 use std::sync::Arc;
@@ -76,7 +76,7 @@ impl polylogue_store::primary::Sinex for Offline {
         self.refused()
     }
 
-    fn send_record(&self, _: &Record) -> polylogue_store::Result<String> {
+    fn send_change(&self, _: &RegisterChange) -> polylogue_store::Result<String> {
         self.refused()
     }
 
