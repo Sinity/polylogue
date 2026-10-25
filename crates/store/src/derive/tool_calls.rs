@@ -46,7 +46,8 @@ fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
              WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant' AND later.written_by='model'
                AND coalesce(json_extract(later.attrs_json,'$.production.response_boundary_unknown'),0)=0
                AND coalesce(json_extract(cm.attrs_json,'$.production.response_boundary_unknown'),0)=0
-               AND (later.order_input_id, later.seq) > (cm.order_input_id, cm.seq))
+               AND (later.order_input_id, later.seq, later.record_position)
+                   > (cm.order_input_id, cm.seq, cm.record_position))
            THEN 'passed_without_result' ELSE 'no_result' END
          WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
            AND outcome_reason IN ('no_result', 'passed_without_result')",

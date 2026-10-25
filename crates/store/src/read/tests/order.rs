@@ -51,7 +51,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
         if changed_plan {
             // Reverse tied native IDs in the actual read index. Row identities,
             // bodies and source positions remain unchanged.
-            conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,id DESC)").unwrap();
+            conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id DESC)").unwrap();
         }
         let r = pool.reader().unwrap();
         for logical in [false, true] {

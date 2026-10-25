@@ -641,6 +641,7 @@ impl<'a> Compiler<'a> {
             // Rows at the same time keep session order.
             o.push(format!("{}.order_input_id", a.m));
             o.push(format!("{}.seq", a.m));
+            o.push(format!("{}.record_position", a.m));
         }
         o.extend(
             spec.identity

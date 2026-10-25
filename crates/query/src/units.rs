@@ -343,8 +343,8 @@ const MESSAGE_DEFAULTS: &[Default] = &[
 /// The session's next counted tool call after `{t}`, in session order.
 pub const NEXT_CALL: &str = "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
      JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
-     AND (qm.order_input_id, qm.seq, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.id, {cb}.idx) \
-     ORDER BY qm.order_input_id, qm.seq, qm.id, qb.idx LIMIT 1";
+     AND (qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.record_position, {m}.id, {cb}.idx) \
+     ORDER BY qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx LIMIT 1";
 
 const MESSAGE_RELATIONS: &[Relation] = &[rel("session", Unit::Sessions, Via::Same)];
 
@@ -1051,14 +1051,14 @@ const TURNS: &str = "(SELECT g.*, \
        sum(tm.cost_nusd) AS cost_nusd \
      FROM (SELECT o.*, \
          sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id \
+           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.written_by, m.prompt_kind, \
+         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id) AS ord \
+       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.written_by, m.prompt_kind, \
              m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.order_input_id, m.seq, m.id), 0) AS prev_hp, \
+               ORDER BY m.order_input_id, m.seq, m.record_position, m.id), 0) AS prev_hp, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \

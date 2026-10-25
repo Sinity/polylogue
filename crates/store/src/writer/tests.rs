@@ -895,6 +895,8 @@ mod restating;
 
 mod array_order;
 
+mod record_order;
+
 mod metadata;
 
 mod statement_cache;

@@ -149,10 +149,10 @@ impl<'a> Reader<'a> {
                     let copied = self
                         .conn()?
                         .prepare_cached(
-                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq FROM message m
+                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq, m.record_position FROM message m
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                             WHERE m.session_pk = ?1 ORDER BY m.order_input_id, m.seq, m.id",
+                             WHERE m.session_pk = ?1 ORDER BY m.order_input_id, m.seq, m.record_position, m.id",
                         )?
                         .query_map(params![parent_pk, frame.pk], |r| {
                             Ok(Key {

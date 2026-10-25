@@ -536,7 +536,7 @@ impl Reader<'_> {
         Ok(self
             .conn()?
             .prepare_cached(
-                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
+                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, record_position, id",
             )?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -573,7 +573,7 @@ impl Reader<'_> {
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
                     duration_ms, attrs_json, cache_write_1h_tokens, speed
-             FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, id",
+             FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq, record_position, id",
         )?;
         let rows = stmt.query_map([session_pk], |r| {
             Ok((

@@ -37,10 +37,10 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'),
            NOT EXISTS (
              SELECT 1 FROM message a WHERE a.session_pk = ?1 AND a.role = 'assistant'
-               AND (a.order_input_id, a.seq) > (
-                 SELECT h.order_input_id, h.seq FROM message h WHERE h.session_pk = ?1
+               AND (a.order_input_id, a.seq, a.record_position) > (
+                 SELECT h.order_input_id, h.seq, h.record_position FROM message h WHERE h.session_pk = ?1
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'
-                 ORDER BY h.order_input_id DESC, h.seq DESC LIMIT 1))
+                 ORDER BY h.order_input_id DESC, h.seq DESC, h.record_position DESC LIMIT 1))
          FROM s, f WHERE s.messages > 0",
     )?
     .execute([session_pk])?;

@@ -68,6 +68,9 @@ pub(super) fn write_rows(
     }
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
+    // Messages one record holds share its offset; their order in the
+    // record breaks the tie.
+    let mut in_record: HashMap<u64, i64> = HashMap::new();
     for (i, row) in p.output.messages.iter().enumerate() {
         let session_pk = ctx.session_pk(&mut sessions, &row.message.session)?;
         let fallback;
@@ -79,9 +82,13 @@ pub(super) fn write_rows(
             }
         };
         let position = match p.order_from {
-            Some(from) => (from + i as u64) as i64,
-            None if p.restates => i as i64,
-            None => row.offset as i64,
+            Some(from) => ((from + i as u64) as i64, 0),
+            None if p.restates => (i as i64, 0),
+            None => {
+                let next = in_record.entry(row.offset).or_default();
+                *next += 1;
+                (row.offset as i64, *next - 1)
+            }
         };
         // A kind this step states needs no lookup.
         let main = match p
@@ -355,7 +362,7 @@ impl Ctx<'_, '_> {
         row: &MessageRow,
         session_pk: i64,
         prepared: &PreparedMessage,
-        position: i64,
+        position: (i64, i64),
         main: bool,
     ) -> Result<bool> {
         let m = &row.message;
@@ -373,7 +380,8 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.order_input_id, m.input_pk, m.source_chain,
-                        m.source_start, m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind
+                        m.source_start, m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind,
+                        m.record_position
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
                  JOIN session ss ON ss.pk = m.session_pk
@@ -382,7 +390,11 @@ impl Ctx<'_, '_> {
             .query_row([m.id.to_string()], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?),
+                    (
+                        r.get::<_, i64>(1)?,
+                        (r.get::<_, i64>(2)?, r.get::<_, i64>(12)?),
+                        r.get::<_, String>(3)?,
+                    ),
                     Version {
                         input_pk: r.get(4)?,
                         chain: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
@@ -441,10 +453,10 @@ impl Ctx<'_, '_> {
             if new_order != order {
                 self.tx
                     .prepare_cached(
-                        "UPDATE message SET order_input_pk = ?2, seq = ?3,
+                        "UPDATE message SET order_input_pk = ?2, seq = ?3, record_position = ?4,
                              order_input_id = (SELECT id FROM input_ref WHERE pk = ?2) WHERE pk = ?1",
                     )?
-                    .execute(params![pk, new_order.0, new_order.1])?;
+                    .execute(params![pk, new_order.0, new_order.1.0, new_order.1.1])?;
             }
             return Ok(false);
         }
@@ -515,7 +527,7 @@ impl Ctx<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, i64),
+        order: (i64, (i64, i64)),
     ) -> Result<i64> {
         self.set_message(None, m, session_pk, v, order)
     }
@@ -526,7 +538,7 @@ impl Ctx<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, i64),
+        order: (i64, (i64, i64)),
     ) -> Result<()> {
         self.set_message(Some(pk), m, session_pk, v, order)
             .map(drop)
@@ -540,7 +552,7 @@ impl Ctx<'_, '_> {
         m: &Message,
         session_pk: i64,
         v: &Version,
-        order: (i64, i64),
+        order: (i64, (i64, i64)),
     ) -> Result<i64> {
         let written_by = match (m.role, m.prompt_kind) {
             (_, Some(PromptKind::Harness)) | (Role::System, _) => "harness",
@@ -578,7 +590,7 @@ impl Ctx<'_, '_> {
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, cost_nusd = NULL, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
+                 record_position = ?31, order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, route_rank, role, written_by,
@@ -586,9 +598,9 @@ impl Ctx<'_, '_> {
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed, order_input_id)
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, order_input_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30,
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31,
                  (SELECT id FROM input_ref WHERE pk = ?3))"
         };
         let first: rusqlite::types::Value = match pk {
@@ -599,7 +611,7 @@ impl Ctx<'_, '_> {
             first,
             session_pk,
             order.0,
-            order.1,
+            order.1.0,
             v.rank,
             name(&m.role),
             written_by,
@@ -629,6 +641,7 @@ impl Ctx<'_, '_> {
                 .map(|w| w.saturating_sub(u.cache_write_1h.unwrap_or(0)) as i64),
             n(u.cache_write_1h),
             u.speed,
+            order.1.1,
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
