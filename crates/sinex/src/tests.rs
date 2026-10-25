@@ -104,7 +104,7 @@ fn a_held_part_carries_the_rows_that_place_it() {
         panic!("a part")
     };
     assert_eq!((number, index), (7, 2));
-    assert_eq!(back, record);
+    assert_eq!(*back, record);
 }
 
 #[test]

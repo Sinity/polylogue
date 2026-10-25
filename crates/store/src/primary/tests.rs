@@ -41,7 +41,7 @@ impl Sinex for Recorder {
             hash: part.hash,
             length: part.length,
             index: part.index,
-            record: part.record.clone(),
+            record: Box::new(part.record.clone()),
         });
         Ok(material)
     }

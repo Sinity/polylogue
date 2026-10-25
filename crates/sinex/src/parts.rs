@@ -119,6 +119,6 @@ pub(crate) fn held(store: &hashed_blobs::Reader, held: HeldMaterial) -> Result<H
         hash,
         length: material.length,
         index: material.part_index,
-        record,
+        record: Box::new(record),
     })
 }

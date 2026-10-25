@@ -101,7 +101,7 @@ pub enum Held {
         hash: BlobHash,
         length: u64,
         index: u32,
-        record: InputRecord,
+        record: Box<InputRecord>,
     },
     Record {
         number: i64,
