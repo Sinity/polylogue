@@ -1,6 +1,5 @@
-//! Excision: permanent removal from every file and derived product
-//!. The `excision` row keeps the
-//! content from coming back by any route.
+//! Excision: permanent removal from every file and derived product. The
+//! `excision` row keeps the content from coming back by any route.
 //!
 //! - **Session:** its rows go from every `index.db` table, its texts from
 //!   the search indexes and `embeddings.db` (when no other row holds the same
@@ -55,7 +54,6 @@ use messages::SelectedMessages;
 use session_texts::SessionTexts;
 use sessions::SelectedSessions;
 use spans::Spans;
-pub(crate) use stored_bytes::delete_uncommitted_files;
 use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
@@ -242,9 +240,27 @@ pub struct Transactions<'a, 'b> {
     pub seq: i64,
     /// `index.db`'s write counter for this transaction.
     pub counter: i64,
-    /// Blob files this excision wrote under rows it inserted; on a rollback
-    /// the writer deletes those whose rows did not commit.
-    pub new_files: std::cell::RefCell<Vec<BlobHash>>,
+    /// Where replacement blob files go in this run.
+    pub replacements: &'a Replacements,
+}
+
+/// An excision runs twice. The first run, rolled back, writes each
+/// file-sized replacement blob to `blobs/tmp/` only. The writer then commits
+/// their rows as `deleting`, installs the files, and runs the excision again,
+/// which marks the rows it uses `present`. A stop before that commit leaves
+/// rows marked `deleting`, whose files go when the archive is next opened, so
+/// no blob file is ever without a row.
+pub enum Replacements {
+    /// The first run: the staged files by hash.
+    Stage(std::cell::RefCell<BTreeMap<BlobHash, hashed_blobs::PreparedPlain>>),
+    /// The second run: the files are installed under committed rows.
+    Installed,
+}
+
+impl Default for Replacements {
+    fn default() -> Self {
+        Self::Stage(Default::default())
+    }
 }
 
 /// Runs an excision, marking blobs it no longer needs `deleting`. The writer

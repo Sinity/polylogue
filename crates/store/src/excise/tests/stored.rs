@@ -11,7 +11,18 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        Self::open(tempfile::tempdir().unwrap())
+    }
+
+    /// Opens the archive again, as after a stop.
+    #[cfg(feature = "faults")]
+    fn reopen(self) -> Self {
+        let Self { _dir, _lock, .. } = self;
+        drop(_lock);
+        Self::open(_dir)
+    }
+
+    fn open(dir: tempfile::TempDir) -> Self {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let store =
             Arc::new(hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap());
@@ -463,27 +474,30 @@ fn a_later_text_replacement_piece_failure_rolls_back_rows_and_retries() {
     );
 }
 
+/// Every file under `blobs/`, temporary files included.
 #[cfg(feature = "faults")]
-#[test]
-fn a_rollback_after_a_piece_file_is_written_leaves_no_unreferenced_file() {
-    fn blob_files(root: &std::path::Path) -> std::collections::BTreeSet<std::path::PathBuf> {
-        let mut files = std::collections::BTreeSet::new();
-        let mut dirs = vec![root.join("blobs")];
-        while let Some(dir) = dirs.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    dirs.push(path);
-                } else {
-                    files.insert(path);
-                }
+fn blob_files(root: &std::path::Path) -> std::collections::BTreeSet<std::path::PathBuf> {
+    let mut files = std::collections::BTreeSet::new();
+    let mut dirs = vec![root.join("blobs")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                files.insert(path);
             }
         }
-        files
     }
+    files
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_failure_after_a_piece_file_is_written_leaves_no_unreferenced_file() {
     let w = World::new();
     let mut original = vec![b'x'; 2 * 1024 * 1024 + 32];
     original[..6].copy_from_slice(b"secret");
@@ -509,6 +523,56 @@ fn a_rollback_after_a_piece_file_is_written_leaves_no_unreferenced_file() {
     crate::fault::clear();
     assert_eq!(w.bytes("large", 1), original);
     assert_eq!(blob_files(&w.archive.root), before);
+    writer.excise(request, w.store.clone()).unwrap();
+    original[..6].fill(b' ');
+    assert_eq!(w.bytes("large", 1), original);
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_stop_after_a_piece_file_is_written_leaves_no_file_without_a_row() {
+    let w = World::new();
+    let mut original = vec![b'x'; 2 * 1024 * 1024 + 32];
+    original[..6].copy_from_slice(b"secret");
+    w.seed("large", 1, &[&original]);
+    let before = blob_files(&w.archive.root);
+    let blob_rows = |w: &World| -> Vec<(Vec<u8>, String)> {
+        open_read(&w.archive.archive_db())
+            .unwrap()
+            .prepare("SELECT hash, state FROM blob ORDER BY hash")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let rows_before = blob_rows(&w);
+    let request = ExciseRequest {
+        id: "file-stop".into(),
+        scope: Scope::Text("secret".into()),
+        reason: None,
+        dry_run: false,
+    };
+    {
+        let writer = crate::Writer::start(&w.archive).unwrap();
+        crate::fault::clear();
+        crate::fault::arm(
+            "excision.after_piece_file",
+            "",
+            crate::fault::Action::Panic,
+            0,
+            1,
+        );
+        assert!(writer.excise(request.clone(), w.store.clone()).is_err());
+        crate::fault::clear();
+    }
+    // The stop left the replacement's file under a row marked `deleting`.
+    assert!(blob_rows(&w).iter().any(|(_, state)| state == "deleting"));
+    let w = w.reopen();
+    assert_eq!(blob_files(&w.archive.root), before);
+    assert_eq!(blob_rows(&w), rows_before);
+    assert_eq!(w.bytes("large", 1), original);
+    let writer = crate::Writer::start(&w.archive).unwrap();
     writer.excise(request, w.store.clone()).unwrap();
     original[..6].fill(b' ');
     assert_eq!(w.bytes("large", 1), original);
