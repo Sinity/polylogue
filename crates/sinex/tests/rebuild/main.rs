@@ -173,14 +173,19 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
 #[test]
 #[ignore = "needs Sinex's binaries; set SINEXD and SINEX_SCHEMA"]
 fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
+    let started = Instant::now();
+    let phase = |name: &str| eprintln!("{:>6.1}s {name}", started.elapsed().as_secs_f64());
     let standalone = Morrow::build(Set::Main);
+    phase("standalone built");
     let expected = answers(&Archive::at(&standalone.root)).0;
     assert!(expected.len() >= 8, "the example produced its sessions");
 
     let world = Morrow::lay_out(Set::Main);
     let running = sinex(world.dir.path());
     let sinex = connect(&running.config, &world.root);
+    phase("sinexd answers");
     converge_on_sinex(&world, &world.home, &sinex, &running.config);
+    phase("converged on Sinex");
     {
         let (archive, _lock) =
             Archive::open_primary(&world.root, &running.config.store, sinex.as_ref()).unwrap();
@@ -207,6 +212,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             ))
             .unwrap();
     }
+    phase("exports imported");
     let on_sinex = Archive::on_sinex(&world.root, &running.config.store);
     let (sessions, notes) = answers(&on_sinex);
     assert_eq!(sessions, expected, "primary and standalone give the same answers");
@@ -226,5 +232,6 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let empty = world.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
     converge_on_sinex(&world, &empty, &sinex, &running.config);
+    phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
 }
