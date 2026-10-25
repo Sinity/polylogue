@@ -4,16 +4,16 @@ use super::*;
 fn refused_watched_bytes_install_no_file() {
     for image in [false, true] {
         let world = ClaudeHome::new();
-        let path = world.file("pool-custody.jsonl");
+        let path = world.file("pool-stored.jsonl");
         let decoded = vec![b'A'; polylogue_store::blobs::INLINE_LIMIT + 1024];
         let bytes = if image {
             let encoded = "QUFB".repeat(decoded.len() / 3 + 1);
             format!(
                 "{}\n",
-                serde_json::json!({"type":"user","uuid":"pool-image","sessionId":"pool-custody","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":encoded}}]}})
+                serde_json::json!({"type":"user","uuid":"pool-image","sessionId":"pool-stored","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":encoded}}]}})
             )
         } else {
-            claude_user("pool-user", "pool-custody", &"x".repeat(decoded.len()))
+            claude_user("pool-user", "pool-stored", &"x".repeat(decoded.len()))
         };
         std::fs::write(&path, &bytes).unwrap();
         let raw = hashed_blobs::Hash::of(bytes.as_bytes());
@@ -67,12 +67,12 @@ fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]
 fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider_file() {
     let world = ClaudeHome::new();
     let (encoded, decoded) = image_payload('A');
-    let path = world.file("decoded-custody.jsonl");
+    let path = world.file("decoded-stored.jsonl");
     std::fs::write(
         &path,
         image_record(
             "image-user",
-            "decoded-custody",
+            "decoded-stored",
             "synthetic decoded content",
             &encoded,
         ),

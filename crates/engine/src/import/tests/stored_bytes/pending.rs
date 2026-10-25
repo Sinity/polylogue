@@ -101,7 +101,7 @@ fn whole_input_excision_removes_bytes_never_installed_and_refuses_their_retry() 
     let original = claude_user(
         "missing-user",
         "missing-session",
-        "synthetic missing reservation",
+        "synthetic bytes never installed",
     );
     std::fs::write(&path, &original).unwrap();
     let id = blake3::hash(original.as_bytes()).to_hex().to_string();
@@ -117,7 +117,7 @@ fn whole_input_excision_removes_bytes_never_installed_and_refuses_their_retry() 
     );
     engine
         .excise(ExciseRequest {
-            id: "remove-missing-reservation".into(),
+            id: "remove-bytes-never-installed".into(),
             scope: ExciseScope::Input(id.clone()),
             reason: None,
             dry_run: false,

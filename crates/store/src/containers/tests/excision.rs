@@ -34,7 +34,7 @@ fn admit(writer: &Writer, store: &Arc<hashed_blobs::Store>, group: Vec<PreparedB
 }
 
 #[test]
-fn shared_selected_input_retires_each_containing_acquisition_and_keeps_unrelated_units() {
+fn a_shared_member_removes_each_zip_holding_it_and_keeps_unrelated_inputs() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
@@ -145,7 +145,7 @@ fn reopening_deletes_the_files_of_a_committed_zip_removal() {
         0,
         1,
     );
-    assert!(remove(&writer, Arc::clone(&store), "interrupted-retirement").is_err());
+    assert!(remove(&writer, Arc::clone(&store), "interrupted-removal").is_err());
     crate::fault::clear();
     drop(writer);
     drop(lock);

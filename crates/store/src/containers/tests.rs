@@ -9,7 +9,7 @@ use std::sync::{Arc, Barrier};
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
 const MEMBER: &[u8] = b"synthetic independently retained member";
 
-// Store checks custody and canonical relationships; actual ZIP decoding is tested in Engine.
+// Store checks how ZIPs and members are stored and linked; ZIP decoding is tested in Engine.
 fn stage(
     archive: &Archive,
     body: &[u8],

@@ -47,42 +47,35 @@ fetching URLs. Whole-input excision removes an independent asset Input and block
 has a decoder. Malformed naming metadata is reported at import and raw sidecars remain
 retained. Native file-ID matching can still resolve bytes without a filename.
 
-ZIP import retains the exact original container, including its metadata, and
-separate uncompressed file-member Inputs. Member observations record their
-original container and native member index. Equal bytes share storage while
-keeping every physical observation.
+ZIP import stores the exact original ZIP, including its metadata, as one
+input and each uncompressed file member as its own input. Member observations
+record their ZIP and native member index (`observation_container`). Equal
+bytes share storage while keeping every observation.
 
-A ZIP's file members are decoded, hashed and staged privately before any bytes
-are published. A refused member refuses the linked acquisition. Corrupt,
-encrypted or unreadable member populations refuse before public installation;
-the original does not fall back to opaque retention. After reservation, an I/O
-failure can leave accountable unfinished bytes, reported as unavailable until
-verified or supplied by an exact retry.
+A ZIP's file members are decoded, hashed and compressed into private files
+before the writer stores them. A refused member refuses the whole ZIP.
+Corrupt, encrypted or unreadable members refuse before anything is stored;
+the original ZIP is not stored as an opaque file instead. A stop after the
+rows are written leaves bytes reported as unfinished until the same bytes
+are imported again.
 
-Removing a member, or rewriting its records for session/document removal,
-retires every containing original ZIP representation, including nested containers.
-Unrelated decoded member Inputs survive. Removing only an original ZIP preserves
-its independently retained members. `containers_retired` identifies originals
-removed (or that would be removed in a dry run); their raw metadata and exact
-container bytes become unavailable. Polylogue never substitutes a regenerated
-ZIP for the original. Acquisition observations remain; retired container links
-are removed through the existing excision publication.
+Removing a member, or rewriting its records for a session or document
+excision, removes every ZIP it was read from, including nested ZIPs, and
+keeps their other members. Removing only a ZIP keeps its members.
+`zips_removed` lists the ZIPs removed (or that a dry run would remove).
+Polylogue never writes a regenerated ZIP in place of the original. The
+observations stay; the ZIP links go.
 
-If another retained raw Input, decoded association, attachment or delta depends
-on the original bytes outside the removal set, the operation refuses before
-mutation. Direct attachment or delta-base references to original bytes currently refuse
-even when their owners are also selected. Selective ZIP regeneration and text
-removal from opaque member formats remain unsupported. A selected immutable member Input is shared by content across
-its acquisitions, so every containing original for that Input is retired; this
-does not extend removal to unrelated location-owned Inputs. Standing refusal
-blocks recapturing the selected member and retired originals.
+If another kept input, attachment or delta uses the ZIP's bytes, the
+excision refuses before changing anything. The excision row refuses the
+removed member and ZIPs if they are imported again. Editing a ZIP or removing
+text from an opaque member format is unsupported.
 
-The original container is material-only data, so its path can appear in both
-`imported` and `unrecognized`.
+The original ZIP is stored without being interpreted, so its path can appear
+in both `imported` and `unrecognized`.
 
-Staging holds metadata for all entries and private compressed stages for all
-member bodies. The complete acquisition uses a synchronous Writer turn; this
-does not promise constant memory, fixed disk use or fair scheduling. Parsing
-continues from retained member bytes afterward. This workflow covers ChatGPT
+Import holds metadata for all entries and private compressed files for all
+member bodies, and stores the whole ZIP in one writer turn. Parsing continues
+from the stored member bytes afterward. This workflow covers ChatGPT
 native file-ID matching and naming/library sidecars; other provider and
 filename-only matching remain open.

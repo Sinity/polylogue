@@ -11,7 +11,7 @@ started inside a queued job keeps that job occupied after the command exits.
 | --- | --- | --- | --- |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing | seconds |
 | Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
-| Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
+| Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit |
 | Changed packages | `cargo run -p xtask -- test --changed` | before pushing a focused change | depends on the change |
 | End-to-end scenarios | `cargo run -p xtask -- scenarios` | after daemon, CLI or MCP changes | about a minute warm |
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
@@ -25,10 +25,10 @@ started inside a queued job keeps that job occupied after the command exits.
   `cargo nextest run --workspace --features
   polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
   (configuration in `.config/nextest.toml`). Ordinary tests and every gated fault
-  control share one test build. Each test runs in its own process, all binaries
+  test share one test build. Each test runs in its own process, all binaries
   in parallel; a test still running after two minutes is terminated and fails.
-  The fault controls cover failure and recovery, including restore interruption
-  after canonical commit, vector cleanup and index replacement. Enabling
+  The fault tests cover failure and recovery, including a stop between an
+  excision's database commits and during a restore. Enabling
   `faults` adds an initially empty in-memory registry; only a test's explicit
   `polylogue_store::fault::arm` call activates a point in that process. The
   preceding strict Clippy step still compiles every ordinary target without
@@ -69,8 +69,8 @@ The dev profile builds dependencies at `opt-level = 2` and workspace crates
 at `opt-level = 1`. Tests spend most of their CPU in SQLite, JSON and the
 credential masker. Measured on 926 tests at load average 25-70: suite CPU fell
 from about 780 s to about 190 s and test execution from 63-76 s to 13-24 s.
-A cold build costs more (9 min instead of 3.5 min); an incremental test build
-after a one-line edit in `store` takes about 2 min under load.
+An incremental test build after a one-line edit in `store` takes about 2 min
+under load.
 
 `xtask` is built on `devkit` from
 [polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common).
