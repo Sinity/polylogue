@@ -18,7 +18,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
-    assert_eq!(index_pending(&conn).unwrap(), 2);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
     assert_eq!(
         count(
             &conn,
@@ -34,7 +34,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         1
     );
     assert_eq!(intern(&conn, "walrus", 1, None, false).unwrap(), id);
-    assert_eq!(index_pending(&conn).unwrap(), 0);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
 }
 
 #[test]
@@ -47,12 +47,12 @@ fn removal_and_rollback_do_not_leave_search_work() {
         intern(&tx, "rolled back", 1, None, false).unwrap();
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
-    assert_eq!(index_pending(&conn).unwrap(), 0);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     let tx = conn.transaction().unwrap();
     let id = intern(&tx, "removed", 1, None, false).unwrap();
     remove(&tx, id, 1).unwrap();
     tx.commit().unwrap();
-    assert_eq!(index_pending(&conn).unwrap(), 0);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 0);
 }
@@ -65,7 +65,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let mut prepared = HashMap::new();
     prepared.insert(*blake3::hash(b"walrus").as_bytes(), b"damaged".to_vec());
     intern(&conn, "walrus", 1, Some(&prepared), false).unwrap();
-    assert!(index_pending(&conn).is_err());
+    assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
 }
@@ -82,7 +82,7 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
         .unwrap();
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
-    assert!(index_pending(&conn).is_err());
+    assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM output_fts"), 0);
     assert_eq!(count(&conn, "SELECT rowid FROM text_fts"), first);
@@ -91,8 +91,8 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
         params![pack_text("narwhal").unwrap(), second],
     )
     .unwrap();
-    assert_eq!(index_pending(&conn).unwrap(), 2);
-    assert_eq!(index_pending(&conn).unwrap(), 0);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 2);
     assert_eq!(
         count(
@@ -116,7 +116,7 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
         if bulk {
             assert!(index_marked(&conn).is_err());
         } else {
-            assert!(index_pending(&conn).is_err());
+            assert!(index_pending(&conn, || ()).is_err());
             assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
         }
         assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
@@ -141,7 +141,10 @@ fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         if bulk {
             index_marked(&conn).unwrap();
         } else {
-            assert_eq!(index_pending(&conn).unwrap(), (SEARCH_ROWS + 5) as u64);
+            assert_eq!(
+                index_pending(&conn, || ()).unwrap(),
+                (SEARCH_ROWS + 5) as u64
+            );
         }
         assert_eq!(
             count(&conn, "SELECT count(*) FROM text_fts"),

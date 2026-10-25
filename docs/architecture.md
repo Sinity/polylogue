@@ -35,8 +35,8 @@ and the checks at open. One writer thread makes every change.
 
 | File | Holds |
 |---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; excisions; blob rows. Created at schema version 1; any other version refuses. |
-| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
+| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
@@ -126,12 +126,15 @@ nothing.
 
 The [read pool](../crates/store/src/read.rs) holds a bounded number of reader
 slots. A reader sees one read transaction on `index.db` with `archive.db`
-attached; it starts on first use, under the shared [write lock](../crates/store/src/write_lock.rs),
-so the two databases are a committed pair. Writers hold the write lock for
-each transaction. A thread that would wait for a slot while holding one gets
-an error instead of a deadlock. Closing the pool refuses new reads; started
-readers finish. Cache sizes are SQLite page-cache targets with mmap off, not a
-limit on process memory.
+attached; it starts on first use, under the shared
+[write lock](../crates/store/src/write_lock.rs), so the two databases are a
+committed pair. Writers hold the write lock only while the register commits,
+and through schema setup, an index replacement or an excision; index writes
+never take it. Outside an excision a reader waits at most for one register
+commit, however long the writer keeps writing. A thread that would wait for a
+slot while holding one gets an error instead of a deadlock. Closing the pool
+refuses new reads; started readers finish. Cache sizes are SQLite page-cache
+targets with mmap off, not a limit on process memory.
 
 Every query answer has a total order: its sort keys, then the unit's
 identity. A page's cursor holds the last row's values of those keys, with the

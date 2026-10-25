@@ -43,6 +43,11 @@ holds `archive.db` (what cannot be recomputed: inputs and their revisions,
 notes, excisions, settings, delivery records), `index.db` (everything parsed
 and derived, rebuilt from the stored inputs when it is deleted or its format
 changes), `embeddings.db` and `blobs/`.
+Opening an `archive.db` written by an older build applies the migrations it
+lacks, in one transaction. The daemon refuses an archive newer than itself,
+or one whose tables match no version it knows, and exits with code 78; a
+service manager should not restart on that code (systemd:
+`RestartPreventExitStatus=78`).
 
 ## Commands
 

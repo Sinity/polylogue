@@ -11,7 +11,7 @@ struct Fixture {
 impl Fixture {
     fn new(length: u64) -> Self {
         let conn = Connection::open_in_memory().unwrap();
-        crate::schema::create_archive(&conn).unwrap();
+        crate::schema::ensure_archive(&conn).unwrap();
         conn.execute(
             "INSERT INTO input(id,format) VALUES ('input','claude-code')",
             [],

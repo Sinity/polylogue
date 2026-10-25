@@ -11,6 +11,10 @@ use super::*;
 pub(super) struct Search {
     wake: Option<SyncSender<()>>,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Held by the writer while it handles queued work and by this thread
+    /// for each of its transactions, so the two index writers take turns
+    /// instead of one failing on SQLite's busy timeout.
+    pub(super) turn: Arc<Mutex<()>>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -19,12 +23,15 @@ impl Search {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(ready));
         let (wake, rx) = sync_channel::<()>(1);
         let seen = flag.clone();
+        let turn = Arc::new(Mutex::new(()));
+        let thread_turn = Arc::clone(&turn);
         let handle = std::thread::Builder::new()
             .name("polylogue-search".into())
-            .spawn(move || search_thread(&index_db, &seen, &rx))?;
+            .spawn(move || search_thread(&index_db, &seen, &rx, &thread_turn))?;
         Ok(Self {
             wake: Some(wake),
             ready: flag,
+            turn,
             handle: Some(handle),
         })
     }
@@ -58,6 +65,7 @@ pub(super) fn search_thread(
     index_db: &std::path::Path,
     ready: &std::sync::atomic::AtomicBool,
     wake: &Receiver<()>,
+    turn: &Mutex<()>,
 ) {
     let mut conn: Option<Connection> = None;
     loop {
@@ -78,7 +86,10 @@ pub(super) fn search_thread(
             }
         }
         if let Some(c) = &conn
-            && let Err(e) = crate::text_rows::index_pending(c)
+            && let Err(e) = crate::text_rows::index_pending(c, || {
+                turn.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            })
         {
             eprintln!("polylogue: search thread: {e}");
         }

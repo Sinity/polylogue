@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn background_only_groups_use_the_exclusion_lookup() {
     let archive_conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::schema::create_archive(&archive_conn).unwrap();
+    crate::schema::ensure_archive(&archive_conn).unwrap();
     archive_conn
         .execute(
             "INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('remove',?1,1,1)",

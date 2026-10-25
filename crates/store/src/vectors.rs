@@ -52,13 +52,6 @@ impl Vectors {
         } else {
             open_read(&archive.embeddings_db())?
         };
-        let found = crate::schema::version(&conn)?;
-        if found > 1 {
-            return Err(StoreError::Version {
-                database: "embeddings",
-                found,
-            });
-        }
         conn.pragma_update(None, "cache_size", -cache_kib)?;
         conn.pragma_update(None, "mmap_size", 0)?;
         if !writable {

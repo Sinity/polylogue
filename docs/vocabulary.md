@@ -9,6 +9,8 @@ the same change.
 
 - **archive**: `archive.db` and `blobs/`, what cannot be recomputed. The
   connection to it is the archive connection.
+- **migration**: a numbered SQL step that brings `archive.db` from one
+  version to the next; opening an older archive applies the ones it lacks.
 - **index**: `index.db`, everything parsed and derived. Rebuilt from the
   archive when deleted or when `INDEX_VERSION` changes. Each build is an
   **index generation**; the change feed's positions name one.
@@ -128,8 +130,8 @@ the same change.
 - **writer**: the one thread that writes the databases.
 - **read pool**, **reader**, **reader slot**: readers see one SQLite read
   transaction each; a slot bounds how many run at once.
-- **write lock**: what writers take so readers start from a consistent pair
-  of databases.
+- **write lock**: what a register commit holds so readers start from a
+  consistent pair of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
 - **mode**: `standalone`, or `primary` with Sinex holding the archive.
 - **register**: the archive's rows for inputs and for what people and agents

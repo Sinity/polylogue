@@ -213,8 +213,18 @@ fn every_register_row_is_sent_first_and_a_lost_copy_is_rebuilt_from_sinex() {
     ] {
         let _ = std::fs::remove_file(root.join(name));
     }
+    let (archive, lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+    assert_eq!(register(&archive), before);
+    drop(lock);
+    // A copy with another schema is rebuilt the same way.
+    rusqlite::Connection::open(root.join("sinex.db"))
+        .unwrap()
+        .execute_batch("CREATE TABLE synthetic_older(value)")
+        .unwrap();
     let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
     assert_eq!(register(&archive), before);
+    let register = crate::archive::open_read(&archive.archive_db()).unwrap();
+    assert!(crate::schema::same_schema(&register, &crate::schema::SINEX).unwrap());
 }
 
 #[test]

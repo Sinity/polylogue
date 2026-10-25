@@ -417,8 +417,9 @@ impl Reader<'_> {
                     self.state.set(ReadState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
-                // One statement reads both databases while the shared lock
-                // excludes writers, so the two reads see a committed pair.
+                // One statement starts the read on `index.db` (`main`), then on
+                // the register (`a`). The shared lock keeps register commits
+                // out of the gap between the two, so they see a committed pair.
                 conn.query_row(
                     "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM a.meta)",
                     [],

@@ -705,7 +705,7 @@ pub fn start(
     let settings = config.clone();
     let (archive, lock, mode, engine) = match mode {
         ArchiveMode::Standalone => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
+            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
             let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine))
         }
@@ -715,7 +715,7 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
+            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,

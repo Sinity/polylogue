@@ -27,7 +27,7 @@ fn begin(index: &Connection, boot: &str) -> Result<()> {
     let previous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
     index.pragma_update(None, "synchronous", previous.max(2))?;
     let result = (|| {
-        let tx = crate::write_lock::transaction(index, rusqlite::TransactionBehavior::Deferred)?;
+        let tx = index.unchecked_transaction()?;
         let value = |key| -> Result<Option<String>> {
             Ok(tx
                 .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))

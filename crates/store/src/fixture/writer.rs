@@ -198,49 +198,7 @@ impl WriterArchive {
     ) {
         let start = self.offset;
         self.offset += records + 1;
-        let mut counts = RecordCounts {
-            records,
-            ..RecordCounts::default()
-        };
-        for _ in 0..records {
-            counts.add("record", &RecordOutcome::Used);
-        }
-        let batch = Batch {
-            input: InputKey {
-                id: input.to_owned(),
-                format: format.into(),
-                arrival_rank: 0,
-            },
-            change: if start == 0 {
-                crate::Change::First
-            } else {
-                crate::Change::Appended { from: start }
-            },
-            observation: Some(Observation {
-                machine: "m".into(),
-                host: "h".into(),
-                path: path.into(),
-                facts: None,
-                seen_at_ms: 1,
-                import: None,
-            }),
-            continues: false,
-            new_blob: None,
-            blobs: vec![],
-            length: self.offset,
-            release: Default::default(),
-            parse: vec![ParseStep {
-                order_from: None,
-                reset: start == 0,
-                repeats_whole_conversations: false,
-                output,
-                counts,
-                start,
-                parsed_upto: self.offset,
-                at_end: true,
-                prepared: Default::default(),
-            }],
-        };
+        let batch = step(input, format, path, output, start, records);
         self.writer.send(batch).expect("send the batch");
         self.writer.flush().expect("flush");
     }
@@ -255,5 +213,61 @@ impl WriterArchive {
             "SELECT live_task, live_task_evidence FROM session WHERE id = 'claude-code:{session}'"
         ))[0]
             .clone()
+    }
+}
+
+/// One appended step of `input` (in `format`, found at `path`): `records`
+/// records of one byte each from offset `start`, parsed into `output`.
+pub fn step(
+    input: &str,
+    format: &str,
+    path: &str,
+    output: Output,
+    start: u64,
+    records: u64,
+) -> Batch {
+    let length = start + records + 1;
+    let mut counts = RecordCounts {
+        records,
+        ..RecordCounts::default()
+    };
+    for _ in 0..records {
+        counts.add("record", &RecordOutcome::Used);
+    }
+    Batch {
+        input: InputKey {
+            id: input.to_owned(),
+            format: format.into(),
+            arrival_rank: 0,
+        },
+        change: if start == 0 {
+            crate::Change::First
+        } else {
+            crate::Change::Appended { from: start }
+        },
+        observation: Some(Observation {
+            machine: "m".into(),
+            host: "h".into(),
+            path: path.into(),
+            facts: None,
+            seen_at_ms: 1,
+            import: None,
+        }),
+        continues: false,
+        new_blob: None,
+        blobs: vec![],
+        length,
+        release: Default::default(),
+        parse: vec![ParseStep {
+            order_from: None,
+            reset: start == 0,
+            repeats_whole_conversations: false,
+            output,
+            counts,
+            start,
+            parsed_upto: length,
+            at_end: true,
+            prepared: Default::default(),
+        }],
     }
 }

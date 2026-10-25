@@ -83,11 +83,20 @@ fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
 }
 
 #[test]
-fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
+fn an_index_of_another_version_or_schema_is_replaced_and_the_archive_kept() {
+    for change in [
+        "PRAGMA user_version = 26",
+        "CREATE TABLE synthetic_older(value)",
+    ] {
+        replaced_index_keeps_the_archive(change);
+    }
+}
+
+fn replaced_index_keeps_the_archive(change: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index.pragma_update(None, "user_version", 26).unwrap();
+    index.execute_batch(change).unwrap();
     index
         .execute(
             "INSERT INTO meta VALUES ('previous-index-marker', 'present')",
@@ -103,6 +112,10 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+    assert!(
+        schema::same_schema(&index, &[schema::INDEX]).unwrap(),
+        "{change}"
+    );
     assert_eq!(
         index
             .query_row(
@@ -122,6 +135,49 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
             .unwrap(),
         value
     );
+}
+
+#[test]
+fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
+    let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
+    // The second as an archive written by a build that declared the current
+    // version with other tables.
+    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE excised", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        drop(lock);
+        let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+        conn.execute_batch(change).unwrap();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(archive.archive_db()).unwrap();
+        let error = Archive::open_or_create(dir.path()).unwrap_err();
+        let refused = if newer {
+            matches!(
+                error,
+                StoreError::NewerSchema {
+                    database: "archive",
+                    ..
+                }
+            )
+        } else {
+            matches!(
+                error,
+                StoreError::NoMigration {
+                    database: "archive",
+                    ..
+                }
+            )
+        };
+        assert!(refused, "{change}: {error}");
+        assert_eq!(std::fs::read(archive.archive_db()).unwrap(), before);
+        // The refusal released the lock: a second try gets the same answer.
+        assert_eq!(
+            Archive::open_or_create(dir.path()).unwrap_err().to_string(),
+            error.to_string()
+        );
+    }
 }
 
 #[test]
