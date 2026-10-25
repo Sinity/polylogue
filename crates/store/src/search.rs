@@ -139,7 +139,7 @@ impl Reader<'_> {
     fn snippet_hit(&self, fts: &str, within: Within) -> Result<Option<Hit>> {
         let (scope, pk) = match within {
             Within::Session(pk) => (
-                "m.inherited_from IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
+                "m.inherited_from IS NULL AND m.duplicate_of IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
                  AND m.session_pk IN \
                  (WITH RECURSIVE tr(pk) AS (SELECT ?2 UNION SELECT l.child_pk FROM link l \
                   JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \

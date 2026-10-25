@@ -84,6 +84,7 @@ CREATE TABLE message (
   order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
   seq               INTEGER NOT NULL,       -- byte offset of the first record in that input
+  record_position   INTEGER NOT NULL DEFAULT 0, -- its place among the messages that record holds
   route_rank        INTEGER NOT NULL DEFAULT 0, -- the preferred version's route: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
@@ -115,6 +116,9 @@ CREATE TABLE message (
                                             --   always written, no default
   inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
   copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
+  duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another route's message the
+                                            --   session shows for the same turn (no shared turn ID, matched by prompt text)
+  duplicate_reason  TEXT,                   --   and why that route's message is the one shown
   from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
   from_name         TEXT,                   --   and the sender's name as the provider wrote it
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
@@ -137,7 +141,7 @@ CREATE TABLE message (
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
-CREATE INDEX message_session ON message(session_pk, order_input_id, seq);   -- reading in order; [last:N]
+CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_unseen  ON message(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;

@@ -134,7 +134,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          JOIN message xm ON xm.pk = xb.message_pk \
-         WHERE {}{} AND xm.inherited_from IS NULL \
+         WHERE {}{} AND xm.inherited_from IS NULL AND xm.duplicate_of IS NULL \
          AND COALESCE(xm.on_active_path, 1) = 1 \
          AND xm.session_pk IN ({})",
         h.block_kind("xb"),
@@ -332,6 +332,11 @@ const MESSAGE_DEFAULTS: &[Default] = &[
         true,
     ),
     d(
+        Expr::Template("{m}.duplicate_of IS NULL"),
+        &["duplicate"],
+        true,
+    ),
+    d(
         Expr::Template("COALESCE({m}.on_active_path, 1) = 1"),
         &["active"],
         true,
@@ -343,8 +348,8 @@ const MESSAGE_DEFAULTS: &[Default] = &[
 /// The session's next counted tool call after `{t}`, in session order.
 pub const NEXT_CALL: &str = "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
      JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
-     AND (qm.order_input_id, qm.seq, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.id, {cb}.idx) \
-     ORDER BY qm.order_input_id, qm.seq, qm.id, qb.idx LIMIT 1";
+     AND (qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx) > ({m}.order_input_id, {m}.seq, {m}.record_position, {m}.id, {cb}.idx) \
+     ORDER BY qm.order_input_id, qm.seq, qm.record_position, qm.id, qb.idx LIMIT 1";
 
 const MESSAGE_RELATIONS: &[Relation] = &[rel("session", Unit::Sessions, Via::Same)];
 
@@ -575,6 +580,11 @@ pub static UNITS: &[UnitSpec] = &[
             d(
                 Expr::Template("{m}.inherited_from IS NULL"),
                 &["inherited"],
+                true,
+            ),
+            d(
+                Expr::Template("{m}.duplicate_of IS NULL"),
+                &["duplicate"],
                 true,
             ),
             d(
@@ -1051,19 +1061,20 @@ const TURNS: &str = "(SELECT g.*, \
        sum(tm.cost_nusd) AS cost_nusd \
      FROM (SELECT o.*, \
          sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id \
+           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.id) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.written_by, m.prompt_kind, \
+         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id) AS ord \
+       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.written_by, m.prompt_kind, \
              m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.order_input_id, m.seq, m.id), 0) AS prev_hp, \
+               ORDER BY m.order_input_id, m.seq, m.record_position, m.id), 0) AS prev_hp, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
            FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
+             AND m.duplicate_of IS NULL \
              AND m.written_by IN ('human', 'model')) o) tm \
      GROUP BY tm.session_pk, tm.turn) g)";
 

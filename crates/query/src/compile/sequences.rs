@@ -43,9 +43,10 @@ impl<'a> Compiler<'a> {
         if !self.ctes.iter().any(|c| c.starts_with(ord_cte)) {
             self.ctes.push(format!(
                 "{ord_cte} AS (SELECT t.pk AS pk, t.session_pk AS session_pk, t.at AS at, \
-                 row_number() OVER (PARTITION BY t.session_pk ORDER BY m.order_input_id, m.seq, m.id, cb.idx) AS n \
+                 row_number() OVER (PARTITION BY t.session_pk ORDER BY m.order_input_id, m.seq, m.record_position, m.id, cb.idx) AS n \
                  FROM tool_call t JOIN block cb ON cb.pk = t.call_block_pk JOIN message m ON m.pk = cb.message_pk \
-                 WHERE m.inherited_from IS NULL AND COALESCE(m.on_active_path, 1) = 1 AND {})",
+                 WHERE m.inherited_from IS NULL AND m.duplicate_of IS NULL \
+                 AND COALESCE(m.on_active_path, 1) = 1 AND {})",
                 fields::counted_call("t")
             ));
         }

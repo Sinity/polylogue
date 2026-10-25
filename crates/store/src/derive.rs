@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 
 mod active_path;
 mod cost;
+mod duplicates;
 mod repository;
 mod session;
 mod session_survival;
@@ -66,6 +67,7 @@ impl Version {
 
 /// Every derivation, in an order where each comes after what it reads.
 const ALL: &[Derivation] = &[
+    duplicates::DERIVATION,
     session::DERIVATION,
     tool_calls::DERIVATION,
     active_path::DERIVATION,

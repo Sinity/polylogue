@@ -181,7 +181,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
             }
             if !changed {
                 let order = if logical { "ASC" } else { "DESC" };
-                conn.execute_batch(&format!("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,id {order})")).unwrap();
+                conn.execute_batch(&format!("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id {order})")).unwrap();
                 changed = true;
             }
         }
