@@ -421,6 +421,6 @@ impl Fixture {
             refused["sessions"] = sessions.clone();
         }
         self.notes.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES (?1,?2,?3,?4,?5,?5)", params![id,scope,refused.to_string(),messages.to_string(),self.commit_seq])?;
-        crate::excise::recovery::acknowledge(&self.notes, &self.index)
+        crate::excise::mark_applied(&self.notes, &self.index)
     }
 }

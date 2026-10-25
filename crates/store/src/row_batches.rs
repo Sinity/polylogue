@@ -87,7 +87,6 @@ const TABLES: &[&str] = &[
     "note_relation",
     "excision",
     "excision_document",
-    "vector_deletion_policy",
     "setting",
     "delivery",
     "delivery_event",
@@ -368,11 +367,6 @@ impl Snapshot {
                 add(
                     "excision_document",
                     "SELECT * FROM excision_document WHERE excision_id = ?1 ORDER BY document_id",
-                    &key,
-                )?;
-                add(
-                    "vector_deletion_policy",
-                    "SELECT * FROM vector_deletion_policy WHERE excision_id = ?1",
                     &key,
                 )?;
                 add("observation", &format!("{excised} ORDER BY rowid"), &key)?;

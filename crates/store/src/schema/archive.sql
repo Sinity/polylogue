@@ -305,73 +305,12 @@ CREATE TABLE delivery_event (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
 
-INSERT INTO meta(key,value) VALUES ('excision_revision','');
-INSERT INTO meta(key,value) VALUES ('excision_version','0');
-CREATE TRIGGER excision_revision_insert AFTER INSERT ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER excision_revision_update AFTER UPDATE ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER excision_revision_delete AFTER DELETE ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-
--- Exact local cleanup intent survives separate archive/index/vector commits.
-CREATE TABLE pending_vector_excision (
-    text_hash BLOB PRIMARY KEY CHECK(length(text_hash)=32),
-    excision_id TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-
--- Only exact deletion intents of committed local excisions are replayed.
-CREATE TABLE pending_blob_excision (
-    hash BLOB PRIMARY KEY CHECK(length(hash)=32),
-    excision_id TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE vector_deletion_policy (
- excision_id TEXT PRIMARY KEY REFERENCES excision(id),
- version INTEGER NOT NULL,
- hashes_json TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-INSERT INTO meta(key,value) VALUES ('vector_policy_revision','');
-CREATE TRIGGER vector_policy_insert AFTER INSERT ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER vector_policy_update AFTER UPDATE ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER vector_policy_delete AFTER DELETE ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-
 -- Document excisions: the documents each one selected.
 CREATE TABLE excision_document (
   excision_id TEXT NOT NULL REFERENCES excision(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL,
   PRIMARY KEY(excision_id,document_id)
 ) STRICT, WITHOUT ROWID;
-CREATE TRIGGER document_policy_insert AFTER INSERT ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER document_policy_update AFTER UPDATE ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER document_policy_delete AFTER DELETE ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
 
 -- Decoded bytes belong to their actual retained source envelope, separately
 -- from raw byte extents. A late extraction is its own row batch.

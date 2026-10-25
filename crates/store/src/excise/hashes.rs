@@ -1,8 +1,6 @@
-//! Removed texts authorize vector exclusion; candidate blobs still need ownership checks.
-use crate::{Result, StoreError};
+//! The texts an excision removed, whose vectors go, and the blobs it may free.
+use crate::Result;
 use rusqlite::Connection;
-use serde::Serializer as _;
-use serde::ser::SerializeSeq;
 
 pub(super) struct RemovalHashes<'a>(&'a Connection);
 
@@ -62,18 +60,6 @@ impl<'a> RemovalHashes<'a> {
             .query_row("SELECT count(*) FROM temp.excision_removed_text", [], |r| {
                 r.get::<_, i64>(0)
             })? as u64)
-    }
-
-    pub(super) fn text_policy_json(&self) -> Result<String> {
-        let mut bytes = Vec::new();
-        let mut serializer = serde_json::Serializer::new(&mut bytes);
-        let mut sequence = serializer.serialize_seq(None)?;
-        self.visit_texts(|hash| {
-            sequence.serialize_element(&crate::encoding::hex(hash))?;
-            Ok(())
-        })?;
-        sequence.end()?;
-        String::from_utf8(bytes).map_err(|error| StoreError::Invalid(error.to_string()))
     }
 
     pub(super) fn finish(self) -> Result<()> {

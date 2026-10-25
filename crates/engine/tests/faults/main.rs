@@ -131,7 +131,6 @@ mod exclusion_cache;
 
 mod blob_cleanup;
 
-mod index_cleanup;
 
 mod tool_exports;
 

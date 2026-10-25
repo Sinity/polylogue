@@ -26,8 +26,6 @@ pub struct Vector {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct VectorStatus {
     pub keys: Vec<KeyStatus>,
-    /// Excisions predating exact deletion policies. Their unknown hashes are preserved.
-    pub legacy_excisions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -44,7 +42,7 @@ pub struct KeyStatus {
 pub struct Vectors {
     conn: Connection,
     writable: bool,
-    revision: crate::excise::recovery::Revision,
+    index: std::path::PathBuf,
 }
 
 impl Vectors {
@@ -52,7 +50,6 @@ impl Vectors {
         archive: &Archive,
         cache_kib: i64,
         writable: bool,
-        revision: crate::excise::recovery::Revision,
     ) -> Result<Self> {
         let conn = if writable {
             open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
@@ -66,23 +63,15 @@ impl Vectors {
                 found,
             });
         }
-        let metadata_kib = if writable { cache_kib / 2 } else { 0 };
-        conn.pragma_update(None, "cache_size", -(cache_kib - metadata_kib))?;
+        conn.pragma_update(None, "cache_size", -cache_kib)?;
         conn.pragma_update(None, "mmap_size", 0)?;
-        {
-            let uri = format!("file:{}?mode=ro", archive.archive_db().display());
-            conn.execute("ATTACH DATABASE ?1 AS canonical", [uri])?;
-            conn.pragma_update(Some("canonical"), "cache_size", -metadata_kib)?;
-            conn.pragma_update(Some("canonical"), "mmap_size", 0)?;
-        }
         if !writable {
             conn.execute_batch("BEGIN")?;
         }
-        crate::excise::vector_cleanup::check_writer(&conn, &revision)?;
         Ok(Self {
             conn,
             writable,
-            revision,
+            index: archive.index_db(),
         })
     }
 
@@ -101,7 +90,6 @@ impl Vectors {
         } else {
             None
         };
-        crate::excise::vector_policy::check(&self.conn)?;
         Ok(snapshot)
     }
 
@@ -122,12 +110,59 @@ impl Vectors {
         Ok(out)
     }
 
-    /// Stores vectors in one transaction.
+    /// Runs `write` under the archive's write lock, which an excision holds
+    /// from its embeddings commit to its index commit, with the text hashes
+    /// the current index still holds, and refuses while the index misses an
+    /// excision: a build that read a text before it was excised cannot store
+    /// a vector for it afterwards.
+    fn while_texts_exist<T>(
+        &self,
+        hashes: impl Iterator<Item = Vec<u8>>,
+        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
+    ) -> Result<T> {
+        Self::while_texts_exist_at(&self.index, hashes, write)
+    }
+
+    fn while_texts_exist_at<T>(
+        index: &std::path::Path,
+        hashes: impl Iterator<Item = Vec<u8>>,
+        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
+    ) -> Result<T> {
+        let archive = open_read(&index.with_file_name("archive.db"))?;
+        let index = open_read(index)?;
+        let _lock = crate::publication::write(&index)?;
+        if crate::excise::index_behind(&archive, &index)? {
+            return Err(StoreError::Invalid(
+                "an excision has not reached the index yet; reopen the archive".into(),
+            ));
+        }
+        let mut exists = index.prepare("SELECT EXISTS(SELECT 1 FROM text WHERE hash = ?1)")?;
+        let mut present = HashSet::new();
+        for hash in hashes {
+            if exists.query_row([&hash], |r| r.get::<_, bool>(0))? {
+                present.insert(hash);
+            }
+        }
+        write(&present)
+    }
+
+    /// Stores vectors in one transaction, except for texts no longer in the
+    /// index.
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        crate::excise::vector_cleanup::check_writer(&tx, &self.revision)?;
+        let conn = &mut self.conn;
+        let index = self.index.clone();
+        Self::while_texts_exist_at(&index, vectors.iter().map(|v| v.text_hash.clone()), |present| {
+            Self::insert(conn, key, vectors, present)
+        })
+    }
+
+    fn insert(
+        conn: &mut Connection,
+        key: &str,
+        vectors: &[Vector],
+        present: &HashSet<Vec<u8>>,
+    ) -> Result<()> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
@@ -137,7 +172,7 @@ impl Vectors {
                      embedded_at = excluded.embedded_at",
             )?;
             let now = now_ms();
-            for v in vectors {
+            for v in vectors.iter().filter(|v| present.contains(&v.text_hash)) {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
                 stmt.execute(params![
                     v.text_hash,
@@ -155,11 +190,19 @@ impl Vectors {
 
     /// A text the provider permanently rejected, with its error as given.
     pub fn fail(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
+        self.while_texts_exist(std::iter::once(text_hash.to_vec()), |present| {
+            if present.is_empty() {
+                return Ok(());
+            }
+            self.record_failure(key, text_hash, error)
+        })
+    }
+
+    fn record_failure(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        crate::excise::vector_cleanup::check_writer(&tx, &self.revision)?;
         tx.execute(
             "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(text_hash, model) DO UPDATE SET error = excluded.error,
@@ -236,17 +279,7 @@ impl Vectors {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let has_policy:bool=self.conn.query_row("SELECT EXISTS(SELECT 1 FROM canonical.sqlite_master WHERE type='table' AND name='vector_deletion_policy')",[],|r|r.get(0))?;
-        let sql = if has_policy {
-            "SELECT count(*) FROM canonical.excision x WHERE NOT EXISTS(SELECT 1 FROM canonical.vector_deletion_policy p WHERE p.excision_id=x.id)"
-        } else {
-            "SELECT count(*) FROM canonical.excision"
-        };
-        let legacy_excisions = self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64;
-        Ok(VectorStatus {
-            keys,
-            legacy_excisions,
-        })
+        Ok(VectorStatus { keys })
     }
 }
 

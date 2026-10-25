@@ -5,12 +5,8 @@ use polylogue_store::Archive;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[test]
-fn restart_removes_only_the_local_files_of_a_committed_excision() {
-    for point in [
-        "excision.after_vector_commit",
-        "excision.before_blob_delete",
-        "excision.after_blob_delete",
-    ] {
+fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
+    for point in ["excision.after_index_commit", "blob.before_delete"] {
         fault::clear();
         let w = ClaudeHome::new();
         let victim = claude_user(
@@ -39,7 +35,7 @@ fn restart_removes_only_the_local_files_of_a_committed_excision() {
             assert!(local.contains(&victim_hash));
             assert!(local.contains(&kept_hash));
             assert_eq!(external.put(victim.as_bytes(), 1).unwrap(), victim_hash);
-            let subject = if point == "excision.after_vector_commit" {
+            let subject = if point == "excision.after_index_commit" {
                 "interrupted-files".to_owned()
             } else {
                 victim_hash.hex()
@@ -54,29 +50,14 @@ fn restart_removes_only_the_local_files_of_a_committed_excision() {
                 })
                 .is_err()
             );
-            assert_eq!(
-                local.contains(&victim_hash),
-                point != "excision.after_blob_delete"
-            );
+            assert!(local.contains(&victim_hash));
             assert!(matches!(
                 e.writer().unwrap().derive(),
                 Err(polylogue_store::StoreError::WriterGone)
             ));
-            assert!(matches!(
-                w.reads().reader().unwrap().status(),
-                Err(polylogue_store::StoreError::ExcisionPending)
-            ));
         }
         fault::clear();
-        fault::arm(
-            "excision.after_blob_delete",
-            &victim_hash.hex(),
-            Action::Fail,
-            0,
-            1,
-        );
-        assert!(Archive::open_or_create(&w.root).is_err());
-        fault::clear();
+        drop(Archive::open_or_create(&w.root).unwrap());
         assert!(!local.contains(&victim_hash));
         for _ in 0..2 {
             let (mut e, _lock) = w.engine(64 << 20);

@@ -85,16 +85,10 @@ pub enum StoreError {
     ReadPoolNested,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
-    #[error("excision cleanup is incomplete; reopen the archive before reading or writing")]
-    ExcisionPending,
-    #[error("blob {0} is still referenced; excision cleanup requires reconciliation")]
+    #[error("blob {0} is still in use and cannot be deleted")]
     ExcisionBlobReferenced(polylogue_model::BlobHash),
-    #[error("excision commit did not complete cleanly; reopen the archive before writing: {0}")]
+    #[error("the excision stopped part way; reopen the archive to finish it: {0}")]
     ExcisionInterrupted(#[source] Box<StoreError>),
-    #[error(
-        "archive excision history conflicts with the index (archive revision {archive}, index revision {index}); preserve both for reconciliation"
-    )]
-    ExcisionConflict { archive: u64, index: u64 },
     #[error("excision is not supported while Sinex holds this archive (primary mode)")]
     ExcisionOnSinex,
     #[error("request {0} was already used for different content")]

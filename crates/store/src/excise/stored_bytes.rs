@@ -112,11 +112,9 @@ pub(super) fn find_all(hay: &[u8], needles: &[Vec<u8>]) -> Vec<(usize, usize)> {
     out
 }
 
-/// A blob replaced by an overwritten copy: the old hash, and its file to
-/// delete when it was one.
+/// A blob replaced by an overwritten copy, marked for deletion.
 pub(super) struct Gone {
     pub(super) hash: [u8; 32],
-    pub(super) file: Option<BlobHash>,
     pub(super) extracted: Vec<BlobHash>,
 }
 
@@ -128,7 +126,6 @@ fn record_replacement(
     if piece.hash == *old {
         return Ok(None);
     }
-    super::blob_cleanup::require_no_delta_base(t.archive, old)?;
     let sources = crate::retention::extracted::candidates(t.archive, None, Some(old))?;
     record_piece(t, &piece)?;
     t.archive.execute(
@@ -136,21 +133,9 @@ fn record_replacement(
         params![&old.0[..], &piece.hash.0[..]],
     )?;
     let extracted = crate::retention::extracted::invalidate(t.archive, t.store, sources)?;
-    let old_place: Option<String> = t
-        .archive
-        .query_row(
-            "SELECT place FROM blob WHERE hash = ?1",
-            [&old.0[..]],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let deleted = t.archive.execute(
-        "DELETE FROM blob WHERE hash=?1 AND NOT EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)",
-        [&old.0[..]],
-    )?;
+    crate::blobs::mark_for_deletion(t.archive, old)?;
     Ok(Some(Gone {
         hash: old.0,
-        file: (deleted > 0 && old_place.as_deref() == Some("file")).then_some(*old),
         extracted,
     }))
 }
@@ -204,9 +189,6 @@ pub(super) fn overwrite(
             refused
                 .blobs
                 .extend(gone.extracted.iter().map(|hash| hex(&hash.0)));
-            if let Some(hash) = gone.file {
-                blob_cleanup::record(t.archive, &req.id, &hash)?;
-            }
         }
         Ok(())
     })?;
@@ -296,9 +278,6 @@ pub(super) fn blank_document(
             refused
                 .blobs
                 .extend(gone.extracted.iter().map(|hash| hex(&hash.0)));
-            if let Some(hash) = gone.file {
-                blob_cleanup::record(t.archive, &req.id, &hash)?;
-            }
         }
         Ok(())
     })?;

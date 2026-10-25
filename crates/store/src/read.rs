@@ -64,7 +64,6 @@ pub struct Reader<'a> {
 enum SnapshotState {
     Deferred,
     Ready,
-    Refused,
     IndexReplaced,
 }
 type IndexIdentity = (u64, u64);
@@ -361,7 +360,6 @@ impl Reader<'_> {
                 &self.pool.archive,
                 self.pool.cache_kib,
                 writable,
-                crate::excise::recovery::current(self.conn()?)?,
             )?);
         }
         Ok(std::cell::RefMut::map(vectors, |v| {
@@ -376,7 +374,6 @@ impl Reader<'_> {
             .expect("reader holds a connection until dropped");
         match self.snapshot.get() {
             SnapshotState::Ready => {}
-            SnapshotState::Refused => return Err(StoreError::ExcisionPending),
             SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             SnapshotState::Deferred => {
                 // Unused reservations hold no snapshot or publication lock.
@@ -417,12 +414,10 @@ impl Reader<'_> {
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
-                self.snapshot.set(SnapshotState::Refused);
                 if Some(index_identity(&self.pool.archive)?) != self.index_identity {
                     self.snapshot.set(SnapshotState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
-                crate::excise::recovery::check_snapshot(conn)?;
                 self.snapshot.set(SnapshotState::Ready);
             }
         }

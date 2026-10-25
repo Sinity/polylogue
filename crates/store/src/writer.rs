@@ -213,13 +213,6 @@ impl Writer {
             Vec::new()
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
-        if crate::excise::recovery::current(&archive_conn)?
-            != crate::excise::recovery::current(&index)?
-            || crate::excise::vector_cleanup::pending(&archive_conn)?
-            || crate::excise::blob_cleanup::pending(&archive_conn)?
-        {
-            return Err(StoreError::ExcisionPending);
-        }
         let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
@@ -636,29 +629,27 @@ impl Inner {
         Ok(())
     }
 
-    /// One transaction per database; a dry run rolls all of them back.
-    /// The archive commits first, followed by the derived stores. Local blob
-    /// cleanup follows those commits; external backing roots stay read-only.
+    /// One transaction per database, committed in one order: embeddings,
+    /// then the archive, then the index; a dry run rolls all of them back.
+    /// Deleting vectors first only costs a later purchase if the archive's
+    /// commit then fails. Once the archive commits, the excision is in force:
+    /// an index that missed it is rebuilt when the archive is next opened,
+    /// and blob files marked for deletion go after the commits, or when the
+    /// archive is next opened.
     fn write_excision(
         &mut self,
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
-        if crate::excise::recovery::current(&self.archive)?
-            != crate::excise::recovery::current(&self.index)?
-        {
-            return Err(StoreError::ExcisionPending);
-        }
-        crate::archive::retired::validate(&self.location, &self.archive)?;
-        // Persist removal receipts with WAL semantics even during a first build.
+        // An excision is written with WAL syncs even during a first build.
         if !request.dry_run {
             self.settle()?;
         }
         if request.dry_run {
             return self.write_excision_rows(request, store);
         }
-        // Canonical replacement rows and cleanup intent must be durable before
-        // removing old files. Ordinary ingestion keeps its existing sync mode.
+        // The archive's rows must be durable before blob files are deleted.
+        // Ordinary ingestion keeps its existing sync mode.
         let previous: i64 = self
             .archive
             .pragma_query_value(None, "synchronous", |r| r.get(0))?;
@@ -699,12 +690,6 @@ impl Inner {
             seq,
             counter,
         };
-        // A restored embeddings file may lack older receipts even though the
-        // canonical/index revisions agree. Establish the prior policy prefix
-        // before acknowledging this operation's newer watermark.
-        if let Some(e) = &embeddings {
-            crate::excise::vector_policy::reconcile(e, &atx)?;
-        }
         let done = match crate::excise::apply(&txs, request) {
             Ok(r) => r,
             Err(e) => {
@@ -723,25 +708,20 @@ impl Inner {
             return Ok(done);
         }
         let refused = crate::excise::Refused::load(&atx)?;
-        // Once COMMIT is attempted its outcome may require reconciliation.
-        // Stop this writer on error; later requests must not acknowledge old rows.
+        // A failed commit leaves the databases apart until the archive is
+        // reopened, so this writer stops.
         let committed: Result<()> = (|| {
-            atx.commit()?;
-            crate::fault::check("excision.between_commits", &request.id)?;
-            itx.commit()?;
-            crate::fault::check("excision.after_index_commit", &request.id)?;
-            drop(publication);
             if let Some(e) = &embeddings {
                 e.execute_batch("COMMIT")?;
             }
-            Ok(())
+            crate::fault::check("excision.after_embeddings_commit", &request.id)?;
+            atx.commit()?;
+            crate::fault::check("excision.after_archive_commit", &request.id)?;
+            itx.commit()?;
+            drop(publication);
+            crate::fault::check("excision.after_index_commit", &request.id)
         })()
-        .and_then(|()| {
-            crate::fault::check("excision.after_vector_commit", &request.id)?;
-            crate::archive::retired::remove(&self.location, &self.archive)?;
-            crate::excise::vector_cleanup::clear(&self.archive, &request.id)?;
-            crate::excise::blob_cleanup::recover(&self.location, &self.archive)
-        });
+        .and_then(|()| crate::blobs::delete_marked(&self.archive, store).map(drop));
         if let Err(error) = committed {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
