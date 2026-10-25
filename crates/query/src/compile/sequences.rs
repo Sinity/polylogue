@@ -142,18 +142,21 @@ impl<'a> Compiler<'a> {
             select.push(format!("{e} AS {n}"));
             columns.push((n.clone(), *k));
         }
+        let (hidden, mut order) = hidden_order(&[owner_order, child_order].concat(), "_m");
+        select.extend(hidden);
+        order.push(OrderKey::ascending("_pk"));
         let sql = format!(
-            "SELECT {} FROM {}, {} WHERE {} ORDER BY {}, {}",
+            "SELECT {} FROM {}, {} WHERE {} ORDER BY {}",
             select.join(", "),
             base_from(owner.unit, &owner.a),
             base_from(unit, &child.a),
             and_all(&w),
-            owner_order.join(", "),
-            child_order.join(", ")
+            order_by(&order)
         );
         Ok(MatchRel {
             sql,
             columns,
+            order,
             recursive: false,
         })
     }
@@ -283,6 +286,7 @@ impl<'a> Compiler<'a> {
             "g._pk AS _pk".to_owned(),
             "(SELECT ss.id FROM session ss WHERE ss.pk = g.session_pk) AS session".to_owned(),
             "g.mt AS match".to_owned(),
+            "g.session_pk AS _m0".to_owned(),
         ];
         let mut columns = vec![
             ("session".to_owned(), ColKind::Text),
@@ -325,6 +329,7 @@ impl<'a> Compiler<'a> {
         Ok(MatchRel {
             sql,
             columns,
+            order: vec![OrderKey::ascending("_m0"), OrderKey::ascending("match")],
             recursive: true,
         })
     }

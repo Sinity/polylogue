@@ -11,7 +11,7 @@ fn page(home: &ClaudeHome, cursor: Option<&str>) -> Result<Value, Failure> {
 }
 
 #[test]
-fn an_insert_before_the_page_position_refuses_instead_of_repeating_a_row() {
+fn writes_between_pages_neither_refuse_nor_repeat_rows() {
     let home = ClaudeHome::new();
     for session in ["a", "b", "c"] {
         home.append(
@@ -26,35 +26,61 @@ fn an_insert_before_the_page_position_refuses_instead_of_repeating_a_row() {
     assert_eq!(first["rows"][0]["id"], "claude-code:a");
     assert_eq!(first["rows"][1]["id"], "claude-code:b");
     let cursor = first["next"].as_str().unwrap();
+    // One session sorts before the cursor, one after it.
     home.append("aa.jsonl", &claude_user("aa1", "aa", "new earlier prompt"));
+    home.append("d.jsonl", &claude_user("d1", "d", "new later prompt"));
     assert!(engine.converge().unwrap().errors.is_empty());
-    let error = page(&home, Some(cursor)).unwrap_err();
-    assert_eq!(error.kind, "stale_cursor");
+    let second = page(&home, Some(cursor)).unwrap();
+    assert_eq!(second["count"], 5);
+    let ids: Vec<&str> = second["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["claude-code:c", "claude-code:d"]);
+    assert!(second["next"].is_null());
 }
 
 #[test]
-fn stable_pages_allow_new_readers_new_page_sizes_and_the_original_clock() {
+fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
     let w = morrow();
-    let query = "kind:* | sort by id";
-    let mut request = ask(query);
-    request.page_size = Some(2);
-    let first = run_q(&w, request).unwrap();
-    let count = first["count"].as_u64().unwrap();
-    let mut rows = first["rows"].as_array().unwrap().clone();
-    let mut cursor = first["next"].as_str().map(str::to_owned);
-    while let Some(next) = cursor {
+    for query in [
+        "kind:* | sort by id",
+        "kind:*",
+        "messages | sort by text desc",
+        "messages | distinct",
+        "tool_calls | group by action | count",
+        "sessions where exists tool_call(action:shell) | matches",
+        "sessions where exists tool_call(action:shell) | matches | sort by command desc",
+        "sessions where seq(action:shell -> action:shell) | matches",
+    ] {
         let mut request = ask(query);
-        request.cursor = Some(&next);
-        request.page_size = Some(u64::MAX);
-        request.now += DAY;
-        let page = run_q(&w, request).unwrap();
-        assert_eq!(page["count"], count);
-        assert_eq!(page["resolved"], first["resolved"]);
-        rows.extend(page["rows"].as_array().unwrap().iter().cloned());
-        cursor = page["next"].as_str().map(str::to_owned);
+        request.page_size = Some(2);
+        let first = run_q(&w, request).unwrap();
+        let count = first["count"].as_u64().unwrap();
+        let mut rows = first["rows"].as_array().unwrap().clone();
+        let mut cursor = first["next"].as_str().map(str::to_owned);
+        let mut size = 1;
+        while let Some(next) = cursor {
+            let mut request = ask(query);
+            request.cursor = Some(&next);
+            request.page_size = Some(size);
+            size += 1;
+            request.now += DAY;
+            let page = run_q(&w, request).unwrap();
+            assert_eq!(page["count"], count, "{query}");
+            assert_eq!(page["resolved"], first["resolved"], "{query}");
+            rows.extend(page["rows"].as_array().unwrap().iter().cloned());
+            cursor = page["next"].as_str().map(str::to_owned);
+        }
+        assert_eq!(rows.len() as u64, count, "{query}");
+        assert_eq!(
+            rows,
+            q(&w, query)["rows"].as_array().unwrap().clone(),
+            "{query}"
+        );
     }
-    assert_eq!(rows.len() as u64, count);
-    assert_eq!(rows, q(&w, query)["rows"].as_array().unwrap().clone());
 }
 
 #[test]
@@ -95,7 +121,7 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
 }
 
 #[test]
-fn edits_and_rebuilds_invalidate_ordinary_page_cursors() {
+fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
     for rebuild in [false, true] {
         let home = ClaudeHome::new();
         for session in ["a", "b", "c"] {
@@ -114,7 +140,7 @@ fn edits_and_rebuilds_invalidate_ordinary_page_cursors() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.converge().unwrap().errors.is_empty());
-            assert_eq!(page(&home, Some(cursor)).unwrap_err().kind, "stale_cursor");
+            assert_eq!(page(&home, Some(cursor)).unwrap()["rows"][0]["id"], "claude-code:c");
         } else {
             std::fs::write(
                 home.file("b.jsonl"),
@@ -122,7 +148,7 @@ fn edits_and_rebuilds_invalidate_ordinary_page_cursors() {
             )
             .unwrap();
             assert!(engine.converge().unwrap().errors.is_empty());
-            assert_eq!(page(&home, Some(cursor)).unwrap_err().kind, "stale_cursor");
+            assert_eq!(page(&home, Some(cursor)).unwrap()["rows"][0]["id"], "claude-code:c");
         }
     }
 }
@@ -167,17 +193,16 @@ fn derived_fixture() -> (tempfile::TempDir, Fixture) {
 }
 
 #[test]
-fn derived_publication_invalidates_pages_reports_the_session_and_settles_once() {
+fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() {
     let (_dir, mut fixture) = derived_fixture();
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
     let page_cursor = first["next"].as_str().unwrap();
     let change_cursor = first["view"]["cursor"].as_str().unwrap();
     assert!(fixture.derive().unwrap() > 0);
     assert_eq!(
-        fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1)
-            .unwrap_err()
-            .kind,
-        "stale_cursor"
+        fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1).unwrap()["rows"]
+            [0]["id"],
+        "claude-code:b"
     );
     let changes = fixture_query(
         &fixture,
@@ -213,7 +238,7 @@ fn derived_publication_invalidates_pages_reports_the_session_and_settles_once() 
 }
 
 #[test]
-fn search_publication_invalidates_pages_without_claiming_a_session_edit() {
+fn search_text_committed_between_pages_continues_without_reporting_a_session_edit() {
     let (_dir, fixture) = derived_fixture();
     fixture
         .queue_search_text("queued independent search text")
@@ -221,10 +246,9 @@ fn search_publication_invalidates_pages_without_claiming_a_session_edit() {
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
     assert_eq!(fixture.publish_search().unwrap(), 1);
     assert_eq!(
-        fixture_query(&fixture, "sessions | sort by id", first["next"].as_str(), 1)
-            .unwrap_err()
-            .kind,
-        "stale_cursor"
+        fixture_query(&fixture, "sessions | sort by id", first["next"].as_str(), 1).unwrap()
+            ["rows"][0]["id"],
+        "claude-code:b"
     );
     let changes = fixture_query(
         &fixture,
@@ -309,10 +333,9 @@ fn near_single_page_succeeds_but_semantic_continuation_never_calls_the_ranker() 
     let opts = options(&reader, &request, request.now, 7).unwrap();
     let program = polylogue_query::compile(text, &opts).unwrap();
     let cursor = Cursor::new(
-        1,
+        vec![Value::Null; program.order.len()],
         program.now,
         7,
-        reader.change_position().unwrap(),
         page::question(&program, &opts, false).unwrap(),
     )
     .encode()
@@ -326,7 +349,7 @@ fn near_single_page_succeeds_but_semantic_continuation_never_calls_the_ranker() 
 }
 
 #[test]
-fn page_cursor_carries_no_query_or_caller_text_and_rejects_old_versions() {
+fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
     use base64::Engine as _;
     let w = morrow();
     let text = "sessions where title:\"opaque private marker\" OR kind:*";

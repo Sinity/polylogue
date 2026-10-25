@@ -191,6 +191,63 @@ pub struct Program {
     /// `| measure WHAT`: the measurement to run over the sessions `sql`
     /// selects, instead of returning its rows.
     pub measure: Option<Measure>,
+    /// The answer's total order, as columns of `sql`; a page continues
+    /// after the last row's values of these columns. Empty for a summary,
+    /// which is one row.
+    pub order: Vec<OrderKey>,
+}
+
+/// One term of an answer's order: a column of the answer and its
+/// direction. SQLite sorts NULL first in ascending order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrderKey {
+    pub column: String,
+    pub descending: bool,
+}
+
+impl OrderKey {
+    fn ascending(column: &str) -> Self {
+        Self {
+            column: column.to_owned(),
+            descending: false,
+        }
+    }
+}
+
+/// Splits an ORDER BY term into its expression and direction.
+fn order_term(term: &str) -> (&str, bool) {
+    match term.strip_suffix(" DESC") {
+        Some(expr) => (expr, true),
+        None => (term.strip_suffix(" ASC").unwrap_or(term), false),
+    }
+}
+
+/// One hidden column `{prefix}{i}` per ORDER BY term, to select beside the
+/// row, and the order keys over them.
+fn hidden_order(order: &[String], prefix: &str) -> (Vec<String>, Vec<OrderKey>) {
+    order
+        .iter()
+        .enumerate()
+        .map(|(i, term)| {
+            let (expr, descending) = order_term(term);
+            let column = format!("{prefix}{i}");
+            (
+                format!("{expr} AS {column}"),
+                OrderKey { column, descending },
+            )
+        })
+        .unzip()
+}
+
+/// An ORDER BY list over order keys.
+fn order_by(keys: &[OrderKey]) -> String {
+    keys.iter()
+        .map(|k| {
+            let dir = if k.descending { " DESC" } else { "" };
+            format!("\"{}\"{dir}", k.column)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -201,10 +258,44 @@ pub struct Measure {
 }
 
 impl Program {
-    /// The answer page by page: binds `LIMIT` and `OFFSET` after `params`.
-    pub fn page_sql(&self) -> String {
+    /// One page of the answer. With `after`, it holds the rows that sort
+    /// after a row whose order-key values are bound after `params`, one per
+    /// key; the page size is bound last.
+    pub fn page_sql(&self, after: bool) -> String {
         let n = self.params.len();
-        format!("{} LIMIT ?{} OFFSET ?{}", self.sql, n + 1, n + 2)
+        let mut sql = format!("SELECT * FROM ({})", self.sql);
+        if after && !self.order.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&self.after_condition(n));
+        }
+        if !self.order.is_empty() {
+            sql.push_str(" ORDER BY ");
+            sql.push_str(&order_by(&self.order));
+        }
+        let limit = if after { n + self.order.len() + 1 } else { n + 1 };
+        sql.push_str(&format!(" LIMIT ?{limit}"));
+        sql
+    }
+
+    /// Rows after the bound key values `?{first+1}`...: equal on every
+    /// earlier key and after on this one, for some key. NULL sorts first.
+    fn after_condition(&self, first: usize) -> String {
+        let mut any = vec![];
+        for (i, key) in self.order.iter().enumerate() {
+            let mut all: Vec<String> = self.order[..i]
+                .iter()
+                .enumerate()
+                .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, first + j + 1))
+                .collect();
+            let (column, value) = (format!("\"{}\"", key.column), format!("?{}", first + i + 1));
+            all.push(if key.descending {
+                format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
+            } else {
+                format!("({column} > {value} OR ({value} IS NULL AND {column} IS NOT NULL))")
+            });
+            any.push(format!("({})", all.join(" AND ")));
+        }
+        any.join(" OR ")
     }
 
     pub fn count_sql(&self) -> String {
@@ -299,10 +390,12 @@ impl Scope {
 }
 
 /// The rows of `| matches`: an SQL body selecting `_pk` and `columns`,
-/// ordered, and whether it needs `WITH RECURSIVE`.
+/// ordered by `order` (columns it also selects), and whether it needs
+/// `WITH RECURSIVE`.
 struct MatchRel {
     sql: String,
     columns: Vec<(String, ColKind)>,
+    order: Vec<OrderKey>,
     recursive: bool,
 }
 

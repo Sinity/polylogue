@@ -133,6 +133,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
             select.join(", ")
         ),
         columns: columns.iter().map(|c| (c.name.clone(), c.kind)).collect(),
+        order: vec![OrderKey::ascending("_pk")],
         recursive: false,
     };
     let mut program = c.program_over(&query, rel)?;

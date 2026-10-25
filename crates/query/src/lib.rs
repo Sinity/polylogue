@@ -13,7 +13,7 @@ pub mod units;
 
 pub use compile::{
     Attach, ColKind, Column, ColumnReference, IdCheck, Kept, Measure, Near, Options, Param,
-    Program, Shape, WhyClause, compile,
+    OrderKey, Program, Shape, WhyClause, compile,
 };
 pub use parse::parse;
 pub use time::Clock;
