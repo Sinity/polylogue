@@ -8,19 +8,19 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
         "synthetic ".repeat(7000)
     );
     let kept = format!("keep this larger value containing [{text}] unchanged");
-    let donor = ClaudeHome::new();
-    donor.append(
+    let exporter = ClaudeHome::new();
+    exporter.append(
         "removed.jsonl",
         &(user("u1", "removed", &text) + &user("u2", "removed", "ok")),
     );
-    donor.append("kept.jsonl", &user("k1", "kept", &kept));
-    let (mut source, _lock) = donor.engine(64 << 20);
+    exporter.append("kept.jsonl", &user("k1", "kept", &kept));
+    let (mut source, _lock) = exporter.engine(64 << 20);
     assert!(source.converge().unwrap().errors.is_empty());
     let original = Document::new(vec![
-        donor.export("claude-code:removed"),
-        donor.export("claude-code:kept"),
+        exporter.export("claude-code:removed"),
+        exporter.export("claude-code:kept"),
     ]);
-    let file = donor.dir.path().join("shared.json");
+    let file = exporter.dir.path().join("shared.json");
     fs::write(&file, original.to_json().unwrap().replace('☺', "\\u263a")).unwrap();
     let original_bytes = fs::read(&file).unwrap();
     let needle = serde_json::to_string(&text)
@@ -44,19 +44,19 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
         polylogue_store::archive::cache::SETUP,
     )
     .unwrap();
-    // The supported legacy fallback: these records have no known end offset.
+    // These records have no known end offset, so excision takes its fallback path.
     index.execute("UPDATE message_source SET source_end=source_start WHERE message_pk IN (SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:removed')", []).unwrap();
     drop(index);
     let archive = Archive::at(&w.root);
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
     {
-        let canonical = rusqlite::Connection::open(archive.archive_db()).unwrap();
-        let hash: Vec<u8> = canonical
+        let archive_conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
+        let hash: Vec<u8> = archive_conn
             .query_row("SELECT DISTINCT blob FROM extent", [], |row| row.get(0))
             .unwrap();
-        // Inject malformed retained metadata only in this synthetic archive.
-        canonical.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
-        canonical
+        // Inject malformed stored metadata only in this synthetic archive.
+        archive_conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        archive_conn
             .execute("UPDATE extent SET blob=x'01'", [])
             .unwrap();
         let failed = engine.excise(ExciseRequest {
@@ -65,10 +65,10 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
             reason: None,
             dry_run: false,
         });
-        canonical
+        archive_conn
             .execute("UPDATE extent SET blob=?1", [hash])
             .unwrap();
-        canonical.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        archive_conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         assert!(
             failed
                 .unwrap_err()
@@ -76,7 +76,7 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
                 .contains("invalid source blob hash")
         );
         assert_eq!(
-            canonical
+            archive_conn
                 .query_row("SELECT count(*) FROM excision", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
@@ -92,12 +92,12 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
             ranges.len() as u64
         );
         assert_eq!(w.texts("kept"), std::slice::from_ref(&kept));
-        let canonical = rusqlite::Connection::open(archive.archive_db()).unwrap();
-        let hash: Vec<u8> = canonical
+        let archive_conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
+        let hash: Vec<u8> = archive_conn
             .query_row("SELECT DISTINCT blob FROM extent", [], |r| r.get(0))
             .unwrap();
         let hash = polylogue_model::BlobHash(hash.try_into().unwrap());
-        let raw = polylogue_store::blobs::read(&canonical, &store, &hash).unwrap();
+        let raw = polylogue_store::blobs::read(&archive_conn, &store, &hash).unwrap();
         assert_eq!(
             raw,
             if dry {
@@ -114,7 +114,7 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
                 .map(|&(start, end)| serde_json::json!([source_hash, start, end - start]))
                 .collect();
             let expected = serde_json::to_string(&expected_spans).unwrap();
-            let recorded:Vec<String>=canonical.prepare("SELECT spans_json FROM observation WHERE class='excised' AND spans_json IS NOT NULL").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            let recorded:Vec<String>=archive_conn.prepare("SELECT spans_json FROM observation WHERE class='excised' AND spans_json IS NOT NULL").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
             assert!(!recorded.is_empty());
             assert!(
                 recorded.iter().all(|value| value == &expected),

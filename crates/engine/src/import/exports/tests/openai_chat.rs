@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_retained_bytes() {
+fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored_bytes() {
     let messages = r#"[{"role":"user","content":"weather?"},{"role":"assistant","content":null,"reasoning_content":"need a tool","tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Oslo\"}"}}]},{"role":"tool","tool_call_id":"call-1","content":"rain"},{"role":"assistant","content":"Rain."}]"#;
     for wrapped in [false, true] {
         let w = ClaudeHome::new();
@@ -77,12 +77,12 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_retain
 }
 
 #[test]
-fn malformed_openai_wrapper_suffix_publishes_no_prefix_messages() {
+fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("chat.json");
     fs::write(
         &path,
-        r#"{"messages":[{"role":"user","content":"never published"}],"model":"example"} false"#,
+        r#"{"messages":[{"role":"user","content":"never committed"}],"model":"example"} false"#,
     )
     .unwrap();
     let (mut e, _lock) = engine(&w, 8);

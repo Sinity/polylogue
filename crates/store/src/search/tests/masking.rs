@@ -87,7 +87,7 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
             .all(|snippet| snippet.as_ref() == Some(first))
     );
 
-    // The admitted reader retains its selected hit and masking prefix while a
+    // The stored reader keeps its selected hit and masking prefix while a
     // fresh reader sees a different prefix in the same synthetic archive.
     let ordinary = crate::encoding::pack_text("ordinary header").unwrap();
     write.execute("UPDATE text SET body=?1 WHERE id=(SELECT text_id FROM block WHERE message_pk=?2 LIMIT 1)", params![ordinary, header]).unwrap();

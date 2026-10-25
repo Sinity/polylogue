@@ -20,12 +20,12 @@ fn refused_watched_bytes_install_no_file() {
         let (mut engine, _lock) = engine(&world, 1 << 20);
         let input = engine.location_id(&path);
         let conn = rusqlite::Connection::open(world.root.join("archive.db")).unwrap();
-        conn.execute_batch(&format!("CREATE TRIGGER reject_pool BEFORE INSERT ON input WHEN NEW.id='{input}' BEGIN SELECT RAISE(ABORT,'synthetic pool first admission rejection'); END;")).unwrap();
+        conn.execute_batch(&format!("CREATE TRIGGER reject_pool BEFORE INSERT ON input WHEN NEW.id='{input}' BEGIN SELECT RAISE(ABORT,'synthetic pool first write rejection'); END;")).unwrap();
         let pass = engine.converge().unwrap();
         assert!(!pass.errors.is_empty());
         assert!(
             !engine.blobs.contains(&raw),
-            "rejected raw pool bytes have no canonical owner"
+            "rejected pool bytes have no archive row"
         );
         assert_eq!(world.count("SELECT count(*) AS n FROM a.blob"), 0);
         conn.execute_batch("DROP TRIGGER reject_pool").unwrap();
@@ -82,7 +82,7 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
     {
         let (mut engine, _lock) = engine(&world, 1 << 20);
         let index = rusqlite::Connection::open(world.root.join("index.db")).unwrap();
-        index.execute_batch("CREATE TRIGGER reject_decoded_message BEFORE INSERT ON message BEGIN SELECT RAISE(ABORT,'synthetic derived admission refusal'); END;").unwrap();
+        index.execute_batch("CREATE TRIGGER reject_decoded_message BEFORE INSERT ON message BEGIN SELECT RAISE(ABORT,'synthetic derived write refusal'); END;").unwrap();
         let pass = engine.converge().unwrap();
         assert!(!pass.errors.is_empty());
         assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);

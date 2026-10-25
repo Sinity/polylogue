@@ -34,11 +34,11 @@ fn whole_input_removal_refuses_new_messages_of_its_session_after_restart() {
         );
         w.append(
             "unrelated.jsonl",
-            &user("independent", "unrelated", "admitted independent body"),
+            &user("independent", "unrelated", "stored independent body"),
         );
         assert!(engine.converge().unwrap().errors.is_empty());
         assert!(w.texts("removed").is_empty(), "restart={restart}");
-        assert_eq!(w.texts("unrelated"), ["admitted independent body"]);
+        assert_eq!(w.texts("unrelated"), ["stored independent body"]);
         drop(engine);
         drop(lock);
     }
@@ -93,7 +93,7 @@ fn session_excision_checks_all_append_pieces_before_rewriting_and_rebuilding() {
     let (mut engine, lock) = w.engine(64 << 20);
     let mut expected = Vec::new();
     for n in 0..48 {
-        let keep = format!("retained public message number {n}");
+        let keep = format!("stored public message number {n}");
         w.append(
             "shared.jsonl",
             &(user(
@@ -137,24 +137,24 @@ fn input_excision_owns_text_shared_only_by_its_removed_sessions() {
                 shared.to_owned()
             }
         };
-        let donor = ClaudeHome::new();
+        let exporter = ClaudeHome::new();
         for (n, id) in [(1, "first"), (2, "second"), (3, "third")] {
-            donor.append(
+            exporter.append(
                 &format!("{id}.jsonl"),
                 &user(&format!("u{n}"), id, &message(id)),
             );
         }
-        let (mut source, _source_lock) = donor.engine(64 << 20);
+        let (mut source, _source_lock) = exporter.engine(64 << 20);
         assert!(source.converge().unwrap().errors.is_empty());
         let export = |id| {
-            let mut doc = donor.export(&format!("claude-code:{id}"));
+            let mut doc = exporter.export(&format!("claude-code:{id}"));
             if title_only {
                 doc.session
                     .offer_title(shared, polylogue_model::TitleSource::Custom);
             }
             doc
         };
-        let selected = donor.dir.path().join("selected.json");
+        let selected = exporter.dir.path().join("selected.json");
         fs::write(
             &selected,
             polylogue_model::export::Document::new(vec![export("first"), export("second")])
@@ -166,7 +166,7 @@ fn input_excision_owns_text_shared_only_by_its_removed_sessions() {
         let (mut engine, _lock) = w.engine(64 << 20);
         engine.import(std::slice::from_ref(&selected)).unwrap();
         if survivor {
-            let kept = donor.dir.path().join("kept.json");
+            let kept = exporter.dir.path().join("kept.json");
             fs::write(
                 &kept,
                 polylogue_model::export::Document::new(vec![export("third")])
@@ -224,8 +224,8 @@ fn input_excision_owns_text_shared_only_by_its_removed_sessions() {
             } else {
                 " ".repeat(shared.len())
             };
-            let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
-            let hash: Vec<u8> = canonical
+            let archive_conn = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+            let hash: Vec<u8> = archive_conn
                 .query_row(
                     "SELECT content_hash FROM delivery WHERE id='shared-summary'",
                     [],

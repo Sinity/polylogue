@@ -16,14 +16,14 @@ fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Value>> {
 fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let canonical = open_archive_writer(&archive).unwrap();
+    let archive_conn = open_archive_writer(&archive).unwrap();
     let seen = BlobHash::of(b"synthetic previously seen text");
-    let retained = BlobHash::of(b"synthetic retained embedded text");
+    let stored = BlobHash::of(b"synthetic stored embedded text");
     let removed = BlobHash::of(b"synthetic removed text");
     let removed_blob = BlobHash::of(b"synthetic removed attachment");
-    canonical.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
-    canonical.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29)", [&seen.0[..]]).unwrap();
-    canonical.execute("INSERT INTO variant(id,target,seen_hash,kind,coverage,body,author,machine,created_at) VALUES ('variant','message:claude-code:stable',?1,'summary','whole','exact transformed text','operator','synthetic',2)", [&seen.0[..]]).unwrap();
+    archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
+    archive_conn.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29)", [&seen.0[..]]).unwrap();
+    archive_conn.execute("INSERT INTO variant(id,target,seen_hash,kind,coverage,body,author,machine,created_at) VALUES ('variant','message:claude-code:stable',?1,'summary','whole','exact transformed text','operator','synthetic',2)", [&seen.0[..]]).unwrap();
     let refusal = serde_json::json!({
         "sessions":["claude-code:blocked"],
         "locations":[{"machine":"synthetic","path":"/synthetic/removed","device":12,"inode":34}],
@@ -31,20 +31,20 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
         "blobs":[removed_blob.to_string()]
     })
     .to_string();
-    canonical.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',?1,'[\"claude-code:blocked-message\"]',3,2)", [&refusal]).unwrap();
-    canonical
+    archive_conn.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',?1,'[\"claude-code:blocked-message\"]',3,2)", [&refusal]).unwrap();
+    archive_conn
         .execute(
             "INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('text-removal',?1,4,3)",
             [format!("text:{removed}")],
         )
         .unwrap();
     let vectors = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
-    for (hash, value) in [(retained, 1.25f32), (removed, 2.5f32)] {
+    for (hash, value) in [(stored, 1.25f32), (removed, 2.5f32)] {
         vectors.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'synthetic/model/1/document/unit',0,1,?2,5)", params![&hash.0[..], value.to_le_bytes().as_slice()]).unwrap();
     }
     drop(vectors);
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    crate::excise::mark_applied(&canonical, &index).unwrap();
+    crate::excise::mark_applied(&archive_conn, &index).unwrap();
     index.pragma_update(None, "user_version", 29).unwrap();
     index
         .execute("INSERT INTO meta VALUES ('old-index-marker','old')", [])
@@ -56,12 +56,12 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
         "SELECT * FROM variant ORDER BY id",
         "SELECT * FROM excision ORDER BY id",
     ];
-    let before: Vec<_> = queries.iter().map(|sql| rows(&canonical, sql)).collect();
+    let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
     let vectors = open_read(&archive.embeddings_db()).unwrap();
     let paid = rows(&vectors, "SELECT * FROM embedded ORDER BY id");
     assert_eq!(paid.len(), 2);
     drop(vectors);
-    drop(canonical);
+    drop(archive_conn);
     drop(lock);
 
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -77,13 +77,13 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
             .unwrap(),
         0
     );
-    let canonical = open_read(&archive.archive_db()).unwrap();
-    let after: Vec<_> = queries.iter().map(|sql| rows(&canonical, sql)).collect();
+    let archive_conn = open_read(&archive.archive_db()).unwrap();
+    let after: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
     assert_eq!(
         after, before,
         "authored values, seen hashes, anchors and excisions stay verbatim"
     );
-    let refused = crate::excise::Refused::load(&canonical).unwrap();
+    let refused = crate::excise::Refused::load(&archive_conn).unwrap();
     let matches = refused
         .matching(
             &["claude-code:blocked".into(), "claude-code:allowed".into()],

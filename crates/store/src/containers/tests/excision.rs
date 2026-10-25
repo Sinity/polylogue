@@ -24,7 +24,7 @@ fn member(
         }),
     )
 }
-fn admit(writer: &Writer, store: &Arc<hashed_blobs::Store>, group: Vec<PreparedBatch>) {
+fn write_group(writer: &Writer, store: &Arc<hashed_blobs::Store>, group: Vec<PreparedBatch>) {
     let results = writer
         .sender()
         .unwrap()
@@ -54,7 +54,7 @@ fn a_shared_member_removes_each_zip_holding_it_and_keeps_unrelated_inputs() {
         }
         group.push(member(&archive, sibling, acquisition, original, 1));
     }
-    admit(&writer, &store, group);
+    write_group(&writer, &store, group);
     writer.user(crate::user_writes::UserRequest::now("unrelated-note".into(), crate::user_writes::UserWrite::AddNote { note: serde_json::from_value(serde_json::json!({"kind":"note","value":"unrelated authored note","author":"operator","targets":["repo:synthetic"]})).unwrap() })).unwrap();
     let removed = remove(&writer, Arc::clone(&store), "shared-member").unwrap();
     assert_eq!(
@@ -90,7 +90,7 @@ fn a_shared_member_removes_each_zip_holding_it_and_keeps_unrelated_inputs() {
 }
 
 #[test]
-fn nested_container_closure_is_iterative_beyond_sixty_four_levels() {
+fn nested_containers_are_walked_iteratively_beyond_sixty_four_levels() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
@@ -116,7 +116,7 @@ fn nested_container_closure_is_iterative_beyond_sixty_four_levels() {
             0,
         ));
     }
-    admit(&writer, &store, group);
+    write_group(&writer, &store, group);
     let removed = remove(&writer, store, "nested-member").unwrap();
     assert_eq!(removed.zips_removed.len(), 70);
     assert_eq!(removed.inputs_removed.len(), 71);
@@ -137,7 +137,7 @@ fn reopening_deletes_the_files_of_a_committed_zip_removal() {
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let store = Arc::new(hashed_blobs::Store::open(&archive.root, vec![], 0o600).unwrap());
-    admit(&writer, &store, linked(&archive, "interrupted", false));
+    write_group(&writer, &store, linked(&archive, "interrupted", false));
     crate::fault::arm(
         "blob.before_delete",
         &id(ORIGINAL),
@@ -177,14 +177,14 @@ fn original_bytes_shared_with_unlinked_source_refuse_before_removal() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let store = Arc::new(hashed_blobs::Store::open(&archive.root, vec![], 0o600).unwrap());
-    admit(&writer, &store, linked(&archive, "shared-original", false));
+    write_group(&writer, &store, linked(&archive, "shared-original", false));
     let mut watched = stage(&archive, ORIGINAL, "watched", "watched.zip", None);
     watched.batch.input.id = "independent-watched-input".into();
     watched.batch.input.format = "synthetic-text".into();
     watched.batch.input.route_rank = 0;
     watched.batch.change = Change::First;
     watched.batch.observation.as_mut().unwrap().import = None;
-    admit(&writer, &store, vec![watched]);
+    write_group(&writer, &store, vec![watched]);
     let db = open_read(&archive.archive_db()).unwrap();
     let before: i64 = db
         .query_row("SELECT count(*) FROM extent", [], |r| r.get(0))
@@ -212,7 +212,7 @@ fn original_bytes_referenced_by_attachment_refuse_before_archive_or_blob_mutatio
     use polylogue_model::{Attachment, AttachmentDirection, Block, Role};
     let mut world = WriterWorld::new();
     let store = Arc::new(hashed_blobs::Store::open(&world.archive.root, vec![], 0o600).unwrap());
-    admit(
+    write_group(
         &world.writer,
         &store,
         linked(&world.archive, "attachment-owner", false),
@@ -283,7 +283,7 @@ fn dry_run_reports_originals_without_changing_linked_bytes_or_policy() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let store = Arc::new(hashed_blobs::Store::open(&archive.root, vec![], 0o600).unwrap());
-    admit(&writer, &store, linked(&archive, "dry-run", false));
+    write_group(&writer, &store, linked(&archive, "dry-run", false));
     let result = writer
         .excise(
             crate::excise::ExciseRequest {

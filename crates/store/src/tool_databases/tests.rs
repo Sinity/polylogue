@@ -84,7 +84,7 @@ fn a_restart_rebuilds_what_was_exported_from_the_file() {
 }
 
 #[test]
-fn dropped_tables_publish_exact_removals_and_can_reappear() {
+fn dropped_tables_commit_exact_removals_and_can_reappear() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.sqlite");
     let out = dir.path().join("state.jsonl");
@@ -151,7 +151,7 @@ fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
     exporter.export(&db, &out, None).unwrap();
     let mut corrupt = fs::read(&out).unwrap();
     corrupt[0] = b'!';
-    corrupt.extend_from_slice(b"unpublished tail");
+    corrupt.extend_from_slice(b"uncommitted tail");
     fs::write(&out, &corrupt).unwrap();
     assert!(exporter.export(&db, &out, None).is_err());
     assert_eq!(fs::read(&out).unwrap(), corrupt);

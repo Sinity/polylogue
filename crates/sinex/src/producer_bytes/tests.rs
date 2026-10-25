@@ -54,7 +54,7 @@ fn acknowledgment(
     Acknowledgment {
         frame,
         material,
-        admitted: vec![],
+        stored: vec![],
         outcome,
         refusal: None,
         commit_seq: Some(1),
@@ -84,7 +84,7 @@ async fn a_cancelled_send_is_resent_from_the_spool_and_a_completed_request_needs
     let worker = tokio::spawn(async move {
         let Ingress::Reserve {
             frame: first_attempt,
-            publication: request,
+            commit: request,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
             panic!("the request comes first")
@@ -122,7 +122,7 @@ async fn a_cancelled_send_is_resent_from_the_spool_and_a_completed_request_needs
         spool::discard_bytes(&root, "polylogue", &request).unwrap();
         let Ingress::Reserve {
             frame: retry_attempt,
-            publication: retry,
+            commit: retry,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
             panic!("the retried request comes first")
@@ -238,7 +238,7 @@ async fn a_cancelled_incomplete_request_resends_the_same_material_and_bytes() {
     let root = dir.path().to_owned();
     let worker = tokio::spawn(async move {
         let Ingress::Reserve {
-            publication: request,
+            commit: request,
             ..
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
@@ -252,7 +252,7 @@ async fn a_cancelled_incomplete_request_resends_the_same_material_and_bytes() {
         // Sinex committed the request, but its acknowledgment was lost.
         let Ingress::Reserve {
             frame,
-            publication: retry,
+            commit: retry,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
             panic!("the retried request comes first")
@@ -316,7 +316,7 @@ async fn a_cancelled_incomplete_request_resends_the_same_material_and_bytes() {
         )
         .await
         .unwrap();
-    assert_eq!(Some(actual), spooled.publication.material.map(|m| m.id));
+    assert_eq!(Some(actual), spooled.commit.material.map(|m| m.id));
     assert_eq!(actual, worker.await.unwrap());
     assert!(
         spool::load(dir.path(), "polylogue", "incomplete")
@@ -355,7 +355,7 @@ async fn missing_spooled_bytes_refuse_without_reading_the_source_again() {
             Some(&mut &body[..]),
         )
         .unwrap();
-    spool::discard_bytes(dir.path(), "polylogue", &spooled.publication).unwrap();
+    spool::discard_bytes(dir.path(), "polylogue", &spooled.commit).unwrap();
     let client = sinex.client.clone();
     let subject = sinex.subjects.ack(&sinex.producer);
     let worker = tokio::spawn(async move {
@@ -425,7 +425,7 @@ async fn an_oversized_events_frame_travels_as_a_spooled_envelope() {
     let worker = tokio::spawn(async move {
         let Ingress::Reserve {
             frame: attempt,
-            publication: request,
+            commit: request,
         } = serde_json::from_slice(&ingress.next().await.unwrap().payload).unwrap()
         else {
             panic!("the request comes first")
@@ -511,13 +511,13 @@ async fn finishing_the_spool_asks_only_about_its_own_requests_and_resends_nothin
     let done = spooled_material(&sinex, "done");
     let waiting = spooled_material(&sinex, "waiting");
     let mut unrelated = waiting.clone();
-    unrelated.publication.frame = "another-producer".into();
+    unrelated.commit.frame = "another-producer".into();
     if let Ingress::Material { frame, .. } = &mut unrelated.frame {
         *frame = "another-producer".into();
     }
     spool::freeze(dir.path(), "other-producer", &unrelated).unwrap();
     // A terminal ACK must permit cleanup even after receiver byte cleanup.
-    spool::discard_bytes(dir.path(), "polylogue", &done.publication).unwrap();
+    spool::discard_bytes(dir.path(), "polylogue", &done.commit).unwrap();
     let mut requests = sinex
         .client
         .subscribe(sinex.subjects.have(&sinex.producer))
@@ -525,7 +525,7 @@ async fn finishing_the_spool_asks_only_about_its_own_requests_and_resends_nothin
         .unwrap();
     sinex.client.flush().await.unwrap();
     let client = sinex.client.clone();
-    let id = done.publication.material.as_ref().unwrap().id;
+    let id = done.commit.material.as_ref().unwrap().id;
     let worker = tokio::spawn(async move {
         let message = requests.next().await.unwrap();
         let mut request: Have = serde_json::from_slice(&message.payload).unwrap();

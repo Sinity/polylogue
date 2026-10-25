@@ -8,7 +8,7 @@ const ROOM: &str = r#"{"version":"example","messages":{
     "title":"Late header","characters":{"char":{"model":"example-model"}}}"#;
 
 #[test]
-fn keyed_room_replacements_choose_the_first_retained_message_and_rebuild_exactly() {
+fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, ROOM).unwrap();
@@ -63,7 +63,7 @@ fn keyed_room_replacements_choose_the_first_retained_message_and_rebuild_exactly
 }
 
 #[test]
-fn a_bad_room_suffix_refuses_before_any_header_or_message_is_published() {
+fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, format!("{ROOM} false")).unwrap();

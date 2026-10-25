@@ -75,7 +75,7 @@ fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
 }
 
 #[test]
-fn malformed_observer_suffix_never_publishes_a_valid_prefix() {
+fn malformed_observer_suffix_never_commits_a_valid_prefix() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("synthetic.atof.jsonl");
     fs::write(&path,b"{\"atof_version\":\"0.1\",\"kind\":\"mark\",\"uuid\":\"synthetic\",\"name\":\"neutral\"}\n{").unwrap();

@@ -70,7 +70,7 @@ fn stores_scans_and_survives_reopening() {
 }
 
 #[test]
-fn admitted_readers_share_one_budget_with_their_single_optional_vector_connection() {
+fn readers_share_one_budget_with_their_single_optional_vector_connection() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
     let budget = (8 << 20) + 123;
@@ -104,7 +104,7 @@ fn admitted_readers_share_one_budget_with_their_single_optional_vector_connectio
 }
 
 #[test]
-fn vector_write_upgrade_keeps_its_cache_and_retains_read_results() {
+fn vector_write_upgrade_keeps_its_cache_and_its_read_results() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
     texts(&archive, &[&[1]]);

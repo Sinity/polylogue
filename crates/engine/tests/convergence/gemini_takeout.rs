@@ -7,7 +7,7 @@ fn cell(id: &str, body: &str) -> String {
 }
 
 #[test]
-fn takeout_cells_keep_interleaved_parents_and_events_after_retained_rebuild() {
+fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
     let w = ClaudeHome::new();
     let path = w
         .dir

@@ -48,7 +48,7 @@ fn hermes_native_capture_reads_roles_reasoning_and_zero_nonzero_tool_outcomes() 
     assert_eq!(
         ids.len(),
         1,
-        "retained native Hermes rows must become a conversation"
+        "stored native Hermes rows must become a conversation"
     );
     assert!(
         ids[0]
@@ -126,7 +126,7 @@ fn hermes_many_framed_messages_keep_supplied_subagent_metadata() {
     for n in 0..128 {
         tx.execute(
             "INSERT INTO messages VALUES(?1,'child','assistant',?2,0,0)",
-            rusqlite::params![n, format!("retained body {n}")],
+            rusqlite::params![n, format!("stored body {n}")],
         )
         .unwrap();
     }

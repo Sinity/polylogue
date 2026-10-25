@@ -41,7 +41,7 @@ fn a_stopped_watched_export_finishes_only_its_stored_bytes() {
         let dir = world.config(64).spool_dir("ai-studio");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("stored.json");
-        let original = prompt("synthetic watched reserved version");
+        let original = prompt("synthetic watched pending version");
         let hash = hashed_blobs::Hash::of(&original);
         std::fs::write(&path, &original).unwrap();
         {

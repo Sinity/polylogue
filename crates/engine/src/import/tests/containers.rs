@@ -47,12 +47,12 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
             );
         }
         let reader = engine.reads.reader().unwrap();
-        let retained = reader
+        let stored = reader
             .input_progress(&id)
             .unwrap()
-            .expect("original ZIP input must be retained");
+            .expect("original ZIP input must be stored");
         let bytes = reader
-            .stored_range(&id, retained.chain, 0, retained.length, &engine.blobs)
+            .stored_range(&id, stored.chain, 0, stored.length, &engine.blobs)
             .unwrap();
         assert_eq!(
             bytes, original,
@@ -62,7 +62,7 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
 }
 
 #[test]
-fn a_refused_zip_member_prevents_container_and_sibling_publication() {
+fn a_refused_zip_member_prevents_committing_the_zip_and_its_siblings() {
     let w = ClaudeHome::new();
     let source = w.dir.path().join("file-one.dat");
     std::fs::write(&source, b"first member").unwrap();
@@ -163,7 +163,7 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
             polylogue_testkit::claude_user(
                 "user",
                 "zip-session",
-                "synthetic retained conversation",
+                "synthetic stored conversation",
             )
             .into_bytes(),
         ),
@@ -225,12 +225,12 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
     }
     let before = w.count("SELECT count(*) AS n FROM a.extent");
     let unrelated = w.dir.path().join("unrelated.dat");
-    std::fs::write(&unrelated, b"unrelated retained bytes").unwrap();
+    std::fs::write(&unrelated, b"unrelated stored bytes").unwrap();
     assert!(e.import(&[unrelated]).unwrap().pass.errors.is_empty());
     e.excise(ExciseRequest {
         id: "unrelated-removal".into(),
         scope: ExciseScope::Input(
-            blake3::hash(b"unrelated retained bytes")
+            blake3::hash(b"unrelated stored bytes")
                 .to_hex()
                 .to_string(),
         ),
@@ -259,11 +259,11 @@ fn original_bytes_and_ordinal_preserve_raw_names_separately_from_decoded_project
     let reader = e.reads.reader().unwrap();
     let id = blake3::hash(&original).to_hex().to_string();
     let input = reader.input_progress(&id).unwrap().unwrap();
-    let retained = reader
+    let stored = reader
         .stored_range(&id, input.chain, 0, input.length, &e.blobs)
         .unwrap();
-    assert_eq!(retained, original);
-    let mut container = zip::ZipArchive::new(std::io::Cursor::new(retained)).unwrap();
+    assert_eq!(stored, original);
+    let mut container = zip::ZipArchive::new(std::io::Cursor::new(stored)).unwrap();
     let member = container.by_index(0).unwrap();
     assert_eq!(member.name_raw()[0], 0xff);
     assert!(std::str::from_utf8(member.name_raw()).is_err());

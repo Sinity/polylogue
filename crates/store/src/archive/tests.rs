@@ -90,15 +90,15 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     index.pragma_update(None, "user_version", 26).unwrap();
     index
         .execute(
-            "INSERT INTO meta VALUES ('old-format-marker', 'retained')",
+            "INSERT INTO meta VALUES ('old-format-marker', 'stored')",
             [],
         )
         .unwrap();
     drop(index);
-    let canonical = open_archive_writer(&archive).unwrap();
-    let value = "canonical note value independent of row dictionary";
-    canonical.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
-    drop(canonical);
+    let archive_conn = open_archive_writer(&archive).unwrap();
+    let value = "archive note value independent of row dictionary";
+    archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
+    drop(archive_conn);
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
@@ -114,9 +114,9 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
         0
     );
     assert!(!dir.path().join("index.db.v26").exists());
-    let canonical = open_read(&archive.archive_db()).unwrap();
+    let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
-        canonical
+        archive_conn
             .query_row("SELECT value FROM note WHERE id='note'", [], |r| r
                 .get::<_, String>(0))
             .unwrap(),

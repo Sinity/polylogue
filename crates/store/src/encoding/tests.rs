@@ -151,7 +151,7 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
 }
 
 #[test]
-fn dictionary_rows_and_plain_canonical_frames_remain_distinct() {
+fn dictionary_rows_and_plain_sorted_frames_remain_distinct() {
     let message: Message = serde_json::from_value(json!({
         "id":"codex:sample-42", "session":"codex:sample-session",
         "parent":"codex:sample-parent", "role":"assistant", "model":"synthetic-model",
@@ -167,7 +167,7 @@ fn dictionary_rows_and_plain_canonical_frames_remain_distinct() {
     assert_eq!(unpack_json::<Message>(&row).unwrap(), message);
     for plain in [
         pack_json(&message).unwrap(),
-        pack_text("canonical text").unwrap(),
+        pack_text("archive_conn text").unwrap(),
     ] {
         assert!(zstd::zstd_safe::get_dict_id_from_frame(&plain).is_none());
         assert_eq!(

@@ -230,7 +230,7 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
             .unwrap();
         assert!(
             selected.visit(|_| ControlFlow::Continue(())).is_err(),
-            "control must try the corrupt prefix body"
+            "the reference case must try the corrupt prefix body"
         );
         let mut actual = Vec::new();
         selected

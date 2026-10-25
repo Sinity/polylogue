@@ -18,12 +18,12 @@ fn a_refused_import_installs_no_file() {
         {
             let (mut engine, _lock) = engine(&world, 64);
             let conn = rusqlite::Connection::open(world.root.join("archive.db")).unwrap();
-            conn.execute_batch("CREATE TRIGGER reject_first_import BEFORE INSERT ON input BEGIN SELECT RAISE(ABORT,'synthetic first admission refusal'); END;").unwrap();
+            conn.execute_batch("CREATE TRIGGER reject_first_import BEFORE INSERT ON input BEGIN SELECT RAISE(ABORT,'synthetic first write refusal'); END;").unwrap();
             let rejected = engine.import(std::slice::from_ref(&path)).unwrap();
             assert!(!rejected.pass.errors.is_empty());
             assert!(
                 !engine.blobs.contains(&hash),
-                "a rejected first acquisition must not publish a CAS object without canonical ownership"
+                "a rejected first import must not write a blob file without an archive row"
             );
             for table in ["input", "revision", "extent", "blob", "observation"] {
                 assert_eq!(

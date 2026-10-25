@@ -27,7 +27,7 @@ fn batch(id: &str, length: u64) -> Batch {
 }
 
 #[test]
-fn dropping_private_preparation_and_refusing_another_archive_publish_no_cas_name() {
+fn dropping_a_private_preparation_or_refusing_another_archive_writes_no_blob_file() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(first.path()).unwrap();
@@ -60,7 +60,7 @@ fn dropping_private_preparation_and_refusing_another_archive_publish_no_cas_name
 }
 
 #[test]
-fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
+fn concurrent_excision_and_an_exact_write_cannot_bring_back_a_deleted_blob() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     let writer = Arc::new(Writer::start(&archive).unwrap());
@@ -74,7 +74,7 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
         .unwrap();
     let prepared = archive.prepare_bytes(&[], body.as_slice()).unwrap();
     let barrier = Arc::new(Barrier::new(3));
-    let admit = {
+    let writing = {
         let writer = Arc::clone(&writer);
         let barrier = Arc::clone(&barrier);
         let id = id.clone();
@@ -102,8 +102,8 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
         })
     };
     barrier.wait();
-    let admitted = admit.join().unwrap();
-    assert!(admitted.is_ok() || matches!(admitted, Err(StoreError::InputRefused { .. })));
+    let stored = writing.join().unwrap();
+    assert!(stored.is_ok() || matches!(stored, Err(StoreError::InputRefused { .. })));
     remove.join().unwrap().unwrap();
     assert!(!store.contains(&hashed_blobs::Hash(hash.0)));
     let retry = archive
@@ -123,7 +123,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let writer = Writer::start(&archive).unwrap();
     let store = Arc::new(hashed_blobs::Store::open(dir.path(), Vec::new(), 0o600).unwrap());
     let source = archive
-        .prepare_bytes(&[], b"synthetic retained source".as_slice())
+        .prepare_bytes(&[], b"synthetic stored source".as_slice())
         .unwrap();
     let stray = archive
         .prepare_bytes(&[], b"synthetic unreferenced stage".as_slice())
@@ -149,7 +149,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
         .unwrap();
     assert!(
         result[0].is_err(),
-        "a private stage without a source owner was admitted"
+        "a private stage without a source owner was stored"
     );
     assert!(!store.contains(&hashed_blobs::Hash(source_hash.0)));
     assert!(!store.contains(&hashed_blobs::Hash(stray_hash.0)));

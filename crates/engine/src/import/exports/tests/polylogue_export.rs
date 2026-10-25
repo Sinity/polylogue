@@ -24,7 +24,7 @@ fn exported_session(name: &str) -> SessionExport {
     let events = vec![
         serde_json::from_value(json!({
             "session":sid,"kind":"compaction","after":format!("claude-code:{name}-m0"),
-            "range":[10,20],"data":{"label":"retained event"}
+            "range":[10,20],"data":{"label":"stored event"}
         }))
         .unwrap(),
     ];
@@ -37,7 +37,7 @@ fn exported_session(name: &str) -> SessionExport {
 }
 
 #[test]
-fn exported_sessions_retain_ids_fields_links_and_exact_spans_after_source_deletion() {
+fn exported_sessions_keep_ids_fields_links_and_exact_spans_after_source_deletion() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("export.json");
     let first = exported_session("first");
@@ -110,7 +110,7 @@ fn exported_sessions_retain_ids_fields_links_and_exact_spans_after_source_deleti
 }
 
 #[test]
-fn invalid_export_session_or_suffix_does_not_publish_the_valid_prefix() {
+fn invalid_export_session_or_suffix_does_not_commit_the_valid_prefix() {
     let session = serde_json::to_string(&exported_session("prefix")).unwrap();
     for ending in [
         ",{\"session\":false}],\"version\":1}".to_owned(),

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn an_old_inputs_parse_prefix_does_not_publish_a_late_append_early() {
+fn an_older_inputs_parse_prefix_does_not_commit_a_late_append_early() {
     let w = ClaudeHome::new();
     let first: String = (0..10)
         .map(|n| user(&format!("u{n}"), "late", "original message"))

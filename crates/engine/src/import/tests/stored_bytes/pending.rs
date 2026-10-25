@@ -27,9 +27,9 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert!(!report.pass.errors.is_empty(), "{point}");
             assert_eq!(engine.blobs.contains(&hash), physically_installed);
             let reader = engine.reads.reader().unwrap();
-            let retained = reader.input_progress(&id).unwrap().unwrap();
+            let stored = reader.input_progress(&id).unwrap().unwrap();
             assert!(matches!(
-                reader.stored_chain(&id, retained.chain, retained.length),
+                reader.stored_chain(&id, stored.chain, stored.length),
                 Err(StoreError::InputPending { .. })
             ));
             let status = reader.status().unwrap();

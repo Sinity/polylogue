@@ -561,7 +561,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let known = pool.reader().unwrap().known_inputs("m").unwrap();
     assert_eq!(known[0].stored, 16);
     assert_eq!(known[0].parsed_upto, 5);
-    assert!(!known[0].waiting, "the EOF proof covered only twelve bytes");
+    assert!(!known[0].waiting, "the end-of-file check covered only twelve bytes");
 }
 
 #[test]
@@ -767,7 +767,7 @@ fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
 }
 
 #[test]
-fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
+fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     let World {
         _dir,
         archive,
@@ -795,7 +795,7 @@ fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
                 crate::user_writes::new_request_id(),
                 crate::UserWrite::SetSetting {
                     key: "shutdown-test".into(),
-                    value: "retained".into(),
+                    value: "stored".into(),
                     author: polylogue_model::Author::Operator,
                     machine: None,
                 },
@@ -810,7 +810,7 @@ fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
     });
     stopped
         .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("writer drop waited for retained senders");
+        .expect("writer drop waited for stored senders");
     thread.join().unwrap();
     assert!(received.recv().unwrap().is_ok());
     assert!(matches!(sender.derive(), Err(StoreError::WriterGone)));
@@ -822,7 +822,7 @@ fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
     );
     assert_eq!(
         reader.setting("shutdown-test", "").unwrap().as_deref(),
-        Some("retained")
+        Some("stored")
     );
 }
 
@@ -921,8 +921,8 @@ fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
             .unwrap()[0]["value"],
         "1"
     );
-    // This retained snapshot predates both the write and the durable build
-    // completion. Neither publication may require it to be dropped.
+    // This stored snapshot predates both the write and the durable build
+    // completion. Neither commit may require it to be dropped.
     w.writer
         .send(batch(
             "first",
