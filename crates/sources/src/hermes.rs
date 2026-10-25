@@ -22,6 +22,15 @@ use std::path::Path;
 pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evidence.db"];
 pub const ORIGIN: &str = "hermes";
 
+/// The ID of a session in the Hermes state database at `state_db` on
+/// `machine`, as its parsed rows name it, for the hook events Hermes sends
+/// while it runs.
+pub fn session_at(machine: &str, state_db: &Path, native: &str) -> Option<SessionId> {
+    let source = serde_json::json!({ "machine": machine, "path": state_db });
+    let profile = identity::profile(Some(&source)).ok()??;
+    session_id(ORIGIN, &format!("{native}@profile-{profile}"))
+}
+
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     if observer::recognize(path, head)
         || verification::recognize(path)

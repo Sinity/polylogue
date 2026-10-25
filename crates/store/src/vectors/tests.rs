@@ -56,17 +56,30 @@ fn stores_scans_and_survives_reopening() {
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let v = reader.vectors().unwrap();
-    let near = v.nearest(key, &unit(&[1.0, 0.05, 0.0]), 2).unwrap();
-    assert_eq!(near.len(), 2);
-    assert_eq!(near[0].0, vec![1]);
-    assert!(near[0].1 >= near[1].1);
+    let loaded = std::sync::Arc::new(v.load(key).unwrap());
+    assert_eq!(loaded.vectors(), 3);
+    assert_eq!(loaded.writes, writes());
+    let near = loaded.similarity(&unit(&[1.0, 0.05, 0.0])).unwrap();
+    let (one, two) = (near.of(&[1]).unwrap(), near.of(&[2]).unwrap());
+    assert!(one > two, "{one} {two}");
+    // Text 2's nearer second chunk counts, not its first.
+    assert!(two > 0.9, "{two}");
+    assert!(near.of(&[3]).is_none());
     assert_eq!(v.done(key).unwrap().len(), 3);
     let s = v.status().unwrap();
     assert_eq!(s.keys[0].texts, 2);
     assert_eq!(s.keys[0].vectors, 3);
     assert_eq!(s.keys[0].failures, 1);
     // Another key's vectors never answer this one.
-    assert!(v.nearest("other", &[1.0, 0.0, 0.0], 5).unwrap().is_empty());
+    let other = std::sync::Arc::new(v.load("other").unwrap());
+    assert_eq!(other.vectors(), 0);
+    assert!(
+        other
+            .similarity(&[1.0, 0.0, 0.0])
+            .unwrap()
+            .of(&[1])
+            .is_none()
+    );
 }
 
 #[test]
@@ -166,4 +179,37 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
         .fail("synthetic", &[2; 32], "synthetic failure")
         .unwrap();
     assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
+}
+
+#[test]
+fn pl_similarity_answers_only_inside_its_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1], &[2]]);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let key = "local/test/2/document/unit";
+    reader
+        .vectors_writer()
+        .unwrap()
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: unit(&[1.0, 0.0]),
+            }],
+        )
+        .unwrap();
+    let loaded = std::sync::Arc::new(reader.vectors().unwrap().load(key).unwrap());
+    let similarity = std::sync::Arc::new(loaded.similarity(&[1.0, 0.0]).unwrap());
+    let sql = "SELECT hex(hash) AS h, pl_similarity(hash) AS s FROM text ORDER BY hash";
+    let rows = reader.with_similarity(similarity, || reader.query(sql, &[]).unwrap());
+    assert!(
+        (rows[0]["s"].as_f64().unwrap() - 1.0).abs() < 0.01,
+        "{rows:?}"
+    );
+    assert!(rows[1]["s"].is_null());
+    let outside = reader.query(sql, &[]).unwrap();
+    assert!(outside[0]["s"].is_null());
 }

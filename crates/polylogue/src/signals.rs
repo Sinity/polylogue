@@ -10,8 +10,14 @@
 //!
 //! Each rule fires once per matching row; `for` holds a row until it has
 //! matched that long, judged against the clock, so a deadline fires with no
-//! new data and a row that stops matching first fires nothing; an
-//! interrupting notice waits out quiet hours; past the rate limit a notice waits for the next briefing;
+//! new data and a row that stops matching first fires nothing.
+//!
+//! Every notice is shown by `status`, in the next session-start briefs and
+//! by `polylogue notices`. An interrupting one is also a desktop
+//! notification (`notify.command`, default `notify-send`): rules the
+//! operator writes interrupt unless they say `"interrupt": false`, agents'
+//! rules only when they say `true`. An interrupting notice waits out quiet
+//! hours; past the rate limit a notice is kept for the briefs only;
 //! agent-written rules share one interrupt budget, past which their
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
@@ -132,7 +138,10 @@ pub fn rule(note: &Note) -> Result<Rule, Unusable> {
             .to_owned(),
         query: query.to_owned(),
         for_ms,
-        interrupt: v.get("interrupt").and_then(Value::as_bool).unwrap_or(false),
+        interrupt: v
+            .get("interrupt")
+            .and_then(Value::as_bool)
+            .unwrap_or(!matches!(note.author, Author::Agent(_))),
         quiet_hours,
         rate_limit,
         operator: !matches!(note.author, Author::Agent(_)),
@@ -144,7 +153,7 @@ pub fn rule(note: &Note) -> Result<Rule, Unusable> {
 pub enum How {
     Notice,
     Interrupt,
-    /// Past the rate limit: kept for the next briefing.
+    /// Past the rate limit: kept for the briefs, not pushed.
     Deferred,
 }
 
@@ -271,7 +280,7 @@ impl Evaluator {
                         matched,
                         at: now,
                         how: How::Deferred,
-                        why: Some("rate limit: kept for the next briefing".into()),
+                        why: Some("rate limit: kept for the briefs".into()),
                     });
                     continue;
                 }
@@ -384,6 +393,81 @@ fn history(d: &Daemon) -> Vec<Sent> {
         .collect()
 }
 
+/// Every row a rule's query matches, by key, through all its pages.
+fn matching_rows(
+    reader: &polylogue_store::Reader<'_>,
+    query: &str,
+    now: i64,
+    day: &polylogue_model::LogicalDay,
+) -> Result<Vec<String>, crate::daemon::query::Failure> {
+    let mut rows = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = crate::daemon::query::run(
+            reader,
+            crate::daemon::query::Ask {
+                text: query,
+                cursor: cursor.as_deref(),
+                page_size: Some(1_000),
+                why: false,
+                session: None,
+                now,
+                day: day.clone(),
+                embeddings: false,
+                near: None,
+                fields: &[],
+            },
+        )?;
+        rows.extend(page["rows"].as_array().into_iter().flatten().map(row_key));
+        match page["next"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => return Ok(rows),
+        }
+    }
+}
+
+/// Shows a notice on the desktop through `notify.command` (default
+/// `notify-send`), which takes a summary and a body.
+fn notify(d: &Daemon, rule: &Rule, h: &Handoff) -> Result<(), String> {
+    let machine = polylogue_store::user_writes::machine_id();
+    let command = d
+        .reads
+        .reader()
+        .ok()
+        .and_then(|r| r.setting("notify.command", &machine).ok().flatten())
+        .unwrap_or_else(|| "notify-send".into());
+    let mut words = command.split_whitespace();
+    let program = words.next().ok_or("notify.command is empty")?;
+    let status = std::process::Command::new(program)
+        .args(words)
+        .arg(format!("Polylogue: {}", rule.name))
+        .arg(notice(rule, h))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+/// What `status` shows of the notices of the last day.
+pub fn recent(reader: &polylogue_store::Reader<'_>, now: i64) -> Value {
+    const DAY: i64 = 24 * HOUR;
+    match reader.notices_since(now - DAY) {
+        Ok(found) => json!({
+            "last_day": found.len(),
+            "latest": found.iter().take(5).map(|(row, text)| json!({
+                "id": row.id, "at": row.at, "text": text, "events": row.events,
+            })).collect::<Vec<_>>(),
+        }),
+        Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
 /// Evaluates the signal rules after each change and at each `for`
 /// deadline, so a duration fires with no new data, and records
 /// every handoff as a delivery.
@@ -428,24 +512,8 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
         let mut matches = std::collections::HashMap::new();
         let mut usable = vec![];
         for rule in rules {
-            let ask = crate::daemon::query::Ask {
-                text: &rule.query,
-                cursor: None,
-                page_size: Some(1_000),
-                why: false,
-                session: None,
-                now,
-                day: day.clone(),
-                embeddings: false,
-                near: None,
-                fields: &[],
-            };
-            match crate::daemon::query::run(&reader, ask) {
-                Ok(v) => {
-                    let rows = v["rows"]
-                        .as_array()
-                        .map(|rows| rows.iter().map(row_key).collect())
-                        .unwrap_or_default();
+            match matching_rows(&reader, &rule.query, now, &day) {
+                Ok(rows) => {
                     matches.insert(rule.id.clone(), rows);
                     usable.push(rule);
                 }
@@ -486,18 +554,18 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             {
                 continue;
             }
-            // A notice is shown by `status`, briefings and the change feed;
-            // an interrupt needs the notifier `signals.toml` names, which is
-            // not built, so it stays a notice and says so.
             let event = match h.how {
                 How::Notice => None,
-                How::Interrupt => Some((
-                    polylogue_model::DeliveryOutcome::NotSent,
-                    "no notifier is configured",
-                )),
+                How::Interrupt => Some(match notify(d, rule, &h) {
+                    Ok(()) => (
+                        polylogue_model::DeliveryOutcome::Delivered,
+                        "shown as a desktop notification".to_owned(),
+                    ),
+                    Err(why) => (polylogue_model::DeliveryOutcome::NotSent, why),
+                }),
                 How::Deferred => Some((
                     polylogue_model::DeliveryOutcome::NotSent,
-                    "rate limit: kept for the next briefing",
+                    "rate limit: kept for the briefs".to_owned(),
                 )),
             };
             if let Some((what, detail)) = event {
@@ -506,7 +574,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                     UserWrite::DeliveryEvent {
                         delivery: id,
                         what,
-                        detail: Some(detail.into()),
+                        detail: Some(detail),
                     },
                 ));
             }

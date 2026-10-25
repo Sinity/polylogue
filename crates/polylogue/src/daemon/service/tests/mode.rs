@@ -76,6 +76,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         text: "question".into(),
         cwd: None,
         for_session: None,
+        cursor: None,
     };
     let requests = vec![
         Request::ChatSend {
@@ -189,6 +190,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
                     text: "Stored".into(),
                     cwd: None,
                     for_session: None,
+                    cursor: None,
                 },
                 sender: None,
             },

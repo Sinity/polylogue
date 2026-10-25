@@ -830,6 +830,7 @@ impl Inner {
         let committed: Result<()> = (|| {
             if let Some(e) = &embeddings {
                 e.execute_batch("COMMIT")?;
+                crate::vectors::wrote();
             }
             crate::fault::check("excision.after_embeddings_commit", &request.id)?;
             atx.commit()?;

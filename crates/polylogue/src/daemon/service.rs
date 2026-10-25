@@ -20,6 +20,7 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     page_ends: read::page_ends::Cache,
+    pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
@@ -84,7 +85,15 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Ok(r) => r,
             Err(e) => return store_error(&e),
         };
-        match briefing::prepare(&reader, ask, &request_id, user_writes::now()) {
+        let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+            .ok()
+            .flatten();
+        let near = |q: &str| match &provider {
+            Some(p) => d.warm.similarity(&reader, p, q),
+            None => Err("embeddings are off".into()),
+        };
+        let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
+        match briefing::prepare(&reader, ask, &request_id, user_writes::now(), near) {
             Ok(p) => p,
             Err(e) => return store_error(&e),
         }
@@ -262,6 +271,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "passes": loop_status.passes,
                 "last_pass": loop_status.last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
+                "notices": crate::signals::recent(&reader, now_ms()),
+                "warm": d.warm.summary(),
                 "mode": d.mode,
             }))
         }
@@ -273,15 +284,22 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             session,
             fields,
         } => {
+            let position = match reader.change_position() {
+                Ok(p) => format!("{p}:{}", polylogue_store::vectors::writes()),
+                Err(e) => return store_error(&e),
+            };
+            let key =
+                serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
+            if let Some(data) = d.warm.answer(&key, &position) {
+                return Response::Ok { data };
+            }
             let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
                 .ok()
                 .flatten();
-            let embeddings = crate::embeddings::available(&reader, provider.as_ref());
-            let near = |q: &str| -> Result<String, String> {
-                let Some(p) = &provider else {
-                    return Ok("[]".into());
-                };
-                crate::embeddings::nearest_json(&reader, p, q).map_err(|e| e.to_string())
+            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+            let near = |q: &str| match &provider {
+                Some(p) => d.warm.similarity(&reader, p, q),
+                None => Err("embeddings are off".into()),
             };
             let ask = super::query::Ask {
                 text: &text,
@@ -298,12 +316,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 fields: &fields,
             };
             match super::query::run(&reader, ask) {
-                Ok(data) => Response::Ok { data },
+                Ok(data) => {
+                    d.warm.keep_answer(key, position, cursor.is_none(), &data);
+                    Response::Ok { data }
+                }
                 Err(f) => Response::Error {
                     kind: f.kind,
                     message: f.message,
                     detail: f.detail,
                 },
+            }
+        }
+        Request::Complete { word } => {
+            let position = match reader.change_position() {
+                Ok(p) => p.to_string(),
+                Err(e) => return store_error(&e),
+            };
+            match d.warm.completion(&reader, &position) {
+                Ok(data) => ok(super::warm::candidates(&data, &word)
+                    .into_iter()
+                    .map(|(value, help)| serde_json::json!({"value": value, "help": help}))
+                    .collect::<Vec<_>>()),
+                Err(e) => error("store", e),
             }
         }
         Request::Sql { statement } => match reader.query(&statement, &[]) {
@@ -440,6 +474,55 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             drop(reader);
             write(d, request_id, UserWrite::AddNote { note })
         }
+        Request::AnnotateQuery {
+            request_id,
+            query,
+            mut note,
+        } => {
+            note.targets = match query_targets(&reader, &query) {
+                Ok(targets) => targets,
+                Err(response) => return response,
+            };
+            drop(reader);
+            let count = note.targets.len();
+            match write(d, request_id, UserWrite::AddNote { note }) {
+                Response::Ok { mut data } => {
+                    data["targets"] = serde_json::json!(count);
+                    Response::Ok { data }
+                }
+                other => other,
+            }
+        }
+        Request::Judge {
+            request_id,
+            note,
+            accepted,
+            reason,
+        } => {
+            let found = match reader.note(&note) {
+                Ok(Some(found)) => found,
+                Ok(None) => return error("not_found", format!("no note {note}")),
+                Err(e) => return store_error(&e),
+            };
+            if !found.author.is_agent() {
+                return error(
+                    "bad_request",
+                    "only notes agents wrote are accepted or rejected; revise or withdraw the operator's own",
+                );
+            }
+            drop(reader);
+            let judgment = polylogue_model::NewNote {
+                kind: polylogue_model::NoteKind::Judgment,
+                key: Some(if accepted { "accepted" } else { "rejected" }.into()),
+                value: reason,
+                author: Author::Operator,
+                targets: vec![polylogue_model::Target::Note(found.id)],
+                relations: vec![],
+                revises: None,
+                valid_until: None,
+            };
+            write(d, request_id, UserWrite::AddNote { note: judgment })
+        }
         Request::Withdraw {
             request_id,
             note,
@@ -524,6 +607,78 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     }
 }
 
+/// The references of every row `query` returns, for a note on all of
+/// them: sessions, messages, documents and notes.
+fn query_targets(
+    reader: &polylogue_store::Reader<'_>,
+    query: &str,
+) -> Result<Vec<polylogue_model::Target>, Response> {
+    use polylogue_model::Target;
+    let mut targets = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let ask = super::query::Ask {
+            text: query,
+            cursor: cursor.as_deref(),
+            page_size: Some(1_000),
+            why: false,
+            session: None,
+            now: now_ms(),
+            day: polylogue_model::LogicalDay::system(),
+            embeddings: false,
+            near: None,
+            fields: &[],
+        };
+        let page = super::query::run(reader, ask).map_err(|f| Response::Error {
+            kind: f.kind,
+            message: f.message,
+            detail: f.detail,
+        })?;
+        let unit = page["unit"].as_str().unwrap_or("");
+        if !matches!(unit, "sessions" | "messages" | "documents" | "notes") {
+            return Err(error(
+                "bad_request",
+                format!(
+                    "a note applies to the rows of a sessions, messages, documents or notes query, not {unit}"
+                ),
+            ));
+        }
+        for row in page["rows"].as_array().into_iter().flatten() {
+            let Some(id) = row["id"].as_str() else {
+                continue;
+            };
+            let target = match unit {
+                "sessions" => polylogue_model::SessionId::parse(id)
+                    .map(Target::Session)
+                    .ok(),
+                "messages" => polylogue_model::MessageId::parse(id)
+                    .map(Target::Message)
+                    .ok(),
+                "documents" => polylogue_model::DocumentId::parse(id)
+                    .map(Target::Document)
+                    .ok(),
+                _ => Some(Target::Note(id.to_owned())),
+            };
+            if let Some(t) = target
+                && !targets.contains(&t)
+            {
+                targets.push(t);
+            }
+        }
+        match page["next"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    if targets.is_empty() {
+        return Err(error(
+            "empty",
+            "the query returns no rows; nothing was noted",
+        ));
+    }
+    Ok(targets)
+}
+
 /// Whole sessions in the structured export format (`json`, read back by
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
 fn export(reader: &polylogue_store::Reader<'_>, targets: &[ReadTarget], format: &str) -> Response {
@@ -589,6 +744,7 @@ impl Runtime {
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
         self.daemon.page_ends.clear();
+        self.daemon.warm.clear();
         self.daemon.reads.close();
     }
 
@@ -773,6 +929,7 @@ pub fn start(
         archive,
         reads,
         page_ends: read::page_ends::Cache::default(),
+        warm: super::warm::Warm::default(),
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -817,6 +974,20 @@ pub fn start(
             .name("polylogue-signals".into())
             .spawn(move || crate::signals::run(&daemon, &stopped))?,
     );
+    // Load the vectors `near:` ranks by before the first query needs them.
+    let daemon = Arc::clone(&runtime.daemon);
+    std::thread::Builder::new()
+        .name("polylogue-warm".into())
+        .spawn(move || {
+            let Ok(reader) = daemon.reads.reader() else {
+                return;
+            };
+            if let Ok(Some(provider)) =
+                crate::embeddings::Provider::from_settings(&reader, &machine_id())
+            {
+                let _ = daemon.warm.vectors(&reader, &provider);
+            }
+        })?;
     Ok(runtime)
 }
 

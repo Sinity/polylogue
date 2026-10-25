@@ -10,9 +10,13 @@
 //!   accent-blind substring tests;
 //! - `pl_random(text_key, decimal_seed)`: a seeded integer order value;
 //! - `pl_day(ms, zone, start_minutes)`, `pl_week(…)`, `pl_month(…)`: the
-//!   logical date, ISO week or month label of an instant.
+//!   logical date, ISO week or month label of an instant;
+//! - `pl_similarity(text_hash)`: the text's similarity to the query text of
+//!   a `near:` ranking ([`with_similarity`]), NULL for a text with no
+//!   vector or outside such a query.
 //!
-//! All are deterministic, so SQLite may use them in indexes and caches.
+//! All but `pl_similarity` are deterministic, so SQLite may use them in
+//! indexes and caches.
 
 use polylogue_model::LogicalDay;
 use rusqlite::Connection;
@@ -63,7 +67,37 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function("pl_month", 3, FLAGS, |ctx| {
         label(ctx, LogicalDay::month_label)
     })?;
+    conn.create_scalar_function("pl_similarity", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
+        let Some(hash) = ctx.get::<Option<Vec<u8>>>(0)? else {
+            return Ok(None);
+        };
+        Ok(SIMILARITY.with(|s| s.borrow().as_ref().and_then(|s| s.of(&hash)).map(f64::from)))
+    })?;
     Ok(())
+}
+
+thread_local! {
+    /// The similarities `pl_similarity` answers from while a `near:` query
+    /// runs on this thread.
+    static SIMILARITY: RefCell<Option<std::sync::Arc<crate::vectors::Similarity>>> =
+        const { RefCell::new(None) };
+}
+
+/// Runs `f` with `pl_similarity` answering from `similarity`; the previous
+/// answer source comes back afterwards, also when `f` panics.
+pub(crate) fn with_similarity<T>(
+    similarity: std::sync::Arc<crate::vectors::Similarity>,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<std::sync::Arc<crate::vectors::Similarity>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            SIMILARITY.with(|s| *s.borrow_mut() = previous);
+        }
+    }
+    let _restore = Restore(SIMILARITY.with(|s| s.borrow_mut().replace(similarity)));
+    f()
 }
 
 /// `pl_percentile(x, p)`: the nearest-rank p-th percentile of the known

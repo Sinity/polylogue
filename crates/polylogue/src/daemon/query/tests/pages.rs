@@ -317,43 +317,35 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
 }
 
 #[test]
-fn near_single_page_succeeds_but_semantic_continuation_never_calls_the_ranker() {
-    use std::cell::Cell;
+fn near_ranked_pages_continue_like_any_other() {
     let w = morrow();
-    let calls = Cell::new(0);
-    let rank = |_: &str| {
-        calls.set(calls.get() + 1);
-        Ok("[]".to_owned())
-    };
+    let s = similarity(&w, "%0003-4000%");
+    let near = |_: &str| Ok(std::sync::Arc::clone(&s));
     let text = "kind:* near:\"synthetic ranking\"";
-    let mut single = ask(text);
-    single.page_size = Some(100);
-    single.embeddings = true;
-    single.near = Some(&rank);
-    assert_eq!(run_q(&w, single).unwrap()["count"], 8);
-    assert_eq!(calls.get(), 1);
-    let pool = w.fx.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let mut request = ask(text);
-    request.page_size = Some(1);
-    request.embeddings = true;
-    request.near = Some(&rank);
-    let opts = options(&reader, &request, request.now, 7).unwrap();
-    let program = polylogue_query::compile(text, &opts).unwrap();
-    let cursor = Cursor::new(
-        vec![Value::Null; program.order.len()],
-        program.now,
-        7,
-        page::question(&program, &opts, false).unwrap(),
-    )
-    .encode()
-    .unwrap();
-    drop(reader);
-    drop(pool);
-    calls.set(0);
-    request.cursor = Some(&cursor);
-    assert_eq!(run_q(&w, request).unwrap_err().kind, "not_built");
-    assert_eq!(calls.get(), 0);
+    let mut whole = ask(text);
+    whole.page_size = Some(100);
+    whole.embeddings = true;
+    whole.near = Some(&near);
+    let expected = run_q(&w, whole).unwrap();
+    assert_eq!(expected["count"], 8);
+    let mut first = ask(text);
+    first.page_size = Some(3);
+    first.embeddings = true;
+    first.near = Some(&near);
+    let first = run_q(&w, first).unwrap();
+    let mut rows = first["rows"].as_array().unwrap().clone();
+    let mut cursor = first["next"].as_str().map(str::to_owned);
+    while let Some(next) = cursor {
+        let mut request = ask(text);
+        request.page_size = Some(3);
+        request.embeddings = true;
+        request.near = Some(&near);
+        request.cursor = Some(&next);
+        let page = run_q(&w, request).unwrap();
+        rows.extend(page["rows"].as_array().unwrap().iter().cloned());
+        cursor = page["next"].as_str().map(str::to_owned);
+    }
+    assert_eq!(&rows, expected["rows"].as_array().unwrap());
 }
 
 #[test]

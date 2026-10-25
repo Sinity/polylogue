@@ -640,6 +640,12 @@ pub static FIELDS: &[Field] = &[
         "operator, a session ID, agent or script",
     ).sql("{r}.author"),
     f(Notes, "agent", Bool, "an agent wrote it").sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
+    f(
+        Notes,
+        "judged",
+        Match,
+        "the operator's judgment of this revision: accepted or rejected",
+    ).sql_fn(notes_judged),
     sp(Notes, "target", "a reference it is about: session:ID, repo:NAME, cwd:PATH, …", custom::note_target),
     f(
         Notes,
@@ -1171,6 +1177,18 @@ fn sessions_peers(a: &Aliases, now: i64) -> String {
 
 fn notes_current(a: &Aliases) -> String {
     format!("({})", current_note(&a.row))
+}
+
+/// The key of the operator's latest live `judgment` note on this exact
+/// revision: `accepted` or `rejected`.
+fn notes_judged(a: &Aliases) -> String {
+    format!(
+        "(SELECT j.key FROM a.note j JOIN a.note_target jt ON jt.note_id = j.id \
+         WHERE jt.ref = 'note:' || {r}.id AND j.kind = 'judgment' AND j.author = 'operator' \
+         AND {live} ORDER BY j.commit_seq DESC LIMIT 1)",
+        r = a.row,
+        live = live_note("j"),
+    )
 }
 
 fn notes_withdrawn(a: &Aliases) -> String {

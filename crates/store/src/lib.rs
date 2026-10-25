@@ -47,7 +47,9 @@ mod zip_members;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
-pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
+pub use context::{
+    DeliveryRow, FailingCommand, NearbySession, OpenBead, OpenItems, Prompt, SessionWork,
+};
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
 };

@@ -117,3 +117,19 @@ fn reader_location_uses_the_written_port_and_requires_a_live_own_listener() {
     drop(listener);
     assert!(reader_url_in(dir.path()).is_err());
 }
+
+#[test]
+fn only_a_listener_on_127_0_0_1_counts() {
+    let port = 0x1F4D;
+    let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:1F4D 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1
+   1: 0101A8C0:1F4D 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 2
+   2: 0100007F:1F4D 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1002        0 3
+";
+    let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
+    // The wildcard and the LAN address listen on the same port first in the
+    // table; only the loopback listener's owner is returned.
+    assert_eq!(listener_in(table, &v4_hex(loopback)), Some(1002));
+    let without = table.lines().take(3).collect::<Vec<_>>().join("\n");
+    assert_eq!(listener_in(&without, &v4_hex(loopback)), None);
+}

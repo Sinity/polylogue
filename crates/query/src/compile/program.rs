@@ -482,8 +482,8 @@ impl<'a> Compiler<'a> {
                     cols.push((n, e, k, reference));
                 }
             }
-            if let Some(rank) = &self.rank {
-                cols.push(("rank".into(), rank.clone(), ColKind::Number, None));
+            if let Some(rank) = self.ranking(&scope) {
+                cols.push(("rank".into(), rank, ColKind::Number, None));
                 columns.push(Column {
                     name: "rank".into(),
                     kind: ColKind::Number,
@@ -564,7 +564,7 @@ impl<'a> Compiler<'a> {
             sql,
             params: self.params,
             columns,
-            ranked: self.rank.is_some(),
+            ranked: self.rank.is_some() || self.near_rank.is_some(),
             text_terms: self.text_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
@@ -627,14 +627,34 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
+    /// How the rows rank, lower first: by full-text relevance, by
+    /// similarity to a `near:` text, or, with both, by reciprocal rank
+    /// fusion of the two orders over the rows the conditions keep (each
+    /// row scores `1/(60 + its place)` in each order it is in; a row with
+    /// no vector is in the text order only).
+    pub(super) fn ranking(&self, scope: &RowContext) -> Option<String> {
+        match (&self.rank, &self.near_rank) {
+            (None, None) => None,
+            (Some(rank), None) | (None, Some(rank)) => Some(rank.clone()),
+            (Some(text), Some(near)) => {
+                let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+                Some(format!(
+                    "(-(1.0 / (60 + row_number() OVER (ORDER BY {text} IS NULL, {text}, {pk}))) \
+                     - CASE WHEN {near} IS NULL THEN 0.0 \
+                     ELSE 1.0 / (60 + row_number() OVER (ORDER BY {near} IS NULL, {near}, {pk})) END)"
+                ))
+            }
+        }
+    }
+
     pub(super) fn default_order(&self, scope: &RowContext) -> Vec<String> {
         let a = &scope.a;
         let spec = units::spec(scope.unit);
         let time = a.expand(spec.time);
-        if let Some(rank) = &self.rank {
+        if let Some(rank) = self.ranking(scope) {
             return vec![
                 format!("{rank} IS NULL"),
-                rank.clone(),
+                rank,
                 format!("{time} IS NULL"),
                 format!("{time} DESC"),
             ];

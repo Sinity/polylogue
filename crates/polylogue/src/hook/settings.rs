@@ -1,17 +1,50 @@
-//! Merge only the hook commands this installer owns.
+//! Merge only the hook commands this installer owns, into Claude Code's
+//! `settings.json` or Codex's `hooks.json` (the same layout). Hermes reads
+//! its hooks from `config.yaml`; its entries are listed in the README.
 
-use super::EVENTS;
+use super::{EVENTS, Harness};
 use serde_json::{Value, json};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 mod parse;
 
-/// Claude Code's settings file in its configured directory.
-pub fn settings_path() -> PathBuf {
-    polylogue_engine::Config::from_env()
-        .root(polylogue_sources::claude_code::ROOT)
-        .join("settings.json")
+/// The events Codex calls hooks on.
+const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+];
+
+/// The harness's hook settings file in its configured directory.
+pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
+    let config = polylogue_engine::Config::from_env();
+    match harness {
+        Harness::ClaudeCode => Ok(config
+            .root(polylogue_sources::claude_code::ROOT)
+            .join("settings.json")),
+        Harness::Codex => Ok(config.root(polylogue_sources::codex::ROOT).join("hooks.json")),
+        Harness::Hermes => Err(
+            "Hermes reads its hooks from config.yaml: add `hooks: {pre_llm_call: [{command: \"polylogue hook pre_llm_call --harness hermes\"}]}`"
+                .into(),
+        ),
+    }
+}
+
+fn harness_events(harness: Harness) -> &'static [&'static str] {
+    match harness {
+        Harness::Codex => CODEX_EVENTS,
+        _ => EVENTS,
+    }
+}
+
+fn command(harness: Harness, event: &str) -> String {
+    match harness {
+        Harness::ClaudeCode => format!("polylogue hook {event}"),
+        _ => format!("polylogue hook {event} --harness {}", harness.origin()),
+    }
 }
 
 fn invalid(path: &str, expected: &str) -> io::Error {
@@ -63,17 +96,32 @@ fn validate(settings: &Value) -> io::Result<()> {
     Ok(())
 }
 
+/// A command this installer wrote: `polylogue hook EVENT`, with
+/// `--harness NAME` for a harness other than Claude Code, and nothing else.
 fn ours(hook: &Value) -> bool {
-    hook["type"] == "command"
-        && hook["command"]
-            .as_str()
-            .and_then(|command| command.strip_prefix("polylogue hook "))
-            .is_some_and(|event| EVENTS.contains(&event))
+    let Some(rest) = hook["command"]
+        .as_str()
+        .and_then(|command| command.strip_prefix("polylogue hook "))
+    else {
+        return false;
+    };
+    let words: Vec<&str> = rest.split(' ').collect();
+    let event = words[0];
+    let harness_ok = match words[1..] {
+        [] => true,
+        ["--harness", name] => Harness::parse(name).is_some(),
+        _ => false,
+    };
+    hook["type"] == "command" && EVENTS.contains(&event) && harness_ok
 }
 
 /// Merge Polylogue's commands, keeping other hooks and entry metadata.
 /// Refuse invalid containers instead of replacing their contents.
-pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Value> {
+pub(super) fn merge_hooks(
+    mut settings: Value,
+    harness: Harness,
+    install: bool,
+) -> io::Result<Value> {
     validate(&settings)?;
     let settings_object = settings.as_object_mut().expect("validated settings object");
     if !install && !settings_object.contains_key("hooks") {
@@ -84,7 +132,7 @@ pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Valu
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .expect("validated hooks object");
-    for event in EVENTS {
+    for event in harness_events(harness) {
         if let Some(entries) = events.get_mut(*event) {
             let entries = entries.as_array_mut().expect("validated event array");
             let had_entries = !entries.is_empty();
@@ -103,7 +151,7 @@ pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Valu
         if install {
             events.entry(*event).or_insert_with(|| json!([]))
                 .as_array_mut().expect("validated event array").push(json!({
-                    "hooks": [{"type":"command", "command":format!("polylogue hook {event}"),
+                    "hooks": [{"type":"command", "command":command(harness, event),
                         "timeout":if *event=="SessionStart" || *event=="UserPromptSubmit" {10} else {2}}]
                 }));
         }
@@ -114,7 +162,7 @@ pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Valu
 /// Installs or removes the hooks in a settings file, atomically. A file
 /// that is a symlink (managed by Home Manager or similar) is refused: the
 /// hooks belong in the file's declared source.
-pub fn install(path: &Path, install: bool) -> std::io::Result<()> {
+pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<()> {
     if path.is_symlink() {
         return Err(std::io::Error::other(format!(
             "{} is a symlink to a managed file; add the hooks in its source instead",
@@ -126,7 +174,7 @@ pub fn install(path: &Path, install: bool) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
         Err(e) => return Err(e),
     };
-    let merged = merge_hooks(current, install)?;
+    let merged = merge_hooks(current, harness, install)?;
     let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
     text.push('\n');
     let dir = path.parent().unwrap_or(Path::new("."));

@@ -3,15 +3,31 @@
 //! The texts come from `index.db`'s `text` table; a vector outlives every
 //! index generation because the hash, not the row, names its text.
 //!
-//! Search is an exact scan: every vector of one key, dot product against a
-//! unit query vector, the best chunk per text.
+//! Search is a scan of every vector of one key held in memory ([`Loaded`]):
+//! a dot product against a unit query vector, the best chunk per text. The
+//! daemon keeps the loaded vectors and reloads them after [`writes`]
+//! changes.
 
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+/// Commits that stored or removed vectors in this process. Only the daemon
+/// writes `embeddings.db` (its embedding build and excision), so a copy
+/// loaded at the same count holds what the file holds.
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn writes() -> u64 {
+    WRITES.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) fn wrote() {
+    WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
 
 /// One vector to store.
 #[derive(Debug, Clone, PartialEq)]
@@ -176,6 +192,7 @@ impl Vectors {
             }
         }
         tx.commit()?;
+        wrote();
         Ok(())
     }
 
@@ -204,52 +221,74 @@ impl Vectors {
         Ok(())
     }
 
-    /// The `k` texts nearest to `query` (a unit vector) under `key`, best
-    /// first, as `(text hash, cosine similarity)`.
-    pub fn nearest(&self, key: &str, query: &[f32], k: usize) -> Result<Vec<(Vec<u8>, f32)>> {
+    /// An embedding key starting with `prefix` that has vectors, without
+    /// counting them.
+    pub fn key_with_prefix(&self, prefix: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
         let _read = self.read_transaction()?;
-        let mut best: HashMap<Vec<u8>, f32> = HashMap::new();
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT model FROM embedded WHERE substr(model, 1, length(?1)) = ?1 LIMIT 1",
+                [prefix],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Every vector of `key` in memory, for `near:`. Each value is kept as
+    /// one signed byte scaled by its vector's largest value: a quarter of
+    /// the size, and similarities within about 1% of the stored ones,
+    /// which keeps their order for ranking.
+    pub fn load(&self, key: &str) -> Result<Loaded> {
+        let _read = self.read_transaction()?;
+        let mut loaded = Loaded {
+            key: key.to_owned(),
+            writes: writes(),
+            dims: 0,
+            texts: HashMap::new(),
+            owner: Vec::new(),
+            scale: Vec::new(),
+            values: Vec::new(),
+        };
         let mut stmt = self
             .conn
-            .prepare("SELECT text_hash, vector FROM embedded WHERE model = ?1 AND dims = ?2")?;
-        let rows = stmt.query_map(params![key, query.len() as i64], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })?;
-        for row in rows {
-            let (hash, bytes) = row?;
-            if bytes.len() != query.len() * 4 {
+            .prepare("SELECT text_hash, dims, vector FROM embedded WHERE model = ?1")?;
+        let mut rows = stmt.query([key])?;
+        while let Some(row) = rows.next()? {
+            let hash: Vec<u8> = row.get(0)?;
+            let dims = usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0);
+            let bytes: Vec<u8> = row.get(2)?;
+            if loaded.dims == 0 {
+                loaded.dims = dims;
+            }
+            if dims != loaded.dims || bytes.len() != dims * 4 {
                 return Err(StoreError::Invalid(format!(
                     "a stored vector under {key} has {} bytes, not {}",
                     bytes.len(),
-                    query.len() * 4
+                    loaded.dims * 4
                 )));
             }
-            let score: f32 = bytes
+            let next = u32::try_from(loaded.texts.len()).unwrap_or(u32::MAX);
+            let text = *loaded.texts.entry(hash.into_boxed_slice()).or_insert(next);
+            let floats: Vec<f32> = bytes
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .zip(query)
-                .map(|(b, q)| f32::from_le_bytes(*b) * q)
-                .sum();
-            let e = best.entry(hash).or_insert(f32::MIN);
-            if score > *e {
-                *e = score;
-            }
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
+            let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
+            let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
+            loaded.owner.push(text);
+            loaded.scale.push(scale);
+            loaded.values.extend(
+                floats
+                    .iter()
+                    .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8),
+            );
         }
-        // Top k by score.
-        let mut heap: BinaryHeap<std::cmp::Reverse<(Ordered, Vec<u8>)>> = BinaryHeap::new();
-        for (hash, score) in best {
-            heap.push(std::cmp::Reverse((Ordered(score), hash)));
-            if heap.len() > k {
-                heap.pop();
-            }
-        }
-        let mut out: Vec<(Vec<u8>, f32)> = heap
-            .into_iter()
-            .map(|std::cmp::Reverse((s, h))| (h, s.0))
-            .collect();
-        out.sort_by(|a, b| b.1.total_cmp(&a.1));
-        Ok(out)
+        loaded.texts.shrink_to_fit();
+        Ok(loaded)
     }
 
     pub fn status(&self) -> Result<VectorStatus> {
@@ -271,21 +310,6 @@ impl Vectors {
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(VectorStatus { keys })
-    }
-}
-
-/// `f32` ordered by `total_cmp`, for the heap.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Ordered(f32);
-impl Eq for Ordered {}
-impl PartialOrd for Ordered {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Ordered {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
     }
 }
 
@@ -344,26 +368,98 @@ impl Reader<'_> {
         }
         Ok(out)
     }
-
-    /// `text.id` for each hash the index holds, in the given order.
-    pub fn text_ids(&self, hashes: &[Vec<u8>]) -> Result<Vec<Option<i64>>> {
-        let mut stmt = self
-            .conn()?
-            .prepare_cached("SELECT id FROM text WHERE hash = ?1")?;
-        hashes
-            .iter()
-            .map(|h| {
-                use rusqlite::OptionalExtension;
-                Ok(stmt.query_row([h], |r| r.get(0)).optional()?)
-            })
-            .collect()
-    }
 }
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// Every vector of one embedding key, in memory.
+pub struct Loaded {
+    pub key: String,
+    /// [`writes`] when loaded: the copy is current while it is unchanged.
+    pub writes: u64,
+    pub dims: usize,
+    /// Text hash to text number.
+    texts: HashMap<Box<[u8]>, u32>,
+    /// Per vector: its text, and the factor its bytes are scaled by.
+    owner: Vec<u32>,
+    scale: Vec<f32>,
+    values: Vec<i8>,
+}
+
+impl Loaded {
+    pub fn vectors(&self) -> usize {
+        self.owner.len()
+    }
+
+    /// The similarity of every text to `query`, a unit vector of the same
+    /// dimension: its best chunk's.
+    pub fn similarity(self: &Arc<Self>, query: &[f32]) -> Result<Similarity> {
+        if query.len() != self.dims && !self.owner.is_empty() {
+            return Err(StoreError::Invalid(format!(
+                "the query vector has {} values; vectors under {} have {}",
+                query.len(),
+                self.key,
+                self.dims
+            )));
+        }
+        let dims = self.dims.max(1);
+        let n = self.owner.len();
+        let mut scores = vec![0f32; n];
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8);
+        let per = n.div_ceil(workers).max(1);
+        std::thread::scope(|scope| {
+            for (part, out) in scores.chunks_mut(per).enumerate() {
+                let first = part * per;
+                scope.spawn(move || {
+                    for (i, score) in out.iter_mut().enumerate() {
+                        let v = first + i;
+                        let row = &self.values[v * dims..(v + 1) * dims];
+                        let dot: f32 = row.iter().zip(query).map(|(a, q)| f32::from(*a) * q).sum();
+                        *score = dot * self.scale[v];
+                    }
+                });
+            }
+        });
+        let mut best = vec![f32::MIN; self.texts.len()];
+        for (v, score) in scores.into_iter().enumerate() {
+            let text = self.owner[v] as usize;
+            if score > best[text] {
+                best[text] = score;
+            }
+        }
+        Ok(Similarity {
+            loaded: Arc::clone(self),
+            best,
+        })
+    }
+}
+
+/// Every text's similarity to one query, looked up by text hash while a
+/// query runs (`pl_similarity`, [`Reader::with_similarity`]).
+pub struct Similarity {
+    loaded: Arc<Loaded>,
+    best: Vec<f32>,
+}
+
+impl Similarity {
+    pub fn of(&self, hash: &[u8]) -> Option<f32> {
+        let text = *self.loaded.texts.get(hash)?;
+        self.best.get(text as usize).copied()
+    }
+}
+
+impl Reader<'_> {
+    /// Runs `f` with `pl_similarity(text_hash)` answering from
+    /// `similarity`, on this thread, where the reader's queries run.
+    pub fn with_similarity<T>(&self, similarity: Arc<Similarity>, f: impl FnOnce() -> T) -> T {
+        crate::sql_functions::with_similarity(similarity, f)
+    }
 }
 
 #[cfg(test)]

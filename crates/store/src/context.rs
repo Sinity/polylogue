@@ -1,5 +1,6 @@
-//! Reads that context assembly needs: sessions by working directory, a
-//! session's own prompts, earlier deliveries and settings.
+//! Reads that context assembly needs: sessions by working directory, what
+//! each did, open Beads and failing commands there, a session's own
+//! prompts, earlier deliveries and settings.
 
 use crate::read::{parse_name, ts};
 use crate::{Reader, Result};
@@ -51,6 +52,53 @@ pub struct DeliveryRow {
     pub seq: i64,
     /// What happened to it, in order: delivered, failed, not_sent, used.
     pub events: Vec<String>,
+}
+
+/// What a session did, from its parsed rows and work graph: the outcome a
+/// brief reports, rather than its title.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SessionWork {
+    /// The text of its last model message.
+    pub last_answer: Option<String>,
+    /// Files it wrote or edited successfully, most recent first.
+    pub files_changed: Vec<String>,
+    /// Commits (short hashes) and pull requests (`owner/repo#n`) its
+    /// commands' output names.
+    pub commits: Vec<String>,
+    pub pull_requests: Vec<String>,
+    /// Test, build and lint commands that passed and failed.
+    pub checks_passed: u64,
+    pub checks_failed: u64,
+    /// Beads it claimed, each with the state its own commands left:
+    /// `open`, `closed` or `released`.
+    pub beads: Vec<(String, String)>,
+    /// Its todo or plan items: how many are completed, and the others, in
+    /// progress first.
+    pub plan_done: u64,
+    pub plan_open: Vec<String>,
+}
+
+/// A command that failed under a directory with no later success of the
+/// same command there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FailingCommand {
+    /// The command's shape (`cargo test`).
+    pub command: String,
+    /// The latest failing command as given.
+    pub latest: Option<String>,
+    pub exit_code: Option<i64>,
+    pub at: Option<Timestamp>,
+    pub session: String,
+    /// Failures since the window began.
+    pub times: u64,
+}
+
+/// A Bead whose latest claim under a directory is still open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OpenBead {
+    pub id: String,
+    pub session: String,
+    pub since: Option<Timestamp>,
 }
 
 /// What a session left open: the evidence a resumable session is ranked
@@ -279,5 +327,234 @@ impl Reader<'_> {
                 |r| r.get(0),
             )
             .optional()?)
+    }
+
+    /// What a session did; `None` when there is no such session.
+    pub fn session_work(&self, session: &str) -> Result<Option<SessionWork>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn()?;
+        let Some(pk) = conn
+            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
+            .query_row([session], |r| r.get::<_, i64>(0))
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut work = SessionWork::default();
+        let last: Option<i64> = conn
+            .prepare_cached(
+                "SELECT m.pk FROM message m
+                  WHERE m.session_pk = ?1 AND m.written_by = 'model' AND m.duplicate_of IS NULL
+                    AND EXISTS (SELECT 1 FROM block b WHERE b.message_pk = m.pk AND b.kind = 'text')
+                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
+                  LIMIT 1",
+            )?
+            .query_row([pk], |r| r.get(0))
+            .optional()?;
+        if let Some(message) = last {
+            let mut parts = Vec::new();
+            let mut stmt = conn.prepare_cached(
+                "SELECT t.body FROM block b JOIN text t ON t.id = b.text_id
+                  WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
+            )?;
+            for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
+                parts.push(crate::encoding::unpack_text(&body?)?);
+            }
+            let text = parts.join("\n");
+            work.last_answer = (!text.trim().is_empty()).then_some(text);
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT path FROM tool_call
+              WHERE session_pk = ?1 AND action IN ('file_write', 'file_edit')
+                AND outcome = 'ok' AND path IS NOT NULL
+              GROUP BY path ORDER BY max(at) DESC, path",
+        )?;
+        for path in stmt.query_map([pk], |r| r.get::<_, String>(0))? {
+            work.files_changed.push(path?);
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT key, title FROM work_node
+              WHERE session_pk = ?1 AND kind = 'artifact' ORDER BY at, pk",
+        )?;
+        for row in stmt.query_map([pk], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (key, title) = row?;
+            if key.starts_with("commit:") {
+                work.commits.push(title.chars().take(10).collect());
+            } else {
+                work.pull_requests.push(title);
+            }
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT state, count(*) FROM work_node
+              WHERE session_pk = ?1 AND kind = 'verification' GROUP BY state",
+        )?;
+        for row in stmt.query_map([pk], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))
+        })? {
+            let (state, n) = row?;
+            let n = u64::try_from(n).unwrap_or(0);
+            match state.as_deref() {
+                Some("ok") => work.checks_passed += n,
+                Some("error") => work.checks_failed += n,
+                _ => {}
+            }
+        }
+        let mut stmt = conn.prepare_cached(
+            "SELECT g.key, g.title, coalesce(a.state, '') FROM work_node a
+               JOIN work_edge e ON e.from_pk = a.pk AND e.kind = 'pursues'
+               JOIN work_node g ON g.pk = e.to_pk
+              WHERE a.session_pk = ?1 AND a.kind = 'attempt'
+              ORDER BY a.at, a.pk",
+        )?;
+        let mut in_progress = Vec::new();
+        let mut pending = Vec::new();
+        for row in stmt.query_map([pk], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })? {
+            let (key, title, state) = row?;
+            if key.starts_with("bead:") {
+                work.beads.push((title, state));
+            } else if key.starts_with("todo:") {
+                match state.as_str() {
+                    "completed" => work.plan_done += 1,
+                    "open" => in_progress.push(title),
+                    _ => pending.push(title),
+                }
+            }
+        }
+        in_progress.extend(pending);
+        work.plan_open = in_progress;
+        Ok(Some(work))
+    }
+
+    /// Commands that failed since `since` in sessions under `dirs`, with no
+    /// later success of the same command shape there, most recent first.
+    pub fn failing_commands(&self, dirs: &[String], since: i64) -> Result<Vec<FailingCommand>> {
+        let conn = self.conn()?;
+        let under = |alias: &str| {
+            format!(
+                "EXISTS (SELECT 1 FROM json_each(?1) d WHERE {alias}.cwd = d.value \
+                 OR ({alias}.cwd >= d.value || '/' AND {alias}.cwd < d.value || '0'))"
+            )
+        };
+        let sql = format!(
+            "SELECT t.command_norm, t.command, t.exit_code, t.at, s.id,
+                    (SELECT count(*) FROM tool_call f JOIN session fs ON fs.pk = f.session_pk
+                      WHERE f.command_norm = t.command_norm AND f.outcome = 'error'
+                        AND f.at >= ?2 AND {fs})
+               FROM tool_call t JOIN session s ON s.pk = t.session_pk
+              WHERE t.outcome = 'error' AND t.command_norm IS NOT NULL AND t.at >= ?2 AND {s}
+                AND NOT EXISTS (
+                    SELECT 1 FROM tool_call u JOIN session us ON us.pk = u.session_pk
+                     WHERE u.command_norm = t.command_norm AND u.outcome = 'ok'
+                       AND u.at > t.at AND {us})
+              ORDER BY t.at DESC, t.pk DESC",
+            fs = under("fs"),
+            s = under("s"),
+            us = under("us"),
+        );
+        let dirs = serde_json::to_string(dirs)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params![dirs, since], |r| {
+            Ok(FailingCommand {
+                command: r.get(0)?,
+                latest: r.get(1)?,
+                exit_code: r.get(2)?,
+                at: ts(r.get(3)?),
+                session: r.get(4)?,
+                times: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+            })
+        })?;
+        let mut out: Vec<FailingCommand> = Vec::new();
+        for row in rows {
+            let row = row?;
+            // The latest failure of each command shape stands for it.
+            if !out.iter().any(|o| o.command == row.command) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Beads whose latest claim by a session under `dirs` is still open,
+    /// most recent first.
+    pub fn open_beads(&self, dirs: &[String]) -> Result<Vec<OpenBead>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT g.title, a.state, a.at, s.id FROM work_node a
+               JOIN work_edge e ON e.from_pk = a.pk AND e.kind = 'pursues'
+               JOIN work_node g ON g.pk = e.to_pk
+               JOIN session s ON s.pk = a.session_pk
+              WHERE a.kind = 'attempt' AND g.key >= 'bead:' AND g.key < 'bead;'
+                AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
+                            OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
+              ORDER BY a.at IS NULL, a.at DESC, a.pk DESC",
+        )?;
+        let dirs = serde_json::to_string(dirs)?;
+        let mut seen: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+        for row in stmt.query_map([dirs], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })? {
+            let (id, state, at, session) = row?;
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id.clone());
+            if state.as_deref() == Some("open") {
+                out.push(OpenBead {
+                    id,
+                    session,
+                    since: ts(at),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The text of a message's text blocks, joined.
+    pub fn message_text(&self, message: &str) -> Result<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT t.body FROM message m JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
+               JOIN text t ON t.id = b.text_id
+              WHERE m.id = ?1 ORDER BY b.idx",
+        )?;
+        let mut parts = Vec::new();
+        for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
+            parts.push(crate::encoding::unpack_text(&body?)?);
+        }
+        Ok((!parts.is_empty()).then(|| parts.join("\n")))
+    }
+
+    /// Signal notices recorded since `since` (Unix ms), newest first, with
+    /// their text and what happened to each.
+    pub fn notices_since(&self, since: i64) -> Result<Vec<(DeliveryRow, String)>> {
+        let conn = self.conn()?;
+        let ids: Vec<String> = conn
+            .prepare_cached(
+                "SELECT id FROM a.delivery WHERE sender = 'signal' AND at >= ?1
+                  ORDER BY at DESC, commit_seq DESC",
+            )?
+            .query_map([since], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(found) = self.delivery(&id)? {
+                out.push(found);
+            }
+        }
+        Ok(out)
     }
 }

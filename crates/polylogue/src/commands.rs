@@ -246,6 +246,32 @@ const EMBED_ARGS: &[Arg] = &[
     opt("yes", Kind::Bool, "Confirm a build with a paid provider"),
 ];
 
+const QUERY_TARGET: Arg = opt(
+    "query",
+    Kind::Text,
+    "Note every row this query returns instead of named targets",
+);
+const JUDGE_ARGS: &[Arg] = &[
+    pos("note", Kind::Text, "The note's ID (one revision)"),
+    opt("reason", Kind::Text, "Why"),
+];
+
+const HOOKS_ARGS: &[Arg] = &[
+    Arg {
+        default: Some("claude-code"),
+        ..opt(
+            "harness",
+            Kind::Choice(&["claude-code", "codex"]),
+            "Whose settings",
+        )
+    },
+    opt(
+        "settings",
+        Kind::Text,
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+    ),
+];
+
 /// A command on the command line only, sent to the daemon unless its
 /// action is local.
 const CLI: Command = Command {
@@ -276,7 +302,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
     },
     Group {
         name: "chat",
@@ -504,9 +530,10 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "note add",
-        help: "Add a note to one or more targets: session:<id>, message:<id>, document:<id>, tool:<session>#<call>, repo:<name>, cwd:<path>, work:<n>. Over MCP the author is the calling agent",
+        help: "Add a note to one or more targets: session:<id>, message:<id>, document:<id>, tool:<session>#<call>, repo:<name>, cwd:<path>, work:<n>; or, with `--query`, to every row a sessions, messages, documents or notes query returns. Over MCP the author is the calling agent, and the note waits for the operator to accept it",
         args: &[
-            pos("targets", Kind::List, "What the note is about"),
+            pos_opt("targets", Kind::List, "What the note is about"),
+            QUERY_TARGET,
             Arg {
                 required: true,
                 short: Some('m'),
@@ -539,9 +566,10 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "note tag",
-        help: "Tag targets: `key` or `key:value`",
+        help: "Tag targets, or every row of `--query`: `key` or `key:value`",
         args: &[
-            pos("targets", Kind::List, "What to tag"),
+            pos_opt("targets", Kind::List, "What to tag"),
+            QUERY_TARGET,
             Arg {
                 required: true,
                 ..opt("tag", Kind::Text, "The tag")
@@ -553,6 +581,24 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Request(requests::note_tag),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "note accept",
+        help: "Accept an agent's note: briefs carry it as the operator's own",
+        args: JUDGE_ARGS,
+        action: Action::Request(requests::note_accept),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "note reject",
+        help: "Reject an agent's note: it stays listed as rejected and never reaches a brief",
+        args: JUDGE_ARGS,
+        action: Action::Request(requests::note_reject),
         http: true,
         writes: true,
         ..CLI
@@ -584,6 +630,11 @@ const WRITTEN: &[Command] = &[
                 "Note kinds: lesson, handoff, decision, ...",
             ),
             opt("agents", Kind::Bool, "Only notes agents wrote"),
+            opt(
+                "judged",
+                Kind::Choice(&["accepted", "rejected", "none"]),
+                "Only notes the operator accepted, rejected, or has not judged",
+            ),
             opt("history", Kind::Bool, "Earlier revisions too"),
             opt("withdrawn", Kind::Bool, "Withdrawn notes too"),
             opt(
@@ -601,7 +652,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "brief",
-        help: "The session-start brief for a directory or session: the operator's lessons, handoffs and decisions there, and recent sessions",
+        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, commands failing with no later success, and signal notices; within `briefing.budget` tokens",
         args: &[
             opt(
                 "session",
@@ -657,14 +708,11 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "recall",
-        help: "Search past work for something relevant now: matching messages grouped by session, notes on them, and a summary of how it searched",
+        help: "Search past work for something relevant now: messages holding every word (in prose or tool output) and, when vectors exist, messages similar to the text, ranked together; grouped by session, with notes on them and a summary of how it searched. A page ends with the cursor of the next",
         args: &[
-            pos_opt(
-                "query",
-                Kind::Words,
-                "What to look for; every word must match",
-            ),
+            pos_opt("query", Kind::Words, "What to look for"),
             CWD,
+            CURSOR,
         ],
         action: Action::Request(requests::recall),
         print: print::context,
@@ -939,38 +987,56 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin",
-        args: &[pos("event", Kind::Text, "The hook event's name")],
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        args: &[
+            pos("event", Kind::Text, "The hook event's name"),
+            Arg {
+                default: Some("claude-code"),
+                ..opt(
+                    "harness",
+                    Kind::Choice(crate::hook::Harness::NAMES),
+                    "The harness calling: its payload, output and session IDs",
+                )
+            },
+        ],
         action: Action::Local(local::hook),
         ..CLI
     },
     Command {
         name: "hooks install",
         help: "Merge Polylogue's hook entries into the settings file, keeping everything else. Installing twice changes nothing",
-        args: &[opt(
-            "settings",
-            Kind::Text,
-            "Default: `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`",
-        )],
+        args: HOOKS_ARGS,
         action: Action::Local(local::hooks_install),
         ..CLI
     },
     Command {
         name: "hooks uninstall",
         help: "Remove Polylogue's hook entries, keeping everything else",
-        args: &[opt(
-            "settings",
-            Kind::Text,
-            "Default: `$CLAUDE_CONFIG_DIR/settings.json` or `~/.claude/settings.json`",
-        )],
+        args: HOOKS_ARGS,
         action: Action::Local(local::hooks_uninstall),
         ..CLI
     },
     Command {
         name: "completions",
-        help: "Shell completions",
-        args: &[pos("shell", Kind::Choice(SHELLS), "The shell")],
+        help: "The shell code that registers completion: commands and options, and while you type a query, its units, fields, values seen and recent session IDs from the daemon (`source <(polylogue completions zsh)`)",
+        args: &[
+            pos("shell", Kind::Choice(SHELLS), "The shell"),
+            opt(
+                "program",
+                Kind::Text,
+                "The command to complete, when a wrapper on PATH runs Polylogue (default: polylogue)",
+            ),
+        ],
         action: Action::Local(local::completions),
+        ..CLI
+    },
+    Command {
+        name: "complete",
+        help: "Completion candidates for one word of a query: field names, values seen, unit names and recent session IDs",
+        args: &[pos_opt("word", Kind::Text, "The word being typed")],
+        action: Action::Request(requests::complete),
+        cli: Cli::Hidden,
+        http: true,
         ..CLI
     },
 ];

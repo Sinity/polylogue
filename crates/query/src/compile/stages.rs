@@ -313,6 +313,7 @@ impl<'a> Compiler<'a> {
         let saved_ctes = std::mem::take(&mut self.ctes);
         let saved_shown = std::mem::take(&mut self.shown);
         let saved_rank = self.rank.take();
+        let saved_near_rank = self.near_rank.take();
         let sc = RowContext::plain(child.unit);
         let conds: Vec<Cond> = child
             .windows
@@ -387,6 +388,7 @@ impl<'a> Compiler<'a> {
         self.ctes = saved_ctes;
         self.shown = saved_shown;
         self.rank = saved_rank;
+        self.near_rank = saved_near_rank;
         let (mut first, mut last) = (None, None);
         for w in &child.windows {
             match w {

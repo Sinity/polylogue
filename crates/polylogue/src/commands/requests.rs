@@ -55,6 +55,12 @@ pub fn status(_: &Command, _: &Values, _: &Caller) -> Built {
     Ok(Request::Status)
 }
 
+pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Complete {
+        word: v.text("word").unwrap_or_default(),
+    })
+}
+
 pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
     let reveal = v.flag("reveal");
     if reveal {
@@ -156,9 +162,9 @@ pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
     } else {
         Author::Operator
     };
-    Ok(Request::AddNote {
-        request_id: v.request_id(),
-        note: NewNote {
+    noted(
+        v,
+        NewNote {
             kind: note_kind(&v.text("kind").unwrap_or_else(|| "note".into()))?,
             key: None,
             value: v.text("body"),
@@ -168,13 +174,49 @@ pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
             revises: v.text("revises"),
             valid_until: None,
         },
+    )
+}
+
+/// A note on its targets, or on every row of `--query`; one of the two.
+fn noted(v: &Values, note: NewNote) -> Built {
+    match (v.text("query"), note.targets.is_empty()) {
+        (Some(_), false) => Err("give targets or `--query`, not both".into()),
+        (None, true) => Err("give the targets, or `--query` for every row of a query".into()),
+        (Some(query), true) => Ok(Request::AnnotateQuery {
+            request_id: v.request_id(),
+            query,
+            note,
+        }),
+        (None, false) => Ok(Request::AddNote {
+            request_id: v.request_id(),
+            note,
+        }),
+    }
+}
+
+/// `note accept` and `note reject`: the operator's judgment of an agent's
+/// note.
+pub fn note_accept(_: &Command, v: &Values, _: &Caller) -> Built {
+    judge(v, true)
+}
+
+pub fn note_reject(_: &Command, v: &Values, _: &Caller) -> Built {
+    judge(v, false)
+}
+
+fn judge(v: &Values, accepted: bool) -> Built {
+    Ok(Request::Judge {
+        request_id: v.request_id(),
+        note: v.text("note").unwrap_or_default(),
+        accepted,
+        reason: v.text("reason"),
     })
 }
 
 pub fn note_tag(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::AddNote {
-        request_id: v.request_id(),
-        note: NewNote {
+    noted(
+        v,
+        NewNote {
             kind: NoteKind::Tag,
             key: v.text("tag"),
             value: v.text("value"),
@@ -184,7 +226,7 @@ pub fn note_tag(_: &Command, v: &Values, _: &Caller) -> Built {
             revises: None,
             valid_until: None,
         },
-    })
+    )
 }
 
 pub fn note_withdraw(_: &Command, v: &Values, _: &Caller) -> Built {
@@ -223,6 +265,11 @@ pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
     }
     if v.flag("agents") {
         conditions.push("agent:true".into());
+    }
+    match v.text("judged").as_deref() {
+        Some("none") => conditions.push("judged:unknown".into()),
+        Some(j) => conditions.push(format!("judged:{j}")),
+        None => {}
     }
     if v.flag("history") {
         conditions.push("current:*".into());
@@ -280,6 +327,7 @@ pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
             text: v.text("query").unwrap_or_default(),
             cwd: cwd(v, caller).ok(),
             for_session: None,
+            cursor: v.text("cursor"),
         },
         sender: caller.sender(),
     })

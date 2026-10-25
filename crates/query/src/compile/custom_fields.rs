@@ -94,28 +94,23 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         return Ok("1".into());
     }
     let text = x.value()?;
-    // The caller binds the nearest texts as `[[text id, similarity], ...]`.
-    let param = c.bind(Param::Text("[]".into()));
-    let index = c.params.len();
-    let cte = format!("n{}", c.ctes.len() + 1);
-    c.ctes.push(format!(
-        "{cte} AS MATERIALIZED (SELECT CAST(json_extract(j.value, '$[0]') AS INTEGER) AS text_id, \
-         -json_extract(j.value, '$[1]') AS rank FROM json_each({param}) j)"
-    ));
+    // `pl_similarity` answers from the similarities the caller computed for
+    // this text; a row ranks by its best text, and a row with no vector has
+    // no rank.
     let a = &x.scope.a;
     let rank = match x.unit {
         Unit::Sessions => format!(
-            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+            "-(SELECT max(pl_similarity(xt.hash)) FROM block xb JOIN text xt ON xt.id = xb.text_id \
              WHERE xb.session_pk IN ({}))",
             fields::subtree(&a.s)
         ),
         Unit::Messages => format!(
-            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+            "-(SELECT max(pl_similarity(xt.hash)) FROM block xb JOIN text xt ON xt.id = xb.text_id \
              WHERE xb.message_pk = {}.pk)",
             a.m
         ),
         Unit::Blocks => format!(
-            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
+            "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
             a.b
         ),
         other => {
@@ -128,10 +123,8 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             });
         }
     };
-    // Semantic similarity ranks the whole query, ahead of any full-text
-    // rank.
-    c.rank = Some(rank);
-    c.near = Some(Near { text, param: index });
+    c.near_rank = Some(rank);
+    c.near = Some(Near { text });
     Ok("1".into())
 }
 

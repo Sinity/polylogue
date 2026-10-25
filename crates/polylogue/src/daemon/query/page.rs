@@ -79,6 +79,9 @@ struct Question<'a> {
     #[serde(with = "jiff::fmt::serde::tz::required")]
     zone: &'a jiff::tz::TimeZone,
     day_start_minutes: u16,
+    /// For `near:`: the vectors the similarities came from. A page after
+    /// vectors were stored or removed would rank by different values.
+    vector_writes: Option<u64>,
 }
 
 pub(super) fn question(program: &Program, options: &Options, why: bool) -> Result<String, Failure> {
@@ -100,16 +103,12 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
         why,
         zone: &options.clock.day.zone,
         day_start_minutes: options.clock.day.start_minutes,
+        vector_writes: program
+            .near
+            .is_some()
+            .then(polylogue_store::vectors::writes),
     };
     let mut digest = blake3::Hasher::new();
     serde_json::to_writer(&mut digest, &binding).map_err(failed)?;
     Ok(digest.finalize().to_hex().to_string())
-}
-
-pub(super) fn semantic_paging() -> Failure {
-    Failure {
-        kind: "not_built".into(),
-        message: "a query ranked by `near:` has no further pages; request a page large enough for the whole answer".into(),
-        detail: None,
-    }
 }

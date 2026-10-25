@@ -40,8 +40,12 @@ pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
     }
 }
 
-pub fn hook(_: &Command, v: &Values, _: bool) -> ExitCode {
-    crate::hook::run(&v.text("event").unwrap_or_default())
+pub fn hook(_: &Command, v: &Values, json: bool) -> ExitCode {
+    let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
+    let Some(harness) = crate::hook::Harness::parse(&name) else {
+        return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
+    };
+    crate::hook::run(harness, &v.text("event").unwrap_or_default())
 }
 
 pub fn web(_: &Command, _: &Values, json: bool) -> ExitCode {
@@ -52,19 +56,21 @@ pub fn browser_host(_: &Command, _: &Values, _: bool) -> ExitCode {
     crate::browser::native::run()
 }
 
+/// Prints what `COMPLETE=<shell> polylogue` prints: shell code that asks
+/// this binary for candidates as the operator types.
 pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
-    use std::str::FromStr;
     let shell = v.text("shell").unwrap_or_default();
-    let Ok(shell) = clap_complete::Shell::from_str(&shell) else {
+    let shells = clap_complete::env::Shells::builtins();
+    let Some(completer) = shells.completer(&shell) else {
         return fail(false, "bad_request", &format!("unknown shell {shell:?}"), 2);
     };
-    clap_complete::generate(
-        shell,
-        &mut super::command(),
-        "polylogue",
-        &mut std::io::stdout(),
-    );
-    ExitCode::SUCCESS
+    // A wrapper on PATH that runs this binary (Sinnix's `polylogue-live`)
+    // is completed and asked under its own name, so it keeps its archive.
+    let name = v.text("program").unwrap_or_else(|| "polylogue".into());
+    match completer.write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(false, "io", &e.to_string(), 1),
+    }
 }
 
 pub fn hooks_install(_: &Command, v: &Values, json: bool) -> ExitCode {
@@ -76,10 +82,18 @@ pub fn hooks_uninstall(_: &Command, v: &Values, json: bool) -> ExitCode {
 }
 
 fn hooks(v: &Values, json: bool, on: bool) -> ExitCode {
-    let path = v
-        .text("settings")
-        .map_or_else(crate::hook::settings_path, std::path::PathBuf::from);
-    match crate::hook::install(&path, on) {
+    let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
+    let Some(harness) = crate::hook::Harness::parse(&name) else {
+        return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
+    };
+    let path = match v.text("settings") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => match crate::hook::settings_path(harness) {
+            Ok(path) => path,
+            Err(message) => return fail(json, "bad_request", &message, 2),
+        },
+    };
+    match crate::hook::install(&path, harness, on) {
         Ok(()) => {
             println!(
                 "{} Polylogue's hooks {} {}",
