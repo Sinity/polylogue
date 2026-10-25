@@ -239,10 +239,53 @@ CREATE TABLE excised (
   kind        TEXT NOT NULL CHECK(kind IN ('session','message','document','input','blob','location')),
   value       TEXT NOT NULL,
   PRIMARY KEY(kind, value, excision_id)
-
-
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX excised_excision ON excised(excision_id, kind);
+
+-- Chat actions: turns the operator asks the browser extension to draft or
+-- submit in a chat web page (`browser.actions`). The request is stored once;
+-- what happened to it is in chat_action_event, and its state is the latest
+-- event (an expired claim reads as queued).
+CREATE TABLE chat_action (
+  id                TEXT PRIMARY KEY,       -- UUIDv7
+  request_key       TEXT NOT NULL UNIQUE,   -- the request's idempotency key: a resent request is the same action
+  request_hash      BLOB NOT NULL,          -- BLAKE3 of the request's JSON; a reused key with other content is refused
+  request_json      TEXT NOT NULL,          -- provider, operation, target, text, presentation and submit policy
+  stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
+  needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
+  created_at        INTEGER NOT NULL,
+  commit_seq        INTEGER NOT NULL
+) STRICT;
+CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
+
+-- Files the operator attached to a chat action, as blobs.
+CREATE TABLE chat_action_attachment (
+  action            TEXT NOT NULL REFERENCES chat_action(id),
+  id                TEXT NOT NULL,          -- UUIDv7, for the extension to fetch it by
+  blob              BLOB NOT NULL REFERENCES blob(hash),
+  name              TEXT NOT NULL,          -- a file name, never a path
+  media_type        TEXT NOT NULL,
+  size              INTEGER NOT NULL,
+  PRIMARY KEY (action, id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX chat_action_attachment_blob ON chat_action_attachment(blob);
+
+-- What happened to a chat action, in order: queued | awaiting_approval |
+-- approved | declined | claimed | progress, or an outcome the extension
+-- reported (drafted, submitted, outcome_unknown, rate_limited, failed, ...).
+CREATE TABLE chat_action_event (
+  action            TEXT NOT NULL REFERENCES chat_action(id),
+  n                 INTEGER NOT NULL,       -- 1, 2, ...
+  at                INTEGER NOT NULL,
+  kind              TEXT NOT NULL,
+  phase             TEXT NOT NULL,          -- the extension's step, as it reported it
+  detail            TEXT,
+  by                TEXT,                   -- the extension instance holding the claim, or the operator
+  receipt_json      TEXT,                   -- the provider's record of the result, as the extension saw it
+  commit_seq        INTEGER NOT NULL,
+  PRIMARY KEY (action, n)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
 
 -- Which export ZIP a member observation was read from, and where in it.
 -- The row travels in the member observation's row batch.
