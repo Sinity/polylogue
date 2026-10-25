@@ -73,7 +73,7 @@
         error: "conversation_api_url_not_found"
       };
     }
-    beforeAwait("admission");
+    beforeAwait("start");
     const prepared = await window.polylogueAssetStream.prepareResponse("claude-ai", signal, url, null, "native-response", false, null, null, false, null, ownerId);
     let response; let bodyRef;
     try {
@@ -127,7 +127,7 @@
           requestId: data.requestId,
           error: String(error && error.message ? error.message : error),
           // Original acquisition boundary that began unwinding, not cleanup
-          // progress or proof of the exception cause. No private value is added.
+          // progress or evidence of the exception cause. No private value is added.
           failure_stage: failureStage
         },
         data.ownerId

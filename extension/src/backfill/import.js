@@ -27,8 +27,8 @@ function validateFile(evidence) {
   return meta;
 }
 
-/** Import the existing export format. Publication is one paused IDB transaction.
- * The tokenizer retains one acquired entry at a time, including that entry's
+/** Import the existing export format. The commit is one paused IDB transaction.
+ * The tokenizer holds one acquired entry at a time, including that entry's
  * encoded file bytes; it does not promise a fixed memory bound for a large file.
  */
 export async function importCheckpoint(file, { staging, store, signal = null }) {
@@ -135,7 +135,7 @@ export async function importCheckpoint(file, { staging, store, signal = null }) 
     const queue = ledger.queue.map(value => {
       requireFiles(value.source_refs); requireFiles(value.capture_source_refs);
       const row = rewrite(value, ids, tokens); delete row.envelope?.receiver_native;
-      row.lease_owner = null; row.lease_expires_at_ms = null;
+      row.claimed_by = null; row.claim_expires_ms = null;
       if (row.body_ref && !staged.includes(row.body_ref)) throw new Error("checkpoint_import_file_missing");
       const entry = acquired.find(e => e.queue_id === value.id);
       if ((row.capture_record_ref || row.record_ref) && !entry?.records && !row.body_ref) {
@@ -151,7 +151,7 @@ export async function importCheckpoint(file, { staging, store, signal = null }) 
         kind: "checkpoint-import-evidence", imported_kind: meta.kind, import_staged: true });
     }
     signal?.throwIfAborted();
-    const result = await store.publishImportedCheckpoint({ job: { ...rewrite(job, ids, tokens), status: "paused",
+    const result = await store.commitImportedCheckpoint({ job: { ...rewrite(job, ids, tokens), status: "paused",
       cooldown_reason: "checkpoint_import_review_required", execution_owner: null, execution_expires_at_ms: null }, queue, revisions: ledger.revisions, captures, records }, signal);
     return { ...result, digest: hash.hex() };
   } catch (error) {

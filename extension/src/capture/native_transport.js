@@ -1,6 +1,6 @@
 import { createSha256 } from "../vendor/sha256.js";
 
-/** Raw provider replies stay in OPFS; the host supplies their interpretation. */
+/** Raw provider replies stay in OPFS; the host parses them. */
 export function nativeEnvelope(capture, attachments = false) {
   const raw = (id) => ({ staged_raw_json: id });
   const payload = capture.provider === "grok"
@@ -54,10 +54,10 @@ export async function prepareNativeCapture({ capture, staging, store, inspect, a
   for (const [ordinal, descriptor] of plan.attachments.entries()) {
     signal?.throwIfAborted();
     const key = `native-attachment:${ordinal}`;
-    const retained = await store.getCaptureRecord(capture.id, key);
-    if (retained?.session_attachment) continue;
+    const stored = await store.getCaptureRecord(capture.id, key);
+    if (stored?.session_attachment) continue;
     const result = descriptor.provider_meta?.native_inline_sha256
-      ? { attachments: [], outcome: { failed: [], retained_native_bytes: true } }
+      ? { attachments: [], outcome: { failed: [], stored_native_bytes: true } }
       : await acquire(descriptor, ordinal, signal);
     const attachment = result.attachments?.[0] || null;
     if (attachment?.staged_asset) {

@@ -1,7 +1,7 @@
 (function () {
   // In-page Layer 1: a blended per-message capture-status dot + save action.
   //
-  // Boundary rule (polylogue-yyvg): per-message state blends into the host's
+  // Boundary rule: per-message state blends into the host's
   // existing message row (this module); cross-conversation intelligence is a
   // separate floating surface (Layer 2, not this module). This module never
   // removes or rewrites host DOM/content — it only appends an isolated
@@ -42,7 +42,7 @@
   }
 
   // Pure state-derivation, exported for direct unit testing. Keys are stable
-  // provider/canonical identity keys, never DOM ordinals.
+  // provider identity keys, never DOM ordinals.
   function deriveStateMap({ identityKeys = [], priorMap = {}, capture = null, pending = false }) {
     const next = {};
     for (const key of identityKeys) {
@@ -63,7 +63,7 @@
     return next;
   }
 
-  function canonicalMessageRef(observation) {
+  function archiveMessageRef(observation) {
     if (!observation?.origin || !observation.provider_conversation_id || !observation.provider_message_id) return null;
     return `${observation.origin}:${observation.provider_conversation_id}:n:${observation.provider_message_id}`;
   }
@@ -116,7 +116,7 @@
       event.stopPropagation();
       // Page scripts share this realm and can dispatch synthetic clicks or
       // keydowns on the badge. Only a real operator gesture may trigger a
-      // capture (polylogue-l6v61).
+      // capture.
       if (!event.isTrusted) return;
       onActivate();
     }
@@ -165,7 +165,7 @@
     }
 
     function keyFor(node) {
-      return canonicalMessageRef(observationFor(node));
+      return archiveMessageRef(observationFor(node));
     }
 
     function identityKeys() {

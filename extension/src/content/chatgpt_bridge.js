@@ -18,21 +18,21 @@
   let cachedAccessTokenUntil = 0;
 
   function accessTokenFromPayload(payload) {
-    const candidates = [
+    const values = [
       payload?.accessToken,
       payload?.access_token,
       payload?.session?.accessToken,
       payload?.session?.access_token
     ];
-    for (const candidate of candidates) {
-      if (typeof candidate === "string" && candidate) return candidate;
+    for (const value of values) {
+      if (typeof value === "string" && value) return value;
     }
     return null;
   }
 
   function accountIdFromPayload(payload) {
-    const candidates = [payload?.account?.id, payload?.session?.account?.id, payload?.account_id];
-    return candidates.find((candidate) => typeof candidate === "string" && candidate) || null;
+    const values = [payload?.account?.id, payload?.session?.account?.id, payload?.account_id];
+    return values.find((value) => typeof value === "string" && value) || null;
   }
 
   function bootstrapAccessToken() {
@@ -298,11 +298,9 @@
     if (request.kind === "url") {
       // No metadata round trip: the caller already has a concrete
       // byte-bearing URL in hand (e.g. an `img.src`/`a.href` rendered on the
-      // page) and skips straight to fetching it. No current caller in this
-      // repo builds a "url"-kind request (the chatgpt-dom-v1 adapter that
-      // originally needed it was removed -- native capture covers what used
-      // to require a DOM scrape), but the receiver-side protocol and its
-      // budget/credential-scoping guarantees stay intact for any future one.
+      // page) and skips straight to fetching it. No current caller builds a
+      // "url"-kind request; the protocol and its budget/credential scoping
+      // apply to any caller that does.
       let directUrl;
       try {
         directUrl = new URL(String(request.url), currentOrigin);

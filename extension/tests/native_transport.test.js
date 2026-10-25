@@ -15,7 +15,7 @@ async function fixture() {
 const summary = { title: "Synthetic conversation", turn_count: 1, attachment_count: 1, session_kind: "main", needs_follow_up: false };
 
 describe("native capture through the shared host parser", () => {
-  it("retains raw bytes and by-value attachments in the ordinary durable capture envelope", async () => {
+  it("keeps raw bytes and by-value attachments in the ordinary durable capture envelope", async () => {
     const { staging, store, raw, ref } = await fixture();
     let inspected;
     const normalizer = new NativeCaptureNormalizer({ staging, store, prepareNative: (capture, options) => prepareNativeCapture({

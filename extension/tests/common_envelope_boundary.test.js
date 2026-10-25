@@ -1,42 +1,23 @@
 /**
  * Boundary contract test for src/common.js's buildEnvelope: a capture
- * adapter (chatgpt.js/claude.js/grok.js) can populate every field the wire
- * format (polylogue/browser_capture/models.py's BrowserCaptureTurn /
- * BrowserCaptureBlock) defines, and buildEnvelope must carry every one of
+ * adapter (chatgpt.js/claude.js/grok.js) can populate every field of a
+ * capture turn and block, and buildEnvelope must carry every one of
  * them into the envelope unmodified. It must not re-introduce a field
  * allowlist that silently drops whatever it does not enumerate.
  *
- * This is a regression guard for exactly that failure mode: buildEnvelope's
- * turns.map projection used to hand-list a fixed set of output keys with no
- * `blocks` entry at all, so every structured block a content script built
- * (tool_use/tool_result/thinking/...) was silently discarded at the
- * envelope boundary while `text` alone kept looking like a complete,
- * successful capture (polylogue-ah21 regressed this once already).
+ * A projection that hand-lists output keys without `blocks` would silently
+ * discard every structured block a content script built
+ * (tool_use/tool_result/thinking/...) while `text` alone still looked like
+ * a complete, successful capture.
  *
  * Loads the REAL src/common.js (via dom.window.eval, the same pattern
  * tests/content/grok.test.js already uses) rather than a hand-copied
  * function -- a local copy of buildEnvelope would test itself, not the
- * production code, which is exactly how the blocks drop went unnoticed for
- * as long as it did (tests/content/chatgpt.test.js and
- * tests/content/claude.test.js both had this problem too; see their
- * changes in this same commit).
+ * production code.
  *
- * Derive-vs-hardcode: the ideal version of this test derives its expected
- * field set from polylogue/browser_capture/models.py's
- * BrowserCaptureTurn/BrowserCaptureBlock Pydantic models directly, so
- * adding a field on the Python side fails this JS test until the JS
- * projection carries it too. That was not done here: there is no existing
- * pattern anywhere in this repo for a vitest test shelling out to Python,
- * no CI job wires the Python venv into the browser-extension test run, and
- * `npx vitest run` is documented (README.md) as a plain `npm`-only command
- * a contributor can run with zero Python setup. Making this one test
- * conditionally require an importable `polylogue` package would make an
- * otherwise-unrelated JS change fail (or silently skip, which defeats the
- * point) in exactly that environment. Falling back to a hardcoded maximal
- * turn/block round-trip is a real regression guard for the allowlist-drift
- * class today; keeping the field lists below in sync with models.py when
- * either side changes is a known, accepted manual cost until that
- * cross-language plumbing is built as its own piece of work.
+ * The field lists below are written out by hand. The receiver's parser
+ * (crates/sources/src/browser_capture.rs) reads these turn and block fields;
+ * keep both sides in step when either changes.
  */
 
 import { readFileSync } from "node:fs";
@@ -46,9 +27,8 @@ import { describe, expect, it } from "vitest";
 
 const commonSource = readFileSync("src/common.js", "utf8");
 
-// Mirrors polylogue/browser_capture/models.py::BrowserCaptureBlock field by
-// field. `type` is required and typed (BlockType); everything else is
-// optional. ordinal/id-shaped identity fields are not part of this model.
+// Every block field a capture can carry. `type` is required; everything else
+// is optional. ordinal/id-shaped identity fields are not block fields.
 const BROWSER_CAPTURE_BLOCK_FIELDS = [
   "type",
   "text",
@@ -61,8 +41,7 @@ const BROWSER_CAPTURE_BLOCK_FIELDS = [
   "exit_code",
 ];
 
-// Mirrors polylogue/browser_capture/models.py::BrowserCaptureTurn field by
-// field. `ordinal` is populated by buildEnvelope itself (the turn's index),
+// Every turn field a capture can carry. `ordinal` is populated by buildEnvelope itself (the turn's index),
 // not read from the caller's turn object, but is still part of the wire
 // contract this test guards.
 const BROWSER_CAPTURE_TURN_FIELDS = [
@@ -128,7 +107,7 @@ function maximalTurn() {
 }
 
 describe("common.js buildEnvelope boundary contract (real source, not a copy)", () => {
-  it("anti-vacuity: emits a full SHA-256 fingerprint matching the canonical digest", () => {
+  it("anti-vacuity: emits a full SHA-256 fingerprint matching the digest", () => {
     const dom = installCommon();
     const observation = dom.window.polylogueCapture.identityObservation({
       provider: "chatgpt", conversationId: "c-1", messageId: "m-1", text: "abc",

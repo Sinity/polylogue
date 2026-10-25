@@ -648,7 +648,7 @@ async function render() {
     const runtime = mission?.extension;
     extensionBuild.textContent = runtime?.contract_epoch
       ? `${runtime.contract_epoch} · ${runtime.manifest_version || "unversioned"}`
-      : "Legacy / stale runtime";
+      : "Outdated runtime";
     extensionBuild.title = [runtime?.extension_id, runtime?.instance_id].filter(Boolean).join(" · ");
   }
   const currentProvider = providerFromUrl(tab?.url || "");
@@ -674,9 +674,9 @@ async function render() {
     const freshness = missionWork.freshness_queue || stored.polylogueCaptureFreshnessQueue;
     const freshnessDeadlines = Object.values(freshness?.entries || {}).map((entry) => Number(entry?.next_attempt_at_ms));
     const queueSweep = Number(freshness?.sweep_not_before_ms);
-    const candidates = [state?.capture_freshness?.next_attempt_at_ms, state?.cooldown_until_ms, ...captureDeadlines, ...freshnessDeadlines, queueSweep]
+    const deadlines = [state?.capture_freshness?.next_attempt_at_ms, state?.cooldown_until_ms, ...captureDeadlines, ...freshnessDeadlines, queueSweep]
       .map(Number).filter((value) => Number.isFinite(value) && value > 0);
-    const nextAttempt = candidates.length ? Math.min(...candidates) : null;
+    const nextAttempt = deadlines.length ? Math.min(...deadlines) : null;
     cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
   }
   const health = mission?.receiver?.health || state?.receiver_health || (

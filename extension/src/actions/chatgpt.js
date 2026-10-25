@@ -26,7 +26,7 @@ export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
 }
 
 // This function is serialized into the same MAIN document as the executor.
-// The original action/lease tuple owns the transient provider File parts.
+// The original action/claim tuple owns the transient provider File parts.
 export function transferBrowserActionAttachmentInPage(actionId, ownerId, command, item = null, offset = 0, encoded = "") {
   const key = "__polylogueBrowserActionAttachments";
   const owned = () => {
@@ -61,7 +61,7 @@ export function transferBrowserActionAttachmentInPage(actionId, ownerId, command
           throw new Error("protocol_attachment_chunk_mismatch");
         }
         const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-        // Blob retains the bytes in the provider document, outside extension IPC.
+        // Blob keeps the bytes in the provider document, outside extension IPC.
         entry.parts.push(new globalThis.Blob([bytes]));
         entry.size += bytes.length;
       } else if (command === "finish") {

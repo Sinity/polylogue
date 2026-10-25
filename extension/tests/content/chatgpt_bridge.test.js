@@ -233,7 +233,7 @@ function installFullCapture(adapter, { url, beforeInstall, plan = [], summary = 
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolve) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -284,7 +284,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(calls).toEqual(["/api/auth/session"]);
   });
 
-  it("refuses a clone chunk without waiting for the unfinished app branch", async () => {
+  it("refuses a clone chunk without waiting for the pending app branch", async () => {
     const { dom } = installBridge({ fetch: vi.fn() });
     let producer;
     const original = new globalThis.Response(new globalThis.ReadableStream({ start(controller) { producer = controller; } }),
@@ -421,7 +421,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(disclosed).not.toContain("synthetic-secret");
   });
 
-  it("prefers the current session token over a stale legacy bootstrap token", async () => {
+  it("prefers the current session token over a stale bootstrap token", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installBridge(adapter, bridgeSource, { bootstrapToken: "stale-bootstrap-token" });
 
@@ -552,10 +552,9 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
     // at /?temporary-chat=true for the whole session -- but the page still
     // fetches /backend-api/conversation/<ephemeral-id> to render it, and
     // window.fetch is intercepted the same way for any conversation path.
-    // Before this fix every id-matching step (parseNativeCapture,
-    // fetchNativePayloadOnDemand, and background.js's own
-    // conversationIdForUrl gate) treated "no id in the URL" as "no
-    // conversation on this page", so zero temporary chats ever landed.
+    // Every id-matching step (parseNativeCapture, fetchNativePayloadOnDemand,
+    // and background.js's conversationIdForUrl gate) must not treat "no id
+    // in the URL" as "no conversation on this page".
     const ephemeralId = "temp-conv-ephemeral-1";
     const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true", summary: { session_kind: "temporary" } });
 
@@ -611,7 +610,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
   it("waits for a brand-new conversation's URL instead of giving up immediately", async () => {
     // 2026-07-17: every chatgpt-dom-v1 capture that ever fired for real
     // landed inside one narrow window where a capture was triggered before
-    // ChatGPT's SPA router had published /c/<id> for a just-created
+    // ChatGPT's SPA router had committed /c/<id> for a just-created
     // conversation -- there was no id to fetch by yet. Native must now wait
     // for the id instead of falling back to a DOM scrape (removed).
     const freshId = "fresh-conversation-1";
@@ -637,7 +636,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
     const harness = installFullCapture({ fetch }, { url: "https://chatgpt.com/" });
 
     const resultPromise = harness.sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
-    // The SPA router publishes the id a little after the first turn is
+    // The SPA router commits the id a little after the first turn is
     // sent -- well inside the wait budget, but after at least one poll tick.
     await new Promise((resolve) => globalThis.setTimeout(resolve, 400));
     harness.dom.reconfigure({ url: `https://chatgpt.com/c/${freshId}` });
@@ -902,7 +901,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(harness.dom.__captureRuntime.nativeContract.receipts[0].result.attachments).toHaveLength(1);
   });
 
-  it.each([false, true])("uses canonical follow-up summary %s to decide cached revision reuse", async (needsFollowUp) => {
+  it.each([false, true])("uses follow-up summary %s to decide cached revision reuse", async (needsFollowUp) => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1", summary: { needs_follow_up: needsFollowUp } });
     const cachedPayload = {
@@ -1054,8 +1053,8 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
     const result = await harness.capturePage();
 
-    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).title).toBe("Authenticated capture fixture");
-    expect((await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).mapping["assistant-node"].message.id).toBe("assistant-message-1");
+    expect((await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).title).toBe("Authenticated capture fixture");
+    expect((await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).mapping["assistant-node"].message.id).toBe("assistant-message-1");
     expect(
       adapter.calls.filter((call) => call.url.pathname === "/backend-api/conversation/conversation-1"),
     ).toHaveLength(1);
@@ -1102,7 +1101,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(durablePayload).not.toContain("synthetic-signed-secret");
   });
 
-  it("attempts every asset and retains the selected branch bytes after independent stale-asset refusals", async () => {
+  it("attempts every asset and keeps the selected branch bytes after independent stale-asset refusals", async () => {
     const targetPath = "/mnt/data/Polylogue-Demo-Packet-v2-Flagships-kit.zip";
     const stalePaths = ["/mnt/data/stale-1.zip", "/mnt/data/stale-2.zip", "/mnt/data/stale-3.zip"];
     const mapping = {};
@@ -1171,7 +1170,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(receipts.map(({ result }) => result.outcome.acquired)).toEqual([0, 0, 0, 1]);
     expect(receipts.map(({ result }) => result.outcome.failed[0]?.status || "acquired")).toEqual(["signed_url_expired", "signed_url_expired", "signed_url_expired", "acquired"]);
     expect(receipts.at(-1).result.attachments[0]).toMatchObject({ provider_attachment_id: `sandbox:current-message:${targetPath}`, provider_meta: { content_sha256: expectedSha256 } });
-    expect(await harness.dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(payload);
+    expect(await harness.dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(payload);
     const metadataPaths = calls
       .filter((call) => call.url.pathname.endsWith("/interpreter/download"))
       .map((call) => call.url.searchParams.get("sandbox_path"));

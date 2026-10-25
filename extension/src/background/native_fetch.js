@@ -81,7 +81,7 @@ export async function nativeFetch(runtime, input, init = {}) {
   }
   function fail(error, cancel = true) {
     if (closed) return;
-    if (cancel) { try { port.postMessage({ type: "cancel" }); } catch { /* EOF releases the same custody. */ } }
+    if (cancel) { try { port.postMessage({ type: "cancel" }); } catch { /* EOF releases the same owner. */ } }
     if (!receivedHeaders) responseReady.reject(error);
     controller?.error(error);
     ack?.reject(error); next?.reject(error);

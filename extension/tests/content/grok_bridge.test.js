@@ -137,7 +137,7 @@ describe("Grok bridge conversation fetch contract", () => {
     expect(posted.filter((message) => message.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse")).toHaveLength(1);
   });
 
-  it("refuses staging admission before any Grok provider request when physical storage is unavailable", async () => {
+  it("refuses staging before any Grok provider request when physical storage is unavailable", async () => {
     const fetch = vi.fn(async () => jsonResponse(conversationMetadata()));
     const { dom, requestNative } = installBridge(fetch);
     const begin = dom.__captureRuntime.staging.begin.bind(dom.__captureRuntime.staging);
@@ -155,7 +155,7 @@ describe("Grok bridge conversation fetch contract", () => {
     expect(bundles[0].replies).toEqual({});
   });
 
-  it("retains named original conversation, response and inflight replies in one capture bundle", async () => {
+  it("keeps named original conversation, response and inflight replies in one capture bundle", async () => {
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input), "https://grok.com");
       if (url.pathname === `/rest/app-chat/conversations/${conversationId}`) return jsonResponse(conversationMetadata());

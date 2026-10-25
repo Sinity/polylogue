@@ -1,9 +1,7 @@
 (function () {
-  // MAIN-world companion to src/content/grok.js. Grok is the only provider
-  // that previously had no bridge at all -- grok.js hardcoded
-  // `native_attempts: []` and scraped the DOM, which this extension's other
-  // adapters have shown is lossy by roughly two orders of magnitude once a
-  // conversation scrolls past the virtualized viewport. grok.com exposes a
+  // MAIN-world companion to src/content/grok.js. Scraping the DOM loses
+  // most of a conversation once it scrolls past the virtualized viewport,
+  // so this bridge reads the provider's data instead. grok.com exposes a
   // clean, cookie-authenticated REST surface
   // (/rest/app-chat/conversations/<id>, .../responses, .../response-node)
   // that this bridge fetches with the page's own credentials, exactly the
@@ -110,7 +108,7 @@
   //
   // File/image attachments never carry bytes in `/responses` -- only a
   // `fileUri`/`key` such as `users/<uid>/<assetId>/content`, served from the
-  // separate `assets.grok.com` host. Verified live 2026-07-31: that host
+  // separate `assets.grok.com` host. That host
   // requires the same grok.com session credentials (403 with
   // credentials:"omit", 200 with credentials:"include" from a grok.com
   // page), unlike ChatGPT's signed object-store URLs which must NOT receive

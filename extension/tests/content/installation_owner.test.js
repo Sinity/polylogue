@@ -58,44 +58,44 @@ async function explicit(owner, requestId = "neutral-request") {
 describe("installation-owned original page transport", () => {
   it.each([undefined, null, "", "foreign", 123])("uses MAIN scoped frames when external runtime API has no valid owner (%s)", async id => {
     const external = vi.fn(() => { throw new Error("external runtime used"); });
-    const h = page({ mainRuntime: { id, sendMessage: external } }), candidate = h.realm(ownerA);
-    h.main.load("asset_stream"); candidate.load("asset_stream"); h.main.load("claude_bridge");
-    const result = await explicit(candidate);
+    const h = page({ mainRuntime: { id, sendMessage: external } }), own = h.realm(ownerA);
+    h.main.load("asset_stream"); own.load("asset_stream"); h.main.load("claude_bridge");
+    const result = await explicit(own);
     expect(result.capture.ok).toBe(true);
     expect(result.ownerId).toBe(ownerA);
-    expect(candidate.calls.filter(call => call.type === "polylogue.asset.begin")).toHaveLength(1);
+    expect(own.calls.filter(call => call.type === "polylogue.asset.begin")).toHaveLength(1);
     expect(external).not.toHaveBeenCalled();
     expect(h.posted.filter(frame => frame.type.endsWith(".claude.nativeFetchResponse"))).toHaveLength(1);
     expect(h.errors).toEqual([]);
   });
 
   it.each([ownerA, ownerB])("keeps true ISOLATED decoding bound to its actual owner (%s)", id => {
-    const h = page(), candidate = h.realm(id);
-    candidate.load("asset_stream");
-    const frame = owner => ({ source: candidate.window, origin: candidate.window.location.origin,
+    const h = page(), own = h.realm(id);
+    own.load("asset_stream");
+    const frame = owner => ({ source: own.window, origin: own.window.location.origin,
       data: { type: `polylogue.page.v2.${owner}.claude.nativeFetchRequest`, requestId: "neutral" } });
-    expect(candidate.window.polylogueAssetStream.readPageMessage(frame(id)).ownerId).toBe(id);
-    expect(candidate.window.polylogueAssetStream.readPageMessage(frame(id === ownerA ? ownerB : ownerA))).toBeNull();
-    expect(candidate.window.polylogueAssetStream.readPageMessage(frame("foreign"))).toBeNull();
+    expect(own.window.polylogueAssetStream.readPageMessage(frame(id)).ownerId).toBe(id);
+    expect(own.window.polylogueAssetStream.readPageMessage(frame(id === ownerA ? ownerB : ownerA))).toBeNull();
+    expect(own.window.polylogueAssetStream.readPageMessage(frame("foreign"))).toBeNull();
   });
 
-  it("ignores foreign-first and legacy responders while replacing their stale singleton claims", async () => {
-    const h = page(), foreign = h.realm(ownerB, { refuse: true }), candidate = h.realm(ownerA);
+  it("ignores foreign-first and unowned responders while replacing their stale singleton claims", async () => {
+    const h = page(), foreign = h.realm(ownerB, { refuse: true }), own = h.realm(ownerA);
     h.main.window.polylogueAssetStream = { prepareResponse() { throw new Error("stale helper called"); } };
     h.main.window.__polylogueClaudeFetchHookInstalled = true;
     // Previously installed responder sees the same request first and injects
-    // both an unowned legacy reply and a foreign-owner reply with its nonce.
+    // both an unowned reply and a foreign-owner reply with its nonce.
     foreign.window.addEventListener("message", event => {
       if (!event.data.type.endsWith("responseStart")) return;
       const requestId = event.data.requestId;
       foreign.window.postMessage({ type: "polylogue.responseReady", requestId, ok: false, error: "receiver_unpaired" });
       foreign.window.postMessage({ type: `polylogue.page.v2.${ownerB}.responseReady`, requestId, ok: false, error: "receiver_unpaired" });
     });
-    h.main.load("asset_stream"); foreign.load("asset_stream"); candidate.load("asset_stream"); h.main.load("claude_bridge");
-    const result = await explicit(candidate);
+    h.main.load("asset_stream"); foreign.load("asset_stream"); own.load("asset_stream"); h.main.load("claude_bridge");
+    const result = await explicit(own);
     expect(result.capture.ok).toBe(true);
     expect(result.capture.bodyRef.id.startsWith(ownerA)).toBe(true);
-    expect(candidate.calls.filter(call => call.type === "polylogue.asset.begin")).toHaveLength(1);
+    expect(own.calls.filter(call => call.type === "polylogue.asset.begin")).toHaveLength(1);
     expect(foreign.calls).toEqual([]);
     expect(h.errors).toEqual([]);
   });
@@ -124,7 +124,7 @@ describe("installation-owned original page transport", () => {
     h.main.window.__polylogueFetchHookInstalled = true;
     h.main.window.polylogueAssetStream = { stageResponse: vi.fn() };
     // Actual old hook pattern: a borrowed clone is handed to the global
-    // helper without an owner. New helper refuses it before admission.
+    // helper without an owner. New helper refuses it before it starts.
     const originalFetch = h.main.window.fetch;
     h.main.window.fetch = async (...args) => { const response = await originalFetch(...args);
       void h.main.window.polylogueAssetStream.stageResponse(response.clone(), "chatgpt", new globalThis.AbortController().signal).catch(() => undefined); return response; };
@@ -157,7 +157,7 @@ describe("installation-owned original page transport", () => {
     expect(h.errors).toEqual([]);
   });
 
-  it("revokes passive registration at page cleanup and never admits an ownerless stale clone", async () => {
+  it("revokes passive registration at page cleanup and never accepts an ownerless stale clone", async () => {
     const h = page({ provider: "chatgpt" }), a = h.realm(ownerA, { eligible: true });
     h.main.load("asset_stream"); a.load("asset_stream"); await flush();
     expect(h.main.window.polylogueAssetStream.eligibleOwners()).toEqual([ownerA]);

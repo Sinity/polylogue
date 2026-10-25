@@ -112,7 +112,7 @@ describe("first-party provider page transport", () => {
     expect(globalThis.window.preparedResponses[0].accountHandle).toBe(provider === "chatgpt" ? "synthetic-account" : provider === "claude-ai" ? selected : null);
   });
 
-  it("streams a valid reply beyond the former bridge cap without projecting or truncating it", async () => {
+  it("streams a large valid reply without projecting or truncating it", async () => {
     const chunk = globalThis.Buffer.from("x".repeat(48 * 1024)); const count = 700;
     let emitted = 0; const hash = createHash("sha256");
     const fetchImpl = vi.fn(async (input) => new globalThis.URL(input).pathname === "/api/auth/session" ? auth() : new globalThis.Response(new globalThis.ReadableStream({ pull(controller) {

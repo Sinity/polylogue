@@ -9,7 +9,7 @@ export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id",
 export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   maxCapturesPerWake: 5,
   maxDailyRequests: 250,
-  leaseMs: 180000,
+  claimMs: 180000,
   baseCadenceMs: 15000,
   maxCadenceMs: 15 * 60 * 1000,
 });

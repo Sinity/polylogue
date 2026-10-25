@@ -8,20 +8,9 @@ import { webcrypto } from "node:crypto";
  * tests/content/chatgpt_bridge.test.js and tests/content/grok.test.js
  * already use) rather than hand-copied function bodies.
  *
- * This file used to keep local copies of roleFromNode (a DOM-scrape
- * function deleted from src/content/claude.js entirely -- native capture
- * now covers everything the DOM fallback used to), conversationIdFromUrl,
- * textFromMessage, roleFromNativeMessage, collectNativeTurns,
- * parseNativeCapture, and a `conversationApiUrlFromResources` +
- * `organizationIdFromStorageKeys` pair that had ALREADY silently drifted
- * from the real functions (which live in claude_bridge.js, are named
- * `conversationApiUrlFromResources`/`organizationIdFromLocalStorage`, and
- * take different parameters) with zero test failures, because the copies
- * only ever tested themselves. That is precisely the failure mode that let
- * src/common.js's buildEnvelope silently drop every turn's `blocks` field
- * (polylogue-ah21 regressed) go unnoticed. All coverage here now exercises
- * window.polylogueCapture.capturePage and the real message-bridge protocol
- * against the real IIFE bodies.
+ * All coverage here exercises window.polylogueCapture.capturePage and the
+ * real message-bridge protocol against the real IIFE bodies; a local copy
+ * of a function would test only itself.
  */
 
 import { readFileSync } from "node:fs";
@@ -92,7 +81,7 @@ function installClaude({ url = "https://claude.ai/chat/conversation-1", resource
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolvePromise, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolvePromise) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolvePromise) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -109,7 +98,7 @@ afterEach(() => {
 });
 
 describe("claude.js native capture (real source)", () => {
-  it.each(["admission", "provider_fetch", "staging", "post_staging"])("retains the original caught %s boundary through real bridge/content and strict proof filtering", async (stage) => {
+  it.each(["start", "provider_fetch", "staging", "post_staging"])("keeps the original caught %s boundary through real bridge/content and strict stage filtering", async (stage) => {
     const secret = "https://private.invalid/conversation?token=neutral-private-error";
     const fetch = vi.fn(async () => {
       if (stage === "provider_fetch") throw new Error(secret);
@@ -129,13 +118,13 @@ describe("claude.js native capture (real source)", () => {
     });
     const originalSend = dom.__captureRuntime.sendMessage.bind(dom.__captureRuntime);
     dom.__captureRuntime.sendMessage = async message => {
-      if (message.type === (stage === "admission" ? "polylogue.asset.begin" : stage === "staging" ? "polylogue.asset.seal" : "never")) return { ok: false, error: secret };
+      if (message.type === (stage === "start" ? "polylogue.asset.begin" : stage === "staging" ? "polylogue.asset.seal" : "never")) return { ok: false, error: secret };
       return originalSend(message);
     };
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage" });
     const expectedStage = stage === "post_staging" ? "unknown" : stage;
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable", native_attempts: [{ stage: "page_bridge_fetch", failure_stage: expectedStage, error: secret, accepted: false }] });
-    if (stage === "admission") expect(fetch).not.toHaveBeenCalled();
+    if (stage === "start") expect(fetch).not.toHaveBeenCalled();
   });
 
   it("keeps a cancelled suspended provider read distinct from a caught acquisition failure and drains original work", async () => {
@@ -158,7 +147,7 @@ describe("claude.js native capture (real source)", () => {
     expect((await capture).native_attempts).toBeUndefined();
   });
 
-  it.each([undefined, "foreign", { stage: "admission", private: "neutral-secret" }, null])("refuses malformed or missing bridge stage while preserving original error", async (stage) => {
+  it.each([undefined, "foreign", { stage: "start", private: "neutral-secret" }, null])("refuses malformed or missing bridge stage while preserving original error", async (stage) => {
     const { dom, sendRuntimeMessage } = installClaude();
     const originalPost = dom.window.postMessage;
     dom.window.postMessage = data => {
@@ -195,8 +184,8 @@ describe("claude.js native capture (real source)", () => {
     expect(String(fetch.mock.calls[0][0])).toBe(`${url}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`);
     if (available) {
       expect(result.ok).toBe(true);
-      expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages.map(message => message.uuid)).toEqual(["u1", "a1", "u2"]);
-      expect(await dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(fresh);
+      expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages.map(message => message.uuid)).toEqual(["u1", "a1", "u2"]);
+      expect(await dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(fresh);
     } else {
       expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
       expect(send.mock.calls.filter(([message]) => message.type === "polylogue.capture")).toEqual([]);
@@ -226,14 +215,14 @@ describe("claude.js native capture (real source)", () => {
       localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch,
     });
     const first = await sendRuntimeMessage({ type: "polylogue.capturePage" });
-    expect((await dom.__captureRuntime.retainedNativeReplies(first.envelope)).chat_messages).toEqual(messages);
+    expect((await dom.__captureRuntime.storedNativeReplies(first.envelope)).chat_messages).toEqual(messages);
     messages = [...messages, { uuid: "a1", sender: "assistant", text: "new turn" }];
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
-    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages).toEqual(messages);
+    expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages).toEqual(messages);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retains native Claude message roles and content verbatim for canonical receiver preparation", async () => {
+  it("keeps native Claude message roles and content verbatim for receiver preparation", async () => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input));
@@ -260,11 +249,11 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
-    expect(retained.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
-    expect(retained.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
-    expect(retained.chat_messages[2].text).toBe("");
-    expect(retained.name).toBe("Native Claude title");
+    const stored = await dom.__captureRuntime.storedNativeReplies(result.envelope);
+    expect(stored.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
+    expect(stored.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
+    expect(stored.chat_messages[2].text).toBe("");
+    expect(stored.name).toBe("Native Claude title");
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
     expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
@@ -378,7 +367,7 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
     expect(result.ok).toBe(true);
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
-    expect((await dom.__captureRuntime.retainedNativeReplies(result.envelope)).chat_messages[0].text).toBe("fresh-current-text");
+    expect((await dom.__captureRuntime.storedNativeReplies(result.envelope)).chat_messages[0].text).toBe("fresh-current-text");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -391,27 +380,24 @@ describe("claude.js native capture (real source)", () => {
   });
 });
 
-// Structured native semantics are qualified through the actual receiver in
-// test_native_receiver_complete_envelope_matches_canonical_provider_parsing,
-// using native-rich-blocks-v1.json (tool use/results, arrays, thinking and
-// signatures, token budgets) and native-attachment-order.json. The ordinary
-// Claude catalog remains the source of canonical normalization semantics.
+// The receiver's Claude parser owns structured block semantics; these tests
+// check only that the browser keeps the original replies.
 
-describe("Claude original native attachment custody", () => {
-  it("retains both attachment channels and missing-ID out-of-order messages for the ordinary parser", async () => {
+describe("Claude original native attachment ownership", () => {
+  it("keeps both attachment channels and missing-ID out-of-order messages for the ordinary parser", async () => {
     const payload = JSON.parse(readFileSync(resolve(testDirectory, "../fixtures/claude-native-attachment-order.json"), "utf8"));
     const orgId = "00000000-0000-4000-8000-000000000042";
     const fetch = vi.fn(async () => jsonResponse(payload));
     const { dom, sendRuntimeMessage } = installClaude({ url: `https://claude.ai/chat/${payload.uuid}`,
       localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch });
-    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-custody" });
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-ownership" });
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
-    expect(retained).toEqual(payload);
+    const stored = await dom.__captureRuntime.storedNativeReplies(result.envelope);
+    expect(stored).toEqual(payload);
     expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
-    expect(retained.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
-    expect(retained.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
+    expect(stored.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
+    expect(stored.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

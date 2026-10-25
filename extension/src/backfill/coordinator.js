@@ -17,7 +17,7 @@ function providerContractDriftError(error) {
 
 function mergePolicy(patch = {}) {
   const policy = { ...DEFAULT_BACKFILL_POLICY, ...patch };
-  if (!Number.isFinite(policy.leaseMs) || policy.leaseMs <= 0) throw new Error("backfill_lease_invalid");
+  if (!Number.isFinite(policy.claimMs) || policy.claimMs <= 0) throw new Error("backfill_claim_invalid");
   return policy;
 }
 
@@ -102,8 +102,8 @@ export class BackfillCoordinator {
     }
     if (status === "running") {
       await this.persistCheckpoint();
-      const authorityError = await this.checkpointErrorForJob(jobId);
-      if (authorityError) return this.snapshotStatus(jobId, authorityError);
+      const checkpointError = await this.checkpointErrorForJob(jobId);
+      if (checkpointError) return this.snapshotStatus(jobId, checkpointError);
     }
     // Preflight while the job is still paused.  Marking it running first would
     // let an alarm acquire its next execution generation while an older worker
@@ -169,22 +169,22 @@ export class BackfillCoordinator {
   async runJob(jobId) {
     const now = this.clock();
     await this.persistCheckpoint();
-    const authorityError = await this.checkpointErrorForJob(jobId);
-    if (authorityError) return this.snapshotStatus(jobId, authorityError);
+    const checkpointError = await this.checkpointErrorForJob(jobId);
+    if (checkpointError) return this.snapshotStatus(jobId, checkpointError);
     const current = await this.requireJob(jobId);
-    const job = await this.store.acquireJobExecution(jobId, this.instanceId, now, current.policy.leaseMs);
+    const job = await this.store.acquireJobExecution(jobId, this.instanceId, now, current.policy.claimMs);
     if (!job) return this.status(jobId);
     const generation = job.execution_generation;
     const controller = new AbortController();
     let renewal = Promise.resolve();
     const timer = globalThis.setInterval(() => {
-      renewal = renewal.then(() => this.store.renewJobExecution(jobId, this.instanceId, generation, this.clock(), job.policy.leaseMs))
+      renewal = renewal.then(() => this.store.renewJobExecution(jobId, this.instanceId, generation, this.clock(), job.policy.claimMs))
         .catch((error) => controller.abort(error));
-    }, Math.max(1, Math.floor(job.policy.leaseMs / 3)));
+    }, Math.max(1, Math.floor(job.policy.claimMs / 3)));
     const execution = { controller, promise: null };
     this.executions.set(jobId, execution);
     try {
-      execution.promise = this.runLeasedJob(job, now);
+      execution.promise = this.runClaimedJob(job, now);
       return await execution.promise;
     } catch (error) {
       if (String(error?.message || error).startsWith("stale_backfill_execution:")) return this.status(jobId);
@@ -198,14 +198,14 @@ export class BackfillCoordinator {
 
   executionSignal(job) { return this.executions.get(job.id)?.controller.signal; }
 
-  async runLeasedJob(initialJob, now) {
+  async runClaimedJob(initialJob, now) {
     let job = initialJob;
     const jobId = job.id;
     job = await this.ensureReceiverContract(job, now);
     if (job.status !== "running") return this.status(jobId);
-    await this.store.recoverExpiredLeases(jobId, now);
-    await this.schedule(jobId, now + job.policy.leaseMs);
-    const receiverItem = await this.store.acquireNextLease(jobId, this.instanceId, now, job.policy.leaseMs, true);
+    await this.store.releaseExpiredClaims(jobId, now);
+    await this.schedule(jobId, now + job.policy.claimMs);
+    const receiverItem = await this.store.claimNextItem(jobId, this.instanceId, now, job.policy.claimMs, true);
     if (receiverItem) {
       job = await this.submitReceiver(job, receiverItem, receiverItem.envelope, now);
     }
@@ -234,11 +234,11 @@ export class BackfillCoordinator {
       if (job.next_request_at_ms > currentNow || job.daily_requests >= job.policy.maxDailyRequests) break;
       const adapter = this.adapters[job.provider];
       adapter.configure?.(job.provider_options || {});
-      const item = await this.store.acquireNextLease(jobId, this.instanceId, currentNow, job.policy.leaseMs, false);
+      const item = await this.store.claimNextItem(jobId, this.instanceId, currentNow, job.policy.claimMs, false);
       if (!item) break;
       const requestCost = adapter.requestCost?.("fetch", item) ?? 1;
       if (job.daily_requests + requestCost > job.policy.maxDailyRequests) {
-        await this.saveQueue(job, { ...item, state: item.resume_state || "eligible", lease_owner: null, lease_expires_at_ms: null });
+        await this.saveQueue(job, { ...item, state: item.resume_state || "eligible", claimed_by: null, claim_expires_ms: null });
         job = await this.pauseJob(job, "daily_request_budget_exhausted", currentNow);
         break;
       }
@@ -264,10 +264,10 @@ export class BackfillCoordinator {
     const adapter = this.adapters[job.provider];
     adapter.configure?.(job.provider_options || {});
     const requestCost = adapter.requestCost?.("enumerate") || 1;
-    const reserved = await this.reserveProviderRequests(job, now, requestCost);
-    if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
-    if (reserved.status !== "running") return reserved;
-    job = reserved;
+    const charged = await this.spendProviderRequests(job, now, requestCost);
+    if (!charged) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (charged.status !== "running") return charged;
+    job = charged;
     try {
       result = await adapter.enumerate(job.inventory_cursor, job.cutoff, this.executionSignal(job));
     } catch (error) {
@@ -292,8 +292,8 @@ export class BackfillCoordinator {
         state: unchanged ? "unchanged" : "eligible",
         attempt_count: 0,
         next_eligible_at_ms: now,
-        lease_owner: null,
-        lease_expires_at_ms: null,
+        claimed_by: null,
+        claim_expires_ms: null,
         last_response_class: unchanged ? "known_revision" : "discovered",
         capture_fidelity: null,
         receiver_receipt: null,
@@ -314,10 +314,10 @@ export class BackfillCoordinator {
 
   async processItem(job, item, now, requestCost = 1) {
     if (item.envelope && (item.resume_state === "captured_waiting_receiver" || item.capture_record_ref)) return this.submitReceiver(job, item, item.envelope, now);
-    const reserved = await this.reserveProviderRequests(job, now, requestCost);
-    if (!reserved) return this.pauseJob(job, "daily_request_budget_exhausted", now);
-    if (reserved.status !== "running") return reserved;
-    job = reserved;
+    const charged = await this.spendProviderRequests(job, now, requestCost);
+    if (!charged) return this.pauseJob(job, "daily_request_budget_exhausted", now);
+    if (charged.status !== "running") return charged;
+    job = charged;
     let response;
     try {
       response = await this.adapters[job.provider].fetchNative(item.native_id, this.executionSignal(job), { item, jobId: job.id, owner: this.instanceId, generation: job.execution_generation });
@@ -326,20 +326,20 @@ export class BackfillCoordinator {
       Object.assign(item, await this.store.getQueue(item.id));
       if (["native_bundle_recovery_missing", "native_bundle_identity_conflict", "native_bundle_owner_mismatch", "native_bundle_reply_invalid",
         "native_acquisition_recovery_pending", "native_acquisition_identity_conflict", "capture_job_account_scope_unresolved", "capture_job_account_scope_mismatch", "capture_staging_missing"].includes(error?.code || error?.message)) {
-        await this.saveQueue(job, { ...item, state: "recovery_required", lease_owner: null, lease_expires_at_ms: null,
+        await this.saveQueue(job, { ...item, state: "recovery_required", claimed_by: null, claim_expires_ms: null,
           last_response_class: "browser_profile_recovery_required", last_error: String(typeof error.code === "string" ? error.code : (error.message || error)) });
         return this.pauseJob(job, "browser_profile_recovery_required", now);
       }
       if (sharedRateLimitError(error)) {
-        await this.saveQueue(job, { ...item, state: "retry_wait", lease_owner: null, lease_expires_at_ms: null, last_response_class: "rate_limited", next_eligible_at_ms: now });
+        await this.saveQueue(job, { ...item, state: "retry_wait", claimed_by: null, claim_expires_ms: null, last_response_class: "rate_limited", next_eligible_at_ms: now });
         return this.handleProviderBlock(job, sharedRateLimitResponse(error), "rate_limited", now);
       }
       if (providerContractDriftError(error)) {
         await this.saveQueue(job, {
           ...item,
           state: "failed",
-          lease_owner: null,
-          lease_expires_at_ms: null,
+          claimed_by: null,
+          claim_expires_ms: null,
           last_response_class: "contract_drift",
           last_error: String(error?.message || error),
         });
@@ -352,11 +352,11 @@ export class BackfillCoordinator {
     const classification = this.adapters[job.provider].classifyResponse(response);
     if (classification !== "success") {
       if (classification === "rate_limited" || classification === "auth_or_challenge") {
-        await this.saveQueue(job, { ...item, state: classification === "auth_or_challenge" ? "auth_required" : "retry_wait", lease_owner: null, lease_expires_at_ms: null, last_response_class: classification, next_eligible_at_ms: now });
+        await this.saveQueue(job, { ...item, state: classification === "auth_or_challenge" ? "auth_required" : "retry_wait", claimed_by: null, claim_expires_ms: null, last_response_class: classification, next_eligible_at_ms: now });
         return this.handleProviderBlock(job, response, classification, now);
       }
       if (classification === "transport") return this.retryTransport(job, item, new Error(`provider_http_${response.status}`), now);
-      await this.saveQueue(job, { ...item, state: "failed", lease_owner: null, lease_expires_at_ms: null, last_response_class: classification, last_error: `provider_http_${response.status}` });
+      await this.saveQueue(job, { ...item, state: "failed", claimed_by: null, claim_expires_ms: null, last_response_class: classification, last_error: `provider_http_${response.status}` });
       return job;
     }
     let capture;
@@ -368,14 +368,14 @@ export class BackfillCoordinator {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       Object.assign(item, await this.store.getQueue(item.id));
       if (providerContractDriftError(error)) {
-        await this.saveQueue(job, { ...item, state: "failed", lease_owner: null, lease_expires_at_ms: null, last_response_class: "contract_drift", last_error: String(error.message || error) });
+        await this.saveQueue(job, { ...item, state: "failed", claimed_by: null, claim_expires_ms: null, last_response_class: "contract_drift", last_error: String(error.message || error) });
         return job;
       }
       return this.retryTransport(job, item, error, now);
     }
     const captureFidelity = capture.provider_meta?.capture_fidelity || "native_full";
     if (!(capture.capture_summary?.turnCount ?? capture.session?.turns?.length) && capture.provider_meta?.capture_fidelity !== "native_full") {
-      await this.saveQueue(job, { ...item, state: "no_turns", lease_owner: null, lease_expires_at_ms: null, last_response_class: "native_empty", capture_fidelity: captureFidelity });
+      await this.saveQueue(job, { ...item, state: "no_turns", claimed_by: null, claim_expires_ms: null, last_response_class: "native_empty", capture_fidelity: captureFidelity });
       return job;
     }
     return this.submitReceiver(job, item, capture, now);
@@ -387,10 +387,10 @@ export class BackfillCoordinator {
     const firstPersistence = item.resume_state !== "captured_waiting_receiver" || !item.envelope;
     if (firstPersistence) {
       try {
-        // Retain acquired records before serializing the receiver body. Disk
+        // Store acquired records before serializing the receiver body. Disk
         // quota or worker loss here must not require another provider read.
         await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash,
-          capture_fidelity: captureFidelity, lease_owner: this.instanceId, lease_expires_at_ms: this.clock() + job.policy.leaseMs, last_response_class: "captured" });
+          capture_fidelity: captureFidelity, claimed_by: this.instanceId, claim_expires_ms: this.clock() + job.policy.claimMs, last_response_class: "captured" });
       } catch (error) {
         if (error?.name !== "QuotaExceededError") throw error;
         return this.pauseJob({ ...job, last_error: "indexeddb_quota_exceeded" }, "indexeddb_quota_exceeded", now);
@@ -401,14 +401,14 @@ export class BackfillCoordinator {
       serialized = prepared.body;
       hash = prepared.contentHash;
       await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash,
-        capture_fidelity: captureFidelity, lease_owner: this.instanceId, lease_expires_at_ms: this.clock() + job.policy.leaseMs, last_response_class: "prepared" });
+        capture_fidelity: captureFidelity, claimed_by: this.instanceId, claim_expires_ms: this.clock() + job.policy.claimMs, last_response_class: "prepared" });
       const receipt = await this.receiver(capture, serialized, this.executionSignal(job));
       const contractError = receiverAckContractError(receipt, hash);
       if (contractError) throw contractError;
       acknowledged = true;
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       const superseded = receipt.outcome === "superseded";
-      const completeItem = { ...item, state: superseded ? "superseded" : "complete", envelope: null, body_ref: null, raw_acquisition_ref: null, capture_record_ref: null, capture_source_refs: [], capture_bundle_ref: null, capture_bundle_replies: null, record_ref: null, source_refs: [], content_hash: superseded ? null : receipt.content_hash, capture_fidelity: captureFidelity, receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: superseded ? "receiver_superseded" : "receiver_acked", completed_at: nowIso(now) };
+      const completeItem = { ...item, state: superseded ? "superseded" : "complete", envelope: null, body_ref: null, raw_acquisition_ref: null, capture_record_ref: null, capture_source_refs: [], capture_bundle_ref: null, capture_bundle_replies: null, record_ref: null, source_refs: [], content_hash: superseded ? null : receipt.content_hash, capture_fidelity: captureFidelity, receiver_receipt: receipt, claimed_by: null, claim_expires_ms: null, last_response_class: superseded ? "receiver_superseded" : "receiver_acked", completed_at: nowIso(now) };
       const revision = !superseded && item.provider_updated_at
         ? {
           id: `${item.provider}:${item.native_id}`,
@@ -446,15 +446,15 @@ export class BackfillCoordinator {
       }
       if (error?.name === "QuotaExceededError") {
         await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash,
-          capture_fidelity: captureFidelity, lease_owner: null, lease_expires_at_ms: null, last_response_class: "storage_quota", last_error: "capture_storage_quota_exceeded" });
+          capture_fidelity: captureFidelity, claimed_by: null, claim_expires_ms: null, last_response_class: "storage_quota", last_error: "capture_storage_quota_exceeded" });
         return this.pauseJob({ ...job, last_error: "capture_storage_quota_exceeded" }, "capture_storage_quota_exceeded", now);
       }
       if (error?.code === "receiver_contract_incompatible" || String(error?.message || error).startsWith("receiver_contract_incompatible:")) {
-        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_contract_incompatible", last_error: String(error.message || error) });
+        await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, claimed_by: null, claim_expires_ms: null, last_response_class: "receiver_contract_incompatible", last_error: String(error.message || error) });
         return this.pauseJob({ ...job, last_error: String(error.message || error) }, "receiver_contract_incompatible", now);
       }
       const attempt = (item.attempt_count || 0) + 1;
-      await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_down", last_error: String(error.message || error) });
+      await this.saveQueue(job, { ...item, state: "captured_waiting_receiver", envelope: capture, content_hash: hash, capture_fidelity: captureFidelity, attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), claimed_by: null, claim_expires_ms: null, last_response_class: "receiver_down", last_error: String(error.message || error) });
       const next = {
         ...job,
         status: job.status,
@@ -469,7 +469,7 @@ export class BackfillCoordinator {
 
   async retryTransport(job, item, error, now) {
     const attempt = (item.attempt_count || 0) + 1;
-    await this.saveQueue(job, { ...item, state: "retry_wait", attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), lease_owner: null, lease_expires_at_ms: null, last_response_class: "transport", last_error: String(error.message || error) });
+    await this.saveQueue(job, { ...item, state: "retry_wait", attempt_count: attempt, next_eligible_at_ms: now + fullJitterDelay(attempt, job.policy.baseCadenceMs, job.policy.maxCadenceMs, this.random), claimed_by: null, claim_expires_ms: null, last_response_class: "transport", last_error: String(error.message || error) });
     const failures = (job.transport_failures || 0) + 1;
     const next = { ...job, transport_failures: failures, last_error: String(error.message || error) };
     await this.saveJob(next);
@@ -500,11 +500,11 @@ export class BackfillCoordinator {
     return { ...next, cooldown_until_ms: deadline, cooldown_reason: "transport_backoff" };
   }
 
-  async reserveProviderRequests(job, now, count) {
+  async spendProviderRequests(job, now, count) {
     if (count === 0) return this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
     const currentDay = dayKey(now);
     const jitter = Math.floor(this.random() * Math.max(1, job.learned_cadence_ms / 4));
-    const reserved = await this.store.reserveProviderRequests(
+    const charged = await this.store.spendProviderRequests(
       job.id,
       this.instanceId,
       job.execution_generation,
@@ -512,11 +512,11 @@ export class BackfillCoordinator {
       currentDay,
       now + job.learned_cadence_ms + jitter,
     );
-    if (!reserved) return null;
+    if (!charged) return null;
     this.checkpointDirty = true;
     await this.persistCheckpoint();
-    const authorityError = await this.checkpointErrorForJob(job.id);
-    return authorityError ? this.requireJob(job.id) : reserved;
+    const checkpointError = await this.checkpointErrorForJob(job.id);
+    return checkpointError ? this.requireJob(job.id) : charged;
   }
 
   async resetDailyBudget(job, now) {
@@ -615,7 +615,7 @@ export class BackfillCoordinator {
           await this.schedule(job.id, retryUntil);
         } else {
           await this.store.controlJob(job.id, "paused", now, {
-            cooldown_reason: "receiver_capture_job_authority_unavailable", last_error: detail,
+            cooldown_reason: "receiver_capture_jobs_unavailable", last_error: detail,
           });
           this.checkpointDirty = true;
         }
@@ -630,7 +630,7 @@ export class BackfillCoordinator {
           state: "failed", error: detail, outcome: "unavailable" });
         if (job.status !== "running") continue;
         await this.store.controlJob(job.id, "paused", now, {
-          cooldown_reason: "receiver_capture_job_authority_unavailable", last_error: detail,
+          cooldown_reason: "receiver_capture_jobs_unavailable", last_error: detail,
         });
         this.checkpointDirty = true;
       }

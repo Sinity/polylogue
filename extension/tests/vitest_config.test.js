@@ -55,7 +55,7 @@ describe("vitest.config.js worker concurrency cap", () => {
     expect(CONFIG_SOURCE).toMatch(/test\s*:\s*{[\s\S]*maxWorkers\s*,/);
   });
 
-  it("uses the current pool-independent cap without ignored predecessor options", () => {
+  it("uses the current pool-independent cap without ignored older options", () => {
     expect(CONFIG_SOURCE).toMatch(/test\s*:\s*{[\s\S]*maxWorkers\s*,/);
     expect(CONFIG_SOURCE).not.toMatch(/poolOptions\s*:|minWorkers\s*:|maxForks\s*:|maxThreads\s*:/);
   });

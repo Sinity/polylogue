@@ -162,18 +162,18 @@ describe("build.mjs full archive emission", () => {
       }) });
     // Passive/automatic backfill work is observe-only: it must find an
     // already-open, operator-owned provider tab via chrome.tabs.query and
-    // never call chrome.tabs.create itself (fix(extension): avoid automatic
-    // provider transport tabs, #2974; background.test.js's "never creates a
-    // transport tab when passive backfill has no provider page" pins this).
+    // never call chrome.tabs.create itself (background.test.js's "never
+    // creates a transport tab when passive backfill has no provider page"
+    // tests this).
     // Seed one open ChatGPT tab up front so this fixture models that real
     // precondition instead of a permanently empty tab list, and make
     // chrome.tabs.query reflect it dynamically like background.test.js does.
     const ownedTabs = [{ id: 42, url: "https://chatgpt.com/", active: true, status: "complete" }];
     const pageRuntimeListeners = [];
-    let admissionGate = null;
-    const holdAdmission = async (phase) => {
-      if (!admissionGate?.enabled || admissionGate.phase !== phase) return;
-      const gate = admissionGate; gate.enabled = false; gate.entered(); await gate.release;
+    let startGate = null;
+    const holdStart = async (phase) => {
+      if (!startGate?.enabled || startGate.phase !== phase) return;
+      const gate = startGate; gate.enabled = false; gate.entered(); await gate.release;
     };
     const tabs = {
       create: vi.fn(async ({ url, active }) => {
@@ -181,13 +181,13 @@ describe("build.mjs full archive emission", () => {
         ownedTabs.push(tab);
         return tab;
       }),
-      get: vi.fn(async (tabId) => { await holdAdmission("tab"); return ownedTabs.find((tab) => tab.id === tabId); }),
+      get: vi.fn(async (tabId) => { await holdStart("tab"); return ownedTabs.find((tab) => tab.id === tabId); }),
       update: vi.fn(),
       remove: vi.fn(),
       query: vi.fn(async () => ownedTabs),
       sendMessage: vi.fn(async (_tabId, message) => {
-        if (message.type === "polylogue.capturePage" && admissionGate) admissionGate.enabled = true;
-        if (message.type === "polylogue.stagingOwner") await holdAdmission("document");
+        if (message.type === "polylogue.capturePage" && startGate) startGate.enabled = true;
+        if (message.type === "polylogue.stagingOwner") await holdStart("document");
         return new Promise((resolve) => {
         const handled = pageRuntimeListeners.some((listener) => listener(message, {}, resolve) === true);
         if (!handled) resolve(undefined);
@@ -296,7 +296,7 @@ describe("build.mjs full archive emission", () => {
       expect((await invocationStore.getJob(started.job.id)).execution_owner).toBeNull(), { timeout: 15000 });
     for (let inventoryCount = 2; inventoryCount <= 4; inventoryCount += 1) {
       // A request being observed does not mean its owned physical operation
-      // has settled. An alarm during that lease joins the current wake.
+      // has settled. An alarm during that claim joins the current wake.
       await waitForJobIdle();
       alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
       await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount), { timeout: 15000 });
@@ -342,7 +342,7 @@ describe("build.mjs full archive emission", () => {
     const foregroundRequest = tabs.sendMessage.mock.calls.find(([, message]) => message.type === "polylogue.capturePage");
     expect(foregroundRequest[1].invocationRef).toEqual({ id: expect.any(String), token: expect.any(String) });
     await vi.waitFor(async () => expect(await invocationStore.getCapture(foregroundRequest[1].invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     let foregroundCache = null;
     for await (const capture of invocationStore.captures()) {
       if (capture.kind === "native-cache" && capture.owner.document_id === "packaged-document") foregroundCache = capture;
@@ -369,8 +369,8 @@ describe("build.mjs full archive emission", () => {
     await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.last_error)
       .toBe("native_capture_identity_mismatch"), { timeout: 15000 });
     expect(receiverPosts).toBe(3);
-    const retainedCache = await invocationStore.getCapture(foregroundCache.id);
-    expect(retainedCache.raw_ref).toEqual(foregroundCache.raw_ref);
+    const keptCache = await invocationStore.getCapture(foregroundCache.id);
+    expect(keptCache.raw_ref).toEqual(foregroundCache.raw_ref);
     expect(await (await new CaptureStaging(globalThis.navigator.storage, invocationStore).file(foregroundRaw.id)).text()).toContain('"id":"fixture-1"');
 
     let entered;
@@ -395,7 +395,7 @@ describe("build.mjs full archive emission", () => {
     expect(await cancellation).toMatchObject({ ok: true, drained: 1 });
     heldNativeFetch = null;
     await vi.waitFor(async () => expect(await invocationStore.getCapture(cancelledRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     expect((await invocationStore.getCapture(foregroundCache.id)).raw_ref).toEqual(foregroundCache.raw_ref);
 
     let navigationEntered;
@@ -430,7 +430,7 @@ describe("build.mjs full archive emission", () => {
     alarmListener({ name: "polylogueCaptureFreshnessWake" });
     await restartFetch;
     // Restore may legitimately pin the newer sealed native acquisition left
-    // by the preceding navigation. Freeze custody after that selection, before
+    // by the preceding navigation. Freeze ownership after that selection, before
     // interruption of the next provider read.
     const restartCache = await invocationStore.getCapture(foregroundCache.id);
     const restartRaw = await new CaptureStaging(globalThis.navigator.storage, invocationStore).metadata(restartCache.raw_ref.id);
@@ -443,44 +443,44 @@ describe("build.mjs full archive emission", () => {
     expect(receiverPosts).toBe(3);
     restartRelease();
     await vi.waitFor(async () => expect(await invocationStore.getCapture(interruptedRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
     heldNativeFetch = null;
     expect((await invocationStore.getCapture(restartCache.id)).raw_ref).toEqual(restartCache.raw_ref);
     expect(await (await new CaptureStaging(globalThis.navigator.storage, invocationStore).file(restartRaw.id)).text()).toBe(restartBytes);
 
     const originalBegin = CaptureStaging.prototype.begin;
     const beginSpy = vi.spyOn(CaptureStaging.prototype, "begin").mockImplementation(async function (...args) {
-      if (args[1]?.invocation_ref) await holdAdmission("staging");
+      if (args[1]?.invocation_ref) await holdStart("staging");
       const result = await originalBegin.apply(this, args);
-      if (args[1]?.invocation_ref) await holdAdmission("staging-reply");
+      if (args[1]?.invocation_ref) await holdStart("staging-reply");
       return result;
     });
     try {
       for (const [index, phase] of ["tab", "document", "staging", "staging-reply"].entries()) {
-        let admissionEntered;
-        const reachedAdmission = new Promise((resolve) => { admissionEntered = resolve; });
-        let admissionRelease;
-        admissionGate = { phase, enabled: false, entered: admissionEntered, release: new Promise((resolve) => { admissionRelease = resolve; }) };
-        const readsBeforeAdmission = pageFetchCalls.length;
+        let startEntered;
+        const reachedStart = new Promise((resolve) => { startEntered = resolve; });
+        let startRelease;
+        startGate = { phase, enabled: false, entered: startEntered, release: new Promise((resolve) => { startRelease = resolve; }) };
+        const readsBeforeStart = pageFetchCalls.length;
         stored.polylogueCaptureFreshnessQueue = scheduleFreshnessHint(null, {
           provider: "chatgpt", nativeId: "fixture-1", reason: "provider_revision_changed",
           nowMs: Date.now(), providerUpdatedAt: `2026-07-16T10:${String(10 + index).padStart(2, "0")}:00Z`,
         });
         alarmListener({ name: "polylogueCaptureFreshnessWake" });
-        await reachedAdmission;
-        const admissionRequest = tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage").at(-1)[1];
-        const cancelledAdmission = tabs.sendMessage(42, { type: "polylogue.cancelCapture", invocationRef: admissionRequest.invocationRef });
-        await vi.waitFor(async () => expect(await invocationStore.getCapture(admissionRequest.invocationRef.id)).toMatchObject({ state: "closing" }), { timeout: 15000 });
-        admissionRelease();
-        expect(await cancelledAdmission).toMatchObject({ ok: true });
-        await vi.waitFor(async () => expect(await invocationStore.getCapture(admissionRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
-        await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.lease_owner).toBeNull(), { timeout: 15000 });
-        expect(pageFetchCalls).toHaveLength(readsBeforeAdmission);
+        await reachedStart;
+        const startRequest = tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage").at(-1)[1];
+        const cancelledStart = tabs.sendMessage(42, { type: "polylogue.cancelCapture", invocationRef: startRequest.invocationRef });
+        await vi.waitFor(async () => expect(await invocationStore.getCapture(startRequest.invocationRef.id)).toMatchObject({ state: "closing" }), { timeout: 15000 });
+        startRelease();
+        expect(await cancelledStart).toMatchObject({ ok: true });
+        await vi.waitFor(async () => expect(await invocationStore.getCapture(startRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
+        await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
+        expect(pageFetchCalls).toHaveLength(readsBeforeStart);
         expect(receiverPosts).toBe(3);
         expect((await invocationStore.getCapture(restartCache.id)).raw_ref).toEqual(restartCache.raw_ref);
-        admissionGate = null;
+        startGate = null;
       }
-    } finally { admissionGate = null; beginSpy.mockRestore(); }
+    } finally { startGate = null; beginSpy.mockRestore(); }
 
     // A fresh profile has a new storage factory and worker module graph.
     // A query on the old composition-root URL still caches its imported runtime.
@@ -496,7 +496,7 @@ describe("build.mjs full archive emission", () => {
         version: 1,
         jobs: [{
           id: "packaged-recovered", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "17", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+          inventory_cursor: "17", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
           learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
         }],
         queue: [{ id: "packaged-recovered-item", job_id: "packaged-recovered", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
@@ -508,7 +508,7 @@ describe("build.mjs full archive emission", () => {
     await import(/* @vite-ignore */ recoveredWorkerUrl);
     const recoveredStatus = await send({ type: "polylogue.backfill.status" });
     expect(recoveredStatus).toMatchObject({ ok: true });
-    // Original checkpoint input transfers to durable custody, but missing
+    // Original checkpoint input transfers to durable ownership, but missing
     // acquired bytes remain an actionable refusal, never a completed capture.
     expect(recoveredStatus.jobs.find(job => job.id === "packaged-recovered")).toMatchObject({
       id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",

@@ -38,7 +38,7 @@ function missionFixture(overrides = {}) {
       reason: "tab_activated",
       detail: "already_safe",
     }],
-    assertions: { selection_candidate_supported: true, persistence_supported: false },
+    assertions: { selection_supported: true, persistence_supported: false },
     intelligence: {
       status: "available",
       archive: {
@@ -289,7 +289,7 @@ describe("ambient capture status surface", () => {
     expect(dom.window.PolylogueAmbientSurface.deriveSelection(crossMessageSelection)).toBeNull();
   });
 
-  it("saves edited notes with an unchanged quote and retains the draft ID after uncertain replies", async () => {
+  it("saves edited notes with an unchanged quote and keeps the draft ID after uncertain replies", async () => {
     const dom = freshDom('<article data-message-author-role="assistant"><span id="inside">Exact  quote\nfrom provider</span></article>');
     const observation = { provider_conversation_id: "conversation-1", provider_message_id: "message-2", fidelity: "native" };
     const { api, runtime } = mount(dom, missionFixture({ notes: { persistence_supported: true } }), { identityForNode: () => observation });
@@ -299,7 +299,7 @@ describe("ambient capture status surface", () => {
     dom.window.getSelection().addRange(range);
     dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
     const body = api.shadow.querySelector("textarea");
-    body.value = "My own interpretation";
+    body.value = "My own note";
     const writes = [];
     runtime.sendMessage.mockImplementation(async (message) => {
       if (message.type === "polylogue.missionControl.status") return missionFixture({ notes: { persistence_supported: true } });
@@ -316,7 +316,7 @@ describe("ambient capture status surface", () => {
     await vi.waitFor(() => expect(api.shadow.textContent).toContain("Note already saved"));
     expect(writes[0]).toEqual(writes[1]);
     expect(writes[0].quote).toBe("Exact  quote\nfrom provider");
-    expect(writes[0].body).toBe("My own interpretation");
+    expect(writes[0].body).toBe("My own note");
     expect(writes[0].source.message_id).toBe("message-2");
     body.value = "Changed after uncertain save";
     trustedClick(button);

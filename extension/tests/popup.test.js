@@ -258,7 +258,7 @@ describe("popup capture", () => {
           ok: true,
           actions: [
             { action_id: "a1", status: "queued" },
-            { action_id: "a2", status: "leased" },
+            { action_id: "a2", status: "claimed" },
             {
               action_id: "a3",
               status: "outcome_unknown",
@@ -602,7 +602,7 @@ describe("popup capture", () => {
     }));
   });
 
-  it("opens the published reader URL while preserving its authentication fragment", async () => {
+  it("opens the committed reader URL while preserving its authentication fragment", async () => {
     await loadPopup({}, [CHATGPT_TAB], async message => message.type === "polylogue.readerLocation"
       ? { ok: true, url: "http://127.0.0.1:41917/auth#synthetic-reader-token" } : { ok: true });
     document.getElementById("open-polylogue").click();

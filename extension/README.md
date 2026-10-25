@@ -11,7 +11,7 @@ The extension talks only to its native messaging host,
 Chrome starts the host only for the extension IDs its manifest names, so
 there is no token or pairing step.
 
-- ChatGPT, claude.ai and Grok raw replies are retained locally. The native
+- ChatGPT, claude.ai and Grok raw replies are stored locally. The native
   host uses the shared source parsers to inspect them; external attachments
   are downloaded by the original provider document and included by value.
   Native inline assets stay in the raw reply. The final capture uses the
@@ -27,7 +27,7 @@ there is no token or pairing step.
   reporting. The extension executes queued actions only while the archive
   setting `browser.actions` is `on`. A public CLI/reader enqueue command
   is still missing; the synthetic host tests queue actions internally.
-- **Open Polylogue** uses the running reader's published address. It reports
+- **Open Polylogue** uses the address the running reader reports. It reports
   unavailable when no reader is running; it does not guess a port or start
   another server.
 
@@ -70,19 +70,17 @@ file, including pending bodies, raw replies, normalized records and attachment
 bytes. Choose **Confirm saved** only after saving it; this releases the
 export copy without removing the original job or its pending evidence.
 
-Import verifies file hashes, sizes, part order and references, then publishes
+Import verifies file hashes, sizes, part order and references, then commits
 the restored job in one database transaction. Restored jobs stay paused and
-retain their original account scope. An old or different profile's scope is
-not silently reassigned. Missing record data in an older backup requires
-explicit recovery. The importer retains one acquired entry, including its
+keep their original account scope. A different profile's scope is not
+silently reassigned. Missing record data in an older backup requires
+explicit recovery. The importer holds one acquired entry, including its
 encoded bytes, while parsing; large individual files can use substantial memory.
 
-The old HTTP receiver, pairing and server checkpoint protocol are retired.
 There is no server or automatic cross-profile recovery. Local file import is
-an explicit backup operation. Mission intelligence remains unavailable on the native host. Selected passages
-use the ordinary note owner rather than the predecessor assertion route.
-Real browser/account workflows remain to be exercised independently of the
-synthetic transport and parser tests.
+an explicit backup operation. Mission intelligence is unavailable on the
+native host. Selected passages are saved as ordinary notes.
+The tests use a synthetic transport and parsers, not real browser accounts.
 
 ## Develop
 
