@@ -96,20 +96,48 @@ async fn an_outage_or_a_lost_acknowledgment_mid_pass_leaves_no_gap() {
     ] {
         stand_in.fail(at, failure);
     }
-    let mut failed = 0;
+    // A lost frame or acknowledgment leaves the sender waiting; the attempt
+    // ends there, as when the process stops, and the next attempt is a new
+    // connection, as after a restart.
+    let mut interrupted = 0;
     loop {
-        // Each attempt is a new connection, as after a restart.
-        match stand_in.connect().await.send_missing(&world.root).await {
-            Ok(_) => break,
-            Err(Error::Unreachable(_)) => failed += 1,
-            Err(other) => panic!("{other}"),
+        let mut sinex = stand_in.connect().await;
+        tokio::select! {
+            sent = sinex.send_missing(&world.root) => {
+                sent.unwrap();
+                break;
+            }
+            () = stand_in.failure_hit() => interrupted += 1,
         }
-        assert!(failed <= 6, "the failures did not end");
+        assert!(interrupted <= 6, "the failures did not end");
     }
-    assert_eq!(failed, 6);
+    assert_eq!(interrupted, 6);
     assert_no_gap(&stand_in, &archive, batches);
     assert_eq!(recorded_names(&stand_in), recorded_names(&clean));
     assert!(stand_in.spool_is_empty());
+}
+
+/// Only the wait can end it: Sinex records the frame and never acknowledges
+/// it, so the send gives up and the next pass asks `have`.
+#[tokio::test]
+async fn an_acknowledgment_that_never_comes_ends_the_send_after_the_wait() {
+    let stand_in = StandIn::start().await;
+    stand_in.fail(1, Failure::LostAcknowledgment);
+    let mut sinex = stand_in.connect().await;
+    sinex.acknowledgment_wait = std::time::Duration::from_millis(100);
+    let events = Ingress::Events {
+        frame: "unacknowledged".into(),
+        failures: vec![],
+        events: vec![],
+    };
+    match sinex.send(events).await {
+        Err(Error::Unreachable(reason)) => {
+            assert_eq!(reason, "no acknowledgment of unacknowledged");
+        }
+        other => panic!("{other:?}"),
+    }
+    let held = sinex.have(&["unacknowledged".into()]).await.unwrap();
+    assert!(held.contains_key("unacknowledged"));
 }
 
 #[tokio::test]

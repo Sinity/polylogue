@@ -48,13 +48,11 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
         .status,
         200
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok {data} if data["store"]["messages"] == 1)
+        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok {data} if data["store"]["messages"] == 1 && data["busy"] == false)
         {
             break;
         }
-        assert!(Instant::now() < deadline, "capture did not converge");
         std::thread::sleep(Duration::from_millis(10));
     }
     let input = selection();

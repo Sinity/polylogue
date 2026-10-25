@@ -76,6 +76,9 @@ pub struct Config {
     /// Further directories stored blobs are read from: in `primary` mode,
     /// Sinex's content store, which holds the archive's bytes.
     pub blob_roots: Vec<PathBuf>,
+    /// The running loop scans every watched location at least this often,
+    /// even when no change is reported (a minute).
+    pub rescan_every: Duration,
 }
 
 impl Config {
@@ -166,6 +169,7 @@ impl Config {
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
             blob_roots: Vec::new(),
+            rescan_every: Duration::from_secs(60),
         }
     }
 }
@@ -190,6 +194,20 @@ pub struct Pass {
     pub errors: Vec<String>,
     /// A SQLite capture has more cooperative work to do.
     pub capture_pending: bool,
+}
+
+/// What the running loop reports, for `status`. A client that waits for a
+/// change to be read waits until the change shows and the loop is not busy:
+/// rows become visible to readers before the pass that wrote them has
+/// derived from them.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct LoopStatus {
+    /// A pass, an import or an excision is running, or a capture continues
+    /// in the next pass.
+    pub busy: bool,
+    /// Passes finished since the loop started.
+    pub passes: u64,
+    pub last_pass: Pass,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]

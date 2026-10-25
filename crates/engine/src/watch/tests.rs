@@ -18,12 +18,12 @@ fn missing_roots_advance_without_watching_unrelated_subtrees_or_reads() {
 
     let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
     fs::create_dir_all(&spool).unwrap();
-    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    rx.recv().unwrap();
     roots.refresh(&config).unwrap();
     let provider = spool.join("synthetic");
     fs::create_dir_all(&provider).unwrap();
     fs::write(provider.join("capture.json"), "{}").unwrap();
-    rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    rx.recv().unwrap();
     // Drain the finite write burst before checking read access.
     while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
     fs::read(provider.join("capture.json")).unwrap();

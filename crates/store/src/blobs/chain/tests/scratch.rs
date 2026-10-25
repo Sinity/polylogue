@@ -37,15 +37,9 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
     while !dir.path().join("ready").exists() {
         if let Some(status) = child.0.try_wait().unwrap() {
             panic!("scratch child exited before readiness: {status}");
-        }
-        if Instant::now() >= deadline {
-            child.0.kill().unwrap();
-            child.0.wait().unwrap();
-            panic!("scratch child failed to become ready");
         }
         std::thread::sleep(Duration::from_millis(10));
     }

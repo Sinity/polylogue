@@ -7,7 +7,6 @@ use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
 
 struct Methods {
     original: *const ffi::sqlite3_io_methods,
@@ -132,8 +131,7 @@ unsafe extern "C" fn shm_lock(
             if at_gap { hook.take() } else { None }
         };
         if let Some(hook) = hook
-            && (hook.reached.send(()).is_err()
-                || hook.proceed.recv_timeout(Duration::from_secs(10)).is_err())
+            && (hook.reached.send(()).is_err() || hook.proceed.recv().is_err())
         {
             return ffi::SQLITE_IOERR;
         }

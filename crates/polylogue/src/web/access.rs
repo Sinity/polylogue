@@ -116,25 +116,32 @@ pub fn same_secret(a: &str, b: &str) -> bool {
             == 0
 }
 
-/// The uid that owns the TCP socket at `addr`, from `/proc/net/tcp{,6}`.
-/// For an accepted connection, the peer's own socket is the entry whose
-/// local address is the peer address.
-pub fn socket_owner(addr: SocketAddr) -> Option<u32> {
-    let (file, wanted) = match addr {
-        SocketAddr::V4(a) => ("/proc/net/tcp", v4_hex(a)),
-        SocketAddr::V6(a) => ("/proc/net/tcp6", v6_hex(a)),
+/// The uid that owns the peer's end of an accepted connection, from
+/// `/proc/net/tcp{,6}`: the entry whose local address is `peer` and whose
+/// remote address is `server`, this listener's end. Both ends must match:
+/// the kernel keeps closed connections in `TIME_WAIT` under uid 0, and one
+/// local port can carry connections to other destinations owned by other
+/// users.
+pub fn socket_owner(peer: SocketAddr, server: SocketAddr) -> Option<u32> {
+    let (file, local, remote) = match (peer, server) {
+        (SocketAddr::V4(p), SocketAddr::V4(s)) => ("/proc/net/tcp", v4_hex(p), v4_hex(s)),
+        (SocketAddr::V6(p), SocketAddr::V6(s)) => ("/proc/net/tcp6", v6_hex(p), v6_hex(s)),
+        _ => return None,
     };
-    let table = fs::read_to_string(file).ok()?;
-    owner_in(&table, &wanted).or_else(|| {
-        // An IPv4 peer on a dual-stack listener appears as v4-mapped v6.
-        let SocketAddr::V4(a) = addr else {
+    owner_in(&fs::read_to_string(file).ok()?, &local, &remote).or_else(|| {
+        // An IPv4 peer that connected from a dual-stack socket is listed as
+        // v4-mapped v6.
+        let (SocketAddr::V4(p), SocketAddr::V4(s)) = (peer, server) else {
             return None;
         };
-        let mapped = SocketAddr::new(a.ip().to_ipv6_mapped().into(), a.port());
-        let SocketAddr::V6(m) = mapped else {
-            return None;
+        let mapped = |a: std::net::SocketAddrV4| {
+            std::net::SocketAddrV6::new(a.ip().to_ipv6_mapped(), a.port(), 0, 0)
         };
-        owner_in(&fs::read_to_string("/proc/net/tcp6").ok()?, &v6_hex(m))
+        owner_in(
+            &fs::read_to_string("/proc/net/tcp6").ok()?,
+            &v6_hex(mapped(p)),
+            &v6_hex(mapped(s)),
+        )
     })
 }
 
@@ -153,10 +160,13 @@ pub fn listener_owner(port: u16) -> Option<u32> {
     })
 }
 
-fn owner_in(table: &str, wanted: &str) -> Option<u32> {
+/// The uid of the live socket with these local and remote addresses in a
+/// `/proc/net/tcp` table. State `06` is `TIME_WAIT`, which has no owner.
+fn owner_in(table: &str, local: &str, remote: &str) -> Option<u32> {
     table.lines().skip(1).find_map(|line| {
         let cols: Vec<&str> = line.split_whitespace().collect();
-        (cols.get(1)? == &wanted).then(|| cols.get(7)?.parse().ok())?
+        (cols.get(1)? == &local && cols.get(2)? == &remote && cols.get(3)? != &"06")
+            .then(|| cols.get(7)?.parse().ok())?
     })
 }
 

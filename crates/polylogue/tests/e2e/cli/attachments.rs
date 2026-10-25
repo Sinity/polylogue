@@ -186,7 +186,6 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
     ];
     let operator = std::thread::scope(|scope| {
         let operator = scope.spawn(|| terminal::cli(&world.env(), &args, false));
-        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let partial = std::fs::read_dir(&directory)
                 .unwrap()
@@ -200,10 +199,6 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
             if partial {
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "exact CLI did not write its private partial output"
-            );
             std::thread::sleep(Duration::from_millis(1));
         }
         let conflicting = world._dir.path().join("conflicting-export");

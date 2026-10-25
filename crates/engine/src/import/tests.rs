@@ -127,6 +127,7 @@ pub(super) fn engine(
         host: "test".into(),
         chunk,
         blob_roots: Vec::new(),
+        rescan_every: std::time::Duration::from_secs(60),
     };
     (Engine::new(config, archive).unwrap(), lock)
 }

@@ -34,10 +34,31 @@ fn secrets_compare_whole() {
 fn a_local_connection_is_owned_by_this_uid() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-    let (_server, peer) = listener.accept().unwrap();
+    let (server, peer) = listener.accept().unwrap();
     assert_eq!(peer, client.local_addr().unwrap());
-    assert_eq!(socket_owner(peer), my_uid());
+    assert_eq!(socket_owner(peer, server.local_addr().unwrap()), my_uid());
     assert!(my_uid().is_some());
+}
+
+/// A closed connection from the same port stays listed in `TIME_WAIT` under
+/// uid 0, and the port can also carry another user's connection elsewhere;
+/// only the live entry with both ends names the owner, wherever it is listed.
+#[test]
+fn only_the_live_entry_with_both_ends_names_the_owner() {
+    let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:9C40 0100007F:1F90 06 00000000:00000000 03:00000F9A 00000000     0        0 0 3 0000000000000000
+   1: 0100007F:9C40 0100007F:0050 01 00000000:00000000 00:00000000 00000000  1001        0 4242 1 0000000000000000 20 4 30 10 -1
+   2: 0100007F:9C40 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 4343 1 0000000000000000 20 4 30 10 -1
+";
+    assert_eq!(
+        owner_in(table, "0100007F:9C40", "0100007F:1F90"),
+        Some(1000)
+    );
+    assert_eq!(
+        owner_in(table, "0100007F:9C40", "0100007F:0050"),
+        Some(1001)
+    );
+    assert_eq!(owner_in(table, "0100007F:9C41", "0100007F:1F90"), None);
 }
 
 #[test]

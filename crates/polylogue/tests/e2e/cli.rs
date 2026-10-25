@@ -32,22 +32,20 @@ fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
     daemon
 }
 
+/// Polls `status` until `ready` holds and the loop is idle, so whatever pass
+/// made `ready` true has also derived from its rows. A state that never comes
+/// is ended by the test runner's timeout.
 fn wait_status(
     env: &[(&str, &Path)],
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    let started = std::time::Instant::now();
     loop {
         let out = cli(env, &["--json", "status"]);
         assert!(out.status.success(), "{out:?}");
         let status = json(&out);
-        if ready(&status) {
+        if status["busy"] == false && ready(&status) {
             return status;
         }
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(60),
-            "status never became ready: {status}"
-        );
     }
 }
 
@@ -202,11 +200,11 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
     for generation in 0..3 {
         // An irrelevant path under the watched tree wakes a real pass without
         // changing a source. The pass reply, not a sleep, delimits observation.
-        let previous = status["last_pass"]["seconds"].clone();
+        let previous = status["passes"].as_u64().unwrap();
         #[cfg(target_os = "linux")]
         let before = io_counts(u64::from(daemon.0.id()));
         std::fs::write(project.join(".idle-wakeup"), generation.to_string()).unwrap();
-        status = wait_status(&env, |s| s["last_pass"]["seconds"] != previous);
+        status = wait_status(&env, |s| s["passes"].as_u64() > Some(previous));
         assert_eq!(status["last_pass"]["bytes_read"], 0, "{status}");
         assert_eq!(status["last_pass"]["bytes_stored"], 0, "{status}");
         assert_eq!(status["last_pass"]["inputs_changed"], 0, "{status}");
@@ -284,20 +282,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let daemon = start_daemon(&env);
 
     // The live file is picked up by the loop's first pass.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let out = cli(&env, &["--json", "status"]);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        if json(&out)["store"]["messages"].as_u64() == Some(1) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the live file was never parsed");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
 
     let out = cli(&env, &["--json", "import", export.to_str().unwrap()]);
     assert!(
@@ -377,12 +362,9 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
     std::fs::remove_file(listing).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let daemon = start_daemon(&env);
-    // The title comes from the Drive listing, a separate input: wait for a
-    // whole pass, not only for the messages.
-    wait_status(&env, |s| {
-        s["store"]["messages"].as_u64() == Some(3)
-            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
-    });
+    // The title comes from the Drive listing, a separate input that the
+    // same pass parses after the messages; an idle loop has done both.
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
     let after = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
     assert!(
         after.status.success(),

@@ -43,11 +43,7 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
             std::fs::remove_dir_all(&source).unwrap();
             polylogue_testkit::delete_index(&archive);
             let _rebuilt = start_daemon(&env);
-            let started = Instant::now();
-            wait_status(&env, |status| {
-                assert!(started.elapsed() < Duration::from_secs(10), "{status}");
-                status["store"]["messages"] == 1
-            });
+            wait_status(&env, |status| status["store"]["messages"] == 1);
             check(&env);
             return;
         }

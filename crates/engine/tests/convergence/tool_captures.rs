@@ -41,11 +41,14 @@ fn ordinary_inputs_are_serviced_between_database_capture_turns() {
     assert_eq!(fs::read_to_string(out).unwrap().lines().count(), 3001);
 }
 
+/// With no change reported and no rescan due, only the loop's own
+/// continuation can finish a capture larger than one turn; a loop that
+/// stopped after the first turn would leave the test waiting.
 #[test]
 fn daemon_continues_capture_without_a_watcher_event() {
-    use polylogue_engine::{LoopMsg, Pass};
+    use polylogue_engine::{LoopMsg, LoopStatus};
     use std::sync::{Arc, Mutex, mpsc::channel};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     let w = ClaudeHome::new();
     let db = w.home.join(".codex/state_5.sqlite");
     fs::create_dir_all(db.parent().unwrap()).unwrap();
@@ -57,8 +60,11 @@ fn daemon_continues_capture_without_a_watcher_event() {
          INSERT INTO kept_rows SELECT n FROM ids;",
         )
         .unwrap();
-    let (mut engine, lock) = w.engine(64 << 20);
-    let status = Arc::new(Mutex::new(Pass::default()));
+    let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
+    let mut config = w.config(64 << 20);
+    config.rescan_every = Duration::MAX;
+    let mut engine = Engine::new(config, archive).unwrap();
+    let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = status.clone();
     let (tx, rx) = channel();
     let (ready, started) = channel();
@@ -67,21 +73,20 @@ fn daemon_continues_capture_without_a_watcher_event() {
         let _lock = lock;
         engine.run(worker_tx, &rx, &shared, || ready.send(()).unwrap())
     });
-    started.recv_timeout(Duration::from_secs(5)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let complete = loop {
-        let pass = status.lock().unwrap().clone();
-        if pass.inputs_seen == 1 && !pass.capture_pending {
-            break true;
-        }
-        if !pass.errors.is_empty() || Instant::now() >= deadline {
-            break false;
+    started.recv().unwrap();
+    let finished = loop {
+        let now = status.lock().unwrap().clone();
+        if now.passes > 0 && !now.busy {
+            break now;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     tx.send(LoopMsg::Stop).unwrap();
     thread.join().unwrap().unwrap();
-    assert!(complete, "{:?}", status.lock().unwrap());
+    assert!(finished.passes > 1, "{finished:?}");
+    assert_eq!(finished.last_pass.inputs_seen, 1, "{finished:?}");
+    assert!(finished.last_pass.errors.is_empty(), "{finished:?}");
+    assert!(!finished.last_pass.capture_pending, "{finished:?}");
     assert_eq!(
         w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
         1

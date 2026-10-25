@@ -357,11 +357,8 @@ fn native_read_benchmark() {
     let initial_daemon_start_seconds = began.elapsed().as_secs_f64();
     let began = Instant::now();
     let status = wait_status(&env, |s| {
-        s["last_pass"]["seconds"]
-            .as_f64()
-            .is_some_and(|seconds| seconds > 0.0)
-            && s["store"]["messages"].as_u64()
-                == Some((MAIN_MESSAGES + SMALL_SESSIONS * SMALL_MESSAGES) as u64)
+        s["store"]["messages"].as_u64()
+            == Some((MAIN_MESSAGES + SMALL_SESSIONS * SMALL_MESSAGES) as u64)
             && s["store"]["search_pending"] == 0
             && s["store"]["parse_states"]["done"] == SMALL_SESSIONS + 1
     });

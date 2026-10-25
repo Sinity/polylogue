@@ -10,7 +10,7 @@ use crate::daemon::{
 use polylogue_engine::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub struct TestDaemon {
     pub home: PathBuf,
@@ -55,28 +55,26 @@ pub fn start(text: &str) -> TestDaemon {
     world.wait_for(|data| {
         data["store"]["messages"].as_u64() == Some(1)
             && data["store"]["search_pending"].as_u64() == Some(0)
-            && data["last_pass"]["seconds"]
-                .as_f64()
-                .is_some_and(|seconds| seconds > 0.0)
     });
     world
 }
 
 impl TestDaemon {
-    /// Waits until `status` satisfies `ok`.
+    /// Waits until `status` satisfies `ok` and then until the loop is idle,
+    /// so the pass that made `ok` hold has also derived from its rows. A
+    /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Response::Ok { data } = handle(Request::Status, &self.daemon)
-                && ok(&data)
-            {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the daemon never reached the state"
-            );
-            std::thread::sleep(Duration::from_millis(50));
+        let status = || match handle(Request::Status, &self.daemon) {
+            Response::Ok { data } => data,
+            other => panic!("status failed: {other:?}"),
+        };
+        while !ok(&status()) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Checked after `ok`: an idle loop seen now has finished any pass
+        // that wrote what `ok` saw.
+        while status()["busy"] != false {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 

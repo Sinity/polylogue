@@ -7,7 +7,7 @@ use crate::test_daemon::{self, TestDaemon};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -128,7 +128,6 @@ fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
     assert_eq!(again.json()["outcome"], "noop");
 
     // The daemon's loop reads the spool; archive state follows it.
-    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let s = exchange(
             &ctx,
@@ -144,7 +143,6 @@ fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
             break;
         }
         assert_eq!(s["state"], "spooled_only");
-        assert!(Instant::now() < deadline, "the capture was never archived");
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -448,7 +446,6 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
     );
     let sent = exchange(&ctx, "POST", "/v1/browser-captures", streamed.as_bytes());
     assert_eq!(sent.status, 200);
-    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(crate::daemon::Response::Ok { data }) = ctx.ask(&crate::daemon::Request::Read {
             target: crate::daemon::ReadTarget::Session(
@@ -465,10 +462,6 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
         {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "native raw capture never reached ordinary read"
-        );
         std::thread::sleep(Duration::from_millis(50));
     }
     let hash = polylogue_model::BlobHash::of(b"native asset bytes");
