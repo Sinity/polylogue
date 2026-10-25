@@ -1,129 +1,62 @@
+// Gemini has no conversation API the page can read, so its capture is the
+// conversation as the page shows it: each prompt and answer in order. The
+// page's own elements for a prompt and an answer are the boundary; when
+// Gemini changes them, the capture finds no turns and says so.
 (function () {
-  if (window.__polylogueGeminiCaptureInstalled) return;
-  window.__polylogueGeminiCaptureInstalled = true;
+  const TURNS = "user-query, model-response";
 
-  // Gemini deliberately has no private API dependency here. These custom
-  // elements are the provider's stable conversation boundary; keeping the
-  // fixture contract at that boundary means a DOM redesign fails in CI
-  // instead of silently producing an empty capture.
-  const TURN_SELECTORS = ["user-query", "model-response"];
-
-  function conversationIdFromUrl(url = window.location.href) {
+  function conversationId(url) {
     const parsed = new URL(url);
-    return parsed.searchParams.get("conversation") || parsed.searchParams.get("id") ||
-      parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1] || null;
+    return parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1]
+      || parsed.searchParams.get("conversation") || null;
   }
 
-  function roleForElement(element) {
-    return element.localName === "user-query" ? "user" : "assistant";
+  async function currentConversation() {
+    return { id: conversationId(location.href), temporary: false };
   }
 
-  function textForElement(element) {
-    const content = element.querySelector("message-content, .message-content, [data-message-content]") || element;
-    return (content.innerText || content.textContent || "").replace(/\s+/g, " ").trim();
-  }
-
-  function collectTurns() {
-    const elements = collectTurnElements();
-    return elements.map((element) => {
-      const text = textForElement(element);
+  function turns() {
+    return [...document.querySelectorAll(TURNS)].map((element) => {
+      const content = element.querySelector("message-content, .message-content, [data-message-content]") || element;
       return {
         provider_turn_id: element.getAttribute("data-message-id") || null,
-        role: roleForElement(element),
-        text,
-        timestamp: null,
-        provider_meta: { capture_source: "gemini_dom", tag_name: element.localName },
+        role: element.localName === "user-query" ? "user" : "assistant",
+        text: (content.innerText || content.textContent || "").replace(/[ \t]+\n/g, "\n").trim(),
       };
     }).filter((turn) => turn.text);
   }
 
-  function collectTurnElements() {
-    return TURN_SELECTORS.flatMap((selector) => [...document.querySelectorAll(selector)])
-      .sort((left, right) => (left.compareDocumentPosition(right) & 4) ? -1 : 1);
-  }
-
-  async function capture(reason = null) {
-    const providerSessionId = conversationIdFromUrl();
-    if (!providerSessionId) return { ok: false, error: "cannot_capture_gemini_without_conversation_id" };
-    const visibleTurnCount = collectTurnElements().length;
-    const turns = collectTurns();
-    if (!turns.length) {
-      await chrome.runtime.sendMessage({
-        type: "polylogue.captureHealth",
-        event: "capture_error",
-        provider: "gemini",
-        provider_session_id: providerSessionId,
-        visible_count: visibleTurnCount,
-        captured_count: 0,
-        reason: "no_turns",
-      });
-      return { ok: false, error: "no_turns" };
-    }
-    if (visibleTurnCount > turns.length) {
-      await chrome.runtime.sendMessage({
-        type: "polylogue.captureHealth",
-        event: "capture_gap",
-        provider: "gemini",
-        provider_session_id: providerSessionId,
-        visible_count: visibleTurnCount,
-        captured_count: turns.length,
-        reason: "visible_turn_not_captureable",
-      });
-    }
-    const envelope = window.polylogueCapture.buildEnvelope({
+  // The whole capture, built here: there is no provider JSON to add.
+  async function fetchConversation(id) {
+    const conversation = conversationId(location.href);
+    if (!conversation || (id && id !== conversation)) return { status: 404, error: "no_conversation_on_page" };
+    const found = turns();
+    if (!found.length) return { status: 422, error: "no_turns_on_page" };
+    const session = {
       provider: "gemini",
-      adapterName: "gemini-dom-v1",
-      providerSessionId,
-      turns,
-      providerMeta: { visible_turn_count: visibleTurnCount },
-    });
-    const result = await window.polylogueCapture.sendCapture(envelope, reason);
-    if (!result?.ok) {
-      await chrome.runtime.sendMessage({
-        type: "polylogue.captureHealth",
-        event: "capture_error",
-        provider: "gemini",
-        provider_session_id: providerSessionId,
-        reason: result?.error || "capture_rejected",
-      });
-      return { ok: false, envelope, captureResult: result, error: result?.error || "capture_rejected" };
-    }
-    const archiveState = await window.polylogueCapture.refreshArchiveState("gemini", providerSessionId);
-    return { ok: true, envelope, captureResult: result, archiveState, visibleTurnCount };
+      provider_session_id: conversation,
+      title: document.title || null,
+      turns: found.map((turn, ordinal) => ({ ...turn, ordinal })),
+    };
+    return {
+      status: 200,
+      info: { id: conversation, temporary: false, url: location.href, session },
+    };
   }
 
-  window.polylogueCapture.capturePage = capture;
-  let lastTurnSignature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n");
-  let recaptureTimer = null;
-  // Debounce the raw mutation stream first, then build the transcript
-  // signature once for the settled batch: streaming emits a mutation per
-  // token, and walking every turn on each one is quadratic work.
-  const freshnessObserver = new MutationObserver(() => {
-    if (recaptureTimer !== null) clearTimeout(recaptureTimer);
-    recaptureTimer = setTimeout(() => {
-      recaptureTimer = null;
-      let signature;
-      try { signature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n"); }
-      catch { return; }
-      if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
-      lastTurnSignature = signature;
-      // Hint only: the background freshness scheduler owns the capture
-      // decision and honours the automatic-capture opt-out.
-      const providerSessionId = conversationIdFromUrl();
-      if (!providerSessionId) return;
-      chrome.runtime.sendMessage({
-        type: "polylogue.captureFreshnessHint",
-        provider: "gemini",
-        provider_session_id: providerSessionId,
-        reason: "gemini_dom_changed",
-        delay_ms: 0,
-      }).catch(() => undefined);
-    }, 500);
-  });
-  freshnessObserver.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== "polylogue.capturePage") return false;
-    capture(message.reason || null).then(sendResponse).catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
-    return true;
-  });
+  async function list() {
+    return { status: 404, error: "no_conversation_list" };
+  }
+
+  async function fetchFile() {
+    return { status: 404, error: "no_download_for_file" };
+  }
+
+  function generating() {
+    return Boolean(document.querySelector('button[aria-label="Stop response"]'));
+  }
+
+  globalThis.polylogueProvider = {
+    name: "gemini", conversationId, currentConversation, fetchConversation, list, fetchFile, generating,
+  };
 })();

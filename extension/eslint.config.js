@@ -1,93 +1,31 @@
 import js from "@eslint/js";
+import globals from "globals";
 
 export default [
   js.configs.recommended,
   {
+    // Page scripts and the popup are classic scripts in a browser page.
     files: ["src/**/*.js"],
     languageOptions: {
-      ecmaVersion: 2022,
+      ecmaVersion: 2023,
       sourceType: "script",
-      globals: {
-        window: "readonly",
-        document: "readonly",
-        chrome: "readonly",
-        MutationObserver: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly",
-        console: "readonly",
-        URL: "readonly",
-        URLSearchParams: "readonly",
-        fetch: "readonly",
-        TextEncoder: "readonly",
-        AbortController: "readonly",
-        structuredClone: "readonly",
-        btoa: "readonly",
-        atob: "readonly",
-        location: "readonly",
-        PointerEvent: "readonly",
-        MouseEvent: "readonly",
-        KeyboardEvent: "readonly",
-        DataTransfer: "readonly",
-        File: "readonly",
-        Blob: "readonly",
-        Headers: "readonly",
-        Response: "readonly",
-        ReadableStream: "readonly",
-        Event: "readonly",
-        InputEvent: "readonly",
-        crypto: "readonly",
-        navigator: "readonly",
-      },
+      globals: { ...globals.browser, chrome: "readonly" },
     },
     rules: {
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
-      "no-undef": "error",
+      "no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },
   {
-    files: ["src/background.js", "src/background/**/*.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js", "src/vendor/**/*.js"],
+    // The service worker and the code it runs in pages are modules.
+    files: ["src/background.js", "src/background/**/*.js", "src/actions/**/*.js"],
+    languageOptions: { sourceType: "module" },
+  },
+  {
+    files: ["tests/**/*.js", "scripts/**/*.mjs", "*.config.js"],
     languageOptions: {
+      ecmaVersion: 2023,
       sourceType: "module",
-    },
-  },
-  {
-    files: ["src/vendor/sha256.js"],
-    languageOptions: {
-      // The locked UMD source names these loaders in guarded inactive branches.
-      globals: { global: "readonly", define: "readonly", require: "readonly" },
-    },
-  },
-  {
-    files: ["src/vendor/**/*.js"],
-    languageOptions: { globals: { TextDecoder: "readonly" } },
-  },
-  {
-    files: ["src/vendor/streamparser-json/tokenizer.js"],
-    // Preserve the locked compiler output's intentional tokenizer fallthrough.
-    // Vendor-byte parity is checked by the build and streaming parser laws.
-    rules: { "no-fallthrough": "off" },
-  },
-  {
-    files: ["tests/**/*.js"],
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: "module",
-      globals: {
-        describe: "readonly",
-        it: "readonly",
-        expect: "readonly",
-        vi: "readonly",
-        beforeEach: "readonly",
-        afterEach: "readonly",
-        URL: "readonly",
-        URLSearchParams: "readonly",
-        document: "readonly",
-        structuredClone: "readonly",
-        chrome: "readonly",
-        TextEncoder: "readonly",
-        btoa: "readonly",
-        setTimeout: "readonly",
-      },
+      globals: { ...globals.node, ...globals.browser },
     },
   },
 ];

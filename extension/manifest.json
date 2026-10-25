@@ -1,23 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Polylogue Browser Capture",
-  "version": "0.3.0",
-  "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
+  "name": "Polylogue",
+  "version": "0.4.0",
+  "description": "Saves your ChatGPT, Claude, Grok and Gemini conversations into Polylogue as they happen.",
   "permissions": [
-    "activeTab",
     "alarms",
+    "nativeMessaging",
     "scripting",
     "storage",
-    "tabs",
-    "nativeMessaging"
+    "tabs"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://claude.ai/*",
-    "https://*.claudeusercontent.com/*",
     "https://grok.com/*",
-    "https://x.com/*",
-    "https://twitter.com/*",
     "https://gemini.google.com/*"
   ],
   "background": {
@@ -25,7 +21,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Polylogue Capture",
+    "default_title": "Polylogue",
     "default_popup": "src/popup.html"
   },
   "content_scripts": [
@@ -34,48 +30,22 @@
         "https://chatgpt.com/*"
       ],
       "js": [
-        "src/content/asset_stream.js",
-        "src/content/chatgpt_bridge.js"
+        "src/content/chatgpt.js",
+        "src/content/page.js",
+        "src/wording.js",
+        "src/content/panel.js"
       ],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://chatgpt.com/*"
-      ],
-      "js": [
-        "src/content/asset_stream.js",
-        "src/common.js",
-        "src/operator_status.js",
-        "src/content/message_layer.js",
-        "src/content/ambient_surface.js",
-        "src/content/chatgpt.js"
-      ],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     },
     {
       "matches": [
         "https://claude.ai/*"
       ],
       "js": [
-        "src/content/asset_stream.js",
-        "src/content/claude_bridge.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://claude.ai/*"
-      ],
-      "js": [
-        "src/common.js",
-        "src/operator_status.js",
-        "src/content/message_layer.js",
-        "src/content/ambient_surface.js",
-        "src/content/asset_stream.js",
-        "src/content/claude.js"
+        "src/content/claude.js",
+        "src/content/page.js",
+        "src/wording.js",
+        "src/content/panel.js"
       ],
       "run_at": "document_idle"
     },
@@ -84,20 +54,10 @@
         "https://grok.com/*"
       ],
       "js": [
-        "src/content/asset_stream.js",
-        "src/content/grok_bridge.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
-        "https://grok.com/*"
-      ],
-      "js": [
-        "src/content/asset_stream.js",
-        "src/common.js",
-        "src/content/grok.js"
+        "src/content/grok.js",
+        "src/content/page.js",
+        "src/wording.js",
+        "src/content/panel.js"
       ],
       "run_at": "document_idle"
     },
@@ -106,11 +66,10 @@
         "https://gemini.google.com/*"
       ],
       "js": [
-        "src/common.js",
-        "src/operator_status.js",
-        "src/content/message_layer.js",
-        "src/content/ambient_surface.js",
-        "src/content/gemini.js"
+        "src/content/gemini.js",
+        "src/content/page.js",
+        "src/wording.js",
+        "src/content/panel.js"
       ],
       "run_at": "document_idle"
     }
