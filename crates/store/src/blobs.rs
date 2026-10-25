@@ -165,6 +165,17 @@ impl Piece {
 /// no index row refers to it; [`delete_marked`] removes the file after the
 /// caller's transaction commits.
 pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<bool> {
+    refuse_delta_base(archive, hash)?;
+    Ok(archive.execute(
+        "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state = 'present'
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)
+         AND NOT EXISTS (SELECT 1 FROM extracted_blob WHERE blob = ?1)",
+        [&hash.0[..]],
+    )? > 0)
+}
+
+/// Refuses when `hash` is the base another blob is stored as a delta of.
+pub(crate) fn refuse_delta_base(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<()> {
     let delta_base: bool = archive.query_row(
         "SELECT EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
         [&hash.0[..]],
@@ -173,12 +184,7 @@ pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash)
     if delta_base {
         return Err(crate::StoreError::ExcisionBlobReferenced(*hash));
     }
-    Ok(archive.execute(
-        "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state = 'present'
-         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)
-         AND NOT EXISTS (SELECT 1 FROM extracted_blob WHERE blob = ?1)",
-        [&hash.0[..]],
-    )? > 0)
+    Ok(())
 }
 
 /// Deletes the files of blobs marked for deletion, then their rows. The

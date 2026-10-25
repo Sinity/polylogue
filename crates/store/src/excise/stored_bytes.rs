@@ -126,6 +126,7 @@ fn record_replacement(
     if piece.hash == *old {
         return Ok(None);
     }
+    crate::blobs::refuse_delta_base(t.archive, old)?;
     let sources = crate::retention::extracted::candidates(t.archive, None, Some(old))?;
     record_piece(t, &piece)?;
     t.archive.execute(

@@ -107,6 +107,9 @@ impl StoredText {
         refused: &mut RefusedJson,
     ) -> Result<()> {
         self.plan.stage_affected(t.archive)?;
+        // A blob another blob is a delta of cannot go; refuse before writing.
+        self.plan
+            .visit_blobs(|hash| crate::blobs::refuse_delta_base(t.archive, &hash))?;
         // A shared blob may contribute only a fragment of a match to one input.
         // Copy each referring extent, applying only that chain's matches. This
         // leaves unrelated input bytes exact and drops unused blob padding.

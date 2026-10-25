@@ -324,7 +324,7 @@ impl TextMatches {
     }
 
     #[cfg(test)]
-    pub(super) fn retained_bytes(&self) -> usize {
+    pub(super) fn held_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + (self.raw.positions.capacity() + self.decoded.positions.capacity())
                 * std::mem::size_of::<(u64, u64)>()
@@ -333,7 +333,7 @@ impl TextMatches {
             + self
                 .nested
                 .as_ref()
-                .map_or(0, |nested| nested.retained_bytes())
+                .map_or(0, |nested| nested.held_bytes())
     }
 
     fn validate(&self) -> MatchResult<()> {

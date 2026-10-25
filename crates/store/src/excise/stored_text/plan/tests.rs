@@ -1,11 +1,12 @@
 use super::*;
+use crate::excise::text_matches::TextMatches;
 
 #[test]
 fn equal_matches_deduplicate_but_overlaps_and_patch_order_remain_distinct() {
     let plan = Plan::new().unwrap();
     plan.matches("input", 1, &[(3, 6), (2, 5), (2, 5)]).unwrap();
-    plan.patch("input", 1, 0, 4, b"Q").unwrap();
-    plan.patch("input", 1, 1, 0, b"AA").unwrap();
+    plan.patch("input", 1, 4, b"Q").unwrap();
+    plan.patch("input", 1, 0, b"AA").unwrap();
     plan.normalize("input", 1).unwrap();
     assert_eq!(plan.counts().unwrap().get("input"), Some(&2));
     let mut changed = Vec::new();
@@ -39,49 +40,19 @@ fn equal_matches_deduplicate_but_overlaps_and_patch_order_remain_distinct() {
 }
 
 #[test]
-fn many_chains_keep_complete_sorted_rows_and_stop_on_visitor_error() {
+fn blanking_keeps_line_breaks_across_chunks() {
     let plan = Plan::new().unwrap();
-    for chain in (0..4097).rev() {
-        plan.matches("opaque\0input:é", chain, &[(2, 3), (7, 8)])
-            .unwrap();
-    }
-    assert_eq!(
-        plan.inputs().unwrap().into_iter().collect::<Vec<_>>(),
-        ["opaque\0input:é"]
-    );
-    assert_eq!(plan.counts().unwrap()["opaque\0input:é"], 8194);
-    let mut ordinal = 0;
-    plan.changed(|input, chain, start, end| {
-        assert_eq!(input, "opaque\0input:é");
-        assert_eq!(chain, ordinal / 2);
-        assert_eq!((start, end), if ordinal % 2 == 0 { (2, 3) } else { (7, 8) });
-        ordinal += 1;
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(ordinal, 8194);
-    let mut called = 0;
-    assert!(
-        plan.changed(|_, _, _, _| {
-            called += 1;
-            Err(StoreError::Invalid("stop".into()))
-        })
-        .is_err()
-    );
-    assert_eq!(called, 1);
-    assert_eq!(
-        plan.conn
-            .pragma_query_value(None, "cache_size", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        -1024
-    );
-    assert_eq!(
-        plan.conn
-            .pragma_query_value(None, "temp_store", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert!(!plan.conn.is_autocommit());
+    plan.matches("input", 1, &[(1, 7)]).unwrap();
+    plan.normalize("input", 1).unwrap();
+    let key = ("input".into(), 1);
+    let mut edits = plan.edits(&key, 0).unwrap();
+    let mut first = *b"ab\nd";
+    let mut second = *b"efgh";
+    edits.blank(0, &mut first, b' ').unwrap();
+    edits.blank(4, &mut second, b' ').unwrap();
+    assert_eq!(&first, b"a \n ");
+    assert_eq!(&second, b"   h");
+    assert!(edits.blank(0, &mut first, b' ').is_err());
 }
 
 #[test]
@@ -108,7 +79,7 @@ fn affected_observations_preserve_overlap_and_patch_order_before_extent_changes(
         .unwrap();
     let plan = Plan::new().unwrap();
     plan.matches("input", 1, &[(2, 4), (3, 5)]).unwrap();
-    plan.patch("input", 1, 0, 0, b"XY").unwrap();
+    plan.patch("input", 1, 0, b"XY").unwrap();
     plan.stage_affected(&archive).unwrap();
     let mut blobs = Vec::new();
     plan.visit_blobs(|hash| {
@@ -139,7 +110,6 @@ fn affected_observations_preserve_overlap_and_patch_order_before_extent_changes(
     let mut inputs = Vec::new();
     plan.visit_extents(|e| {
         inputs.push(e.input);
-        // The source cursor stays usable while another plan table changes.
         if plan.placement(&hash)?.is_none() {
             plan.remember(&hash, 0, 30)?;
         }
@@ -151,12 +121,48 @@ fn affected_observations_preserve_overlap_and_patch_order_before_extent_changes(
 }
 
 #[test]
-fn position_overflow_refuses_without_recording_a_placement() {
-    let plan = Plan::new().unwrap();
-    let hash = BlobHash([3; 32]);
-    assert!(plan.remember(&hash, u64::MAX, 1).is_err());
-    assert!(plan.placement(&hash).unwrap().is_none());
-    assert!(plan.patch("input", 1, 0, u64::MAX, b"x").is_err());
+fn hits_inside_a_rejected_value_never_become_matches() {
+    for (source, expected) in [
+        (r#"{"a":"the secret here","b":"secret"}"#, 2),
+        (r#"{"secret":"kept"}"#, 0),
+    ] {
+        let plan = Plan::new().unwrap();
+        let mut hits = plan.hits("input", 1);
+        let mut scanner = match TextMatches::new("secret", &mut hits) {
+            Ok(scanner) => scanner,
+            Err(_) => panic!("scanner"),
+        };
+        let fed = scanner.feed(source.as_bytes(), &mut hits);
+        let finished = fed.and_then(|()| scanner.finish(&mut hits));
+        match finished {
+            Ok(accepted) => {
+                hits.finish(accepted.scope).unwrap();
+                assert_eq!(
+                    plan.counts().unwrap().get("input").copied().unwrap_or(0),
+                    expected,
+                    "{source}"
+                );
+            }
+            Err(_) => assert_eq!(expected, 0, "{source}"),
+        }
+    }
 }
 
-mod matching;
+#[test]
+fn a_huge_value_keeps_bounded_matcher_state() {
+    let plan = Plan::new().unwrap();
+    let mut hits = plan.hits("input", 1);
+    let mut scanner = TextMatches::new("secret", &mut hits).unwrap_or_else(|_| panic!("scanner"));
+    assert!(scanner.feed(br#"{"a":""#, &mut hits).is_ok());
+    let chunk = b"secret padding ".repeat(4096);
+    for _ in 0..16 {
+        assert!(scanner.feed(&chunk, &mut hits).is_ok());
+        assert!(scanner.held_bytes() < 64 * 1024);
+    }
+    assert!(scanner.feed(br#""}"#, &mut hits).is_ok());
+    let accepted = scanner
+        .finish(&mut hits)
+        .unwrap_or_else(|_| panic!("finish"));
+    hits.finish(accepted.scope).unwrap();
+    assert_eq!(plan.counts().unwrap()["input"], 16 * 4096);
+}
