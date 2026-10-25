@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 
 /// Disposable row comparison state. SQLite spills the index and transaction
-/// journal to disk; Rust retains one decoded row at a time.
+/// journal to disk; Rust holds one decoded row at a time.
 pub(super) struct Catalog {
     pub conn: Connection,
     pub schema: Option<u64>,

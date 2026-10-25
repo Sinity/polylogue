@@ -180,13 +180,13 @@ impl RowPacker {
     ) -> Result<PreparedContent> {
         // Messages and documents hash in separate domains.
         let hash = {
-            let mut canonical = serde_json::to_value(value)?;
-            canonical.sort_all_objects();
+            let mut sorted = serde_json::to_value(value)?;
+            sorted.sort_all_objects();
             let mut hasher = blake3::Hasher::new();
             if let Some(domain) = domain {
                 hasher.update(domain);
             }
-            hasher.update(&serde_json::to_vec(&canonical)?);
+            hasher.update(&serde_json::to_vec(&sorted)?);
             *hasher.finalize().as_bytes()
         };
         Ok(PreparedContent {
@@ -264,9 +264,9 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
             .to_le_bytes(),
     );
     if e.session.is_none() {
-        let mut canonical = e.data.clone();
-        canonical.sort_all_objects();
-        h.update(&serde_json::to_vec(&canonical)?);
+        let mut sorted = e.data.clone();
+        sorted.sort_all_objects();
+        h.update(&serde_json::to_vec(&sorted)?);
     } else {
         h.update(&data);
     }

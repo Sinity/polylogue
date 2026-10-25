@@ -1,5 +1,5 @@
 //! Text documents: one shown version each, chosen like a message's, and
-//! reads on the admitted Store view.
+//! reads in the reader's read transaction.
 use crate::encoding::hex;
 use crate::encoding::{
     PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,
@@ -75,7 +75,7 @@ pub(crate) fn write(
         )
         .optional()?;
     if let Some(pk) = existing {
-        // Within one chain the earliest record wins, or the latest in a chain of snapshots.
+        // Within one chain the earliest record wins, or the latest in a restating chain.
         let earlier: Option<i64> = tx
             .query_row(
                 "SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",

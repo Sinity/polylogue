@@ -49,7 +49,7 @@ pub enum Change {
     First,
     /// Same facts as last time: nothing is read.
     Unchanged,
-    /// Interpret already retained bytes in this exact chain.
+    /// Parse bytes already stored in this exact chain.
     Reparse { chain: i64 },
     /// The same file grew: only the bytes from `from` on are new. The caller
     /// confirms the old tail is intact before trusting this.
@@ -99,7 +99,7 @@ pub struct Piece {
 }
 
 impl Piece {
-    /// Store an unknown-length stream without retaining its whole payload.
+    /// Store an unknown-length stream without holding all of it in memory.
     pub(crate) fn prepare_reader(
         store: &hashed_blobs::Store,
         mut reader: impl std::io::Read,

@@ -89,8 +89,8 @@ pub struct Writer {
     handle: Option<JoinHandle<()>>,
 }
 
-/// Serializes admission with shutdown. Once the stop message is queued,
-/// every retained sender refuses new work rather than acknowledging a
+/// Orders new work against shutdown. Once the stop message is queued,
+/// every remaining sender refuses new work rather than acknowledging a
 /// message that the receiver will never process.
 #[derive(Clone)]
 struct WriterQueue(Arc<Mutex<Option<SyncSender<Msg>>>>);
@@ -107,8 +107,8 @@ impl WriterQueue {
     }
 
     fn stop(&self) {
-        if let Ok(mut admission) = self.0.lock()
-            && let Some(sender) = admission.take()
+        if let Ok(mut accepting) = self.0.lock()
+            && let Some(sender) = accepting.take()
         {
             let _ = sender.send(Msg::Stop);
         }
@@ -178,7 +178,7 @@ impl Writer {
             })?;
         if empty {
             // Make the rebuild marker durable before unsynchronized writes.
-            // Keep WAL throughout: a retained snapshot must not prevent the
+            // Keep WAL throughout: an open read transaction must not prevent the
             // first build from finishing or the writer from stopping.
             index.pragma_update(None, "synchronous", "full")?;
             index.execute(
@@ -325,7 +325,7 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Waits until earlier batches are committed and their memory reservations
+    /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
@@ -505,7 +505,7 @@ impl Inner {
                 }
             }
             // Later queue replies also observe release of the parsed batches'
-            // memory reservations, not only their committed database rows.
+            // memory charges, not only their committed database rows.
             drop(group);
             for (prepared, batch, reply) in single_files.drain(..) {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));

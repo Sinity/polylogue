@@ -20,7 +20,7 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
             )?
         {
             return Err(StoreError::Invalid(
-                "reparse must name retained bytes".into(),
+                "a reparse must name stored bytes".into(),
             ));
         }
         return Ok(Some(chain));
@@ -161,7 +161,7 @@ pub(super) fn check_import_format(
             AND json_type(details_json,'$.import_format')='text' AND json_extract(details_json,'$.import_format') NOT IN ('export-file',?2))",
         params![input,format], |r|r.get(0))?;
     if competing {
-        return Err(StoreError::Conflict("immutable import has a competing parsed origin; switching interpretations is unsupported".into()));
+        return Err(StoreError::Conflict("this import was already parsed as another origin; changing its format is unsupported".into()));
     }
     Ok(())
 }

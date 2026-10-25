@@ -42,19 +42,19 @@ impl PreparedRows {
     }
 
     pub(in crate::writer) fn keep_messages(&mut self, keep: &[bool]) {
-        retain(&mut self.messages, keep);
+        keep_flagged(&mut self.messages, keep);
     }
 
     pub(in crate::writer) fn keep_documents(&mut self, keep: &[bool]) {
-        retain(&mut self.documents, keep);
+        keep_flagged(&mut self.documents, keep);
     }
 
     pub(in crate::writer) fn keep_events(&mut self, keep: &[bool]) {
-        retain(&mut self.events, keep);
+        keep_flagged(&mut self.events, keep);
     }
 }
 
-fn retain<T>(rows: &mut Vec<T>, keep: &[bool]) {
+fn keep_flagged<T>(rows: &mut Vec<T>, keep: &[bool]) {
     if rows.len() == keep.len() {
         let mut positions = keep.iter();
         rows.retain(|_| *positions.next().expect("one flag per row"));

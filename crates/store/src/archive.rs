@@ -132,7 +132,7 @@ impl Archive {
         let a = open_write(&archive.archive_db(), cache::SETUP)?;
         let identity_lock = crate::write_lock::hold(&a)?;
         schema::ensure_archive(&a)?;
-        // The archive's identity: Sinex keys this archive's published rows
+        // The archive's identity: Sinex keys the rows this archive sent
         // by it, so two archives never collide.
         a.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",

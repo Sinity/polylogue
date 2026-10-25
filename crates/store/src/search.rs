@@ -126,7 +126,7 @@ impl Reader<'_> {
             })?;
             if !pending.is_empty() {
                 return Err(StoreError::Invalid(
-                    "selected snippet blocks are absent from the admitted source view".into(),
+                    "selected snippet blocks are absent from this read".into(),
                 ));
             }
         }

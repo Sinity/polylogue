@@ -36,7 +36,7 @@ pub struct ImportMember {
     pub version: u8,
     pub acquisition: String,
     pub member: String,
-    /// Interpretation selected for this acquisition, separate from immutable Input metadata.
+    /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,
     /// Persisted by the Writer in observation_container, not ignorable JSON metadata.
