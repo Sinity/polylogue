@@ -819,7 +819,7 @@ async function completeForegroundDelivery(delivery, signal) {
   signal.throwIfAborted();
   let completion = foregroundDeliveryCompletions.get(delivery.id);
   if (completion?.controller.signal.aborted && !completion.settled) {
-    // Closing entry belongs to the cancelled physical attempt. A new
+    // Closing this delivery to new callers belongs to the cancelled attempt. A new
     // invocation waits its settlement without becoming an owner of that abort.
     const receipt = await new Promise((resolve, reject) => {
       const abort = () => reject(signal.reason);
