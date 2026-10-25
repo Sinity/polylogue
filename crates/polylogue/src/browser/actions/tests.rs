@@ -1,54 +1,56 @@
 use super::*;
 
-fn request(op: &str, conversation: &str, policy: &str) -> ActionRequest {
-    serde_json::from_value(serde_json::json!({
-        "provider": "chatgpt",
-        "operation": op,
-        "target": {"conversation_id": conversation},
-        "text": "summarize this",
-        "presentation": {"model_slug": "x", "model_label": "X", "effort_label": "standard"},
-        "submit_policy": policy
-    }))
-    .unwrap()
+fn request(conversation: Option<&str>, submit: bool) -> ChatRequest {
+    ChatRequest {
+        provider: "chatgpt".into(),
+        conversation: conversation.map(str::to_owned),
+        project: None,
+        text: "summarize this".into(),
+        model: "X".into(),
+        effort: None,
+        submit,
+    }
 }
 
 #[test]
 fn a_request_is_checked_before_it_is_stored() {
-    let none = |_: &BlobHash| None;
-    let new = new_action(&request("conversation.create", "new", "stage_only"), none).unwrap();
+    let new = new_action("k1", &request(None, false), vec![]).unwrap();
     assert!(new.stage_only && !new.needs_approval);
-    assert_eq!(new.request_key, new.request_hash.to_string());
-    let held = new_action(&request("conversation.reply", "c1", "submit_once"), none).unwrap();
-    assert!(held.needs_approval);
-    assert_eq!(
-        new_action(&request("conversation.reply", "new", "stage_only"), none).unwrap_err(),
-        Refused(400, "target_does_not_match_operation")
-    );
-    let mut other = request("conversation.create", "new", "stage_only");
+    assert_eq!(new.request_key, "k1");
+    let held = new_action("k2", &request(Some("c1"), true), vec![]).unwrap();
+    assert!(held.needs_approval && !held.stage_only);
+    let started = new_action("k3", &request(None, true), vec![]).unwrap();
+    assert!(!started.needs_approval);
+
+    let mut other = request(None, false);
     other.provider = "grok".into();
     assert_eq!(
-        new_action(&other, none).unwrap_err(),
-        Refused(400, "unsupported_action")
+        new_action("k", &other, vec![]).unwrap_err(),
+        Refused(400, "unsupported_provider")
     );
-    let mut attached = request("conversation.create", "new", "stage_only");
-    let blob = BlobHash::of(b"bytes");
-    attached.attachments = vec![AttachmentInput {
-        name: "../escape".into(),
-        mime_type: "text/plain".into(),
-        attachment_ref: blob.to_string(),
-    }];
-    let stored = |b: &BlobHash| (*b == blob).then_some(5);
+    let mut blank = request(None, false);
+    blank.model = " ".into();
     assert_eq!(
-        new_action(&attached, stored).unwrap_err(),
+        new_action("k", &blank, vec![]).unwrap_err(),
+        Refused(400, "model_required")
+    );
+
+    let file = ChatFile {
+        name: "../escape".into(),
+        media_type: "text/plain".into(),
+        bytes: b"bytes".to_vec(),
+    };
+    let blob = BlobHash::of(&file.bytes);
+    assert_eq!(
+        new_action("k", &request(None, false), vec![attachment(&file, blob)]).unwrap_err(),
         Refused(400, "attachment_name_not_a_basename")
     );
-    attached.attachments[0].name = "notes.txt".into();
-    assert_eq!(
-        new_action(&attached, stored).unwrap().attachments[0].size,
-        5
-    );
-    assert_eq!(
-        new_action(&attached, none).unwrap_err(),
-        Refused(400, "unknown_attachment")
-    );
+    let file = ChatFile {
+        name: "notes.txt".into(),
+        ..file
+    };
+    let attached = new_action("k", &request(None, false), vec![attachment(&file, blob)]).unwrap();
+    assert_eq!(attached.attachments[0].size, 5);
+    // The same request with other files is other content under the same key.
+    assert_ne!(attached.request_hash, new_action("k", &request(None, false), vec![]).unwrap().request_hash);
 }

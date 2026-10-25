@@ -136,3 +136,58 @@ fn plan(data: &Value) -> String {
     );
     out
 }
+
+/// `chat list`: one line per chat action.
+pub fn chat_actions(data: &Value) -> String {
+    let actions = data["actions"].as_array().map_or(&[][..], Vec::as_slice);
+    if actions.is_empty() {
+        return "no chat actions\n".into();
+    }
+    let mut out = String::new();
+    for a in actions {
+        let target = a["conversation"].as_str().unwrap_or("new conversation");
+        let _ = writeln!(
+            out,
+            "{}  {}  {}  {}  {}",
+            s(&a["id"]),
+            s(&a["status"]),
+            s(&a["provider"]),
+            target,
+            s(&a["updated_at"])
+        );
+        if let Some(error) = a["last_error"].as_str() {
+            let _ = writeln!(out, "    {error}");
+        }
+    }
+    out
+}
+
+/// `backfill start`, `list` and `cancel`: one line per job.
+pub fn backfill_jobs(data: &Value) -> String {
+    let jobs: Vec<&Value> = match data["jobs"].as_array() {
+        Some(jobs) => jobs.iter().collect(),
+        None => data.get("job").filter(|j| !j.is_null()).into_iter().collect(),
+    };
+    if jobs.is_empty() {
+        return "no backfill jobs\n".into();
+    }
+    let mut out = String::new();
+    for j in jobs {
+        let _ = writeln!(
+            out,
+            "{}  {}  {}  listed {}, captured {}, unchanged {}, failed {}  {}",
+            s(&j["id"]),
+            s(&j["provider"]),
+            s(&j["status"]),
+            j["listed"],
+            j["captured"],
+            j["unchanged"],
+            j["failed"],
+            s(&j["updated_at"])
+        );
+        if let Some(detail) = j["detail"].as_str() {
+            let _ = writeln!(out, "    {detail}");
+        }
+    }
+    out
+}

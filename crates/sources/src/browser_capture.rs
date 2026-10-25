@@ -30,8 +30,9 @@ pub const LOCATIONS: &[&str] = &["polylogue/browser-capture/*/*.json"];
 
 const KIND_KEY: &str = "polylogue_capture_kind";
 
-/// Recognizes ordered and streamed envelopes, including schema-first native
-/// captures, without treating an unrelated schema-versioned JSON file as one.
+/// Recognizes capture logs and single captures, including ones that start
+/// with `schema_version`, without treating an unrelated schema-versioned
+/// JSON file as one.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "json")
         && (head.starts_with(polylogue_model::capture_log::MAGIC)
@@ -102,9 +103,9 @@ pub fn session_for(
     session_id(origin_of(provider), provider_session_id)
 }
 
+mod files;
 mod grok;
-mod inspect;
-pub use inspect::inspect;
+pub use files::files;
 
 pub struct Capture;
 

@@ -42,7 +42,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
         exchange(
             &host,
             "POST",
-            "/v1/browser-captures",
+            "/v1/captures",
             &capture("selection-session", "Exact  provider\npassage")
         )
         .status,
@@ -59,7 +59,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let saved = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         input.to_string().as_bytes(),
     );
     assert_eq!(saved.status, 200, "{}", saved.json());
@@ -74,7 +74,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let retry = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         input.to_string().as_bytes(),
     );
     assert_eq!(retry.status, 200, "{}", retry.json());
@@ -96,7 +96,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let conflict = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         changed.to_string().as_bytes(),
     );
     assert_eq!(conflict.status, 409, "{}", conflict.json());
@@ -113,7 +113,7 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
     let missing = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         input.to_string().as_bytes(),
     );
     assert_eq!(missing.status, 409, "{}", missing.json());
@@ -124,7 +124,7 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
             exchange(
                 &host,
                 "POST",
-                "/v1/notes/selection",
+                "/v1/notes",
                 bad.to_string().as_bytes()
             )
             .status,
@@ -144,7 +144,7 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
             exchange(
                 &host,
                 "POST",
-                "/v1/browser-captures",
+                "/v1/captures",
                 &capture(session, "shared native ID")
             )
             .status,
@@ -155,7 +155,7 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
     let refused = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         selection().to_string().as_bytes(),
     );
     assert_eq!(refused.status, 409, "{}", refused.json());

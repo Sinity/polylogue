@@ -16,8 +16,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub const OPERATIONS: &[&str] = &["conversation.create", "conversation.reply"];
-
 /// The providers whose pages the extension can draft and submit on, by
 /// the extension's names for them.
 pub fn providers() -> impl Iterator<Item = &'static str> {
@@ -32,95 +30,43 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Refused(pub u16, pub &'static str);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubmitPolicy {
-    /// Fill the composer and stop: the operator sees a draft.
-    StageOnly,
-    /// Submit once.
-    SubmitOnce,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Target {
-    #[serde(default = "new_conversation")]
-    pub conversation_id: String,
-    #[serde(default)]
-    pub conversation_url: Option<String>,
-    #[serde(default)]
-    pub project_ref: Option<String>,
-}
-
-fn new_conversation() -> String {
-    "new".into()
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Self {
-            conversation_id: new_conversation(),
-            conversation_url: None,
-            project_ref: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Presentation {
-    #[serde(default = "chat")]
-    pub surface: String,
-    pub model_slug: String,
-    pub model_label: String,
-    pub effort_label: String,
-}
-
-fn chat() -> String {
-    "chat".into()
-}
-
-/// A file to attach: bytes stored earlier by an upload, named by their
-/// BLAKE3 hash.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AttachmentInput {
-    pub name: String,
-    #[serde(default = "octet")]
-    pub mime_type: String,
-    pub attachment_ref: String,
-}
-
-fn octet() -> String {
-    "application/octet-stream".into()
-}
-
 /// A request to draft or submit one turn in a chat web page.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    #[serde(default)]
-    pub action_id: Option<String>,
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatRequest {
     pub provider: String,
-    /// `conversation.create` or `conversation.reply`.
-    pub operation: String,
-    #[serde(default)]
-    pub target: Target,
+    /// The conversation to reply in; none starts a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    /// The provider's project to start a new conversation in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub text: String,
+    /// The model as the provider's model menu names it.
+    pub model: String,
+    /// The reasoning effort as the provider's menu names it, where it
+    /// offers one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Submit the turn; without it the extension fills the composer and
+    /// stops, leaving a draft.
     #[serde(default)]
-    pub attachments: Vec<AttachmentInput>,
-    pub presentation: Presentation,
-    #[serde(default = "stage_only")]
-    pub submit_policy: SubmitPolicy,
+    pub submit: bool,
 }
 
-fn stage_only() -> SubmitPolicy {
-    SubmitPolicy::StageOnly
+/// A file the operator attaches, with its bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatFile {
+    pub name: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
 }
 
 /// What the extension instance holding an action reports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Update {
-    pub owner_instance_id: String,
-    #[serde(default = "progress")]
+    /// The extension instance holding the claim.
+    pub by: String,
+    /// `progress` renews the claim; anything else is an outcome.
     pub outcome: String,
     pub phase: String,
     #[serde(default)]
@@ -129,70 +75,61 @@ pub struct Update {
     pub receipt: Option<Value>,
 }
 
-fn progress() -> String {
-    "progress".into()
-}
-
-/// Checks a request and makes the row the writer stores. `size` gives the
-/// size of a stored upload, `None` when no upload has that hash.
+/// Checks a request and makes the row the writer stores. `files` are the
+/// attachments already stored as blobs, with their names and media types.
 pub fn new_action(
-    req: &ActionRequest,
-    size: impl Fn(&BlobHash) -> Option<u64>,
+    request_key: &str,
+    req: &ChatRequest,
+    files: Vec<ChatAttachment>,
 ) -> Result<NewChatAction, Refused> {
-    if !providers().any(|p| p == req.provider) || !OPERATIONS.contains(&req.operation.as_str()) {
-        return Err(Refused(400, "unsupported_action"));
+    if !providers().any(|p| p == req.provider) {
+        return Err(Refused(400, "unsupported_provider"));
     }
     if req.text.trim().is_empty() {
         return Err(Refused(400, "empty_text"));
     }
-    let is_new = req.target.conversation_id == "new";
-    if (req.operation == "conversation.create") != is_new {
-        return Err(Refused(400, "target_does_not_match_operation"));
+    if req.model.trim().is_empty() {
+        return Err(Refused(400, "model_required"));
     }
-    let mut attachments = Vec::new();
-    for a in &req.attachments {
-        let blob =
-            BlobHash::parse(&a.attachment_ref).map_err(|_| Refused(400, "unknown_attachment"))?;
-        let size = size(&blob).ok_or(Refused(400, "unknown_attachment"))?;
-        let basename = Path::new(&a.name)
+    for file in &files {
+        let basename = Path::new(&file.name)
             .file_name()
-            .is_some_and(|n| n == a.name.as_str());
-        if !basename || a.name.chars().any(char::is_control) {
+            .is_some_and(|n| n == file.name.as_str());
+        if !basename || file.name.chars().any(char::is_control) {
             return Err(Refused(400, "attachment_name_not_a_basename"));
         }
-        attachments.push(ChatAttachment {
-            id: uuid::Uuid::now_v7().to_string(),
-            blob,
-            name: a.name.clone(),
-            media_type: a.mime_type.clone(),
-            size,
-        });
     }
     let request = serde_json::to_value(req).map_err(|_| Refused(400, "invalid_action"))?;
-    let request_hash = BlobHash::of(&serde_json::to_vec(&request).unwrap_or_default());
+    let mut hashed = request.clone();
+    hashed["files"] = json!(files.iter().map(|f| f.blob.to_string()).collect::<Vec<_>>());
+    let request_hash = BlobHash::of(&serde_json::to_vec(&hashed).unwrap_or_default());
     Ok(NewChatAction {
-        id: req
-            .action_id
-            .clone()
-            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
-        request_key: req
-            .idempotency_key
-            .clone()
-            .unwrap_or_else(|| request_hash.to_string()),
+        id: uuid::Uuid::now_v7().to_string(),
+        request_key: request_key.to_owned(),
         request_hash,
         request,
-        stage_only: req.submit_policy == SubmitPolicy::StageOnly,
-        needs_approval: req.submit_policy == SubmitPolicy::SubmitOnce && !is_new,
-        attachments,
+        stage_only: !req.submit,
+        needs_approval: req.submit && req.conversation.is_some(),
+        attachments: files,
     })
+}
+
+/// A file's attachment row, once its bytes are stored under `blob`.
+pub fn attachment(file: &ChatFile, blob: BlobHash) -> ChatAttachment {
+    ChatAttachment {
+        id: uuid::Uuid::now_v7().to_string(),
+        blob,
+        name: file.name.clone(),
+        media_type: file.media_type.clone(),
+        size: file.bytes.len() as u64,
+    }
 }
 
 fn iso(ms: i64) -> Value {
     jiff::Timestamp::from_millisecond(ms).map_or(Value::Null, |t| json!(t.to_string()))
 }
 
-/// One action as the extension reads it, at `now`.
+/// One action as the CLI and the extension read it, at `now`.
 pub fn view(a: &ChatAction, now: i64) -> Value {
     let (status, holder) = a.status(now);
     let last = a.events.last();
@@ -202,13 +139,6 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         .rev()
         .find(|e| matches!(e.kind.as_str(), "claimed" | "progress"))
         .filter(|_| holder.is_some());
-    let at = |kind: &str| {
-        a.events
-            .iter()
-            .rev()
-            .find(|e| e.kind == kind)
-            .map(|e| iso(e.at))
-    };
     let failure = a
         .events
         .iter()
@@ -222,14 +152,12 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         .map(|e| e.detail.clone().unwrap_or_else(|| e.kind.clone()));
     let mut out = a.request.clone();
     let fields = json!({
-        "action_id": a.id,
-        "idempotency_key": a.request_key,
-        "request_hash": a.request_hash.to_string(),
+        "id": a.id,
         "attachments": a.attachments.iter().map(|x| json!({
-            "attachment_id": x.id,
+            "id": x.id,
             "name": x.name,
-            "mime_type": x.media_type,
-            "size_bytes": x.size,
+            "media_type": x.media_type,
+            "size": x.size,
             "hash": x.blob.to_string(),
         })).collect::<Vec<_>>(),
         "status": status,
@@ -237,17 +165,13 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         "created_at": iso(a.created_at),
         "updated_at": iso(last.map_or(a.created_at, |e| e.at)),
         "claimed_by": holder,
-        "claim_expires_ms": claim.map(|e| e.at + CLAIM_MS),
-        "requires_operator_approval": a.needs_approval,
-        "approved_at": at("approved"),
-        "declined_at": at("declined"),
+        "claim_expires_at": claim.map(|e| iso(e.at + CLAIM_MS)),
+        "needs_approval": a.needs_approval,
         "last_error": failure,
         "receipt": a.events.iter().rev().find_map(|e| e.receipt.clone()),
         "events": a.events,
     });
     if let (Some(out), Value::Object(fields)) = (out.as_object_mut(), fields) {
-        out.remove("action_id");
-        out.remove("idempotency_key");
         out.extend(fields);
     }
     out
@@ -256,8 +180,11 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
 /// The HTTP status and code a store refusal maps to.
 pub fn refusal(code: &'static str) -> Refused {
     let status = match code {
-        "unknown_chat_action" | "unknown_chat_action_attachment" | "attachment_missing" => 404,
-        "unknown_outcome" | "unknown_attachment" => 400,
+        "unknown_chat_action"
+        | "unknown_chat_action_attachment"
+        | "attachment_missing"
+        | "unknown_backfill_job" => 404,
+        "unknown_outcome" | "unknown_attachment" | "unknown_report" => 400,
         _ => 409,
     };
     Refused(status, code)

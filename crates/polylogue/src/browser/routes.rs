@@ -1,82 +1,47 @@
 //! The routes the extension calls through its native messaging host. Each
 //! native request is served in process by this router; nothing listens on
-//! a port.
+//! a port. A refusal answers `{"error": code, "message": text}` with an
+//! HTTP status.
 
-use super::actions::{self, ActionRequest, Update};
-use super::{API_SCHEMA, BrowserHost, artifact_ref, new_id, now_iso, sha256_hex, write_durable};
+use super::BrowserHost;
+use super::actions::Update;
 use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path as UrlPath, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
+use polylogue_store::backfill_jobs::BackfillReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::fs;
 use std::sync::Arc;
-
-const RECEIVER: &str = "polylogue-browser-capture";
 
 pub fn router(host: Arc<BrowserHost>) -> Router {
     Router::new()
         .route("/v1/status", get(status))
-        .route("/v1/reader-location", get(reader_location))
+        .route("/v1/reader", get(reader))
+        .route("/v1/captures", post(store_capture))
+        .route("/v1/captures/files", post(capture_files))
+        .route("/v1/conversations", post(conversations))
+        .route("/v1/notes", post(selection_note))
+        .route("/v1/chat-actions", get(chat_actions))
+        .route("/v1/chat-actions/{id}/report", post(chat_report))
+        .route("/v1/chat-actions/{id}/decision", post(chat_decision))
         .route(
-            "/v1/browser-captures/capabilities",
-            get(capture_capabilities),
+            "/v1/chat-actions/{id}/attachments/{attachment}",
+            get(chat_attachment),
         )
-        // A conversation's provider reply has no size bound; axum's default
-        // 2 MB limit refused long conversations.
-        .route("/v1/browser-captures", post(capture))
-        .route("/v1/browser-captures/inspect", post(inspect_capture))
-        .route("/v1/archive-state", get(archive_state))
-        .route("/v1/notes/selection", post(selection_note))
-        .route("/v1/capture-health", get(health_list).post(health_report))
-        .route("/v1/browser-actions/capabilities", get(action_capabilities))
-        .route(
-            "/v1/browser-actions",
-            get(actions_list).post(refuse_enqueue),
-        )
-        .route("/v1/browser-actions/{id}", get(action_read))
-        .route("/v1/browser-actions/{id}/events", post(action_event))
-        .route("/v1/browser-actions/{id}/approval", post(action_approval))
-        .route(
-            "/v1/browser-actions/{id}/attachments/{attachment}",
-            get(attachment_read),
-        )
-        .fallback(not_built)
-        .layer(middleware::from_fn(echo_request_id))
+        .route("/v1/backfill", get(backfill_jobs))
+        .route("/v1/backfill/claim", post(backfill_claim))
+        .route("/v1/backfill/{id}/report", post(backfill_report))
         // A capture or a note is as large as the conversation it holds.
         .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(host)
 }
 
-/// Every answer echoes the request's `X-Request-ID`, which the extension
-/// keeps as the receipt of a durable write.
-async fn echo_request_id(req: axum::extract::Request, next: Next) -> HttpResponse {
-    let id = req.headers().get("x-request-id").cloned();
-    let mut r = next.run(req).await;
-    let id = id.unwrap_or_else(|| {
-        HeaderValue::from_str(&new_id()).unwrap_or(HeaderValue::from_static("none"))
-    });
-    r.headers_mut().insert("x-request-id", id);
-    r
-}
-
-/// Routes the extension calls that this host does not serve yet, such as
-/// mission control.
-async fn not_built() -> HttpResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({ "ok": false, "error": "not_built" })),
-    )
-        .into_response()
-}
-
-fn bad(status: StatusCode, error: &str) -> HttpResponse {
-    (status, Json(json!({ "ok": false, "error": error }))).into_response()
+fn refuse(status: StatusCode, error: &str, message: &str) -> HttpResponse {
+    (status, Json(json!({ "error": error, "message": message }))).into_response()
 }
 
 /// Runs blocking work (files, the socket) off the async thread.
@@ -84,82 +49,65 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f).await.ok()
 }
 
+/// Asks the daemon and answers with its data, or its refusal's status and
+/// code; 503 `daemon_required` when it is not running.
+async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
+    match blocking(move || host.ask(&request)).await.flatten() {
+        Some(Response::Ok { data }) => Ok(data),
+        Some(Response::Error {
+            kind,
+            message,
+            detail,
+        }) => {
+            let status = detail
+                .as_ref()
+                .and_then(|d| d["http_status"].as_u64())
+                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
+                .unwrap_or(match kind.as_str() {
+                    "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
+                    "conflict" => StatusCode::CONFLICT,
+                    "not_found" => StatusCode::NOT_FOUND,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                });
+            Err(Box::new(refuse(status, &kind, &message)))
+        }
+        None => Err(Box::new(refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "daemon_required",
+            "the Polylogue daemon is not running",
+        ))),
+    }
+}
+
+async fn answer(host: Arc<BrowserHost>, request: Request) -> HttpResponse {
+    match ask(host, request).await {
+        Ok(data) => Json(data).into_response(),
+        Err(refusal) => *refusal,
+    }
+}
+
+/// Whether the daemon is serving and chat actions are on. A setting read,
+/// not `status`, which counts the whole archive.
 async fn status(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    let c = Arc::clone(&host);
-    // The extension's health probe gives up after five seconds; a full
-    // daemon status takes longer while the loop is busy.
-    let setting = blocking(move || c.actions_setting()).await.flatten();
-    let (daemon, enabled) = (setting.is_some(), setting == Some(true));
+    let setting = blocking(move || host.actions_setting()).await.flatten();
     Json(json!({
-        "ok": true,
-        "receiver": RECEIVER,
-        "receiver_id": host.receiver_id,
-        "api_schema": API_SCHEMA,
-        "schema_version": 1,
-        "daemon": if daemon { "running" } else { "not_running" },
-        "browser_actions": { "enabled": enabled },
+        "daemon": if setting.is_some() { "running" } else { "not_running" },
+        "chat_actions": setting == Some(true),
+        "version": env!("CARGO_PKG_VERSION"),
     }))
     .into_response()
 }
 
-async fn reader_location(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    let Some(key) = host.receiver_id.strip_prefix("polylogue:") else {
-        return bad(StatusCode::SERVICE_UNAVAILABLE, "reader_unavailable");
-    };
-    // BrowserHost's receiver key identifies the same archive as the daemon's reader.
-    let dir = crate::runtime_dir::runtime_dir(key);
-    let location = blocking(move || crate::web::access::reader_url_in(&dir)).await;
-    match location {
-        Some(Ok(url)) => Json(json!({"ok":true,"url":url})).into_response(),
-        _ => bad(StatusCode::SERVICE_UNAVAILABLE, "reader_unavailable"),
-    }
-}
-
-async fn capture_capabilities() -> HttpResponse {
-    Json(json!({
-        "ok": true,
-        "receiver": RECEIVER,
-        "schema_version": 1,
-        "durable_ack_fields": ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"],
-        "outcomes": ["accepted", "noop"],
-        "capture_jobs": false,
-        "inspect": true,
-        "selection_notes": true,
-    }))
-    .into_response()
-}
-
-async fn selection_note(
-    State(host): State<Arc<BrowserHost>>,
-    Json(input): Json<super::notes::SelectionNote>,
-) -> HttpResponse {
-    match blocking(move || super::notes::save(&host, input)).await {
-        Some(Response::Ok { data }) => Json(json!({"ok":true,"note":data})).into_response(),
-        Some(Response::Error { kind, message, .. }) => {
-            let status = match kind.as_str() {
-                "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
-                "conflict" => StatusCode::CONFLICT,
-                "daemon_required" => StatusCode::SERVICE_UNAVAILABLE,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (
-                status,
-                Json(json!({"ok":false,"error":kind,"message":message})),
-            )
-                .into_response()
-        }
-        _ => bad(StatusCode::SERVICE_UNAVAILABLE, "save_outcome_unknown"),
-    }
-}
-
-async fn inspect_capture(body: Bytes) -> HttpResponse {
-    match blocking(move || polylogue_sources::browser_capture::inspect(&body)).await {
-        Some(Ok(mut result)) => {
-            result["ok"] = json!(true);
-            Json(result).into_response()
-        }
-        Some(Err(error)) => bad(StatusCode::UNPROCESSABLE_ENTITY, &error),
-        None => bad(StatusCode::INTERNAL_SERVER_ERROR, "inspection_failed"),
+/// The address the running reader reports.
+async fn reader(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
+    let dir = crate::runtime_dir::runtime_dir(&host.archive_key);
+    match blocking(move || crate::web::access::reader_url_in(&dir)).await {
+        Some(Ok(url)) => Json(json!({ "url": url })).into_response(),
+        _ => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "reader_unavailable",
+            "no reader is running; start it with `polylogue web`",
+        ),
     }
 }
 
@@ -170,310 +118,251 @@ fn capture_identity(v: &Value) -> Option<(String, String)> {
     (!provider.is_empty() && !session.is_empty()).then(|| (provider.to_owned(), session.to_owned()))
 }
 
-/// Accepts one capture into the spool. Identical bytes already there are a
-/// no-op; anything else replaces the conversation's file. The answer is
-/// sent only after the file and its directory are synced.
-async fn capture(
-    State(host): State<Arc<BrowserHost>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> HttpResponse {
+/// Appends one capture to its conversation's capture log. Bytes the log
+/// already holds are not appended again. The answer is sent only after the
+/// file and its directory are synced: the extension may then forget it.
+async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> HttpResponse {
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v @ Value::Object(_)) => v,
-        _ => return bad(StatusCode::BAD_REQUEST, "invalid_envelope"),
+        _ => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "capture_not_json",
+                "a capture is one JSON object",
+            );
+        }
     };
-    let Some((provider, session)) = capture_identity(&value) else {
-        return bad(StatusCode::BAD_REQUEST, "missing_session_identity");
+    let Some((provider, conversation)) = capture_identity(&value) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "capture_names_no_conversation",
+            "a capture names session.provider and session.provider_session_id",
+        );
     };
-    let rel = artifact_ref(&provider, &session);
-    let path = host.spool.join(&rel);
-    let hash = sha256_hex(&body);
-    let request_id = headers
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .map_or_else(new_id, str::to_owned);
-    let bytes = body.clone();
-    let written = blocking(move || super::captures::append(&path, &bytes)).await;
-    let new = match written {
-        Some(Ok(w)) => w,
-        _ => return bad(StatusCode::INTERNAL_SERVER_ERROR, "write_failed"),
-    };
-    let capture_id = value
-        .get("capture_id")
-        .and_then(Value::as_str)
-        .map_or_else(|| format!("{provider}:{session}"), str::to_owned);
-    Json(json!({
-        "ok": true,
-        "receiver": RECEIVER,
-        "schema_version": 1,
-        "source": "browser-extension",
-        "receiver_request_id": request_id,
-        "capture_id": capture_id,
-        "capture_instance_id": value.get("capture_instance_id").cloned().unwrap_or(Value::Null),
-        "provider": provider,
-        "provider_session_id": session,
-        "artifact_ref": rel,
-        "outcome": if new { "accepted" } else { "noop" },
-        "submitted_content_hash": hash,
-        "content_hash": hash,
-        "dedup_content_hash": hash,
-        "bytes_written": if new { body.len() } else { 0 },
-        "replaced": false,
-        "appended": new,
-        "deduplicated": !new,
-        "state": "spooled_only",
-    }))
-    .into_response()
+    let path = host.capture_log(&provider, &conversation);
+    let hash = blake3::hash(&body).to_hex().to_string();
+    match blocking(move || super::captures::append(&path, &body)).await {
+        Some(Ok(new)) => Json(json!({
+            "provider": provider,
+            "conversation": conversation,
+            "hash": hash,
+            "new": new,
+        }))
+        .into_response(),
+        Some(Err(e)) => refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_failed",
+            &e.to_string(),
+        ),
+        None => refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_failed",
+            "the write did not finish",
+        ),
+    }
+}
+
+/// The conversation a capture holds and the files it names, read with the
+/// same parser the loop uses, so the extension can fetch their bytes before
+/// it stores the capture.
+async fn capture_files(body: Bytes) -> HttpResponse {
+    match blocking(move || polylogue_sources::browser_capture::files(&body)).await {
+        Some(Ok(result)) => Json(result).into_response(),
+        Some(Err(error)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, "capture_unreadable", &error),
+        None => refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "capture_unreadable",
+            "reading the capture did not finish",
+        ),
+    }
 }
 
 #[derive(Deserialize)]
-struct StateQuery {
+struct ConversationsAsked {
     provider: String,
-    provider_session_id: String,
+    ids: Vec<String>,
 }
 
-fn sql_text(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
-
-/// What the archive holds for one conversation: spooled, archived with its
-/// message count, or missing. When the daemon is not running, what the
-/// index holds is unknown, not missing.
-async fn archive_state(
+/// What the archive holds of some conversations: `archived` with its
+/// message count and last capture time, `spooled` (stored, not yet read by
+/// the daemon), `missing`, or `unknown` while the daemon is not running.
+async fn conversations(
     State(host): State<Arc<BrowserHost>>,
-    Query(q): Query<StateQuery>,
+    Json(asked): Json<ConversationsAsked>,
 ) -> HttpResponse {
-    let rel = artifact_ref(&q.provider, &q.provider_session_id);
-    let spooled = host.spool.join(&rel).exists();
-    let session_id =
-        polylogue_sources::browser_capture::session_for(&q.provider, &q.provider_session_id)
-            .map(|s| s.to_string());
-    let c = Arc::clone(&host);
-    let sid = session_id.clone();
-    let indexed: Option<Option<i64>> = blocking(move || {
-        let sid = sid?;
-        let statement = format!(
-            "SELECT (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk) AS n
-               FROM session s WHERE s.id = {}",
-            sql_text(&sid)
-        );
-        match c.ask(&Request::Sql { statement })? {
-            Response::Ok { data } => Some(data.get(0).and_then(|r| r["n"].as_i64())),
-            _ => None,
-        }
-    })
-    .await
-    .flatten();
-    let state = match indexed {
-        Some(Some(n)) if n > 0 => "archived",
-        None if spooled => "spooled_unknown_index",
-        _ if spooled => "spooled_only",
-        None => "unknown",
-        _ => "missing",
-    };
-    Json(json!({
-        "ok": true,
-        "provider": q.provider,
-        "provider_session_id": q.provider_session_id,
-        "state": state,
-        "lifecycle": state,
-        "captured": state == "archived",
-        "spooled": spooled,
-        "artifact_ref": rel,
-        "indexed_session_id": session_id,
-        "indexed_message_count": indexed.flatten(),
-        "daemon": if indexed.is_some() { "running" } else { "not_running" },
-    }))
-    .into_response()
-}
-
-/// The latest capture-health report per provider, for the popup.
-async fn health_report(
-    State(host): State<Arc<BrowserHost>>,
-    Json(mut report): Json<Value>,
-) -> HttpResponse {
-    let provider = report["provider"]
-        .as_str()
-        .map_or_else(|| "all".into(), super::safe_token);
-    if let Some(o) = report.as_object_mut() {
-        o.insert("received_at".into(), json!(now_iso()));
-    }
-    let path = host.health.join(format!("{provider}.json"));
-    let bytes = serde_json::to_vec(&report).unwrap_or_default();
-    match blocking(move || write_durable(&path, &bytes)).await {
-        Some(Ok(())) => Json(json!({ "ok": true })).into_response(),
-        _ => bad(StatusCode::INTERNAL_SERVER_ERROR, "write_failed"),
-    }
-}
-
-async fn health_list(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    let dir = host.health.clone();
-    let reports: Vec<Value> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| serde_json::from_slice(&fs::read(e.path()).ok()?).ok())
+    let spooled: Vec<bool> = asked
+        .ids
+        .iter()
+        .map(|id| host.capture_log(&asked.provider, id).exists())
         .collect();
-    Json(json!({ "ok": true, "reports": reports })).into_response()
-}
-
-async fn action_capabilities(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    let c = Arc::clone(&host);
-    let enabled = blocking(move || c.actions_enabled()).await.unwrap_or(false);
-    let providers: Vec<Value> = actions::providers()
-        .map(|p| {
+    let request = Request::Conversations {
+        provider: asked.provider.clone(),
+        ids: asked.ids.clone(),
+    };
+    let held = ask(host, request).await.ok();
+    let daemon = held.is_some();
+    let rows: Vec<Value> = asked
+        .ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| {
+            let row = held
+                .as_ref()
+                .map_or(&Value::Null, |h| &h["conversations"][i]);
+            let messages = row["messages"].as_u64();
+            let state = match (daemon, messages, spooled[i]) {
+                (true, Some(_), _) => "archived",
+                (_, _, true) => "spooled",
+                (true, None, false) => "missing",
+                (false, _, false) => "unknown",
+            };
             json!({
-                "provider": p,
-                "operations": actions::OPERATIONS,
-                "submit_policies": ["stage_only", "submit_once"],
+                "id": id,
+                "state": state,
+                "session": row["session"],
+                "messages": messages,
+                "last_captured_at": row["last_captured_at"],
             })
         })
         .collect();
     Json(json!({
-        "ok": true,
-        "receiver": RECEIVER,
-        "enabled": enabled,
-        "providers": providers,
+        "daemon": if daemon { "running" } else { "not_running" },
+        "conversations": rows,
     }))
     .into_response()
 }
 
-/// The extension never enqueues: only the operator does, through the CLI
-/// or the reader.
-async fn refuse_enqueue(_: Json<ActionRequest>) -> HttpResponse {
-    bad(StatusCode::FORBIDDEN, "only_the_operator_enqueues")
+async fn selection_note(
+    State(host): State<Arc<BrowserHost>>,
+    Json(input): Json<super::notes::SelectionNote>,
+) -> HttpResponse {
+    match blocking(move || super::notes::save(&host, input)).await {
+        Some(Response::Ok { data }) => Json(json!({ "note": data })).into_response(),
+        Some(Response::Error { kind, message, .. }) => {
+            let status = match kind.as_str() {
+                "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
+                "conflict" => StatusCode::CONFLICT,
+                "daemon_required" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            refuse(status, &kind, &message)
+        }
+        None => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "save_outcome_unknown",
+            "the note may or may not be saved; retry it with the same ID",
+        ),
+    }
 }
 
 #[derive(Deserialize)]
-struct ListQuery {
+struct ClaimQuery {
     claim_by: Option<String>,
 }
 
-/// Asks the daemon about chat actions, and answers as the extension expects:
-/// the daemon's data with `ok`, or a refusal's status and code.
-async fn ask_chat(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
-    match blocking(move || host.ask(&request)).await.flatten() {
-        Some(Response::Ok { mut data }) => {
-            if let Some(object) = data.as_object_mut() {
-                object.remove("created");
-                object.insert("ok".into(), json!(true));
-                object.insert("receiver".into(), json!(RECEIVER));
-            }
-            Ok(data)
-        }
-        Some(Response::Error { kind, detail, .. }) => {
-            let status = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            Err(Box::new(bad(status, &kind)))
-        }
-        None => Err(Box::new(bad(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "daemon_required",
-        ))),
-    }
-}
-
-/// Lists actions, or with `claim_by` hands one queued action to that
-/// extension instance while chat actions are on.
-async fn actions_list(
+/// Lists chat actions, or with `claim_by` hands that extension instance
+/// one queued action (`action`, null when none) while chat actions are on.
+async fn chat_actions(
     State(host): State<Arc<BrowserHost>>,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<ClaimQuery>,
 ) -> HttpResponse {
-    let request = match q.claim_by.filter(|o| !o.is_empty()) {
+    let request = match q.claim_by.filter(|by| !by.is_empty()) {
         None => Request::ChatActions,
         Some(by) => Request::ChatClaim { by },
     };
-    match ask_chat(host, request).await {
-        Ok(mut v) => {
-            // A claim answers with the list of what it handed out: one
-            // action or none.
-            if let Some(action) = v.as_object_mut().and_then(|o| o.remove("action")) {
-                v["actions"] = json!(
-                    Some(action)
-                        .filter(|a| !a.is_null())
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                );
-                if v.get("enabled").is_none() {
-                    v["enabled"] = json!(true);
-                }
-            }
-            Json(v).into_response()
-        }
-        Err(r) => *r,
-    }
+    answer(host, request).await
 }
 
-async fn action_read(
-    State(host): State<Arc<BrowserHost>>,
-    UrlPath(id): UrlPath<String>,
-) -> HttpResponse {
-    match ask_chat(host, Request::ChatAction { id }).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => *r,
-    }
-}
-
-async fn action_event(
+async fn chat_report(
     State(host): State<Arc<BrowserHost>>,
     UrlPath(id): UrlPath<String>,
     Json(update): Json<Update>,
 ) -> HttpResponse {
-    match ask_chat(host, Request::ChatReport { id, update }).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => *r,
-    }
+    answer(host, Request::ChatReport { id, update }).await
 }
 
 #[derive(Deserialize)]
-struct Approval {
-    extension_instance_id: String,
-    decision: String,
+struct Decision {
+    by: String,
+    approve: bool,
     #[serde(default)]
     detail: Option<String>,
 }
 
 /// The operator's decision from the extension's popup.
-async fn action_approval(
+async fn chat_decision(
     State(host): State<Arc<BrowserHost>>,
     UrlPath(id): UrlPath<String>,
-    Json(d): Json<Approval>,
+    Json(d): Json<Decision>,
 ) -> HttpResponse {
-    let approve = match d.decision.as_str() {
-        "approve" => true,
-        "decline" => false,
-        _ => return bad(StatusCode::BAD_REQUEST, "decision_is_approve_or_decline"),
-    };
     let request = Request::ChatDecide {
         id,
-        approve,
-        by: d.extension_instance_id,
+        approve: d.approve,
+        by: d.by,
         detail: d.detail,
     };
-    match ask_chat(host, request).await {
-        Ok(v) => Json(v).into_response(),
-        Err(r) => *r,
-    }
+    answer(host, request).await
 }
 
-async fn attachment_read(
+async fn chat_attachment(
     State(host): State<Arc<BrowserHost>>,
     UrlPath((id, attachment)): UrlPath<(String, String)>,
 ) -> HttpResponse {
     use base64::Engine as _;
-    let v = match ask_chat(host, Request::ChatAttachment { id, attachment }).await {
+    let v = match ask(host, Request::ChatAttachment { id, attachment }).await {
         Ok(v) => v,
-        Err(r) => return *r,
+        Err(refusal) => return *refusal,
     };
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(v["bytes"].as_str().unwrap_or(""))
-        .unwrap_or_default();
+    let Ok(bytes) =
+        base64::engine::general_purpose::STANDARD.decode(v["bytes"].as_str().unwrap_or(""))
+    else {
+        return refuse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "attachment_unreadable",
+            "the daemon's answer held no bytes",
+        );
+    };
     let media_type = v["media_type"]
         .as_str()
         .unwrap_or("application/octet-stream")
         .to_owned();
     ([(header::CONTENT_TYPE, media_type)], bytes).into_response()
+}
+
+async fn backfill_jobs(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
+    answer(host, Request::BackfillJobs).await
+}
+
+#[derive(Deserialize)]
+struct Claimant {
+    by: String,
+}
+
+/// Hands the extension instance the job it holds or the oldest waiting
+/// one (`job`, null when none).
+async fn backfill_claim(
+    State(host): State<Arc<BrowserHost>>,
+    Json(c): Json<Claimant>,
+) -> HttpResponse {
+    answer(host, Request::BackfillClaim { by: c.by }).await
+}
+
+#[derive(Deserialize)]
+struct Report {
+    by: String,
+    #[serde(flatten)]
+    report: BackfillReport,
+}
+
+async fn backfill_report(
+    State(host): State<Arc<BrowserHost>>,
+    UrlPath(id): UrlPath<String>,
+    Json(r): Json<Report>,
+) -> HttpResponse {
+    let request = Request::BackfillReport {
+        id,
+        by: r.by,
+        report: r.report,
+    };
+    answer(host, request).await
 }

@@ -158,6 +158,9 @@ pub struct WebChat {
     pub path: &'static str,
     /// Whether the extension can draft and submit turns on its pages.
     pub actions: bool,
+    /// Whether the extension can page through the provider's conversation
+    /// list to capture older conversations.
+    pub backfill: bool,
 }
 
 impl OriginSpec {
@@ -461,6 +464,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             hosts: &["chatgpt.com", "chat.openai.com"],
             path: "c",
             actions: true,
+            backfill: true,
         }),
         assets: Some(crate::chatgpt::assets::RULES),
         collector: None,
@@ -483,6 +487,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             hosts: &["claude.ai"],
             path: "chat",
             actions: false,
+            backfill: true,
         }),
         assets: None,
         collector: None,
@@ -522,6 +527,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             hosts: &["aistudio.google.com"],
             path: "prompts",
             actions: false,
+            backfill: false,
         }),
         assets: None,
         collector: Some(crate::ai_studio::drive::COLLECTOR),
@@ -544,6 +550,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             hosts: &["gemini.google.com"],
             path: "app",
             actions: false,
+            backfill: false,
         }),
         assets: None,
         collector: None,
@@ -566,6 +573,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             hosts: &["grok.com"],
             path: "c",
             actions: false,
+            backfill: true,
         }),
         assets: None,
         collector: None,

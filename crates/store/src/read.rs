@@ -17,8 +17,10 @@ use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
 mod behind_index;
+mod captured;
 mod parents;
 pub use behind_index::{BehindChain, ImportedAs};
+pub use captured::CapturedSession;
 mod rows;
 
 pub use parents::{MessageSelection, ParentIssue, Parents};

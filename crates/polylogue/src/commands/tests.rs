@@ -106,10 +106,7 @@ fn mcp_offers_exactly_the_table_commands_marked_for_it() {
 fn only_daemon_requests_go_over_mcp_and_http() {
     for c in COMMANDS.iter().filter(|c| c.mcp || c.http) {
         assert!(
-            matches!(
-                c.action,
-                Action::Request(_) | Action::JsonRequest(_) | Action::BytesRequest(_)
-            ),
+            matches!(c.action, Action::Request(_)),
             "{} runs locally",
             c.name
         );
@@ -354,30 +351,28 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
 }
 
 #[test]
-fn browser_body_commands_are_http_only_and_build_typed_requests() {
-    for name in ["browser-actions", "browser-actions attachments"] {
-        let command = command(name).unwrap();
-        assert_eq!(command.cli, Cli::Absent);
-        assert!(!command.mcp);
-        assert!(command.http && command.writes);
-        assert!(
-            crate::cli::command()
-                .find_subcommand("browser-actions")
-                .is_none()
-        );
-        assert!(
-            !crate::mcp::tools()
-                .iter()
-                .any(|tool| tool.name == command.mcp_name())
-        );
-    }
-    let Action::JsonRequest(build) = command("browser-actions").unwrap().action else {
-        panic!("wrong body codec")
+fn chat_send_reads_attached_files_on_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.md"), b"synthetic").unwrap();
+    let (c, v) = crate::cli::parse(&[
+        "polylogue", "chat", "send", "chatgpt", "draft", "this", "--model", "X", "--attach",
+        "notes.md",
+    ])
+    .unwrap();
+    let caller = Caller {
+        cwd: Some(dir.path().to_owned()),
+        ..cli_caller()
     };
-    let request = build(json!({"provider":"chatgpt","operation":"conversation.create","text":"Synthetic draft", "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}})).unwrap();
-    assert!(matches!(request, Request::ChatEnqueue { action } if action.text == "Synthetic draft"));
-    let Action::BytesRequest(build) = command("browser-actions attachments").unwrap().action else {
-        panic!("wrong body codec")
+    let Request::ChatSend { action, files, .. } = (match c.action {
+        Action::Request(build) => build(c, &v, &caller).unwrap(),
+        _ => panic!("chat send is a daemon request"),
+    }) else {
+        panic!("chat send builds ChatSend")
     };
-    assert!(matches!(build(vec![0,255,1]), Request::ChatUpload { bytes } if bytes == [0,255,1]));
+    assert_eq!((action.text.as_str(), action.model.as_str(), action.submit), ("draft this", "X", false));
+    assert_eq!(files.len(), 1);
+    assert_eq!((files[0].name.as_str(), files[0].media_type.as_str()), ("notes.md", "text/plain"));
+    assert_eq!(files[0].bytes, b"synthetic");
+    // Over MCP there is no file to read.
+    assert!(command("chat send").unwrap().args_for(Surface::Mcp).all(|a| a.name != "attach"));
 }

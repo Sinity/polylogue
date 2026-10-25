@@ -106,10 +106,6 @@ pub enum Cli {
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
-    /// An HTTP-only structured body, decoded by its typed request owner.
-    JsonRequest(fn(Value) -> Result<Request, String>),
-    /// An HTTP-only binary body, passed directly to the daemon in process.
-    BytesRequest(fn(Vec<u8>) -> Request),
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -283,6 +279,14 @@ pub const GROUPS: &[Group] = &[
     Group {
         name: "hooks",
         help: "Add or remove Polylogue's hooks in Claude Code's settings",
+    },
+    Group {
+        name: "chat",
+        help: "Chat actions: turns the browser extension drafts or sends in a web chat",
+    },
+    Group {
+        name: "backfill",
+        help: "Capture a web chat's older conversations through the browser extension",
     },
 ];
 
@@ -790,19 +794,101 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "browser-actions",
-        help: "Queue one operator chat action while browser.actions is enabled",
-        action: Action::JsonRequest(requests::browser_action),
-        cli: Cli::Absent,
+        name: "chat send",
+        help: "Ask the browser extension to draft a turn in a web chat, or with `--submit` to send it. Needs the setting `browser.actions on`; a submit into an existing conversation waits for approval in the extension's popup",
+        args: &[
+            pos("provider", Kind::Text, "The web chat: chatgpt"),
+            pos("text", Kind::Words, "What to write"),
+            Arg {
+                required: true,
+                ..opt("model", Kind::Text, "The model, as the provider's model menu names it")
+            },
+            opt(
+                "effort",
+                Kind::Text,
+                "The reasoning effort, as the provider's menu names it",
+            ),
+            opt(
+                "conversation",
+                Kind::Text,
+                "Reply in this conversation (its ID); without it a new conversation starts",
+            ),
+            opt(
+                "project",
+                Kind::Text,
+                "Start the conversation in this project",
+            ),
+            opt("submit", Kind::Bool, "Send the turn instead of leaving a draft"),
+            Arg {
+                cli_only: true,
+                ..opt("attach", Kind::List, "Files to attach")
+            },
+        ],
+        action: Action::Request(requests::chat_send),
+        mcp: true,
         http: true,
         writes: true,
         ..CLI
     },
     Command {
-        name: "browser-actions attachments",
-        help: "Store binary attachment bytes for a later operator chat action",
-        action: Action::BytesRequest(requests::browser_attachment),
-        cli: Cli::Absent,
+        name: "chat list",
+        help: "Chat actions and what happened to each",
+        action: Action::Request(requests::chat_list),
+        print: print::chat_actions,
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "chat approve",
+        help: "Approve a held submit into an existing conversation",
+        args: &[pos("id", Kind::Text, "The chat action")],
+        action: Action::Request(requests::chat_decide),
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "chat decline",
+        help: "Decline a held submit; the action is cancelled",
+        args: &[pos("id", Kind::Text, "The chat action")],
+        action: Action::Request(requests::chat_decide),
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "backfill start",
+        help: "Ask the browser extension to capture a web chat's older conversations: every one the archive lacks or holds an older copy of. One job runs per provider; starting again shows it",
+        args: &[
+            pos("provider", Kind::Text, "The web chat: chatgpt, claude-ai or grok"),
+            opt(
+                "since",
+                Kind::Text,
+                "Only conversations changed on or after this date or time",
+            ),
+        ],
+        action: Action::Request(requests::backfill_start),
+        print: print::backfill_jobs,
+        mcp: true,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "backfill list",
+        help: "Backfill jobs and how far each got",
+        action: Action::Request(requests::backfill_list),
+        print: print::backfill_jobs,
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "backfill cancel",
+        help: "Stop a backfill job",
+        args: &[pos("id", Kind::Text, "The job")],
+        action: Action::Request(requests::backfill_cancel),
+        print: print::backfill_jobs,
+        mcp: true,
         http: true,
         writes: true,
         ..CLI

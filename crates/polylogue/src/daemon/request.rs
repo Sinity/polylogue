@@ -11,13 +11,13 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    /// Queues a chat action; only the operator does.
-    ChatEnqueue {
-        action: Box<crate::browser::actions::ActionRequest>,
-    },
-    /// Stores bytes a later chat action attaches.
-    ChatUpload {
-        bytes: Vec<u8>,
+    /// Queues a chat action with the files it attaches; only the operator
+    /// does. The request ID is the action's idempotency key.
+    ChatSend {
+        request_id: String,
+        action: crate::browser::actions::ChatRequest,
+        #[serde(default)]
+        files: Vec<crate::browser::actions::ChatFile>,
     },
     ChatActions,
     ChatAction {
@@ -43,6 +43,33 @@ pub enum Request {
     ChatAttachment {
         id: String,
         attachment: String,
+    },
+    /// Starts capturing a web chat's older conversations; the provider's
+    /// job that has not ended is answered instead of a second one.
+    BackfillStart {
+        provider: String,
+        #[serde(default)]
+        since: Option<String>,
+    },
+    BackfillJobs,
+    BackfillCancel {
+        id: String,
+    },
+    /// The extension instance `by` takes the backfill job it holds or the
+    /// oldest waiting one.
+    BackfillClaim {
+        by: String,
+    },
+    BackfillReport {
+        id: String,
+        by: String,
+        report: polylogue_store::backfill_jobs::BackfillReport,
+    },
+    /// What the archive holds of some of a web chat's conversations: the
+    /// session, its message count and when it was last captured.
+    Conversations {
+        provider: String,
+        ids: Vec<String>,
     },
     Status,
     Attachment {
@@ -196,13 +223,18 @@ impl Request {
             | Self::Sql { .. }
             | Self::ChatActions
             | Self::ChatAction { .. }
-            | Self::ChatAttachment { .. } => true,
+            | Self::ChatAttachment { .. }
+            | Self::BackfillJobs
+            | Self::Conversations { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
-            Self::ChatEnqueue { .. }
-            | Self::ChatUpload { .. }
+            Self::ChatSend { .. }
             | Self::ChatClaim { .. }
+            | Self::BackfillStart { .. }
+            | Self::BackfillCancel { .. }
+            | Self::BackfillClaim { .. }
+            | Self::BackfillReport { .. }
             | Self::ChatReport { .. }
             | Self::ChatDecide { .. }
             | Self::Import { .. }

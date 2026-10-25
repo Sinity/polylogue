@@ -181,9 +181,6 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
         Action::Request(build) => build,
-        Action::JsonRequest(_) | Action::BytesRequest(_) => {
-            return fail(json, "bad_request", "this command is HTTP-only", 2);
-        }
     };
     let caller = Caller {
         surface: Surface::Cli,

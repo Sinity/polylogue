@@ -5,12 +5,11 @@
 //! One exchange: the extension sends `request` (method, path, headers),
 //! then the body as `body` frames of at most 64 KiB, each answered with
 //! `body_ack`, then `body_end`. The host serves it with the browser
-//! router in process and answers `response` (status, headers, its receiver
-//! ID and API schema), then one `response_body` frame per `response_next`
-//! until `response_end`. `cancel` or end of input stops it; a failure is
-//! an `error` frame.
+//! router in process and answers `response` (status and headers), then one
+//! `response_body` frame per `response_next` until `response_end`. `cancel`
+//! or end of input stops it; a failure is an `error` frame.
 
-use super::{API_SCHEMA, BrowserHost};
+use super::BrowserHost;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request};
 use base64::Engine as _;
@@ -105,7 +104,6 @@ pub fn serve(
     let Ok(http) = http.body(Body::from(body)) else {
         return fail(out, "native_request_invalid");
     };
-    let receiver_id = host.receiver_id.clone();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -130,8 +128,6 @@ pub fn serve(
         &json!({
             "type": "response",
             "status": status,
-            "receiver_id": receiver_id,
-            "api_schema": API_SCHEMA,
             "headers": headers,
         }),
     )?;
