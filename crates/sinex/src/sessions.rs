@@ -201,9 +201,10 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
     let session = reader.query(
         "SELECT s.pk, s.origin, s.kind, coalesce(s.title, s.derived_title) AS title, s.cwd_json,
                 s.repo, s.branch, s.harness_version, s.mode, s.started_at, s.last_activity_at,
-                (SELECT o.machine FROM message m JOIN input_ref i ON i.pk = m.input_pk
-                   JOIN a.observation o ON o.input = i.id
-                 WHERE m.session_pk = s.pk ORDER BY o.rowid DESC LIMIT 1) AS machine
+                (SELECT o.machine FROM a.observation o
+                 WHERE o.input = (SELECT i.id FROM message m JOIN input_ref i ON i.pk = m.input_pk
+                                  WHERE m.session_pk = s.pk LIMIT 1)
+                 ORDER BY o.rowid DESC LIMIT 1) AS machine
          FROM session s WHERE s.id = ?1",
         &[SqlValue::Text(id.to_string())],
     )?;
