@@ -94,8 +94,8 @@ fn check_change(
 
 /// The caller owns the unnamed file. No bytes escape until every row has
 /// passed the query's shape checks and the complete batch is written and validated. Dropping
-/// the Reader before sending this file keeps network backpressure out of WAL
-/// read transaction. One decoded row and disk ordering are separate costs.
+/// the Reader before sending this file keeps network backpressure out of the
+/// WAL read transaction. One decoded row and disk ordering are separate costs.
 pub(crate) fn prepare(
     reader: &Reader<'_>,
     since: Option<&str>,

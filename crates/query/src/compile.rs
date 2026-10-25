@@ -1,8 +1,8 @@
-//! Compiling a parsed query to one SQL statement with bound parameters
-//!. The statement
-//! is the whole answer in order; the caller pages it with `LIMIT`/`OFFSET`
-//! inside one read, and counts it with [`Program::count_sql`]. There is no
-//! row cap: a page is how much travels now, never how much is answered.
+//! Compiling a parsed query to one SQL statement with bound parameters.
+//! The statement is the whole answer in a total order; the caller pages it
+//! by key with [`Program::page_sql`] and counts it with
+//! [`Program::count_sql`]. There is no row cap: a page is how much travels
+//! now, never how much is answered.
 
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};

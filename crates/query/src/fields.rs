@@ -786,7 +786,7 @@ pub static FIELDS: &[Field] = &[
     sp(Changes, "sessions", "the sessions an excision selected; null when unknown", custom::selection).sql("{r}.sessions").ids(),
     sp(Changes, "messages", "the messages an excision selected", custom::selection).sql("{r}.messages").ids(),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
-    // turns: computed along the active path
+    // Turns, computed along the active path.
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),
     f(
@@ -996,9 +996,8 @@ pub fn own_messages(s: &str, x: &str) -> String {
     )
 }
 
-/// A Codex code-mode wrapper whose children are counted in its place
-///. Children are the
-/// `exec_command` calls the wrapper ran; a wrapper with none counts itself.
+/// A Codex code-mode wrapper whose children are counted in its place.
+/// Children are the `exec_command` calls the wrapper ran; a wrapper with none counts itself.
 pub fn counted_call(t: &str) -> String {
     format!(
         "NOT ({t}.action = 'code' AND EXISTS (SELECT 1 FROM tool_call cw WHERE cw.session_pk = {t}.session_pk AND cw.tool = 'exec_command'))"
@@ -1038,8 +1037,8 @@ pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// Evidence older than this, with nothing newer, means the session ended.
 pub const LIVE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The live state of session alias `s` at `now`: computed when asked from the stored live facts and the time,
-/// never written by a clock. Rules apply in order and the result is total.
+/// The live state of session alias `s` at `now`: computed when asked from
+/// the stored live facts and the time, never written by a clock. Rules apply in order and the result is total.
 /// A fact dated after `now` counts as at `now`.
 pub fn live_state(s: &str, now: i64) -> String {
     let w = LIVE_WINDOW_MS;

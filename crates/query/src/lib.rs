@@ -1,7 +1,6 @@
-//! The query language: the existing
-//! language ported, not a second one. A read is a query, the
-//! columns it shows and the format it is printed in. Parsing, checking and compiling are pure: the
-//! result is SQL with bound parameters that the daemon runs against
+//! The query language: the existing language ported, not a second one. A
+//! read is a query, the columns it shows and the format it is printed in.
+//! Parsing, checking and compiling are pure: the result is SQL with bound parameters that the daemon runs against
 //! `index.db` (with `archive.db` attached as `a`) in one consistent read.
 
 pub mod ast;

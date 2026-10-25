@@ -1,5 +1,5 @@
-// The Polylogue query language,
-// ported from the Python grammar to pest. Three shapes:
+// The Polylogue query language, ported from the Python grammar to pest.
+// Three shapes:
 //
 //   repo:polylogue since:7d "json envelope" -tag:stale
 //   tool_calls where outcome:error | group by session | count

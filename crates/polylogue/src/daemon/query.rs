@@ -1,7 +1,6 @@
-//! Running a query: compile it,
-//! check pasted IDs, count the whole answer, read one page, cut snippets
-//! for text matches, fill attached rows, and explain an empty result when
-//! asked. Every step reads through one reader, so the count, the page and
+//! Running a query: compile it, check pasted IDs, count the whole answer,
+//! read one page, cut snippets for text matches, fill attached rows, and
+//! explain an empty result when asked. Every step reads through one reader, so the count, the page and
 //! the attachments agree.
 
 use polylogue_model::LogicalDay;
@@ -305,10 +304,10 @@ fn key_value(value: &Value) -> SqlValue {
     match value {
         Value::Null => SqlValue::Null,
         Value::Bool(b) => SqlValue::Int(i64::from(*b)),
-        Value::Number(n) => n
-            .as_i64()
-            .map(SqlValue::Int)
-            .unwrap_or_else(|| SqlValue::Real(n.as_f64().unwrap_or(f64::NAN))),
+        Value::Number(n) => n.as_i64().map_or_else(
+            || SqlValue::Real(n.as_f64().unwrap_or_default()),
+            SqlValue::Int,
+        ),
         Value::String(s) => SqlValue::Text(s.clone()),
         other => SqlValue::Text(other.to_string()),
     }
