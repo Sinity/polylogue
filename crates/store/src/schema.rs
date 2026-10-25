@@ -24,7 +24,10 @@ pub const INDEX_VERSION: u32 = 42;
 /// must leave exactly the tables `archive.sql` creates (where `ALTER TABLE`
 /// cannot, the step creates the new table, copies the rows and renames it).
 /// The schema tests check that version 1 and these steps give `archive.sql`.
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
+    // 2: backfill jobs.
+    include_str!("schema/archive_2.sql"),
+];
 
 /// The version `archive.sql` creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;

@@ -35,7 +35,7 @@ and the checks at open. One writer thread makes every change.
 
 | File | Holds |
 |---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; chat actions and backfill jobs; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
@@ -105,6 +105,13 @@ identical retry is a no-op; a partial matching tail is completed and a
 different one refused. Each capture repeats the whole conversation, so the latest
 capture's version of a message is shown, and a message missing from a later
 capture stays.
+
+The extension keeps nothing but captures the host has not yet acknowledged.
+[Chat actions](../crates/store/src/chat_actions.rs) and
+[backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
+writer changes: the operator queues or starts them through the CLI, MCP or the
+reader, and the extension claims them through the host, with a claim that
+expires, and reports what it did.
 
 A Gemini page capture and a Takeout export of one conversation are one
 session, but they share no turn ID: the capture has the page's text with

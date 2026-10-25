@@ -1,5 +1,10 @@
-export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
-  const detail = String(value?.message || value || "browser_action_failed");
+// Turns the extension drafts or sends in ChatGPT for Polylogue's chat
+// actions. The functions below run inside the ChatGPT page (MAIN world), so
+// each one is self-contained.
+
+/** The outcome a failed chat action reports, from its error text. */
+export function failureOutcome(value, retryAfterSeconds = null) {
+  const detail = String(value?.message || value || "chat_action_failed");
   const text = detail.toLowerCase();
   if (value?.outcome === "rate_limited") {
     return { outcome: "rate_limited", retry_after_seconds: retryAfterSeconds, detail };
@@ -25,39 +30,38 @@ export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
   return { outcome: "network_error", retry_after_seconds: retryAfterSeconds, detail };
 }
 
-// This function is serialized into the same MAIN document as the executor.
-// The original action/claim tuple owns the transient provider File parts.
-export function transferBrowserActionAttachmentInPage(actionId, ownerId, command, item = null, offset = 0, encoded = "") {
-  const key = "__polylogueBrowserActionAttachments";
+// Passes an attachment's bytes into the page in pieces, where they become
+// a File for the composer. The files belong to one action run (`actionId`,
+// `runId`); another run's files are never touched.
+export function attachmentInPage(actionId, runId, command, item = null, offset = 0, encoded = "") {
+  const key = "__polylogueChatAttachments";
   const owned = () => {
     const state = globalThis[key];
-    if (!state || state.actionId !== actionId || state.ownerId !== ownerId) {
-      throw new Error("protocol_attachment_owner_mismatch");
+    if (!state || state.actionId !== actionId || state.runId !== runId) {
+      throw new Error("protocol_attachment_run_mismatch");
     }
     return state;
   };
   if (command === "begin") {
     if (globalThis[key]) throw new Error("protocol_attachment_transfer_busy");
-    globalThis[key] = { actionId, ownerId, entries: new Map() };
+    globalThis[key] = { actionId, runId, entries: new Map() };
   } else if (command === "discard") {
-    // A replaced document has no state. Never delete another owner's parts.
+    // A replaced document has no files. Never delete another run's files.
     if (globalThis[key]) { owned(); delete globalThis[key]; }
   } else {
     const state = owned();
-    if (!item || !Number.isSafeInteger(item.size_bytes) || item.size_bytes < 0) {
-      throw new Error("protocol_attachment_size_unrepresentable");
+    if (!item || !Number.isSafeInteger(item.size) || item.size < 0) {
+      throw new Error("protocol_attachment_size_unknown");
     }
     if (command === "start") {
-      if (state.entries.has(item.attachment_id)) throw new Error("protocol_attachment_duplicate");
-      state.entries.set(item.attachment_id, { metadata: item, size: 0, parts: [], file: null });
+      if (state.entries.has(item.id)) throw new Error("protocol_attachment_duplicate");
+      state.entries.set(item.id, { size: 0, parts: [], file: null });
     } else {
-      const entry = state.entries.get(item.attachment_id);
-      if (!entry || entry.metadata.sha256 !== item.sha256 || entry.file) {
-        throw new Error("protocol_attachment_transfer_mismatch");
-      }
+      const entry = state.entries.get(item.id);
+      if (!entry || entry.file) throw new Error("protocol_attachment_transfer_mismatch");
       if (command === "append") {
         const binary = atob(encoded);
-        if (binary.length > 64 * 1024 || offset !== entry.size || entry.size + binary.length > item.size_bytes) {
+        if (offset !== entry.size || entry.size + binary.length > item.size) {
           throw new Error("protocol_attachment_chunk_mismatch");
         }
         const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -65,8 +69,8 @@ export function transferBrowserActionAttachmentInPage(actionId, ownerId, command
         entry.parts.push(new globalThis.Blob([bytes]));
         entry.size += bytes.length;
       } else if (command === "finish") {
-        if (entry.size !== item.size_bytes) throw new Error("protocol_attachment_size_mismatch");
-        entry.file = new File(entry.parts, item.name, { type: item.mime_type });
+        if (entry.size !== item.size) throw new Error("protocol_attachment_size_mismatch");
+        entry.file = new File(entry.parts, item.name, { type: item.media_type });
         entry.parts = [];
       } else throw new Error("protocol_attachment_command_unknown");
     }
@@ -74,16 +78,20 @@ export function transferBrowserActionAttachmentInPage(actionId, ownerId, command
   return { ok: true };
 }
 
-export async function executeChatGptBrowserActionInPage(action, ownerId) {
-  // chrome.scripting serializes this function into MAIN world. All helpers and
-  // constants therefore intentionally live inside the function body.
+/**
+ * Drafts the action's turn in the composer, or sends it once, and answers
+ * what the page showed: the conversation and the sent turn's ID.
+ */
+export async function chatActionInPage(action, runId) {
+  // chrome.scripting serializes this function into the page, so every
+  // helper lives inside it.
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
   const textOf = (node) => String(node?.innerText || node?.textContent || "").trim();
   const normalizedText = (value) => String(value || "").replace(/\s+/g, " ").trim();
   const expectedText = normalizedText(action.text);
-  const expectedModel = action.presentation.model_label;
-  const expectedEffort = action.presentation.effort_label;
-  const expectedProject = String(action.target.project_ref || "").match(/g-p-[A-Za-z0-9]+/)?.[0] || null;
+  const expectedModel = action.model;
+  const expectedEffort = action.effort || null;
+  const expectedProject = String(action.project || "").match(/g-p-[A-Za-z0-9]+/)?.[0] || null;
   const waitFor = async (predicate, timeoutMs, label) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -137,8 +145,11 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
   // dimension at all -- there is no composer pill to find, ever. Distinguish
   // the two by which control actually exists rather than by presentation
   // fields, so a plan upgrade/downgrade is handled by whichever DOM shows up.
-  const hasComposerPill = () => [...document.querySelectorAll("button")]
-    .some((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort);
+  // Without an effort to pick, any composer pill opens the model menu.
+  const composerPill = () => [...document.querySelectorAll("button")]
+    .find((button) => button.classList.contains("__composer-pill") && (!expectedEffort || textOf(button) === expectedEffort));
+  const hasComposerPill = () => Boolean(composerPill());
+  const effortChecked = (checked) => !expectedEffort || checked.includes(expectedEffort);
   const flatSwitcherButton = () => document.querySelector('[data-testid="model-switcher-dropdown-button"]');
   // Flat switcher menu items pair a model-name span with a muted description
   // line as adjacent DOM nodes under the same menuitemradio; textOf() would
@@ -180,34 +191,26 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
     .map((node) => ({ id: node.getAttribute("data-message-id"), text: normalizedText(textOf(node)) }))
     .filter((message) => message.id);
 
-  const attachmentState = globalThis.__polylogueBrowserActionAttachments;
+  const attachmentState = globalThis.__polylogueChatAttachments;
   const attachments = action.attachments || [];
   let submissionMayHaveOccurred = false;
   try {
     if (location.hostname !== "chatgpt.com" && !location.hostname.endsWith(".chatgpt.com")) {
       throw new Error("protocol_wrong_host");
     }
-    if (action.provider !== "chatgpt" || action.presentation.surface !== "chat") {
-      throw new Error("unsupported provider or surface target mismatch");
-    }
+    if (action.provider !== "chatgpt") throw new Error("unsupported provider target mismatch");
+    const reply = Boolean(action.conversation);
     const locationConversationId = conversationIdFromLocation();
-    if (action.operation === "conversation.create" && locationConversationId) {
-      throw new Error("protocol_new_conversation_target_required");
-    }
-    if (
-      action.operation === "conversation.reply"
-      && locationConversationId !== action.target.conversation_id
-    ) {
-      throw new Error("protocol_reply_target_mismatch");
-    }
+    if (!reply && locationConversationId) throw new Error("protocol_new_conversation_target_required");
+    if (reply && locationConversationId !== action.conversation) throw new Error("protocol_reply_target_mismatch");
     if (expectedProject && !location.pathname.includes(expectedProject)) {
       throw new Error("project mismatch before compose");
     }
 
     let baselineUserIds = new Set();
-    let providerBaselineComplete = action.operation !== "conversation.reply";
-    if (action.operation === "conversation.reply") {
-      const baselineRead = await providerConversation(action.target.conversation_id, true);
+    let providerBaselineComplete = !reply;
+    if (reply) {
+      const baselineRead = await providerConversation(action.conversation, true);
       const baseline = baselineRead.conversation;
       providerBaselineComplete = Boolean(baseline);
       baselineUserIds = baseline
@@ -234,12 +237,7 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
     if (!mode.chat || mode.work) throw new Error(`chat selected mismatch:chat=${mode.chat}:work=${mode.work}`);
 
     if (hasComposerPill()) {
-      const pill = await waitFor(
-        () => [...document.querySelectorAll("button")]
-          .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort),
-        10_000,
-        "effort_pill",
-      );
+      const pill = await waitFor(composerPill, 10_000, "effort_pill");
       pointerClick(pill);
       const modelMenu = await waitFor(
         () => [...document.querySelectorAll('[role="menuitem"][data-has-submenu]')]
@@ -250,7 +248,7 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
       pointerClick(modelMenu);
       await waitFor(() => checkedModelOptions().includes(expectedModel), 5_000, "model_submenu");
       const checked = checkedModelOptions();
-      if (!checked.includes(expectedModel) || !checked.includes(expectedEffort)) {
+      if (!checked.includes(expectedModel) || !effortChecked(checked)) {
         throw new Error(`model mismatch:${checked.join("|")}`);
       }
       pointerClick(pill);
@@ -273,12 +271,12 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
     if (attachments.length && !fileInput) throw new Error("protocol_file_input_missing");
     if (attachments.length) {
       const transfer = new DataTransfer();
-      if (attachmentState?.actionId !== action.action_id || attachmentState?.ownerId !== ownerId) {
-        throw new Error("protocol_attachment_owner_mismatch");
+      if (attachmentState?.actionId !== action.id || attachmentState?.runId !== runId) {
+        throw new Error("protocol_attachment_run_mismatch");
       }
       for (const item of attachments) {
-        const entry = attachmentState.entries.get(item.attachment_id);
-        if (!entry?.file || entry.metadata.sha256 !== item.sha256 || entry.file.size !== item.size_bytes) {
+        const entry = attachmentState.entries.get(item.id);
+        if (!entry?.file || entry.file.size !== item.size) {
           throw new Error("protocol_attachment_transfer_incomplete");
         }
         transfer.items.add(entry.file);
@@ -309,8 +307,7 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
     const finalMode = selectedMode();
     let finalSelectionVerified = false;
     if (hasComposerPill()) {
-      const finalPill = [...document.querySelectorAll("button")]
-        .find((button) => button.classList.contains("__composer-pill") && textOf(button) === expectedEffort);
+      const finalPill = composerPill();
       if (finalPill) pointerClick(finalPill);
       const finalModelMenu = finalPill
         ? await waitFor(
@@ -324,7 +321,7 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
       const finalChecked = finalModelMenu
         ? await waitFor(() => {
           const values = checkedModelOptions();
-          return values.includes(expectedModel) && values.includes(expectedEffort) ? values : null;
+          return values.includes(expectedModel) && effortChecked(values) ? values : null;
         }, 5_000, "final_model_selection")
         : [];
       if (finalPill) pointerClick(finalPill);
@@ -345,7 +342,7 @@ export async function executeChatGptBrowserActionInPage(action, ownerId) {
       throw new Error("model mismatch before submit");
     }
 
-    if (action.submit_policy === "stage_only") {
+    if (!action.submit) {
       return {
         ok: true,
         outcome: "drafted",

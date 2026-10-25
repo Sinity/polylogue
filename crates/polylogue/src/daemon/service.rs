@@ -228,14 +228,19 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(e) => store_error(&e),
             }
         }
-        Request::ChatEnqueue { .. }
-        | Request::ChatUpload { .. }
+        Request::ChatSend { .. }
         | Request::ChatActions
         | Request::ChatAction { .. }
         | Request::ChatClaim { .. }
         | Request::ChatReport { .. }
         | Request::ChatDecide { .. }
-        | Request::ChatAttachment { .. } => chat::handle(request, d, reader),
+        | Request::ChatAttachment { .. }
+        | Request::BackfillStart { .. }
+        | Request::BackfillJobs
+        | Request::BackfillCancel { .. }
+        | Request::BackfillClaim { .. }
+        | Request::BackfillReport { .. }
+        | Request::Conversations { .. } => browser::handle(request, d, reader),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",
@@ -815,7 +820,7 @@ pub fn start(
     Ok(runtime)
 }
 
-mod chat;
+mod browser;
 mod read;
 
 #[cfg(test)]

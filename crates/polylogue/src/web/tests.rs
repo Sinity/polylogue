@@ -219,35 +219,140 @@ fn search_renders_the_cli_answer_with_session_links() {
     });
 }
 
+fn chat_send(body: &serde_json::Value) -> axum::http::Request<Body> {
+    own_origin(authed(post("/api/v1/chat/send")))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 #[test]
 fn the_operator_queues_chat_actions_only_while_switched_on() {
     let r = reader();
     let body = serde_json::json!({
+        "request_id": "draft-1",
         "provider": "chatgpt",
-        "operation": "conversation.create",
         "text": "summarize this",
-        "presentation": {"model_slug": "gpt-x", "model_label": "GPT X", "effort_label": "standard"}
-    })
-    .to_string();
+        "model": "GPT X",
+    });
     rt().block_on(async {
-        let enqueue = || {
-            own_origin(authed(post("/api/v1/browser-actions")))
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body.clone()))
-                .unwrap()
-        };
-        assert_eq!(send(&r, enqueue()).await.0, StatusCode::CONFLICT);
+        let (s, _, refused) = send(&r, chat_send(&body)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{refused}");
+        assert!(refused.contains("browser_actions_off"));
         r.w.set("browser.actions", "on");
-        let (s, _, created) = send(&r, enqueue()).await;
-        assert_eq!(s, StatusCode::CREATED, "{created}");
+        let (s, _, created) = send(&r, chat_send(&body)).await;
+        assert_eq!(s, StatusCode::OK, "{created}");
         let v: serde_json::Value = serde_json::from_str(&created).unwrap();
         assert_eq!(v["action"]["status"], "queued");
-        assert_eq!(v["action"]["submit_policy"], "stage_only");
-        // The same request again is the same action.
-        let (s, _, again) = send(&r, enqueue()).await;
+        assert_eq!(v["action"]["submit"], false);
+        // The same request again, as after a lost reply, is the same action.
+        let (s, _, again) = send(&r, chat_send(&body)).await;
         assert_eq!(s, StatusCode::OK);
         let again: serde_json::Value = serde_json::from_str(&again).unwrap();
-        assert_eq!(again["action"]["action_id"], v["action"]["action_id"]);
+        assert_eq!(again["action"]["id"], v["action"]["id"]);
+        // The same request ID with other content is refused.
+        let mut changed = body.clone();
+        changed["text"] = "Different draft".into();
+        let (s, _, raw) = send(&r, chat_send(&changed)).await;
+        assert_eq!(s, StatusCode::CONFLICT);
+        assert!(raw.contains("idempotency_key_reused"));
+    });
+    assert_eq!(
+        r.w.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .chat_actions()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn chat_send_needs_the_origin_and_token() {
+    let r = reader();
+    rt().block_on(async {
+        let path = "/api/v1/chat/send";
+        assert_eq!(
+            send(&r, own_origin(post(path)).body(Body::from("{}")).unwrap())
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send(&r, authed(post(path)).body(Body::from("{}")).unwrap())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    });
+}
+
+#[test]
+fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
+    let r = reader();
+    let archive = rusqlite::Connection::open(r.w.daemon.archive.archive_db()).unwrap();
+    archive
+        .execute_batch("ALTER TABLE setting RENAME TO unavailable_setting")
+        .unwrap();
+    let body = serde_json::json!({
+        "provider": "chatgpt",
+        "text": "Neutral synthetic draft",
+        "model": "X",
+    });
+    let response = rt().block_on(async { send(&r, chat_send(&body)).await });
+    archive
+        .execute_batch("ALTER TABLE unavailable_setting RENAME TO setting")
+        .unwrap();
+    assert_eq!(
+        response.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        response.2
+    );
+    let body: serde_json::Value = serde_json::from_str(&response.2).unwrap();
+    assert_eq!(body["error"], "store");
+}
+
+#[test]
+fn a_chat_send_answer_masks_credentials_without_changing_the_queued_draft() {
+    let r = reader();
+    r.w.set("browser.actions", "on");
+    let text = format!("Keep this draft {}", "AKIAIOSFODNN7EXAMPLE");
+    let body = serde_json::json!({"provider":"chatgpt", "text":text, "model":"X"});
+    rt().block_on(async {
+        let (status, _, shown) = send(&r, chat_send(&body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!shown.contains("AKIAIOSFODNN7EXAMPLE"));
+    });
+    let queued = r.w.daemon.reads.reader().unwrap().chat_actions().unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].request["text"], text.as_str());
+}
+
+#[test]
+fn backfill_jobs_start_and_list_over_http() {
+    let r = reader();
+    rt().block_on(async {
+        let start = own_origin(authed(post("/api/v1/backfill/start")))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"provider":"claude-ai"}"#))
+            .unwrap();
+        let (s, _, started) = send(&r, start).await;
+        assert_eq!(s, StatusCode::OK, "{started}");
+        let started: serde_json::Value = serde_json::from_str(&started).unwrap();
+        assert_eq!(started["job"]["status"], "waiting");
+        let (s, _, listed) = send(
+            &r,
+            authed(get("/api/v1/backfill/list"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{listed}");
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed["jobs"][0]["id"], started["job"]["id"]);
     });
 }
 
@@ -286,8 +391,11 @@ fn every_http_command_is_served_and_nothing_else() {
             };
             let (status, _, body) = send(&r, req).await;
             if c.http {
+                // A 404 is an answer about an unknown ID, not a missing route.
                 assert!(
-                    status != StatusCode::NOT_FOUND || body.contains("not_found"),
+                    status != StatusCode::NOT_FOUND
+                        || body.contains("not_found")
+                        || body.contains("\"error\":\"unknown_"),
                     "{path}: {status} {body}"
                 );
                 assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{path}");
@@ -415,148 +523,6 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
         assert!(!body.contains(&secret));
         assert!(body.contains("masked"));
     });
-}
-
-#[test]
-fn binary_attachments_and_enqueue_use_the_daemon_action_owner() {
-    let r = reader();
-    let bytes = vec![0, 255, 13, 10, 42];
-    rt().block_on(async {
-        let upload = || own_origin(authed(post("/api/v1/browser-actions/attachments")))
-            .header(header::CONTENT_TYPE, "application/octet-stream").body(Body::from(bytes.clone())).unwrap();
-        let (status, _, raw) = send(&r, upload()).await;
-        assert_eq!(status, StatusCode::OK, "{raw}");
-        let attachment: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(attachment["size_bytes"], bytes.len());
-        let (_, _, retry) = send(&r, upload()).await;
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), attachment);
-        r.w.set("browser.actions", "on");
-        let body = serde_json::json!({"idempotency_key":"synthetic-key", "provider":"chatgpt", "operation":"conversation.create", "text":"Neutral draft", "attachments":[{"name":"sample.bin","attachment_ref":attachment["attachment_ref"]}], "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
-        let enqueue = |body: &serde_json::Value| own_origin(authed(post("/api/v1/browser-actions"))).header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())).unwrap();
-        let (status, _, raw) = send(&r, enqueue(&body)).await;
-        assert_eq!(status, StatusCode::CREATED, "{raw}");
-        let action: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let stored = r.w.daemon.reads.reader().unwrap().chat_attachment(action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap()).unwrap().1;
-        assert_eq!(stored, bytes);
-        let mut changed = body;
-        changed["text"] = "Different draft".into();
-        let (status, _, raw) = send(&r, enqueue(&changed)).await;
-        assert_eq!(status, StatusCode::CONFLICT);
-        assert!(raw.contains("idempotency_key_reused"));
-    });
-}
-
-#[test]
-fn browser_commands_need_the_origin_and_token_and_take_any_size() {
-    let r = reader();
-    rt().block_on(async {
-        for path in [
-            "/api/v1/browser-actions",
-            "/api/v1/browser-actions/attachments",
-        ] {
-            assert_eq!(
-                send(&r, own_origin(post(path)).body(Body::from("{}")).unwrap())
-                    .await
-                    .0,
-                StatusCode::UNAUTHORIZED
-            );
-            assert_eq!(
-                send(&r, authed(post(path)).body(Body::from("{}")).unwrap())
-                    .await
-                    .0,
-                StatusCode::FORBIDDEN
-            );
-        }
-        // Larger than any fixed limit a body once had: stored as a file blob.
-        let bytes: Vec<u8> = (0..3u32 << 20).map(|i| (i % 251) as u8).collect();
-        let request = own_origin(authed(post("/api/v1/browser-actions/attachments")))
-            .header(header::CONTENT_TYPE, "application/octet-stream")
-            .body(Body::from(bytes.clone()))
-            .unwrap();
-        let (status, _, raw) = send(&r, request).await;
-        assert_eq!(status, StatusCode::OK, "{raw}");
-        let stored: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(stored["size_bytes"], bytes.len());
-        assert_eq!(
-            stored["attachment_ref"],
-            polylogue_model::BlobHash::of(&bytes).to_string()
-        );
-    });
-}
-
-#[test]
-fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
-    let r = reader();
-    let archive = rusqlite::Connection::open(r.w.daemon.archive.archive_db()).unwrap();
-    archive
-        .execute_batch("ALTER TABLE setting RENAME TO unavailable_setting")
-        .unwrap();
-    let body = serde_json::json!({
-        "provider": "chatgpt",
-        "operation": "conversation.create",
-        "text": "Neutral synthetic draft",
-        "presentation": {"model_slug": "x", "model_label": "X", "effort_label": "standard"}
-    });
-    let response = rt().block_on(async {
-        let request = own_origin(authed(post("/api/v1/browser-actions")))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        send(&r, request).await
-    });
-    archive
-        .execute_batch("ALTER TABLE unavailable_setting RENAME TO setting")
-        .unwrap();
-    assert_eq!(
-        response.0,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "{}",
-        response.2
-    );
-    let body: serde_json::Value = serde_json::from_str(&response.2).unwrap();
-    assert_eq!(body["error"], "store");
-}
-
-#[test]
-fn an_unobserved_enqueue_reply_reconciles_without_repeating_the_action() {
-    let r = reader();
-    r.w.set("browser.actions", "on");
-    let body = serde_json::json!({"idempotency_key":"lost-reply", "provider":"chatgpt", "operation":"conversation.create", "text":"Neutral pending draft", "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
-    let action = serde_json::from_value(body.clone()).unwrap();
-    drop(crate::daemon::service::handle(
-        Request::ChatEnqueue { action },
-        &r.w.daemon,
-    ));
-    rt().block_on(async {
-        let request = own_origin(authed(post("/api/v1/browser-actions")))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        assert_eq!(send(&r, request).await.0, StatusCode::OK);
-    });
-    let pending = r.w.daemon.reads.reader().unwrap().chat_actions().unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].request["text"], "Neutral pending draft");
-}
-
-#[test]
-fn enqueue_response_masks_credentials_without_changing_the_queued_draft() {
-    let r = reader();
-    r.w.set("browser.actions", "on");
-    let text = format!("Keep this draft {}", "AKIAIOSFODNN7EXAMPLE");
-    let body = serde_json::json!({"provider":"chatgpt", "operation":"conversation.create", "text":text, "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
-    rt().block_on(async {
-        let request = own_origin(authed(post("/api/v1/browser-actions")))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        let (status, _, shown) = send(&r, request).await;
-        assert_eq!(status, StatusCode::CREATED);
-        assert!(!shown.contains("AKIAIOSFODNN7EXAMPLE"));
-    });
-    let queued = r.w.daemon.reads.reader().unwrap().chat_actions().unwrap();
-    assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].request["text"], text.as_str());
 }
 
 #[test]

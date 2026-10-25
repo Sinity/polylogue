@@ -27,7 +27,7 @@ fn selection() -> Value {
 }
 
 #[test]
-fn selected_passage_notes_survive_restart_and_identical_native_retries() {
+fn selected_passage_notes_survive_restart_and_identical_retries() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env();
     config.home = dir.path().join("home");
@@ -42,7 +42,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
         exchange(
             &host,
             "POST",
-            "/v1/browser-captures",
+            "/v1/captures",
             &capture("selection-session", "Exact  provider\npassage")
         )
         .status,
@@ -56,12 +56,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let input = selection();
-    let saved = exchange(
-        &host,
-        "POST",
-        "/v1/notes/selection",
-        input.to_string().as_bytes(),
-    );
+    let saved = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
     assert_eq!(saved.status, 200, "{}", saved.json());
     assert_eq!(saved.json()["note"]["id"], input["request_id"]);
     assert_eq!(saved.json()["note"]["repeat"], false);
@@ -71,12 +66,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     drop(runtime);
     let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
-    let retry = exchange(
-        &host,
-        "POST",
-        "/v1/notes/selection",
-        input.to_string().as_bytes(),
-    );
+    let retry = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
     assert_eq!(retry.status, 200, "{}", retry.json());
     assert_eq!(retry.json()["note"]["id"], input["request_id"]);
     assert_eq!(retry.json()["note"]["repeat"], true);
@@ -93,12 +83,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     assert_eq!(value["source"], input["source"]);
     let mut changed = input;
     changed["body"] = "An edit needs a new note ID".into();
-    let conflict = exchange(
-        &host,
-        "POST",
-        "/v1/notes/selection",
-        changed.to_string().as_bytes(),
-    );
+    let conflict = exchange(&host, "POST", "/v1/notes", changed.to_string().as_bytes());
     assert_eq!(conflict.status, 409, "{}", conflict.json());
     runtime.stop_accepting();
     socket.shutdown().unwrap();
@@ -110,24 +95,13 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
     let w = test_daemon::start("unrelated");
     let host = host(&w);
     let input = selection();
-    let missing = exchange(
-        &host,
-        "POST",
-        "/v1/notes/selection",
-        input.to_string().as_bytes(),
-    );
+    let missing = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
     assert_eq!(missing.status, 409, "{}", missing.json());
     for field in ["message_id", "conversation_id", "page_url"] {
         let mut bad = input.clone();
         bad["source"][field] = "".into();
         assert_eq!(
-            exchange(
-                &host,
-                "POST",
-                "/v1/notes/selection",
-                bad.to_string().as_bytes()
-            )
-            .status,
+            exchange(&host, "POST", "/v1/notes", bad.to_string().as_bytes()).status,
             400
         );
     }
@@ -144,7 +118,7 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
             exchange(
                 &host,
                 "POST",
-                "/v1/browser-captures",
+                "/v1/captures",
                 &capture(session, "shared native ID")
             )
             .status,
@@ -155,7 +129,7 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
     let refused = exchange(
         &host,
         "POST",
-        "/v1/notes/selection",
+        "/v1/notes",
         selection().to_string().as_bytes(),
     );
     assert_eq!(refused.status, 409, "{}", refused.json());

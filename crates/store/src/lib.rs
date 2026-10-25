@@ -9,6 +9,7 @@
 
 pub mod archive;
 pub mod assets;
+pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
 pub mod context;
@@ -47,7 +48,9 @@ mod zip_members;
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
-pub use read::{BehindChain, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status};
+pub use read::{
+    BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
+};
 pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,
@@ -115,6 +118,8 @@ pub enum StoreError {
     ExcisionInsideZip { input: String, file: String },
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
+    #[error("backfill job refused: {0}")]
+    Backfill(&'static str),
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("Sinex: {0}")]
     Sinex(String),

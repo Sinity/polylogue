@@ -19,17 +19,15 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let host = Arc::new(BrowserHost::at(&config, &archive).unwrap());
     let first = capture("rapid", "first earlier version");
     let second = capture("rapid", "second current version");
-    let ack = exchange(&host, "POST", "/v1/browser-captures", &first);
+    let ack = exchange(&host, "POST", "/v1/captures", &first);
     assert_eq!(ack.status, 200);
-    assert_eq!(
-        exchange(&host, "POST", "/v1/browser-captures", &second).status,
-        200
-    );
-    let path = host.spool.join(ack.json()["artifact_ref"].as_str().unwrap());
+    assert_eq!(exchange(&host, "POST", "/v1/captures", &second).status, 200);
+    assert_eq!(ack.json()["new"], true);
+    let path = host.capture_log("chatgpt", "rapid");
     let before = std::fs::read(&path).unwrap();
     assert_eq!(
-        exchange(&host, "POST", "/v1/browser-captures", &first).json()["outcome"],
-        "noop"
+        exchange(&host, "POST", "/v1/captures", &first).json()["new"],
+        false
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let sid = SessionId::parse("chatgpt:rapid").unwrap();
@@ -56,12 +54,12 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     );
     drop(pool);
     // A new observation can revert to earlier content. Its provenance makes
-    // it distinct from the older envelope's idempotent retry.
+    // it distinct from a resend of the older capture.
     let mut reversion: Value = serde_json::from_slice(&first).unwrap();
     reversion["provenance"]["captured_at"] = json!("2026-03-01T11:00:00Z");
     let reversion = serde_json::to_vec(&reversion).unwrap();
     assert_eq!(
-        exchange(&host, "POST", "/v1/browser-captures", &reversion).status,
+        exchange(&host, "POST", "/v1/captures", &reversion).status,
         200
     );
     let pass = engine.run_pass().unwrap();
@@ -77,23 +75,4 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
         text(&reader.messages(&sid, false).unwrap()),
         ["first earlier version"]
     );
-}
-
-fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {
-    for path in [
-        archive.index_db(),
-        archive.index_db().with_extension("db-wal"),
-        archive.index_db().with_extension("db-shm"),
-    ] {
-        match std::fs::remove_file(path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("{e}"),
-        }
-    }
-    let (_archive, _lock) = Archive::open_or_create(&archive.root).unwrap();
-    let mut engine = Engine::new(config, archive.clone()).unwrap();
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    engine
 }

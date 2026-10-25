@@ -77,13 +77,24 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         cwd: None,
         for_session: None,
     };
-    let requests =
-        vec![
-        Request::ChatUpload { bytes: vec![1, 2, 3] },
-        Request::ChatEnqueue { action: serde_json::from_value(serde_json::json!({
-            "provider":"chatgpt", "operation":"conversation.create", "text":"Synthetic draft",
-            "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}
-        })).unwrap() },
+    let requests = vec![
+        Request::ChatSend {
+            request_id: "send".into(),
+            action: crate::browser::actions::ChatRequest {
+                provider: "chatgpt".into(),
+                conversation: None,
+                project: None,
+                text: "Synthetic draft".into(),
+                model: "X".into(),
+                effort: None,
+                submit: false,
+            },
+            files: vec![],
+        },
+        Request::BackfillStart {
+            provider: "chatgpt".into(),
+            since: None,
+        },
         Request::Import {
             request_id: "import".into(),
             paths: vec![],

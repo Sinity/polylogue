@@ -44,6 +44,48 @@ fn version_1_and_the_migrations_give_the_declared_archive() {
     }
 }
 
+#[test]
+fn migration_2_adds_backfill_jobs_and_keeps_every_row() {
+    let conn = archive_at(1);
+    conn.execute_batch(
+        "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
+             VALUES ('s1', '*', 'browser.actions', 'on', 'operator', 1, 1);
+         INSERT INTO chat_action(id, request_key, request_hash, request_json, stage_only,
+             needs_approval, created_at, commit_seq)
+             VALUES ('a1', 'k1', x'00', '{}', 1, 0, 2, 2);
+         INSERT INTO chat_action_event(action, n, at, kind, phase, commit_seq)
+             VALUES ('a1', 1, 2, 'queued', 'queued', 2);",
+    )
+    .unwrap();
+    let rows = |conn: &Connection| -> Vec<String> {
+        ["setting", "chat_action", "chat_action_event"]
+            .iter()
+            .flat_map(|table| {
+                conn.prepare(&format!("SELECT * FROM {table}"))
+                    .unwrap()
+                    .query_map([], |r| {
+                        Ok((0..r.as_ref().column_count())
+                            .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                            .collect::<Vec<_>>()
+                            .join("|"))
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            })
+            .collect()
+    };
+    let before = rows(&conn);
+    ensure_archive(&conn).unwrap();
+    assert!(version(&conn).unwrap() >= 2);
+    assert_eq!(rows(&conn), before);
+    conn.execute_batch(
+        "INSERT INTO backfill_job(id, provider, since, created_at, commit_seq)
+             VALUES ('j1', 'chatgpt', NULL, 3, 3);",
+    )
+    .unwrap();
+}
+
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
     CREATE TABLE added(value TEXT NOT NULL) STRICT;";
 

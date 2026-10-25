@@ -79,12 +79,10 @@ it.
 | `web` | Open the web reader. |
 | `mcp` | Serve MCP over stdio. |
 | `hooks install\|uninstall`, `hook EVENT` | Claude Code hooks: live state and the session-start brief. |
+| `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
+| `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
 | `completions SHELL` | Shell completions for bash, elvish, fish, PowerShell or zsh. |
-
-The browser action commands exist only over HTTP: JSON enqueue at
-`/api/v1/browser-actions` and binary upload at
-`/api/v1/browser-actions/attachments`, behind a token and origin check.
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
 invalid request, 6 no daemon running.

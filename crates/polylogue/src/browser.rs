@@ -1,17 +1,19 @@
-//! The browser extension's side of Polylogue: the capture spool, chat
-//! actions, and the routes the extension calls through its native messaging
-//! host, `polylogue browser-host`. Chrome starts the host only for the
-//! extension IDs its manifest names, so no token or pairing is needed. The
-//! host writes captures into the spool, which the daemon ingests like any
+//! The browser extension's side of Polylogue: the capture spool and the
+//! routes the extension calls through its native messaging host,
+//! `polylogue browser-host`. Chrome starts the host only for the extension
+//! IDs its manifest names, so no token or pairing is needed. The host
+//! writes captures into the spool, which the daemon ingests like any
 //! location, and asks the daemon everything else over its Unix socket.
 //!
 //! Chat actions (Polylogue asking the extension to start or reply to a
-//! conversation in a chat web page) are off by default behind two switches: the archive setting
-//! `browser.actions` must be `on`, and the extension's own posting switch.
-//! Setting `browser.actions` to anything else stops every claim (the kill
-//! switch). Only the operator, through the CLI or the reader, enqueues.
+//! conversation in a chat web page) are off by default: the archive setting
+//! `browser.actions` must be `on`. Setting it to anything else stops every
+//! claim. Only the operator queues them, through the CLI, MCP or the reader.
+//! Backfill jobs (the extension capturing a web chat's older conversations)
+//! are started the same way and run while the extension is open.
 
 pub mod actions;
+pub mod backfill;
 mod captures;
 pub mod native;
 mod notes;
@@ -21,42 +23,31 @@ use crate::daemon::{Request, Response};
 use polylogue_engine::Config;
 use polylogue_store::Archive;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-/// The API identity the extension checks on every answer.
-pub const API_SCHEMA: &str = "polylogue-browser-capture/v1";
 /// The native messaging host's registered name.
 pub const HOST_NAME: &str = "com.polylogue.browser_capture";
 
-/// Where the extension's files live and how to reach the daemon.
+/// Where the extension's captures go and how to reach the daemon.
 pub struct BrowserHost {
-    /// `<state>/browser-capture`: one file per captured conversation.
+    /// `<state>/browser-capture`: one capture log per conversation.
     pub spool: PathBuf,
-    /// `<state>/browser-capture-health`: the latest capture-health report
-    /// per provider.
-    pub health: PathBuf,
-    /// Stable per archive, so the extension can tell its receiver apart.
-    pub receiver_id: String,
+    /// Names the archive's runtime directory, where a running reader
+    /// records its address.
+    pub archive_key: String,
     /// The daemon's socket.
     pub socket: PathBuf,
 }
 
 impl BrowserHost {
-    /// The extension's files in Polylogue's state directory as the
-    /// daemon's loop sees it (`config`), for the archive at `archive`.
+    /// The spool in Polylogue's state directory as the daemon's loop sees
+    /// it (`config`), for the archive at `archive`.
     pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {
         let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
-        let health = config.state_dir().join("browser-capture-health");
         fs::create_dir_all(&spool)?;
-        fs::create_dir_all(&health)?;
         Ok(Self {
             spool,
-            health,
-            receiver_id: format!(
-                "polylogue:{}",
-                crate::runtime_dir::archive_key(&archive.root)
-            ),
+            archive_key: crate::runtime_dir::archive_key(&archive.root),
             socket: archive.socket(),
         })
     }
@@ -71,12 +62,6 @@ impl BrowserHost {
     /// they cannot know as unknown, never as absent.
     pub fn ask(&self, request: &Request) -> Option<Response> {
         crate::cli::send(&self.socket, request).ok()
-    }
-
-    /// Whether the operator switched chat actions on. Off when the daemon
-    /// cannot say.
-    pub fn actions_enabled(&self) -> bool {
-        self.actions_setting() == Some(true)
     }
 
     /// The chat actions setting, or `None` when the daemon does not answer.
@@ -94,22 +79,11 @@ impl BrowserHost {
             _ => None,
         }
     }
-}
 
-pub fn new_id() -> String {
-    uuid::Uuid::now_v7().to_string()
-}
-
-pub fn now_iso() -> String {
-    jiff::Timestamp::now().to_string()
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    /// The capture log of one provider conversation.
+    pub fn capture_log(&self, provider: &str, conversation: &str) -> PathBuf {
+        self.spool.join(capture_log_path(provider, conversation))
+    }
 }
 
 /// A path segment from untrusted text: safe characters only, bounded.
@@ -133,29 +107,17 @@ pub fn safe_token(s: &str) -> String {
     }
 }
 
-/// Where a provider conversation's capture lives, relative to the spool:
-/// one append log per conversation. It keeps every distinct capture in
-/// order, including captures acknowledged before the loop parsed them.
-pub fn artifact_ref(provider: &str, provider_session_id: &str) -> String {
-    let hash = blake3::hash(format!("{provider}:{provider_session_id}").as_bytes());
+/// Where a provider conversation's capture log lives, relative to the
+/// spool. It keeps every distinct capture in order, including captures
+/// stored before the loop parsed them.
+pub fn capture_log_path(provider: &str, conversation: &str) -> String {
+    let hash = blake3::hash(format!("{provider}:{conversation}").as_bytes());
     format!(
         "{}/{}-{}.json",
         safe_token(provider),
-        safe_token(provider_session_id),
+        safe_token(conversation),
         &hash.to_hex()[..12]
     )
-}
-
-/// Writes `bytes` to `path` so a crash leaves the old file or the new one:
-/// a temporary file, synced, renamed, then the directory synced.
-pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("no parent directory"))?;
-    fs::create_dir_all(dir)?;
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write(|file| file.write_all(bytes))
-        .map_err(Into::into)
 }
 
 #[cfg(test)]

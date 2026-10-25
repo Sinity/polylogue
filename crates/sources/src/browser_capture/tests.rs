@@ -94,7 +94,7 @@ fn recognizes_captures_by_their_first_key() {
 }
 
 #[test]
-fn grok_endpoint_bundle_preserves_native_identity_parents_and_files() {
+fn a_grok_capture_keeps_the_providers_ids_parents_and_files() {
     let bytes = capture(
         json!({
             "conversation": {"conversationId":"g1", "title":"Grok fixture", "createTime":"2026-06-27T12:00:00Z"},
@@ -120,33 +120,31 @@ fn grok_endpoint_bundle_preserves_native_identity_parents_and_files() {
             .any(|b| matches!(b, Block::Other { type_name, .. } if type_name == "grok_step"))
     );
     assert_eq!(step.output.blobs[0].bytes, b"hello");
-    let inspected = inspect::inspect(&bytes).unwrap();
-    assert_eq!(inspected["summary"]["turn_count"], 2);
-    assert_eq!(inspected["attachments"][0]["url"], "users/u/f1/content");
+    let read = files(&bytes).unwrap();
+    assert_eq!(read["conversation"]["messages"], 2);
+    assert_eq!(read["files"][0]["url"], "users/u/f1/content");
 }
 
 #[test]
-fn inspection_keeps_mapping_keys_separate_from_native_message_ids() {
+fn the_files_of_a_capture_name_their_message_by_its_provider_id() {
     let bytes = capture(
         chatgpt_payload(),
         json!({"provider":"chatgpt", "provider_session_id":"c1"}),
     );
-    let inspected = inspect::inspect(&bytes).unwrap();
-    assert_eq!(inspected["attachments"][0]["original_record_key"], "n1");
-    assert_eq!(inspected["attachments"][0]["message_provider_id"], "m1");
-    assert_eq!(
-        inspected["attachments"][0]["provider_meta"]["provider_file_id"],
-        "file-Pic"
-    );
+    let read = files(&bytes).unwrap();
+    assert_eq!(read["files"][0]["message"], "m1");
+    assert_eq!(read["files"][0]["file_id"], "file-Pic");
+    assert_eq!(read["files"][0]["inline"], false);
+    assert_eq!(read["conversation"]["temporary"], false);
 }
 
 #[test]
-fn inspection_refuses_a_raw_conversation_with_another_identity() {
+fn a_capture_whose_provider_conversation_has_another_identity_is_refused() {
     let bytes = capture(
         chatgpt_payload(),
         json!({"provider":"chatgpt", "provider_session_id":"another"}),
     );
-    assert!(inspect::inspect(&bytes).unwrap_err().contains("identity"));
+    assert!(files(&bytes).unwrap_err().contains("identity"));
 }
 
 #[test]
@@ -165,62 +163,28 @@ fn claude_inline_media_is_linked_to_stored_bytes_and_reported_as_inline() {
     assert!(
         matches!(&parsed.output.messages[0].message.blocks[0], Block::Image(file) if file.blob == Some(BlobHash::of(b"hello")))
     );
-    let inspected = inspect::inspect(&bytes).unwrap();
-    assert_eq!(
-        inspected["attachments"][0]["provider_meta"]["native_inline_size_bytes"],
-        5
-    );
-    assert_eq!(
-        inspected["attachments"][0]["provider_meta"]["native_inline_sha256"]
-            .as_str()
-            .unwrap()
-            .len(),
-        64
-    );
-    assert_eq!(inspected["attachments"][1]["name"], "notes.txt");
+    let read = files(&bytes).unwrap();
+    assert_eq!(read["files"][0]["inline"], true);
+    assert_eq!(read["files"][1]["name"], "notes.txt");
 }
 
 #[test]
-fn inspection_refuses_local_raw_refs_but_accepts_empty_provider_conversations() {
-    let session = json!({"provider":"grok", "provider_session_id":"g1"});
-    let refs = capture(
-        json!({"conversation":{"staged_raw_json":"local-conversation"}, "responses":{"staged_raw_json":"local-responses"}}),
-        session.clone(),
-    );
-    assert_eq!(
-        inspect::inspect(&refs).unwrap_err(),
-        "unresolved_staged_raw_json"
-    );
+fn an_empty_provider_conversation_is_a_conversation_with_no_messages() {
     let empty = capture(
         json!({"conversation":{"conversationId":"g1"}, "responses":{"responses":[]}}),
-        session,
+        json!({"provider":"grok", "provider_session_id":"g1"}),
     );
-    assert_eq!(
-        inspect::inspect(&empty).unwrap()["summary"]["turn_count"],
-        0
-    );
+    assert_eq!(files(&empty).unwrap()["conversation"]["messages"], 0);
 }
 
 #[test]
-fn streamed_native_envelopes_are_recognized_with_schema_version_first() {
+fn captures_are_recognized_with_schema_version_first() {
     let bytes = br#"{"schema_version":1,"polylogue_capture_kind":"browser_llm_session","session":{"provider":"grok","provider_session_id":"g1","turns":[]}}"#;
     assert!(recognize(Path::new("capture.json"), &bytes[..64]));
     assert!(!recognize(
         Path::new("other.json"),
         br#"{"schema_version":1,"unrelated":true}"#
     ));
-}
-
-#[test]
-fn inspection_preserves_literal_staging_names_inside_provider_data() {
-    let bytes = capture(
-        json!({"conversation":{"conversationId":"g1", "metadata":{"staged_raw_json":"provider-literal"}}, "responses":{"responses":[]}}),
-        json!({"provider":"grok","provider_session_id":"g1"}),
-    );
-    assert_eq!(
-        inspect::inspect(&bytes).unwrap()["summary"]["turn_count"],
-        0
-    );
 }
 
 #[test]

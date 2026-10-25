@@ -2,9 +2,9 @@
 
 use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
+use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::{ReadTarget, Request};
 use polylogue_model::{Author, NewNote, NoteKind, Target};
-use serde_json::Value;
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -365,12 +365,86 @@ pub fn embed(c: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
-pub fn browser_action(value: Value) -> Built {
-    serde_json::from_value(value)
-        .map(|action| Request::ChatEnqueue { action })
-        .map_err(|error| format!("invalid browser action: {error}"))
+/// `chat send`: the command line reads `--attach` files here, in the
+/// caller's process.
+pub fn chat_send(_: &Command, v: &Values, caller: &Caller) -> Built {
+    let mut files = Vec::new();
+    for path in v.list("attach") {
+        let path = match &caller.cwd {
+            Some(cwd) => cwd.join(&path),
+            None => std::path::PathBuf::from(&path),
+        };
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("{} names no file", path.display()))?;
+        files.push(ChatFile {
+            media_type: media_type(&name).to_owned(),
+            name,
+            bytes,
+        });
+    }
+    Ok(Request::ChatSend {
+        request_id: v.request_id(),
+        action: ChatRequest {
+            provider: v.text("provider").unwrap_or_default(),
+            conversation: v.text("conversation"),
+            project: v.text("project"),
+            text: v.text("text").unwrap_or_default(),
+            model: v.text("model").unwrap_or_default(),
+            effort: v.text("effort"),
+            submit: v.flag("submit"),
+        },
+        files,
+    })
 }
 
-pub fn browser_attachment(bytes: Vec<u8>) -> Request {
-    Request::ChatUpload { bytes }
+/// The media type a file's extension names; the provider checks the bytes.
+fn media_type(name: &str) -> &'static str {
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("txt" | "md") => "text/plain",
+        Some("json") => "application/json",
+        Some("pdf") => "application/pdf",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("csv") => "text/csv",
+        Some("html") => "text/html",
+        _ => "application/octet-stream",
+    }
+}
+
+pub fn chat_list(_: &Command, _: &Values, _: &Caller) -> Built {
+    Ok(Request::ChatActions)
+}
+
+/// `chat approve` and `chat decline`.
+pub fn chat_decide(c: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::ChatDecide {
+        id: v.text("id").unwrap_or_default(),
+        approve: c.name == "chat approve",
+        by: "operator".into(),
+        detail: None,
+    })
+}
+
+pub fn backfill_start(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::BackfillStart {
+        provider: v.text("provider").unwrap_or_default(),
+        since: v.text("since"),
+    })
+}
+
+pub fn backfill_list(_: &Command, _: &Values, _: &Caller) -> Built {
+    Ok(Request::BackfillJobs)
+}
+
+pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::BackfillCancel {
+        id: v.text("id").unwrap_or_default(),
+    })
 }

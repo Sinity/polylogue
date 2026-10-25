@@ -80,6 +80,24 @@ pub enum UserWrite {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// The operator starts a backfill job; the provider's job that has not
+    /// ended is found instead of a second one.
+    BackfillStart(crate::backfill_jobs::NewBackfillJob),
+    /// The extension instance `by` takes the job it holds or the oldest
+    /// waiting one; `NotFound` when there is none.
+    BackfillClaim {
+        by: String,
+    },
+    /// What the instance holding a backfill job's claim reports.
+    BackfillReport {
+        job: String,
+        by: String,
+        report: crate::backfill_jobs::BackfillReport,
+    },
+    /// The operator stops a backfill job.
+    BackfillCancel {
+        job: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -314,6 +332,31 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), at, seq)?;
             Ok(UserOutcome {
                 id: action.clone(),
+                repeat: false,
+            })
+        }
+        UserWrite::BackfillStart(new) => {
+            let id = crate::backfill_jobs::start(tx, new, at, seq)?;
+            Ok(UserOutcome {
+                repeat: id != new.id,
+                id,
+            })
+        }
+        UserWrite::BackfillClaim { by } => Ok(UserOutcome {
+            id: crate::backfill_jobs::claim(tx, by, at, seq)?,
+            repeat: false,
+        }),
+        UserWrite::BackfillReport { job, by, report } => {
+            crate::backfill_jobs::report(tx, job, by, report, at, seq)?;
+            Ok(UserOutcome {
+                id: job.clone(),
+                repeat: false,
+            })
+        }
+        UserWrite::BackfillCancel { job } => {
+            crate::backfill_jobs::cancel(tx, job, at, seq)?;
+            Ok(UserOutcome {
+                id: job.clone(),
                 repeat: false,
             })
         }

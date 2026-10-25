@@ -263,11 +263,15 @@ pub(crate) fn request_event(
                 set_at: at,
             })?,
         ),
-        // The browser's chat-action queue is Polylogue's working state: Sinex
-        // keeps the requests, with no event of their own.
+        // The browser's chat actions and backfill jobs are Polylogue's
+        // working state: Sinex keeps the requests, with no event of their own.
         UserWrite::ChatEnqueue(_)
         | UserWrite::ChatClaim { .. }
         | UserWrite::ChatReport { .. }
-        | UserWrite::ChatDecide { .. } => return Ok(None),
+        | UserWrite::ChatDecide { .. }
+        | UserWrite::BackfillStart(_)
+        | UserWrite::BackfillClaim { .. }
+        | UserWrite::BackfillReport { .. }
+        | UserWrite::BackfillCancel { .. } => return Ok(None),
     }))
 }

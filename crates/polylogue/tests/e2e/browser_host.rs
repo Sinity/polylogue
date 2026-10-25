@@ -90,8 +90,19 @@ fn started_as_chrome_starts_it_the_binary_is_the_host() {
     let got = frames(&out.stdout);
     assert_eq!(got[0]["type"], "response");
     assert_eq!(got[0]["status"], 200);
-    assert_eq!(got[0]["api_schema"], "polylogue-browser-capture/v1");
     assert_eq!(got.last().unwrap()["type"], "response_end");
+    let body: Vec<u8> = got
+        .iter()
+        .filter(|f| f["type"] == "response_body")
+        .flat_map(|f| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(f["data"].as_str().unwrap())
+                .unwrap()
+        })
+        .collect();
+    let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status["daemon"], "not_running");
 }
 
 #[test]
@@ -165,10 +176,10 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         )
     };
     let daemon = start();
-    let capture = json!({"schema_version":1,"polylogue_capture_kind":"browser_capture","source":"browser-extension",
-        "provenance":{"captured_at":"2026-10-24T00:00:00Z","url":"https://chatgpt.com/c/passage"},
+    let capture = json!({"schema_version":1,"polylogue_capture_kind":"browser_llm_session",
+        "provenance":{"captured_at":"2026-10-24T00:00:00Z","source_url":"https://chatgpt.com/c/passage"},
         "session":{"provider":"chatgpt","provider_session_id":"passage","turns":[{"provider_turn_id":"native-message","role":"assistant","text":"Exact  selected\nquote"}]}});
-    assert_eq!(native("/v1/browser-captures", &capture).0, 200);
+    assert_eq!(native("/v1/captures", &capture).0, 200);
     loop {
         let status = command().args(["status", "--json"]).output().unwrap();
         assert!(status.status.success(), "{status:?}");
@@ -179,12 +190,12 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     }
     let note = json!({"request_id":"019c6e27-e55b-73d1-87d8-4e01f1f75043","body":"My edited annotation","quote":"Exact  selected\nquote",
         "source":{"provider":"chatgpt","conversation_id":"passage","message_id":"native-message","page_url":"https://chatgpt.com/c/passage","selected_at":"2026-10-24T00:00:00Z"}});
-    let (status, saved) = native("/v1/notes/selection", &note);
+    let (status, saved) = native("/v1/notes", &note);
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["note"]["repeat"], false);
     drop(daemon);
     let _daemon = start();
-    let (status, retried) = native("/v1/notes/selection", &note);
+    let (status, retried) = native("/v1/notes", &note);
     assert_eq!(status, 200, "{retried}");
     assert_eq!(retried["note"]["repeat"], true);
     let output = command()

@@ -83,9 +83,9 @@ the same change.
   stored). The **record counts** add up to the records read.
 - **capture**: one conversation saved by the browser extension, appended to
   the provider's **capture log** as a frame: a header holding its length and
-  BLAKE3, then its bytes. The extension's **backfill** fetches older
-  conversations as **jobs**; a worker holds a job by a **claim** that
-  expires. A chat action is handed out by a claim the same way.
+  BLAKE3, then its bytes. A **backfill job** captures a web chat's older
+  conversations; the extension holds it by a **claim** that expires, and a
+  chat action is handed out the same way.
 - **diagnostic**: a note from a parser about a record it could not fully
   read, with a `reason`.
 - **usage report** and **quota report**: token use or subscription quota a
@@ -144,6 +144,20 @@ the same change.
   change to the register that is not input bytes: a look at an input that
   found no new bytes, a request, or an excision.
 
+## The browser extension
+
+- **host**: the native messaging host, `polylogue browser-host`, which Chrome
+  starts for the extension.
+- **outbox**: captures the extension keeps until the host has stored them;
+  the only thing it keeps.
+- **page script**: the extension's script in a chat page, which fetches the
+  conversation, the provider's conversation list and files with the page's
+  sign-in.
+- **list position**: where a backfill job got to in the provider's
+  conversation list, in the provider's own terms.
+- **in-page button**: the Polylogue button on a chat page, with its panel.
+- **extension instance**: one browser profile's extension, as claims name it.
+
 ## Queries and output
 
 - **query**, **unit** (what a query lists: sessions, messages, ...),
@@ -200,6 +214,13 @@ the same change.
 | checkpoint (read pages) | page end |
 | logical export | row dump |
 | receipt (search) | search summary |
+| receiver (of browser captures) | host |
+| envelope, bundle (captures) | capture |
+| staging, staged (in the extension) | outbox, or nothing |
+| freshness | changed, captured again |
+| fidelity | complete, or say what is missing |
+| invocation, settlement | call, finished |
+| ledger, mission control, intelligence, ambient surface | the popup, the in-page button, or say what it is |
 
 Excision, epoch and sealed are kept. **Receipt** is only the provider's
 record of a chat action's result, as the extension saw it.
