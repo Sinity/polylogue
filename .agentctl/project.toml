@@ -110,7 +110,7 @@ cap = "cargo"
 max_io_pressure = 5
 
 [operations.measure]
-description = "Run performance measurements without the background I/O cap"
+description = "Run a performance driver in the measure queue; refuses to start under I/O pressure"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "measure"
