@@ -950,7 +950,7 @@ impl Inner {
         } else {
             if let Some(sinex) = &self.sinex {
                 let record = crate::primary::Record::Request {
-                    request: request.clone(),
+                    request: Box::new(request.clone()),
                     root: crate::user_writes::note_root(&tx, request)?,
                 };
                 let material = sinex.send_record(&record)?;

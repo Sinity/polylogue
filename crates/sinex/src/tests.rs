@@ -112,7 +112,7 @@ fn a_held_record_is_read_from_the_content_store_and_checked() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
     let record = Record::Request {
-        request: request(UserWrite::ChatClaim { by: "x".into() }),
+        request: Box::new(request(UserWrite::ChatClaim { by: "x".into() })),
         root: None,
     };
     let bytes = serde_json::to_vec(&record).unwrap();

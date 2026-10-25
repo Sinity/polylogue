@@ -68,7 +68,7 @@ pub enum Record {
     /// A request a person or agent made, with the note family it joined
     /// when it adds or withdraws a note.
     Request {
-        request: UserRequest,
+        request: Box<UserRequest>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root: Option<String>,
     },
