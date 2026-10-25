@@ -26,7 +26,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
             .unwrap();
         assert!(outcomes.iter().any(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
-        let source = Snapshot::open(&archive.root).unwrap();
+        let source = BatchReader::open(&archive.root).unwrap();
         let mut refused = 0;
         for batch in source.batches(None, 10_000).unwrap() {
             if matches!(
@@ -57,7 +57,7 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
         } else {
             assert!(finished.pending.is_empty());
         }
-        let source = Snapshot::open(&archive.root).unwrap();
+        let source = BatchReader::open(&archive.root).unwrap();
         for batch in source.batches(None, 10_000).unwrap() {
             source.rows(&batch, |_| Ok(())).unwrap();
         }
