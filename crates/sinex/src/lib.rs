@@ -12,12 +12,12 @@
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use sinex_protocol::{Acknowledgment, Have, Ingress, Subjects};
+use sinex_protocol::{Acknowledgment, Have, Subjects};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-mod producer_bytes;
+mod frames;
 mod restore;
 mod rows;
 mod send;
@@ -65,7 +65,7 @@ pub struct Config {
     /// This producer's name on the ingress.
     #[serde(default = "default_producer")]
     pub producer: String,
-    /// Sinex's store root on this host. Polylogue stages the bytes it sends
+    /// Sinex's store root on this host. Polylogue writes the bytes it sends
     /// under it and reads restored bytes from its content store.
     pub store: PathBuf,
     /// The archive Sinex holds for this machine: restored from Sinex when
@@ -126,6 +126,7 @@ pub struct Sinex {
     max_message: usize,
     store_root: PathBuf,
     acknowledgments: async_nats::Subscriber,
+    acknowledgment_wait: Duration,
     confirmed: Option<Confirmed>,
 }
 
@@ -154,6 +155,7 @@ impl Sinex {
             max_message,
             store_root: config.store.clone(),
             acknowledgments,
+            acknowledgment_wait: ACKNOWLEDGMENT_WAIT,
             confirmed: None,
         })
     }
@@ -184,26 +186,23 @@ impl Sinex {
         Ok(out)
     }
 
-    /// Sends one message and waits for its acknowledgment. Accepted by NATS
-    /// is not confirmed: only the acknowledgment, which Sinex commits with
-    /// the message's events, is.
-    async fn transmit(&mut self, message: &Ingress) -> Result<Acknowledgment> {
-        self.check_message(message)?;
+    /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
+    /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
+    /// with the frame's events, is. A lost acknowledgment is an error here;
+    /// the next pass asks `have` for it.
+    async fn transmit(&mut self, name: &str, body: Vec<u8>) -> Result<Acknowledgment> {
         let js = jetstream::new(self.client.clone());
-        js.publish(
-            self.subjects.ingress(&self.producer),
-            sinex_protocol::producer_bytes::encode_frame(message).into(),
-        )
-        .await
-        .map_err(|e| Error::Unreachable(e.to_string()))?
-        .await
-        .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let name = message.frame();
+        js.publish(self.subjects.ingress(&self.producer), body.into())
+            .await
+            .map_err(|e| Error::Unreachable(e.to_string()))?
+            .await
+            .map_err(|e| Error::Unreachable(e.to_string()))?;
         loop {
-            let message = tokio::time::timeout(ACKNOWLEDGMENT_WAIT, self.acknowledgments.next())
-                .await
-                .map_err(|_| Error::Unreachable(format!("no acknowledgment of {name}")))?
-                .ok_or_else(|| Error::Unreachable("acknowledgments closed".into()))?;
+            let message =
+                tokio::time::timeout(self.acknowledgment_wait, self.acknowledgments.next())
+                    .await
+                    .map_err(|_| Error::Unreachable(format!("no acknowledgment of {name}")))?
+                    .ok_or_else(|| Error::Unreachable("acknowledgments closed".into()))?;
             let acknowledgment: Acknowledgment = serde_json::from_slice(&message.payload)?;
             if acknowledgment.frame == name {
                 return checked(acknowledgment);
@@ -233,3 +232,6 @@ fn parse_content_name(name: &str) -> Result<hashed_blobs::Hash> {
         .map(|hash| hashed_blobs::Hash(hash.0))
         .ok_or_else(|| Error::Invalid(format!("{name} is not a BLAKE3 content name")))
 }
+
+#[cfg(test)]
+mod tests;

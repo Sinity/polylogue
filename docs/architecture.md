@@ -191,8 +191,13 @@ then kind and key. Store lists them and visits their rows; the
 [Sinex client](../crates/sinex/src/lib.rs) encodes each batch as JSON lines
 and sends it, after the blobs its rows cite, as a `polylogue.rows` event named
 `rows:<archive>:<position>`. Each pass asks Sinex which names it holds and
-sends the rest in order, so Sinex holds a prefix of the archive. A batch whose
-bytes are still being written waits for a later pass.
+sends the rest in order, so Sinex holds a prefix of the archive. A blob or
+batch's bytes go to its frame's spool directory under Sinex's store root on
+this host, and Sinex stores them before it records the frame. A send is done
+when Sinex acknowledges it; one cut short by an outage or a lost
+acknowledgment is found missing by the next pass and sent again from the
+archive's own bytes. A batch whose bytes are still being written waits for a
+later pass.
 
 Once Sinex holds the archive, excision refuses, and Sinex never deletes what
 it holds. An empty archive with `archive = "<id>"` configured is restored from
