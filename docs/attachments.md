@@ -67,5 +67,4 @@ Excising a whole input removes it and refuses it on later imports. Nothing
 inside an export ZIP can be excised: the ZIP, a file read from it, and a
 session or document parsed from such a file all refuse before changing
 anything, because the kept ZIP also holds unrelated conversations
-([excision.md](excision.md)). Removing text from a file stored in a format
-Polylogue cannot parse refuses.
+([excision.md](excision.md)).

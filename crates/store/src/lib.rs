@@ -97,12 +97,8 @@ pub enum StoreError {
     IncompleteLineage(read::LineageIssue),
     #[error("{0} not found")]
     NotFound(String),
-    #[error("excision cannot inspect input {input} ({format}): {detail}")]
-    ExcisionFormat {
-        input: String,
-        format: String,
-        detail: String,
-    },
+    #[error("excision refused for {target}: {reason}")]
+    ExcisionRefused { target: String, reason: String },
     #[error(
         "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
     )]

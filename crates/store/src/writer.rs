@@ -213,7 +213,7 @@ impl Writer {
             Vec::new()
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
-        let refused = crate::excise::Refused::load(&archive_conn)?;
+        let excisions = crate::excise::any_excision(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
             index,
@@ -222,7 +222,7 @@ impl Writer {
             deferred_indexes,
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
-            refused,
+            excisions,
         };
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
@@ -416,8 +416,9 @@ struct Inner {
     /// allowed to write once the index is out of a first build.
     search: Search,
     location: Archive,
-    /// Sessions and messages excised: their rows are never written again.
-    refused: crate::excise::Refused,
+    /// Whether the archive holds an excision, whose sessions, messages and
+    /// bytes are never written again.
+    excisions: bool,
 }
 
 impl Inner {
@@ -629,118 +630,96 @@ impl Inner {
         Ok(())
     }
 
-    /// One transaction per database, committed in one order: embeddings,
-    /// then the archive, then the index; a dry run rolls all of them back.
-    /// Deleting vectors first only costs a later purchase if the archive's
-    /// commit then fails. Once the archive commits, the excision is in force:
-    /// an index that missed it is rebuilt when the archive is next opened,
-    /// and blob files marked for deletion go after the commits, or when the
-    /// archive is next opened.
+    /// An excision in one pass ([`crate::excise`]): plan, then one
+    /// transaction per database, committed embeddings, archive, index; a dry
+    /// run plans and rolls back. Deleting vectors first only costs a later
+    /// purchase if a later commit fails. Once the archive commits, the
+    /// excision is in force: an index that missed it is rebuilt when the
+    /// archive is next opened, and the files of blobs marked for deletion go
+    /// after the commits, or when the archive is next opened. Running a
+    /// recorded request again finishes what is left.
     fn write_excision(
         &mut self,
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
-        // An excision is written with WAL syncs even during a first build.
-        if !request.dry_run {
-            self.settle()?;
-        }
         if request.dry_run {
-            return self.write_excision_rows(request, store);
+            let _lock = crate::write_lock::hold(&self.archive)?;
+            let plan = crate::excise::plan(&self.archive, &self.index, request)?;
+            if plan.recorded() {
+                return crate::excise::recorded(&self.archive, request);
+            }
+            return self.run_excision(request, &plan);
         }
-        // The archive's rows must be durable before blob files are deleted.
-        // Ordinary ingestion keeps its existing sync mode.
+        // An excision is written with WAL syncs even during a first build,
+        // and the archive's rows are durable before blob files are deleted.
+        self.settle()?;
         let previous: i64 = self
             .archive
             .pragma_query_value(None, "synchronous", |r| r.get(0))?;
         self.archive
             .pragma_update(None, "synchronous", previous.max(2))?;
-        let result = self.write_excision_rows(request, store);
+        let lock = crate::write_lock::hold(&self.archive)?;
+        // Pages the excision frees are overwritten with zeros, so no removed
+        // content stays readable in the database files.
+        for conn in [&self.archive, &self.index] {
+            conn.pragma_update(None, "secure_delete", true)?;
+        }
+        let result = crate::excise::plan(&self.archive, &self.index, request).and_then(|plan| {
+            if plan.recorded() {
+                crate::excise::recorded(&self.archive, request)
+            } else {
+                self.run_excision(request, &plan)
+            }
+        });
+        drop(lock);
+        // Then the blob files and rows go, and the database files are
+        // scrubbed of every freed page.
+        let result = result.and_then(|done| {
+            crate::blobs::delete_marked(&self.archive, store)
+                .and_then(|_| {
+                    let _lock = crate::write_lock::hold(&self.archive)?;
+                    self.scrub_after_excision()
+                })
+                .map(|()| done)
+                .map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))
+        });
+        for conn in [&self.archive, &self.index] {
+            conn.pragma_update(None, "secure_delete", false)
+                .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
+        }
         self.archive
             .pragma_update(None, "synchronous", previous)
             .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
+        if result.is_ok() {
+            self.excisions = true;
+        }
         result
     }
 
-    /// Runs the excision twice ([`crate::excise::Replacements`]): once,
-    /// rolled back, to stage its replacement blob files; then, after their
-    /// rows are committed as `deleting` and the files installed, for real.
-    fn write_excision_rows(
-        &mut self,
-        request: &crate::excise::ExciseRequest,
-        store: &hashed_blobs::Store,
-    ) -> Result<crate::excise::Excised> {
-        let lock = crate::write_lock::hold(&self.archive)?;
-        if !request.dry_run {
-            // Every `deleting` row below is then this excision's own.
-            crate::blobs::delete_marked(&self.archive, store)?;
+    /// After an excision commits: the search indexes are merged into one
+    /// segment each, so deleted entries leave the old segments, and both
+    /// write-ahead logs are emptied into the database files, whose freed pages
+    /// `secure_delete` has zeroed.
+    fn scrub_after_excision(&mut self) -> Result<()> {
+        for table in ["text_fts", "output_fts", "tool_call_trigram"] {
+            self.index.execute(
+                &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
+                [],
+            )?;
         }
-        let staged = crate::excise::Replacements::default();
-        let first = self.run_excision(request, store, &staged, false)?;
-        if request.dry_run {
-            return Ok(first);
+        for conn in [&self.index, &self.archive] {
+            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         }
-        let crate::excise::Replacements::Stage(staged) = staged else {
-            unreachable!("the first run stages");
-        };
-        let installed: Result<()> = (|| {
-            let staged = staged.into_inner();
-            if staged.is_empty() {
-                return Ok(());
-            }
-            let tx = self.archive.transaction()?;
-            bump_counter(&tx)?;
-            for (hash, file) in &staged {
-                tx.execute(
-                    "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-                     VALUES (?1, ?2, 0, 'file', 'plain', 'deleting')",
-                    params![&hash.0[..], file.decoded_len() as i64],
-                )?;
-            }
-            tx.commit()?;
-            for (hash, file) in staged {
-                if !store.contains(&hashed_blobs::Hash(hash.0)) {
-                    file.install()?;
-                }
-                crate::fault::check("excision.after_piece_file", &hash.to_string())?;
-            }
-            Ok(())
-        })();
-        let done = installed.and_then(|()| {
-            self.run_excision(
-                request,
-                store,
-                &crate::excise::Replacements::Installed,
-                true,
-            )
-        });
-        match done {
-            Ok(done) => {
-                drop(lock);
-                if let Err(error) = crate::blobs::delete_marked(&self.archive, store) {
-                    return Err(StoreError::ExcisionInterrupted(Box::new(error)));
-                }
-                Ok(done)
-            }
-            Err(error) => {
-                // Rows still `deleting` are this excision's unused replacements.
-                if !matches!(error, StoreError::ExcisionInterrupted(_)) {
-                    let _ = crate::blobs::delete_marked(&self.archive, store);
-                }
-                Err(error)
-            }
-        }
+        Ok(())
     }
 
-    /// One run of an excision in one transaction per database, committed in
-    /// the order [`Self::write_excision`] describes when `commit` is set and
-    /// rolled back otherwise.
+    /// One transaction per database, committed in the order
+    /// [`Self::write_excision`] describes, or rolled back for a dry run.
     fn run_excision(
         &mut self,
         request: &crate::excise::ExciseRequest,
-        store: &hashed_blobs::Store,
-        replacements: &crate::excise::Replacements,
-        commit: bool,
+        plan: &crate::excise::Plan,
     ) -> Result<crate::excise::Excised> {
         let embeddings = if self.location.embeddings_db().exists() {
             let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
@@ -749,6 +728,11 @@ impl Inner {
             Some(e)
         } else {
             None
+        };
+        let rollback = |embeddings: &Option<rusqlite::Connection>| {
+            if let Some(e) = embeddings {
+                let _ = e.execute_batch("ROLLBACK");
+            }
         };
         let atx = self.archive.transaction()?;
         let itx = self
@@ -760,31 +744,22 @@ impl Inner {
             archive: &atx,
             index: &itx,
             embeddings: embeddings.as_ref(),
-            store,
             seq,
             counter,
-            replacements,
         };
-        let applied = crate::excise::apply(&txs, request);
-        let rollback = |embeddings: &Option<rusqlite::Connection>| {
-            if let Some(e) = embeddings {
-                let _ = e.execute_batch("ROLLBACK");
-            }
-        };
-        let done = match applied {
+        let done = match crate::excise::apply(&txs, request, plan) {
             Ok(done) => done,
             Err(error) => {
                 rollback(&embeddings);
                 return Err(error);
             }
         };
-        if !commit {
+        if request.dry_run {
             itx.rollback()?;
             atx.rollback()?;
             rollback(&embeddings);
             return Ok(done);
         }
-        let refused = crate::excise::Refused::load(&atx)?;
         // A failed commit leaves the databases apart until the archive is
         // reopened, so this writer stops.
         let committed: Result<()> = (|| {
@@ -797,18 +772,15 @@ impl Inner {
             itx.commit()?;
             crate::fault::check("excision.after_index_commit", &request.id)
         })();
-        if let Err(error) = committed {
-            return Err(StoreError::ExcisionInterrupted(Box::new(error)));
-        }
-        self.refused = refused;
+        committed.map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))?;
         Ok(done)
     }
 
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        if !self.refused.is_empty() {
-            let refused = match matching(group, &self.refused) {
+        if self.excisions {
+            let refused = match matching(group, &self.archive) {
                 Ok(refused) => refused,
                 Err(error) => {
                     for b in group {

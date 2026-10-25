@@ -1,7 +1,6 @@
 //! The browser capture log: each capture is a frame whose length and digest
-//! let readers skip earlier captures without decoding them. A frame starts as
-//! the exact submitted JSON bytes; text excision rehashes it and keeps the
-//! digest of the bytes as first seen.
+//! let readers skip earlier captures without decoding them. A frame holds
+//! the exact submitted JSON bytes.
 
 pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
 pub const HEADER_LEN: usize = 151;
@@ -10,7 +9,7 @@ pub const HEADER_LEN: usize = 151;
 pub struct Header {
     pub length: u64,
     pub digest: String,
-    /// Digest of the bytes as first seen, kept when text in them is excised.
+    /// The same digest again; the header format holds it twice.
     pub observed_digest: String,
 }
 

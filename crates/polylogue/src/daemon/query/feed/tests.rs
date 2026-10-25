@@ -49,12 +49,12 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
         .excision(
             "remove-a",
             "session:test:gone",
-            Some(&json!(["test:gone"])),
-            &json!(["test:gone1"]),
+            &["test:gone"],
+            &["test:gone1"],
         )
         .unwrap();
     fixture
-        .excision("remove-b", "input:synthetic", None, &json!([]))
+        .excision("remove-b", "input:synthetic", &[], &[])
         .unwrap();
     fixture_counters(&fixture, 1, 3);
     let result = batch(&fixture, Some("old-generation:8:9"));
@@ -90,39 +90,12 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     );
     assert_eq!(archive[1]["change"]["sessions"], json!(["test:gone"]));
     assert_eq!(archive[1]["change"]["messages"], json!(["test:gone1"]));
-    assert!(archive[2]["change"]["sessions"].is_null());
+    assert_eq!(archive[2]["change"]["sessions"], json!([]));
     assert_eq!(archive[2]["change"]["messages"], json!([]));
 }
 
 #[test]
-fn late_bad_selection_or_output_failure_never_returns_a_deliverable_file() {
-    for malformed in [
-        json!(7),
-        json!(true),
-        json!("[\"test:a\"]"),
-        json!([""]),
-        json!([7]),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        fixture
-            .excision("valid", "input:first", Some(&json!([])), &json!([]))
-            .unwrap();
-        fixture
-            .excision("late-bad", "input:last", Some(&malformed), &json!([]))
-            .unwrap();
-        fixture_counters(&fixture, 0, 2);
-        let pool = fixture.reads().unwrap();
-        let error = prepare(
-            &pool.reader().unwrap(),
-            None,
-            0,
-            tempfile::tempfile().unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind, "store", "{malformed}");
-        assert!(error.message.contains("selection"), "{}", error.message);
-    }
+fn an_output_failure_never_returns_a_deliverable_file() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();

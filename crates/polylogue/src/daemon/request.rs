@@ -132,7 +132,7 @@ pub enum Request {
     Sql {
         statement: String,
     },
-    /// `session:<id>`, `input:<id>` or `text:<string>`. A dry run counts
+    /// `session:<id>`, `document:<id>` or `input:<id>`. A dry run counts
     /// what would go and changes nothing.
     Excise {
         request_id: String,

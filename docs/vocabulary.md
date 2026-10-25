@@ -69,8 +69,9 @@ a plain name here before it gets code.
 - **note** (with **tag**, **title** and the other note kinds), **kept
   result**, **variant**, **setting**, **delivery** (exactly what was put into
   a model's context), **client request** (one write request, for retries).
-- **excision**: content removed on purpose. The request is recorded once and
-  applied in one ordered pass; running it again finishes an interrupted one.
+- **excision**: stored inputs removed on purpose, with everything parsed from
+  them. The request is recorded once, with the identities it removed
+  (**excised**); a stop part way needs no recovery.
 
 ## The daemon
 

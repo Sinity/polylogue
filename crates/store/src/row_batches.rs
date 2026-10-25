@@ -85,7 +85,7 @@ const TABLES: &[&str] = &[
     "note_target",
     "note_relation",
     "excision",
-    "excision_document",
+    "excised",
     "setting",
     "delivery",
     "delivery_event",
@@ -332,8 +332,8 @@ impl BatchReader {
                 )?;
                 add("excision", "SELECT * FROM excision WHERE id = ?1", &key)?;
                 add(
-                    "excision_document",
-                    "SELECT * FROM excision_document WHERE excision_id = ?1 ORDER BY document_id",
+                    "excised",
+                    "SELECT * FROM excised WHERE excision_id = ?1 ORDER BY kind, value",
                     &key,
                 )?;
                 add("observation", &format!("{excised} ORDER BY rowid"), &key)?;

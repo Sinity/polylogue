@@ -137,18 +137,6 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
         prior[..],
         "recognition must not change row batches Sinex may already hold"
     );
-    let refused = e
-        .excise(ExciseRequest {
-            id: "promoted-text".into(),
-            scope: ExciseScope::Text("stored later parse".into()),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap_err();
-    assert!(
-        matches!(refused, EngineError::Store(polylogue_store::StoreError::ExcisionFormat { input, .. }) if input == id)
-    );
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
     // A later opaque acquisition must not discard the captured parser path.
     e.import(std::slice::from_ref(&unknown)).unwrap();
     drop(e);

@@ -97,12 +97,6 @@ CREATE TABLE observation (
                                          -- | deleted | back | imported | excised | download_attempt
   revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)
   excision      TEXT REFERENCES excision(id),  -- excised: the excision that changed this input's stored bytes
-  spans_json    TEXT,                    -- excised: [[blob, offset, length], ...] the overwritten byte spans, by
-                                         --   blob range, so every chain whose extents reuse that range sees them
-  ids_json      TEXT,                    -- excised: content-derived IDs of the records overlapping a span,
-                                         --   computed from the bytes before the overwrite ([[blob, offset, id], ...])
-  text_hashes_json TEXT,                 -- excised: BLAKE3 of every text value that held an overwritten span,
-                                         --   computed from the bytes before the overwrite
   length        INTEGER,                 -- that revision's length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER, birth_ns INTEGER,
@@ -165,8 +159,8 @@ CREATE TABLE note_target (
   seen_hash     BLOB,                    -- BLAKE3 of the target's text when the note was written
   anchor_input  TEXT,                    -- optional exact anchor for a citation: the input, the revision chain
   anchor_chain  INTEGER,                 --   and the byte range of the cited record in that chain (exact even if
-  anchor_start  INTEGER,                 --   the index is rebuilt from another backend). Bytes excised since
-  anchor_end    INTEGER,                 --   resolve to "excised", never to the overwritten bytes
+  anchor_start  INTEGER,                 --   the index is rebuilt from another backend)
+  anchor_end    INTEGER,
   PRIMARY KEY (note_id, ref)
 ) STRICT;
 CREATE INDEX note_target_ref ON note_target(ref);       -- notes about X; the hidden filter
@@ -194,22 +188,13 @@ CREATE TABLE kept_result (
                                          -- and the match rows of each match
 ) STRICT;
 
--- Content removed on purpose (how it works: below). The operator's standing
--- rule, not a work ledger: the loop removes whatever a row names, every round.
+-- Content removed on purpose (docs/excision.md). Recorded once; `excised`
+-- names what it removed, never the content.
 CREATE TABLE excision (
-  id            TEXT PRIMARY KEY,        -- the request's ID; for the n-th further scope of one request,
-                                         --   '<id>.<n>' (as note.id)
-  scope         TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'text:<blake3>', 'note:<id>'
+  id            TEXT PRIMARY KEY,        -- the request's ID
+  scope         TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'document:<id>', 'text:<blake3>'
   reason        TEXT,
   created_at    INTEGER NOT NULL,
-  refused_json  TEXT NOT NULL DEFAULT '{}',  -- removed IDs, hashes and locations, never content: the (machine, path,
-                                         --   device, inode) locations and the BLAKE3 of every revision and
-                                         --   blob the excision removed; collect and store refuse them
-  usage_json    TEXT NOT NULL DEFAULT '[]',  -- session scope: usage as numbers only, per (provider account,
-                                         --   model, window): message count, tokens by kind (How excision works)
-  message_ids_json TEXT NOT NULL DEFAULT '[]',  -- session scope: the excised session's message IDs (IDs only, never
-                                         --   content), so copies of them elsewhere are counted nowhere, also after
-                                         --   an index rebuild (How excision works)
   commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
 ) STRICT;
 CREATE INDEX excision_commit_seq ON excision(commit_seq);
@@ -303,12 +288,16 @@ CREATE TABLE delivery_event (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
 
--- Document excisions: the documents each one selected.
-CREATE TABLE excision_document (
-  excision_id TEXT NOT NULL REFERENCES excision(id) ON DELETE CASCADE,
-  document_id TEXT NOT NULL,
-  PRIMARY KEY(excision_id,document_id)
+-- What each excision removed, by identity: the writer never stores these
+-- sessions, messages and documents again, and refuses these inputs, blob
+-- hashes and locations ('["machine","path"]') on later reads.
+CREATE TABLE excised (
+  excision_id TEXT NOT NULL REFERENCES excision(id),
+  kind        TEXT NOT NULL CHECK(kind IN ('session','message','document','input','blob','location')),
+  value       TEXT NOT NULL,
+  PRIMARY KEY(kind, value, excision_id)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX excised_excision ON excised(excision_id, kind);
 
 -- Which export ZIP a member observation was read from, and where in it.
 -- The row travels in the member observation's row batch.

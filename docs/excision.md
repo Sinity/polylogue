@@ -1,92 +1,60 @@
 # Excision
 
-`polylogue excise TARGET` removes content on purpose: a session, a document,
-an input, or every stored occurrence of a text (a leaked secret). It is a rare
-operator action. `--dry-run` reports what would go and changes nothing.
+`polylogue excise TARGET` removes stored files on purpose, with everything
+parsed from them. It is a rare operator action. Without `--yes` it reports
+what would go and changes nothing.
 
-## What each scope removes
+An excision removes whole stored inputs and never rewrites stored bytes.
+Anything it could only remove by rewriting a file that also holds other
+content refuses with `unsupported_excision` before anything changes.
 
-- **Session:** its rows from every `index.db` table, its texts from search
-  and `embeddings.db` when no other row holds them, and its bytes. An input
-  that held only this session is removed whole. In an input shared with other
-  sessions, the byte ranges of its records are overwritten with spaces of the
-  same length, line breaks kept, so every other record keeps its offsets. In a
-  JSON export the removed records' array separators go too. In a whole
-  document with no record ranges, the session's own texts are blanked where
-  they stand (`inputs_kept` and `texts_left` report what could not be).
-- **Document:** its rows, the byte ranges that held it, and notes about it.
-- **Input:** the input whole. Sessions that also came from other inputs are
-  rebuilt by parsing those inputs again.
-- **Text:** every stored occurrence, in every revision chain, as written and
-  as JSON escapes it, overwritten with spaces of the same length. Notes,
-  variants, kept results, deliveries and excision reasons holding it are
-  redacted in place. The rows parsed from the changed inputs go, and the
-  inputs are parsed again from their overwritten bytes (`inputs_reparsed`),
-  so no column list decides what is cleaned.
+## What can be excised
 
-Notes about a removed session go, and delivered briefs that included its
-texts are blanked. The `excision` row keeps the removed session and message
-IDs, locations and hashes (never the content); the writer refuses those rows
-and the loop stops collecting those locations from then on.
+- **`session:<id>`:** every input the session came from, when those inputs
+  hold nothing but this session: their stored bytes, the session's rows in
+  every `index.db` table, its texts in search and `embeddings.db` when no
+  other row holds them, and the notes about it.
+- **`document:<id>`:** every input the document came from, when those inputs
+  hold nothing but this document, with its rows, variants and notes.
+- **`input:<id>`:** the input, with the sessions and documents it holds, when
+  none of them also comes from another input.
+
+The `excised` rows keep what was removed by identity (session, message and
+document IDs, inputs, blob hashes and locations), never the content. The
+writer never stores those rows again, refuses those inputs and bytes on later
+reads, and the loop stops collecting those locations. Provider files are
+never edited.
 
 ## What cannot be excised
 
-An excision removes only the thing it names. Anything it cannot remove without
-also removing or changing something else refuses with `unsupported_excision`
-before anything changes, a dry run included:
+Each refuses, naming the input or record that stops it:
 
-- **Anything inside an export ZIP.** The original ZIP is kept as imported, and
-  it holds other, unrelated conversations whose bytes cannot be rewritten
-  apart from the excised one. A session, document or text read from a ZIP,
-  a file read from one, and the ZIP input itself all refuse with a message
-  naming the ZIP file: excision inside it is not supported, because removing
-  it would also remove unrelated conversations. A text excision refuses while
-  the archive holds any export ZIP, since the text may be in its compressed
-  bytes.
-- a text inside a SQLite page image, PDF or gzip stream, a non-UTF-8
-  representation, a delta-encoded blob, or an input stored as an opaque file;
-- a text matching a JSON object key;
-- a session whose records cut through scalar values or share bytes with an
-  input outside the excision, or overlap a surviving session's records.
-
-Everything else can be excised: sessions, documents and inputs from watched
-files and from imported files that are not ZIPs, and texts in them. In an
-input shared with other sessions only the excised records' bytes change;
-every other byte keeps its value and offset, and the other sessions' rows are
-untouched.
-
-Provider files are never edited. `on_disk` lists the locations whose stored
-history held a text match; clean those files by hand, or a later full read
-collects the text again.
+- anything inside an export ZIP: the ZIP is kept as imported and holds
+  unrelated conversations (the message names the ZIP file);
+- a session or document whose input also holds another session or document,
+  such as a JSON lines file with records of two sessions or a
+  multi-conversation export; excise the whole input instead;
+- an input holding a session or document that also comes from another
+  input; excise that session instead;
+- a session a delivered brief names, since the brief holds its text;
+- a text inside messages (`text:`).
 
 ## The order of the work
 
-An excision runs in the writer twice. The first run is rolled back; it only
-writes each new blob file the excision needs (the rewritten bytes) to
-`blobs/tmp/`. Their blob rows are then committed as `deleting` and the files
-moved under their content names, so a stop from here on leaves only files
-that their rows mark for deletion. The second run does the work, one
-transaction per database, and marks the new blobs it uses `present`:
+The writer runs an excision in one pass. It plans, reading only, and refuses
+there. Then one transaction per database commits embeddings, then the
+archive, then the index: the vectors of removed texts go first (a later
+failure only costs buying them again); once the archive commits the
+excision is in force. Blobs nothing refers to are marked `deleting`, and the
+index's meta records how many excisions it holds. With `secure_delete` on,
+freed pages are zeroed; afterwards the search indexes are merged and both
+write-ahead logs are checkpointed, so no removed text stays readable in the
+database files, and the files of blobs marked `deleting` are deleted.
 
-1. **Embeddings first.** Vectors and provider failures of the removed texts
-   are deleted and committed. If anything later fails, nothing else changed
-   and the cost is buying those vectors again.
-2. **The archive.** The `excision` row, the rewritten or removed bytes, the
-   redactions and `excised` observations commit together. Blobs nothing
-   refers to any more are marked `deleting`. From here the excision is in
-   force.
-3. **The index.** Its rows go or are cleared for parsing again, and its meta
-   records how many excisions it holds.
-4. **Files.** Blob files marked `deleting` are deleted, then their rows.
-
-A stop between steps needs no recovery code. Reopening the archive clears
-`blobs/tmp/` and deletes the files of blobs still marked `deleting`, and an
-index that holds fewer excisions than the archive is deleted and rebuilt from
-the already excised stored inputs. While an index is behind, the embeddings
-writer refuses to store vectors, and it never stores a vector for a text the
-index no longer holds. A failed commit stops the writer until the archive is
-reopened.
-
-The text scan keeps its matches, frames and the decoded blobs it reads in the
-operation's memory and private scratch files, released when it ends. The
-largest JSON record, the selected IDs and the reports must fit in memory.
+A stop needs no recovery code. Reopening the archive deletes the files of
+blobs still marked `deleting`, and an index that holds fewer excisions than
+the archive is rebuilt from the stored inputs that remain. While an index is
+behind, the embeddings writer refuses to store vectors. A failed commit
+stops the writer until the archive is reopened. Running the same request
+again reports what the recorded excision removed and finishes what is left.
+A dry run plans and rolls the transactions back.

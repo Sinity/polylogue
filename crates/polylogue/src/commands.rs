@@ -761,7 +761,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "excise",
-        help: "Remove content permanently from every file and derived product: `session:<id>`, `document:<id>`, `input:<id>` or `text:<string>`. Without `--yes`, shows what would go and changes nothing",
+        help: "Remove stored files permanently, with everything parsed from them: `session:<id>`, `document:<id>` or `input:<id>`. A session or document whose files hold anything else refuses. Without `--yes`, shows what would go and changes nothing",
         args: &[
             pos("target", Kind::Text, "What to remove"),
             opt("yes", Kind::Bool, "Remove it"),

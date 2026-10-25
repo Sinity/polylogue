@@ -1,11 +1,9 @@
 use super::*;
-use polylogue_engine::{ExciseRequest, ExciseScope};
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]
-fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_restart_or_excision()
-{
-    for excision in [false, true] {
+fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_restart() {
+    {
         fault::clear();
         let w = ClaudeHome::new();
         w.append(
@@ -45,34 +43,11 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         assert_eq!(unchanged.bytes_read, 0);
         assert_eq!(w.texts("history"), ["current sibling"]);
         fault::clear();
-        if excision {
-            let done = engine
-                .excise(ExciseRequest {
-                    id: "clear-historical-secret".into(),
-                    scope: ExciseScope::parse("text:historical unique secret").unwrap(),
-                    reason: None,
-                    dry_run: false,
-                })
-                .unwrap();
-            assert!(!done.inputs_reparsed.is_empty());
-            let after = engine.converge().unwrap();
-            assert!(after.errors.is_empty(), "{:?}", after.errors);
-            assert!(after.bytes_read > 0, "changed stored history is retried");
-            let messages = w.texts("history");
-            assert_eq!(messages.len(), 2);
-            assert!(messages.iter().any(|text| text == "current sibling"));
-            assert!(
-                messages
-                    .iter()
-                    .all(|text| !text.contains("historical unique secret"))
-            );
-        } else {
-            drop(engine);
-            drop(lock);
-            let (mut restarted, _lock) = w.engine(64 << 20);
-            let after = restarted.converge().unwrap();
-            assert!(after.errors.is_empty(), "{:?}", after.errors);
-            assert_eq!(w.texts("history"), before);
-        }
+        drop(engine);
+        drop(lock);
+        let (mut restarted, _lock) = w.engine(64 << 20);
+        let after = restarted.converge().unwrap();
+        assert!(after.errors.is_empty(), "{:?}", after.errors);
+        assert_eq!(w.texts("history"), before);
     }
 }

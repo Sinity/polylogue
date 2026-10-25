@@ -24,14 +24,23 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
     archive_conn.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29)", [&seen.0[..]]).unwrap();
     archive_conn.execute("INSERT INTO variant(id,target,seen_hash,kind,coverage,body,author,machine,created_at) VALUES ('variant','message:claude-code:stable',?1,'summary','whole','exact transformed text','operator','synthetic',2)", [&seen.0[..]]).unwrap();
-    let refusal = serde_json::json!({
-        "sessions":["claude-code:blocked"],
-        "locations":[{"machine":"synthetic","path":"/synthetic/removed","device":12,"inode":34}],
-        "revisions":[BlobHash::of(b"synthetic removed source").to_string()],
-        "blobs":[removed_blob.to_string()]
-    })
-    .to_string();
-    archive_conn.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',?1,'[\"claude-code:blocked-message\"]',3,2)", [&refusal]).unwrap();
+    archive_conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',3,2)", []).unwrap();
+    for (kind, value) in [
+        ("session", "claude-code:blocked".to_owned()),
+        ("message", "claude-code:blocked-message".to_owned()),
+        (
+            "location",
+            r#"["synthetic","/synthetic/removed"]"#.to_owned(),
+        ),
+        ("blob", removed_blob.to_string()),
+    ] {
+        archive_conn
+            .execute(
+                "INSERT INTO excised(excision_id,kind,value) VALUES ('session-removal',?1,?2)",
+                [kind, &value],
+            )
+            .unwrap();
+    }
     archive_conn
         .execute(
             "INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('text-removal',?1,4,3)",
@@ -55,6 +64,7 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
         "SELECT * FROM note_target ORDER BY note_id,ref",
         "SELECT * FROM variant ORDER BY id",
         "SELECT * FROM excision ORDER BY id",
+        "SELECT * FROM excised ORDER BY kind, value",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
     let vectors = open_read(&archive.embeddings_db()).unwrap();
@@ -83,16 +93,16 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
         after, before,
         "authored values, seen hashes, anchors and excisions stay verbatim"
     );
-    let refused = crate::excise::Refused::load(&archive_conn).unwrap();
-    let matches = refused
-        .matching(
-            &["claude-code:blocked".into(), "claude-code:allowed".into()],
-            &[
-                "claude-code:blocked-message".into(),
-                "claude-code:allowed-message".into(),
-            ],
-        )
-        .unwrap();
+    let matches = crate::excise::matching(
+        &archive_conn,
+        &["claude-code:blocked".into(), "claude-code:allowed".into()],
+        &[
+            "claude-code:blocked-message".into(),
+            "claude-code:allowed-message".into(),
+        ],
+        &[],
+    )
+    .unwrap();
     assert_eq!(
         matches.sessions.into_iter().collect::<Vec<_>>(),
         ["claude-code:blocked"]

@@ -10,7 +10,6 @@ use polylogue_testkit::{
 use std::fs;
 use std::path::Path;
 
-mod excision_documents;
 mod excision_selected;
 mod older_chains;
 mod tool_captures;
@@ -375,7 +374,7 @@ fn excise(e: &mut Engine, target: &str, dry_run: bool) -> Excised {
 
 /// Whether any stored input byte range holds `needle`.
 fn stored(root: &Path, needle: &str) -> bool {
-    !polylogue_store::excise::stored_blobs_containing(&Archive::at(root), needle)
+    !polylogue_store::fixture::text_search::stored_blobs_containing(&Archive::at(root), needle)
         .unwrap()
         .is_empty()
 }
@@ -438,48 +437,10 @@ fn an_excised_session_is_gone_from_every_file_and_never_comes_back() {
     assert!(w.texts("s1").is_empty());
 }
 
-#[test]
-fn an_excised_text_is_overwritten_in_stored_bytes_and_the_index() {
-    let w = ClaudeHome::new();
-    w.append(
-        "s1.jsonl",
-        &(user("u1", "s1", "token sk-abc123 here") + &assistant("a1", "s1", "ok")),
-    );
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.converge().unwrap().errors.is_empty());
-    let done = excise(&mut e, "text:sk-abc123", false);
-    assert_eq!(done.inputs_overwritten.len(), 1, "{done:?}");
-    assert_eq!(
-        done.on_disk.len(),
-        1,
-        "the live file still holds it: {done:?}"
-    );
-    assert!(!stored(&w.root, "sk-abc123"));
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'abc123'"),
-        0
-    );
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'token'"),
-        1
-    );
-    e.converge().unwrap();
-    let texts = w.texts("s1");
-    assert_eq!(texts.len(), 2, "{texts:?}");
-    assert!(!texts[0].contains("sk-abc123"));
-    assert!(texts[0].starts_with("token ") && texts[0].ends_with(" here"));
-    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    let rows = pool
-        .reader()
-        .unwrap()
-        .query("SELECT scope AS s FROM a.excision", &[])
-        .unwrap();
-    assert!(!rows[0]["s"].as_str().unwrap().contains("sk-abc123"));
-}
-
 /// Index columns holding `needle`.
 fn indexed(root: &Path, needle: &str) -> Vec<String> {
-    polylogue_store::excise::index_columns_containing(&Archive::at(root), needle).unwrap()
+    polylogue_store::fixture::text_search::index_columns_containing(&Archive::at(root), needle)
+        .unwrap()
 }
 
 /// A session whose secret sits in its title, working directory, branch,
@@ -515,51 +476,24 @@ fn secret_session(session: &str, secret: &str) -> String {
 }
 
 #[test]
-fn an_excised_text_leaves_no_index_row_and_a_later_derive_does_not_bring_it_back() {
-    let secret = "qx7vaultkey";
+fn a_removed_session_leaves_no_index_column_or_stored_byte_holding_its_text() {
     let w = ClaudeHome::new();
-    w.append("s1.jsonl", &secret_session("s1", secret));
-    w.append(
-        "s2.jsonl",
-        &(user("u9", "s2", "unrelated work") + &assistant("a9", "s2", "fine")),
-    );
-    let (mut e, lock) = w.engine(64 << 20);
-    assert!(e.converge().unwrap().errors.is_empty());
-    let before = indexed(&w.root, secret);
-    assert!(before.iter().any(|c| c == "session.title"), "{before:?}");
-    assert!(before.iter().any(|c| c == "session.cwd"), "{before:?}");
-    assert!(
-        before.iter().any(|c| c == "fts_vocab_text.term"),
-        "{before:?}"
-    );
-
-    excise(&mut e, &format!("text:{secret}"), false);
-    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
-    // The session is still there, parsed again from the overwritten bytes.
-    let texts = w.texts("s1");
-    assert!(
-        texts.iter().any(|t| t.starts_with("deploy with ")),
-        "{texts:?}"
-    );
-    assert_eq!(w.texts("s2"), ["unrelated work", "fine"]);
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s1' AND title LIKE 'rotate %'"),
-        1
-    );
-
-    // Neither a later pass and derive nor a restart brings it back.
-    assert!(e.converge().unwrap().errors.is_empty());
-    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
-    drop(e);
-    drop(lock);
+    let secret = "sk-abc123-synthetic";
+    w.append("secret.jsonl", &secret_session("secret", secret));
+    w.append("kept.jsonl", &user("k1", "kept", "kept text"));
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.converge().unwrap().errors.is_empty());
+    assert!(!indexed(&w.root, secret).is_empty());
+    assert!(stored(&w.root, secret));
+    let done = excise(&mut e, "session:claude-code:secret", false);
+    assert_eq!(done.inputs_removed.len(), 1, "{done:?}");
     assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
-    assert_eq!(w.texts("s2"), ["unrelated work", "fine"]);
+    assert!(!stored(&w.root, secret));
+    assert_eq!(w.texts("kept"), ["kept text"]);
 }
 
 #[test]
-fn excising_a_session_from_a_shared_input_overwrites_only_its_records() {
+fn excising_a_session_from_a_file_holding_another_session_refuses() {
     let w = ClaudeHome::new();
     // One file holding records of two sessions (a resumed session's file
     // names the session each record belongs to).
@@ -571,15 +505,29 @@ fn excising_a_session_from_a_shared_input_overwrites_only_its_records() {
     );
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.converge().unwrap().errors.is_empty());
-    assert_eq!(w.count("SELECT count(*) AS n FROM session"), 2);
-    let target = w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:drop'");
-    assert_eq!(target, 1);
-    let done = excise(&mut e, "session:claude-code:drop", false);
-    assert!(done.inputs_removed.is_empty(), "{done:?}");
-    assert_eq!(done.inputs_overwritten.len(), 1, "{done:?}");
-    assert!(!stored(&w.root, "pelican77"));
-    assert!(stored(&w.root, "keep this") && stored(&w.root, "and this"));
-    assert_eq!(w.texts("keep").len(), 2);
+    let before = (w.export("claude-code:keep"), w.export("claude-code:drop"));
+    for dry_run in [true, false] {
+        let refused = e
+            .excise(ExciseRequest {
+                id: format!("drop-{dry_run}"),
+                scope: ExciseScope::parse("session:claude-code:drop").unwrap(),
+                reason: None,
+                dry_run,
+            })
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("also holds session claude-code:keep"),
+            "{refused}"
+        );
+        assert_eq!(
+            (w.export("claude-code:keep"), w.export("claude-code:drop")),
+            before
+        );
+        assert!(stored(&w.root, "pelican77"));
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+    }
 }
 
 #[test]
@@ -703,82 +651,6 @@ fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
     let repositories: Vec<&str> = failing.iter().map(|f| f.repository.as_str()).collect();
     assert!(repositories.contains(&"cwd:/work/g"), "{repositories:?}");
     assert!(repositories.contains(&"cwd:/work/c"), "{repositories:?}");
-}
-
-#[test]
-fn text_excision_decodes_json_escapes_reparses_and_survives_restart() {
-    let w = ClaudeHome::new();
-    let secret = "secrét😀";
-    let original = user("u1", "s1", &format!("before {secret} after"))
-        .replace(secret, r"s\u0065cr\u00E9t\uD83D\uDE00");
-    w.append("s1.jsonl", &original);
-    w.append("s2.jsonl", &user("u2", "s2", "unrelated bytes"));
-    let (mut e, lock) = w.engine(300);
-    assert!(e.converge().unwrap().errors.is_empty());
-    assert_eq!(w.texts("s1"), [format!("before {secret} after")]);
-    let before_other = w.texts("s2");
-    let preview = excise(&mut e, &format!("text:{secret}"), true);
-    assert_eq!(w.texts("s1"), [format!("before {secret} after")]);
-    let done = excise(&mut e, &format!("text:{secret}"), false);
-    assert_eq!(done.inputs_overwritten, preview.inputs_overwritten);
-    assert_eq!(done.on_disk.len(), 1);
-    assert!(!stored(&w.root, secret));
-    let clean = w.texts("s1");
-    assert_eq!(clean.len(), 1);
-    assert!(clean[0].starts_with("before ") && clean[0].ends_with(" after"));
-    assert!(!clean[0].contains(secret));
-    assert_eq!(w.texts("s2"), before_other);
-    drop(e);
-    drop(lock);
-    let (mut e, _lock) = w.engine(300);
-    assert!(e.converge().unwrap().errors.is_empty());
-    assert_eq!(w.texts("s1"), clean);
-    assert_eq!(w.texts("s2"), before_other);
-    assert_eq!(fs::read_to_string(w.file("s1.jsonl")).unwrap(), original);
-}
-
-#[test]
-fn text_excision_reaches_encoded_codex_tool_arguments() {
-    let w = ClaudeHome::new();
-    let rollouts = w.home.join(".codex/sessions/2026/03/01");
-    fs::create_dir_all(&rollouts).unwrap();
-    let thread = "019a0000-0000-7000-8000-000000000001";
-    let env = |ty: &str, payload: serde_json::Value| {
-        serde_json::json!({"timestamp":"2026-03-01T10:00:00.000Z", "type":ty, "payload":payload})
-            .to_string()
-            + "\n"
-    };
-    let source = env(
-        "session_meta",
-        serde_json::json!({"id":thread, "cwd":"/work/c"}),
-    ) + &env(
-        "response_item",
-        serde_json::json!({"type":"function_call", "name":"shell_command", "call_id":"k1",
-            "arguments":r#"{"command":"echo s\u0065cret","keep":"exact"}"#}),
-    );
-    let path = rollouts.join(format!("rollout-2026-03-01T10-00-00-{thread}.jsonl"));
-    fs::write(&path, &source).unwrap();
-    let (mut e, _lock) = w.engine(300);
-    assert!(e.converge().unwrap().errors.is_empty());
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM tool_call WHERE command = 'echo secret'"),
-        1
-    );
-    excise(&mut e, "text:secret", false);
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM tool_call WHERE command LIKE '%secret%'"),
-        0
-    );
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM tool_call WHERE command LIKE 'echo %'"),
-        1
-    );
-    let id = SessionId::parse(&format!("codex:{thread}")).unwrap();
-    let pool = w.reads();
-    let messages = pool.reader().unwrap().messages(&id, false).unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].session, id);
-    assert_eq!(fs::read_to_string(path).unwrap(), source);
 }
 
 #[test]

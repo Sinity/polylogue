@@ -1,63 +1,23 @@
-//! Excision: permanent removal from every file and derived product. The
-//! `excision` row keeps the content from coming back by any route.
+//! Excision: removing content on purpose (`docs/excision.md`). An excision
+//! removes whole stored inputs, with their rows in every database; it never
+//! rewrites bytes. Anything it could only remove by rewriting bytes that also
+//! hold other content refuses before anything changes.
 //!
-//! - **Session:** its rows go from every `index.db` table, its texts from
-//!   the search indexes and `embeddings.db` (when no other row holds the same
-//!   text), and its bytes from the stored inputs. An input holding only
-//!   this session is removed whole; in an input it shares with other
-//!   sessions, the byte ranges of its records are overwritten with spaces
-//!   of the same length (line breaks kept), so every other record keeps its
-//!   offsets. Shared JSON records also remove the necessary array separators;
-//!   unsupported record boundaries refuse before committing. Notes about
-//!   the session go, and briefs that delivered its texts are redacted. The
-//!   writer refuses the session's and its messages' rows from then on, and
-//!   the loop stops collecting a removed input's paths.
-//! - **Input:** the input whole, with every session only it produced.
-//! - **Inside an export ZIP:** refused before anything changes; the ZIP also
-//!   holds unrelated conversations ([`crate::containers`]).
-//! - **Text:** every stored occurrence of a string (a leaked secret), as
-//!   written and as JSON escapes it, overwritten with spaces. The sessions
-//!   built from those records lose every index row, and their inputs are
-//!   parsed again from the overwritten bytes, so no column list decides
-//!   what is cleaned.
-//!
-//! An excised revision keeps its BLAKE3 (the hash of the bytes as first
-//! observed); its blobs are what it is verified by afterwards.
+//! The writer runs it in one pass: [`plan`] decides what goes and refuses
+//! what cannot, reading only; [`apply`] writes it in one transaction per
+//! database, committed embeddings, archive, index. A dry run rolls [`apply`]
+//! back.
 
-use crate::blobs::{Piece, Stored};
-use crate::encoding::hex;
-use crate::encoding::unpack_text;
 use crate::{Result, StoreError};
 use polylogue_model::{BlobHash, SessionId};
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-mod authored;
-mod documents;
-mod hashes;
 mod index_rows;
-mod messages;
-mod notes;
-mod record_ranges;
 mod refused;
-pub use refused::Refused;
-pub(crate) use refused::RefusedIds;
-mod session_texts;
-mod sessions;
-mod spans;
-mod stored_bytes;
-mod stored_text;
-mod text_matches;
 
-use hashes::RemovalHashes;
-use index_rows::*;
-use messages::SelectedMessages;
-use session_texts::SessionTexts;
-use sessions::SelectedSessions;
-use spans::Spans;
-use stored_bytes::*;
-pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
+pub(crate) use refused::{RefusedIds, any_excision, matching, raw_import};
 
 /// What to remove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,11 +26,10 @@ pub enum Scope {
     Session(SessionId),
     Document(polylogue_model::DocumentId),
     Input(String),
-    Text(String),
 }
 
 impl Scope {
-    /// `session:<id>`, `document:<id>`, `input:<id>`, `text:<string>`, or a bare session ID.
+    /// `session:<id>`, `document:<id>`, `input:<id>`, or a bare session ID.
     pub fn parse(target: &str) -> std::result::Result<Self, String> {
         let (kind, value) = target.split_once(':').unwrap_or(("", target));
         match kind {
@@ -78,13 +37,16 @@ impl Scope {
                 .map(Self::Document)
                 .map_err(|e| e.to_string()),
             "input" if !value.is_empty() => Ok(Self::Input(value.to_owned())),
-            "text" if !value.is_empty() => Ok(Self::Text(value.to_owned())),
+            "text" => Err(
+                "excising a text is not supported: it would rewrite stored bytes that hold other content; excise the session or input that holds it"
+                    .into(),
+            ),
             "session" => SessionId::parse(value)
                 .map(Self::Session)
                 .map_err(|e| e.to_string()),
             _ => SessionId::parse(target).map(Self::Session).map_err(|_| {
                 format!(
-                    "not an excision target: {target:?} (session:<id>, document:<id>, input:<id>, text:<string>)"
+                    "not an excision target: {target:?} (session:<id>, document:<id>, input:<id>)"
                 )
             }),
         }
@@ -95,8 +57,6 @@ impl Scope {
             Self::Session(s) => format!("session:{s}"),
             Self::Document(d) => format!("document:{d}"),
             Self::Input(i) => format!("input:{i}"),
-            // Never the text itself: the row keeps only its hash.
-            Self::Text(t) => format!("text:{}", blake3::hash(t.as_bytes()).to_hex()),
         }
     }
 }
@@ -121,561 +81,234 @@ pub struct Excised {
     pub messages: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<String>,
+    /// Texts no index row holds any more.
     pub texts: u64,
-    /// Inputs removed whole.
+    /// The stored inputs removed.
     pub inputs_removed: Vec<String>,
-    /// Inputs whose bytes were overwritten in place, and how many spans.
-    pub inputs_overwritten: BTreeMap<String, u64>,
-    /// Shared whole documents (exports) where some of the session's texts
-    /// could not be found as a complete string value and so still stand
-    /// (`texts_left` counts them); their rows are gone and refused.
-    pub inputs_kept: Vec<String>,
-    /// Session texts left in shared whole documents: too short to blank
-    /// safely (under 12 bytes) or not stored as a whole string value.
-    #[serde(default)]
-    pub texts_left: u64,
-    /// Notes whose every target was the excised session or its messages.
+    /// Notes whose every target was removed.
     #[serde(default)]
     pub notes_removed: u64,
-    /// Text scope: authored rows whose payloads were overwritten.
-    #[serde(default)]
-    pub notes_redacted: u64,
-    #[serde(default)]
-    pub variants_redacted: u64,
-    #[serde(default)]
-    pub kept_results_redacted: u64,
-    /// Delivered briefs whose text held the session's texts, blanked.
-    #[serde(default)]
-    pub deliveries_redacted: u64,
     pub blobs_deleted: u64,
     pub embeddings_deleted: u64,
     /// Paths the loop no longer collects, as `machine:path`.
     pub refused_paths: Vec<String>,
-    /// Text scope: inputs whose rows went, to be parsed again from their
-    /// overwritten stored bytes ([`crate::excise`]); the engine does so
-    /// before the excision returns.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inputs_reparsed: Vec<String>,
-    /// Text scope: provider locations (`machine:path`) whose stored
-    /// history held a match. Current presence and content are not checked.
-    /// Polylogue never edits them; a later full read may collect the text
-    /// again until the original file is scrubbed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub on_disk: Vec<String>,
 }
 
-impl crate::Reader<'_> {
-    /// Paths (`(machine, path)`) the loop must never collect again, from every
-    /// excision's refused locations. Invalid records refuse the read.
-    pub fn refused_paths(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self
-            .conn()?
-            .prepare("SELECT refused_json FROM a.excision")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let refused = RefusedJson::decode(&row?)?;
-            out.extend(refused.locations.into_iter().map(|l| (l.machine, l.path)));
-        }
-        Ok(out)
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct RefusedJson {
-    /// Exact session selection, including input-scoped removals. Older
-    /// records may lack this list; their IDs cannot be inferred from messages.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "refused::session_selection"
-    )]
-    sessions: Option<Vec<SessionId>>,
-    #[serde(default)]
-    locations: Vec<Location>,
-    /// BLAKE3 (hex) of every revision and blob the excision removed.
-    #[serde(default)]
-    revisions: Vec<String>,
-    #[serde(default)]
-    blobs: Vec<String>,
-}
-
-impl RefusedJson {
-    fn decode(value: &str) -> Result<Self> {
-        if !value.trim_start().starts_with('{') {
-            return Err(StoreError::Invalid(
-                "invalid excision refusal payload".into(),
-            ));
-        }
-        Ok(serde_json::from_str(value)?)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-struct Location {
-    machine: String,
-    path: String,
-    device: Option<i64>,
-    inode: Option<i64>,
-}
-
-/// One byte range in an input's revision chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Span {
-    chain: i64,
-    start: i64,
-    end: i64,
-}
-
-/// The two transactions an excision runs in, with the blob store. Blobs it no
-/// longer needs are marked `deleting`; their files go after the commit.
-pub struct Transactions<'a, 'b> {
+/// The connections an excision writes through. Blobs it no longer needs
+/// are marked `deleting`; the writer deletes their files after the commits.
+pub(crate) struct Transactions<'a, 'b> {
     pub archive: &'a Transaction<'b>,
     pub index: &'a Transaction<'b>,
-    pub embeddings: Option<&'a rusqlite::Connection>,
-    pub store: &'a hashed_blobs::Store,
+    pub embeddings: Option<&'a Connection>,
     /// `archive.db`'s write counter for this transaction.
     pub seq: i64,
     /// `index.db`'s write counter for this transaction.
     pub counter: i64,
-    /// Where replacement blob files go in this run.
-    pub replacements: &'a Replacements,
 }
 
-/// An excision runs twice. The first run, rolled back, writes each
-/// file-sized replacement blob to `blobs/tmp/` only. The writer then commits
-/// their rows as `deleting`, installs the files, and runs the excision again,
-/// which marks the rows it uses `present`. A stop before that commit leaves
-/// rows marked `deleting`, whose files go when the archive is next opened, so
-/// no blob file is ever without a row.
-pub enum Replacements {
-    /// The first run: the staged files by hash.
-    Stage(std::cell::RefCell<BTreeMap<BlobHash, hashed_blobs::PreparedPlain>>),
-    /// The second run: the files are installed under committed rows.
-    Installed,
+/// What an excision removes, decided before anything changes.
+#[derive(Debug, Default)]
+pub(crate) struct Plan {
+    /// Index key and ID of each session to remove.
+    sessions: Vec<(i64, String)>,
+    documents: Vec<(i64, String)>,
+    inputs: BTreeSet<String>,
+    /// The same request was recorded by an earlier run: what is left (an
+    /// index rebuild, blob files) finishes when the archive opens or after
+    /// this run.
+    recorded: bool,
 }
 
-impl Default for Replacements {
-    fn default() -> Self {
-        Self::Stage(Default::default())
+impl Plan {
+    pub(crate) fn recorded(&self) -> bool {
+        self.recorded
     }
 }
 
-/// Runs an excision, marking blobs it no longer needs `deleting`. The writer
-/// deletes their files after all database transactions commit.
-pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
-    if !req.dry_run && crate::row_batches::on_sinex(t.archive)? {
+/// Decides what `request` removes, reading only. Every refusal happens here.
+pub(crate) fn plan(
+    archive: &Connection,
+    index: &Connection,
+    request: &ExciseRequest,
+) -> Result<Plan> {
+    if !request.dry_run && crate::row_batches::on_sinex(archive)? {
         return Err(StoreError::ExcisionOnSinex);
     }
-    let mut done = Excised {
-        dry_run: req.dry_run,
-        ..Excised::default()
-    };
-    let mut plan = Plan::new(t.index)?;
-    match &req.scope {
+    let recorded: Option<String> = archive
+        .query_row(
+            "SELECT scope FROM excision WHERE id = ?1",
+            [&request.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match recorded {
+        Some(scope) if scope == request.scope.label() => {
+            return Ok(Plan {
+                recorded: true,
+                ..Plan::default()
+            });
+        }
+        Some(_) => {
+            return Err(StoreError::Conflict(format!(
+                "excision {} was recorded with another target",
+                request.id
+            )));
+        }
+        None => {}
+    }
+    let mut plan = Plan::default();
+    match &request.scope {
         Scope::Session(id) => {
-            let pk = session_pk(t.index, &id.to_string())?
+            let id = id.to_string();
+            let pk = index_rows::session_pk(index, &id)?
                 .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
-            plan.session(t, pk, &id.to_string())?;
+            plan.sessions.push((pk, id));
+            plan.inputs
+                .extend(index_rows::inputs_of_session(index, pk)?);
         }
         Scope::Document(id) => {
-            let pk = t
-                .index
-                .query_row(
-                    "SELECT pk FROM document WHERE id=?1",
-                    [id.to_string()],
-                    |r| r.get(0),
-                )
+            let id = id.to_string();
+            let pk = index
+                .query_row("SELECT pk FROM document WHERE id = ?1", [&id], |r| r.get(0))
                 .optional()?
                 .ok_or_else(|| StoreError::NotFound(format!("document {id}")))?;
-            plan.document(t, pk, &id.to_string())?;
+            plan.documents.push((pk, id));
+            plan.inputs
+                .extend(index_rows::inputs_of_document(index, pk)?);
         }
         Scope::Input(input) => {
-            let pk = input_pk(t.index, input)?;
-            let known: bool = t.archive.query_row(
-                "SELECT EXISTS (SELECT 1 FROM input WHERE id = ?1)",
+            let known: bool = archive.query_row(
+                "SELECT EXISTS(SELECT 1 FROM input WHERE id = ?1)",
                 [input],
                 |r| r.get(0),
             )?;
             if !known {
                 return Err(StoreError::NotFound(format!("input {input}")));
             }
-            plan.whole.insert(input.clone());
-            if let Some(pk) = pk {
-                let mut statement = t.index.prepare(
-                    "SELECT s.pk,s.id FROM session s WHERE s.pk IN
-                        (SELECT session_pk FROM parsed WHERE input_pk=?1)
-                     AND NOT EXISTS (SELECT 1 FROM parsed p WHERE p.session_pk=s.pk AND p.input_pk<>?1)")?;
-                let sessions = statement
-                    .query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-                for row in sessions {
-                    let (spk, sid) = row?;
-                    plan.session(t, spk, &sid)?;
-                }
-                let mut docs=t.index.prepare("SELECT d.pk,d.id FROM document d WHERE EXISTS(SELECT 1 FROM document_source s WHERE s.document_pk=d.pk AND s.input_pk=?1) AND NOT EXISTS(SELECT 1 FROM document_source s WHERE s.document_pk=d.pk AND s.input_pk<>?1)")?;
-                for row in
-                    docs.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-                {
-                    let (pk, id) = row?;
-                    plan.document(t, pk, &id)?;
-                }
+            plan.inputs.insert(input.clone());
+            if let Some(pk) = index_rows::input_pk(index, input)? {
+                plan.sessions = index_rows::sessions_of_input(index, pk)?;
+                plan.documents = index_rows::documents_of_input(index, pk)?;
             }
         }
-        Scope::Text(text) => {
-            plan.text = Some(text.clone());
-        }
     }
-    plan.apply(t, req, &mut done)
+    let input_named = matches!(request.scope, Scope::Input(_));
+    index_rows::refuse_shared(archive, index, &plan, input_named)?;
+    Ok(plan)
 }
 
-struct Plan<'a> {
-    /// Sessions to remove: pk and id.
-    sessions: SelectedSessions<'a>,
-    /// Inputs to remove whole.
-    whole: BTreeSet<String>,
-    /// Inputs shared with other sessions: the spans to overwrite.
-    spans: Spans,
-    /// Shared inputs whose records have no byte ranges.
-    kept: BTreeSet<String>,
-    /// Message IDs of the removed sessions, for the writer's refusal.
-    message_ids: SelectedMessages,
-    /// Texts only the removed sessions hold (bodies and titles), for
-    /// blanking shared whole documents and delivered briefs.
-    own_texts: SessionTexts,
-    text: Option<String>,
-    documents: BTreeMap<i64, String>,
+/// Writes the excision `plan` describes.
+pub(crate) fn apply(
+    t: &Transactions<'_, '_>,
+    request: &ExciseRequest,
+    plan: &Plan,
+) -> Result<Excised> {
+    let mut done = Excised {
+        dry_run: request.dry_run,
+        sessions: plan.sessions.iter().map(|(_, id)| id.clone()).collect(),
+        documents: plan.documents.iter().map(|(_, id)| id.clone()).collect(),
+        inputs_removed: plan.inputs.iter().cloned().collect(),
+        ..Excised::default()
+    };
+    t.archive.execute(
+        "INSERT INTO excision(id, scope, reason, created_at, commit_seq)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            request.id,
+            request.scope.label(),
+            request.reason,
+            now_ms(),
+            t.seq
+        ],
+    )?;
+    let record = |kind: &str, value: &str| refused::record(t.archive, &request.id, kind, value);
+
+    // Texts whose rows go, so their vectors go too; blobs that may now be
+    // unused.
+    let mut removed_texts = BTreeSet::new();
+    let mut blobs = BTreeSet::new();
+    let messages = index_rows::message_ids(t.index, &plan.sessions)?;
+    done.messages = messages.len() as u64;
+    for id in &messages {
+        record("message", id)?;
+    }
+    for (pk, id) in &plan.sessions {
+        record("session", id)?;
+        index_rows::remove_session(t, *pk, id, &mut removed_texts, &mut blobs)?;
+    }
+    let mut references = index_rows::note_references(t.archive, &done.sessions, &messages)?;
+    for (pk, id) in &plan.documents {
+        record("document", id)?;
+        index_rows::remove_document(t, *pk, &mut removed_texts, &mut blobs)?;
+        let reference = format!("document:{id}");
+        t.archive
+            .execute("DELETE FROM variant WHERE target = ?1", [&reference])?;
+        references.push(reference);
+    }
+    done.notes_removed = index_rows::remove_notes_about(t.archive, &references)?;
+
+    let mut locations = BTreeSet::new();
+    for input in &plan.inputs {
+        record("input", input)?;
+        let removed = index_rows::remove_input(t, &request.id, input)?;
+        for blob in removed.blobs {
+            record("blob", &blob.to_string())?;
+            blobs.insert(blob);
+        }
+        locations.extend(removed.locations);
+    }
+    for (machine, path) in &locations {
+        record("location", &serde_json::to_string(&(machine, path))?)?;
+        done.refused_paths.push(format!("{machine}:{path}"));
+    }
+
+    for hash in &blobs {
+        if index_rows::blob_unused(t, hash)? && crate::blobs::mark_for_deletion(t.archive, hash)? {
+            done.blobs_deleted += 1;
+        }
+    }
+    if let Some(embeddings) = t.embeddings {
+        for hash in &removed_texts {
+            done.embeddings_deleted +=
+                embeddings.execute("DELETE FROM embedded WHERE text_hash = ?1", [hash])? as u64;
+            embeddings.execute("DELETE FROM embed_failure WHERE text_hash = ?1", [hash])?;
+        }
+    }
+    done.texts = removed_texts.len() as u64;
+    mark_applied(t.archive, t.index)?;
+    Ok(done)
 }
 
-impl<'a> Plan<'a> {
-    fn new(index: &'a rusqlite::Connection) -> Result<Self> {
-        index.execute_batch(
-            "CREATE TEMP TABLE excision_documents(document_pk INTEGER PRIMARY KEY)",
-        )?;
-        Ok(Self {
-            sessions: SelectedSessions::new(index)?,
-            whole: BTreeSet::new(),
-            spans: Spans::default(),
-            kept: BTreeSet::new(),
-            message_ids: SelectedMessages::default(),
-            own_texts: SessionTexts::default(),
-            text: None,
-            documents: BTreeMap::new(),
-        })
+/// What an already recorded excision removed, from its `excised` rows.
+pub(crate) fn recorded(archive: &Connection, request: &ExciseRequest) -> Result<Excised> {
+    let values = |kind: &str| -> Result<Vec<String>> {
+        Ok(archive
+            .prepare(
+                "SELECT value FROM excised WHERE excision_id = ?1 AND kind = ?2 ORDER BY value",
+            )?
+            .query_map(params![request.id, kind], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    let mut refused_paths = Vec::new();
+    for location in values("location")? {
+        let (machine, path): (String, String) = serde_json::from_str(&location)?;
+        refused_paths.push(format!("{machine}:{path}"));
     }
-
-    fn session(&mut self, t: &Transactions<'_, '_>, pk: i64, id: &str) -> Result<()> {
-        self.sessions.insert(pk, id)?;
-        let mut messages = t
-            .index
-            .prepare("SELECT id FROM message WHERE session_pk=?1")?;
-        for id in messages.query_map([pk], |r| r.get::<_, String>(0))? {
-            self.message_ids.insert(&id?)?;
-        }
-        // Every input the session's rows came from.
-        let mut inputs = t.index.prepare(
-            "SELECT pk,id FROM input_ref WHERE pk IN (
-                SELECT input_pk FROM parsed WHERE session_pk=?1
-                UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.session_pk=?1
-                UNION SELECT input_pk FROM event WHERE session_pk=?1)")?;
-        let inputs =
-            inputs.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
-        for row in inputs {
-            let (ipk, iid) = row?;
-            let shared: bool = t.index.query_row(
-                "SELECT EXISTS (SELECT 1 FROM parsed WHERE input_pk = ?1 AND session_pk <> ?2)
-                     OR EXISTS (SELECT 1 FROM message_source s JOIN message m ON m.pk = s.message_pk
-                                WHERE s.input_pk = ?1 AND m.session_pk <> ?2)
-                     OR EXISTS(SELECT 1 FROM document_source WHERE input_pk=?1)
-                     OR EXISTS (SELECT 1 FROM event e
-                                WHERE e.input_pk=?1 AND (e.session_pk IS NULL OR e.session_pk<>?2))",
-                params![ipk, pk],
-                |r| r.get(0),
-            )?;
-            if !shared {
-                self.whole.insert(iid);
-                continue;
-            }
-            let mut statement = t.index.prepare(
-                "SELECT s.chain,s.source_start,s.source_end FROM message_source s JOIN message m ON m.pk=s.message_pk
-                 WHERE m.session_pk=?2 AND s.input_pk=?1 AND s.source_end>s.source_start
-                 UNION SELECT source_chain,source_start,source_end FROM event
-                 WHERE session_pk=?2 AND input_pk=?1 AND source_end>source_start")?;
-            let spans = statement.query_map(params![ipk, pk], |r| {
-                Ok(Span {
-                    chain: r.get(0)?,
-                    start: r.get(1)?,
-                    end: r.get(2)?,
-                })
-            })?;
-            let mut found = false;
-            for span in spans {
-                self.spans.insert(&iid, span?)?;
-                found = true;
-            }
-            if !found {
-                self.kept.insert(iid);
-            }
-        }
-        Ok(())
-    }
-
-    /// Ownership is relative to the complete removal set, not one session
-    /// at a time: another selected session is not a surviving owner.
-    fn collect_texts(&mut self, t: &Transactions<'_, '_>) -> Result<()> {
-        if self.sessions.is_empty()? {
-            return Ok(());
-        }
-        let mut bodies = t.index.prepare(
-            "SELECT t.body FROM text t WHERE t.id IN
-               (SELECT text_id FROM block WHERE session_pk IN (SELECT session_pk FROM temp.excision_sessions))
-             AND NOT EXISTS
-               (SELECT 1 FROM block o WHERE o.text_id=t.id
-                  AND o.session_pk NOT IN (SELECT session_pk FROM temp.excision_sessions))
-             AND NOT EXISTS (SELECT 1 FROM document_block d WHERE d.text_id=t.id)",
-        )?;
-        for body in bodies.query_map([], |r| r.get::<_, Vec<u8>>(0))? {
-            self.own_texts.insert(&unpack_text(&body?)?)?;
-        }
-        let mut titles = t.index.prepare(
-            "SELECT title FROM session s WHERE pk IN (SELECT session_pk FROM temp.excision_sessions)
-               AND title IS NOT NULL AND NOT EXISTS
-               (SELECT 1 FROM session o WHERE o.title=s.title
-                  AND o.pk NOT IN (SELECT session_pk FROM temp.excision_sessions))",
-        )?;
-        for title in titles.query_map([], |r| r.get::<_, String>(0))? {
-            self.own_texts.insert(&title?)?;
-        }
-        Ok(())
-    }
-
-    fn apply(
-        mut self,
-        t: &Transactions<'_, '_>,
-        req: &ExciseRequest,
-        done: &mut Excised,
-    ) -> Result<Excised> {
-        self.collect_texts(t)?;
-        let mut selected = self.whole.clone();
-        selected.extend(self.kept.iter().cloned());
-        self.spans.visit_inputs(|input, _| {
-            selected.insert(input.into());
-            Ok(())
-        })?;
-        crate::containers::refuse_inside_zip(t.archive, &selected)?;
-        // Removing an input supersedes partial rewrites of its records.
-        self.spans.remove_whole(&self.whole)?;
-        self.kept.retain(|input| !self.whole.contains(input));
-        let mut text_matches = self
-            .text
-            .as_ref()
-            .map(|text| stored_text::find(t, text))
-            .transpose()?;
-        let mut refused = RefusedJson::default();
-        let hashes = RemovalHashes::new(t.index)?;
-        if !req.dry_run {
-            // First, so the `excised` observations can name it; what it
-            // refused is filled in at the end.
-            t.archive.execute(
-                "INSERT INTO excision(id, scope, reason, created_at, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![req.id, req.scope.label(), req.reason, now_ms(), t.seq],
-            )?;
-        }
-
-        if let Some(text) = self.text.take() {
-            self.text_scope(
-                t,
-                &text,
-                text_matches.as_mut().expect("text scope preflight"),
-                req,
-                done,
-                &mut refused,
-                &hashes,
-            )?;
-        }
-
-        done.sessions = self.sessions.ids()?;
-        refused.sessions = Some(
-            done.sessions
-                .iter()
-                .map(|id| SessionId::parse(id))
-                .collect::<std::result::Result<_, _>>()
-                .map_err(|error| StoreError::Invalid(error.to_string()))?,
-        );
-        done.messages = self.message_ids.count()?;
-        done.documents = self.documents.values().cloned().collect();
-        done.inputs_removed = self.whole.iter().cloned().collect();
-        done.inputs_kept = self.kept.iter().cloned().collect();
-        self.spans.visit_inputs(|input, count| {
-            done.inputs_overwritten.insert(input.to_owned(), count);
-            Ok(())
-        })?;
-
-        // Session rows, before the inputs, so a blob a removed block named
-        // can be checked against what remains.
-        self.sessions
-            .visit(|pk, id| delete_session(t, pk, id, req.dry_run, &hashes))?;
-
-        for (&pk, id) in &self.documents {
-            documents::remove(t, pk, id, req, &hashes, done)?;
-        }
-        // Sessions that also came from other inputs are rebuilt from those.
-        if !self.whole.is_empty() {
-            let mut again = clear_for_reparse(t, None, &self.whole, req.dry_run, &hashes)?;
-            again.retain(|input| !self.whole.contains(input));
-            done.inputs_reparsed.extend(again);
-        }
-        for input in &self.whole {
-            remove_input(t, input, req, &mut refused, done, &hashes)?;
-        }
-        self.spans
-            .visit_inputs(|input, _| overwrite(t, input, &self.spans, req, &mut refused))?;
-        if !self.kept.is_empty() {
-            let mut still = BTreeSet::new();
-            for input in &self.kept {
-                let left = blank_document(t, input, &self.own_texts, req, &mut refused, done)?;
-                done.texts_left += left;
-                if left > 0 {
-                    still.insert(input.clone());
-                }
-            }
-            done.inputs_kept = still.into_iter().collect();
-        }
-        if !self.sessions.is_empty()? {
-            done.notes_removed =
-                notes::remove(t.archive, &done.sessions, &self.message_ids, req.dry_run)?;
-            done.deliveries_redacted = redact_deliveries(
-                t.archive,
-                &done.sessions,
-                &self.message_ids,
-                &self.own_texts,
-                req.dry_run,
-            )?;
-        }
-        // Blobs nothing refers to any more: the removed inputs' and the
-        // removed blocks' (inline images, large outputs).
-        for hash in refused
-            .blobs
-            .iter()
-            .filter_map(|hash| BlobHash::parse(hash).ok())
-        {
-            hashes.blob_to_check(&hash.0)?;
-        }
-        if !req.dry_run {
-            hashes.visit_blobs_to_check(|hash| {
-                let used: bool = t.archive.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
-                    [hash],
-                    |r| r.get(0),
-                )? || t.index.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM block WHERE blob_hash = ?1) OR EXISTS (SELECT 1 FROM document_block WHERE blob_hash=?1)",
-                    [hash],
-                    |r| r.get(0),
-                )?;
-                if used {
-                    return Ok(());
-                }
-                let hash = BlobHash(
-                    hash.try_into()
-                        .map_err(|_| StoreError::Invalid("invalid blob hash".into()))?,
-                );
-                if crate::blobs::mark_for_deletion(t.archive, &hash)? {
-                    done.blobs_deleted += 1;
-                }
-                Ok(())
-            })?;
-        }
-
-        // Embeddings of texts no row holds any more.
-        if let Some(e) = t.embeddings {
-            hashes.visit_texts(|hash| {
-                done.embeddings_deleted += if req.dry_run {
-                    e.query_row(
-                        "SELECT count(*) FROM embedded WHERE text_hash = ?1",
-                        [hash],
-                        |r| r.get::<_, i64>(0),
-                    )? as u64
-                } else {
-                    let n = e.execute("DELETE FROM embedded WHERE text_hash = ?1", [hash])? as u64;
-                    e.execute("DELETE FROM embed_failure WHERE text_hash = ?1", [hash])?;
-                    n
-                };
-                Ok(())
-            })?;
-        }
-        done.texts = hashes.text_count()?;
-
-        refused.locations.sort();
-        refused.locations.dedup();
-        done.refused_paths = refused
-            .locations
-            .iter()
-            .map(|l| format!("{}:{}", l.machine, l.path))
-            .collect();
-
-        if !req.dry_run {
-            t.archive.execute(
-                "UPDATE excision SET refused_json = ?2, message_ids_json = ?3 WHERE id = ?1",
-                params![
-                    req.id,
-                    serde_json::to_string(&refused)?,
-                    serde_json::to_string(&self.message_ids)?,
-                ],
-            )?;
-        }
-        if !req.dry_run {
-            mark_applied(t.archive, t.index)?;
-        }
-        hashes.finish()?;
-        self.sessions.finish()?;
-        t.index
-            .execute_batch("DROP TABLE temp.excision_documents")?;
-        Ok(done.clone())
-    }
-
-    /// Text scope: overwrite every stored occurrence, remove the index
-    /// texts that hold it, and name the inputs to parse again.
-    #[allow(clippy::too_many_arguments)]
-    fn text_scope(
-        &mut self,
-        t: &Transactions<'_, '_>,
-        text: &str,
-        matches: &mut stored_text::StoredText,
-        req: &ExciseRequest,
-        done: &mut Excised,
-        refused: &mut RefusedJson,
-        hashes: &RemovalHashes<'_>,
-    ) -> Result<()> {
-        let reparse = matches.inputs()?;
-        done.inputs_overwritten = matches.counts()?;
-        if !req.dry_run {
-            matches.overwrite(t, req, refused)?;
-        }
-        authored::redact(t.archive, text, req.dry_run, done)?;
-        // The rows parsed from the text go; the caller parses their inputs
-        // again from the overwritten stored bytes.
-        done.inputs_reparsed = clear_for_reparse(t, Some(text), &reparse, req.dry_run, hashes)?;
-        // Files on disk that held it: Polylogue never edits them; the
-        // operator scrubs them.
-        let mut on_disk = BTreeSet::new();
-        for input in &reparse {
-            let paths: Vec<(String, String)> = t
-                .archive
-                .prepare("SELECT DISTINCT machine, path FROM observation WHERE input = ?1")?
-                .query_map([input], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            on_disk.extend(paths.into_iter().map(|(m, p)| format!("{m}:{p}")));
-        }
-        done.on_disk = on_disk.into_iter().collect();
-        Ok(())
-    }
+    Ok(Excised {
+        sessions: values("session")?,
+        messages: values("message")?.len() as u64,
+        documents: values("document")?,
+        inputs_removed: values("input")?,
+        refused_paths,
+        ..Excised::default()
+    })
 }
 
 /// Which excisions an `index.db` has applied: the count and the largest
 /// write counter of the archive's excision rows. An index whose mark differs
 /// from the archive's (a stop between the archive's commit and the index's)
-/// is rebuilt from the already excised stored inputs.
-fn excisions(archive: &rusqlite::Connection) -> Result<String> {
+/// is rebuilt from the stored inputs that remain.
+fn excisions(archive: &Connection) -> Result<String> {
     Ok(archive.query_row(
         "SELECT count(*) || ':' || COALESCE(max(commit_seq), 0) FROM excision",
         [],
@@ -684,10 +317,7 @@ fn excisions(archive: &rusqlite::Connection) -> Result<String> {
 }
 
 /// Records in `index` that it holds every excision `archive` holds.
-pub(crate) fn mark_applied(
-    archive: &rusqlite::Connection,
-    index: &rusqlite::Connection,
-) -> Result<()> {
+pub(crate) fn mark_applied(archive: &Connection, index: &Connection) -> Result<()> {
     index.execute(
         "INSERT INTO meta(key, value) VALUES ('excisions', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -697,10 +327,7 @@ pub(crate) fn mark_applied(
 }
 
 /// Whether `index` lacks an excision `archive` holds.
-pub(crate) fn index_behind(
-    archive: &rusqlite::Connection,
-    index: &rusqlite::Connection,
-) -> Result<bool> {
+pub(crate) fn index_behind(archive: &Connection, index: &Connection) -> Result<bool> {
     let applied: Option<String> = index
         .query_row("SELECT value FROM meta WHERE key = 'excisions'", [], |r| {
             r.get(0)

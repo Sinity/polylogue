@@ -1003,7 +1003,9 @@ pub static UNITS: &[UnitSpec] = &[
                FROM removed_session rs \
              UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind, NULL, NULL, NULL FROM a.note cn \
              UNION ALL SELECT 'excision', ce.id, NULL, ce.commit_seq, NULL, NULL, NULL, ce.scope, \
-               (ce.refused_json -> '$.sessions'), ce.message_ids_json FROM a.excision ce) {r}",
+               (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'session'), \
+               (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'message') \
+               FROM a.excision ce) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
         identity: &["{r}.kind", "{r}.ref"],
