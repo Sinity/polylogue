@@ -1,6 +1,6 @@
-//! Property laws over generated Claude Code archives (architecture section 9;
-//! the "Laws for" Beads: L1 idempotent ingest, L2 append equivalence, L4 order
-//! independence, L5 rebuild equivalence, L11 lineage without duplication).
+//! Property laws over generated Claude Code archives: ingesting again changes
+//! nothing, appends equal whole files, arrival order does not matter, a
+//! rebuild gives the same view, and a copied record is stored once.
 //!
 //! The generator writes main session files, some of which resume an earlier
 //! session and so begin with a byte-identical copy of its first records.
@@ -180,8 +180,8 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// L1: converging again changes nothing and reads nothing; the same bytes
-    /// at a second location give the same view (L40).
+    /// Converging again changes nothing and reads nothing; the same bytes
+    /// at a second location give the same view.
     #[test]
     fn law_1_idempotent_ingest(s in shape()) {
         let c = corpus(&s);
@@ -232,7 +232,7 @@ proptest! {
         prop_assert_eq!(search_index(&w), whole_search);
     }
 
-    /// L4: files arriving one by one in any order, a convergence after each,
+    /// Files arriving one by one in any order, a convergence after each,
     /// give the view of converging them all at once (children before parents
     /// included).
     #[test]
@@ -251,8 +251,8 @@ proptest! {
         prop_assert_eq!(&view(&w), &whole);
     }
 
-    /// L5: deleting index.db and converging again gives the same view, even
-    /// with the provider files gone. L81: the rebuild adds no archive.db row.
+    /// Deleting index.db and converging again gives the same view, even
+    /// with the provider files gone, and the rebuild adds no archive.db row.
     #[test]
     fn law_5_rebuild_equivalence(s in shape(), files_gone in any::<bool>()) {
         let c = corpus(&s);
@@ -280,7 +280,7 @@ proptest! {
         prop_assert_eq!(archive_row_counts(&w), expected);
     }
 
-    /// L11: every record is stored once however many files copy it; a resumed
+    /// Every record is stored once however many files copy it; a resumed
     /// session reads its parent's prefix logically and owns only its tail.
     #[test]
     fn law_11_lineage_without_duplication(s in shape()) {

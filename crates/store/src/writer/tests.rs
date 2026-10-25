@@ -309,7 +309,7 @@ fn prose_and_tool_output_are_searchable_after_a_flush() {
 }
 
 /// After a first build, new text reaches the search index from the search
-/// thread, without a flush, within the architecture's 2 s (5.5c); `status`
+/// thread, without a flush, within 2 s; `status`
 /// counts it as pending until then.
 #[test]
 fn the_search_thread_indexes_live_writes_without_a_flush() {

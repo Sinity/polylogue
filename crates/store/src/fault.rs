@@ -1,4 +1,4 @@
-//! Test-only fault injection (laws 7, 45, 63). With the `faults` feature a
+//! Test-only fault injection. With the `faults` feature a
 //! test arms a point to fail or panic; without it every check compiles to
 //! nothing, and no shipped build enables the feature.
 

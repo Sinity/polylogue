@@ -49,7 +49,7 @@ pub(super) fn refused_message(m: &Message, r: &crate::excise::RefusedIds) -> boo
 }
 
 /// A copy of a batch without the rows of excised sessions and messages:
-/// they are never written again, from any input (architecture 5.6). The
+/// they are never written again, from any input. The
 /// bytes and parse position stay, so the input is not parsed again for
 /// them.
 pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch {

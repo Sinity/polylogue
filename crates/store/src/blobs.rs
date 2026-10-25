@@ -1,5 +1,5 @@
 //! The blob layer: inputs, revisions and extents over `hashed-blobs`
-//! (architecture 4.2). A blob under 128 KiB lives inline in `archive.db`,
+//!. A blob under 128 KiB lives inline in `archive.db`,
 //! zstd-compressed; larger ones are files of seekable zstd frames. Hashing
 //! and compression run before the writer; the writer writes a file's blob row
 //! (`writing`) before installing the file, then marks it `present`.

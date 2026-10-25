@@ -1,5 +1,5 @@
 //! Excision: permanent removal from every file and derived product
-//! (architecture 5.6). The `excision` row keeps the
+//!. The `excision` row keeps the
 //! content from coming back by any route.
 //!
 //! - **Session:** its rows go from every `index.db` table, its texts from

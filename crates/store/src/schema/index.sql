@@ -136,7 +136,7 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  UNIQUE (pk, session_pk)                   -- lets children state their owner once (R73)
+  UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
@@ -239,7 +239,7 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
 INSERT INTO text_fts(text_fts, rank) VALUES ('hashsize', 67108864);
 INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 
--- Search entries still to write (architecture 5.5c). The writer records a
+-- Search entries still to write. The writer records a
 -- text here in the transaction that stores it, and the search thread writes
 -- the entry shortly after, outside the writer's transaction; a flush writes
 -- every waiting entry before it returns. A first build writes none: it
@@ -394,7 +394,7 @@ CREATE TABLE process (
   cpu_ms            INTEGER,                -- user plus system CPU time at the last sample before it ended; NULL while alive or unknown (a lower bound)
   rss_peak_kb       INTEGER,                -- largest resident size seen by the samples (a lower bound)
   usage_partial     INTEGER NOT NULL DEFAULT 0, -- 1 when a daemon restart lost part of the samples
-  tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- only when timing and ancestry both match (slice 6)
+  tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- only when timing and ancestry both match
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   UNIQUE (boot_id, pid, start_ticks)
 ) STRICT;
@@ -522,7 +522,7 @@ CREATE TABLE repo_lookup (
 
 
 
--- The work graph (architecture 4.4), derived from structure
+-- The work graph, derived from structure
 -- only: goals are what a session declared it
 -- would do (a Bead claimed by a `bd` command, a todo or plan item), attempts
 -- are a session pursuing a goal, verifications are check commands with their

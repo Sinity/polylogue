@@ -1,4 +1,4 @@
-//! The first-build performance test (architecture 2, 9).
+//! The first-build performance test.
 //!
 //! ```text
 //! first_build --generate-mb 2000 --sizes <stat.tsv> --dir <scratch>

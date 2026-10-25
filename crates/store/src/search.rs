@@ -4,7 +4,7 @@
 //! visibility rules; this module splits words as the index does and cuts
 //! a query result's snippet. A first build writes the entries in bulk when
 //! it ends; afterwards the search thread writes them shortly after their
-//! text commits (`search_pending`, architecture 5.5c), and a flush writes
+//! text commits (`search_pending`), and a flush writes
 //! every waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is

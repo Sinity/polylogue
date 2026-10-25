@@ -1,4 +1,4 @@
-//! Importing exports and other files by hand (architecture 5.1): a file, a
+//! Importing exports and other files by hand: a file, a
 //! directory of them, or a zip whose members are recognized one by one.
 //! An imported file's origin is decided by its content and, when several
 //! origins accept it, by the layout its path sits in.

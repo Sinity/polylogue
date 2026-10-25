@@ -1,4 +1,4 @@
-//! The convergence loop (architecture 5). One loop runs in the daemon:
+//! The convergence loop. One loop runs in the daemon:
 //!
 //! ```text
 //! collect -> store -> parse -> derive -> excise -> wait
@@ -10,7 +10,7 @@
 //!
 //! Parser state lives in memory. After a restart it is rebuilt lazily: an
 //! input's state is rebuilt by parsing its bytes again only when that input
-//! next changes, never all at start-up (architecture 2, measured facts).
+//! next changes, never all at start-up.
 
 pub mod ai_studio_drive;
 pub mod collect;
@@ -240,7 +240,7 @@ struct InputState {
     /// archive; `None` once this run stored a new chain.
     chain: Option<i64>,
     /// The file facts a parse failed at: the input is tried again only when
-    /// its bytes change (law 63) or the daemon restarts.
+    /// its bytes change or the daemon restarts.
     failed: Option<FileFacts>,
     /// Failed immutable chains wait for changed bytes or a restart.
     failed_history: HashMap<i64, FailedChain>,

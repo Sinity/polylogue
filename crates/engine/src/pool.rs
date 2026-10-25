@@ -1,5 +1,5 @@
 //! The parse pool: N worker threads, limited by bytes in flight, feeding
-//! the one writer (architecture 2, 5.3). A worker reads its byte range,
+//! the one writer. A worker reads its byte range,
 //! hashes and stores or compresses the new bytes, parses, and hands the
 //! writer one batch. Live appends go before bulk work. One input has at
 //! most one job in flight, so its parser state passes from job to job.
@@ -355,7 +355,7 @@ fn run(
     let mut extra = Vec::new();
     let parse = (job.origin.open)(&job.path)
         .map(|parser| {
-            // A parser that panics loses only its own input (law 63): the panic
+            // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
             let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())

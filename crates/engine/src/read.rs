@@ -1,4 +1,4 @@
-//! Reading input bytes (architecture 4.2, 5.2). Unchanged file facts mean
+//! Reading input bytes. Unchanged file facts mean
 //! nothing is read; a grown file has its old tail compared before only the
 //! appended bytes are read. Hashing and compression happen on the parse
 //! pool, never on the writer thread.

@@ -1,5 +1,4 @@
-//! Reading whole sessions back in the export format (architecture 7,
-//! Export and import): the session, its own messages (not inherited ones,
+//! Reading whole sessions back in the export format: the session, its own messages (not inherited ones,
 //! which are exported with the session they came from), its events and
 //! the links naming it. Importing the document into a fresh archive gives
 //! the same sessions and IDs.
@@ -72,7 +71,7 @@ impl Reader<'_> {
 
     /// Links where the session is the parent or the child, in an order fixed
     /// by their content: the order inputs arrived in never changes the view
-    /// (law 4).
+    ///.
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence

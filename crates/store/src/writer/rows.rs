@@ -449,7 +449,7 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         // A message is stored once, in the session where it originated
-        // (architecture 5.4). A spawned session's file can repeat its
+        //. A spawned session's file can repeat its
         // parent's messages (a compaction call, a side question replaying
         // the history); such a copy may become the shown version, but it
         // never moves the message out of a main session.
@@ -944,7 +944,7 @@ impl Ctx<'_, '_> {
     /// One link per kind, parent and child; parts one file lacks are filled
     /// from another (the SQL form of [`Link::merge`]).
     /// Upserts a link. Several inputs state the same link; what it records
-    /// must not depend on which arrived first (law 41), so where two
+    /// must not depend on which arrived first, so where two
     /// statements differ the smaller value is kept, and the evidence keeps
     /// the input that stated it.
     fn write_link(&self, l: &Link) -> Result<()> {

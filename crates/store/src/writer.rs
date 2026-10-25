@@ -1,4 +1,4 @@
-//! The one writer (architecture 5.2-5.6). It runs on its own thread, owns
+//! The one writer. It runs on its own thread, owns
 //! the only writing connections to `archive.db` and `index.db`, and writes
 //! batches from the parse pool in large transactions: first the bytes'
 //! rows in `archive.db` (inputs, revisions, extents, observations, inline
@@ -165,8 +165,7 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs (architecture 2: "index.db
-    /// built unsynced"): every row in it can be recomputed, and syncing a
+    /// An empty index is built without syncs: every row in it can be recomputed, and syncing a
     /// first build of tens of GB through a busy drive costs more than the
     /// build. The first flush syncs it and clears the mark; an index still
     /// marked when the archive is next opened is set aside and rebuilt.
@@ -281,7 +280,7 @@ impl Writer {
     }
 
     /// Derives the products of sessions changed since they were last
-    /// derived (architecture 5.6), after the batches already queued.
+    /// derived, after the batches already queued.
     pub fn derive(&self) -> Result<u64> {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }

@@ -12,7 +12,7 @@ pub struct InputKey {
     /// The origin that parses it (`claude-code`).
     pub format: String,
     /// How faithful the route is, for choosing between versions of a
-    /// message (architecture 5.5): 0 live file, 1 spool, 2 import.
+    /// message: 0 live file, 1 spool, 2 import.
     pub route_rank: u8,
 }
 

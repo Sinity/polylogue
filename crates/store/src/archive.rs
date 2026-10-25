@@ -59,7 +59,7 @@ impl Archive {
         self.root.join("blobs")
     }
 
-    /// Logical exports of tool databases (architecture 4.2): one
+    /// Logical exports of tool databases: one
     /// append-only file per database, stored as an ordinary input.
     pub fn exports_dir(&self) -> PathBuf {
         self.root.join("exports")
@@ -133,7 +133,7 @@ impl Archive {
         let identity_lock = crate::write_lock::hold(&a)?;
         schema::ensure_archive(&a)?;
         // The archive's identity: Sinex keys this archive's published rows
-        // by it, so two archives never collide (architecture 7.1).
+        // by it, so two archives never collide.
         a.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
             [uuid::Uuid::now_v7().to_string()],

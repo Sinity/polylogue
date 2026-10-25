@@ -1,4 +1,4 @@
-//! Tool databases as typed logical exports (architecture 4.2): a database
+//! Tool databases as typed logical exports: a database
 //! that disappears must not take archived rows with it, but every version
 //! of its pages is not needed.
 //!

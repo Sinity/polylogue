@@ -125,7 +125,7 @@ pub struct Status {
     /// The most frequent record kinds and fields parsers did not read.
     pub unrecognized: Vec<(String, u64)>,
     /// Texts stored but not yet in the search index: how far search lags
-    /// the writer (architecture 5.5c).
+    /// the writer.
     pub search_pending: u64,
 }
 

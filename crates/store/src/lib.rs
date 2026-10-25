@@ -1,5 +1,5 @@
 //! The only crate that opens SQLite. The archive is a directory of three
-//! database files and a blob directory (architecture 4.1):
+//! database files and a blob directory:
 //!
 //! - `archive.db`: what cannot be recomputed (inputs, revisions, notes,
 //!   excisions, deliveries, settings);

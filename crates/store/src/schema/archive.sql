@@ -270,7 +270,7 @@ CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 CREATE INDEX setting_commit_seq ON setting(commit_seq);
 
 -- Exactly what was put into a model's context, kept because it cannot be
--- recomputed (architecture 4.3). Prepared, delivered and used are
+-- recomputed. Prepared, delivered and used are
 -- separate facts: a delivery row is what was prepared, with its exact bytes;
 -- what happened to it is in delivery_event.
 CREATE TABLE delivery (

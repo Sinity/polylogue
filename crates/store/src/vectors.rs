@@ -1,5 +1,5 @@
 //! `embeddings.db`: purchased vectors keyed by embedding key and NFC text
-//! hash, never destroyed by a reindex (architecture 4.1).
+//! hash, never destroyed by a reindex.
 //! The texts come from `index.db`'s `text` table; a vector outlives every
 //! index generation because the hash, not the row, names its text.
 //!
