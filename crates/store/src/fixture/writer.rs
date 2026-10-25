@@ -199,7 +199,7 @@ impl WriterArchive {
         let start = self.offset;
         self.offset += records + 1;
         let mut counts = RecordCounts {
-            records: records,
+            records,
             ..RecordCounts::default()
         };
         for _ in 0..records {
