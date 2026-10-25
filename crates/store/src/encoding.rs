@@ -39,6 +39,8 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
     String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 
+/// Packs JSON without the row dictionary; the writer uses [`RowPacker`].
+#[cfg(test)]
 pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }

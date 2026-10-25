@@ -283,7 +283,7 @@ pub(super) fn write_piece(
     t: &Transactions<'_, '_>,
     mut bytes: impl std::io::Read + std::io::Seek,
 ) -> Result<Piece> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::SeekFrom;
     let mut hasher = blake3::Hasher::new();
     let size = std::io::copy(&mut bytes, &mut hasher)?;
     let hash = BlobHash(*hasher.finalize().as_bytes());
