@@ -87,6 +87,9 @@ pub struct ExcisionRecord {
     pub created_at: i64,
     /// The `excised` rows: what was removed, by kind and identity.
     pub excised: Vec<(String, String)>,
+    /// What stays of the removed inputs: their observations, the last of
+    /// them `excised`.
+    pub observations: Vec<InputRecord>,
 }
 
 /// One thing Sinex holds from this archive.
@@ -323,12 +326,19 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
         .prepare("SELECT kind, value FROM excised WHERE excision_id = ?1 ORDER BY kind, value")?
         .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut observations = Vec::new();
+    for (kind, input) in &excised {
+        if kind == "input" {
+            observations.extend(crate::input_record::observations(conn, input)?);
+        }
+    }
     Ok(ExcisionRecord {
         id: id.to_owned(),
         scope,
         reason,
         created_at,
         excised,
+        observations,
     })
 }
 
@@ -352,6 +362,9 @@ fn restore_excision(tx: &Connection, excision: &ExcisionRecord, seq: i64) -> Res
             "INSERT OR IGNORE INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
             params![excision.id, kind, value],
         )?;
+    }
+    for observed in &excision.observations {
+        observed.insert(tx, seq)?;
     }
     let of = |kind: &str| -> Vec<String> {
         excision

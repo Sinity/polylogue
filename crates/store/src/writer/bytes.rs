@@ -215,6 +215,7 @@ pub(super) fn observation(
                 )
             })
             .transpose()?,
+        excision: None,
         container,
     }))
 }
