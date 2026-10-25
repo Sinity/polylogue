@@ -141,7 +141,10 @@ fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         if bulk {
             index_marked(&conn).unwrap();
         } else {
-            assert_eq!(index_pending(&conn, || ()).unwrap(), (SEARCH_ROWS + 5) as u64);
+            assert_eq!(
+                index_pending(&conn, || ()).unwrap(),
+                (SEARCH_ROWS + 5) as u64
+            );
         }
         assert_eq!(
             count(&conn, "SELECT count(*) FROM text_fts"),
