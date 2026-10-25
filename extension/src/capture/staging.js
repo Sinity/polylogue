@@ -639,7 +639,7 @@ export class CaptureStaging {
     await this.discardUnreferenced(snapshot.artifact_id);
   }
 
-  conversionId(queueId) { return createSha256().update(`queue:${queueId}`).hex(); }
+  queueStageId(queueId) { return createSha256().update(`queue:${queueId}`).hex(); }
   async prepare(envelope, stageId = null, delivery = null, signal = null) {
     signal?.throwIfAborted();
     if (!this.records) throw stageError("capture_staging_records_unavailable");
@@ -780,9 +780,6 @@ export class CaptureStaging {
   async acknowledge(stageId) {
     const meta = await this.metadata(stageId);
     if (meta.state !== "receiver-acknowledged" || receiverAckContractError(meta.receiver_receipt, meta.sha256)) throw stageError("capture_staging_ack_required");
-    // Deleting the source can fail after the delivery commits. Its original input
-    // still owns the acknowledged bytes/receipt until conversion settles.
-    if (meta.delivery?.source_retry_id && await this.records.hasCaptureRetry(meta.delivery.source_retry_id)) return;
     if (meta.record_ref) {
       const capture = await this.records.getCapture(meta.record_ref);
       if (capture?.state === "ready" && capture.raw_ref) await this.discardFailedNormalizations(capture.raw_ref, capture.id);

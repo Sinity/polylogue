@@ -544,7 +544,7 @@ describe("popup capture", () => {
 
   it("reports queue cooldowns and scopes recent browser actions to the active conversation", async () => {
     const requests = [];
-    await loadPopup({ polylogueCaptureQueue: { entries: [{ next_attempt_at: "2030-01-01T00:00:00.000Z" }] } }, [CHATGPT_TAB], async (message) => {
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
       requests.push(message);
       if (message.type === "polylogue.browserActions.status") return { ok: true, actions: [
         { action_id: "active", operation: "conversation.reply", status: "submitted", target: { conversation_id: "test-conversation" } },
@@ -854,15 +854,12 @@ describe("popup capture", () => {
     // intent's drafted reply, so serializing either verbatim disclosed
     // transcripts to whoever received the file.
     //
-    // Anti-vacuity: serialize `stored.polylogueCaptureQueue` and `actionStatus`
+    // Anti-vacuity: serialize the capture queue and `actionStatus`
     // directly again and both `not.toContain` assertions fail on the exact
     // secret strings. The metadata assertions pin the opposite direction: a
     // redaction that emptied the packet would fail them.
     const blobs = [];
-    await loadPopup(
-      {
-        polylogueCaptureQueue: {
-          dropped_count: 2,
+    const captureQueue = {
           entries: [{
             id: "req-7",
             reason: "receiver_unreachable",
@@ -875,10 +872,14 @@ describe("popup capture", () => {
             capture_fidelity: "native_full", turn_count: 2, attachment_count: 1,
             title: "MY PRIVATE PROMPT",
           }],
-        },
-      },
+        };
+    await loadPopup(
+      {},
       [CHATGPT_TAB],
       async (message) => {
+        if (message.type === "polylogue.missionControl.status") {
+          return { ok: true, state: { online: true }, work: { capture_queue: captureQueue } };
+        }
         if (message.type === "polylogue.browserActions.status") {
           return {
             ok: true,
@@ -918,7 +919,6 @@ describe("popup capture", () => {
     expect(packet).not.toContain("?share=1");
 
     const parsed = JSON.parse(packet);
-    expect(parsed.automatic_capture.capture_queue.dropped_count).toBe(2);
     expect(parsed.automatic_capture.capture_queue.entries[0]).toMatchObject({
       id: "req-7",
       attempts: 3,
@@ -971,8 +971,7 @@ describe("popup capture", () => {
   });
 
   it("renders queued retry entries with attempt and backoff detail", async () => {
-    await loadPopup({
-      polylogueCaptureQueue: {
+    const captureQueue = {
         entries: [
           {
             id: "polylogue-ext-1",
@@ -983,11 +982,12 @@ describe("popup capture", () => {
             last_error: "HTTP 503",
           },
         ],
-        dropped_count: 1,
-      },
-    });
+      };
+    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.missionControl.status"
+      ? { ok: true, state: { online: true }, work: { capture_queue: captureQueue } }
+      : { ok: true });
 
-    expect(globalThis.document.getElementById("queue-count").textContent).toBe("1 (+1 dropped)");
+    expect(globalThis.document.getElementById("queue-count").textContent).toBe("1");
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("chatgpt conv-9");
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("attempt 2");
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("HTTP 503");

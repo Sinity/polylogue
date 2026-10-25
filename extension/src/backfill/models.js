@@ -2,7 +2,7 @@ import { requireProviderCooldownMs } from "../capture/provider_cooldown.js";
 
 export const BACKFILL_ALARM = "polylogueBackfillWake";
 export const BACKFILL_DB_NAME = "polylogue-browser-backfill";
-export const BACKFILL_DB_VERSION = 4;
+export const BACKFILL_DB_VERSION = 5;
 export const BACKFILL_RECOVERY_CHECKPOINT_VERSION = 1;
 export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"]);
 

@@ -1,5 +1,3 @@
-import { sortedJson } from "./encoding.js";
-import { createSha256 } from "../vendor/sha256.js";
 import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, BACKFILL_RECOVERY_CHECKPOINT_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
 
 function captureRecordRow(record) {
@@ -93,13 +91,6 @@ function checkpointRevision(revision) {
   return globalThis.structuredClone(safe);
 }
 
-function recoveryValueDigest(value) {
-  const safe = { ...value };
-  delete safe.recovery_source_checkpoint;
-  delete safe.recovery_checkpoint_outcome;
-  return createSha256().update(sortedJson(safe)).hex();
-}
-
 export function nativeCacheOrder(current, incoming) {
   const revision = (row) => {
     const value = row.headers?.update_time ?? row.headers?.updated_at ?? row.headers?.updatedAt ?? row.headers?.modifyTime;
@@ -131,30 +122,6 @@ function recoveryRequiredItem(item) {
   };
 }
 
-function recoveryCheckpointJob(job, hasRecoveryRequiredQueueItem = false, preservePausedState = false) {
-  const wasRunning = job.status === "running";
-  const needsProfileRecovery = wasRunning || (job.status === "paused" && hasRecoveryRequiredQueueItem && !preservePausedState && !job.cooldown_reason);
-  return {
-    ...globalThis.structuredClone(job),
-    ...(needsProfileRecovery ? { status: "paused", cooldown_reason: "browser_profile_recovery_required",
-      last_error: "browser_profile_recovery_required" } : {}),
-    execution_owner: null,
-    execution_expires_at_ms: null,
-  };
-}
-
-// Conversion of disposable pre-streaming queue state. This is invoked only
-// while committing an older database or checkpoint into the current queue format.
-function convertAcquisitionRefusal(item) {
-  if (item.state !== "bridge_oversize") return item;
-  const acquired = Boolean(item.envelope || item.body_ref || item.receiver_receipt || item.capture_ref);
-  return { ...item, state: acquired ? "recovery_required" : "eligible",
-    resume_state: acquired ? "recovery_required" : null,
-    next_eligible_at_ms: 0, claimed_by: null, claim_expires_ms: null,
-    last_response_class: acquired ? "browser_profile_recovery_required" : "discovered",
-    last_error: acquired ? "capture_refusal_keeps_acquired_bytes" : null };
-}
-
 export class IndexedDbBackfillStore {
   constructor(indexedDb = globalThis.indexedDB, databaseName = BACKFILL_DB_NAME) {
     this.indexedDb = indexedDb;
@@ -167,194 +134,42 @@ export class IndexedDbBackfillStore {
     if (!this.databasePromise) {
       this.databasePromise = new Promise((resolve, reject) => {
         const request = this.indexedDb.open(this.databaseName, BACKFILL_DB_VERSION);
-        request.onupgradeneeded = (event) => {
+        request.onupgradeneeded = () => {
           const database = request.result;
-          if (!database.objectStoreNames.contains("captures")) database.createObjectStore("captures", { keyPath: "id" });
-          if (!database.objectStoreNames.contains("capture_records")) {
-            const records = database.createObjectStore("capture_records", { keyPath: ["capture_id", "key"] });
-            records.createIndex("semantic_occurrences", ["capture_id", "semantic_digest"], { unique: false });
-            records.createIndex("capture_order", ["capture_id", "record_kind", "order_time", "order_id", "occurrence"], { unique: true });
-          }
-          if (!database.objectStoreNames.contains("jobs")) database.createObjectStore("jobs", { keyPath: "id" });
-          if (!database.objectStoreNames.contains("revisions")) database.createObjectStore("revisions", { keyPath: "id" });
-          if (!database.objectStoreNames.contains("capture_retry_metadata")) {
-            const retries = database.createObjectStore("capture_retry_metadata", { keyPath: "queue_order", autoIncrement: true });
-            retries.createIndex("id", "id", { unique: true });
-            database.createObjectStore("capture_retry_bodies", { keyPath: "id" });
-            database.createObjectStore("capture_retry_state");
-          }
-          if (!database.objectStoreNames.contains("queue")) {
-            const queue = database.createObjectStore("queue", { keyPath: "id" });
-            queue.createIndex("job_state_next", ["job_id", "state", "next_eligible_at_ms"], { unique: false });
-            queue.createIndex("job_native", ["job_id", "provider", "native_id"], { unique: true });
-          }
-          const jobs = request.transaction.objectStore("jobs");
-          if (!jobs.indexNames.contains("provider_status")) jobs.createIndex("provider_status", ["provider", "status"], { unique: false });
-          if (!jobs.indexNames.contains("active_page")) {
-            jobs.createIndex("active_page", ["active_page", "id"], { unique: true });
-            const rows = jobs.openCursor();
-            rows.onsuccess = () => { const cursor = rows.result; if (cursor) { cursor.update(jobRow(cursor.value)); cursor.continue(); } };
-          }
-          const captures = request.transaction.objectStore("captures");
-          if (!captures.indexNames.contains("source_refs")) captures.createIndex("source_refs", "source_refs", { multiEntry: true });
-          if (!captures.indexNames.contains("record_roots")) captures.createIndex("record_roots", "record_ref", { unique: false });
-          if (!captures.indexNames.contains("checkpoint_job")) captures.createIndex("checkpoint_job", ["kind", "job_id", "id"], { unique: true });
-          if (!captures.indexNames.contains("native_bundle_scope")) captures.createIndex("native_bundle_scope", ["kind", "owner.tab_id", "provider", "native_id"], { unique: false });
-          if (!captures.indexNames.contains("native_revision")) captures.createIndex("native_revision", ["provider", "native_id", "raw_revision_sha256"], { unique: false });
-          if (!captures.indexNames.contains("acquisition_order")) captures.createIndex("acquisition_order", ["acquisition_raw_id", "id"], { unique: true });
-          const records = request.transaction.objectStore("capture_records");
-          if (!records.indexNames.contains("asset_refs")) records.createIndex("asset_refs", "asset_refs", { multiEntry: true });
-          if (!records.indexNames.contains("record_roots")) records.createIndex("record_roots", "record_ref", { unique: false });
-          const queue = request.transaction.objectStore("queue");
-          if (!queue.indexNames.contains("job_id")) queue.createIndex("job_id", "job_id", { unique: false });
-          if (!queue.indexNames.contains("provider_state")) queue.createIndex("provider_state", ["provider", "state"], { unique: false });
-          if (!queue.indexNames.contains("delivery_order")) queue.createIndex("delivery_order", ["delivery_kind", "delivery_sequence", "id"], { unique: true });
-          if (!queue.indexNames.contains("delivery_due")) queue.createIndex("delivery_due", ["delivery_kind", "next_attempt_at_ms", "id"], { unique: true });
-          if (!queue.indexNames.contains("body_ref")) queue.createIndex("body_ref", "body_ref", { unique: false });
-          if (!queue.indexNames.contains("record_ref")) queue.createIndex("record_ref", "record_ref", { unique: false });
-          if (!queue.indexNames.contains("source_refs")) queue.createIndex("source_refs", "source_refs", { multiEntry: true });
-          if (event.oldVersion > 0 && event.oldVersion < 4) {
-            const conversion = queue.openCursor();
-            conversion.onsuccess = () => {
-              const cursor = conversion.result;
-              if (!cursor) return;
-              const original = cursor.value;
-              const converted = queueRow(convertAcquisitionRefusal(original));
-              cursor.update(converted);
-              cursor.continue();
-            };
-          }
+          // Rows written by an earlier extension build are not read: start empty.
+          for (const name of [...database.objectStoreNames]) database.deleteObjectStore(name);
+          const captures = database.createObjectStore("captures", { keyPath: "id" });
+          captures.createIndex("source_refs", "source_refs", { multiEntry: true });
+          captures.createIndex("record_roots", "record_ref", { unique: false });
+          captures.createIndex("checkpoint_job", ["kind", "job_id", "id"], { unique: true });
+          captures.createIndex("native_bundle_scope", ["kind", "owner.tab_id", "provider", "native_id"], { unique: false });
+          captures.createIndex("native_revision", ["provider", "native_id", "raw_revision_sha256"], { unique: false });
+          captures.createIndex("acquisition_order", ["acquisition_raw_id", "id"], { unique: true });
+          const records = database.createObjectStore("capture_records", { keyPath: ["capture_id", "key"] });
+          records.createIndex("semantic_occurrences", ["capture_id", "semantic_digest"], { unique: false });
+          records.createIndex("capture_order", ["capture_id", "record_kind", "order_time", "order_id", "occurrence"], { unique: true });
+          records.createIndex("asset_refs", "asset_refs", { multiEntry: true });
+          records.createIndex("record_roots", "record_ref", { unique: false });
+          const jobs = database.createObjectStore("jobs", { keyPath: "id" });
+          jobs.createIndex("provider_status", ["provider", "status"], { unique: false });
+          jobs.createIndex("active_page", ["active_page", "id"], { unique: true });
+          database.createObjectStore("revisions", { keyPath: "id" });
+          const queue = database.createObjectStore("queue", { keyPath: "id" });
+          queue.createIndex("job_state_next", ["job_id", "state", "next_eligible_at_ms"], { unique: false });
+          queue.createIndex("job_native", ["job_id", "provider", "native_id"], { unique: true });
+          queue.createIndex("job_id", "job_id", { unique: false });
+          queue.createIndex("provider_state", ["provider", "state"], { unique: false });
+          queue.createIndex("delivery_order", ["delivery_kind", "delivery_sequence", "id"], { unique: true });
+          queue.createIndex("delivery_due", ["delivery_kind", "next_attempt_at_ms", "id"], { unique: true });
+          queue.createIndex("body_ref", "body_ref", { unique: false });
+          queue.createIndex("record_ref", "record_ref", { unique: false });
+          queue.createIndex("source_refs", "source_refs", { multiEntry: true });
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error || new Error("indexeddb_open_failed"));
       });
     }
     return this.databasePromise;
-  }
-
-  async importCaptureRetries(entries) {
-    const db = await this.database();
-    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies", "capture_retry_state"], "readwrite");
-    const settled = transactionDone(tx);
-    settled.catch(() => undefined);
-    try {
-      const state = tx.objectStore("capture_retry_state");
-      if (!await requestResult(state.get("local_storage_transferred"))) {
-        const records = tx.objectStore("capture_retry_metadata");
-        for (const { metadata, envelope } of entries) {
-          const existing = await requestResult(records.index("id").get(metadata.id));
-          if (existing) continue;
-          records.put(metadata);
-          tx.objectStore("capture_retry_bodies").put({ id: metadata.id, envelope });
-        }
-        // Writing the cache may fail. This same transaction prevents a stale
-        // old cache from resurrecting an already delivered body on restart.
-        state.put(true, "local_storage_transferred");
-      }
-      await settled;
-    } catch (error) {
-      try { tx.abort(); } catch { /* Already physically settled. */ }
-      await settled.catch(() => undefined);
-      throw error;
-    }
-  }
-
-  // Separate stores keep queue/status reads independent of stored capture
-  // size. One transaction writes both the original body and its retry owner.
-  async putCaptureRetry(metadata, envelope) {
-    const db = await this.database();
-    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
-    const settled = transactionDone(tx);
-    settled.catch(() => undefined);
-    try {
-      const records = tx.objectStore("capture_retry_metadata");
-      const existing = await requestResult(records.index("id").get(metadata.id));
-      const entry = { ...metadata, ...(existing ? { queue_order: existing.queue_order } : {}) };
-      records.put(entry);
-      tx.objectStore("capture_retry_bodies").put({ id: metadata.id, envelope });
-      await settled;
-    } catch (error) {
-      try { tx.abort(); } catch { /* Already physically settled. */ }
-      await settled.catch(() => undefined);
-      throw error;
-    }
-  }
-
-  async listCaptureRetries() {
-    const db = await this.database();
-    return requestResult(db.transaction("capture_retry_metadata", "readonly").objectStore("capture_retry_metadata").getAll());
-  }
-
-  async *captureRetryInputs() {
-    const db = await this.database();
-    let after = null;
-    for (;;) {
-      const tx = db.transaction("capture_retry_metadata", "readonly");
-      const settled = transactionDone(tx);
-      const row = await requestResult(tx.objectStore("capture_retry_metadata").openCursor(
-        after === null ? undefined : globalThis.IDBKeyRange.lowerBound(after, true),
-      ));
-      const metadata = row ? globalThis.structuredClone(row.value) : null;
-      await settled;
-      if (!metadata) return;
-      if (!Number.isSafeInteger(metadata.queue_order) || metadata.queue_order < 1) throw new Error("capture_retry_metadata_invalid");
-      after = metadata.queue_order;
-      yield metadata;
-    }
-  }
-
-  async deleteCaptureRetry(id) {
-    const db = await this.database();
-    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
-    const settled = transactionDone(tx);
-    settled.catch(() => undefined);
-    try {
-      const records = tx.objectStore("capture_retry_metadata");
-      const metadata = await requestResult(records.index("id").get(id));
-      if (metadata) records.delete(metadata.queue_order);
-      tx.objectStore("capture_retry_bodies").delete(id);
-      await settled;
-    } catch (error) {
-      try { tx.abort(); } catch { /* Already physically settled. */ }
-      await settled.catch(() => undefined);
-      throw error;
-    }
-  }
-
-  async hasCaptureRetry(id) {
-    const db = await this.database();
-    return Boolean(await requestResult(db.transaction("capture_retry_metadata", "readonly").objectStore("capture_retry_metadata").index("id").getKey(id)));
-  }
-
-  async getCaptureRetryEnvelope(id) {
-    const db = await this.database();
-    const record = await requestResult(db.transaction("capture_retry_bodies", "readonly").objectStore("capture_retry_bodies").get(id));
-    if (!record?.envelope) throw new Error("capture_retry_body_missing");
-    return record.envelope;
-  }
-
-  async replaceCaptureRetryMetadata(entries) {
-    const db = await this.database();
-    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
-    const settled = transactionDone(tx);
-    settled.catch(() => undefined);
-    try {
-      const records = tx.objectStore("capture_retry_metadata");
-      const kept = new Set(entries.map((entry) => entry.id));
-      const existing = await requestResult(records.getAll());
-      for (const entry of existing) {
-        if (!kept.has(entry.id)) {
-          records.delete(entry.queue_order);
-          tx.objectStore("capture_retry_bodies").delete(entry.id);
-        }
-      }
-      for (const entry of entries) records.put(entry);
-      await settled;
-    } catch (error) {
-      try { tx.abort(); } catch { /* Already physically settled. */ }
-      await settled.catch(() => undefined);
-      throw error;
-    }
   }
 
   async putDelivery(entry, bodyRoot = null) {
@@ -1350,59 +1165,6 @@ export class IndexedDbBackfillStore {
       return { job_id: job.id, restored: queue.length, status: "paused" };
     } catch (error) { cancel(); await done.catch(() => undefined); throw error; }
     finally { signal?.removeEventListener("abort", cancel); }
-  }
-
-  async *unconvertedBackfillBodies() {
-    const db = await this.database(); let after = null;
-    for (;;) {
-      const cursor = await requestResult(db.transaction("queue", "readonly").objectStore("queue")
-        .openCursor(after === null ? null : globalThis.IDBKeyRange.lowerBound(after, true)));
-      if (!cursor) return;
-      after = cursor.key;
-      if (cursor.value.delivery_kind !== "foreground" && cursor.value.envelope && !cursor.value.envelope.capture_body_ref) yield cursor.value;
-    }
-  }
-
-  async localCheckpointRecordCommitted(collection, original) {
-    const marker = await this.getCapture(`checkpoint-conversion:${collection}:${original.id}:${recoveryValueDigest(original)}`);
-    if (!marker) return false;
-    if (marker.original_digest !== recoveryValueDigest(original)) throw new Error("checkpoint_conversion_source_conflict");
-    return marker.state === "committed";
-  }
-
-  async convertLocalCheckpointRecord(collection, original, replacement = original) {
-    if (!["jobs", "queue", "revisions"].includes(collection) || !original || typeof original.id !== "string" || !original.id ||
-        replacement.id !== original.id || replacement.provider !== original.provider) {
-      throw new Error("checkpoint_conversion_record_invalid");
-    }
-    const db = await this.database();
-    const tx = db.transaction([collection, "captures"], "readwrite"); const done = transactionDone(tx);
-    const markerId = `checkpoint-conversion:${collection}:${original.id}:${recoveryValueDigest(original)}`;
-    const captures = tx.objectStore("captures"); const target = tx.objectStore(collection);
-    const marker = await requestResult(captures.get(markerId));
-    const originalDigest = recoveryValueDigest(original);
-    if (marker) {
-      if (marker.original_digest !== originalDigest) {
-        tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_conversion_source_conflict");
-      }
-      await done; return;
-    }
-    const current = await requestResult(target.get(original.id));
-    const replaceOriginal = collection === "queue" && current && replacement.body_ref && recoveryValueDigest(queueRow(original)) === recoveryValueDigest(current);
-    if (collection === "queue" && current && replacement.body_ref && current.body_ref !== replacement.body_ref && !replaceOriginal) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_conversion_owner_conflict");
-    }
-    if (!current || replaceOriginal) {
-      const converted = convertAcquisitionRefusal(replacement);
-      const value = collection === "jobs" ? recoveryCheckpointJob(checkpointJob(replacement), false, true)
-        : collection === "queue" ? queueRow(converted.body_ref
-          ? { ...converted, state: converted.state === "claimed" ? converted.resume_state || "captured_waiting_receiver" : converted.state,
-            claimed_by: null, claim_expires_ms: null }
-          : recoveryRequiredItem(converted)) : replacement;
-      target.put(collection === "jobs" ? jobRow(value) : value);
-    }
-    captures.put({ id: markerId, kind: "checkpoint-conversion", original_digest: originalDigest, state: "committed" });
-    await done;
   }
 
   async releaseExpiredClaims(jobId, nowMs) {

@@ -348,7 +348,6 @@ describe("background receiver diagnostics", () => {
       event: "held_with_reason", detail: "receiver_superseded",
     });
     expect(stored.polylogueState.captured).toBe(false);
-    expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
   });
 
   it("accepts export and exact ACK only from its popup and preserves the paused original delivery", async () => {
@@ -390,8 +389,6 @@ describe("background receiver diagnostics", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       if (String(url).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "account-race-receiver", api_schema: "polylogue-browser-capture/v1" });
-      if (String(url).endsWith("/v1/capture-jobs/capabilities")) return responseJson({ schema: "polylogue.capture-jobs.capabilities.v1",
-        checkpoint_transport: "artifact-v1", protocol_min: 2, protocol_max: 2, scope_namespace: namespace });
       throw new Error("unexpected_provider_or_receiver_request");
     });
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
@@ -1550,17 +1547,17 @@ describe("background receiver diagnostics", () => {
     expect(acquisitions).toBe(1);
   });
 
-  it("retries coordinator initialization after recovery storage fails once", async () => {
+  it("retries coordinator initialization after storage fails once", async () => {
     const get = globalThis.chrome.storage.local.get;
     let failed = false;
     globalThis.chrome.storage.local.get = vi.fn(async (defaults) => {
-      if (!failed && Object.hasOwn(defaults, "polylogueBackfillRecoveryCheckpoint")) {
+      if (!failed && Object.hasOwn(defaults, "polylogueExtensionInstanceId")) {
         failed = true;
-        throw new Error("synthetic_recovery_storage_failure");
+        throw new Error("synthetic_storage_failure");
       }
       return get(defaults);
     });
-    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: false, error: "synthetic_recovery_storage_failure" });
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: false, error: "synthetic_storage_failure" });
     expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
   });
 
@@ -1588,35 +1585,6 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.scripting.executeScript.mock.calls.filter(
       ([details]) => typeof details.args?.[0]?.operation === "string" && details.args[0].operation !== "identity",
     )).toHaveLength(0);
-  });
-
-  it("restores a packaged recovery checkpoint as an actionable paused job and ignores its alarm", async () => {
-    await loadBackground({
-      polylogueBackfillRecoveryCheckpoint: {
-        version: 1,
-        jobs: [{
-          id: "recovered-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "17", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
-          learned_cadence_ms: 40000, daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
-        }],
-        queue: [{ id: "recovered-item", job_id: "recovered-job", provider: "chatgpt", native_id: "one", state: "captured_waiting_receiver", content_hash: "hash-1" }],
-        revisions: [],
-      },
-    });
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    expect(status.jobs[0]).toMatchObject({
-      id: "recovered-job", status: "paused", cooldown_reason: "browser_profile_recovery_required",
-      inventory_cursor: "17", daily_requests: 7, last_ack: { receiver_request_id: "ack-1" },
-      progress: { operator_action: 1 },
-    });
-    const pageWorkBeforeAlarm = globalThis.chrome.scripting.executeScript.mock.calls.filter(
-      ([details]) => typeof details.args?.[0]?.operation === "string" && details.args[0].operation !== "identity",
-    ).length;
-    alarmListener({ name: "polylogueBackfillWake:recovered-job" });
-    await Promise.resolve();
-    expect(globalThis.chrome.scripting.executeScript.mock.calls.filter(
-      ([details]) => typeof details.args?.[0]?.operation === "string" && details.args[0].operation !== "identity",
-    )).toHaveLength(pageWorkBeforeAlarm);
   });
 
   it("derives local scope from provider identity without disclosing the handle to the host", async () => {
@@ -1663,14 +1631,6 @@ describe("background receiver diagnostics", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const path = new globalThis.URL(url).pathname;
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:profile-recovery-namespace",
-        });
-      }
       if (path === "/v1/browser-captures/capabilities") {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
@@ -1894,29 +1854,6 @@ describe("background receiver diagnostics", () => {
     const commit = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
     expect(JSON.parse(await commit.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
-
-  it("preserves local recovery without querying accountless older evidence", async () => {
-    await loadBackground({
-      polylogueBackfillRecoveryCheckpoint: {
-        version: 1,
-        jobs: [{
-          id: "local-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-          inventory_cursor: "3", policy: { claimMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
-          learned_cadence_ms: 40000, daily_requests: 1, last_ack: null,
-        }],
-        queue: [],
-        revisions: [],
-      },
-    });
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      return responseJson({ error: "should_not_be_called" }, { ok: false, status: 500 });
-    });
-
-    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-
-    expect(fetchCalls.some((call) => String(call.url).includes("/v1/backfill-checkpoint") && (call.options.method || "GET") === "GET")).toBe(false);
-  });
 
   it("requires an existing provider surface before accepting a new account-scoped backfill", async () => {
     tabs = [{ id: 43, url: "https://help.chatgpt.com/article", title: "Help" }];
@@ -3031,25 +2968,6 @@ describe("capture retry queue", () => {
     expect(stored.polylogueConversationTimeline["chatgpt:unstored"][0]).toMatchObject({ event: "held_with_reason" });
   });
 
-  it("keeps accepted bodies when the derived status cache fails", async () => {
-    globalThis.fetch = vi.fn(async () => { throw new TypeError("offline"); });
-    await vi.waitFor(() => expect(stored.polylogueCaptureQueue).toBeDefined());
-    const original = globalThis.chrome.storage.local.set;
-    globalThis.chrome.storage.local.set = vi.fn(async (patch) => {
-      if (patch.polylogueCaptureQueue) throw new globalThis.DOMException("cache exhausted", "QuotaExceededError");
-      return original(patch);
-    });
-    const response = await sendRuntimeMessage({ type: "polylogue.capture",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "kept-without-cache", turns: [] } } });
-    expect(response).toMatchObject({ ok: false, queued: true });
-    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({
-      entries: [expect.objectContaining({ summary: expect.objectContaining({ providerSessionId: "kept-without-cache" }) })],
-    });
-    expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith("polylogueCaptureRetry", expect.any(Object));
-    expect(stored.polylogueDebugLog).toContainEqual(expect.objectContaining({ stage: "capture_queue_cache_failed" }));
-    globalThis.chrome.storage.local.set = original;
-  });
-
   it("holds acquired evidence after a later non-retryable receiver rejection", async () => {
     let callCount = 0;
     globalThis.fetch = vi.fn(async () => {
@@ -3099,46 +3017,9 @@ describe("capture retry queue", () => {
     }
 
     expect(await deliveryEntries()).toHaveLength(22);
-    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ total: 22, dropped_count: 0 });
-    expect(stored.polylogueCaptureQueue?.entries).toBeUndefined();
+    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ total: 22 });
     expect((await deliveryEntries())[0].summary.providerSessionId).toBe("conv-0");
     expect((await deliveryEntries()).at(-1).summary.providerSessionId).toBe("conv-21");
-  });
-
-  it("converts original inline inputs despite derived cache failure without losing evidence or pause state", async () => {
-    const queue = { version: 2, dropped_count: 0, entries: ["first", "second"].map((id) => ({
-      id, held: true, attempts: 2, queued_at: "2026-01-01T00:00:00Z",
-      envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [{ text: `stored ${id}` }] } },
-    })) };
-    const settings = { enabled: true, automatic_capture_enabled: false, disabled_sites: [] };
-    let allowCommit = false;
-    await loadBackground({ polylogueCaptureQueue: globalThis.structuredClone(queue), polylogueAmbientSettings: settings }, () => {
-      const commit = globalThis.chrome.storage.local.set.getMockImplementation();
-      globalThis.chrome.storage.local.set.mockImplementation(async (patch) => {
-        if (patch.polylogueCaptureQueue?.version === 3 && !allowCommit) {
-          throw new Error("synthetic_commit_interruption");
-        }
-        return commit(patch);
-      });
-    });
-    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ ok: true, total: 2 });
-    expect(stored.polylogueCaptureQueue.entries.every(entry => entry.envelope === undefined)).toBe(true);
-    expect(stored.polylogueAmbientSettings).toEqual(settings);
-    allowCommit = true;
-    const committed = await deliveryEntries();
-    expect(committed.map((entry) => entry.id)).toEqual(["first", "second"]);
-    const staging = new CaptureStaging(globalThis.navigator.storage);
-    const bodies = await Promise.all(committed.map(async (entry) => (await staging.file(entry.body_ref)).text()));
-    const writes = globalThis.navigator.storage.writes.length;
-    vi.resetModules();
-    await import("../src/background.js");
-    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ ok: true, total: 2 });
-    expect(stored.polylogueCaptureQueue).toEqual({ version: 3, dropped_count: 0 });
-    const resumed = await deliveryEntries();
-    expect(resumed.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref])).toEqual(committed.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref]));
-    expect(await Promise.all(resumed.map(async (entry) => (await staging.file(entry.body_ref)).text()))).toEqual(bodies);
-    expect(globalThis.navigator.storage.writes).toHaveLength(writes);
-    expect(stored.polylogueAmbientSettings).toEqual(settings);
   });
 
   it("queues a capture when receiver physical staging fails", async () => {
@@ -3170,7 +3051,6 @@ describe("capture retry queue", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" });
 
     expect(response.ok).toBe(true);
-    expect(response.dropped_count).toBe(0);
     expect(response.entries).toHaveLength(1);
     expect(response.entries[0]).toMatchObject({ provider: "chatgpt", provider_session_id: "conv-5", attempts: 0, tab_origin: "https://chatgpt.com" });
     expect(response.entries[0].envelope).toBeUndefined();
@@ -3750,7 +3630,7 @@ describe("receiver health probe", () => {
     ["receiver_identity_mismatch", "pairing_mismatch", "mismatch"],
     ["receiver_authentication_failed", "unauthorized", "unauthorized"],
   ])("classifies native %s without transferring a credential", async (code) => {
-    await loadBackground({ receiverAuthToken: "neutral-deleted", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
+    await loadBackground({ neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
       receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
     } });
     globalThis.fetch = vi.fn(async (_url, init) => {
@@ -3761,7 +3641,6 @@ describe("receiver health probe", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
     expect(result).toMatchObject({ ok: false, status: "unreachable", detail: code });
     expect(globalThis.fetch).toHaveBeenCalledOnce();
-    expect(stored.receiverAuthToken).toBeUndefined();
     expect(stored.neutralUnrelatedSetting).toBe("preserved");
   });
   beforeEach(async () => {
@@ -3814,38 +3693,6 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
     expect(response).toMatchObject({ ok: false, status: "error", detail: "native_host_contract_incompatible" });
-  });
-});
-
-describe("accepted message identity storage", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-  });
-
-  it("drops a version 1 identity cache instead of reading it", async () => {
-    // Anti-vacuity: without the startup replacement the snapshot indexes the
-    // stale scalar entry as if it were a keyed map and reports its fields as
-    // accepted message refs.
-    const versionOne = {
-      message_ref: "chatgpt-export:conv-123:n:m1",
-      evidence_ref: "chatgpt/conv-123.json#message:m1",
-      fidelity: "native",
-    };
-    await loadBackground({
-      polylogueState: { provider: "chatgpt", provider_session_id: "conv-123" },
-      polylogueAcceptedMessageIdentities: { "chatgpt:conv-123": versionOne },
-    });
-    globalThis.fetch = vi.fn(async () => responseJson({ ok: false }, { ok: false, status: 503 }));
-
-    const snapshot = await sendRuntimeMessage(
-      { type: "polylogue.missionControl.status", refresh: false },
-      { tab: { id: 7, url: "https://chatgpt.com/c/conv-123", title: "conversation" } },
-    );
-
-    expect(stored.polylogueAcceptedMessageIdentitiesVersion).toBe(2);
-    expect(stored.polylogueAcceptedMessageIdentities).toEqual({});
-    expect(snapshot.assertions.accepted_identities).toEqual({});
   });
 });
 

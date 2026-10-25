@@ -8,7 +8,7 @@ import { NativeCaptureNormalizer } from "../src/capture/native.js";
 import { receiverContractPreparation, stagingRuntime } from "./infra/capture-staging.js";
 
 import { BackfillCoordinator } from "../src/backfill/coordinator.js";
-import { backfillAlarmName } from "../src/backfill/models.js";
+import { BACKFILL_DB_VERSION, backfillAlarmName } from "../src/backfill/models.js";
 import { ChatGptBackfillAdapter, ClaudeBackfillAdapter, GrokBackfillAdapter } from "../src/backfill/providers.js";
 import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 
@@ -28,7 +28,7 @@ function coordinatorFixture(options) {
   return new BackfillCoordinator({
     prepareCapture: (envelope, item, signal) => {
       const source = captureOwners.get(envelope.capture_record_ref)?.staging || staging;
-      return source.prepare(envelope, source.conversionId(`backfill:${item.id}`),
+      return source.prepare(envelope, source.queueStageId(`backfill:${item.id}`),
         { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal);
     },
     ...options,
@@ -1342,63 +1342,27 @@ describe("provider adapter contracts", () => {
   });
 });
 
-describe("disposable pre-streaming refusal conversion", () => {
-  const refusal = { id: "old-refusal", job_id: "paused-job", provider: "chatgpt", native_id: "native-old", state: "bridge_oversize", claimed_by: null };
-  const paused = { id: "paused-job", provider: "chatgpt", status: "paused", cooldown_reason: "operator_pause" };
-
-  it.each([2, 3])("atomically converts v%s after an aborted upgrade and preserves paused/acquired ownership", async (oldVersion) => {
-    const name = `conversion-${globalThis.crypto.randomUUID()}`;
-    const old = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, oldVersion);
+describe("database version", () => {
+  it("opens a database written by an earlier build empty instead of reading its rows", async () => {
+    const name = `earlier-build-${globalThis.crypto.randomUUID()}`;
+    const earlier = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, BACKFILL_DB_VERSION - 1);
       request.onupgradeneeded = () => {
         for (const store of ["queue", "jobs", "revisions"]) request.result.createObjectStore(store, { keyPath: "id" });
-        if (oldVersion === 3) {
-          const metadata = request.result.createObjectStore("capture_retry_metadata", { keyPath: "queue_order", autoIncrement: true });
-          metadata.createIndex("id", "id", { unique: true });
-          request.result.createObjectStore("capture_retry_bodies", { keyPath: "id" });
-          request.result.createObjectStore("capture_retry_state");
-        }
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
     await new Promise((resolve, reject) => {
-      const tx = old.transaction(["queue", "jobs"], "readwrite");
-      tx.objectStore("queue").put(refusal); tx.objectStore("jobs").put(paused);
-      tx.objectStore("queue").put({ ...refusal, id: "acquired-old-refusal", envelope: { stored: "original bytes" } });
+      const tx = earlier.transaction(["queue", "jobs"], "readwrite");
+      tx.objectStore("queue").put({ id: "earlier-item", job_id: "earlier-job", state: "claimed", claimed_by: "worker" });
+      tx.objectStore("jobs").put({ id: "earlier-job", provider: "chatgpt", status: "running" });
       tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     });
-    old.close();
-    await new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, 4);
-      request.onupgradeneeded = () => request.transaction.abort();
-      request.onerror = () => resolve();
-      request.onsuccess = () => { request.result.close(); reject(new Error("aborted_upgrade_committed")); };
-    });
-    const owner = new IndexedDbBackfillStore(indexedDB, name);
-    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible", next_eligible_at_ms: 0, claimed_by: null });
-    expect(await owner.getJob(paused.id)).toMatchObject(paused);
-    expect(await owner.getQueue("acquired-old-refusal")).toMatchObject({
-      state: "recovery_required", envelope: { stored: "original bytes" },
-      last_error: "capture_refusal_keeps_acquired_bytes",
-    });
-    (await owner.database()).close();
-    const restarted = new IndexedDbBackfillStore(indexedDB, name);
-    expect(await restarted.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
-    expect(await restarted.acquireJobExecution(paused.id, "other-owner", 1000, 1000)).toBeNull();
-  });
-
-  it("converts checkpoint refusal once and preserves acquired ownership as an explicit hold", async () => {
-    const owner = new IndexedDbBackfillStore(indexedDB, `checkpoint-conversion-${globalThis.crypto.randomUUID()}`);
-    const acquired = { ...refusal, id: "acquired-refusal", native_id: "native-acquired", body_ref: "stored-body" };
-    const checkpoint = { version: 1, jobs: [paused], queue: [refusal, acquired], revisions: [] };
-    for (let restart = 0; restart < 2; restart++) {
-      for (const job of checkpoint.jobs) await owner.convertLocalCheckpointRecord("jobs", job);
-      for (const item of checkpoint.queue) await owner.convertLocalCheckpointRecord("queue", item);
-    }
-    expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
-    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "stored-body", last_error: "capture_refusal_keeps_acquired_bytes" });
-    expect(await owner.getJob(paused.id)).toMatchObject({ status: "paused", cooldown_reason: "operator_pause" });
-    expect(((await owner.queuePage(paused.id)).items).every((item) => item.state !== "bridge_oversize")).toBe(true);
+    earlier.close();
+    const store = new IndexedDbBackfillStore(indexedDB, name);
+    expect(await store.getQueue("earlier-item")).toBeFalsy();
+    expect(await store.getJob("earlier-job")).toBeFalsy();
+    expect([...(await store.database()).objectStoreNames].sort()).toEqual(["capture_records", "captures", "jobs", "queue", "revisions"]);
   });
 });
