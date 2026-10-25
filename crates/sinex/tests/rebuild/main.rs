@@ -163,9 +163,8 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
     let end = json.rfind('}').expect("a JSON reply");
     let value: serde_json::Value = serde_json::from_str(&json[start..=end])
         .unwrap_or_else(|e| panic!("{e}: {reply}"));
-    value["rows"]
+    value["result"]["rows"]
         .as_array()
-        .or_else(|| value["data"]["rows"].as_array())
         .unwrap_or_else(|| panic!("no rows in {value}"))
         .len()
 }
@@ -234,4 +233,36 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     converge_on_sinex(&world, &empty, &sinex, &running.config);
     phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
+
+    // Excising session #1 is Sinex's excision of its file, with Polylogue
+    // as the actor; a later rebuild keeps it removed.
+    {
+        let (archive, _lock) =
+            Archive::open_primary(&world.root, &running.config.store, sinex.as_ref()).unwrap();
+        let mut engine = Engine::on_sinex(world.config(), archive, sinex.clone()).unwrap();
+        let excised = engine
+            .excise(polylogue_engine::ExciseRequest {
+                id: "0199d8a0-0000-7000-8000-00000000e001".into(),
+                scope: polylogue_engine::ExciseScope::Session(polylogue_testkit::session(1)),
+                reason: None,
+                dry_run: false,
+            })
+            .unwrap();
+        assert_eq!(excised.sessions, [polylogue_testkit::session(1).to_string()]);
+    }
+    phase("excised");
+    assert_eq!(sinex_rows(&running.socket, "events where kind = polylogue.session"), 7);
+    assert_eq!(sinex_rows(&running.socket, "events where kind = polylogue.excision"), 1);
+    let (after, _) = answers(&on_sinex);
+    assert!(!after.contains_key(&polylogue_testkit::session(1).to_string()));
+    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm", "sinex-sent.json"] {
+        let _ = fs::remove_file(world.root.join(name));
+    }
+    converge_on_sinex(&world, &world.home, &sinex, &running.config);
+    phase("rebuilt after the excision");
+    assert_eq!(
+        answers(&on_sinex).0,
+        after,
+        "a rebuild keeps the excision, though the provider file is still there"
+    );
 }
