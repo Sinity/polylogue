@@ -46,13 +46,13 @@ const input = (text) => ({ session: { provider: "chatgpt", provider_session_id: 
   provenance: { extension_instance_id: null, acquisition_sequence: null } });
 
 describe("original retry input conversion through the background worker", () => {
-  it("publishes each body before retiring source and preserves absent historical identity", async () => {
+  it("commits each body before releasing source and preserves absent historical identity", async () => {
     const { store, storage, network, start } = await setup();
     await store.importCaptureRetries([
       { metadata: { id: "z-first" }, envelope: input("first") },
       { metadata: { id: "a-second" }, envelope: input("second") },
     ]);
-    const retire = store.deleteCaptureRetry.bind(store);
+    const release = store.deleteCaptureRetry.bind(store);
     const seen = [];
     vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockImplementation(async function (id) {
       const delivery = await this.getDelivery(id);
@@ -61,7 +61,7 @@ describe("original retry input conversion through the background worker", () => 
       expect(envelope.provenance).toEqual({ extension_instance_id: null, acquisition_sequence: null });
       expect(await this.getCaptureRetryEnvelope(id)).toEqual(input(id === "z-first" ? "first" : "second"));
       seen.push(id);
-      return retire(id);
+      return release(id);
     });
     const { page } = await start();
     expect(await page()).toMatchObject({ ok: true, total: 2 });
@@ -70,7 +70,7 @@ describe("original retry input conversion through the background worker", () => 
     expect(network).not.toHaveBeenCalled();
   });
 
-  it("retains originals after a body close fault and retries the same deterministic publication", async () => {
+  it("keeps originals after a body close fault and retries the same deterministic commit", async () => {
     const { store, storage, start } = await setup();
     await store.importCaptureRetries([{ metadata: { id: "kept" }, envelope: input("exact original") }]);
     storage.directory.failClose = (name) => name.endsWith(".bytes");
@@ -86,10 +86,10 @@ describe("original retry input conversion through the background worker", () => 
     expect(deliveries[0].body_ref).toBe((await start()).staging.conversionId("kept"));
   });
 
-  it("restarts after source retirement failure without rewriting or duplicating published bytes", async () => {
+  it("restarts after source release failure without rewriting or duplicating committed bytes", async () => {
     const { store, storage, start } = await setup();
     await store.importCaptureRetries([{ metadata: { id: "kept" }, envelope: input("exact original") }]);
-    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
+    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral release fault"));
     const first = await start();
     expect(await first.page()).toMatchObject({ ok: false });
     const before = await store.getDelivery("kept");
@@ -103,10 +103,10 @@ describe("original retry input conversion through the background worker", () => 
     expect(await store.listCaptureRetries()).toEqual([]);
   });
 
-  it.each(["accepted", "noop", "superseded"])("retains the %s receipt until source retirement settles, then removes only owned bytes", async (outcome) => {
+  it.each(["accepted", "noop", "superseded"])("keeps the %s receipt until source release settles, then removes only owned bytes", async (outcome) => {
     const { store, storage, network, start } = await setup();
     await store.importCaptureRetries([{ metadata: { id: "kept" }, envelope: input("exact original") }]);
-    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral retirement fault"));
+    const fault = vi.spyOn(store.constructor.prototype, "deleteCaptureRetry").mockRejectedValue(new Error("neutral release fault"));
     const first = await start();
     expect(await first.page()).toMatchObject({ ok: false });
     const delivery = await store.getDelivery("kept");

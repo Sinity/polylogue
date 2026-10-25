@@ -20,7 +20,7 @@ describe("shared operator status vocabulary", () => {
     api = await loadApi();
   });
 
-  it("maps archive, receiver, provider, and fidelity states to the canonical vocabulary", () => {
+  it("maps archive, receiver, provider, and fidelity states to the vocabulary", () => {
     const cases = [
       [{ online: true, archive_state: { state: "archived" } }, "safe_current", "Safe / current"],
       [{ online: true, archive_state: { state: "archived" }, capture_freshness: { next_attempt_at_ms: 1 } }, "catching_up", "Catching up"],
@@ -176,7 +176,7 @@ describe("shared operator status vocabulary", () => {
     expect(items.find((item) => item.id === "auth").status).toMatchObject({ code: "needs_attention", label: "Needs attention" });
   });
 
-  it("marks unfinished capture and backfill work receiver-offline", () => {
+  it("marks pending capture and backfill work receiver-offline", () => {
     const items = api.normalizeWorkItems({
       receiverOnline: false,
       captureQueue: { entries: [{ id: "capture", provider: "chatgpt", provider_session_id: "c1" }] },
@@ -196,9 +196,9 @@ describe("shared operator status vocabulary", () => {
       label: "Observed; no action needed",
       detail: "Durable evidence already existed and the receiver was still catching up.",
     });
-    expect(api.eventPresentation({ event: "receiver_recovered", detail: "old -> canonical" })).toEqual({
+    expect(api.eventPresentation({ event: "receiver_recovered", detail: "old -> new" })).toEqual({
       label: "Receiver connection recovered",
-      detail: "old -> canonical",
+      detail: "old -> new",
     });
   });
 

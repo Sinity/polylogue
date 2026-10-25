@@ -81,7 +81,7 @@ describe("one owned native receiver operation", () => {
     expect(f.port.disconnect).toHaveBeenCalledOnce();
   });
 
-  it.each(["before", "after"])("propagates cancellation %s response headers and closes custody", async phase => {
+  it.each(["before", "after"])("propagates cancellation %s response headers and closes ownership", async phase => {
     const controller = new globalThis.AbortController();
     const f = fixture((frame, emit) => { if (phase === "after" && frame.type === "body_end") emit(headers); });
     const pending = nativeFetch(f.runtime, "http://127.0.0.1:8765/v1/status", { signal: controller.signal });

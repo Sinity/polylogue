@@ -108,7 +108,7 @@ function installChromeMock(storagePatch = {}) {
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/capture-jobs/synthetic-receiver-job" || path === "/v1/capture-jobs/synthetic-receiver-job/adopt") {
         return responseJson({ job: { job_id: "synthetic-receiver-job", provider: "chatgpt", revision: 1, claim_generation: 1 },
-          claim: { claim_id: "synthetic-claim", generation: 1, proof: "synthetic-proof" } });
+          claim: { claim_id: "synthetic-claim", generation: 1, token: "synthetic-token" } });
       }
       const response = await globalThis.fetch(...args);
       if (response.ok && options.method === "POST" && path === "/v1/browser-captures") {
@@ -329,7 +329,7 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueSessionLedger["chatgpt:conv-refused"].last_error).toMatch(/^receiver_contract_incompatible:/);
   });
 
-  it("retires a superseded capture without certifying incoming turn counts", async () => {
+  it("releases a superseded capture without certifying incoming turn counts", async () => {
     stored.polylogueSessionLedger = { "chatgpt:conv-stale": { turn_count: 7, attachment_count: 2 } };
     globalThis.fetch = vi.fn(async () => responseJson({
       ok: true, outcome: "superseded", provider: "chatgpt", provider_session_id: "conv-stale",
@@ -351,7 +351,7 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
   });
 
-  it("admits export and exact ACK only from its popup and preserves the paused original delivery", async () => {
+  it("accepts export and exact ACK only from its popup and preserves the paused original delivery", async () => {
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
     await store.putJob({ id: "export-job", provider: "chatgpt", status: "paused", cooldown_reason: "operator_paused" });
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
@@ -382,7 +382,7 @@ describe("background receiver diagnostics", () => {
     expect(await store.getJob("export-job")).toMatchObject({ status: "paused", cooldown_reason: "operator_paused" });
   });
 
-  it("refuses switched-account acquisition before provider traffic without changing existing custody", async () => {
+  it("refuses switched-account acquisition before provider traffic without changing existing ownership", async () => {
     tabs[0].url = "https://chatgpt.com/c/session";
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "account-race-receiver",
       api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
@@ -391,12 +391,12 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url, options });
       if (String(url).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "account-race-receiver", api_schema: "polylogue-browser-capture/v1" });
       if (String(url).endsWith("/v1/capture-jobs/capabilities")) return responseJson({ schema: "polylogue.capture-jobs.capabilities.v1",
-        checkpoint_transport: "canonical-artifact-v1", protocol_min: 2, protocol_max: 2, scope_namespace: namespace });
+        checkpoint_transport: "artifact-v1", protocol_min: 2, protocol_max: 2, scope_namespace: namespace });
       throw new Error("unexpected_provider_or_receiver_request");
     });
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
-    const body = await staging.prepare({ session: { turns: [{ text: "unacknowledged original custody" }] } });
+    const body = await staging.prepare({ session: { turns: [{ text: "unacknowledged original ownership" }] } });
     const scope = await deriveAccountScope(namespace, "chatgpt", "account-A");
     await store.putJob({ id: "job", provider: "chatgpt", account_scope: scope, status: "running",
       execution_owner: "worker", execution_generation: 1, execution_expires_at_ms: Date.now() + 60_000 });
@@ -410,7 +410,7 @@ describe("background receiver diagnostics", () => {
     expect(result).toMatchObject({ ok: false, error: "capture_job_account_scope_mismatch" });
     expect(await store.getQueue("item")).toMatchObject(item);
     expect((await store.getJob("job")).account_scope).toBe(scope);
-    expect(await (await staging.file(body.ref)).text()).toContain("unacknowledged original custody");
+    expect(await (await staging.file(body.ref)).text()).toContain("unacknowledged original ownership");
     expect(fetchCalls.filter((call) => String(call.url).startsWith("https://"))).toEqual([]);
     expect(JSON.stringify(stored)).not.toContain("account-A");
     expect(JSON.stringify(stored)).not.toContain("account-B");
@@ -442,7 +442,7 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls.filter((call) => String(call.url).startsWith("https://"))).toEqual([]);
   });
 
-  it("returns the exact acquired revision while keeping a newer current-page cache authoritative", async () => {
+  it("returns the exact acquired revision while preferring a newer current-page cache", async () => {
     tabs[0].url = "https://chatgpt.com/c/session";
     const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
@@ -521,12 +521,12 @@ describe("background receiver diagnostics", () => {
   });
 
   it("restores identity-validated sealed native evidence without a page replay or provider read", async () => {
-    tabs[0].url = "https://chatgpt.com/c/retained-session";
-    const owner = { tab_id: 42, document_id: "retained-document", provider: "chatgpt" };
+    tabs[0].url = "https://chatgpt.com/c/stored-session";
+    const owner = { tab_id: 42, document_id: "stored-document", provider: "chatgpt" };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const refs = [];
-    for (const id of ["retained-session", "unrelated-session"]) {
+    for (const id of ["stored-session", "unrelated-session"]) {
       const ref = await staging.begin(owner, { kind: "native-response", source_url: `https://chatgpt.com/backend-api/conversation/${id}` });
       await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ id, mapping: {} })).toString("base64"));
       await staging.seal(ref, owner); refs.push(ref);
@@ -536,18 +536,18 @@ describe("background receiver diagnostics", () => {
       return responseJson({});
     });
     const sender = { tab: tabs[0], documentId: owner.document_id };
-    const restored = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "retained-session", request_id: globalThis.crypto.randomUUID() }, sender);
-    expect(restored).toMatchObject({ ok: true, capture: { bodyRef: refs[0], headers: { id: "retained-session" } } });
+    const restored = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "stored-session", request_id: globalThis.crypto.randomUUID() }, sender);
+    expect(restored).toMatchObject({ ok: true, capture: { bodyRef: refs[0], headers: { id: "stored-session" } } });
     expect(await store.captureReferences(refs[0].id)).toBe(true);
     // Unselected acquired evidence remains pending; restoration never deletes it.
     expect(await store.captureReferences(refs[1].id)).toBe(true);
     expect(await store.getCapture(`raw:${refs[1].id}`)).toMatchObject({ state: "pending-normalization" });
     expect(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("https://chatgpt.com/"))).toHaveLength(0);
     const writes = globalThis.navigator.storage.writes.length;
-    const repeated = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "retained-session", request_id: globalThis.crypto.randomUUID() }, sender);
+    const repeated = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "stored-session", request_id: globalThis.crypto.randomUUID() }, sender);
     expect(repeated.capture.bodyRef).toEqual(refs[0]);
     expect(globalThis.navigator.storage.writes.length).toBe(writes);
-    const lostDocument = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "retained-session", request_id: globalThis.crypto.randomUUID() }, { ...sender, documentId: "different-document" });
+    const lostDocument = await sendRuntimeMessage({ type: "polylogue.restoreNativeCapture", provider: "chatgpt", native_id: "stored-session", request_id: globalThis.crypto.randomUUID() }, { ...sender, documentId: "different-document" });
     expect(lostDocument).toEqual({ ok: true, capture: null });
   });
 
@@ -659,7 +659,7 @@ describe("background receiver diagnostics", () => {
     const owner = { tab_id: 42, document_id: "capture-owner", provider: "chatgpt" };
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
     await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ conversation_id: "session", mapping: {
-      node: { message: { id: "message", author: { role: "assistant" }, content: { parts: ["retained evidence"] } } },
+      node: { message: { id: "message", author: { role: "assistant" }, content: { parts: ["stored evidence"] } } },
     } })).toString("base64"));
     await staging.seal(ref, owner);
     const envelope = await new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store) }).normalize({ provider: "chatgpt", rawRef: ref,
@@ -692,7 +692,7 @@ describe("background receiver diagnostics", () => {
     expect(await deliveryEntries()).toHaveLength(1);
   });
 
-  it("shares one immutable native upload and lets one caller cancel without retiring the other caller's evidence", async () => {
+  it("shares one immutable native upload and lets one caller cancel without releasing the other caller's evidence", async () => {
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-delivery",
       api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
@@ -735,7 +735,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(async () => expect(await deliveryEntries()).toHaveLength(0));
   });
 
-  it("keeps late native delivery admission outside a cancelled physical upload until it drains", async () => {
+  it("keeps a late native delivery outside a cancelled physical upload until it drains", async () => {
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-delivery",
       api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
@@ -782,7 +782,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(async () => expect(await deliveryEntries()).toHaveLength(0));
   });
 
-  it("returns its durable ACK while retirement waits behind another delivery's physical upload", async () => {
+  it("returns its durable ACK while release waits behind another delivery's physical upload", async () => {
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-delivery",
       api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
     const sender = { tab: tabs[0], documentId: "capture-owner" };
@@ -807,7 +807,7 @@ describe("background receiver diagnostics", () => {
       });
       return captureReceipt({ ok: true, provider: "chatgpt", provider_session_id: id }, options);
     });
-    const own = sendRuntimeMessage({ type: "polylogue.capture", request_id: "ack-before-retirement", envelope: { session: {
+    const own = sendRuntimeMessage({ type: "polylogue.capture", request_id: "ack-before-release", envelope: { session: {
       provider: "chatgpt", provider_session_id: "own-delivery", turns: [{ text: "own evidence" }],
     } } }, sender);
     await vi.waitFor(() => expect(ownStarted).toBe(true));
@@ -827,7 +827,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(async () => expect(await deliveryEntries()).toHaveLength(0));
   });
 
-  it("cancels capture preparation queued behind an unrelated progressing retry without publishing it", async () => {
+  it("cancels capture preparation queued behind an unrelated progressing retry without committing it", async () => {
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-delivery",
       api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
     const sender = { tab: tabs[0], documentId: "capture-owner" };
@@ -851,7 +851,7 @@ describe("background receiver diagnostics", () => {
     const retry = sendRuntimeMessage({ type: "polylogue.retryCaptureQueue" });
     await vi.waitFor(() => expect(uploads).toBe(1));
     const capture = sendRuntimeMessage({ type: "polylogue.capture", request_id: "waiting-preparation", envelope: { session: {
-      provider: "chatgpt", provider_session_id: "cancelled-before-preparation", turns: [{ text: "must not publish" }],
+      provider: "chatgpt", provider_session_id: "cancelled-before-preparation", turns: [{ text: "must not commit" }],
     } } }, sender);
     expect(await sendRuntimeMessage({ type: "polylogue.cancelCaptureDelivery", request_id: "waiting-preparation" }, sender))
       .toMatchObject({ ok: true });
@@ -863,7 +863,7 @@ describe("background receiver diagnostics", () => {
     expect(uploads).toBe(1);
   });
 
-  it("cancels and drains an owned receiver upload while retaining unacknowledged bytes", async () => {
+  it("cancels and drains an owned receiver upload while keeping unacknowledged bytes", async () => {
     stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-delivery",
       api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
     let started = false; let drained = false;
@@ -882,7 +882,7 @@ describe("background receiver diagnostics", () => {
     });
     const sender = { tab: tabs[0], documentId: "capture-owner" };
     const capture = sendRuntimeMessage({ type: "polylogue.capture", request_id: "owned-delivery",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "cancelled-session", turns: [{ text: "retained evidence" }] } },
+      envelope: { session: { provider: "chatgpt", provider_session_id: "cancelled-session", turns: [{ text: "stored evidence" }] } },
     }, sender);
     await vi.waitFor(() => expect(started).toBe(true));
     expect(await sendRuntimeMessage({ type: "polylogue.cancelCaptureDelivery", request_id: "owned-delivery" },
@@ -893,7 +893,7 @@ describe("background receiver diagnostics", () => {
     expect(await capture).toMatchObject({ ok: false, error: "capture_cancelled" });
     const entries = await deliveryEntries();
     expect(entries).toHaveLength(1); expect(entries[0]).toMatchObject({ held: true, next_attempt_at: null });
-    expect(await (await new CaptureStaging(globalThis.navigator.storage).file(entries[0].body_ref)).text()).toContain("retained evidence");
+    expect(await (await new CaptureStaging(globalThis.navigator.storage).file(entries[0].body_ref)).text()).toContain("stored evidence");
   });
 
   it("coalesces concurrent capture attribution into one stable service-worker instance", async () => {
@@ -1371,7 +1371,7 @@ describe("background receiver diagnostics", () => {
     expect(responses[0].job.id).toBe(responses[1].job.id);
   });
 
-  it.each(["lookup", "removal"])("transport cleanup retains original custody after a %s fault", async (fault) => {
+  it.each(["lookup", "removal"])("transport cleanup keeps original ownership after a %s fault", async (fault) => {
     await loadBackground();
     const key = "polylogueProviderTransportTab:chatgpt";
     const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
@@ -1411,7 +1411,7 @@ describe("background receiver diagnostics", () => {
     expect(sessionStored[key]).toBe(current === null ? undefined : current);
   });
 
-  it("transport cleanup retires custody only after Chrome positively reports the original tab absent", async () => {
+  it("transport cleanup releases ownership only after Chrome positively reports the original tab absent", async () => {
     await loadBackground();
     const key = "polylogueProviderTransportTab:chatgpt";
     const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
@@ -1423,7 +1423,7 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith(alarm);
   });
 
-  it("transport cleanup rechecks custody after an in-flight lookup", async () => {
+  it("transport cleanup rechecks ownership after an in-flight lookup", async () => {
     await loadBackground();
     const key = "polylogueProviderTransportTab:chatgpt";
     const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
@@ -1439,7 +1439,7 @@ describe("background receiver diagnostics", () => {
     expect(sessionStored[key]).toBe(77);
   });
 
-  it.each(["existing_lookup", "setup_cleanup"])("transport cleanup preserves original setup failure and custody: %s", async (fault) => {
+  it.each(["existing_lookup", "setup_cleanup"])("transport cleanup preserves original setup failure and ownership: %s", async (fault) => {
     await loadBackground({ polylogueReceiverPairing: {
       state: "online", receiver_id: "rx-transport", api_schema: "polylogue-browser-capture/v1",
     } });
@@ -1508,7 +1508,7 @@ describe("background receiver diagnostics", () => {
       adapter = this.adapters.chatgpt;
     });
     await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    alarmListener({ name: "polylogueBackfillWake:cancel-admission-control" });
+    alarmListener({ name: "polylogueBackfillWake:cancel-start-job" });
     await vi.waitFor(() => expect(adapter).toBeDefined());
     wake.mockRestore();
     let finishFirst; let acquisitions = 0;
@@ -1564,7 +1564,7 @@ describe("background receiver diagnostics", () => {
     expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
   });
 
-  it("admits receiver capability preflight without an invented request deadline", async () => {
+  it("accepts receiver capability preflight without an invented request deadline", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       const captureJobResponse = nativeInspectionFixtureResponse(url, options);
@@ -1647,7 +1647,7 @@ describe("background receiver diagnostics", () => {
     expect((await new IndexedDbBackfillStore(globalThis.indexedDB).jobPage()).jobs).toEqual([]);
   });
 
-  it("fails CaptureJob publication closed when provider identity is unavailable", async () => {
+  it("fails CaptureJob commit closed when provider identity is unavailable", async () => {
     globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
       const request = details.args?.[0];
       if (request?.operation === "identity") {
@@ -1665,7 +1665,7 @@ describe("background receiver diagnostics", () => {
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/capture-jobs/capabilities") {
         return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
+          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "artifact-v1",
           protocol_min: 2,
           protocol_max: 2,
           scope_namespace: "cjs1:profile-recovery-namespace",
@@ -1763,7 +1763,7 @@ describe("background receiver diagnostics", () => {
         simulatedNowMs += 20000;
         alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
         // Let the wake's async chain (provider fetch, capture, receiver
-        // POST, CaptureJob publication) fully settle before advancing the
+        // POST, CaptureJob commit) fully settle before advancing the
         // clock again. A later wake may have nothing left to do once the
         // item is already captured, so this does not assert growth.
         await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
@@ -1785,11 +1785,11 @@ describe("background receiver diagnostics", () => {
       clockSpy.mockRestore();
     }
 
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
-    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
+    const commit = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await commit.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
 
-  it("retains thoughts literally through native member publication", async () => {
+  it("keeps thoughts literally through native member commit", async () => {
     const pairing = { state: "online", receiver_id: "rx-thoughts-fallback-test", api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
     stored.polylogueReceiverPairing = pairing;
     tabs = [{ id: 42, url: "https://chatgpt.com/", title: "ChatGPT" }];
@@ -1891,11 +1891,11 @@ describe("background receiver diagnostics", () => {
       clockSpy.mockRestore();
     }
 
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
-    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
+    const commit = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await commit.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
 
-  it("preserves local recovery without querying accountless legacy evidence", async () => {
+  it("preserves local recovery without querying accountless older evidence", async () => {
     await loadBackground({
       polylogueBackfillRecoveryCheckpoint: {
         version: 1,
@@ -1918,7 +1918,7 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls.some((call) => String(call.url).includes("/v1/backfill-checkpoint") && (call.options.method || "GET") === "GET")).toBe(false);
   });
 
-  it("requires an existing provider surface before admitting a new account-scoped backfill", async () => {
+  it("requires an existing provider surface before accepting a new account-scoped backfill", async () => {
     tabs = [{ id: 43, url: "https://help.chatgpt.com/article", title: "Help" }];
 
     const started = await sendRuntimeMessage({
@@ -2694,7 +2694,7 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("retains a forty-eight hour provider cooldown across conversations without requesting assets or fallback", async () => {
+  it("keeps a forty-eight hour provider cooldown across conversations without requesting assets or fallback", async () => {
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     const sender = { tab: tabs[0], documentId: "synthetic" };
     expect(await sendRuntimeMessage({ type: "polylogue.providerRateLimited", provider: "chatgpt", request_id: "actual-response", provider_response: { status: 429, url: "https://chatgpt.com/backend-api/conversation/synthetic" }, retry_after_seconds: 172800 }, sender)).toMatchObject({ ok: true });
@@ -2722,15 +2722,15 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
-  it.each(["native-response", "provider-inventory"])("records a staged %s rate limit against its admitted request", async (kind) => {
+  it.each(["native-response", "provider-inventory"])("records a staged %s rate limit against its accepted request", async (kind) => {
     vi.spyOn(Date, "now").mockReturnValue(100_000);
     const sender = { tab: tabs[0], documentId: "owned-document" };
     const owner = { tab_id: sender.tab.id, document_id: sender.documentId, provider: "chatgpt" };
     const staging = new CaptureStaging(globalThis.navigator.storage, new IndexedDbBackfillStore(globalThis.indexedDB));
     const sourceUrl = kind === "native-response" ? "https://chatgpt.com/backend-api/conversation/session" : "https://chatgpt.com/backend-api/conversations";
-    const claim = await staging.begin(owner, { kind, source_url: sourceUrl }, "admitted-request");
+    const claim = await staging.begin(owner, { kind, source_url: sourceUrl }, "accepted-request");
     const report = { type: "polylogue.providerRateLimited", provider: "chatgpt", claim,
-      request_id: "admitted-request", provider_response: { status: 429, url: sourceUrl }, retry_after: "172800" };
+      request_id: "accepted-request", provider_response: { status: 429, url: sourceUrl }, retry_after: "172800" };
     expect(await sendRuntimeMessage({ ...report, request_id: "another-request" }, sender))
       .toMatchObject({ ok: false, error: "provider_rate_limit_claim_invalid" });
     expect(await sendRuntimeMessage({ ...report, provider_response: { status: 429, url: `${sourceUrl}/another` } }, sender))
@@ -3000,7 +3000,7 @@ describe("capture retry queue", () => {
     ]);
   });
 
-  it("retains and delivers a retry body beyond the former 40 MiB queue budget", async () => {
+  it("keeps and delivers a retry body larger than 40 MiB", async () => {
     const envelope = { session: { provider: "chatgpt", provider_session_id: "conv-oversized",
       turns: [{ text: "x".repeat(43_000_000) }] } };
     globalThis.fetch = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
@@ -3020,7 +3020,7 @@ describe("capture retry queue", () => {
     expect(await deliveryEntries()).toEqual([]);
   });
 
-  it("reports storage admission failure without dropping an earlier retry", async () => {
+  it("reports a storage failure without dropping an earlier retry", async () => {
     globalThis.fetch = vi.fn(async () => { throw new TypeError("offline"); });
     const capture = (id) => sendRuntimeMessage({ type: "polylogue.capture",
       envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [] } } });
@@ -3030,15 +3030,15 @@ describe("capture retry queue", () => {
       if (this.name === "queue" && args[0]?.delivery_kind === "foreground") throw new globalThis.DOMException("storage exhausted", "QuotaExceededError");
       return originalPut.apply(this, args);
     });
-    const refused = await capture("unretained");
+    const refused = await capture("unstored");
     expect(refused).toMatchObject({ ok: false, error: "capture_staging_quota_exceeded" });
     expect(refused.queued).not.toBe(true);
     failing.mockRestore();
     expect((await deliveryEntries()).map((entry) => entry.summary.providerSessionId)).toEqual(["kept"]);
-    expect(stored.polylogueConversationTimeline["chatgpt:unretained"][0]).toMatchObject({ event: "held_with_reason" });
+    expect(stored.polylogueConversationTimeline["chatgpt:unstored"][0]).toMatchObject({ event: "held_with_reason" });
   });
 
-  it("keeps admitted bodies when the derived status cache fails", async () => {
+  it("keeps accepted bodies when the derived status cache fails", async () => {
     globalThis.fetch = vi.fn(async () => { throw new TypeError("offline"); });
     await vi.waitFor(() => expect(stored.polylogueCaptureQueue).toBeDefined());
     const original = globalThis.chrome.storage.local.set;
@@ -3095,7 +3095,7 @@ describe("capture retry queue", () => {
     expect((await deliveryEntries())[0].next_attempt_at).toBeNull();
   });
 
-  it("retains every 503 retry beyond the former 20-entry queue cap", async () => {
+  it("keeps every 503 retry without an entry cap", async () => {
     globalThis.fetch = vi.fn(async () => responseJson({ error: "unavailable" }, { ok: false, status: 503 }));
 
     for (let i = 0; i < 22; i += 1) {
@@ -3115,34 +3115,34 @@ describe("capture retry queue", () => {
   it("converts original inline inputs despite derived cache failure without losing evidence or pause state", async () => {
     const queue = { version: 2, dropped_count: 0, entries: ["first", "second"].map((id) => ({
       id, held: true, attempts: 2, queued_at: "2026-01-01T00:00:00Z",
-      envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [{ text: `retained ${id}` }] } },
+      envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [{ text: `stored ${id}` }] } },
     })) };
     const settings = { enabled: true, automatic_capture_enabled: false, disabled_sites: [] };
     let allowCommit = false;
     await loadBackground({ polylogueCaptureQueue: globalThis.structuredClone(queue), polylogueAmbientSettings: settings }, () => {
-      const publish = globalThis.chrome.storage.local.set.getMockImplementation();
+      const commit = globalThis.chrome.storage.local.set.getMockImplementation();
       globalThis.chrome.storage.local.set.mockImplementation(async (patch) => {
         if (patch.polylogueCaptureQueue?.version === 3 && !allowCommit) {
           throw new Error("synthetic_commit_interruption");
         }
-        return publish(patch);
+        return commit(patch);
       });
     });
     expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ ok: true, total: 2 });
     expect(stored.polylogueCaptureQueue.entries.every(entry => entry.envelope === undefined)).toBe(true);
     expect(stored.polylogueAmbientSettings).toEqual(settings);
     allowCommit = true;
-    const published = await deliveryEntries();
-    expect(published.map((entry) => entry.id)).toEqual(["first", "second"]);
+    const committed = await deliveryEntries();
+    expect(committed.map((entry) => entry.id)).toEqual(["first", "second"]);
     const staging = new CaptureStaging(globalThis.navigator.storage);
-    const bodies = await Promise.all(published.map(async (entry) => (await staging.file(entry.body_ref)).text()));
+    const bodies = await Promise.all(committed.map(async (entry) => (await staging.file(entry.body_ref)).text()));
     const writes = globalThis.navigator.storage.writes.length;
     vi.resetModules();
     await import("../src/background.js");
     expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({ ok: true, total: 2 });
     expect(stored.polylogueCaptureQueue).toEqual({ version: 3, dropped_count: 0 });
     const resumed = await deliveryEntries();
-    expect(resumed.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref])).toEqual(published.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref]));
+    expect(resumed.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref])).toEqual(committed.map((entry) => [entry.id, entry.delivery_sequence, entry.body_ref]));
     expect(await Promise.all(resumed.map(async (entry) => (await staging.file(entry.body_ref)).text()))).toEqual(bodies);
     expect(globalThis.navigator.storage.writes).toHaveLength(writes);
     expect(stored.polylogueAmbientSettings).toEqual(settings);
@@ -3757,7 +3757,7 @@ describe("receiver health probe", () => {
     ["receiver_identity_mismatch", "pairing_mismatch", "mismatch"],
     ["receiver_authentication_failed", "unauthorized", "unauthorized"],
   ])("classifies native %s without transferring a credential", async (code) => {
-    await loadBackground({ receiverAuthToken: "neutral-retired", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
+    await loadBackground({ receiverAuthToken: "neutral-deleted", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
       receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
     } });
     globalThis.fetch = vi.fn(async (_url, init) => {
@@ -3834,14 +3834,14 @@ describe("accepted message identity storage", () => {
     // Anti-vacuity: without the startup replacement the snapshot indexes the
     // stale scalar entry as if it were a keyed map and reports its fields as
     // accepted message refs.
-    const legacy = {
+    const versionOne = {
       message_ref: "chatgpt-export:conv-123:n:m1",
       evidence_ref: "chatgpt/conv-123.json#message:m1",
       fidelity: "native",
     };
     await loadBackground({
       polylogueState: { provider: "chatgpt", provider_session_id: "conv-123" },
-      polylogueAcceptedMessageIdentities: { "chatgpt:conv-123": legacy },
+      polylogueAcceptedMessageIdentities: { "chatgpt:conv-123": versionOne },
     });
     globalThis.fetch = vi.fn(async () => responseJson({ ok: false }, { ok: false, status: 503 }));
 

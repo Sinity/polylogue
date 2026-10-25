@@ -3,7 +3,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { BACKFILL_DB_NAME } from "../src/backfill/models.js";
 import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 
-describe("retained automatic capture bodies", () => {
+describe("stored automatic capture bodies", () => {
   beforeEach(() => { globalThis.IDBKeyRange = IDBKeyRange; });
   it("adds retry stores without changing existing backfill jobs and queue inputs", async () => {
     const factory = new IDBFactory();
@@ -22,14 +22,14 @@ describe("retained automatic capture bodies", () => {
       opening.onsuccess = () => { opening.result.close(); resolve(); };
     });
     const store = new IndexedDbBackfillStore(factory);
-    // Database admission adds the declared active-page index key to paused jobs.
+    // Opening the database adds the declared active-page index key to paused jobs.
     expect(await store.getJob("existing-job")).toEqual({ id: "existing-job", status: "paused", active_page: 1 });
     expect((await store.queuePage("existing-job")).items[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: { session: { turns: [] } } });
     await store.putCaptureRetry({ id: "automatic-input" }, { session: { turns: [] } });
     expect((await store.listCaptureRetries()).map((entry) => entry.id)).toEqual(["automatic-input"]);
   });
 
-  it("reopens exact bodies separately from ordered metadata and retires both atomically", async () => {
+  it("reopens exact bodies separately from ordered metadata and releases both atomically", async () => {
     const factory = new IDBFactory();
     const original = new IndexedDbBackfillStore(factory);
     const envelope = { session: { provider: "grok", provider_session_id: "neutral",
@@ -61,9 +61,9 @@ describe("retained automatic capture bodies", () => {
     await expect(restarted.getCaptureRetryEnvelope("old-input")).rejects.toThrow("capture_retry_body_missing");
   });
 
-  it("settles failed retirement without deleting any original body", async () => {
+  it("settles failed release without deleting any original body", async () => {
     const store = new IndexedDbBackfillStore(new IDBFactory());
-    const envelope = { session: { turns: [{ text: "retained" }] } };
+    const envelope = { session: { turns: [{ text: "stored" }] } };
     await store.putCaptureRetry({ id: "first" }, envelope);
     await store.putCaptureRetry({ id: "second" }, envelope);
     const metadata = await store.listCaptureRetries();
@@ -84,7 +84,7 @@ describe("retained automatic capture bodies", () => {
     expect((await store.listCaptureRetries()).map((entry) => entry.id)).toEqual(["first"]);
   });
 
-  it("rolls back metadata when retaining the original body fails", async () => {
+  it("rolls back metadata when keeping the original body fails", async () => {
     const store = new IndexedDbBackfillStore(new IDBFactory());
     await store.putCaptureRetry({ id: "kept" }, { session: { turns: [] } });
     await expect(store.putCaptureRetry({ id: "failed" }, { uncloneable: () => {} })).rejects.toThrow();

@@ -52,7 +52,7 @@ describe("streamed action attachment integrity", () => {
     expect(globalThis.__polylogueBrowserActionAttachments).toBeUndefined();
   });
 
-  it("refuses IPC chunks above the declared transfer unit without retaining bytes", () => {
+  it("refuses IPC chunks above the declared transfer unit without keeping bytes", () => {
     const item = { attachment_id: "a1", size_bytes: 100000, sha256: "11".repeat(32) };
     transfer("begin"); transfer("start", item);
     expect(() => transfer("append", item, 0, btoa("x".repeat(65537)))).toThrow("chunk_mismatch");

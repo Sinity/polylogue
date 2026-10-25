@@ -233,7 +233,7 @@ function installFullCapture(adapter, { url, beforeInstall, plan = [], summary = 
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolve) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -284,7 +284,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(calls).toEqual(["/api/auth/session"]);
   });
 
-  it("refuses a clone chunk without waiting for the unfinished app branch", async () => {
+  it("refuses a clone chunk without waiting for the pending app branch", async () => {
     const { dom } = installBridge({ fetch: vi.fn() });
     let producer;
     const original = new globalThis.Response(new globalThis.ReadableStream({ start(controller) { producer = controller; } }),
@@ -421,7 +421,7 @@ describe("ChatGPT authenticated interpreter bridge response contract", () => {
     expect(disclosed).not.toContain("synthetic-secret");
   });
 
-  it("prefers the current session token over a stale legacy bootstrap token", async () => {
+  it("prefers the current session token over a stale bootstrap token", async () => {
     const adapter = syntheticEndpointAdapter();
     const harness = installBridge(adapter, bridgeSource, { bootstrapToken: "stale-bootstrap-token" });
 
@@ -611,7 +611,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
   it("waits for a brand-new conversation's URL instead of giving up immediately", async () => {
     // 2026-07-17: every chatgpt-dom-v1 capture that ever fired for real
     // landed inside one narrow window where a capture was triggered before
-    // ChatGPT's SPA router had published /c/<id> for a just-created
+    // ChatGPT's SPA router had committed /c/<id> for a just-created
     // conversation -- there was no id to fetch by yet. Native must now wait
     // for the id instead of falling back to a DOM scrape (removed).
     const freshId = "fresh-conversation-1";
@@ -637,7 +637,7 @@ describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
     const harness = installFullCapture({ fetch }, { url: "https://chatgpt.com/" });
 
     const resultPromise = harness.sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
-    // The SPA router publishes the id a little after the first turn is
+    // The SPA router commits the id a little after the first turn is
     // sent -- well inside the wait budget, but after at least one poll tick.
     await new Promise((resolve) => globalThis.setTimeout(resolve, 400));
     harness.dom.reconfigure({ url: `https://chatgpt.com/c/${freshId}` });
@@ -902,7 +902,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(harness.dom.__captureRuntime.nativeContract.receipts[0].result.attachments).toHaveLength(1);
   });
 
-  it.each([false, true])("uses canonical follow-up summary %s to decide cached revision reuse", async (needsFollowUp) => {
+  it.each([false, true])("uses follow-up summary %s to decide cached revision reuse", async (needsFollowUp) => {
     const adapter = syntheticEndpointAdapter();
     const harness = installFullCapture(adapter, { url: "https://chatgpt.com/c/conversation-1", summary: { needs_follow_up: needsFollowUp } });
     const cachedPayload = {
@@ -1102,7 +1102,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(durablePayload).not.toContain("synthetic-signed-secret");
   });
 
-  it("attempts every asset and retains the selected branch bytes after independent stale-asset refusals", async () => {
+  it("attempts every asset and keeps the selected branch bytes after independent stale-asset refusals", async () => {
     const targetPath = "/mnt/data/Polylogue-Demo-Packet-v2-Flagships-kit.zip";
     const stalePaths = ["/mnt/data/stale-1.zip", "/mnt/data/stale-2.zip", "/mnt/data/stale-3.zip"];
     const mapping = {};

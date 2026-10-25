@@ -5,19 +5,19 @@ import { NativeCaptureNormalizer } from "../../src/capture/native.js";
 import { CaptureStaging } from "../../src/capture/staging.js";
 
 /** Receiver-contract fixture: no provider content is parsed in JavaScript.
- * Canonical parser parity belongs to the native host integration. These explicit plans exercise browser byte/occurrence custody.
+ * Parser parity belongs to the native host integration. These explicit plans exercise browser byte/occurrence ownership.
  */
 export function receiverContractPreparation(staging, store, contract = {}) {
   return async (capture, { rawRef, relatedRefs, signal, summaryOnly = false }) => {
     signal?.throwIfAborted();
     const members = capture.provider === "grok" ? { responses: rawRef, ...relatedRefs } : { conversation: rawRef };
-    const retained = {};
+    const stored = {};
     for (const [name, ref] of Object.entries(members)) {
       const meta = await staging.metadata(ref.id);
       staging.requireOwner(meta, ref, capture.owner);
-      retained[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
+      stored[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
     }
-    await contract.onPrepare?.({ capture, members: retained, signal });
+    await contract.onPrepare?.({ capture, members: stored, signal });
     for (const asset of summaryOnly ? [] : contract.plan || []) {
       signal?.throwIfAborted();
       const result = await contract.acquire?.({ capture, rawRef, asset, signal });

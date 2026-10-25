@@ -63,7 +63,7 @@ describe("local backfill backup import", () => {
     expect(await (await target.staging.prepare({ capture_body_ref: items[0].body_ref })).body.text()).toBe(exported.body);
   });
 
-  it.each(["hash", "order", "path", "missing", "attachment", "raw", "related", "metadata", "truncated"])("refuses %s corruption without publishing a job", async kind => {
+  it.each(["hash", "order", "path", "missing", "attachment", "raw", "related", "metadata", "truncated"])("refuses %s corruption without committing a job", async kind => {
     const exported = await backup(); const parsed = JSON.parse(await exported.file.text());
     const evidence = parsed.acquired[0].files[0];
     if (kind === "hash") evidence.parts[0].sha256 = "0".repeat(64);
@@ -80,7 +80,7 @@ describe("local backfill backup import", () => {
     await empty(target.store); expect(target.storage.files.size).toBe(0);
   });
 
-  it("cancels during evidence installation without publishing a runnable partial job", async () => {
+  it("cancels during evidence installation without committing a runnable partial job", async () => {
     const exported = await backup(); const target = stagingRuntime(); const controller = new globalThis.AbortController();
     const append = target.staging.append.bind(target.staging);
     target.staging.append = async (...args) => { const result = await append(...args); controller.abort(new globalThis.DOMException("Cancelled", "AbortError")); return result; };

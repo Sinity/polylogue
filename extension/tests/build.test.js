@@ -170,10 +170,10 @@ describe("build.mjs full archive emission", () => {
     // chrome.tabs.query reflect it dynamically like background.test.js does.
     const ownedTabs = [{ id: 42, url: "https://chatgpt.com/", active: true, status: "complete" }];
     const pageRuntimeListeners = [];
-    let admissionGate = null;
-    const holdAdmission = async (phase) => {
-      if (!admissionGate?.enabled || admissionGate.phase !== phase) return;
-      const gate = admissionGate; gate.enabled = false; gate.entered(); await gate.release;
+    let startGate = null;
+    const holdStart = async (phase) => {
+      if (!startGate?.enabled || startGate.phase !== phase) return;
+      const gate = startGate; gate.enabled = false; gate.entered(); await gate.release;
     };
     const tabs = {
       create: vi.fn(async ({ url, active }) => {
@@ -181,13 +181,13 @@ describe("build.mjs full archive emission", () => {
         ownedTabs.push(tab);
         return tab;
       }),
-      get: vi.fn(async (tabId) => { await holdAdmission("tab"); return ownedTabs.find((tab) => tab.id === tabId); }),
+      get: vi.fn(async (tabId) => { await holdStart("tab"); return ownedTabs.find((tab) => tab.id === tabId); }),
       update: vi.fn(),
       remove: vi.fn(),
       query: vi.fn(async () => ownedTabs),
       sendMessage: vi.fn(async (_tabId, message) => {
-        if (message.type === "polylogue.capturePage" && admissionGate) admissionGate.enabled = true;
-        if (message.type === "polylogue.stagingOwner") await holdAdmission("document");
+        if (message.type === "polylogue.capturePage" && startGate) startGate.enabled = true;
+        if (message.type === "polylogue.stagingOwner") await holdStart("document");
         return new Promise((resolve) => {
         const handled = pageRuntimeListeners.some((listener) => listener(message, {}, resolve) === true);
         if (!handled) resolve(undefined);
@@ -430,7 +430,7 @@ describe("build.mjs full archive emission", () => {
     alarmListener({ name: "polylogueCaptureFreshnessWake" });
     await restartFetch;
     // Restore may legitimately pin the newer sealed native acquisition left
-    // by the preceding navigation. Freeze custody after that selection, before
+    // by the preceding navigation. Freeze ownership after that selection, before
     // interruption of the next provider read.
     const restartCache = await invocationStore.getCapture(foregroundCache.id);
     const restartRaw = await new CaptureStaging(globalThis.navigator.storage, invocationStore).metadata(restartCache.raw_ref.id);
@@ -450,37 +450,37 @@ describe("build.mjs full archive emission", () => {
 
     const originalBegin = CaptureStaging.prototype.begin;
     const beginSpy = vi.spyOn(CaptureStaging.prototype, "begin").mockImplementation(async function (...args) {
-      if (args[1]?.invocation_ref) await holdAdmission("staging");
+      if (args[1]?.invocation_ref) await holdStart("staging");
       const result = await originalBegin.apply(this, args);
-      if (args[1]?.invocation_ref) await holdAdmission("staging-reply");
+      if (args[1]?.invocation_ref) await holdStart("staging-reply");
       return result;
     });
     try {
       for (const [index, phase] of ["tab", "document", "staging", "staging-reply"].entries()) {
-        let admissionEntered;
-        const reachedAdmission = new Promise((resolve) => { admissionEntered = resolve; });
-        let admissionRelease;
-        admissionGate = { phase, enabled: false, entered: admissionEntered, release: new Promise((resolve) => { admissionRelease = resolve; }) };
-        const readsBeforeAdmission = pageFetchCalls.length;
+        let startEntered;
+        const reachedStart = new Promise((resolve) => { startEntered = resolve; });
+        let startRelease;
+        startGate = { phase, enabled: false, entered: startEntered, release: new Promise((resolve) => { startRelease = resolve; }) };
+        const readsBeforeStart = pageFetchCalls.length;
         stored.polylogueCaptureFreshnessQueue = scheduleFreshnessHint(null, {
           provider: "chatgpt", nativeId: "fixture-1", reason: "provider_revision_changed",
           nowMs: Date.now(), providerUpdatedAt: `2026-07-16T10:${String(10 + index).padStart(2, "0")}:00Z`,
         });
         alarmListener({ name: "polylogueCaptureFreshnessWake" });
-        await reachedAdmission;
-        const admissionRequest = tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage").at(-1)[1];
-        const cancelledAdmission = tabs.sendMessage(42, { type: "polylogue.cancelCapture", invocationRef: admissionRequest.invocationRef });
-        await vi.waitFor(async () => expect(await invocationStore.getCapture(admissionRequest.invocationRef.id)).toMatchObject({ state: "closing" }), { timeout: 15000 });
-        admissionRelease();
-        expect(await cancelledAdmission).toMatchObject({ ok: true });
-        await vi.waitFor(async () => expect(await invocationStore.getCapture(admissionRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
+        await reachedStart;
+        const startRequest = tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage").at(-1)[1];
+        const cancelledStart = tabs.sendMessage(42, { type: "polylogue.cancelCapture", invocationRef: startRequest.invocationRef });
+        await vi.waitFor(async () => expect(await invocationStore.getCapture(startRequest.invocationRef.id)).toMatchObject({ state: "closing" }), { timeout: 15000 });
+        startRelease();
+        expect(await cancelledStart).toMatchObject({ ok: true });
+        await vi.waitFor(async () => expect(await invocationStore.getCapture(startRequest.invocationRef.id)).toBeUndefined(), { timeout: 15000 });
         await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:fixture-1"]?.claimed_by).toBeNull(), { timeout: 15000 });
-        expect(pageFetchCalls).toHaveLength(readsBeforeAdmission);
+        expect(pageFetchCalls).toHaveLength(readsBeforeStart);
         expect(receiverPosts).toBe(3);
         expect((await invocationStore.getCapture(restartCache.id)).raw_ref).toEqual(restartCache.raw_ref);
-        admissionGate = null;
+        startGate = null;
       }
-    } finally { admissionGate = null; beginSpy.mockRestore(); }
+    } finally { startGate = null; beginSpy.mockRestore(); }
 
     // A fresh profile has a new storage factory and worker module graph.
     // A query on the old composition-root URL still caches its imported runtime.
@@ -508,7 +508,7 @@ describe("build.mjs full archive emission", () => {
     await import(/* @vite-ignore */ recoveredWorkerUrl);
     const recoveredStatus = await send({ type: "polylogue.backfill.status" });
     expect(recoveredStatus).toMatchObject({ ok: true });
-    // Original checkpoint input transfers to durable custody, but missing
+    // Original checkpoint input transfers to durable ownership, but missing
     // acquired bytes remain an actionable refusal, never a completed capture.
     expect(recoveredStatus.jobs.find(job => job.id === "packaged-recovered")).toMatchObject({
       id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",

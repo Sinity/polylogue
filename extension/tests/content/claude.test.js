@@ -92,7 +92,7 @@ function installClaude({ url = "https://claude.ai/chat/conversation-1", resource
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolvePromise, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolvePromise) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolvePromise) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -109,7 +109,7 @@ afterEach(() => {
 });
 
 describe("claude.js native capture (real source)", () => {
-  it.each(["start", "provider_fetch", "staging", "post_staging"])("retains the original caught %s boundary through real bridge/content and strict proof filtering", async (stage) => {
+  it.each(["start", "provider_fetch", "staging", "post_staging"])("keeps the original caught %s boundary through real bridge/content and strict stage filtering", async (stage) => {
     const secret = "https://private.invalid/conversation?token=neutral-private-error";
     const fetch = vi.fn(async () => {
       if (stage === "provider_fetch") throw new Error(secret);
@@ -233,7 +233,7 @@ describe("claude.js native capture (real source)", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("retains native Claude message roles and content verbatim for canonical receiver preparation", async () => {
+  it("keeps native Claude message roles and content verbatim for receiver preparation", async () => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input));
@@ -260,11 +260,11 @@ describe("claude.js native capture (real source)", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
-    expect(retained.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
-    expect(retained.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
-    expect(retained.chat_messages[2].text).toBe("");
-    expect(retained.name).toBe("Native Claude title");
+    const stored = await dom.__captureRuntime.storedNativeReplies(result.envelope);
+    expect(stored.chat_messages.map((message) => message.sender)).toEqual(["human", "assistant", "assistant", "system"]);
+    expect(stored.chat_messages[1]).toMatchObject({ model: "claude-native", parent_message_uuid: "u1", content: [{ text: "Native answer" }] });
+    expect(stored.chat_messages[2].text).toBe("");
+    expect(stored.name).toBe("Native Claude title");
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
     expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
@@ -391,27 +391,24 @@ describe("claude.js native capture (real source)", () => {
   });
 });
 
-// Structured native semantics are qualified through the actual receiver in
-// test_native_receiver_complete_envelope_matches_canonical_provider_parsing,
-// using native-rich-blocks-v1.json (tool use/results, arrays, thinking and
-// signatures, token budgets) and native-attachment-order.json. The ordinary
-// Claude catalog remains the source of canonical normalization semantics.
+// The receiver's Claude parser owns structured block semantics; these tests
+// check only that the browser keeps the original replies.
 
-describe("Claude original native attachment custody", () => {
-  it("retains both attachment channels and missing-ID out-of-order messages for the ordinary parser", async () => {
+describe("Claude original native attachment ownership", () => {
+  it("keeps both attachment channels and missing-ID out-of-order messages for the ordinary parser", async () => {
     const payload = JSON.parse(readFileSync(resolve(testDirectory, "../fixtures/claude-native-attachment-order.json"), "utf8"));
     const orgId = "00000000-0000-4000-8000-000000000042";
     const fetch = vi.fn(async () => jsonResponse(payload));
     const { dom, sendRuntimeMessage } = installClaude({ url: `https://claude.ai/chat/${payload.uuid}`,
       localStorageEntries: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: orgId }) }, fetch });
-    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-custody" });
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "synthetic-attachment-ownership" });
     expect(result.ok).toBe(true);
-    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
-    expect(retained).toEqual(payload);
+    const stored = await dom.__captureRuntime.storedNativeReplies(result.envelope);
+    expect(stored).toEqual(payload);
     expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
-    expect(retained.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
-    expect(retained.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
+    expect(stored.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
+    expect(stored.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -178,7 +178,7 @@ async function enumerateThenAdvance(h, job) {
 beforeEach(() => { vi.restoreAllMocks(); captureOwners.clear(); globalThis.IDBKeyRange = IDBKeyRange; });
 
 describe("background backfill coordinator", () => {
-  it("does not let an unavailable retired checkpoint service block local job control", async () => {
+  it("does not let a failed remote checkpoint block local job control", async () => {
     const h = harness(); const job = await startJob(h);
     await h.store.putJob({ ...await h.store.getJob(job.id), status: "paused",
       recovery_checkpoint_outcome: { state: "failed", error: "old remote checkpoint unavailable" } });
@@ -222,9 +222,9 @@ describe("background backfill coordinator", () => {
     await execution; expect(h.receiver).not.toHaveBeenCalled();
   });
 
-  it.each(["accepted", "noop", "superseded"])("keeps retained ACK truth for %s", async (outcome) => {
+  it.each(["accepted", "noop", "superseded"])("keeps stored ACK truth for %s", async (outcome) => {
     const receiver = vi.fn(async (envelope, serialized) => ({
-      receiver_request_id: "retained-ack", outcome,
+      receiver_request_id: "stored-ack", outcome,
       submitted_content_hash: await captureContentHash(envelope, serialized),
       content_hash: outcome === "accepted" ? await captureContentHash(envelope, serialized) : "resident-hash",
     }));
@@ -272,7 +272,7 @@ describe("background backfill coordinator", () => {
     if (outcome === "superseded") expect(await h.store.getRevision("chatgpt", "one")).toBeUndefined();
   });
 
-  it.each(["foreign_submission", "unknown_outcome", "accepted_wrong_hash"])("refuses %s ACK without dropping retained input", async (fault) => {
+  it.each(["foreign_submission", "unknown_outcome", "accepted_wrong_hash"])("refuses %s ACK without dropping stored input", async (fault) => {
     const receiver = vi.fn(async (envelope, serialized) => ({
       receiver_request_id: "ack", outcome: fault === "unknown_outcome" ? "unknown" : "accepted",
       submitted_content_hash: fault === "foreign_submission" ? "foreign" : await captureContentHash(envelope, serialized),
@@ -400,7 +400,7 @@ describe("background backfill coordinator", () => {
     expect(h.adapter.enumerateCalls).toBe(0);
   });
 
-  it("holds provider work when the receiver-authority checkpoint cannot commit", async () => {
+  it("holds provider work when the receiver checkpoint cannot commit", async () => {
     const checkpoint = vi.fn(async () => { throw new Error("storage_local_quota"); });
     const h = harness({ checkpoint });
     const job = await startJob(h);
@@ -450,7 +450,7 @@ describe("background backfill coordinator", () => {
       for await (const job of store.jobRecords()) {
         yield { job_id: job.id, error: "capture_job_account_scope_unresolved", outcome: "scope_unresolved" };
         // An accumulator that consumes the whole iterator before applying
-        // outcomes fails here; each row must publish before requesting another.
+        // outcomes fails here; each row must commit before requesting another.
         expect((await store.getJob(job.id)).recovery_checkpoint_outcome).toMatchObject({ state: "failed", error: "capture_job_account_scope_unresolved" });
         observed++;
         if (first && pass === 1) { first = false; await gate; }
@@ -528,7 +528,7 @@ describe("background backfill coordinator", () => {
     expect(h.adapter.enumerateCalls).toBe(0);
   });
 
-  it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
+  it("coalesces concurrent receiver checkpoints across status readers", async () => {
     let releaseCheckpoint;
     const checkpoint = vi.fn(async () => {
       await new Promise((resolve) => { releaseCheckpoint = resolve; });
@@ -663,7 +663,7 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("retains the full native mapping and current node while publishing the canonical receiver reference", async () => {
+  it("keeps the full native mapping and current node while committing the receiver reference", async () => {
     const native = chatGptNative("branch-session");
     native.mapping.first.children = ["second", "sibling"];
     native.mapping.sibling = { id: "sibling", parent: "first", children: [], message: { id: "sibling-message", author: { role: "assistant" }, content: { parts: ["alternate"] } } };
@@ -681,7 +681,7 @@ describe("background backfill coordinator", () => {
     expect((await h.store.queuePage(job.id)).items).toMatchObject([{ state: "complete", capture_fidelity: "native_full" }]);
   });
 
-  it("submits acquired assets through the authoritative adapter through the ordinary receiver path", async () => {
+  it("submits acquired assets through the provider adapter through the ordinary receiver path", async () => {
     const exactEnvelope = {
       polylogue_capture_kind: "browser_llm_session",
       provider_meta: { capture_fidelity: "native_full" },
@@ -713,7 +713,7 @@ describe("background backfill coordinator", () => {
     }]);
   });
 
-  it("retains retryable acquisition failures without delivering incomplete assets", async () => {
+  it("keeps retryable acquisition failures without delivering incomplete assets", async () => {
     const adapter = new FixtureAdapter(["one"]);
     adapter.normalizeCapture = vi.fn(async () => { throw new Error("exact_asset_acquisition_pending"); });
     const h = harness({ adapter });
@@ -771,7 +771,7 @@ describe("background backfill coordinator", () => {
     expect(status.daily_requests).toBe(3);
   });
 
-  it("retains empty native evidence and distinguishes auth, transport, refusal, and ACK", async () => {
+  it("keeps empty native evidence and distinguishes auth, transport, refusal, and ACK", async () => {
     const cases = [
       { result: response({}, { status: 403 }), expected: "auth_required" },
       { result: response(chatGptNative("one", false)), expected: "complete" },
@@ -922,7 +922,7 @@ describe("background backfill coordinator", () => {
     await expect(startJob(h)).rejects.toThrow("backfill_job_already_active:chatgpt");
   });
 
-  it("serializes concurrent wakes and request reservation in real IndexedDB", async () => {
+  it("serializes concurrent wakes and request budget in real IndexedDB", async () => {
     const databaseName = `polylogue-test-${globalThis.crypto.randomUUID()}`;
     const store = new IndexedDbBackfillStore(indexedDB, databaseName);
     let releaseInventory;
@@ -979,7 +979,7 @@ describe("background backfill coordinator", () => {
     expect(h.receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("retains acquired receiver evidence across repeated failures without refetching or exhausting attempts", async () => {
+  it("keeps acquired receiver evidence across repeated failures without refetching or exhausting attempts", async () => {
     const receiver = vi.fn(async () => { throw new Error("receiver_down"); });
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
     const job = await startJob(h); await enumerateThenAdvance(h, job);
@@ -992,7 +992,7 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(20);
   });
 
-  it("pins Claude organization identity across restart and hard-reserves its request budget", async () => {
+  it("pins Claude organization identity across restart and hard-limits its request budget", async () => {
     let now = 1000;
     const store = makeStore();
     const alarms = { create: vi.fn(async () => undefined) };
@@ -1046,7 +1046,7 @@ describe("provider adapter contracts", () => {
   // turns. This is the exact shape (content_type "code" then
   // "execution_output") that used to be indistinguishable from ordinary
   // assistant text once BrowserCaptureTurn had no blocks channel.
-  it("retains a ChatGPT code-interpreter call and output for the shared source parser", async () => {
+  it("keeps a ChatGPT code-interpreter call and output for the shared source parser", async () => {
     const native = {
       id: "gpt-ci",
       title: "Code interpreter run",
@@ -1061,15 +1061,13 @@ describe("provider adapter contracts", () => {
 
     expect(await storedNativeCapture(capture)).toEqual(native);
     expect(capture.raw_provider_payload).toBeDefined();
-    // Canonical pairing: native-rich-blocks-v1.json through actual receiver
-    // parity and test_code_interpreter_call_and_result_share_a_tool_id.
+    // The receiver's ChatGPT parser owns tool call and result pairing.
 
   });
 
   it("does not misclassify a thoughts-only ChatGPT turn as no_turns", async () => {
-    // Canonical block structure is exercised by native-rich-blocks-v1.json
-    // through the actual receiver. The browser retains the original reply
-    // and the canonical nonempty summary instead of projecting prose.
+    // The receiver's parser owns block structure. The browser keeps the original reply
+    // and the nonempty summary instead of projecting prose.
     const native = {
       id: "gpt-reasoning-only",
       title: "Reasoning only",
@@ -1117,7 +1115,7 @@ describe("provider adapter contracts", () => {
     expect(capture.raw_provider_payload).toBeDefined();
   });
 
-  it("retains a recipient-addressed JSON tool call for shared source classification", async () => {
+  it("keeps a recipient-addressed JSON tool call for shared source classification", async () => {
     const native = {
       id: "gpt-tool",
       title: "Web search",
@@ -1263,7 +1261,7 @@ describe("provider adapter contracts", () => {
   // Grok's own /rest/app-chat/conversations REST surface, verified live
   // 2026-07-31 (see src/content/grok_bridge.js): pageToken-cursored
   // enumeration, and a two-request native fetch (conversation metadata +
-  // /responses) retained as separate original replies for normalizeCapture.
+  // /responses) stored as separate original replies for normalizeCapture.
   it("enumerates Grok conversations by pageToken and stops when nextPageToken is absent", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({
@@ -1307,7 +1305,7 @@ describe("provider adapter contracts", () => {
     await expect(adapter.enumerate()).rejects.toThrow("provider_contract_drift:grok_inventory.conversations_must_be_array");
   });
 
-  it("retains original Grok endpoint replies while normalizing temporary sessions", async () => {
+  it("keeps original Grok endpoint replies while normalizing temporary sessions", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(response({ conversationId: "g-1", title: "Fixture", temporary: true, createTime: "2026-06-27T12:39:08Z", modifyTime: "2026-06-27T13:46:12Z" }))
       .mockResolvedValueOnce(response({
@@ -1324,10 +1322,10 @@ describe("provider adapter contracts", () => {
     expect(capture.session.turns).toEqual([]);
     expect(capture.raw_provider_payload).toBeDefined();
     expect(fetchImpl.mock.calls[1][0]).toContain("/responses");
-    const retained = await storedNativeCapture(capture);
-    expect(retained.conversation).toMatchObject({ conversationId: "g-1", temporary: true });
-    expect(retained.responses.responses).toHaveLength(2);
-    expect(retained.responses.responses[1]).toMatchObject({ sender: "ASSISTANT", message: "hi there", parentResponseId: "r-1", model: "grok-3" });
+    const stored = await storedNativeCapture(capture);
+    expect(stored.conversation).toMatchObject({ conversationId: "g-1", temporary: true });
+    expect(stored.responses.responses).toHaveLength(2);
+    expect(stored.responses.responses[1]).toMatchObject({ sender: "ASSISTANT", message: "hi there", parentResponseId: "r-1", model: "grok-3" });
 
     await expect(
       adapter.normalizeCapture(response({ responses: "not-an-array" }, { refusal: "invalid_native_preparation" }), { native_id: "g-1" }, {}),
@@ -1350,7 +1348,7 @@ describe("disposable pre-streaming refusal conversion", () => {
   const refusal = { id: "old-refusal", job_id: "paused-job", provider: "chatgpt", native_id: "native-old", state: "bridge_oversize", claimed_by: null };
   const paused = { id: "paused-job", provider: "chatgpt", status: "paused", cooldown_reason: "operator_pause" };
 
-  it.each([2, 3])("atomically converts v%s after an aborted upgrade and preserves paused/acquired custody", async (oldVersion) => {
+  it.each([2, 3])("atomically converts v%s after an aborted upgrade and preserves paused/acquired ownership", async (oldVersion) => {
     const name = `conversion-${globalThis.crypto.randomUUID()}`;
     const old = await new Promise((resolve, reject) => {
       const request = indexedDB.open(name, oldVersion);
@@ -1369,7 +1367,7 @@ describe("disposable pre-streaming refusal conversion", () => {
     await new Promise((resolve, reject) => {
       const tx = old.transaction(["queue", "jobs"], "readwrite");
       tx.objectStore("queue").put(refusal); tx.objectStore("jobs").put(paused);
-      tx.objectStore("queue").put({ ...refusal, id: "acquired-old-refusal", envelope: { retained: "original bytes" } });
+      tx.objectStore("queue").put({ ...refusal, id: "acquired-old-refusal", envelope: { stored: "original bytes" } });
       tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
     });
     old.close();
@@ -1377,13 +1375,13 @@ describe("disposable pre-streaming refusal conversion", () => {
       const request = indexedDB.open(name, 4);
       request.onupgradeneeded = () => request.transaction.abort();
       request.onerror = () => resolve();
-      request.onsuccess = () => { request.result.close(); reject(new Error("aborted_upgrade_published")); };
+      request.onsuccess = () => { request.result.close(); reject(new Error("aborted_upgrade_committed")); };
     });
     const owner = new IndexedDbBackfillStore(indexedDB, name);
     expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible", next_eligible_at_ms: 0, claimed_by: null });
     expect(await owner.getJob(paused.id)).toMatchObject(paused);
     expect(await owner.getQueue("acquired-old-refusal")).toMatchObject({
-      state: "recovery_required", envelope: { retained: "original bytes" },
+      state: "recovery_required", envelope: { stored: "original bytes" },
       last_error: "capture_refusal_keeps_acquired_bytes",
     });
     (await owner.database()).close();
@@ -1392,16 +1390,16 @@ describe("disposable pre-streaming refusal conversion", () => {
     expect(await restarted.acquireJobExecution(paused.id, "other-owner", 1000, 1000)).toBeNull();
   });
 
-  it("converts checkpoint refusal once and preserves acquired custody as an explicit hold", async () => {
+  it("converts checkpoint refusal once and preserves acquired ownership as an explicit hold", async () => {
     const owner = new IndexedDbBackfillStore(indexedDB, `checkpoint-conversion-${globalThis.crypto.randomUUID()}`);
-    const acquired = { ...refusal, id: "acquired-refusal", native_id: "native-acquired", body_ref: "retained-body" };
+    const acquired = { ...refusal, id: "acquired-refusal", native_id: "native-acquired", body_ref: "stored-body" };
     const checkpoint = { version: 1, jobs: [paused], queue: [refusal, acquired], revisions: [] };
     for (let restart = 0; restart < 2; restart++) {
       for (const job of checkpoint.jobs) await owner.convertLocalCheckpointRecord("jobs", job);
       for (const item of checkpoint.queue) await owner.convertLocalCheckpointRecord("queue", item);
     }
     expect(await owner.getQueue(refusal.id)).toMatchObject({ state: "eligible" });
-    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "retained-body", last_error: "capture_refusal_keeps_acquired_bytes" });
+    expect(await owner.getQueue(acquired.id)).toMatchObject({ state: "recovery_required", body_ref: "stored-body", last_error: "capture_refusal_keeps_acquired_bytes" });
     expect(await owner.getJob(paused.id)).toMatchObject({ status: "paused", cooldown_reason: "operator_pause" });
     expect(((await owner.queuePage(paused.id)).items).every((item) => item.state !== "bridge_oversize")).toBe(true);
   });

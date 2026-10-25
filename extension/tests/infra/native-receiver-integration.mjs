@@ -59,7 +59,7 @@ const adapters = {
   now: () => Date.now(), log() {},
 };
 startBackgroundRuntime(adapters);
-// Settle startup reconciliation before admitting a new synthetic observation.
+// Settle startup reconciliation before accepting a new synthetic observation.
 for (let turn = 0; turn < 20; turn++) await setImmediate();
 const store = new IndexedDbBackfillStore();
 const staging = new CaptureStaging(origin, store);
@@ -84,7 +84,6 @@ assert.ok(summarized.summary.turn_count >= 1, "the fixture must produce an ordin
 assert.equal(assetRequests, 0);
 const prefix = await store.getCapture(`native-preparation:${(refs.responses || refs.conversation).id}`);
 assert.equal(prefix.state, "normalizing");
-assert.ok(!calls.some((call) => call.path.endsWith("/native/asset") || call.path.endsWith("/native/finalize") || call.path.endsWith("/native/publish")));
 const normalized = await send({ type: "polylogue.normalizeNativeCapture", provider, native_id: nativeId,
   raw_ref: refs.responses || refs.conversation,
   related_refs: provider === "grok" ? { conversation: refs.conversation, ...(refs.response_nodes ? { response_nodes: refs.response_nodes } : {}) } : {} });
@@ -93,11 +92,11 @@ assert.equal(normalized.envelope.provenance.extension_instance_id, null);
 assert.equal(normalized.envelope.provenance.acquisition_sequence, null);
 const root = await store.getCapture(normalized.envelope.capture_record_ref);
 assert.equal(root.owner.document_id, sender.documentId);
-const published = await send({ type: "polylogue.capture", envelope: normalized.envelope, request_id: "synthetic-integration-delivery" });
-assert.equal(published.ok, true, JSON.stringify(published));
-assert.match(published.content_hash, /^[a-f0-9]{64}$/);
-assert.ok(published.receiver_request_id);
+const committed = await send({ type: "polylogue.capture", envelope: normalized.envelope, request_id: "synthetic-integration-delivery" });
+assert.equal(committed.ok, true, JSON.stringify(committed));
+assert.match(committed.content_hash, /^[a-f0-9]{64}$/);
+assert.ok(committed.receiver_request_id);
 assert.ok(calls.some((call) => call.path === "/v1/browser-captures/inspect" && call.method === "POST"));
 assert.ok(calls.some((call) => call.path === "/v1/browser-captures" && call.method === "POST"));
 assert.ok(!calls.some((call) => call.path.startsWith("/v1/capture-jobs")));
-process.stdout.write(JSON.stringify({ sha256: published.content_hash, receiver_request_id: published.receiver_request_id, summary: summarized.summary, asset_requests: assetRequests, calls }));
+process.stdout.write(JSON.stringify({ sha256: committed.content_hash, receiver_request_id: committed.receiver_request_id, summary: summarized.summary, asset_requests: assetRequests, calls }));

@@ -170,7 +170,7 @@ describe("mount() DOM behavior", () => {
     handle.stop();
   });
 
-  it("matches the exact receiver canonical ref and survives DOM reorder", () => {
+  it("matches the exact receiver ref and survives DOM reorder", () => {
     const dom = freshDom('<!DOCTYPE html><html><body><article data-message-id="m-a">A</article><article data-message-id="m-b">B</article></body></html>');
     const { document } = dom.window;
     const identityForNode = (node) => ({

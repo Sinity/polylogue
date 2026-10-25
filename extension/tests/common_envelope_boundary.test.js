@@ -128,7 +128,7 @@ function maximalTurn() {
 }
 
 describe("common.js buildEnvelope boundary contract (real source, not a copy)", () => {
-  it("anti-vacuity: emits a full SHA-256 fingerprint matching the canonical digest", () => {
+  it("anti-vacuity: emits a full SHA-256 fingerprint matching the digest", () => {
     const dom = installCommon();
     const observation = dom.window.polylogueCapture.identityObservation({
       provider: "chatgpt", conversationId: "c-1", messageId: "m-1", text: "abc",

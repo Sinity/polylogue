@@ -39,7 +39,7 @@ describe("capture freshness queue", () => {
     expect(entry.provider_updated_at).toBe("2026-07-16T00:00:00Z");
   });
 
-  it("retains deduplicated lifecycle observations until the exact capture claim completes", () => {
+  it("keeps deduplicated lifecycle observations until the exact capture claim completes", () => {
     const started = {
       observation_id: "conversation-1:turn-2:started:1000",
       state: "started",
@@ -90,7 +90,7 @@ describe("capture freshness queue", () => {
     expect(completed.entries["chatgpt:conversation-1"]).toBeUndefined();
   });
 
-  it("retains a newer revision or observation that arrives during a claim", () => {
+  it("keeps a newer revision or observation that arrives during a claim", () => {
     const initial = hint(null, "conversation-1", 1000, {
       delayMs: 0,
       providerUpdatedAt: "2026-07-16T00:00:00Z",
@@ -140,7 +140,7 @@ describe("capture freshness queue", () => {
     expect(completeFreshnessClaim(next.queue, next.claim, { nowMs: 6500, needsFollowUp: false }).entries).toEqual({});
   });
 
-  it("retains typed retry and provider cooldown when newer evidence arrives during failure", () => {
+  it("keeps typed retry and provider cooldown when newer evidence arrives during failure", () => {
     const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
     const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", claimMs: 5000 });
     const updated = hint(first.queue, "conversation-1", 1500, { delayMs: 0, providerUpdatedAt: "2026-07-16T00:01:00Z" });
@@ -192,13 +192,13 @@ describe("capture freshness queue", () => {
     expect(complete.entries[claim.key]).toBeUndefined();
   });
 
-  it("keeps freshness pending until canonical receiver preparation reports a terminal head", () => {
+  it("keeps freshness pending until receiver preparation reports a terminal head", () => {
     expect(chatGptCaptureNeedsFollowUp({ capture_summary: { needsFollowUp: false } })).toBe(false);
     expect(chatGptCaptureNeedsFollowUp({ capture_summary: { needsFollowUp: true } })).toBe(true);
     expect(chatGptCaptureNeedsFollowUp({})).toBe(true);
   });
 
-  it("uses typed backoff and preserves every durable hint past the former count limit", () => {
+  it("uses typed backoff and keeps every durable hint without a count limit", () => {
     expect(failureRetryDelayMs(0, "rate_limited")).toBe(15 * 60_000);
     expect(failureRetryDelayMs(0, "auth_challenge")).toBe(60 * 60_000);
     expect(failureRetryDelayMs(2, "network_error")).toBe(60_000);

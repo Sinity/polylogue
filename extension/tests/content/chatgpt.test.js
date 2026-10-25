@@ -72,7 +72,7 @@ function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch, r
         const assetResult = await dom.__captureRuntime.sendMessage(message);
         const overridden = await runtimeMessage?.(message);
         // Observe the staging owner's validated rate response as well as the
-        // page messages, while keeping its reply authoritative.
+        // page messages, while keeping its reply.
         if (assetResult !== undefined) return assetResult;
         if (overridden !== undefined) return overridden;
         if (message.type === "polylogue.capture") {
@@ -102,7 +102,7 @@ function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch, r
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolve) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -184,7 +184,7 @@ describe("connected capture recovery", () => {
     expect(captures).toEqual([]);
   });
 
-  it.each([false, true])("retains thoughts with ordinary text present=%s through actual native acquisition", async (mixed) => {
+  it.each([false, true])("keeps thoughts with ordinary text present=%s through actual native acquisition", async (mixed) => {
     const native = { id: "conversation-1", mapping: { reasoning: { message: {
       id: "reasoning-1", author: { role: "assistant" },
       content: { content_type: mixed ? "text" : "thoughts", parts: mixed ? ["ordinary text"] : [], thoughts: [{ content: "reasoning text" }] },
@@ -198,7 +198,6 @@ describe("connected capture recovery", () => {
     expect(result.ok).toBe(true);
     expect(await dom.__captureRuntime.storedNativeReplies(result.envelope)).toEqual(native);
     expect(result.envelope.raw_provider_payload.staged_raw_json).toEqual(expect.any(String));
-    // Canonical thinking/text blocks: test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end.
     expect(result.envelope.session.turns).toEqual([]);
   });
 
@@ -246,9 +245,9 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     const { dom, sendRuntimeMessage } = installChatgpt({ fetch });
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "backfill_exact_capture", providerSessionId: "conversation-1", deferReceiver: true });
     expect(result).toMatchObject({ ok: true, deferred: true, envelope: { session: { provider_session_id: "conversation-1", turns: [] }, raw_provider_payload: expect.any(Object) } });
-    const retained = await dom.__captureRuntime.storedNativeReplies(result.envelope);
-    expect(retained).toEqual(payload);
-    expect(retained.mapping.reasoning.message.content.thoughts.map(item => item.content || item.summary).join("\n")).toBe(text);
+    const stored = await dom.__captureRuntime.storedNativeReplies(result.envelope);
+    expect(stored).toEqual(payload);
+    expect(stored.mapping.reasoning.message.content.thoughts.map(item => item.content || item.summary).join("\n")).toBe(text);
     expect(fetch.mock.calls.map(([url]) => new globalThis.URL(url).pathname)).toEqual(["/api/auth/session", "/backend-api/conversation/conversation-1"]);
   });
 
@@ -501,10 +500,10 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
 
   });
 
-  it("fails closed when the shared throttle authority is unavailable", async () => {
+  it("fails closed when the shared throttle is unavailable", async () => {
     const fetch = vi.fn(async () => notFoundResponse());
     const { sendRuntimeMessage } = installChatgpt({
-      url: "https://chatgpt.com/c/authority-unavailable",
+      url: "https://chatgpt.com/c/throttle-unavailable",
       fetch,
       runtimeMessage: async (message) => {
         if (message.type === "polylogue.providerThrottle") throw new Error("runtime unavailable");
@@ -518,10 +517,10 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("fails closed when the shared throttle authority returns a negative response", async () => {
+  it("fails closed when the shared throttle returns a negative response", async () => {
     const fetch = vi.fn(async () => notFoundResponse());
     const { sendRuntimeMessage } = installChatgpt({
-      url: "https://chatgpt.com/c/authority-negative",
+      url: "https://chatgpt.com/c/throttle-negative",
       fetch,
       runtimeMessage: async (message) => {
         if (message.type === "polylogue.providerThrottle") return { ok: false, error: "worker reloading" };
@@ -536,11 +535,10 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
   });
 });
 
-describe("ChatGPT canonical asset-plan consumption", () => {
-  // Canonical pointer classification and sandbox punctuation/deduplication:
-  // test_parsers_chatgpt.py audio/pointer and sandbox-link controls. These
-  // tests exercise the content bridge consuming that parser's descriptors.
-  it("acquires a canonical audio descriptor through its exact provider file ID", async () => {
+describe("ChatGPT asset-plan consumption", () => {
+  // The receiver's ChatGPT parser classifies pointers and sandbox links.
+  // These tests exercise the content bridge consuming its descriptors.
+  it("acquires an audio descriptor through its exact provider file ID", async () => {
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input), "https://chatgpt.com");
       if (url.pathname === "/api/auth/session") return jsonResponse({ accessToken: "synthetic-asset-token" });
@@ -565,7 +563,7 @@ describe("ChatGPT canonical asset-plan consumption", () => {
     expect(fetch.mock.calls.some(([url]) => String(url).includes("/backend-api/files/file-TRANSCRIBE8/download"))).toBe(true);
   });
 
-  it("keeps duplicate provider IDs in distinct canonical occurrence acquisitions", async () => {
+  it("keeps duplicate provider IDs in distinct occurrence acquisitions", async () => {
     const { dom, sendRuntimeMessage } = installChatgpt({ fetch: async (input) => {
       const url = new URL(String(input), "https://chatgpt.com");
       if (url.pathname === "/api/auth/session") return jsonResponse({ accessToken: "synthetic-asset-token" });
@@ -751,7 +749,7 @@ describe("chatgpt.js capture-initiated native fetch does not observe itself", ()
 });
 
 
-it.each(["success", "failure", "cancel"])("retains exact native progress without settling the response early: %s", async (outcome) => {
+it.each(["success", "failure", "cancel"])("keeps exact native progress without settling the response early: %s", async (outcome) => {
   let entered = false;
   let finish;
   let requestId;
@@ -810,7 +808,7 @@ it.each(["success", "failure", "cancel"])("retains exact native progress without
 });
 
 
-it("retains a pending native-header marker until original cancellation drains", async () => {
+it("keeps a pending native-header marker until original cancellation drains", async () => {
   let finishHeader;
   let headerEntered = false;
   const { sendRuntimeMessage } = installChatgpt({
@@ -905,18 +903,18 @@ it.each(["success", "failure", "cancel", "ambiguous", "observer_failure"])("filt
   const marker=(phase,state,extra={})=>({at:new Date().toISOString(),stage:"native_preparation_progress",phase,state,acquisition_ref:rawRef.id,native_request_id:nativeRequestId,...extra});
   const historical=marker("normalize_start","BEGIN");
   emitStorage({polylogueDebugLog:{oldValue:[historical],newValue:[historical]}});
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","BEGIN")]}}); // No fresh admission.
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","BEGIN")]}}); // No fresh start.
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{acquisition_ref:"other"})]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:"polylogue-native-fetch-1-foreign"})]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:undefined})]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{native_request_id:"staging-uuid"})]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{started_at:Date.now()+1000})]}});
-  const admission=marker("normalize_start","BEGIN");
-  // Use an actually fresh row, not retained matching fields.
-  admission.at="2099-01-01T00:00:01.000Z";
-  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[admission]}});
+  const fresh=marker("normalize_start","BEGIN");
+  // Use an actually fresh row, not earlier matching fields.
+  fresh.at="2099-01-01T00:00:01.000Z";
+  emitStorage({polylogueDebugLog:{oldValue:[],newValue:[fresh]}});
   const preparation=marker("native_prepare","BEGIN");
-  emitStorage({polylogueDebugLog:{oldValue:[admission],newValue:[preparation,admission]}});
+  emitStorage({polylogueDebugLog:{oldValue:[fresh],newValue:[preparation,fresh]}});
   emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("native_prepare","END",{token:"private"})]}});
   if(outcome==="ambiguous") emitStorage({polylogueDebugLog:{oldValue:[],newValue:[marker("normalize_start","BEGIN",{at:"2099-01-01T00:00:02.000Z"})]}});
   let cancellation;

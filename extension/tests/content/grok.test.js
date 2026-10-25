@@ -31,7 +31,7 @@ function byteResponse(bytes, status = 200) {
 function conversationMetadata(overrides = {}) {
   return {
     conversationId,
-    title: "Kane's insatiable seed: breeding legacy",
+    title: "Kane's insatiable seed: breeding lines",
     temporary: false,
     createTime: "2026-06-27T12:39:08.985242Z",
     modifyTime: "2026-06-27T13:46:12.022Z",
@@ -122,7 +122,7 @@ function installFullCapture(fetchImpl, { url, captureResult = null } = {}) {
   new Script(contentSource).runInContext(context);
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
-      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      const listener = runtimeListeners.find((handler) => handler(message, {}, resolve) === true);
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
@@ -179,7 +179,7 @@ describe("Grok native capture end to end", () => {
     expect(await second).toMatchObject({ ok: false, error: "capture_cancelled" });
   });
 
-  it("retains original text and reasoning steps for canonical preparation and forwards capture reason", async () => {
+  it("keeps original text and reasoning steps for preparation and forwards capture reason", async () => {
     const { dom, runtimeMessages, sendRuntimeMessage } = installFullCapture(conversationFetchImpl());
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_missing" });
 
@@ -187,14 +187,14 @@ describe("Grok native capture end to end", () => {
     expect(response.envelope.raw_provider_payload).toBeTruthy();
     expect(response.envelope.session.provider_session_id).toBe(conversationId);
     expect(response.envelope.session.session_kind).toBe("standard");
-    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
-    expect(retained.responses.responses).toEqual([humanResponse(), assistantResponse()]);
+    const stored = await dom.__captureRuntime.storedNativeReplies(response.envelope);
+    expect(stored.responses.responses).toEqual([humanResponse(), assistantResponse()]);
     expect(response.envelope.raw_provider_payload).toBeDefined();
     expect(response.envelope.session.turns).toEqual([]);
     expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toEqual([expect.objectContaining({ reason: "auto_capture_missing" })]);
   });
 
-  it("uses the canonical temporary session kind while retaining the original provider flag", async () => {
+  it("uses the temporary session kind while keeping the original provider flag", async () => {
     const { dom, sendRuntimeMessage } = installFullCapture(
       conversationFetchImpl({ conversation: conversationMetadata({ temporary: true }) }),
     );
@@ -229,18 +229,18 @@ describe("Grok native capture end to end", () => {
     expect(await (await dom.__captureRuntime.staging.file(acquired.staged_asset.id)).text()).toBe("polylogue grok attachment fixture\n");
   });
 
-  it("retains unrecognized toolResponses verbatim for canonical receiver diagnostics", async () => {
+  it("keeps unrecognized toolResponses verbatim for receiver diagnostics", async () => {
     const withOddTool = assistantResponse({ toolResponses: [{ weird_shape: true, payload: [1, 2, 3] }] });
     const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [humanResponse(), withOddTool] }));
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
     expect(response.ok).toBe(true);
-    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
-    expect(retained.responses.responses[1].toolResponses).toEqual(withOddTool.toolResponses);
+    const stored = await dom.__captureRuntime.storedNativeReplies(response.envelope);
+    expect(stored.responses.responses[1].toolResponses).toEqual(withOddTool.toolResponses);
     expect(response.envelope.raw_provider_payload).toBeDefined();
   });
 
-  it("retains web search evidence verbatim for canonical receiver tool blocks", async () => {
+  it("keeps web search evidence verbatim for receiver tool blocks", async () => {
     const searchResponse = humanResponse({
       responseId: "r-search",
       query: "latest EU battery regulations",
@@ -250,8 +250,8 @@ describe("Grok native capture end to end", () => {
     const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [searchResponse, assistantResponse({ parentResponseId: "r-search" })] }));
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
-    const retained = await dom.__captureRuntime.storedNativeReplies(response.envelope);
-    expect(retained.responses.responses[0]).toEqual(searchResponse);
+    const stored = await dom.__captureRuntime.storedNativeReplies(response.envelope);
+    expect(stored.responses.responses[0]).toEqual(searchResponse);
     expect(response.envelope.raw_provider_payload).toBeDefined();
   });
 
