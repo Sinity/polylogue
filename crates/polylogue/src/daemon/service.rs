@@ -731,8 +731,8 @@ pub fn start(
             path,
         } => match crate::sinex::open(root, &sinex)? {
             (archive, lock, Ok(connection)) => {
-                let engine = Engine::on_sinex(config, archive.clone(), connection)
-                    .map_err(|e| to_io(&e))?;
+                let engine =
+                    Engine::on_sinex(config, archive.clone(), connection).map_err(|e| to_io(&e))?;
                 (archive, lock, ModeState::Primary, Some(engine))
             }
             (archive, lock, Err(error)) => {
@@ -754,8 +754,12 @@ pub fn start(
     let per_reader = settings
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;
-    let reads = ReadPool::with_budget(&archive, settings.workers, per_reader * settings.workers as u64)
-        .map_err(|e| to_io(&e))?;
+    let reads = ReadPool::with_budget(
+        &archive,
+        settings.workers,
+        per_reader * settings.workers as u64,
+    )
+    .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     // The loop's first pass starts as soon as it runs.
     let status = Arc::new(Mutex::new(LoopStatus {

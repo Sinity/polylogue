@@ -82,12 +82,7 @@ impl InputRecord {
                  ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
             )?
             .execute(params![
-                self.input,
-                r.number,
-                r.produced,
-                r.chain,
-                r.length,
-                seq
+                self.input, r.number, r.produced, r.chain, r.length, seq
             ])?;
         }
         if let Some(e) = &self.extent {
@@ -134,8 +129,10 @@ impl InputRecord {
                 o.excision,
             ])?;
             if let Some((container, index)) = &o.container {
-                tx.prepare_cached("INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3)")?
-                    .execute(params![o.id, container, index])?;
+                tx.prepare_cached(
+                    "INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3)",
+                )?
+                .execute(params![o.id, container, index])?;
             }
         }
         Ok(())
@@ -144,9 +141,10 @@ impl InputRecord {
 
 /// Every observation of `input`, as records, in the order they were made.
 pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRecord>> {
-    let format: String = conn.query_row("SELECT format FROM input WHERE id = ?1", [input], |r| {
-        r.get(0)
-    })?;
+    let format: String =
+        conn.query_row("SELECT format FROM input WHERE id = ?1", [input], |r| {
+            r.get(0)
+        })?;
     let mut statement = conn.prepare(
         "SELECT o.id, o.machine, coalesce((SELECT m.host FROM machine m WHERE m.id = o.machine
                  ORDER BY m.first_seen LIMIT 1), ''),

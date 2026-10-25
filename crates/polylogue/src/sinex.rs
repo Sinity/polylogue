@@ -42,9 +42,8 @@ pub fn open(
     config: &SinexConfig,
 ) -> std::io::Result<(Archive, ArchiveLock, Result<Arc<Sinex>, String>)> {
     let opened = |sinex: &dyn polylogue_store::primary::Sinex| {
-        Archive::open_primary(root, &config.store, sinex).map_err(|e| {
-            std::io::Error::other(format!("opening the archive Sinex holds: {e}"))
-        })
+        Archive::open_primary(root, &config.store, sinex)
+            .map_err(|e| std::io::Error::other(format!("opening the archive Sinex holds: {e}")))
     };
     match Sinex::connect(config, root) {
         Ok(sinex) => {

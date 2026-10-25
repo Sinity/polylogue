@@ -57,7 +57,11 @@ fn sinex(dir: &Path) -> Running {
     let tokens = dir.join("tokens");
     fs::create_dir_all(&tokens).unwrap();
     for t in ["read", "agent", "operator"] {
-        fs::write(tokens.join(format!("{t}.token")), format!("{t}-rebuild-token")).unwrap();
+        fs::write(
+            tokens.join(format!("{t}.token")),
+            format!("{t}-rebuild-token"),
+        )
+        .unwrap();
     }
     let socket = dir.join("sinexd.sock");
     let daemon = Daemon(
@@ -161,8 +165,8 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
     // A chunked body: the JSON object starts at its first brace.
     let start = json.find('{').expect("a JSON reply");
     let end = json.rfind('}').expect("a JSON reply");
-    let value: serde_json::Value = serde_json::from_str(&json[start..=end])
-        .unwrap_or_else(|e| panic!("{e}: {reply}"));
+    let value: serde_json::Value =
+        serde_json::from_str(&json[start..=end]).unwrap_or_else(|e| panic!("{e}: {reply}"));
     value["result"]["rows"]
         .as_array()
         .unwrap_or_else(|| panic!("no rows in {value}"))
@@ -188,8 +192,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     {
         let (archive, _lock) =
             Archive::open_primary(&world.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine =
-            Engine::on_sinex(world.config(), archive, sinex.clone()).unwrap();
+        let mut engine = Engine::on_sinex(world.config(), archive, sinex.clone()).unwrap();
         world.import_exports(&mut engine);
         engine
             .writer()
@@ -214,18 +217,38 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     phase("exports imported");
     let on_sinex = Archive::on_sinex(&world.root, &running.config.store);
     let (sessions, notes) = answers(&on_sinex);
-    assert_eq!(sessions, expected, "primary and standalone give the same answers");
+    assert_eq!(
+        sessions, expected,
+        "primary and standalone give the same answers"
+    );
     assert_eq!(notes.len(), 1);
-    assert!(!world.root.join("archive.db").exists(), "primary keeps no archive.db");
-    assert!(!world.root.join("blobs").exists(), "primary keeps no local blobs");
+    assert!(
+        !world.root.join("archive.db").exists(),
+        "primary keeps no archive.db"
+    );
+    assert!(
+        !world.root.join("blobs").exists(),
+        "primary keeps no local blobs"
+    );
 
     // Sinex answers its own query language about the sessions.
     assert!(sinex_rows(&running.socket, "events where kind = polylogue.session") >= 8);
     assert!(sinex_rows(&running.socket, "events where kind = polylogue.message") > 0);
-    assert_eq!(sinex_rows(&running.socket, "events where kind = polylogue.note"), 1);
+    assert_eq!(
+        sinex_rows(&running.socket, "events where kind = polylogue.note"),
+        1
+    );
 
     // Delete the local copy and the index; rebuild with no provider file.
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm", "sinex-sent.json"] {
+    for name in [
+        "sinex.db",
+        "sinex.db-wal",
+        "sinex.db-shm",
+        "index.db",
+        "index.db-wal",
+        "index.db-shm",
+        "sinex-sent.json",
+    ] {
         let _ = fs::remove_file(world.root.join(name));
     }
     let empty = world.dir.path().join("empty-home");
@@ -248,14 +271,31 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                 dry_run: false,
             })
             .unwrap();
-        assert_eq!(excised.sessions, [polylogue_testkit::session(1).to_string()]);
+        assert_eq!(
+            excised.sessions,
+            [polylogue_testkit::session(1).to_string()]
+        );
     }
     phase("excised");
-    assert_eq!(sinex_rows(&running.socket, "events where kind = polylogue.session"), 7);
-    assert_eq!(sinex_rows(&running.socket, "events where kind = polylogue.excision"), 1);
+    assert_eq!(
+        sinex_rows(&running.socket, "events where kind = polylogue.session"),
+        7
+    );
+    assert_eq!(
+        sinex_rows(&running.socket, "events where kind = polylogue.excision"),
+        1
+    );
     let (after, _) = answers(&on_sinex);
     assert!(!after.contains_key(&polylogue_testkit::session(1).to_string()));
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm", "sinex-sent.json"] {
+    for name in [
+        "sinex.db",
+        "sinex.db-wal",
+        "sinex.db-shm",
+        "index.db",
+        "index.db-wal",
+        "index.db-shm",
+        "sinex-sent.json",
+    ] {
         let _ = fs::remove_file(world.root.join(name));
     }
     converge_on_sinex(&world, &world.home, &sinex, &running.config);

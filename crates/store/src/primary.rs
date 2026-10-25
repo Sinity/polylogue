@@ -140,7 +140,11 @@ CREATE INDEX record_input ON record(input) WHERE input IS NOT NULL;
 
 /// Where a new part of `input`'s chain goes: its place and the material
 /// before it.
-pub(crate) fn next_part(conn: &Connection, input: &str, chain: i64) -> Result<(u32, Option<String>)> {
+pub(crate) fn next_part(
+    conn: &Connection,
+    input: &str,
+    chain: i64,
+) -> Result<(u32, Option<String>)> {
     let last: Option<(i64, String)> = conn
         .prepare_cached(
             "SELECT part, id FROM material WHERE input = ?1 AND chain = ?2 ORDER BY offset DESC LIMIT 1",
@@ -165,7 +169,9 @@ pub(crate) fn record_material(conn: &Connection, record: &Record, material: &str
                 .observation
                 .as_ref()
                 .map(|o| o.id.as_str())
-                .ok_or_else(|| StoreError::Invalid("an observation record has no observation".into()))?,
+                .ok_or_else(|| {
+                    StoreError::Invalid("an observation record has no observation".into())
+                })?,
             Some(stored.input.as_str()),
         ),
         Record::Request { request, .. } => (request.id.as_str(), None),
@@ -256,7 +262,6 @@ pub(crate) fn load(
     tx.commit()?;
     Ok(loaded)
 }
-
 
 /// The Sinex materials holding `inputs`: their parts and the records of
 /// looks at them.

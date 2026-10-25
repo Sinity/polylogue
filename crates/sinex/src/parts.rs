@@ -94,7 +94,10 @@ pub(crate) fn held(store: &hashed_blobs::Reader, held: HeldMaterial) -> Result<H
             .read(&hashed_blobs::Hash(hash.0))?
             .read_to_end(&mut bytes)?;
         if BlobHash::of(&bytes) != hash {
-            return Err(Error::Invalid(format!("{} failed its check", material.blob)));
+            return Err(Error::Invalid(format!(
+                "{} failed its check",
+                material.blob
+            )));
         }
         let record: Record = serde_json::from_slice(&bytes)?;
         return Ok(Held::Record {

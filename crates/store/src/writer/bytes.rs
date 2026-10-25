@@ -42,11 +42,7 @@ pub(super) fn write_bytes(
 /// What one step of an input adds to the register, from the input's latest
 /// revision and the step's change.
 /// Returns it with the revision chain the step's records are in.
-fn input_record(
-    tx: &Transaction<'_>,
-    b: &Batch,
-    seq: i64,
-) -> Result<(Option<i64>, InputRecord)> {
+fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRecord)> {
     let latest: Option<(i64, i64, i64, String)> = tx
         .prepare_cached(
             "SELECT number, chain, length, produced FROM revision WHERE input = ?1
@@ -186,7 +182,11 @@ pub(super) fn observation(
         return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    let container = match o.import.as_ref().and_then(|member| member.container.as_ref()) {
+    let container = match o
+        .import
+        .as_ref()
+        .and_then(|member| member.container.as_ref())
+    {
         Some(container) => Some(crate::containers::check(tx, &b.input.id, container)?),
         None => None,
     };

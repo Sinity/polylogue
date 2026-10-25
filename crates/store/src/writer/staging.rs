@@ -121,7 +121,10 @@ impl Inner {
                     continue;
                 }
                 let crate::staging::Prepared::Local { prepared, .. } = file.file else {
-                    failed.insert(hash, "a part to send to Sinex reached the blob store".into());
+                    failed.insert(
+                        hash,
+                        "a part to send to Sinex reached the blob store".into(),
+                    );
                     continue;
                 };
                 match prepared.install_checked::<StoreError>(|| {
@@ -278,8 +281,8 @@ impl Inner {
                 b.piece = None;
             }
             let (chain, record) = write_bytes(&tx, b, seq)?;
-            let chain =
-                chain.ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
+            let chain = chain
+                .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
             if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
                 let piece = b.piece.as_ref().map(|piece| piece.hash);
                 let file = piece.and_then(|hash| files.iter().find(|f| f.hash() == hash));
@@ -400,7 +403,6 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
         .collect()
 }
 
-
 /// Sends what one step stored to Sinex, before its rows commit: its new
 /// bytes as a part of the input, or, when it found none, the record alone.
 pub(super) fn send_to_sinex(
@@ -423,7 +425,8 @@ pub(super) fn send_to_sinex(
         return Ok(());
     };
     let (index, previous) = crate::primary::next_part(tx, &record.input, extent.chain)?;
-    let mut bytes: Box<dyn std::io::Read> = match (file.map(|f| &f.file), piece.map(|p| &p.stored)) {
+    let mut bytes: Box<dyn std::io::Read> = match (file.map(|f| &f.file), piece.map(|p| &p.stored))
+    {
         (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
         (_, Some(Stored::Inline(data))) => Box::new(std::io::Cursor::new(zstd::bulk::decompress(
             data,

@@ -24,7 +24,9 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                 stored
                     .observation
                     .as_ref()
-                    .ok_or_else(|| Error::Invalid("an observation record has no observation".into()))?
+                    .ok_or_else(|| Error::Invalid(
+                        "an observation record has no observation".into()
+                    ))?
                     .id
             ),
             InputRef {
@@ -33,10 +35,7 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                 host: input.host.clone(),
             },
         ),
-        Record::Request { request, .. } => (
-            format!("request:{}", request.id),
-            requests(host),
-        ),
+        Record::Request { request, .. } => (format!("request:{}", request.id), requests(host)),
         Record::Excision(excision) => (format!("excision:{}", excision.id), requests(host)),
     };
     let bytes = serde_json::to_vec(record)?;
@@ -148,18 +147,18 @@ pub(crate) fn request_event(
                         kind: "revises".into(),
                         other: format!("note:{previous}"),
                     })
-                    .chain(note.relations.iter().map(|(relation, other)| {
-                        event::NoteRelation {
-                            kind: relation.as_str().to_owned(),
-                            other: other.clone(),
-                        }
-                    }))
+                    .chain(
+                        note.relations
+                            .iter()
+                            .map(|(relation, other)| event::NoteRelation {
+                                kind: relation.as_str().to_owned(),
+                                other: other.clone(),
+                            }),
+                    )
                     .collect(),
             })?,
         ),
-        UserWrite::Withdraw {
-            author, reason, ..
-        } => {
+        UserWrite::Withdraw { author, reason, .. } => {
             let root = root()?;
             (
                 "polylogue.note",

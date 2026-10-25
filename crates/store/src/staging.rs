@@ -141,10 +141,7 @@ fn inline(bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
         crate::Piece {
             hash: BlobHash::of(bytes),
             size: bytes.len() as u64,
-            stored: crate::blobs::Stored::Inline(zstd::bulk::compress(
-                bytes,
-                crate::blobs::LEVEL,
-            )?),
+            stored: crate::blobs::Stored::Inline(zstd::bulk::compress(bytes, crate::blobs::LEVEL)?),
         },
         None,
     ))

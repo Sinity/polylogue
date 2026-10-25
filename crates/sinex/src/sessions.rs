@@ -77,7 +77,10 @@ fn send_chunks(sinex: &Sinex, events: Vec<ProducerEvent>) -> Result<()> {
                     hash.update(&at.anchor.to_le_bytes());
                 }
             }
-            (format!("events:{}", hash.finalize().to_hex()), chunk.to_vec())
+            (
+                format!("events:{}", hash.finalize().to_hex()),
+                chunk.to_vec(),
+            )
         })
         .collect();
     if chunks.is_empty() {
@@ -260,7 +263,11 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
         first.get_or_insert(location);
         messages.push(producer_event(
             "polylogue.message",
-            message_payload(m, row, copies_of.remove(&m.id.to_string()).unwrap_or_default())?,
+            message_payload(
+                m,
+                row,
+                copies_of.remove(&m.id.to_string()).unwrap_or_default(),
+            )?,
             location,
         )?);
     }
@@ -407,12 +414,12 @@ fn tool_calls(
             row["result_chain"].as_i64(),
             row["result_start"].as_i64(),
         ) {
-            (Some(input), Some(chain), Some(start)) => anchors
-                .at(input, chain, start)?
-                .map(|l| event::RecordRef {
+            (Some(input), Some(chain), Some(start)) => {
+                anchors.at(input, chain, start)?.map(|l| event::RecordRef {
                     material: l.material,
                     anchor: l.anchor,
-                }),
+                })
+            }
             _ => None,
         };
         out.push(producer_event(

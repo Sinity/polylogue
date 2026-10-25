@@ -1028,10 +1028,8 @@ fn excise_on_sinex(
     }
     crate::primary::forget_inputs(archive, plan.inputs())?;
     crate::primary::forget_records(archive, &done.notes)?;
-    let record = crate::primary::Record::Excision(crate::primary::excision_record(
-        archive,
-        &request.id,
-    )?);
+    let record =
+        crate::primary::Record::Excision(crate::primary::excision_record(archive, &request.id)?);
     let material = sinex.send_record(&record)?;
     crate::primary::record_material(archive, &record, &material)
 }

@@ -130,7 +130,13 @@ impl Client {
 
     /// Writes `bytes` (`length` long, named `blob`) to the spool directory of
     /// the frame `name`.
-    pub(crate) fn stage(&self, name: &str, blob: &str, length: u64, bytes: impl Read) -> Result<()> {
+    pub(crate) fn stage(
+        &self,
+        name: &str,
+        blob: &str,
+        length: u64,
+        bytes: impl Read,
+    ) -> Result<()> {
         spool::stage(&self.store_root, &self.producer, name, blob, length, bytes)
             .map_err(Error::Invalid)
     }

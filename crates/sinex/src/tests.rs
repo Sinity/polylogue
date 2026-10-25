@@ -58,7 +58,10 @@ fn a_note_request_becomes_a_note_event_in_its_family() {
     assert_eq!(payload["relations"][0]["kind"], "revises");
     let event: sinex_model::event_types::polylogue::Note = serde_json::from_value(payload).unwrap();
     assert_eq!(event.note, note.id);
-    assert!(request_event(&note, None).is_err(), "a note needs its family");
+    assert!(
+        request_event(&note, None).is_err(),
+        "a note needs its family"
+    );
 }
 
 #[test]
@@ -90,7 +93,11 @@ fn a_held_part_carries_the_rows_that_place_it() {
         ..
     } = held(
         &store,
-        material("polylogue-claude-code", &blob, serde_json::json!({ "polylogue": record })),
+        material(
+            "polylogue-claude-code",
+            &blob,
+            serde_json::json!({ "polylogue": record }),
+        ),
     )
     .unwrap()
     else {
@@ -113,7 +120,11 @@ fn a_held_record_is_read_from_the_content_store_and_checked() {
     let reader = hashed_blobs::Reader::new(dir.path(), vec![]);
     let held = held(
         &reader,
-        material(RECORDS, &format!("blake3:{}", hash.hex()), serde_json::json!({})),
+        material(
+            RECORDS,
+            &format!("blake3:{}", hash.hex()),
+            serde_json::json!({}),
+        ),
     )
     .unwrap();
     let Held::Record {

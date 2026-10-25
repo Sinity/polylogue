@@ -213,11 +213,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
             .is_empty()
     );
     let before = w.count("SELECT count(*) AS n FROM a.observation");
-    let mut captured = Captured::stream(
-        &e.archive,
-        std::fs::File::open(&path).unwrap(),
-    )
-    .unwrap();
+    let mut captured = Captured::stream(&e.archive, std::fs::File::open(&path).unwrap()).unwrap();
     captured.member = Some(polylogue_store::ImportMember {
         version: 1,
         acquisition: "competing".into(),

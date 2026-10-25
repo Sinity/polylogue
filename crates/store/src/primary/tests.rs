@@ -162,15 +162,24 @@ fn every_register_row_is_sent_first_and_a_lost_copy_is_rebuilt_from_sinex() {
         let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
         for (bytes, change) in [
             (b"{\"first\":1}\n".as_slice(), Change::First),
-            (b"{\"second\":2}\n".as_slice(), Change::Appended { from: 12 }),
+            (
+                b"{\"second\":2}\n".as_slice(),
+                Change::Appended { from: 12 },
+            ),
         ] {
             let prepared = archive.prepare_bytes(bytes).unwrap();
-            let length = if matches!(change, Change::First) { 12 } else { 25 };
+            let length = if matches!(change, Change::First) {
+                12
+            } else {
+                25
+            };
             writer
                 .store_bytes(prepared, observed(path, change, length))
                 .unwrap();
         }
-        writer.send(observed(path, Change::Disappeared, 25)).unwrap();
+        writer
+            .send(observed(path, Change::Disappeared, 25))
+            .unwrap();
         writer.user(note()).unwrap();
         writer.flush().unwrap();
         drop(writer);
@@ -188,9 +197,20 @@ fn every_register_row_is_sent_first_and_a_lost_copy_is_rebuilt_from_sinex() {
             })
             .collect();
         assert_eq!(parts, [(0, "synthetic-input"), (1, "synthetic-input")]);
-        assert_eq!(held.len(), 4, "two parts, the disappearance and the request");
+        assert_eq!(
+            held.len(),
+            4,
+            "two parts, the disappearance and the request"
+        );
     }
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm"] {
+    for name in [
+        "sinex.db",
+        "sinex.db-wal",
+        "sinex.db-shm",
+        "index.db",
+        "index.db-wal",
+        "index.db-shm",
+    ] {
         let _ = std::fs::remove_file(root.join(name));
     }
     let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
@@ -205,7 +225,9 @@ fn nothing_is_written_locally_that_sinex_did_not_take() {
     let sinex = Recorder::new(&store, true);
     let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
     let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-    let prepared = archive.prepare_bytes(b"{\"first\":1}\n".as_slice()).unwrap();
+    let prepared = archive
+        .prepare_bytes(b"{\"first\":1}\n".as_slice())
+        .unwrap();
     assert!(
         writer
             .store_bytes(prepared, observed("/p/s.jsonl", Change::First, 12))
@@ -227,7 +249,9 @@ fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuil
     let before = {
         let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
         let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-        let prepared = archive.prepare_bytes(b"{\"first\":1}\n".as_slice()).unwrap();
+        let prepared = archive
+            .prepare_bytes(b"{\"first\":1}\n".as_slice())
+            .unwrap();
         writer
             .store_bytes(prepared, observed(path, Change::First, 12))
             .unwrap();
@@ -253,23 +277,37 @@ fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuil
             !held.iter().any(|h| matches!(h, Held::Part { .. })),
             "Sinex excised the input's part"
         );
-        assert!(
-            held.iter()
-                .any(|h| matches!(h, Held::Record { record: Record::Excision(_), .. }))
-        );
+        assert!(held.iter().any(|h| matches!(
+            h,
+            Held::Record {
+                record: Record::Excision(_),
+                ..
+            }
+        )));
     }
     assert!(
         store.join("blobs").exists(),
         "Polylogue never deletes from Sinex's content store"
     );
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm"] {
+    for name in [
+        "sinex.db",
+        "sinex.db-wal",
+        "sinex.db-shm",
+        "index.db",
+        "index.db-wal",
+        "index.db-shm",
+    ] {
         let _ = std::fs::remove_file(root.join(name));
     }
     let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
     assert_eq!(register(&archive), before);
     let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
     let excised: i64 = conn
-        .query_row("SELECT count(*) FROM excised WHERE kind = 'input'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM excised WHERE kind = 'input'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(excised, 1, "the rebuilt copy still refuses the input");
 }

@@ -29,10 +29,7 @@ impl polylogue_store::primary::Sinex for Empty {
     ) -> polylogue_store::Result<String> {
         Err(polylogue_store::StoreError::Sinex("synthetic".into()))
     }
-    fn send_record(
-        &self,
-        _: &polylogue_store::primary::Record,
-    ) -> polylogue_store::Result<String> {
+    fn send_record(&self, _: &polylogue_store::primary::Record) -> polylogue_store::Result<String> {
         Err(polylogue_store::StoreError::Sinex("synthetic".into()))
     }
     fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
@@ -218,7 +215,10 @@ fn primary_without_sinex_or_a_local_copy_does_not_start() {
 #[test]
 fn primary_with_a_local_copy_reads_offline_and_pauses_writes() {
     let w = ClaudeHome::new();
-    w.append("later.jsonl", &user("later", "later", "Must wait for Sinex"));
+    w.append(
+        "later.jsonl",
+        &user("later", "later", "Must wait for Sinex"),
+    );
     let store = w.dir.path().join("sinex-store");
     drop(polylogue_store::Archive::open_primary(&w.root, &store, &Empty).unwrap());
     let runtime = start(&w.root, w.config(64 << 20), primary(&w)).unwrap();

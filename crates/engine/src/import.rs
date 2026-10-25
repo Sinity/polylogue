@@ -70,11 +70,7 @@ impl Engine {
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
                 self.import_zip(path, file, facts, membership, &mut report)?;
             } else {
-                let mut captured = Captured::file(
-                    &self.archive,
-                    &mut file,
-                    polylogue_export,
-                )?;
+                let mut captured = Captured::file(&self.archive, &mut file, polylogue_export)?;
                 captured.member = Some(membership.clone());
                 unchanged(&file, facts, captured.prepared.len())?;
                 let origin = self
@@ -279,21 +275,17 @@ impl Captured {
     }
 
     /// Bytes that can be read only once, inspected from a scratch copy.
-    fn stream(
-        archive: &Archive,
-        reader: impl std::io::Read,
-    ) -> polylogue_store::Result<Self> {
+    fn stream(archive: &Archive, reader: impl std::io::Read) -> polylogue_store::Result<Self> {
         let mut reader = CaptureReader {
             reader,
             size: 0,
             head: Vec::new(),
         };
-        let (prepared, polylogue_export) =
-            archive.prepare_stream(&mut reader, |scratch| {
-                Ok(polylogue_sources::polylogue_export::recognize_reader(
-                    scratch,
-                )?)
-            })?;
+        let (prepared, polylogue_export) = archive.prepare_stream(&mut reader, |scratch| {
+            Ok(polylogue_sources::polylogue_export::recognize_reader(
+                scratch,
+            )?)
+        })?;
         Ok(Self {
             prepared,
             head: reader.head,
