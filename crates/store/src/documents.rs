@@ -16,7 +16,7 @@ pub(crate) struct Source<'a> {
     pub input_id: &'a str,
     pub chain: i64,
     /// Later records of the chain restate earlier ones.
-    pub restates: bool,
+    pub repeats_whole_conversations: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -24,7 +24,7 @@ pub(crate) struct Source<'a> {
 }
 
 /// What decides the shown version: a known source time first, then the
-/// newest, then the more faithful route, then the larger content hash, then
+/// newest, then the more faithful arrival, then the larger content hash, then
 /// the smaller input ID and the newer chain, so arrival order never decides.
 type Rank = (bool, Option<i64>, i64, Vec<u8>, String, i64);
 
@@ -75,7 +75,7 @@ pub(crate) fn write(
         )
         .optional()?;
     if let Some(pk) = existing {
-        // Within one chain the earliest record wins, or the latest in a restating chain.
+        // Within one chain the earliest record wins, or the latest in a repeating whole conversations chain.
         let earlier: Option<i64> = tx
             .query_row(
                 "SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
@@ -85,7 +85,7 @@ pub(crate) fn write(
             .optional()?;
         let start = row.offset as i64;
         if earlier.is_some_and(|earlier| {
-            if source.restates {
+            if source.repeats_whole_conversations {
                 start < earlier
             } else {
                 start > earlier
@@ -95,8 +95,8 @@ pub(crate) fn write(
         }
         let shown: Option<Rank> = tx
             .query_row(
-                "SELECT s.source_time,s.route_rank,s.version_hash,r.id,s.chain FROM document_source s
-                 JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 AND s.preferred=1",
+                "SELECT s.source_time,s.arrival_rank,s.version_hash,r.id,s.chain FROM document_source s
+                 JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 AND s.shown=1",
                 [pk],
                 |r| {
                     let time: Option<i64> = r.get(0)?;
@@ -109,7 +109,7 @@ pub(crate) fn write(
             .is_none_or(|shown| better(&new, shown) || (shown.4 == new.4 && shown.5 == new.5));
         if wins {
             tx.execute(
-                "UPDATE document_source SET preferred=0 WHERE document_pk=?1",
+                "UPDATE document_source SET shown=0 WHERE document_pk=?1",
                 [pk],
             )?;
         }
@@ -133,13 +133,13 @@ fn set_source(
     row: &DocumentRow,
     time: Option<i64>,
     hash: &[u8; 32],
-    preferred: bool,
+    shown: bool,
 ) -> Result<()> {
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,route_rank,source_time,version_hash,preferred)
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
         ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
-            route_rank=excluded.route_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,preferred=excluded.preferred",
-        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&hash[..],preferred])?;
+            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&hash[..],shown])?;
     Ok(())
 }
 
@@ -265,7 +265,7 @@ impl DocumentRead<'_, '_> {
         Ok(())
     }
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
-        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.preferred FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
+        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.shown FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
         let mut rows = statement.query([self.pk])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -277,7 +277,7 @@ impl DocumentRead<'_, '_> {
                 start: row.get(2)?,
                 end: row.get(3)?,
                 version: hex(&row.get::<_, Vec<u8>>(4)?),
-                preferred: row.get(5)?,
+                shown: row.get(5)?,
                 locations,
             });
         }
@@ -292,6 +292,6 @@ pub struct DocumentSource {
     pub start: i64,
     pub end: i64,
     pub version: String,
-    pub preferred: bool,
+    pub shown: bool,
     pub locations: Vec<Json>,
 }

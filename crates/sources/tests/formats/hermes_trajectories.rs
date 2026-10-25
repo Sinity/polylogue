@@ -113,7 +113,7 @@ fn atif_future_versions_are_explicitly_unsupported_and_foreign_schema_keys_do_no
     assert!(messages(&parsed).is_empty());
     assert!(sessions(&parsed).is_empty());
     assert!(
-        parsed["accounting"]["unknown"]
+        parsed["counts"]["skipped"]
             .as_object()
             .unwrap()
             .keys()

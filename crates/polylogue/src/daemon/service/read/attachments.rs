@@ -45,7 +45,7 @@ pub(super) fn labels(
                     format!("{} stored bytes", resolution.matches[0].size)
                 }
                 AttachmentState::Ambiguous => format!(
-                    "{} stored files match, choose one with --asset",
+                    "{} stored files match, choose one with --input",
                     resolution.matches.len()
                 ),
                 AttachmentState::Unavailable => "no stored file matches".into(),

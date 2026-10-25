@@ -6,7 +6,6 @@ fn n(line: &str) -> String {
 
 #[test]
 fn prefixes_do_not_change_the_key() {
-    // Law 97.
     for line in [
         "cargo test -p store",
         "cd /src/tide && cargo test -p store",

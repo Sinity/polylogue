@@ -25,8 +25,8 @@ mod usage;
 mod work;
 
 pub use batch::{
-    Accounting, BackgroundUpdate, CountMismatch, Disposition, DocumentRow, InlineBlob, MessageRow,
-    OrderKey, Output, RepoLookup,
+    BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, MessageRow, OrderKey, Output,
+    RecordCounts, RecordOutcome, RepoLookup,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,
@@ -37,10 +37,10 @@ pub use delivery::{DELIVERY_STATES, DeliveryEvent, DeliveryOutcome, DeliverySend
 pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
-pub mod observations;
+pub mod reports;
 pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy};
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
-pub use observations::{QuotaObservation, UsageObservation};
+pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
 pub mod text;

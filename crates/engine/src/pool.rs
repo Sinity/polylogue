@@ -34,13 +34,13 @@ pub struct Job {
     /// when parser state is rebuilt by parsing the input again.
     pub start: u64,
     /// Where new bytes start; `None` when the range is only parsed again.
-    pub piece_from: Option<u64>,
+    pub store_from: Option<u64>,
     pub end: u64,
     /// This range reaches the observed source end, not merely a chunk boundary.
     pub at_end: bool,
     /// The input's stored length once this job is written.
     pub length: u64,
-    pub carry: Option<Json>,
+    pub parser_state: Option<Json>,
     pub priority: Priority,
     /// Where the bytes come from.
     pub source: Bytes,
@@ -74,7 +74,7 @@ pub struct Done {
     /// Offset after the last complete record parsed; the next job of this
     /// input starts here.
     pub parsed_upto: u64,
-    pub carry: Option<Json>,
+    pub parser_state: Option<Json>,
     /// The last bytes read, kept to check the next growth.
     pub tail: Vec<u8>,
     pub stored: u64,
@@ -170,7 +170,7 @@ const GROUP_BYTES: u64 = 64 << 20;
 /// A bounded worker group whose prepared files stay private until the writer
 /// stores them.
 struct Group {
-    held: Vec<(Option<PreparedBatch>, Done, u64)>,
+    waiting: Vec<(Option<PreparedBatch>, Done, u64)>,
     bytes: u64,
 }
 
@@ -193,7 +193,7 @@ fn work(
     done: &Sender<Done>,
 ) {
     let mut group = Group {
-        held: Vec::new(),
+        waiting: Vec::new(),
         bytes: 0,
     };
     loop {
@@ -203,7 +203,7 @@ fn work(
                 if let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front()) {
                     break Some(j);
                 }
-                if !group.held.is_empty() {
+                if !group.waiting.is_empty() {
                     // Nothing waiting: make the group durable and hand it on
                     // now rather than hold it.
                     break None;
@@ -223,7 +223,7 @@ fn work(
         let size = job.bytes();
         let live = job.priority == Priority::Live;
         let (batch, result) = run(job, archive, store);
-        group.held.push((batch, result, size));
+        group.waiting.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
             return;
@@ -239,14 +239,17 @@ fn flush(
     store: &Arc<hashed_blobs::Store>,
     done: &Sender<Done>,
 ) -> bool {
-    let mut held = std::mem::take(&mut group.held);
-    let durable = held
+    let mut waiting = std::mem::take(&mut group.waiting);
+    let durable = waiting
         .iter()
         .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
     if durable {
-        let queued: Vec<bool> = held.iter().map(|(batch, _, _)| batch.is_some()).collect();
+        let queued: Vec<bool> = waiting
+            .iter()
+            .map(|(batch, _, _)| batch.is_some())
+            .collect();
         let mut batches = Vec::new();
-        for (batch, _, size) in &mut held {
+        for (batch, _, size) in &mut waiting {
             if let Some(mut batch) = batch.take() {
                 let owner = Arc::clone(shared);
                 let bytes = *size;
@@ -260,7 +263,7 @@ fn flush(
         match results {
             Ok(results) => {
                 let mut results = results.into_iter();
-                for ((_, result, _), queued) in held.iter_mut().zip(queued) {
+                for ((_, result, _), queued) in waiting.iter_mut().zip(queued) {
                     if queued {
                         match results.next() {
                             Some(Err(error)) => result.error = Some(error.to_string()),
@@ -271,13 +274,13 @@ fn flush(
                 }
             }
             Err(error) => {
-                for (_, result, _) in &mut held {
+                for (_, result, _) in &mut waiting {
                     result.error.get_or_insert_with(|| error.to_string());
                 }
             }
         }
     } else {
-        for (batch, result, size) in &mut held {
+        for (batch, result, size) in &mut waiting {
             if let Some(mut batch) = batch.take() {
                 let owner = Arc::clone(shared);
                 let bytes = *size;
@@ -291,7 +294,8 @@ fn flush(
         }
     }
     group.bytes = 0;
-    held.into_iter()
+    waiting
+        .into_iter()
         .all(|(_, result, _)| done.send(result).is_ok())
 }
 
@@ -306,7 +310,7 @@ fn run(
         start: job.start,
         end: job.end,
         parsed_upto: job.start,
-        carry: job.carry.take(),
+        parser_state: job.parser_state.take(),
         tail: Vec::new(),
         stored: 0,
         error: None,
@@ -332,9 +336,9 @@ fn run(
     };
     out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
-    let piece = match job.piece_from {
+    let new_blob = match job.store_from {
         Some(from) => match time(Stage::Store, || {
-            archive.prepare_piece(&bytes[(from - job.start) as usize..])
+            archive.prepare_blob(&bytes[(from - job.start) as usize..])
         }) {
             Ok((p, file)) => {
                 files.extend(file);
@@ -357,7 +361,7 @@ fn run(
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())
                     .map_err(|e| e.to_string())?;
                 time(Stage::Parse, || {
-                    parser.steps(out.carry.as_ref(), &bytes, job.start)
+                    parser.steps(out.parser_state.as_ref(), &bytes, job.start)
                 })
                 .map_err(|e| e.to_string())
             }))
@@ -370,8 +374,8 @@ fn run(
                 Err(format!("the parser panicked: {why}"))
             });
             match step {
-                Ok((steps, carry)) => {
-                    out.carry = Some(carry);
+                Ok((steps, parser_state)) => {
+                    out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
                         for blob in std::mem::take(&mut step.output.blobs) {
@@ -390,12 +394,12 @@ fn run(
                         out.parsed_upto = job.start + step.consumed;
                         let mut p = ParseStep::new(
                             step.output,
-                            step.accounting,
+                            step.counts,
                             job.start + step.start..job.start + step.consumed,
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
-                        p.restates = step.restates;
+                        p.repeats_whole_conversations = step.repeats_whole_conversations;
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
                         p.prepare();
@@ -424,7 +428,7 @@ fn run(
         change: job.change,
         observation: job.observation,
         continues: job.continues,
-        piece,
+        new_blob,
         blobs: extra,
         length: job.length,
         parse,

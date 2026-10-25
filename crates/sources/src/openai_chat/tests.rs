@@ -50,9 +50,9 @@ fn an_array_with_a_tool_round_trip() {
         "chat-1#3"
     );
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
 }
 
@@ -95,16 +95,16 @@ fn refused_and_empty_messages_keep_raw_ordinals_without_breaking_parent_links() 
         step.output.messages[1].message.parent.as_ref(),
         Some(&step.output.messages[0].message.id)
     );
-    assert_eq!(step.accounting.framed, 5);
+    assert_eq!(step.counts.records, 5);
     assert_eq!(
-        step.accounting
-            .refused
+        step.counts
+            .unreadable
             .get("future_role: unknown role future_role"),
         Some(&1)
     );
     assert_eq!(
-        step.accounting
-            .unknown
+        step.counts
+            .skipped
             .get("assistant: a message with no content"),
         Some(&1)
     );
@@ -124,9 +124,9 @@ fn invalid_wrappers_refuse_the_input_without_emitting_child_messages() {
         let step = parse(file, doc);
         assert!(step.output.sessions.is_empty());
         assert!(step.output.messages.is_empty());
-        assert_eq!(step.accounting.framed, 1);
+        assert_eq!(step.counts.records, 1);
         assert_eq!(
-            step.accounting.refused.get(&format!("chat: {reason}")),
+            step.counts.unreadable.get(&format!("chat: {reason}")),
             Some(&1)
         );
     }
@@ -142,5 +142,5 @@ fn an_empty_wrapper_id_still_uses_a_nonempty_file_name() {
         step.output.messages[0].message.id.native().as_str(),
         "file#0"
     );
-    assert!(step.accounting.refused.is_empty());
+    assert!(step.counts.unreadable.is_empty());
 }

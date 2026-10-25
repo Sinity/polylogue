@@ -13,20 +13,20 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         let before;
         {
             let (mut engine, _lock) = w.engine(64 << 20);
-            assert!(engine.converge().unwrap().errors.is_empty());
+            assert!(engine.run_pass().unwrap().errors.is_empty());
             fs::write(
                 w.file("history.jsonl"),
                 claude_user("new", "history", "current sibling"),
             )
             .unwrap();
-            assert!(engine.converge().unwrap().errors.is_empty());
+            assert!(engine.run_pass().unwrap().errors.is_empty());
             before = w.texts("history");
             assert_eq!(before.len(), 2);
         }
         delete_index(&w.root);
         fault::arm("parse", "history.jsonl", Action::Panic, 0, 1);
         let (mut engine, lock) = w.engine(64 << 20);
-        let first = engine.converge().unwrap();
+        let first = engine.run_pass().unwrap();
         assert_eq!(first.errors.len(), 1, "{:?}", first.errors);
         assert!(first.errors[0].contains("panicked"));
         assert_eq!(w.texts("history"), ["current sibling"]);
@@ -38,7 +38,7 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         );
         // The fault was one-shot: retry would now succeed, but unchanged
         // failure still waits rather than silently retrying on every pass.
-        let unchanged = engine.converge().unwrap();
+        let unchanged = engine.run_pass().unwrap();
         assert!(unchanged.errors.is_empty(), "{:?}", unchanged.errors);
         assert_eq!(unchanged.bytes_read, 0);
         assert_eq!(w.texts("history"), ["current sibling"]);
@@ -46,7 +46,7 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         drop(engine);
         drop(lock);
         let (mut restarted, _lock) = w.engine(64 << 20);
-        let after = restarted.converge().unwrap();
+        let after = restarted.run_pass().unwrap();
         assert!(after.errors.is_empty(), "{:?}", after.errors);
         assert_eq!(w.texts("history"), before);
     }

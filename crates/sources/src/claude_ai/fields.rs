@@ -1,4 +1,4 @@
-//! Borrowed JSON fields keep each value's exact acquired byte coordinates.
+//! Borrowed JSON fields keep each value's exact byte range.
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;

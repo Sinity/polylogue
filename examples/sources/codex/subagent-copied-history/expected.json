@@ -1,14 +1,14 @@
 {
-  "accounting": {
-    "framed": 8,
-    "materialized": {
+  "counts": {
+    "records": 8,
+    "used": {
       "inter_agent_communication_metadata": 1,
       "response_item/agent_message": 1,
       "response_item/message": 2,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {
+    "unreadable": {},
+    "skipped": {
       "compacted: copied from the parent thread, which stores it": 1,
       "response_item/message: copied from the parent thread, which stores it": 1,
       "turn_context: copied from the parent thread, which stores it": 1

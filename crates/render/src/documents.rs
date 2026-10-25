@@ -23,11 +23,11 @@ pub(crate) fn mask(document: &mut Document) {
 fn heading(doc: &Document) -> String {
     crate::mask(doc.title.as_deref().unwrap_or(doc.purpose.as_str()))
 }
-fn pieces(doc: &Document, view: View) -> impl Iterator<Item = crate::Piece> + '_ {
+fn rendered_blocks(doc: &Document, view: View) -> impl Iterator<Item = crate::RenderedBlock> + '_ {
     doc.blocks
         .iter()
         .filter(move |b| view.keeps_block(false, b))
-        .filter_map(crate::piece)
+        .filter_map(crate::block)
 }
 pub(crate) fn terminal(doc: &Document, view: View, out: &mut dyn Write) -> io::Result<()> {
     writeln!(
@@ -38,7 +38,7 @@ pub(crate) fn terminal(doc: &Document, view: View, out: &mut dyn Write) -> io::R
         doc.purpose.as_str(),
         doc.authorship.as_str()
     )?;
-    for p in pieces(doc, view) {
+    for p in rendered_blocks(doc, view) {
         writeln!(out, "{}", p.text)?;
     }
     Ok(())
@@ -52,7 +52,7 @@ pub(crate) fn markdown(doc: &Document, view: View, out: &mut dyn Write) -> io::R
         doc.purpose.as_str(),
         doc.authorship.as_str()
     )?;
-    for p in pieces(doc, view) {
+    for p in rendered_blocks(doc, view) {
         writeln!(out, "{}\n", p.text)?;
     }
     Ok(())
@@ -67,7 +67,7 @@ pub(crate) fn html(doc: &Document, view: View, out: &mut dyn Write) -> io::Resul
         doc.purpose.as_str(),
         doc.authorship.as_str()
     )?;
-    for p in pieces(doc, view) {
+    for p in rendered_blocks(doc, view) {
         write!(out, "<pre class=\"{}\">{}</pre>", p.kind, escape(&p.text))?;
     }
     write!(out, "</section>")

@@ -66,8 +66,8 @@ fn notes_are_written_once_per_request_and_revised_in_families() {
     let r = reads.reader().unwrap();
     let current = r.note(&second.id).unwrap().unwrap();
     assert_eq!(current.value.as_deref(), Some("run cargo nextest"));
-    assert_eq!(current.root, out.id);
-    assert_eq!(r.note(&out.id).unwrap().unwrap().root, out.id);
+    assert_eq!(current.first_note, out.id);
+    assert_eq!(r.note(&out.id).unwrap().unwrap().first_note, out.id);
 }
 
 #[test]

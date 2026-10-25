@@ -1,7 +1,7 @@
 {
-  "accounting": {
-    "framed": 13,
-    "materialized": {
+  "counts": {
+    "records": 13,
+    "used": {
       "compacted": 1,
       "response_item/function_call": 2,
       "response_item/function_call_output": 2,
@@ -10,8 +10,8 @@
       "session_meta": 1,
       "turn_context": 2
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

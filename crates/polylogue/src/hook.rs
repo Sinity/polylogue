@@ -1,9 +1,9 @@
 //! The hook command a harness calls on its events (`polylogue hook
 //! <Event>`, the event's JSON on stdin).
 //!
-//! Every event is appended as one line to a carrier file for the calling
+//! Every event is appended as one line to the hook spool file of the calling
 //! harness process, with `O_APPEND` and no fsync; the daemon
-//! reads carriers through the ordinary append route. Some events also ask
+//! reads those files like any other growing file. Some events also ask
 //! the daemon for context:
 //!
 //! - `SessionStart`: the session-start brief (injected by default; the
@@ -45,14 +45,14 @@ pub const EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
-/// Where carrier files go: the hook spool the daemon's loop reads.
-pub fn carrier_dir() -> PathBuf {
+/// Where hook events go: the hook spool the daemon's loop reads.
+pub fn hook_spool_dir() -> PathBuf {
     polylogue_engine::Config::from_env().spool_dir(polylogue_sources::hook_spool::ORIGIN)
 }
 
-/// Appends one event line to the carrier of the harness process that
+/// Appends one event line to the spool file of the harness process that
 /// called the hook (this process's parent).
-pub fn append_carrier(dir: &Path, event: &str, payload: &Value) -> std::io::Result<()> {
+pub fn append_to_spool(dir: &Path, event: &str, payload: &Value) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
     let harness = std::os::unix::process::parent_id();
@@ -221,7 +221,7 @@ pub fn run(event: &str) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    if let Err(e) = append_carrier(&carrier_dir(), event, &payload) {
+    if let Err(e) = append_to_spool(&hook_spool_dir(), event, &payload) {
         // The harness must not fail because the spool cannot be written.
         eprintln!("polylogue hook: could not record {event}: {e}");
     }

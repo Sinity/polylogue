@@ -93,10 +93,10 @@ A budgeted read (`read SESSION --budget N`) returns a page sized for a model
 and a cursor in `next`; pass it as `--cursor` for the next page. Query pages
 work the same way: the cursor holds the last row shown.
 
-`read SESSION --logical` reads a session together with the history it
+`read SESSION --with-parents` reads a session together with the history it
 continues from (a fork's parent up to the fork point, and so on). Missing
 parents or cycles keep what is available readable and mark the result
-`lineage.complete: false` with the issues.
+`parents.complete: false` with the issues.
 
 Sessions show the title the tool recorded, or else one made from the first
 prompt (`display_title` in JSON).

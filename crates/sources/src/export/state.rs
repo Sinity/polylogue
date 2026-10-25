@@ -8,7 +8,7 @@ pub struct MemoryState {
 }
 
 impl crate::export::ExportState for MemoryState {
-    fn claim(
+    fn record_first_session(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,

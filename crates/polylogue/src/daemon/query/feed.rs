@@ -1,4 +1,4 @@
-//! A finite change-reference batch, prepared completely before delivery.
+//! One batch of the change feed, prepared completely before it is sent.
 use super::{Failure, present, validate, values};
 use crate::daemon::Response;
 use polylogue_model::{ChangePosition, LogicalDay};
@@ -9,8 +9,8 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
-/// Positions on event lines remain the prior completed checkpoint. Only
-/// Complete offers a new checkpoint, after every preceding reference.
+/// Positions on event lines stay at the previous completed batch. Only
+/// `Complete` gives a new position, after every preceding line.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Line {
@@ -81,7 +81,7 @@ fn check_change(
     if !allowed
         || !change["ref"].as_str().is_some_and(|s| !s.is_empty())
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
-        || (kind == Some("excision") && !change["scope"].as_str().is_some_and(|s| !s.is_empty()))
+        || (kind == Some("excision") && !change["target"].as_str().is_some_and(|s| !s.is_empty()))
     {
         return Err(Failure {
             kind: "store".into(),

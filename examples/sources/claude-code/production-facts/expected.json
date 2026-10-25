@@ -1,15 +1,15 @@
 {
-  "accounting": {
-    "framed": 7,
-    "materialized": {
+  "counts": {
+    "records": 7,
+    "used": {
       "api-request": 1,
       "api-request-blob": 1,
       "api-request-shape": 1,
       "assistant": 2,
       "user": 2
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

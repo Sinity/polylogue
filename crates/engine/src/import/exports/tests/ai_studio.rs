@@ -21,7 +21,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         let (mut e, _lock) = engine(&w, 8);
         let captured = Captured::stream(&e.archive, fs::File::open(&path).unwrap()).unwrap();
         let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-        // Stop after durable acquisition. The first parse must use stored bytes.
+        // Stop after durable import. The first parse must use stored bytes.
         e.import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap()
             .unwrap();
@@ -33,7 +33,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
             polylogue_testkit::delete_index(&w.root);
         }
         let (mut e, _lock) = engine(&w, 8);
-        let pass = e.converge().unwrap();
+        let pass = e.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         let r = e.reads.reader().unwrap();
         let sid = polylogue_model::SessionId::parse("ai-studio:Electrons").unwrap();
@@ -52,7 +52,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert!(
             matches!(&messages[3].blocks[1],polylogue_model::Block::Image(a) if a.blob.is_some())
         );
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 4);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 4);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
@@ -107,7 +107,7 @@ fn watched_ai_studio_prompt_revisions_are_stored_before_chunk_parsing() {
     for text in ["first revision", "edited second revision"] {
         let bytes = prompt(text);
         fs::write(&path, &bytes).unwrap();
-        let pass = e.converge().unwrap();
+        let pass = e.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         assert_eq!(texts(&w, "ai-studio:drive-id"), [text]);
         assert!(pass.bytes_stored > 0);
@@ -121,13 +121,13 @@ fn watched_ai_studio_prompt_revisions_are_stored_before_chunk_parsing() {
     }
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 2);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 2);
-    assert_eq!(e.converge().unwrap().bytes_read, 0);
+    assert_eq!(e.run_pass().unwrap().bytes_read, 0);
     drop(e);
     drop(_lock);
     fs::remove_file(&path).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 8);
-    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(texts(&w, "ai-studio:drive-id"), ["edited second revision"]);
 }
 
@@ -140,7 +140,7 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
     let full = br#"{"chunkedPrompt":{"chunks":[{"role":"user","text":"now complete"}]}}"#;
     fs::write(&path, &full[..full.len() - 1]).unwrap();
     let (mut e, _lock) = engine(&w, 8);
-    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(e.run_pass().unwrap().errors.is_empty());
     assert!(texts(&w, "ai-studio:incomplete").is_empty());
     use std::io::Write;
     fs::OpenOptions::new()
@@ -149,7 +149,7 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
         .unwrap()
         .write_all(b"}")
         .unwrap();
-    let pass = e.converge().unwrap();
+    let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.bytes_stored, 1);
     assert_eq!(texts(&w, "ai-studio:incomplete"), ["now complete"]);
@@ -157,5 +157,5 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
         w.count("SELECT SUM(length) AS n FROM a.extent"),
         full.len() as i64
     );
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 2);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
 }

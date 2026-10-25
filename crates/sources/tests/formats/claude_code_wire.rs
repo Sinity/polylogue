@@ -113,12 +113,7 @@ fn the_team_name_is_captured_once_per_session() {
     let teams = events(&p, "team");
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0]["data"]["team"], "structural-consolidation");
-    assert!(
-        p["accounting"]["unread_fields"]
-            .as_object()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(p["counts"]["unread_fields"].as_object().unwrap().is_empty());
 }
 
 #[test]
@@ -353,7 +348,7 @@ fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented()
         {"type": "text", "text": ""},
         {"type": "text", "text": "\tsecond  "}])
     );
-    assert_eq!(p["accounting"]["framed"], 1);
+    assert_eq!(p["counts"]["records"], 1);
 }
 
 #[test]
@@ -404,7 +399,7 @@ fn hook_context_unsupported_shapes_keep_native_facts_and_diagnose_the_shape() {
         let p = run(std::slice::from_ref(&native));
         assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
         assert_eq!(
-            p["accounting"]["refused"]
+            p["counts"]["unreadable"]
                 .as_object()
                 .unwrap()
                 .values()
@@ -527,7 +522,7 @@ fn malformed_hook_diagnostics_preserve_valid_context_and_native_evidence() {
         let p = run(std::slice::from_ref(&native));
         assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
         assert_eq!(
-            p["accounting"]["refused"]
+            p["counts"]["unreadable"]
                 .as_object()
                 .unwrap()
                 .values()

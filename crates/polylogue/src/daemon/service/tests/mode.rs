@@ -47,7 +47,7 @@ fn seeded() -> ClaudeHome {
     let w = ClaudeHome::new();
     w.append("s1.jsonl", &user("u1", "s1", "Stored question"));
     let (mut engine, _lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     drop(engine);
     drop(_lock);
     w
@@ -143,7 +143,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
                 ),
                 view: "full".into(),
                 format: "json".into(),
-                logical: false,
+                with_parents: false,
                 budget: None,
                 cursor: None,
             },

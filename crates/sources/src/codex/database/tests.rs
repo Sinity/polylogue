@@ -46,6 +46,6 @@ fn rows_become_sessions_links_and_events() {
     assert_eq!(s.started.unwrap().unix_ms(), 1_772_359_200_123);
     assert_eq!(step.output.links[0].evidence, "thread_spawn_edges");
     assert_eq!(step.output.events[0].kind, "goal");
-    assert_eq!(step.accounting.unknown.values().sum::<u64>(), 2);
-    assert_eq!(step.accounting.materialized.values().sum::<u64>(), 4);
+    assert_eq!(step.counts.skipped.values().sum::<u64>(), 2);
+    assert_eq!(step.counts.used.values().sum::<u64>(), 4);
 }

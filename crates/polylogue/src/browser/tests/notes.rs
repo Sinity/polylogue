@@ -2,8 +2,8 @@ use super::*;
 use crate::daemon::{Request, Response, server, service};
 
 /// Every note, as the `notes` query lists them.
-fn notes(ctx: &Ctx) -> Vec<Value> {
-    let Some(Response::Ok { data }) = ctx.ask(&Request::Query {
+fn notes(host: &BrowserHost) -> Vec<Value> {
+    let Some(Response::Ok { data }) = host.ask(&Request::Query {
         text: "notes".into(),
         cursor: None,
         page_size: None,
@@ -36,11 +36,11 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let root = dir.path().join("archive");
     let mut runtime =
         service::start(&root, config.clone(), service::ArchiveMode::Standalone).unwrap();
-    let ctx = Arc::new(Ctx::at(&config, &runtime.daemon.archive).unwrap());
+    let host = Arc::new(BrowserHost::at(&config, &runtime.daemon.archive).unwrap());
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     assert_eq!(
         exchange(
-            &ctx,
+            &host,
             "POST",
             "/v1/browser-captures",
             &capture("selection-session", "Exact  provider\npassage")
@@ -57,7 +57,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     }
     let input = selection();
     let saved = exchange(
-        &ctx,
+        &host,
         "POST",
         "/v1/notes/selection",
         input.to_string().as_bytes(),
@@ -72,7 +72,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let retry = exchange(
-        &ctx,
+        &host,
         "POST",
         "/v1/notes/selection",
         input.to_string().as_bytes(),
@@ -80,7 +80,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     assert_eq!(retry.status, 200, "{}", retry.json());
     assert_eq!(retry.json()["note"]["id"], input["request_id"]);
     assert_eq!(retry.json()["note"]["repeat"], true);
-    let data = notes(&ctx);
+    let data = notes(&host);
     assert_eq!(data.len(), 1);
     assert_eq!(data[0]["author"], "operator");
     assert_eq!(
@@ -94,7 +94,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     let mut changed = input;
     changed["body"] = "An edit needs a new note ID".into();
     let conflict = exchange(
-        &ctx,
+        &host,
         "POST",
         "/v1/notes/selection",
         changed.to_string().as_bytes(),
@@ -108,10 +108,10 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
 #[test]
 fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
     let w = test_daemon::start("unrelated");
-    let ctx = ctx(&w);
+    let host = host(&w);
     let input = selection();
     let missing = exchange(
-        &ctx,
+        &host,
         "POST",
         "/v1/notes/selection",
         input.to_string().as_bytes(),
@@ -122,7 +122,7 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
         bad["source"][field] = "".into();
         assert_eq!(
             exchange(
-                &ctx,
+                &host,
                 "POST",
                 "/v1/notes/selection",
                 bad.to_string().as_bytes()
@@ -131,18 +131,18 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
             400
         );
     }
-    let data = notes(&ctx);
+    let data = notes(&host);
     assert!(data.is_empty());
 }
 
 #[test]
 fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
     let w = test_daemon::start("unrelated");
-    let ctx = ctx(&w);
+    let host = host(&w);
     for session in ["selection-session", "another-session"] {
         assert_eq!(
             exchange(
-                &ctx,
+                &host,
                 "POST",
                 "/v1/browser-captures",
                 &capture(session, "shared native ID")
@@ -153,12 +153,12 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
     }
     w.wait_for(|status| status["store"]["sessions"] == 3);
     let refused = exchange(
-        &ctx,
+        &host,
         "POST",
         "/v1/notes/selection",
         selection().to_string().as_bytes(),
     );
     assert_eq!(refused.status, 409, "{}", refused.json());
-    let data = notes(&ctx);
+    let data = notes(&host);
     assert!(data.is_empty());
 }

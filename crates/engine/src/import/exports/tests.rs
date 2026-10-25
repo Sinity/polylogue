@@ -61,15 +61,15 @@ fn array_order_and_parent_ownership_survive_newest_first_storage_and_rebuild() {
             assert!(raw.get("mapping").is_some());
         }
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 7);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 7);
     }
     fs::remove_file(&path).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 16);
-    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(texts(&w, "chatgpt:parent"), ["First", "Second"]);
     assert_eq!(texts(&w, "chatgpt:child"), ["Third"]);
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 7);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 7);
 }
 
 #[test]
@@ -87,8 +87,8 @@ fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
         let report = e.import(&[path]).unwrap();
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 1);
-        assert_eq!(w.count("SELECT SUM(undecodable) AS n FROM parse_state"), 1);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
+        assert_eq!(w.count("SELECT SUM(unreadable) AS n FROM parse_state"), 1);
     }
 }
 
@@ -128,7 +128,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn interrupted_array_delivery_replays_stored_bytes_and_resets_accounting() {
+fn interrupted_array_delivery_replays_stored_bytes_and_resets_record_counts() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let bytes = serde_json::to_vec(&vec![
@@ -150,15 +150,15 @@ fn interrupted_array_delivery_replays_stored_bytes_and_resets_accounting() {
         assert_eq!(report.pass.errors.len(), 1);
         assert_eq!(w.count("SELECT parsed_upto AS n FROM parse_state"), 0);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 1);
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 2);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
     }
     fs::remove_file(&path).unwrap();
     let (mut e, _lock) = engine(&w, 8);
-    let retry = e.converge().unwrap();
+    let retry = e.run_pass().unwrap();
     assert!(retry.errors.is_empty(), "{:?}", retry.errors);
     assert_eq!(texts(&w, "chatgpt:old"), ["old"]);
     assert_eq!(texts(&w, "chatgpt:new"), ["new"]);
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 4);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 4);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
 }
 
@@ -268,7 +268,7 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
     fs::remove_file(path).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 8);
-    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(texts(&w, "chatgpt:same"), ["A", "B"]);
     assert_eq!(
         w.count("SELECT COUNT(*) AS n FROM message WHERE id='chatgpt:a' AND on_active_path=1"),
@@ -378,7 +378,7 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
         let w = &w;
         scope.spawn(move || {
             let (mut e, _lock) = engine(w, 8);
-            e.converge().unwrap();
+            e.run_pass().unwrap();
             let captured = Captured::stream(&e.archive, fs::File::open(&bulk).unwrap()).unwrap();
             let origin = polylogue_sources::origin::by_name("chatgpt").unwrap();
             let mut plan = e
@@ -399,7 +399,7 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
             )
             .unwrap();
             assert_eq!(w.texts("live"), ["before"]);
-            let pass = e.converge().unwrap();
+            let pass = e.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
             assert_eq!(w.texts("live"), ["before", "during bulk"]);
         });

@@ -5,7 +5,7 @@ use super::*;
 /// IDs sort against transcript order.
 #[test]
 fn messages_one_record_holds_read_in_record_order() {
-    let w = world();
+    let w = test_archive();
     let record = |offset, ids: &[(&str, Role, &str)]| {
         ids.iter()
             .map(|(id, role, text)| MessageRow {

@@ -39,7 +39,7 @@ fn history() -> Vec<Json> {
 #[test]
 fn reasoning_joins_the_next_answer_and_messages_are_named_by_offset() {
     let input = lines(&history());
-    let step = run(&grok(), &mut Carry::default(), &input, 0).unwrap();
+    let step = run(&grok(), &mut ParserState::default(), &input, 0).unwrap();
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 5);
     assert_eq!(msgs[0].session.to_string(), "grok-cli:01a0b507");
@@ -60,18 +60,18 @@ fn reasoning_joins_the_next_answer_and_messages_are_named_by_offset() {
     assert_eq!(msgs[4].prompt_kind, Some(PromptKind::Harness));
     assert_eq!(msgs[1].prompt_kind, Some(PromptKind::Prose));
     assert!(msgs[1].id.native().as_str().starts_with("01a0b507@"));
-    assert_eq!(step.accounting.framed, 6);
+    assert_eq!(step.counts.records, 6);
 }
 
 #[test]
 fn appending_in_pieces_gives_the_same_messages() {
     let input = lines(&history());
-    let whole = run(&grok(), &mut Carry::default(), &input, 0).unwrap();
+    let whole = run(&grok(), &mut ParserState::default(), &input, 0).unwrap();
     for cut in [1, 40, 120, input.len() / 2, input.len() - 3] {
-        let mut carry = Carry::default();
-        let first = run(&grok(), &mut carry, &input[..cut], 0).unwrap();
+        let mut parser_state = ParserState::default();
+        let first = run(&grok(), &mut parser_state, &input[..cut], 0).unwrap();
         let used = first.consumed as usize;
-        let second = run(&grok(), &mut carry, &input[used..], used as u64).unwrap();
+        let second = run(&grok(), &mut parser_state, &input[used..], used as u64).unwrap();
         let joined: Vec<&MessageRow> = first
             .output
             .messages

@@ -1,5 +1,5 @@
 use super::*;
-use crate::blobs::{INLINE_LIMIT, Piece, Stored};
+use crate::blobs::{INLINE_LIMIT, NewBlob, Stored};
 use rusqlite::params;
 use std::io::Read;
 
@@ -27,7 +27,7 @@ impl Fixture {
         }
     }
     fn add(&self, at: u64, length: u64, blob_offset: u64, bytes: &[u8]) -> BlobHash {
-        let p = Piece::prepare(&self.store, bytes).unwrap();
+        let p = NewBlob::prepare(&self.store, bytes).unwrap();
         let (place, size, data) = match &p.stored {
             Stored::Inline(data) => ("inline", data.len() as u64, Some(data.as_slice())),
             Stored::File { stored_size } => ("file", *stored_size, None),
@@ -101,12 +101,12 @@ fn many_inline_pieces_stay_compressed_on_disk_and_clones_share_one_selected_view
     ));
     let extents = chain.extents.as_ref().unwrap();
     let conn = extents.connection();
-    let (pieces, compressed): (i64, i64) = conn
+    let (new_blobs, compressed): (i64, i64) = conn
         .query_row("SELECT count(*),sum(length(data)) FROM blob", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    assert_eq!(pieces, 512);
+    assert_eq!(new_blobs, 512);
     assert!(compressed < (chain.length / 100) as i64);
     drop(conn);
     w.conn.execute("UPDATE blob SET data=x'00'", []).unwrap();

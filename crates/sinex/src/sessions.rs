@@ -234,7 +234,7 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
         "SELECT m.id, i.id AS input, s.chain, s.source_start AS start
          FROM message_source s JOIN message m ON m.pk = s.message_pk
          JOIN input_ref i ON i.pk = s.input_pk
-         WHERE m.session_pk = ?1 AND s.preferred = 0
+         WHERE m.session_pk = ?1 AND s.shown = 0
          ORDER BY m.id, i.id, s.chain",
         &[SqlValue::Int(pk)],
     )?;

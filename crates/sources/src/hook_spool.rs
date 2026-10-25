@@ -1,23 +1,23 @@
 //! The hook spool: one JSON line per harness hook event (session start,
 //! prompt submitted, tool about to run, tool finished, compaction, stop),
 //! appended without a sync. Two layouts share the format: a file
-//! per session (`<provider>-<session>.jsonl`) and dated carrier files
-//! (`carriers/<provider>/<date>/*.ndjson`; a carrier is a file of hook
-//! lines written by one process). The `polylogue hook` command writes a
-//! third: one carrier per harness process (`<pid>.ndjson`), lines
+//! per session (`<provider>-<session>.jsonl`) and dated files
+//! (`carriers/<provider>/<date>/*.ndjson`, each holding the hook lines one
+//! process wrote). The `polylogue hook` command writes a
+//! third: one file per harness process (`<pid>.ndjson`), lines
 //! `{"at_ns", "event", "harness_pid", "payload"}`, for Claude Code.
 //!
 //! Each line becomes an event on the session it names, kept whole: what
 //! the hook saw (tool input, permission mode, effort, working directory)
-//! is evidence the transcript does not always carry. The session ID is
+//! is evidence the transcript does not always hold. The session ID is
 //! the harness's own, so the events land on the same session as its
 //! transcript.
 
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule};
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::parse::{Output, Parse, Parser};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{Event, Json, Session, SessionKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -36,7 +36,7 @@ fn is_spool_file(path: &Path) -> bool {
 }
 
 /// A spool line starts `{"event_type"` (per-session files), `{"event_id"`
-/// (dated carriers) or `{"at_ns"` (the hook command's carriers).
+/// (dated files) or `{"at_ns"` (the hook command's files).
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     is_spool_file(path) && matches!(first_key(head), Some("event_type" | "event_id" | "at_ns"))
 }
@@ -49,7 +49,7 @@ pub struct HookSpool;
 
 /// Session facts already sent, so each step resends them once.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Carry {}
+pub struct ParserState {}
 
 static FIELDS: Fields = Fields::new(&[
     ("event_id", Rule::Read),
@@ -89,7 +89,7 @@ fn event_kind(event_type: &str) -> String {
 }
 
 impl Parser for HookSpool {
-    type Carry = Carry;
+    type ParserState = ParserState;
 
     fn kind(&self, value: &Json) -> String {
         str_of(value, "event_type")
@@ -100,33 +100,33 @@ impl Parser for HookSpool {
 
     fn parse_record(
         &self,
-        _carry: &mut Carry,
+        _carry: &mut ParserState,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let kind = self.kind(value);
         records.fields(&kind, value, &FIELDS);
         let Some(event_type) = str_of(value, "event_type").or_else(|| str_of(value, "event"))
         else {
-            return Disposition::refused("no event_type");
+            return RecordOutcome::unreadable("no event_type");
         };
         // The hook command's lines name no provider: it is installed for
         // Claude Code only.
         let provider = match str_of(value, "provider") {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
-            None => return Disposition::refused("no provider"),
+            None => return RecordOutcome::unreadable("no provider"),
         };
         let native = str_of(value, "session_id")
             .or_else(|| value.pointer("/payload/session_id").and_then(Json::as_str))
             .filter(|s| !s.is_empty());
         let Some(native) = native else {
-            return Disposition::unknown("event names no session");
+            return RecordOutcome::skipped("event names no session");
         };
         let Some(sid) = session_id(provider, native) else {
-            return Disposition::refused("unusable provider or session ID");
+            return RecordOutcome::unreadable("unusable provider or session ID");
         };
         let at = value
             .get("timestamp")
@@ -161,10 +161,10 @@ impl Parser for HookSpool {
             range: Some((record.offset, record.offset + record.bytes.len() as u64)),
             data,
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
-    fn flush(&self, _carry: &mut Carry, _out: &mut Output) {}
+    fn flush(&self, _carry: &mut ParserState, _out: &mut Output) {}
 }
 
 #[cfg(test)]

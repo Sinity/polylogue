@@ -10,14 +10,18 @@ impl<'a> Compiler<'a> {
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
         let (mut scope, wheres, top) = match &q.source {
-            Source::Empty => (Scope::plain(Unit::Sessions), vec![], vec![]),
+            Source::Empty => (RowContext::plain(Unit::Sessions), vec![], vec![]),
             Source::Sessions { cond } => {
                 let top = top_level(cond);
-                (Scope::plain(Unit::Sessions), vec![(cond.clone())], top)
+                (RowContext::plain(Unit::Sessions), vec![(cond.clone())], top)
             }
             Source::Unit { unit, cond } => {
                 let top = cond.as_ref().map(top_level).unwrap_or_default();
-                (Scope::plain(*unit), cond.iter().cloned().collect(), top)
+                (
+                    RowContext::plain(*unit),
+                    cond.iter().cloned().collect(),
+                    top,
+                )
             }
         };
         let mut where_sql: Vec<String> = self.defaults(&scope, &top);
@@ -101,7 +105,7 @@ impl<'a> Compiler<'a> {
                         let (name, _) = match_column(rel, field, stage.span.start)?;
                         let dir = if *descending { " DESC" } else { "" };
                         let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
-                        for identity in ["owner", "session", "match"] {
+                        for identity in ["parent_id", "session", "match"] {
                             if rel.columns.iter().any(|(name, _)| name == identity) {
                                 sorted.push(format!("\"{identity}\"{dir}"));
                             }
@@ -126,7 +130,7 @@ impl<'a> Compiler<'a> {
                     }
                     let sessions =
                         format!("SELECT s.pk FROM session s WHERE {}", and_all(&where_sql));
-                    let next = Scope::plain(*unit);
+                    let next = RowContext::plain(*unit);
                     let ntop = cond.as_ref().map(top_level).unwrap_or_default();
                     let mut w = self.defaults(&next, &ntop);
                     let link = if fields::has_session(*unit) {
@@ -285,13 +289,13 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     };
-                    let owners = and_all(&where_sql);
+                    let parent_rows = and_all(&where_sql);
                     matched = Some(match &c.kind {
                         CondKind::Exists { unit, cond } => {
-                            self.exists_matches(*unit, cond, &scope, &owners, c.span)?
+                            self.exists_matches(*unit, cond, &scope, &parent_rows, c.span)?
                         }
                         CondKind::Seq { steps, gaps } => {
-                            self.seq_matches(steps, gaps, &scope, &owners, c.span)?
+                            self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?
                         }
                         _ => unreachable!("filtered above"),
                     });
@@ -566,7 +570,7 @@ impl<'a> Compiler<'a> {
             change_generations: self.change_generations,
             attach,
             notes: self.notes,
-            degraded: self.degraded,
+            incomplete: self.incomplete,
             why,
             why_of,
             page_size,
@@ -583,7 +587,7 @@ impl<'a> Compiler<'a> {
     /// so later stages filter, group or count only the selected rows.
     pub(super) fn apply_selection(
         &mut self,
-        scope: &Scope,
+        scope: &RowContext,
         where_sql: &mut Vec<String>,
         order: &Option<Vec<String>>,
         selection: Option<(Option<u64>, Option<u64>)>,
@@ -605,13 +609,13 @@ impl<'a> Compiler<'a> {
     }
 
     /// The FROM clause of a unit, joining the rows its fields read.
-    pub(super) fn from(&self, scope: &Scope) -> Result<String, QueryError> {
+    pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
         Ok(base_from(scope.unit, &scope.a))
     }
 
     /// The default filters a unit binds, dropped by a top-level condition
     /// naming their field.
-    pub(super) fn defaults(&mut self, scope: &Scope, top: &[Cond]) -> Vec<String> {
+    pub(super) fn defaults(&mut self, scope: &RowContext, top: &[Cond]) -> Vec<String> {
         let named = named_fields(top, scope.unit);
         let reference = top.iter().any(|c| self.is_reference(c));
         units::spec(scope.unit)
@@ -623,7 +627,7 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
-    pub(super) fn default_order(&self, scope: &Scope) -> Vec<String> {
+    pub(super) fn default_order(&self, scope: &RowContext) -> Vec<String> {
         let a = &scope.a;
         let spec = units::spec(scope.unit);
         let time = a.expand(spec.time);

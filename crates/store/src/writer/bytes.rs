@@ -14,11 +14,11 @@ pub(super) fn write_bytes(
 ) -> Result<(Option<i64>, Option<InputRecord>)> {
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
-    for piece in &b.blobs {
-        insert_blob(tx, piece)?;
+    for new_blob in &b.blobs {
+        insert_blob(tx, new_blob)?;
     }
     if let Change::Reparse { chain } = b.change {
-        if b.piece.is_some()
+        if b.new_blob.is_some()
             || !tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
                 params![b.input.id, chain, b.length as i64],
@@ -32,8 +32,8 @@ pub(super) fn write_bytes(
         return Ok((Some(chain), None));
     }
     let (chain, record) = input_record(tx, b, seq)?;
-    if let Some(piece) = &b.piece {
-        insert_blob(tx, piece)?;
+    if let Some(new_blob) = &b.new_blob {
+        insert_blob(tx, new_blob)?;
     }
     record.insert(tx, seq)?;
     Ok((chain, Some(record)))
@@ -81,7 +81,7 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
             (next, chain, *from)
         }
         (change, _, _) => {
-            let produced = match (change, b.input.route_rank) {
+            let produced = match (change, b.input.arrival_rank) {
                 (_, 2) => "imported",
                 (Change::First, _) => "first",
                 _ => "rewritten",
@@ -90,21 +90,21 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
             (next, next, 0)
         }
     };
-    if let Some(piece) = &b.piece {
+    if let Some(new_blob) = &b.new_blob {
         record.extent = Some(Extent {
             chain,
             offset: offset as i64,
-            length: piece.size as i64,
-            blob: piece.hash,
+            length: new_blob.size as i64,
+            blob: new_blob.hash,
         });
     }
     if b.observation.is_some() && !b.continues {
         let class = match &b.change {
-            Change::First if b.input.route_rank == 2 => "imported",
+            Change::First if b.input.arrival_rank == 2 => "imported",
             Change::First => "first",
             Change::Appended { .. } => "appended",
             Change::Rewritten => "rewritten",
-            Change::Unchanged if b.input.route_rank == 2 => "imported",
+            Change::Unchanged if b.input.arrival_rank == 2 => "imported",
             Change::Unchanged => "back",
             Change::Reparse { .. } => unreachable!(),
             Change::Disappeared => "deleted",
@@ -114,8 +114,8 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
     Ok((Some(chain), record))
 }
 
-pub(super) fn insert_blob(tx: &Transaction<'_>, piece: &Piece) -> Result<()> {
-    let (place, stored_size, data) = match &piece.stored {
+pub(super) fn insert_blob(tx: &Transaction<'_>, new_blob: &NewBlob) -> Result<()> {
+    let (place, stored_size, data) = match &new_blob.stored {
         Stored::Inline(z) => ("inline", z.len() as u64, Some(z.as_slice())),
         Stored::File { stored_size } => ("file", *stored_size, None),
     };
@@ -124,8 +124,8 @@ pub(super) fn insert_blob(tx: &Transaction<'_>, piece: &Piece) -> Result<()> {
          VALUES (?1, ?2, ?3, ?4, 'plain', 'present', ?5)",
     )?
     .execute(params![
-        &piece.hash.0[..],
-        piece.size as i64,
+        &new_blob.hash.0[..],
+        new_blob.size as i64,
         stored_size as i64,
         place,
         data
@@ -182,12 +182,8 @@ pub(super) fn observation(
         return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    let container = match o
-        .import
-        .as_ref()
-        .and_then(|member| member.container.as_ref())
-    {
-        Some(container) => Some(crate::containers::check(tx, &b.input.id, container)?),
+    let zip = match o.import.as_ref().and_then(|member| member.zip.as_ref()) {
+        Some(zip) => Some(crate::zip_members::check(tx, &b.input.id, zip)?),
         None => None,
     };
     let f = o.facts;
@@ -216,6 +212,6 @@ pub(super) fn observation(
             })
             .transpose()?,
         excision: None,
-        container,
+        zip,
     }))
 }

@@ -55,7 +55,7 @@ fn repeated_history_is_written_once_in_order() {
     assert!(matches!(&msgs[3].blocks[1], Block::ToolCall { tool: Some(t), .. } if t == "search"));
     assert_eq!(msgs[3].id.native().as_str(), "conv-1#3");
     assert_eq!(step.output.sessions.len(), 1);
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]
@@ -104,8 +104,8 @@ fn malformed_middle_lines_discard_their_prefix_and_preserve_later_spans() {
             .collect::<Vec<_>>(),
         ["kept", "later"]
     );
-    assert_eq!(step.accounting.framed, 3);
-    assert_eq!(step.accounting.refused.values().sum::<u64>(), 1);
+    assert_eq!(step.counts.records, 3);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
     for event in &step.output.events {
         let (a, b) = event.range.unwrap();
         let raw: Json = serde_json::from_slice(&bytes.as_bytes()[a as usize..b as usize]).unwrap();
@@ -162,7 +162,7 @@ fn duplicate_selected_containers_and_bad_suffixes_emit_no_prefix_spans() {
         let step = parse(bytes.as_bytes());
         assert!(step.output.messages.is_empty());
         assert!(step.output.events.is_empty());
-        assert_eq!(step.accounting.refused.values().sum::<u64>(), 1);
+        assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
     }
 }
 
@@ -182,6 +182,6 @@ fn an_out_of_range_numeric_timestamp_stays_unknown_without_dropping_its_span() {
             .collect::<Vec<_>>(),
         ["large timestamp", "good"]
     );
-    assert_eq!(step.accounting.refused.values().sum::<u64>(), 0);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 0);
     assert!(step.output.events[0].at.is_none());
 }

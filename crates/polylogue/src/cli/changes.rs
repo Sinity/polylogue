@@ -1,4 +1,4 @@
-//! Finite feed delivery. A completion line is forwarded only after every
+//! Printing the change feed. A completion line is forwarded only after every
 //! preceding line has been validated and written, then stdout is flushed.
 use super::{Archive, Request, Response, fail, when_ready};
 use crate::commands::{Command, Values};

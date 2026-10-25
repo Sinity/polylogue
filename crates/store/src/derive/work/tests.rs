@@ -6,7 +6,7 @@ use serde_json::json;
 fn no_task_from_prose() {
     // A Bead ID in a prompt, or read with `bd show`, claims
     // nothing; a successful claim holds until a successful close.
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let mut a = prose("a", 1, 1_000, "please work on demo-ony.7 next");
     a.extend(bash(
         "a",
@@ -66,7 +66,7 @@ fn no_task_from_prose() {
 
 #[test]
 fn a_failed_claim_claims_nothing() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write(
         "s",
         bash(
@@ -86,7 +86,7 @@ fn a_failed_claim_claims_nothing() {
 
 #[test]
 fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let mut m = bash("s", 1, 1_000, "bd update demo-9 --claim", true, "");
     m.extend(bash(
         "s",
@@ -168,7 +168,7 @@ fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
 
 #[test]
 fn a_bead_claimed_by_two_sessions_is_one_goal() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write(
         "a",
         bash("a", 1, 1_000, "bd update demo-5 --claim", true, ""),
@@ -189,7 +189,7 @@ fn a_bead_claimed_by_two_sessions_is_one_goal() {
 
 #[test]
 fn declared_todo_items_are_session_goals() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let todos = |a: &str, b: &str| {
         json!({"todos": [
             {"content": "port the parser", "status": a, "activeForm": "Porting"},
@@ -236,7 +236,7 @@ fn declared_todo_items_are_session_goals() {
 
 #[test]
 fn deriving_again_changes_nothing() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write(
         "s",
         bash("s", 1, 1_000, "bd update demo-1 --claim", true, ""),
@@ -252,7 +252,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
     // Excision deletes a session's nodes by their session; their edges go
     // with them, and a shared goal no one pursues any more goes at the next
     // derive.
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write(
         "a",
         bash("a", 1, 1_000, "bd update demo-5 --claim", true, ""),
@@ -294,7 +294,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
 
 #[test]
 fn a_spawned_session_pursues_the_task_it_was_given() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write("parent", prose("parent", 1, 1_000, "coordinate"));
     let mut child = prose(
         "child",
@@ -381,7 +381,7 @@ fn orphan_goals_are_removed_even_when_no_sessions_remain() {
 fn command_only_work_does_not_read_tool_result_bodies() {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let mut messages = bash(
         "s",
         1,
@@ -449,7 +449,7 @@ fn command_only_work_does_not_read_tool_result_bodies() {
 
 #[test]
 fn declared_plan_items_keep_their_states_without_command_text() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     w.write(
         "s",
         call(
@@ -470,7 +470,7 @@ fn declared_plan_items_keep_their_states_without_command_text() {
 #[test]
 fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
     for output_in_body in [false, true] {
-        let mut w = WriterWorld::new();
+        let mut w = WriterArchive::new();
         let output = "[work 1a2b3c4] store: improve work reads\nhttps://github.com/Sinity/polylogue/pull/6300\n";
         w.write(
             "s",
@@ -508,9 +508,9 @@ fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
     }
 }
 
-fn checks_with_unknown_outcomes() -> WriterWorld {
+fn checks_with_unknown_outcomes() -> WriterArchive {
     use polylogue_model::{Block, ToolOutcome, UnknownReason};
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let mut messages = bash("s", 1, 1_000, "bd update demo-9 --claim", true, "claimed");
     for (n, outcome) in [
         (2, None),
@@ -552,7 +552,7 @@ fn checks_with_unknown_outcomes() -> WriterWorld {
     w
 }
 
-fn attempt_totals(w: &WriterWorld) -> Json {
+fn attempt_totals(w: &WriterArchive) -> Json {
     let rows = w.rows("SELECT attrs_json FROM work_node WHERE kind='attempt'");
     assert_eq!(rows.len(), 1);
     serde_json::from_str(rows[0]["attrs_json"].as_str().unwrap()).unwrap()

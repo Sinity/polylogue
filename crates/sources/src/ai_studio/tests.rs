@@ -73,11 +73,11 @@ fn chunks_become_messages_with_thoughts_split_out() {
         TitleSource::FileName
     );
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
-    assert_eq!(step.accounting.framed, 6);
+    assert_eq!(step.counts.records, 6);
 }
 
 #[test]
@@ -124,9 +124,9 @@ fn code_and_images_inside_parts_are_read() {
     ));
     assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
 }
 
@@ -187,7 +187,7 @@ fn the_listing_names_the_prompts() {
 
 #[test]
 fn listings_distinguish_empty_invalid_and_refused_entries() {
-    for (bytes, framed, refused, sessions) in [
+    for (bytes, records, refused, sessions) in [
         (br#"{"files":[]}"#.as_slice(), 0, 0, 0),
         (br#"{"files":false}"#.as_slice(), 1, 1, 0),
         (
@@ -206,8 +206,8 @@ fn listings_distinguish_empty_invalid_and_refused_entries() {
         let step =
             crate::export::fixture::parse(&mut Parse::Export(Box::new(Listing::default())), bytes)
                 .unwrap();
-        assert_eq!(step.accounting.framed, framed);
-        assert_eq!(step.accounting.refused.values().sum::<u64>(), refused);
+        assert_eq!(step.counts.records, records);
+        assert_eq!(step.counts.unreadable.values().sum::<u64>(), refused);
         assert_eq!(step.output.sessions.len(), sessions);
     }
 }

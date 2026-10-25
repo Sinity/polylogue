@@ -51,7 +51,7 @@ pub enum Request {
         #[serde(default)]
         attachment: usize,
         #[serde(default)]
-        asset: Option<String>,
+        input: Option<String>,
         #[serde(default)]
         reveal: bool,
         #[serde(default = "attachment_chunk")]
@@ -81,13 +81,13 @@ pub enum Request {
         fields: Vec<String>,
     },
     /// Reads one session, document or event in a view and format.
-    /// `logical` (sessions only) includes inherited ancestry.
+    /// `with_parents` (sessions only): the parent sessions' messages first.
     Read {
         target: ReadTarget,
         view: String,
         format: String,
         #[serde(default)]
-        logical: bool,
+        with_parents: bool,
         budget: Option<usize>,
         cursor: Option<String>,
     },

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repair() {
     for corrupt in ["{", "null", "{\"id\":17}"] {
-        let w = world();
+        let w = test_archive();
         let mut first = batch(
             "input",
             0,

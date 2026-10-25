@@ -20,7 +20,7 @@ fn jsonl(records: &[Json]) -> Vec<u8> {
 
 /// Applies a run of steps the way the writer does for one input: a row
 /// at the same offset replaces the earlier one, and of several versions of
-/// one message the earliest in the input is preferred.
+/// one message the earliest in the input is shown.
 fn final_messages(steps: &[crate::parse::Step]) -> Vec<Message> {
     let mut rows: BTreeMap<u64, Message> = BTreeMap::new();
     for step in steps {
@@ -68,8 +68,14 @@ fn conversation() -> Vec<Json> {
 
 #[test]
 fn a_response_split_over_records_is_one_message() {
-    let mut carry = Carry::default();
-    let step = run(&main_file("s1"), &mut carry, &jsonl(&conversation()), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(
+        &main_file("s1"),
+        &mut parser_state,
+        &jsonl(&conversation()),
+        0,
+    )
+    .unwrap();
     let msgs = final_messages(&[step]);
     let ids: Vec<_> = msgs.iter().map(|m| m.id.native().as_str()).collect();
     assert_eq!(ids, ["u1", "a1", "u2", "a4"]);
@@ -101,18 +107,18 @@ fn a_response_split_over_records_is_one_message() {
 fn parsing_in_pieces_equals_parsing_at_once() {
     let bytes = jsonl(&conversation());
     let whole = {
-        let mut carry = Carry::default();
-        final_messages(&[run(&main_file("s1"), &mut carry, &bytes, 0).unwrap()])
+        let mut parser_state = ParserState::default();
+        final_messages(&[run(&main_file("s1"), &mut parser_state, &bytes, 0).unwrap()])
     };
     for cut in 0..=bytes.len() {
         let parser = main_file("s1");
-        let mut carry = Carry::default();
-        let first = run(&parser, &mut carry, &bytes[..cut], 0).unwrap();
-        // The carry travels as JSON between steps, as it does in the engine.
-        let mut carry: Carry =
-            serde_json::from_value(serde_json::to_value(&carry).unwrap()).unwrap();
+        let mut parser_state = ParserState::default();
+        let first = run(&parser, &mut parser_state, &bytes[..cut], 0).unwrap();
+        // The parser state travels as JSON between steps, as it does in the engine.
+        let mut parser_state: ParserState =
+            serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
         let used = first.consumed as usize;
-        let second = run(&parser, &mut carry, &bytes[used..], used as u64).unwrap();
+        let second = run(&parser, &mut parser_state, &bytes[used..], used as u64).unwrap();
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
     }
 }
@@ -124,8 +130,8 @@ fn a_late_continuation_reopens_its_response() {
         assistant("b1", "msg_2", json!({"type":"text","text":"other"})),
         assistant("a2", "msg_1", json!({"type":"text","text":"part two"})),
     ];
-    let mut carry = Carry::default();
-    let step = run(&main_file("s1"), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&main_file("s1"), &mut parser_state, &jsonl(&records), 0).unwrap();
     let msgs = final_messages(&[step]);
     assert_eq!(msgs.len(), 2);
     let first = msgs
@@ -141,8 +147,8 @@ fn a_repeated_uuid_keeps_the_first_record() {
         json!({"type":"user","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"original"}}),
         json!({"type":"user","uuid":"u1","sessionId":"s1","message":{"role":"user","content":"conflicting"}}),
     ];
-    let mut carry = Carry::default();
-    let step = run(&main_file("s1"), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&main_file("s1"), &mut parser_state, &jsonl(&records), 0).unwrap();
     assert_eq!(step.output.messages.len(), 2);
     let msgs = final_messages(&[step]);
     assert_eq!(msgs.len(), 1);
@@ -155,8 +161,8 @@ fn copied_history_stays_in_its_original_session() {
         json!({"type":"user","uuid":"old","sessionId":"s1","message":{"role":"user","content":"earlier"}}),
         json!({"type":"user","uuid":"new","sessionId":"s2","message":{"role":"user","content":"resumed"}}),
     ];
-    let mut carry = Carry::default();
-    let step = run(&main_file("s2"), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&main_file("s2"), &mut parser_state, &jsonl(&records), 0).unwrap();
     let out = &step.output;
     assert_eq!(out.messages[0].message.session.native().as_str(), "s1");
     assert_eq!(out.messages[1].message.session.native().as_str(), "s2");
@@ -183,8 +189,10 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
         json!({"type":"user","uuid":"u","sessionId":"s1","agentId":"x1","isSidechain":true,
                               "message":{"role":"user","content":"do the subtask"}}),
     ];
-    let mut carry = Carry::default();
-    let out = run(&sub, &mut carry, &jsonl(&records), 0).unwrap().output;
+    let mut parser_state = ParserState::default();
+    let out = run(&sub, &mut parser_state, &jsonl(&records), 0)
+        .unwrap()
+        .output;
     assert_eq!(
         out.messages[0].message.session.native().as_str(),
         "agent-x1"
@@ -197,8 +205,8 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
         json!({"type":"user","uuid":"u","sessionId":"s1","isSidechain":true,
                               "message":{"role":"user","content":"side"}}),
     ];
-    let mut carry = Carry::default();
-    let out = run(&main_file("s1"), &mut carry, &jsonl(&records), 0)
+    let mut parser_state = ParserState::default();
+    let out = run(&main_file("s1"), &mut parser_state, &jsonl(&records), 0)
         .unwrap()
         .output;
     assert_eq!(
@@ -214,8 +222,8 @@ fn an_agent_calls_result_links_the_agent_it_started() {
                "toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a9"},
                "message":{"role":"user","content":[
                    {"type":"tool_result","tool_use_id":"toolu_9","content":"launched"}]}})];
-    let mut carry = Carry::default();
-    let out = run(&main_file("s1"), &mut carry, &jsonl(&records), 0)
+    let mut parser_state = ParserState::default();
+    let out = run(&main_file("s1"), &mut parser_state, &jsonl(&records), 0)
         .unwrap()
         .output;
     let l = &out.links[0];
@@ -232,8 +240,8 @@ fn titles_follow_precedence() {
         json!({"type":"ai-title","aiTitle":"Generated","sessionId":"s1"}),
         json!({"type":"summary","summary":"Summary","leafUuid":"x"}),
     ];
-    let mut carry = Carry::default();
-    let out = run(&main_file("s1"), &mut carry, &jsonl(&records), 0)
+    let mut parser_state = ParserState::default();
+    let out = run(&main_file("s1"), &mut parser_state, &jsonl(&records), 0)
         .unwrap()
         .output;
     assert_eq!(out.sessions[0].title.as_ref().unwrap().text, "Mine");
@@ -243,8 +251,8 @@ fn titles_follow_precedence() {
 fn background_completion_updates_the_outcome() {
     let record = json!({"type":"queue-operation","operation":"enqueue","sessionId":"s1",
         "content":"<task-notification><task-id>bg7</task-id><status>failed</status></task-notification>"});
-    let mut carry = Carry::default();
-    let out = run(&main_file("s1"), &mut carry, &jsonl(&[record]), 0)
+    let mut parser_state = ParserState::default();
+    let out = run(&main_file("s1"), &mut parser_state, &jsonl(&[record]), 0)
         .unwrap()
         .output;
     assert_eq!(out.background.len(), 1);
@@ -255,8 +263,8 @@ fn background_completion_updates_the_outcome() {
     );
     let record = json!({"type":"queue-operation","sessionId":"s1",
         "content":"<task-notification>\n<task-id>bg8</task-id>\n<tool-use-id>toolu_8</tool-use-id>\n<status>failed</status>\n<summary>Background command \"x\" failed with exit code 7</summary>\n</task-notification>"});
-    let mut carry = Carry::default();
-    let out = run(&main_file("s1"), &mut carry, &jsonl(&[record]), 0)
+    let mut parser_state = ParserState::default();
+    let out = run(&main_file("s1"), &mut parser_state, &jsonl(&[record]), 0)
         .unwrap()
         .output;
     assert_eq!(out.background[0].call_id.as_deref(), Some("toolu_8"));
@@ -277,17 +285,17 @@ fn every_record_is_accounted_for() {
         json!({"type":"user","uuid":"u","sessionId":"s1","newField":1,"message":{"role":"user","content":"x"}}),
     ]);
     bytes.extend(b"{not json\n");
-    let mut carry = Carry::default();
-    let step = run(&main_file("s1"), &mut carry, &bytes, 0).unwrap();
-    let acc = &step.accounting;
-    assert_eq!(acc.framed, 4);
-    assert_eq!(acc.accounted(), 4);
-    assert_eq!(acc.materialized["user"], 1);
+    let mut parser_state = ParserState::default();
+    let step = run(&main_file("s1"), &mut parser_state, &bytes, 0).unwrap();
+    let acc = &step.counts;
+    assert_eq!(acc.records, 4);
+    assert_eq!(acc.counted(), 4);
+    assert_eq!(acc.used["user"], 1);
     assert!(
-        acc.unknown
+        acc.skipped
             .contains_key("mystery: unrecognized record type")
     );
-    assert_eq!(acc.refused.len(), 1);
+    assert_eq!(acc.unreadable.len(), 1);
     assert_eq!(acc.unread_fields["user.newField"], 1);
 }
 
@@ -339,7 +347,7 @@ fn a_session_names_its_plan_once_per_slug() {
         rec("u2", "quiet-river"),
         rec("u3", "loud-sea"),
     ]);
-    let step = run(&main_file("s1"), &mut Carry::default(), &bytes, 0).unwrap();
+    let step = run(&main_file("s1"), &mut ParserState::default(), &bytes, 0).unwrap();
     let plans: Vec<_> = step
         .output
         .events

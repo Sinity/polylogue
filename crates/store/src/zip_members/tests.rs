@@ -1,0 +1,263 @@
+use super::*;
+use crate::blobs::Stored;
+use crate::staging::PreparedBatch;
+use crate::writer::{InFlight, InputKey};
+use crate::{Archive, Change, ImportMember, NewBlob, Observation, Writer};
+use polylogue_model::BlobHash;
+use std::sync::{Arc, Barrier};
+
+const ORIGINAL: &[u8] = b"synthetic container byte representation";
+const MEMBER: &[u8] = b"synthetic independently stored member";
+
+// Store checks how ZIPs and members are stored and linked; ZIP decoding is tested in Engine.
+fn stage(
+    archive: &Archive,
+    body: &[u8],
+    import_id: &str,
+    member: &str,
+    zip: Option<InZip>,
+) -> PreparedBatch {
+    let prepared = archive.prepare_bytes(body).unwrap();
+    let batch = Batch {
+        input: InputKey {
+            id: prepared.hash().to_string(),
+            format: "export-file".into(),
+            arrival_rank: 2,
+        },
+        change: Change::First,
+        observation: Some(Observation {
+            machine: "synthetic-machine".into(),
+            host: "synthetic-host".into(),
+            path: format!("/synthetic/{member}"),
+            facts: None,
+            seen_at_ms: 1,
+            import: Some(ImportMember {
+                version: 1,
+                import_id: import_id.into(),
+                member: member.into(),
+                format: Some("export-file".into()),
+                zip,
+            }),
+        }),
+        continues: false,
+        new_blob: Some(NewBlob {
+            hash: prepared.hash(),
+            size: prepared.len(),
+            stored: Stored::File { stored_size: 0 },
+        }),
+        blobs: vec![],
+        length: prepared.len(),
+        parse: vec![],
+        release: InFlight::default(),
+    };
+    PreparedBatch {
+        batch,
+        files: vec![prepared],
+    }
+}
+
+fn linked(archive: &Archive, import_id: &str, duplicates: bool) -> Vec<PreparedBatch> {
+    let root = BlobHash::of(ORIGINAL).to_string();
+    let mut group = vec![
+        stage(archive, ORIGINAL, import_id, "original.zip", None),
+        stage(
+            archive,
+            MEMBER,
+            import_id,
+            "first.dat",
+            Some(InZip {
+                input: root.clone(),
+                member_index: 0,
+            }),
+        ),
+    ];
+    if duplicates {
+        group.push(stage(
+            archive,
+            MEMBER,
+            import_id,
+            "second.dat",
+            Some(InZip {
+                input: root,
+                member_index: 1,
+            }),
+        ));
+    }
+    group
+}
+
+fn remove(
+    writer: &Writer,
+    store: Arc<hashed_blobs::Store>,
+    id: &str,
+) -> Result<crate::excise::Excised> {
+    writer.excise(
+        crate::excise::ExciseRequest {
+            id: id.into(),
+            target: crate::excise::ExciseTarget::Input(BlobHash::of(MEMBER).to_string()),
+            reason: None,
+            dry_run: false,
+        },
+        store,
+    )
+}
+
+#[test]
+fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    for import_id in ["one", "two"] {
+        let outcomes = writer
+            .sender()
+            .unwrap()
+            .store_group(linked(&archive, import_id, true), Arc::clone(&store))
+            .unwrap();
+        assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+    }
+    let db = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let count = |table: &str| {
+        db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        (
+            count("input"),
+            count("revision"),
+            count("extent"),
+            count("blob")
+        ),
+        (2, 2, 2, 2)
+    );
+    assert_eq!((count("observation"), count("observation_zip")), (6, 4));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(DISTINCT member_index) FROM observation_zip",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn prepared_linked_writes_and_member_exclusion_serialize_without_hidden_copies() {
+    for concurrent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Arc::new(Writer::start(&archive).unwrap());
+        let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+        let initial = stage(&archive, MEMBER, "initial", "initial.dat", None);
+        writer
+            .sender()
+            .unwrap()
+            .store_group(vec![initial], Arc::clone(&store))
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
+        let group = linked(&archive, "linked", false);
+        if !concurrent {
+            remove(&writer, Arc::clone(&store), "queued-remove").unwrap();
+            let outcomes = writer
+                .sender()
+                .unwrap()
+                .store_group(group, Arc::clone(&store))
+                .unwrap();
+            assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
+            assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+            continue;
+        }
+        let barrier = Arc::new(Barrier::new(3));
+        let writing = {
+            let sender = writer.sender().unwrap();
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                sender.store_group(group, store).unwrap()
+            })
+        };
+        let exclusion = {
+            let writer = Arc::clone(&writer);
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                remove(&writer, store, "concurrent-remove")
+            })
+        };
+        barrier.wait();
+        let outcomes = writing.join().unwrap();
+        let excised = exclusion.join().unwrap();
+        // Either the excision ran first and the ZIP is refused whole, or the
+        // ZIP was stored first and the excision, now inside it, is refused.
+        match excised {
+            Ok(_) => {
+                assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
+                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
+            }
+            Err(StoreError::ExcisionInsideZip { .. }) => {
+                assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
+                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
+
+#[cfg(feature = "faults")]
+mod pending;
+
+#[test]
+fn a_container_in_one_import_can_be_a_real_member_in_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    let inner = BlobHash::of(ORIGINAL).to_string();
+    let outer = b"synthetic outer container representation";
+    let outer_id = BlobHash::of(outer).to_string();
+    let group = vec![
+        stage(&archive, outer, "outer", "outer.zip", None),
+        stage(&archive, ORIGINAL, "inner", "inner.zip", None),
+        stage(
+            &archive,
+            ORIGINAL,
+            "outer",
+            "file-Native.dat",
+            Some(InZip {
+                input: outer_id,
+                member_index: 0,
+            }),
+        ),
+        stage(
+            &archive,
+            MEMBER,
+            "inner",
+            "first.dat",
+            Some(InZip {
+                input: inner,
+                member_index: 0,
+            }),
+        ),
+    ];
+    let results = writer.sender().unwrap().store_group(group, store).unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let (members, _) = pool.reader().unwrap().unindexed_import_members().unwrap();
+    let mut names: Vec<_> = members
+        .into_iter()
+        .map(|member| member.membership.member)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["file-Native.dat", "first.dat"]);
+}
+
+mod excision;

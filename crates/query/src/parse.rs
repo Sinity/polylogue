@@ -30,7 +30,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
             return Err(not_a_unit(text, &bad));
         }
     }
-    let Some(shape) = query.kids().find(|p| p.as_rule() != Rule::EOI) else {
+    let Some(shape) = query.children().find(|p| p.as_rule() != Rule::EOI) else {
         return Ok(Query {
             source: Source::Empty,
             attach: vec![],
@@ -39,7 +39,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
     };
     match shape.as_rule() {
         Rule::unit_query => {
-            let mut inner = shape.kids();
+            let mut inner = shape.children();
             let unit = unit(inner.next().expect("unit"));
             let mut cond = None;
             let mut attach = vec![];
@@ -59,7 +59,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
             })
         }
         Rule::expr_query => {
-            if let Some((start, end)) = shape.clone().kids().next().and_then(bare_where) {
+            if let Some((start, end)) = shape.clone().children().next().and_then(bare_where) {
                 // `kind:* where exists …` would search for the word "where"
                 // and answer wrongly; refuse it with the reading meant.
                 let joined = format!("{} {}", text[..start].trim_end(), text[end..].trim_start());
@@ -72,7 +72,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
                     Some(joined.trim().to_owned()),
                 ));
             }
-            let mut inner = shape.kids();
+            let mut inner = shape.children();
             let cond = expr(inner.next().expect("expr"));
             let mut attach = vec![];
             let mut stages = vec![];
@@ -118,15 +118,15 @@ fn depth(text: &str) -> usize {
 /// A pair's children without the keyword tokens. Keywords are atomic
 /// rules so their word boundary sees no implicit whitespace, which puts
 /// them in the tree; nothing reads them.
-type KidsIter<'i> =
+type ChildrenIter<'i> =
     std::iter::Filter<pest::iterators::Pairs<'i, Rule>, fn(&Pair<'i, Rule>) -> bool>;
 
-trait Kids<'i> {
-    fn kids(self) -> KidsIter<'i>;
+trait InnerPairs<'i> {
+    fn children(self) -> ChildrenIter<'i>;
 }
 
-impl<'i> Kids<'i> for Pair<'i, Rule> {
-    fn kids(self) -> KidsIter<'i> {
+impl<'i> InnerPairs<'i> for Pair<'i, Rule> {
+    fn children(self) -> ChildrenIter<'i> {
         fn keep(p: &Pair<'_, Rule>) -> bool {
             !matches!(
                 p.as_rule(),
@@ -168,12 +168,12 @@ fn unknown_unit(p: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
 /// Whether `bad` is the first word of a query with no `where` after it, so
 /// the word is meant as text (`crash`, `crash | count`).
 fn lone_word(query: Pair<'_, Rule>, bad: &Pair<'_, Rule>) -> bool {
-    let Some(shape) = query.kids().find(|p| p.as_rule() == Rule::unit_query) else {
+    let Some(shape) = query.children().find(|p| p.as_rule() == Rule::unit_query) else {
         return false;
     };
-    let mut kids = shape.kids();
-    kids.next().is_some_and(|u| u.as_span() == bad.as_span())
-        && kids.all(|k| k.as_rule() != Rule::expr)
+    let mut parts = shape.children();
+    parts.next().is_some_and(|u| u.as_span() == bad.as_span())
+        && parts.all(|k| k.as_rule() != Rule::expr)
 }
 
 fn not_a_unit(text: &str, bad: &Pair<'_, Rule>) -> QueryError {
@@ -201,7 +201,7 @@ fn number(p: Pair<'_, Rule>) -> u64 {
 }
 
 fn unquote(p: Pair<'_, Rule>) -> String {
-    let inner = p.kids().next().map(|i| i.as_str()).unwrap_or("");
+    let inner = p.children().next().map(|i| i.as_str()).unwrap_or("");
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -218,12 +218,12 @@ fn unquote(p: Pair<'_, Rule>) -> String {
 
 fn expr(p: Pair<'_, Rule>) -> Cond {
     debug_assert_eq!(p.as_rule(), Rule::expr);
-    or_expr(p.kids().next().expect("or_expr"))
+    or_expr(p.children().next().expect("or_expr"))
 }
 
 fn or_expr(p: Pair<'_, Rule>) -> Cond {
     let sp = span(&p);
-    let mut any: Vec<Cond> = p.kids().map(and_expr).collect();
+    let mut any: Vec<Cond> = p.children().map(and_expr).collect();
     if any.len() == 1 {
         return any.pop().expect("one");
     }
@@ -235,7 +235,7 @@ fn or_expr(p: Pair<'_, Rule>) -> Cond {
 
 fn and_expr(p: Pair<'_, Rule>) -> Cond {
     let sp = span(&p);
-    let mut all: Vec<Cond> = p.kids().map(not_expr).collect();
+    let mut all: Vec<Cond> = p.children().map(not_expr).collect();
     if all.len() == 1 {
         return all.pop().expect("one");
     }
@@ -247,7 +247,7 @@ fn and_expr(p: Pair<'_, Rule>) -> Cond {
 
 fn not_expr(p: Pair<'_, Rule>) -> Cond {
     let sp = span(&p);
-    let mut inner = p.kids();
+    let mut inner = p.children();
     let first = inner.next().expect("not_expr");
     match first.as_rule() {
         Rule::negate => Cond {
@@ -262,7 +262,7 @@ fn not_expr(p: Pair<'_, Rule>) -> Cond {
 }
 
 fn atom(p: Pair<'_, Rule>) -> Cond {
-    let inner = p.kids().next().expect("atom");
+    let inner = p.children().next().expect("atom");
     leaf(inner)
 }
 
@@ -271,7 +271,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
     let kind = match p.as_rule() {
         Rule::expr => return expr(p),
         Rule::exists => {
-            let mut i = p.kids();
+            let mut i = p.children();
             let unit = unit(i.next().expect("row unit"));
             let cond = expr(i.next().expect("exists body"));
             CondKind::Exists {
@@ -282,7 +282,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
         Rule::seq => {
             let mut steps = vec![];
             let mut gaps = vec![];
-            for q in p.kids() {
+            for q in p.children() {
                 match q.as_rule() {
                     Rule::step => steps.push(step(q)),
                     Rule::arrow => gaps.push(gap(q)),
@@ -292,7 +292,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
             CondKind::Seq { steps, gaps }
         }
         Rule::between => {
-            let mut i = p.kids();
+            let mut i = p.children();
             CondKind::Between {
                 field: i.next().expect("field").as_str().to_owned(),
                 from: scalar(i.next().expect("from")),
@@ -300,7 +300,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
             }
         }
         Rule::compare => {
-            let mut i = p.kids();
+            let mut i = p.children();
             let field = i.next().expect("field").as_str().to_owned();
             let op = Op::parse(i.next().expect("op").as_str()).expect("grammar op");
             CondKind::Compare {
@@ -310,9 +310,9 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
             }
         }
         Rule::match_ => {
-            let mut i = p.kids();
+            let mut i = p.children();
             let field = i.next().expect("field").as_str().to_owned();
-            let v = i.next().expect("mvalue").kids().next().expect("value");
+            let v = i.next().expect("mvalue").children().next().expect("value");
             match v.as_rule() {
                 Rule::quoted => CondKind::Match {
                     field,
@@ -324,7 +324,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
                 Rule::alternatives => CondKind::Match {
                     field,
                     value: Value::Alternatives {
-                        any: v.kids().map(|b| b.as_str().to_owned()).collect(),
+                        any: v.children().map(|b| b.as_str().to_owned()).collect(),
                     },
                 },
                 Rule::any_value => CondKind::Match {
@@ -359,7 +359,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
             text: p.as_str().to_owned(),
         },
         Rule::text => {
-            let t = p.kids().next().expect("text");
+            let t = p.children().next().expect("text");
             match t.as_rule() {
                 Rule::quoted => CondKind::Text {
                     text: unquote(t),
@@ -371,7 +371,7 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
                 },
             }
         }
-        Rule::step_atom | Rule::atom => return leaf(p.kids().next().expect("inner")),
+        Rule::step_atom | Rule::atom => return leaf(p.children().next().expect("inner")),
         other => unreachable!("leaf {other:?}"),
     };
     Cond { span: sp, kind }
@@ -389,7 +389,7 @@ fn compact_compare(text: &str) -> Option<(Op, &str)> {
 }
 
 fn scalar(p: Pair<'_, Rule>) -> String {
-    let inner = p.kids().next().expect("scalar");
+    let inner = p.children().next().expect("scalar");
     match inner.as_rule() {
         Rule::quoted => unquote(inner),
         Rule::time_phrase => inner
@@ -404,7 +404,7 @@ fn scalar(p: Pair<'_, Rule>) -> String {
 
 fn step(p: Pair<'_, Rule>) -> Cond {
     let sp = span(&p);
-    let mut all: Vec<Cond> = p.kids().map(leaf).collect();
+    let mut all: Vec<Cond> = p.children().map(leaf).collect();
     if all.len() == 1 {
         return all.pop().expect("one");
     }
@@ -415,14 +415,14 @@ fn step(p: Pair<'_, Rule>) -> Cond {
 }
 
 fn gap(p: Pair<'_, Rule>) -> Gap {
-    let Some(g) = p.kids().next() else {
+    let Some(g) = p.children().next() else {
         return Gap::Later;
     };
-    let g = g.kids().next().expect("gap kind");
+    let g = g.children().next().expect("gap kind");
     match g.as_rule() {
         Rule::gap_next => Gap::Next,
         Rule::gap_within => {
-            let d = g.kids().next().expect("duration").as_str();
+            let d = g.children().next().expect("duration").as_str();
             Gap::Within {
                 ms: crate::time::duration_ms(d).expect("grammar duration"),
             }
@@ -432,11 +432,11 @@ fn gap(p: Pair<'_, Rule>) -> Gap {
 }
 
 fn children(p: Pair<'_, Rule>) -> Vec<Child> {
-    p.kids()
+    p.children()
         .filter(|c| c.as_rule() == Rule::child)
         .map(|c| {
             let sp = span(&c);
-            let mut i = c.kids();
+            let mut i = c.children();
             let unit = unit(i.next().expect("unit"));
             let mut fields = vec![];
             let mut windows = vec![];
@@ -444,11 +444,11 @@ fn children(p: Pair<'_, Rule>) -> Vec<Child> {
                 match q.as_rule() {
                     Rule::field => fields.push(q.as_str().to_owned()),
                     Rule::window => {
-                        let w = q.kids().next().expect("window");
+                        let w = q.children().next().expect("window");
                         windows.push(match w.as_rule() {
                             Rule::window_n => {
                                 let first = w.as_str().to_ascii_lowercase().starts_with("first");
-                                let n = number(w.kids().next().expect("n"));
+                                let n = number(w.children().next().expect("n"));
                                 if first {
                                     Window::First { n }
                                 } else {
@@ -472,21 +472,21 @@ fn children(p: Pair<'_, Rule>) -> Vec<Child> {
 }
 
 fn stage_list(p: Pair<'_, Rule>) -> Vec<Stage> {
-    p.kids().map(stage).collect()
+    p.children().map(stage).collect()
 }
 
 fn stage(p: Pair<'_, Rule>) -> Stage {
     let sp = span(&p);
-    let s = p.kids().next().expect("stage");
+    let s = p.children().next().expect("stage");
     let kind = match s.as_rule() {
         Rule::sort_by => {
             let mut descending = false;
             let mut key = None;
             let mut then = vec![];
-            for q in s.kids() {
+            for q in s.children() {
                 match q.as_rule() {
                     Rule::sort_then => {
-                        let mut i = q.kids();
+                        let mut i = q.children();
                         let field = i.next().expect("field").as_str().to_owned();
                         let desc = i
                             .next()
@@ -494,10 +494,10 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
                         then.push((field, desc));
                     }
                     Rule::sort_key => {
-                        let k = q.kids().next().expect("sort key");
+                        let k = q.children().next().expect("sort key");
                         key = Some(match k.as_rule() {
                             Rule::random => SortKey::Random {
-                                seed: k.kids().next().map(number),
+                                seed: k.children().next().map(number),
                             },
                             _ => SortKey::Field {
                                 field: k.as_str().to_owned(),
@@ -518,9 +518,9 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
         }
         Rule::group_by => StageKind::GroupBy {
             keys: s
-                .kids()
+                .children()
                 .map(|k| {
-                    let mut i = k.kids();
+                    let mut i = k.children();
                     let first = i.next().expect("group key");
                     match first.as_rule() {
                         Rule::bucket => GroupKey {
@@ -540,30 +540,30 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
                 .collect(),
         },
         Rule::agg => StageKind::Agg {
-            fns: s.kids().map(agg_fn).collect(),
+            fns: s.children().map(agg_fn).collect(),
         },
         Rule::count => StageKind::Count,
         Rule::limit => StageKind::Limit {
-            n: number(s.kids().next().expect("n")),
+            n: number(s.children().next().expect("n")),
         },
         Rule::offset => StageKind::Offset {
-            n: number(s.kids().next().expect("n")),
+            n: number(s.children().next().expect("n")),
         },
         Rule::where_stage => StageKind::Where {
-            cond: expr(s.kids().next().expect("expr")),
+            cond: expr(s.children().next().expect("expr")),
         },
         Rule::distinct => StageKind::Distinct,
         Rule::matches => StageKind::Matches,
         Rule::measure => StageKind::Measure {
             what: s
-                .kids()
+                .children()
                 .next()
                 .expect("measure_what")
                 .as_str()
                 .to_ascii_lowercase(),
         },
         Rule::scope_stage => {
-            let mut i = s.kids();
+            let mut i = s.children();
             let unit = unit(i.next().expect("unit"));
             StageKind::Scope {
                 unit,
@@ -576,7 +576,7 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
 }
 
 fn agg_fn(p: Pair<'_, Rule>) -> AggFn {
-    let mut i = p.kids();
+    let mut i = p.children();
     let Some(name) = i.next() else {
         return AggFn::Count;
     };

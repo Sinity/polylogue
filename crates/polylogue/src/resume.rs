@@ -1,11 +1,11 @@
 //! Resuming a session. Two ways are
 //! kept apart:
 //!
-//! - **native resume**: the harness's own command reopens the session with
+//! - **harness resume**: the harness's own command reopens the session with
 //!   its full history (`claude --resume <id>`, `codex resume <id>`);
 //! - **context-assisted continuation**: a new session starts with a
 //!   takeover brief Polylogue prepares (`polylogue takeover <id>`), for
-//!   harnesses without native resume or a session whose file is gone.
+//!   harnesses without harness resume or a session whose file is gone.
 //!
 //! Which sessions are worth resuming comes from what they left open, not
 //! from how their text ended.
@@ -25,7 +25,7 @@ pub struct Command {
 }
 
 /// The harness's own resume command for a session, when it has one.
-pub fn native_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> {
+pub fn harness_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> {
     let resume = polylogue_sources::origin::by_name(session.origin().as_str())?.resume?;
     let mut argv = resume(session.native().as_str())?.into_iter();
     Some(Command {
@@ -35,12 +35,12 @@ pub fn native_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> 
     })
 }
 
-/// How to continue a session: its native resume command if any, and the
+/// How to continue a session: its harness resume command if any, and the
 /// context-assisted way, which always exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Plan {
     pub session: SessionId,
-    pub native: Option<Command>,
+    pub harness_command: Option<Command>,
     pub context_assisted: Command,
 }
 
@@ -51,7 +51,7 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
     let cwd = s.cwd.last().cloned();
     Ok(Plan {
         session: session.clone(),
-        native: native_resume(session, cwd.as_deref()),
+        harness_command: harness_resume(session, cwd.as_deref()),
         context_assisted: Command {
             program: "polylogue".into(),
             args: vec!["takeover".into(), session.to_string()],
@@ -67,7 +67,7 @@ pub struct ResumableSession {
     pub open: OpenItems,
     /// Operator notes on it that ask for follow-up (handoffs, blockers).
     pub follow_ups: Vec<String>,
-    pub native: Option<Command>,
+    pub harness_command: Option<Command>,
 }
 
 /// Sessions under `cwd`, newest first, that left something open or carry
@@ -99,12 +99,12 @@ pub fn resumable(
         if !open.any() && follow_ups.is_empty() {
             continue;
         }
-        let native = native_resume(&s.id, s.cwd.as_deref());
+        let harness_command = harness_resume(&s.id, s.cwd.as_deref());
         out.push(ResumableSession {
             session: s,
             open,
             follow_ups,
-            native,
+            harness_command,
         });
         if out.len() as u64 >= limit {
             break;

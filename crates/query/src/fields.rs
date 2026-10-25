@@ -284,7 +284,7 @@ pub const SESSION_HAS: [Has; 8] = [
             format!(
                 "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
                  WHERE ht.ref = 'session:' || {s}.id AND {} \
-                 GROUP BY hn.root HAVING count(*) > 1)",
+                 GROUP BY hn.first_note HAVING count(*) > 1)",
                 current_note("hn")
             )
         },
@@ -426,7 +426,7 @@ pub static FIELDS: &[Field] = &[
     sp(Sessions, "link", "the kind of an incoming link; link:fork, link:resume", custom::link),
     sp(Sessions, "continues", "sessions continuing the given session", custom::continues),
     sp(Sessions, "continued_by", "sessions the given session continues", custom::continued_by),
-    sp(Sessions, "lineage", "every session connected through links", custom::lineage),
+    sp(Sessions, "connected", "every session connected to the given one through links", custom::connected),
     sp(Sessions, "path", "a file path the session read, wrote or edited", custom::session_tool_call),
     sp(Sessions, "tool", "the session made such a tool call", custom::session_tool_call),
     sp(Sessions, "action", "the session made such a tool call", custom::session_tool_call),
@@ -506,7 +506,7 @@ pub static FIELDS: &[Field] = &[
         Messages,
         "duplicate",
         Bool,
-        "a turn another route of the session also holds, shown from that route",
+        "a turn another input of the session also holds, shown from that input",
     ).sql("({m}.duplicate_of IS NOT NULL)"),
     f(Messages, "active", Bool, "on the active path").sql("COALESCE({m}.on_active_path, 1)"),
     sv(Messages, "has", &MESSAGE_HAS_NAMES, "the message has thinking, tool calls, attachments or code", custom::has),
@@ -648,7 +648,7 @@ pub static FIELDS: &[Field] = &[
         "the archive's write counter when it was written",
     ).sql("{r}.commit_seq"),
     f(Notes, "created_at", Time, "").sql("{r}.created_at"),
-    f(Notes, "root", Prefix, "the revision family").sql("{r}.root"),
+    f(Notes, "first_note", Prefix, "the first note of its revisions").sql("{r}.first_note"),
     f(Notes, "current", Bool, "no later revision replaces it").sql_fn(notes_current),
     f(
         Notes,
@@ -707,7 +707,7 @@ pub static FIELDS: &[Field] = &[
     )
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
-    f(Changes, "scope", Prefix, "an excision's session/input scope or text hash").sql("{r}.scope"),
+    f(Changes, "target", Prefix, "an excision's target: session:, document: or input:").sql("{r}.target"),
     sp(Changes, "sessions", "the sessions an excision removed", custom::selection).sql("{r}.sessions").ids(),
     sp(Changes, "messages", "the messages an excision removed", custom::selection).sql("{r}.messages").ids(),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
@@ -1188,14 +1188,14 @@ pub fn live_note(n: &str) -> String {
 
 pub fn current_note(n: &str) -> String {
     format!(
-        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.root = {n}.root AND nr.commit_seq > {n}.commit_seq)"
+        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.first_note = {n}.first_note AND nr.commit_seq > {n}.commit_seq)"
     )
 }
 
 /// Whether note `n`'s family is withdrawn: a withdrawal names its first note.
 pub fn withdrawn_note(n: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM a.note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.root)"
+        "EXISTS (SELECT 1 FROM a.note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.first_note)"
     )
 }
 
@@ -1210,7 +1210,7 @@ pub fn hidden(s: &str) -> String {
 
 /// An excision row names the session.
 pub fn excised(s: &str) -> String {
-    format!("EXISTS (SELECT 1 FROM a.excision ex WHERE ex.scope = 'session:' || {s}.id)")
+    format!("EXISTS (SELECT 1 FROM a.excision ex WHERE ex.target = 'session:' || {s}.id)")
 }
 
 /// The session and every session below it in its subagent tree.

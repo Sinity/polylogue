@@ -10,7 +10,7 @@ impl Reader<'_> {
     pub fn note(&self, id: &str) -> Result<Option<Note>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT id, root, kind, key, value, author, created_at, valid_until
+            "SELECT id, first_note, kind, key, value, author, created_at, valid_until
              FROM a.note WHERE id = ?1 AND kind != 'withdrawal'",
         )?;
         let mut rows = stmt.query([id])?;
@@ -19,7 +19,7 @@ impl Reader<'_> {
         };
         let raw = RawNote {
             id: r.get(0)?,
-            root: r.get(1)?,
+            first_note: r.get(1)?,
             kind: r.get(2)?,
             key: r.get(3)?,
             value: r.get(4)?,
@@ -59,7 +59,7 @@ impl Reader<'_> {
             .collect();
         Ok(Some(Note {
             id: raw.id,
-            root: raw.root,
+            first_note: raw.first_note,
             kind,
             key: raw.key,
             value: raw.value,
@@ -75,7 +75,7 @@ impl Reader<'_> {
 
 struct RawNote {
     id: String,
-    root: String,
+    first_note: String,
     kind: String,
     key: Option<String>,
     value: Option<String>,

@@ -1,4 +1,4 @@
-//! Native state database titles, through the logical-export parser interface.
+//! Titles from Codex's state database, through the row dump parser.
 use crate::support::{jsonl, parse};
 use polylogue_model::{Session, TitleSource};
 use serde_json::{Value, json};

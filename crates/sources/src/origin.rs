@@ -19,7 +19,7 @@ pub enum Support {
 
 /// How an input reaches Polylogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Route {
+pub enum Arrival {
     /// A file the tool keeps writing at a fixed location.
     Live,
     /// An export the operator brings in with `polylogue import`.
@@ -62,10 +62,10 @@ pub const STATE_DIR: &str = "polylogue";
 pub enum Capture {
     /// The file's bytes.
     Bytes,
-    /// A tool's SQLite database: a typed logical export of its rows,
+    /// A tool's SQLite database: a typed row dump of its rows,
     /// written by the store and parsed in place of the database, never
     /// page images.
-    LogicalExport,
+    RowDump,
 }
 
 /// A tool's resume command line (program first) from a session's native
@@ -75,7 +75,7 @@ pub type Resume = fn(&str) -> Option<Vec<String>>;
 pub struct OriginSpec {
     pub name: &'static str,
     pub support: Support,
-    pub route: Route,
+    pub arrival: Arrival,
     pub root: Root,
     /// Glob patterns relative to `root`, exactly the layout the tool
     /// writes. Empty for imports.
@@ -163,9 +163,9 @@ pub struct WebChat {
 impl OriginSpec {
     /// Where Polylogue's own writer puts a spool origin's files, relative
     /// to its root: the directory every location lies under, up to the
-    /// first wildcard (`polylogue/hooks`). `None` for other routes.
+    /// first wildcard (`polylogue/hooks`). `None` for other arrivals.
     pub fn spool_dir(&self) -> Option<PathBuf> {
-        if self.route != Route::Spool {
+        if self.arrival != Arrival::Spool {
             return None;
         }
         fn fixed(l: &'static str) -> Vec<&'static str> {
@@ -196,14 +196,14 @@ fn none(_: &Path) -> Option<Parse> {
 }
 
 macro_rules! declared {
-    ($name:literal, $route:ident, [$($loc:literal),*]) => {
-        declared!($name, $route, Root::HOME, [$($loc),*])
+    ($name:literal, $arrival:ident, [$($loc:literal),*]) => {
+        declared!($name, $arrival, Root::HOME, [$($loc),*])
     };
-    ($name:literal, $route:ident, $root:expr, [$($loc:literal),*]) => {
+    ($name:literal, $arrival:ident, $root:expr, [$($loc:literal),*]) => {
         OriginSpec {
             name: $name,
             support: Support::Declared,
-            route: Route::$route,
+            arrival: Arrival::$arrival,
             root: $root,
             locations: &[$($loc),*],
             capture: Capture::Bytes,
@@ -224,7 +224,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
         capture: Capture::Bytes,
@@ -241,7 +241,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-side",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: crate::claude_code::side::SIDE_ROOT,
         locations: crate::claude_code::side::SIDE_LOCATIONS,
         capture: Capture::Bytes,
@@ -258,7 +258,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-history",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::side::HISTORY_LOCATIONS,
         capture: Capture::Bytes,
@@ -275,7 +275,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "codex",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
         capture: Capture::Bytes,
@@ -292,10 +292,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "codex-database",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
-        capture: Capture::LogicalExport,
+        capture: Capture::RowDump,
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
         resume: None,
@@ -309,7 +309,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "gemini-cli",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::gemini_cli::LOCATIONS,
         capture: Capture::Bytes,
@@ -327,10 +327,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "hermes",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::hermes::LOCATIONS,
-        capture: Capture::LogicalExport,
+        capture: Capture::RowDump,
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
         resume: None,
@@ -344,7 +344,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok-cli",
         support: Support::Parsed,
-        route: Route::Live,
+        arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::grok_cli::LOCATIONS,
         capture: Capture::Bytes,
@@ -361,7 +361,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "polylogue-repo-lookup",
         support: Support::Parsed,
-        route: Route::Spool,
+        arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
         capture: Capture::Bytes,
@@ -378,7 +378,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
         support: Support::Parsed,
-        route: Route::Spool,
+        arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
         capture: Capture::Bytes,
@@ -395,7 +395,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
         support: Support::Parsed,
-        route: Route::Spool,
+        arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
         capture: Capture::Bytes,
@@ -412,7 +412,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "export-file",
         support: Support::Kept,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -429,7 +429,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -446,7 +446,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "chatgpt",
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -468,7 +468,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-ai",
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -490,7 +490,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-design",
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -507,7 +507,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
         support: Support::Parsed,
-        route: Route::Spool,
+        arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
         capture: Capture::Bytes,
@@ -529,7 +529,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -551,7 +551,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok",
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -573,7 +573,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -590,7 +590,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openrouter::ORIGIN,
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -609,7 +609,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
         support: Support::Parsed,
-        route: Route::Import,
+        arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -652,7 +652,7 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
     })
 }
 
-/// The export file name of a database found at a [`Capture::LogicalExport`]
+/// The export file name of a database found at a [`Capture::RowDump`]
 /// origin's location: `<db file name>.jsonl`.
 pub fn export_name(db: &Path) -> Option<String> {
     Some(format!("{}.jsonl", db.file_name()?.to_str()?))

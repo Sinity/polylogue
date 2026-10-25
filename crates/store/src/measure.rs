@@ -8,8 +8,8 @@
 
 pub mod daily;
 pub mod drift;
-mod observations;
 pub mod quota;
+mod reports;
 pub mod survival;
 pub mod tool_calls;
 mod usage;
@@ -22,7 +22,7 @@ use crate::{Reader, Result};
 
 /// Which messages a measurement covers. Nothing given is the whole archive.
 #[derive(Debug, Clone, Default)]
-pub struct Scope {
+pub struct Selection {
     /// Session primary keys, from a sessions query.
     pub sessions: Option<Vec<i64>>,
     /// Unix ms bounds on a message's time, `since` inclusive.
@@ -32,8 +32,8 @@ pub struct Scope {
     pub origins: Option<Vec<String>>,
 }
 
-impl Scope {
-    /// The same scope, narrowed to one tool's sessions.
+impl Selection {
+    /// The same selection, narrowed to one tool's sessions.
     pub fn for_tool(mut self, origin: &str) -> Self {
         self.origins = Some(vec![origin.to_owned()]);
         self
@@ -58,7 +58,7 @@ impl Scope {
 
     /// The SQL condition on a session primary key column, for figures read
     /// from per-session facts. Those facts have no message times, so a
-    /// time-bounded scope is refused.
+    /// time-bounded selection is refused.
     fn session_condition(&self, column: &str) -> Result<(String, Vec<rusqlite::types::Value>)> {
         if self.since.is_some() || self.until.is_some() {
             return Err(crate::StoreError::Invalid(
@@ -98,30 +98,30 @@ impl Scope {
     }
 }
 
-/// Tokens by kind and cost over the scope, at the physical grain: each model
+/// Tokens by kind and cost over the selection, at the own grain: each model
 /// response once, however many sessions show it.
-pub fn usage(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> {
-    usage::report(reader, scope)
+pub fn usage(reader: &Reader<'_>, selection: &Selection) -> Result<UsageReport> {
+    usage::report(reader, selection)
 }
 
-/// Each session's usage in the scope, physical and logical.
-pub fn sessions(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<SessionUsage>> {
-    usage::per_session(reader, scope)
+/// Each session's usage in the selection, own and with parents.
+pub fn sessions(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionUsage>> {
+    usage::per_session(reader, selection)
 }
 
-/// Sessions in `scope` that a current `hidden` note hides. They stay in
+/// Sessions in `selection` that a current `hidden` note hides. They stay in
 /// every figure; this says how many figures include.
-pub(crate) fn hidden_sessions(reader: &Reader<'_>, scope: &Scope) -> Result<u64> {
-    let (cond, params) = scope.condition();
+pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Result<u64> {
+    let (cond, params) = selection.condition();
     let sql = format!(
         "SELECT count(DISTINCT s.pk) FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} AND EXISTS (
            SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
-             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.root = hn.root
+             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = hn.first_note
                              AND later.commit_seq > hn.commit_seq)
              AND NOT EXISTS (SELECT 1 FROM a.note_relation w
-                             WHERE w.kind = 'withdraws' AND w.other = 'note:' || hn.root))"
+                             WHERE w.kind = 'withdraws' AND w.other = 'note:' || hn.first_note))"
     );
     let n: i64 = reader
         .conn()?

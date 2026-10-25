@@ -1,6 +1,6 @@
 //! Hermes's verification ledger contains observations, not conversation turns.
 use super::{Event, Json, Parse, Sink, lines};
-use crate::Disposition;
+use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use std::path::Path;
 
@@ -56,7 +56,7 @@ impl ExportParser for Verification {
         } else if self.version.as_ref().and_then(Json::as_str) != Some("1") {
             sink.records.record(
                 table,
-                &Disposition::unknown(
+                &RecordOutcome::skipped(
                     "unsupported or absent Hermes verification schema version; original rows kept",
                 ),
             );
@@ -66,13 +66,13 @@ impl ExportParser for Verification {
                 "verification_events" => ("hermes_verification_event", Some("created_at")),
                 "verification_state" => ("hermes_verification_state", Some("last_edit_at")),
                 "meta" => {
-                    sink.records.record(table, &Disposition::Materialized);
+                    sink.records.record(table, &RecordOutcome::Used);
                     return Ok(());
                 }
                 _ => {
                     sink.records.record(
                         table,
-                        &Disposition::unknown("unrecognized Hermes verification table"),
+                        &RecordOutcome::skipped("unrecognized Hermes verification table"),
                     );
                     return Ok(());
                 }
@@ -81,7 +81,7 @@ impl ExportParser for Verification {
         if time.is_some() && !value.get("r").is_some_and(Json::is_object) {
             sink.records.record(
                 table,
-                &Disposition::refused("verification row is not an object"),
+                &RecordOutcome::unreadable("verification row is not an object"),
             );
             return Ok(());
         }
@@ -99,7 +99,7 @@ impl ExportParser for Verification {
         }
         // Preserve status, exit code and changed_paths_json as supplied. Missing
         // or future values do not become a tool outcome or an empty path list.
-        sink.records.record(table, &Disposition::Materialized);
+        sink.records.record(table, &RecordOutcome::Used);
         sink.out.events.push(Event {
             session: None,
             kind: kind.into(),

@@ -1,7 +1,7 @@
 use super::*;
 
-fn commit(origin: &str, messages: Vec<Message>) -> World {
-    let w = world();
+fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
+    let w = test_archive();
     let session = SessionId::parse(&format!("{origin}:s")).unwrap();
     let rows = messages
         .into_iter()

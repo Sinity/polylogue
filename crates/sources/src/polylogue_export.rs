@@ -6,7 +6,7 @@
 use crate::document::Sink;
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::parse::{MessageRow, Output, Parse, Step};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::export::{Document, EventExport, FORMAT, SessionExport};
 use std::path::Path;
 
@@ -151,13 +151,13 @@ impl ExportParser for Export {
             return Ok(None);
         };
         let mut records = Records::default();
-        records.record("export", &Disposition::refused(reason));
+        records.record("export", &RecordOutcome::unreadable(reason));
         Ok(Some(Step {
             output: Output::default(),
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
 
@@ -188,7 +188,7 @@ impl ExportParser for Export {
                     end: at,
                     document,
                 });
-                sink.records.record("document", &Disposition::Materialized);
+                sink.records.record("document", &RecordOutcome::Used);
                 return Ok(());
             }
             Kind::Event => {
@@ -198,7 +198,7 @@ impl ExportParser for Export {
                 // This observation belongs to this local export record.
                 exported.event.range = None;
                 sink.out.events.push(exported.event);
-                sink.records.record("event", &Disposition::Materialized);
+                sink.records.record("event", &RecordOutcome::Used);
                 return Ok(());
             }
             Kind::Session => {}
@@ -220,7 +220,7 @@ impl ExportParser for Export {
             sink.out.events.push(event);
         }
         sink.out.links.extend(session.links);
-        sink.records.record("session", &Disposition::Materialized);
+        sink.records.record("session", &RecordOutcome::Used);
         Ok(())
     }
 }

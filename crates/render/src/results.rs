@@ -276,7 +276,7 @@ fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     if let Some(next) = data["next"].as_str() {
         lines.push(format!("more: --cursor {next}"));
     }
-    for n in data["degraded"]
+    for n in data["incomplete"]
         .as_array()
         .into_iter()
         .flatten()

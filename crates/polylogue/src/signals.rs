@@ -29,7 +29,7 @@ const HOUR: i64 = 60 * MIN;
 /// deliveries are refused by name when a rule is read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rule {
-    /// The rule note's revision family, so a revision keeps the rule.
+    /// The rule note's first note, so a revision keeps the rule.
     pub id: String,
     pub name: String,
     pub query: String,
@@ -68,7 +68,7 @@ pub fn duration(text: &str) -> Option<i64> {
 /// Reads a `signal` note into a rule.
 pub fn rule(note: &Note) -> Result<Rule, Unusable> {
     let unusable = |reason: &str| Unusable {
-        id: note.root.clone(),
+        id: note.first_note.clone(),
         reason: reason.to_owned(),
     };
     if note.kind != NoteKind::Signal {
@@ -125,7 +125,7 @@ pub fn rule(note: &Note) -> Result<Rule, Unusable> {
         None => None,
     };
     Ok(Rule {
-        id: note.root.clone(),
+        id: note.first_note.clone(),
         name: text("name")
             .or(note.key.as_deref())
             .unwrap_or(query)
@@ -385,7 +385,7 @@ fn history(d: &Daemon) -> Vec<Sent> {
 }
 
 /// Evaluates the signal rules after each change and at each `for`
-/// deadline, so a duration fires with no new data (law 140), and records
+/// deadline, so a duration fires with no new data, and records
 /// every handoff as a delivery.
 pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
     use polylogue_model::LogicalDay;

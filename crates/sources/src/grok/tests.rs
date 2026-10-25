@@ -182,8 +182,8 @@ fn malformed_and_unknown_fields_are_not_read_and_invent_no_facts() {
             .iter()
             .all(|row| row.message.at.is_none() && row.message.model.is_none())
     );
-    assert!(parsed.accounting.refused.values().sum::<u64>() >= 3);
-    assert_eq!(parsed.accounting.unknown.values().sum::<u64>(), 1);
+    assert!(parsed.counts.unreadable.values().sum::<u64>() >= 3);
+    assert_eq!(parsed.counts.skipped.values().sum::<u64>(), 1);
     assert!(
         parsed.output.events[0]
             .data
@@ -209,7 +209,7 @@ fn detection_is_content_based_across_filenames_and_rejects_cli_history() {
         br#"{"type":"user","content":"hello"}"#
     ));
     let bad = parse(json!({"conversations":"not an array"}));
-    assert!(!bad.accounting.refused.is_empty());
+    assert!(!bad.counts.unreadable.is_empty());
     assert!(bad.output.sessions.is_empty());
 }
 
@@ -232,7 +232,7 @@ fn conflicting_native_ids_and_times_do_not_choose_one() {
             .to_string()
             .contains("conflicting Grok creation times")
     );
-    assert_eq!(parsed.accounting.refused.values().sum::<u64>(), 2);
+    assert_eq!(parsed.counts.unreadable.values().sum::<u64>(), 2);
 }
 
 #[test]

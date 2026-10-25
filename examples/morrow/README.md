@@ -2,7 +2,7 @@
 
 A week of synthetic work (Oct 01–07, 2026) on a fictional Rust library,
 in Claude Code, Codex, ChatGPT and claude.ai, plus a Claude-Code-only
-lineage set, a live set and an annotation session. `FACTS.md` states every
+parents set, a live set and an annotation session. `FACTS.md` states every
 fact the files produce; `expected/` holds the expected results of the
 query examples.
 
@@ -32,9 +32,9 @@ tests read an archive built by the real parsers and writer.
   request is not grouped into one message up to its `token_count`. The
   example's prompts, tool calls and outcomes are unchanged by this; its
   per-session message counts for #5 and #6 are not comparable.
-- Hook carrier lines put `event_id`, `event_type` and `observed_at_ms` first,
-  as real carriers do (the generator wrote `provider`, `session_id` and
-  `proc` first, which no real carrier does, so collection did not recognize
+- Hook spool lines put `event_id`, `event_type` and `observed_at_ms` first,
+  as real hook spool files do (the generator wrote `provider`, `session_id` and
+  `proc` first, which no real hook spool file does, so collection did not recognize
   them). Every field is kept.
 
 ## Cost evidence

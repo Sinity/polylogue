@@ -73,11 +73,11 @@ fn joined(messages: &[Message], view: View, budget: usize) -> String {
 
 fn joined_with_checkpoints(messages: &[Message], view: View, budget: usize) -> String {
     let mut position = None;
-    let mut checkpoint: Option<Checkpoint> = None;
+    let mut page_end: Option<PageEnd> = None;
     let mut out = String::new();
     for _ in 0..10000 {
-        let from = checkpoint.as_ref().map_or(0, Checkpoint::message);
-        let mut pager = match (position, checkpoint.take()) {
+        let from = page_end.as_ref().map_or(0, PageEnd::message);
+        let mut pager = match (position, page_end.take()) {
             (Some(at), Some(saved)) => Pager::resume(view, budget, at, saved),
             _ => Pager::new(view, budget, position),
         };
@@ -86,7 +86,7 @@ fn joined_with_checkpoints(messages: &[Message], view: View, budget: usize) -> S
                 break;
             }
         }
-        checkpoint = pager.checkpoint();
+        page_end = pager.page_end();
         let page = pager.finish().unwrap();
         out.push_str(&page.text);
         position = page.next;
@@ -94,7 +94,7 @@ fn joined_with_checkpoints(messages: &[Message], view: View, budget: usize) -> S
             return out;
         }
     }
-    panic!("checkpoint pages made no progress");
+    panic!("page_end pages made no progress");
 }
 
 #[test]

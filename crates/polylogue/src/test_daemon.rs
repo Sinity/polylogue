@@ -47,7 +47,7 @@ pub fn start(text: &str) -> TestDaemon {
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let server = server::Server::start(Arc::clone(&daemon)).unwrap();
-    let world = TestDaemon {
+    let daemon = TestDaemon {
         _dir: dir,
         home,
         config,
@@ -55,11 +55,11 @@ pub fn start(text: &str) -> TestDaemon {
         server,
         runtime,
     };
-    world.wait_for(|data| {
+    daemon.wait_for(|data| {
         data["store"]["messages"].as_u64() == Some(1)
             && data["store"]["search_pending"].as_u64() == Some(0)
     });
-    world
+    daemon
 }
 
 impl TestDaemon {

@@ -1,6 +1,6 @@
-//! A whole export, stored, then framed and ordered before its items are written.
+//! A whole export, stored, then split into records and ordered before its items are written.
 use super::*;
-use polylogue_model::{Accounting, Output};
+use polylogue_model::{Output, RecordCounts};
 use polylogue_sources::export::{self, ExportParser, ExportState};
 use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
 
@@ -67,7 +67,7 @@ impl export::ItemSink for ItemWriter<'_> {
 
 struct StateLookup<'a>(&'a mut ExportItems);
 impl ExportState for StateLookup<'_> {
-    fn claim(
+    fn record_first_session(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
@@ -117,23 +117,14 @@ impl Engine {
                 return Err(std::io::Error::other(error).into());
             };
             let step = export::refused(error.to_string(), plan.size);
-            self.write_export_step(
-                plan,
-                step.output,
-                step.accounting,
-                0,
-                true,
-                true,
-                false,
-                pass,
-            )?;
+            self.write_export_step(plan, step.output, step.counts, 0, true, true, false, pass)?;
             plan.parse_pos = plan.size;
             return Ok(());
         }
         let mut next = next_record(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
-        let mut restates = false;
+        let mut repeats_whole_conversations = false;
         if let Some(step) = parser
             .begin(
                 plan.size,
@@ -141,16 +132,16 @@ impl Engine {
             )
             .map_err(std::io::Error::other)?
         {
-            restates = step.restates;
+            repeats_whole_conversations = step.repeats_whole_conversations;
             order_from = (step.output.messages.len() as u64).max(1);
             self.write_export_step(
                 plan,
                 step.output,
-                step.accounting,
+                step.counts,
                 0,
                 true,
                 false,
-                restates,
+                repeats_whole_conversations,
                 pass,
             )?;
             first = false;
@@ -170,11 +161,11 @@ impl Engine {
             self.write_export_step(
                 plan,
                 step.output,
-                step.accounting,
+                step.counts,
                 order_from,
                 first,
                 false,
-                restates,
+                repeats_whole_conversations,
                 pass,
             )?;
             first = false;
@@ -184,11 +175,11 @@ impl Engine {
         self.write_export_step(
             plan,
             Output::default(),
-            Accounting::default(),
+            RecordCounts::default(),
             order_from,
             first,
             true,
-            restates,
+            repeats_whole_conversations,
             pass,
         )?;
         plan.parse_pos = plan.size;
@@ -208,12 +199,12 @@ impl Engine {
         let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
         file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
         file.read_exact(&mut tail)?;
-        file.seek(SeekFrom::Start(plan.piece_pos))?;
+        file.seek(SeekFrom::Start(plan.stored_upto))?;
         let prepared = self
             .archive
-            .prepare_bytes((&mut file).take(plan.size - plan.piece_pos))?;
+            .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
         if FileFacts::of(&file.metadata()?) != before
-            || prepared.len() != plan.size - plan.piece_pos
+            || prepared.len() != plan.size - plan.stored_upto
         {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
@@ -229,7 +220,7 @@ impl Engine {
                         .unwrap_or_else(|| self.observation(&plan.path, plan.facts)),
                 ),
                 continues: false,
-                piece: None,
+                new_blob: None,
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
@@ -249,8 +240,8 @@ impl Engine {
         let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
         plan.source = pool::Bytes::Stored(Arc::new(chain));
         plan.change = Change::Unchanged;
-        plan.piece_pos = plan.size;
-        plan.piece_started = true;
+        plan.stored_upto = plan.size;
+        plan.storing_started = true;
         plan.parse_pos = 0;
         plan.tail = Some(tail);
         Ok(())
@@ -261,35 +252,30 @@ impl Engine {
         &mut self,
         plan: &Plan,
         mut output: Output,
-        accounting: Accounting,
+        counts: RecordCounts,
         order_from: u64,
         reset: bool,
         done: bool,
-        restates: bool,
+        repeats_whole_conversations: bool,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
         let mut files = Vec::new();
         {
             for blob in std::mem::take(&mut output.blobs) {
-                let (piece, file) = self.archive.prepare_decoded(&blob.bytes)?;
-                if piece.hash != blob.hash || piece.size != blob.size {
+                let (new_blob, file) = self.archive.prepare_decoded(&blob.bytes)?;
+                if new_blob.hash != blob.hash || new_blob.size != blob.size {
                     return Err(std::io::Error::other(
                         "decoded export bytes differ from their declared hash or length",
                     )
                     .into());
                 }
                 files.extend(file);
-                blobs.push(piece);
+                blobs.push(new_blob);
             }
         }
-        let mut parse = ParseStep::new(
-            output,
-            accounting,
-            0..if done { plan.size } else { 0 },
-            done,
-        );
-        parse.restates = restates;
+        let mut parse = ParseStep::new(output, counts, 0..if done { plan.size } else { 0 }, done);
+        parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.prepare();
@@ -298,7 +284,7 @@ impl Engine {
             change: plan.change.clone(),
             observation: None,
             continues: false,
-            piece: None,
+            new_blob: None,
             blobs,
             length: plan.size,
             parse: vec![parse],

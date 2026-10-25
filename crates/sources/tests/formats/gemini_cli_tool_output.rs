@@ -40,7 +40,7 @@ fn result(parsed: &Value) -> &Value {
         .into_iter()
         .filter(|b| b["type"] == "tool_result")
         .collect();
-    assert_eq!(results.len(), 1, "one carrier keeps the tool's renderings");
+    assert_eq!(results.len(), 1, "one result keeps the tool's renderings");
     results[0]
 }
 

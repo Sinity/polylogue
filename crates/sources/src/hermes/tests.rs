@@ -108,10 +108,10 @@ fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     unbound.as_object_mut().unwrap().remove("source");
     let without_source = parse([vec![unbound], records.clone()].concat());
     assert!(without_source.output.sessions.is_empty());
-    assert!(!without_source.accounting.unknown.is_empty());
+    assert!(!without_source.counts.skipped.is_empty());
     let conflicting = parse([vec![header("a"), header("b")], records].concat());
     assert!(conflicting.output.messages.is_empty());
-    assert!(!conflicting.accounting.unknown.is_empty());
+    assert!(!conflicting.counts.skipped.is_empty());
 }
 
 #[test]
@@ -125,12 +125,12 @@ fn latest_positive_rows_and_gone_keep_the_last_known_message_without_changing_it
     ]);
     assert_eq!(parsed.output.messages.len(), 1);
     assert_eq!(parsed.output.messages[0].message.text(), "new");
-    assert_eq!(parsed.accounting.framed, 5);
-    assert_eq!(parsed.accounting.unknown.values().sum::<u64>(), 2);
+    assert_eq!(parsed.counts.records, 5);
+    assert_eq!(parsed.counts.skipped.values().sum::<u64>(), 2);
 }
 
 #[test]
-fn compression_ancestry_uses_nonempty_ancestor_and_its_actual_leaf() {
+fn compression_parents_use_nonempty_ancestor_and_its_actual_leaf() {
     let parsed = parse(vec![
         header("a"),
         session("child", Some("empty"), None),
@@ -263,7 +263,7 @@ fn unknown_authorship_and_unreadable_times_remain_explicit_without_guesses() {
     assert!(parsed.output.messages[0].message.model.is_none());
     assert!(parsed.output.messages[0].message.at.is_none());
     assert!(parsed.output.sessions[0].started.is_none());
-    assert!(!parsed.accounting.unknown.is_empty());
+    assert!(!parsed.counts.skipped.is_empty());
     assert!(
         parsed
             .output
@@ -404,7 +404,7 @@ fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
             .begin(raw.len() as u64, None)
             .unwrap()
             .unwrap()
-            .restates
+            .repeats_whole_conversations
     );
     assert_eq!(count, records.len());
     let parsed = parse(records);

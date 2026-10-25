@@ -9,7 +9,7 @@ use super::query::Failure;
 use polylogue_model::LogicalDay;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
-use polylogue_store::measure::{self, Scope, daily, drift, quota, survival, tool_calls};
+use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, tool_calls};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -28,7 +28,7 @@ pub struct Measure {
 
 /// What a measurement runs over.
 pub struct Run<'a> {
-    pub scope: Scope,
+    pub selection: Selection,
     pub now: i64,
     pub day: &'a LogicalDay,
     /// The series, for a measure that takes one.
@@ -45,15 +45,15 @@ pub static MEASURES: &[Measure] = &[
         help: "Tokens by kind and cost by model, over a sessions query or everything",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(measure::usage(r, &x.scope)),
+        run: |r, x| json(measure::usage(r, &x.selection)),
         text: text::usage,
     },
     Measure {
         name: "sessions",
-        help: "Each session's tokens and cost, physical (its own responses) and logical (what it shows, inherited responses included)",
+        help: "Each session's tokens and cost, own (its own responses) and with_parents (what it shows, inherited responses included)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(measure::sessions(r, &x.scope)),
+        run: |r, x| json(measure::sessions(r, &x.selection)),
         text: text::json,
     },
     Measure {
@@ -75,7 +75,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Tool outcomes: ok, error, no result and unknown, never one rate",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(tool_calls::outcomes(r, &x.scope)),
+        run: |r, x| json(tool_calls::outcomes(r, &x.selection)),
         text: text::json,
     },
     Measure {
@@ -83,7 +83,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(tool_calls::failing_commands(r, &x.scope)),
+        run: |r, x| json(tool_calls::failing_commands(r, &x.selection)),
         text: text::failing,
     },
     Measure {
@@ -99,7 +99,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(survival::unanswered_end(r, &x.scope, x.now)),
+        run: |r, x| json(survival::unanswered_end(r, &x.selection, x.now)),
         text: text::json,
     },
     Measure {
@@ -107,7 +107,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session's first failed tool call, in minutes (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(survival::first_failure(r, &x.scope, false)),
+        run: |r, x| json(survival::first_failure(r, &x.selection, false)),
         text: text::json,
     },
     Measure {
@@ -115,7 +115,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session's first failed tool call, in human prompts (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(survival::first_failure(r, &x.scope, true)),
+        run: |r, x| json(survival::first_failure(r, &x.selection, true)),
         text: text::json,
     },
     Measure {
@@ -123,7 +123,7 @@ pub static MEASURES: &[Measure] = &[
         help: "A daily series with its 7-day baseline and level changes",
         whole_archive: false,
         metrics: daily::DAILY_METRICS,
-        run: |r, x| json(daily::daily(r, &x.scope, x.metric, x.day)),
+        run: |r, x| json(daily::daily(r, &x.selection, x.metric, x.day)),
         text: text::json,
     },
     Measure {
@@ -131,7 +131,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Which tool call follows which, and what follows a failure",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(tool_calls::process(r, &x.scope, 20)),
+        run: |r, x| json(tool_calls::process(r, &x.selection, 20)),
         text: text::json,
     },
     Measure {
@@ -139,7 +139,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Prompts by weekday and hour",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(daily::rhythm(r, &x.scope, x.day)),
+        run: |r, x| json(daily::rhythm(r, &x.selection, x.day)),
         text: text::json,
     },
 ];
@@ -182,9 +182,9 @@ pub fn run(
     }
     let day = LogicalDay::system();
     let run = Run {
-        scope: Scope {
+        selection: Selection {
             sessions,
-            ..Scope::default()
+            ..Selection::default()
         },
         now,
         day: &day,

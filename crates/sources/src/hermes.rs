@@ -1,4 +1,4 @@
-//! Hermes state rows, framed from one stored logical export. Session facts
+//! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
 mod identity;
 mod message;
@@ -11,7 +11,7 @@ use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Event, Json, Link, LinkKind, MessageId, Session, SessionId, SessionKind, TitleSource,
 };
@@ -118,7 +118,7 @@ fn lines(
         }
         if bytes.last() != Some(&b'\n') {
             return Err(ScanError::Callback(
-                "incomplete Hermes logical export line".into(),
+                "incomplete Hermes row dump line".into(),
             ));
         }
         let value = serde_json::from_slice(&bytes).map_err(ScanError::Malformed)?;
@@ -172,7 +172,7 @@ impl Database {
     }
     fn settle(&mut self) {
         // Ancestors precede their children. A genuine cycle is kept as a
-        // source relationship; the reader reports its incomplete ancestry.
+        // source relationship; the reader reports its parents as incomplete.
         for session in self.sessions.keys() {
             let mut seen = HashSet::new();
             let mut at = Some(session.clone());
@@ -347,7 +347,7 @@ impl ExportParser for Database {
         })?;
         if self.profile.is_none() {
             self.refusal.get_or_insert(
-                "Hermes logical export names no native profile; original rows stay unbound".into(),
+                "Hermes row dump names no native profile; original rows stay unbound".into(),
             );
         }
         self.settle();
@@ -394,17 +394,17 @@ impl ExportParser for Database {
             for _ in 0..*count {
                 records.record(
                     kind,
-                    &Disposition::unknown("superseded logical row stays in the stored input"),
+                    &RecordOutcome::skipped("superseded row stays in the stored input"),
                 );
             }
         }
         Ok(Some(Step {
             output: Output::default(),
-            accounting: records.finish().map_err(|error| error.to_string())?,
+            counts: records.finish().map_err(|error| error.to_string())?,
             start: 0,
             consumed: length,
             // Rows restate their whole record: a later row replaces an earlier one.
-            restates: self.refusal.is_none() && self.view.is_some(),
+            repeats_whole_conversations: self.refusal.is_none() && self.view.is_some(),
         }))
     }
     fn item(
@@ -416,17 +416,17 @@ impl ExportParser for Database {
         let value: Json = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
         let table = value.get("t").and_then(Json::as_str).unwrap_or("?");
         if let Some(reason) = &self.refusal {
-            sink.records.record(table, &Disposition::unknown(reason));
+            sink.records.record(table, &RecordOutcome::skipped(reason));
             return Ok(());
         }
         if value.get("schema").is_some() {
-            sink.records.record("schema", &Disposition::Materialized);
+            sink.records.record("schema", &RecordOutcome::Used);
             return Ok(());
         }
         if value.get("gone") == Some(&Json::Bool(true)) {
             sink.records.record(
                 table,
-                &Disposition::unknown(
+                &RecordOutcome::skipped(
                     "provider deleted the row; its last known positive value is kept",
                 ),
             );
@@ -438,7 +438,7 @@ impl ExportParser for Database {
                 let Some(raw) = native(row, "id") else {
                     sink.records.record(
                         table,
-                        &Disposition::refused("Hermes session ID is not a nonempty string"),
+                        &RecordOutcome::unreadable("Hermes session ID is not a nonempty string"),
                     );
                     return Ok(());
                 };
@@ -456,7 +456,12 @@ impl ExportParser for Database {
                         .parent(&raw)
                         .is_some_and(|(_, kind)| kind == LinkKind::Continuation)
                 {
-                    sink.records.record(table,&Disposition::unknown("empty compression intermediary; ancestry uses its nearest stored source"));
+                    sink.records.record(
+                        table,
+                        &RecordOutcome::skipped(
+                            "empty compression intermediary; parents use its nearest stored source",
+                        ),
+                    );
                     return Ok(());
                 }
                 let mut session = Session::new(id.clone(), facts.kind);
@@ -563,13 +568,13 @@ impl ExportParser for Database {
                         data: serde_json::json!({"end_reason":end}),
                     });
                 }
-                sink.records.record(table, &Disposition::Materialized);
+                sink.records.record(table, &RecordOutcome::Used);
             }
             "messages" => {
                 let Some(key) = key(&value) else {
                     sink.records.record(
                         table,
-                        &Disposition::refused("Hermes message has no logical row key"),
+                        &RecordOutcome::unreadable("Hermes message has no row key"),
                     );
                     return Ok(());
                 };
@@ -578,7 +583,7 @@ impl ExportParser for Database {
                     .get(&key)
                     .ok_or("missing Hermes message key")?;
                 if selected.seed.is_none() {
-                    sink.records.record(table, &Disposition::unknown("unrecognized Hermes role or message shape; authorship was not assigned"));
+                    sink.records.record(table, &RecordOutcome::skipped("unrecognized Hermes role or message shape; authorship was not assigned"));
                     return Ok(());
                 }
                 let (Some(raw), Some(id), Some(_)) =
@@ -586,7 +591,7 @@ impl ExportParser for Database {
                 else {
                     sink.records.record(
                         table,
-                        &Disposition::refused(
+                        &RecordOutcome::unreadable(
                             "Hermes message needs a textual session and integer insertion ID",
                         ),
                     );
@@ -595,7 +600,7 @@ impl ExportParser for Database {
                 let Some(facts) = self.sessions.get(raw) else {
                     sink.records.record(
                         table,
-                        &Disposition::unknown("Hermes message has no owning session"),
+                        &RecordOutcome::skipped("Hermes message has no owning session"),
                     );
                     return Ok(());
                 };
@@ -633,15 +638,15 @@ impl ExportParser for Database {
                                 data: Json::Null,
                             });
                         }
-                        sink.records.record(table, &Disposition::Materialized);
+                        sink.records.record(table, &RecordOutcome::Used);
                     }
-                    Err(reason) => sink.records.record(table, &Disposition::unknown(reason)),
+                    Err(reason) => sink.records.record(table, &RecordOutcome::skipped(reason)),
                 }
             }
-            "schema_version" => sink.records.record(table, &Disposition::Materialized),
+            "schema_version" => sink.records.record(table, &RecordOutcome::Used),
             _ => sink.records.record(
                 table,
-                &Disposition::unknown("Hermes auxiliary row stays in the stored input"),
+                &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
             ),
         }
         Ok(())

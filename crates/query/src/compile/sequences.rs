@@ -8,10 +8,10 @@ impl<'a> Compiler<'a> {
         &mut self,
         unit: Unit,
         cond: &Cond,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let child = Scope {
+        let child = RowContext {
             unit,
             a: self.fresh(),
         };
@@ -35,7 +35,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         steps: &[Cond],
         gaps: &[Gap],
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
@@ -54,7 +54,7 @@ impl<'a> Compiler<'a> {
         let mut conds = vec![];
         for step in steps {
             let a = self.fresh();
-            let sc = Scope {
+            let sc = RowContext {
                 unit: Unit::ToolCalls,
                 a: Aliases {
                     s: s.clone(),
@@ -98,44 +98,44 @@ impl<'a> Compiler<'a> {
         Ok(inner)
     }
 
-    /// `| matches` of `exists unit(cond)`: one row per owner and matching
-    /// child, numbered within the owner in the child's order.
+    /// `| matches` of `exists unit(cond)`: one row per parent row and
+    /// matching child, numbered within the parent in the child's order.
     pub(super) fn exists_matches(
         &mut self,
         unit: Unit,
         cond: &Cond,
-        owner: &Scope,
-        owners: &str,
+        parent: &RowContext,
+        parent_rows: &str,
         span: Span,
     ) -> Result<MatchRel, QueryError> {
-        let child = Scope {
+        let child = RowContext {
             unit,
             a: self.fresh(),
         };
-        let key = owner.a.expand(units::spec(owner.unit).key);
-        let session = self.session_alias(owner, span).map(|s| format!("{s}.pk"));
-        let link = self.under_parent(owner.unit, &child, &key, session)?;
+        let key = parent.a.expand(units::spec(parent.unit).key);
+        let session = self.session_alias(parent, span).map(|s| format!("{s}.pk"));
+        let link = self.under_parent(parent.unit, &child, &key, session)?;
         let mut w = self.defaults(&child, &top_level(cond));
         w.push(link);
         w.push(self.cond(cond, &child, false)?);
-        w.push(format!("({owners})"));
-        let (owner_pk, owner_cols) = row_columns(owner.unit, &owner.a, self.opts.clock.now);
+        w.push(format!("({parent_rows})"));
+        let (parent_pk, parent_cols) = row_columns(parent.unit, &parent.a, self.opts.clock.now);
         let (child_pk, child_cols) = row_columns(unit, &child.a, self.opts.clock.now);
         let mut columns = vec![];
         let mut select = vec![format!("{child_pk} AS _pk")];
         let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _, _)| n.as_str()).collect();
-        if !(owner.unit == Unit::Sessions && child_names.contains(&"session")) {
-            let id = owner_cols
+        if !(parent.unit == Unit::Sessions && child_names.contains(&"session")) {
+            let id = parent_cols
                 .iter()
                 .find(|(n, _, _, _)| n == "id")
-                .map_or_else(|| owner_pk.clone(), |(_, e, _, _)| e.clone());
-            select.push(format!("{id} AS owner"));
-            columns.push(("owner".to_owned(), ColKind::Text));
+                .map_or_else(|| parent_pk.clone(), |(_, e, _, _)| e.clone());
+            select.push(format!("{id} AS parent_id"));
+            columns.push(("parent_id".to_owned(), ColKind::Text));
         }
         let child_order = self.default_order(&child);
-        let owner_order = self.default_order(owner);
+        let parent_order = self.default_order(parent);
         select.push(format!(
-            "row_number() OVER (PARTITION BY {owner_pk} ORDER BY {}) AS match",
+            "row_number() OVER (PARTITION BY {parent_pk} ORDER BY {}) AS match",
             child_order.join(", ")
         ));
         columns.push(("match".to_owned(), ColKind::Number));
@@ -143,12 +143,12 @@ impl<'a> Compiler<'a> {
             select.push(format!("{e} AS {n}"));
             columns.push((n.clone(), *k));
         }
-        let (hidden, order) = hidden_order(&[owner_order, child_order].concat(), "_m");
+        let (hidden, order) = hidden_order(&[parent_order, child_order].concat(), "_m");
         select.extend(hidden);
         let sql = format!(
             "SELECT {} FROM {}, {} WHERE {} ORDER BY {}",
             select.join(", "),
-            base_from(owner.unit, &owner.a),
+            base_from(parent.unit, &parent.a),
             base_from(unit, &child.a),
             and_all(&w),
             order_by(&order)
@@ -168,18 +168,18 @@ impl<'a> Compiler<'a> {
         &mut self,
         steps: &[Cond],
         gaps: &[Gap],
-        owner: &Scope,
-        owners: &str,
+        parent: &RowContext,
+        parent_rows: &str,
         span: Span,
     ) -> Result<MatchRel, QueryError> {
-        let s = self.session_alias(owner, span)?;
+        let s = self.session_alias(parent, span)?;
         let ord = "tc_order";
         let k = steps.len();
         let mut al = vec![];
         let mut conds = vec![];
         for step in steps {
             let a = self.fresh();
-            let sc = Scope {
+            let sc = RowContext {
                 unit: Unit::ToolCalls,
                 a: a.clone(),
             };
@@ -244,8 +244,8 @@ impl<'a> Compiler<'a> {
         };
         let name = format!("seqm{}", self.aliases);
         let owners_sql = format!(
-            "SELECT DISTINCT {s}.pk AS pk FROM {} WHERE {owners}",
-            base_from(owner.unit, &owner.a)
+            "SELECT DISTINCT {s}.pk AS pk FROM {} WHERE {parent_rows}",
+            base_from(parent.unit, &parent.a)
         );
         let mut next = vec![];
         for i in 1..k {

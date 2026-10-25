@@ -1,6 +1,7 @@
-//! The browser extension's capture spool: one framed append log per conversation
+//! The browser extension's capture spool: one capture log per conversation
 //! (`$XDG_STATE_HOME/polylogue/browser-capture/<provider>/*.json`). Each distinct
-//! capture is parsed once. An unframed file is read as one capture.
+//! capture is parsed once. A file without the capture-log header is read as
+//! one capture.
 //!
 //! A capture carries the provider's own conversation JSON
 //! (`raw_provider_payload`) where the provider page exposes it. That JSON
@@ -14,8 +15,8 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
+use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
@@ -115,12 +116,12 @@ impl DocumentParser for Capture {
             Ok(_) => {
                 return sink
                     .records
-                    .record("capture", &Disposition::refused("not an object"));
+                    .record("capture", &RecordOutcome::unreadable("not an object"));
             }
             Err(e) => {
                 return sink.records.record(
                     "capture",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
+                    &RecordOutcome::unreadable(format!("malformed JSON: {e}")),
                 );
             }
         };
@@ -134,16 +135,16 @@ impl DocumentParser for Capture {
         else {
             return sink
                 .records
-                .record("capture", &Disposition::refused("no session.provider"));
+                .record("capture", &RecordOutcome::unreadable("no session.provider"));
         };
         let origin = origin_of(provider);
         if polylogue_model::Origin::new(origin).is_err() {
             return sink.records.record(
                 "capture",
-                &Disposition::refused(format!("source {origin:?} is not an origin name")),
+                &RecordOutcome::unreadable(format!("source {origin:?} is not an origin name")),
             );
         }
-        sink.records.record("capture", &Disposition::Materialized);
+        sink.records.record("capture", &RecordOutcome::Used);
 
         let raw = capture
             .get("raw_provider_payload")
@@ -167,7 +168,7 @@ impl DocumentParser for Capture {
                 Some(session) => turns(origin, session, &mut sink),
                 None => sink.records.record(
                     "session",
-                    &Disposition::refused("neither provider JSON nor turns"),
+                    &RecordOutcome::unreadable("neither provider JSON nor turns"),
                 ),
             },
         }
@@ -198,13 +199,15 @@ impl DocumentParser for Capture {
 /// conversation JSON.
 fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     let Some(native) = str_of(session, "provider_session_id") else {
-        sink.records
-            .record("session", &Disposition::refused("no provider_session_id"));
+        sink.records.record(
+            "session",
+            &RecordOutcome::unreadable("no provider_session_id"),
+        );
         return;
     };
     let Some(sid) = session_id(origin, native) else {
         sink.records
-            .record("session", &Disposition::refused("unusable session ID"));
+            .record("session", &RecordOutcome::unreadable("unusable session ID"));
         return;
     };
     let mut facts = Session::new(sid.clone(), SessionKind::Main);
@@ -215,7 +218,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         facts.offer_start(at);
     }
     sink.out.sessions.push(facts);
-    sink.records.record("session", &Disposition::Materialized);
+    sink.records.record("session", &RecordOutcome::Used);
     let mut list: Vec<&Json> = session
         .get("turns")
         .and_then(Json::as_array)
@@ -236,7 +239,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             "system" => (Role::System, None, AttachmentDirection::Input),
             other => {
                 sink.records
-                    .record(other, &Disposition::unknown(format!("role {other}")));
+                    .record(other, &RecordOutcome::skipped(format!("role {other}")));
                 continue;
             }
         };
@@ -251,7 +254,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         });
         let Some(id) = message_id(origin, &turn_native) else {
             sink.records
-                .record(&role_name, &Disposition::refused("unusable turn ID"));
+                .record(&role_name, &RecordOutcome::unreadable("unusable turn ID"));
             continue;
         };
         let mut blocks: Vec<Block> = turn
@@ -295,7 +298,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             end: offset + 1,
             message,
         });
-        sink.records.record(&role_name, &Disposition::Materialized);
+        sink.records.record(&role_name, &RecordOutcome::Used);
     }
 }
 
@@ -379,7 +382,7 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
             .map(|bytes| {
                 let hash = BlobHash::of(&bytes);
                 let size = bytes.len() as u64;
-                sink.out.blobs.push(InlineBlob { hash, size, bytes });
+                sink.out.blobs.push(ExtractedBlob { hash, size, bytes });
                 (hash, size)
             });
         let file_id = str_of(a, "provider_attachment_id");

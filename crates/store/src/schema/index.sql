@@ -1,7 +1,7 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, the write counter, unsynced, facts_version,
 -- the status counters count.sessions, count.messages, count.tool_calls,
--- count.tool_calls_failed, count.unrecognized,
+-- count.tool_calls_failed, count.unused,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose
@@ -70,14 +70,14 @@ CREATE TABLE message (
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
   seq               INTEGER NOT NULL,       -- byte offset of the first record in that input
   record_position   INTEGER NOT NULL DEFAULT 0, -- its place among the messages that record holds
-  route_rank        INTEGER NOT NULL DEFAULT 0, -- the preferred version's route: 0 live, 1 spool, 2 import
+  arrival_rank        INTEGER NOT NULL DEFAULT 0, -- the shown version's arrival: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
   at                INTEGER,                -- provider time
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (preferred) version came from
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (shown) version came from
   source_chain      INTEGER,                -- the revision chain the byte range is in (archive.db revision.chain):
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
@@ -85,9 +85,9 @@ CREATE TABLE message (
   in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
-  duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another route's message the
+  duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another input's message the
                                             --   session shows for the same turn (no shared turn ID, matched by prompt text)
-  duplicate_reason  TEXT,                   --   and why that route's message is the one shown
+  duplicate_reason  TEXT,                   --   and why that input's message is the one shown
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
                                             --   (attribution, effort, Codex phase, citations, speech or
                                             --   recap markers); one JSON object, export field `attrs`
@@ -112,7 +112,7 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 
 -- Every stored version that contributed to a message: one row per input chain
--- whose records hold a version of it (the preferred version's row repeats the
+-- whose records hold a version of it (the shown version's row repeats the
 -- message's own columns). A citation names a row here, never just an input and
 -- offsets, because a rewritten input's new chain puts other bytes at the same
 -- offsets (an outside review, 2026-10-12). Rebuilt with the message.
@@ -122,7 +122,7 @@ CREATE TABLE message_source (
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
-  preferred         INTEGER NOT NULL,       -- 1 for the version the message shows
+  shown         INTEGER NOT NULL,       -- 1 for the version the message shows
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
   version_hash      BLOB,                   -- BLAKE3 of the version's sorted-key JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
@@ -256,9 +256,9 @@ CREATE TABLE link (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
   UNIQUE (parent_id, child_id, kind, how)
 ) STRICT;
-CREATE INDEX link_child  ON link(child_pk);                    -- lineage up
+CREATE INDEX link_child  ON link(child_pk);                    -- parents
 CREATE INDEX link_child_id ON link(child_id) WHERE child_pk IS NULL;   -- late children
-CREATE INDEX link_parent ON link(parent_id, kind);             -- lineage down; late parents
+CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
@@ -302,25 +302,26 @@ CREATE TABLE parse_state (
                                             --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
   detail            TEXT,                   -- waiting: the stored length it waits at
-  framed            INTEGER NOT NULL DEFAULT 0,  -- every framed record of this chain is counted:
-  used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + unrecognized_n + undecodable; an append adds
-  unrecognized_n    INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
-  undecodable       INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
+  records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
+  used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
+  skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
+  unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
   PRIMARY KEY (input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
 
--- Record types and fields a parser did not understand, and record types it
--- deliberately only counts (sources/ lists them), per input: an append adds to
--- the input's rows, a whole re-parse replaces them.
-CREATE TABLE unrecognized (
+-- What a parser did not use, per input: records it skipped (known kinds it
+-- counts by design, listed in sources/), records it could not read, and wire
+-- fields it did not read. An append adds to the input's rows, a whole
+-- re-parse replaces them.
+CREATE TABLE unused (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- also the example input status shows
   chain             INTEGER NOT NULL,       -- the revision chain counted; a whole re-parse of a chain replaces its rows
   format            TEXT NOT NULL,
-  what              TEXT NOT NULL,          -- 'record:<type>', 'field:<json path>' or 'undecodable:<reason>' (a record
-                                            --   that could not be read)
+  what              TEXT NOT NULL,          -- 'skipped:<kind>: <reason>', 'unreadable:<kind>: <reason>' or
+                                            --   'field:<kind>.<json path>'
   count             INTEGER NOT NULL,
-  counted_only      INTEGER NOT NULL DEFAULT 0,  -- 1: a known type kept only as a count, by design
+  counted_only      INTEGER NOT NULL DEFAULT 0,  -- 1: skipped, a known kind kept only as a count by design
   PRIMARY KEY (input_pk, chain, what)
 ) STRICT, WITHOUT ROWID;
 
@@ -453,7 +454,7 @@ CREATE TABLE session_survival (
 
 
 -- Text that is not a conversation (claude.ai documents, for example), with the
--- same preferred-version rule as messages and interned text.
+-- same shown-version rule as messages and interned text.
 CREATE TABLE document (
   pk INTEGER PRIMARY KEY,
   id TEXT NOT NULL UNIQUE,
@@ -477,10 +478,10 @@ CREATE TABLE document_source (
   chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
-  route_rank INTEGER NOT NULL,
+  arrival_rank INTEGER NOT NULL,
   source_time INTEGER,
   version_hash BLOB NOT NULL,
-  preferred INTEGER NOT NULL DEFAULT 0,
+  shown INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(document_pk,input_pk,chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_source_input ON document_source(input_pk,chain);
@@ -499,14 +500,14 @@ CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS
 -- Import membership is projected from the engine-authored observation details.
 CREATE TABLE import_member (
   observation TEXT PRIMARY KEY,
-  acquisition TEXT NOT NULL,
+  import_id TEXT NOT NULL,
   input TEXT NOT NULL,
   member TEXT NOT NULL,
   source_id TEXT,
   sidecar TEXT
 ) STRICT;
-CREATE INDEX import_member_input ON import_member(input,acquisition);
-CREATE INDEX import_member_asset ON import_member(acquisition,source_id);
+CREATE INDEX import_member_input ON import_member(input,import_id);
+CREATE INDEX import_member_asset ON import_member(import_id,source_id);
 CREATE INDEX import_member_sidecar ON import_member(input) WHERE sidecar IS NOT NULL;
 CREATE TABLE import_asset_metadata (
   input TEXT NOT NULL,

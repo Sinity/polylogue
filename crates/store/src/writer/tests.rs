@@ -1,23 +1,23 @@
 use super::*;
 use crate::ReadPool;
 use polylogue_model::{
-    Disposition, Json, LinkKind, MessageId, PromptKind, SessionKind, TitleSource, Usage,
+    Json, LinkKind, MessageId, PromptKind, RecordOutcome, SessionKind, TitleSource, Usage,
 };
 
 mod input_events;
 
-struct World {
+struct TestArchive {
     _dir: tempfile::TempDir,
     archive: Archive,
     _lock: crate::ArchiveLock,
     writer: Writer,
 }
 
-fn world() -> World {
+fn test_archive() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    World {
+    TestArchive {
         _dir: dir,
         archive,
         _lock: lock,
@@ -47,13 +47,13 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
     }
 }
 
-fn accounting(n: u64) -> Accounting {
-    let mut a = Accounting {
-        framed: n,
-        ..Accounting::default()
+fn counts(n: u64) -> RecordCounts {
+    let mut a = RecordCounts {
+        records: n,
+        ..RecordCounts::default()
     };
     for _ in 0..n {
-        a.add("user", &Disposition::Materialized);
+        a.add("user", &RecordOutcome::Used);
     }
     a
 }
@@ -64,7 +64,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         input: InputKey {
             id: input.into(),
             format: "claude-code".into(),
-            route_rank: rank,
+            arrival_rank: rank,
         },
         change: if start == 0 {
             Change::First
@@ -80,13 +80,13 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             import: None,
         }),
         continues: false,
-        piece: None,
+        new_blob: None,
         blobs: vec![],
         length: start + 100,
         parse: vec![ParseStep {
             order_from: None,
             reset: start == 0,
-            restates: false,
+            repeats_whole_conversations: false,
             output: Output {
                 sessions: sessions
                     .iter()
@@ -95,7 +95,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
                 messages: rows,
                 ..Output::default()
             },
-            accounting: accounting(n),
+            counts: counts(n),
             start,
             parsed_upto: start + 100,
             at_end: true,
@@ -113,7 +113,7 @@ fn row(offset: u64, message: Message) -> MessageRow {
     }
 }
 
-fn texts(w: &World, session: &str) -> Vec<String> {
+fn texts(w: &TestArchive, session: &str) -> Vec<String> {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     r.messages(&sid(session), false)
@@ -125,7 +125,7 @@ fn texts(w: &World, session: &str) -> Vec<String> {
 
 #[test]
 fn messages_read_back_in_order_and_unchanged() {
-    let w = world();
+    let w = test_archive();
     let a = text_message("a", "s", Role::User, "hello", None);
     let b = text_message("b", "s", Role::Assistant, "hi", Some("end_turn"));
     w.writer
@@ -146,7 +146,7 @@ fn messages_read_back_in_order_and_unchanged() {
 
 #[test]
 fn the_same_record_sent_longer_replaces_itself() {
-    let w = world();
+    let w = test_archive();
     let short = text_message("r", "s", Role::Assistant, "part", None);
     let long = text_message("r", "s", Role::Assistant, "part and more", Some("end_turn"));
     w.writer
@@ -161,7 +161,7 @@ fn the_same_record_sent_longer_replaces_itself() {
 
 #[test]
 fn within_one_input_the_earliest_record_wins() {
-    let w = world();
+    let w = test_archive();
     let first = text_message("u", "s", Role::User, "original", None);
     let dup = text_message("u", "s", Role::User, "conflicting duplicate", None);
     w.writer
@@ -180,7 +180,7 @@ fn within_one_input_the_earliest_record_wins() {
 #[test]
 fn across_inputs_a_complete_version_beats_an_open_one_whichever_comes_first() {
     for order in [[0, 1], [1, 0]] {
-        let w = world();
+        let w = test_archive();
         let open = text_message("r", "s", Role::Assistant, "open", None);
         let done = text_message("r", "s", Role::Assistant, "done", Some("end_turn"));
         let batches = [
@@ -197,7 +197,7 @@ fn across_inputs_a_complete_version_beats_an_open_one_whichever_comes_first() {
 
 #[test]
 fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
-    let w = world();
+    let w = test_archive();
     let mut open = text_message("r", "first", Role::Assistant, "open", None);
     open.blocks.push(Block::ToolCall {
         run_by_script: false,
@@ -224,7 +224,7 @@ fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
 #[test]
 fn a_tool_result_pairs_with_its_call_in_either_order() {
     for result_first in [false, true] {
-        let w = world();
+        let w = test_archive();
         let mut call = text_message("c", "s", Role::Assistant, "", Some("tool_use"));
         call.blocks = vec![Block::ToolCall {
             run_by_script: false,
@@ -282,7 +282,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
 
 #[test]
 fn prose_and_tool_output_are_searchable_after_a_flush() {
-    let w = world();
+    let w = test_archive();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
         call_id: None,
@@ -317,7 +317,7 @@ fn prose_and_tool_output_are_searchable_after_a_flush() {
 /// counts it as pending until then.
 #[test]
 fn the_search_thread_indexes_live_writes_without_a_flush() {
-    let w = world();
+    let w = test_archive();
     w.writer
         .send(batch(
             "i",
@@ -360,7 +360,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
 
 #[test]
 fn session_facts_merge_and_a_pending_link_finds_its_child() {
-    let w = world();
+    let w = test_archive();
     let mut b1 = batch("i", 0, 0, vec![], &[]);
     let p = b1.parse.first_mut().unwrap();
     let mut s = Session::new(sid("parent"), SessionKind::Main);
@@ -409,7 +409,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
 
 #[test]
 fn copied_messages_are_stored_once_and_read_logically() {
-    let w = world();
+    let w = test_archive();
     // The parent's own file.
     let a = text_message("a", "parent", Role::User, "first", None);
     w.writer
@@ -462,7 +462,7 @@ fn copied_messages_are_stored_once_and_read_logically() {
 
 #[test]
 fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
-    let w = world();
+    let w = test_archive();
     let good = batch(
         "good",
         0,
@@ -477,7 +477,7 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
         vec![row(0, text_message("x", "t", Role::User, "x", None))],
         &["t"],
     );
-    bad.parse.first_mut().unwrap().accounting.framed = 5;
+    bad.parse.first_mut().unwrap().counts.records = 5;
     w.writer.send(good).unwrap();
     w.writer.send(bad).unwrap();
     let report = w.writer.flush().unwrap();
@@ -488,14 +488,14 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
 
 #[test]
 fn revisions_extents_and_parse_state_follow_appends() {
-    let w = world();
+    let w = test_archive();
     let store = hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap();
     let mut b1 = batch("i", 0, 0, vec![], &[]);
-    b1.piece = Some(Piece::prepare(&store, b"line one\n").unwrap());
+    b1.new_blob = Some(NewBlob::prepare(&store, b"line one\n").unwrap());
     b1.length = 9;
     b1.parse.first_mut().unwrap().parsed_upto = 9;
     let mut b2 = batch("i", 0, 9, vec![], &[]);
-    b2.piece = Some(Piece::prepare(&store, b"line two\npartial").unwrap());
+    b2.new_blob = Some(NewBlob::prepare(&store, b"line two\npartial").unwrap());
     b2.length = 25;
     b2.parse.first_mut().unwrap().parsed_upto = 18;
     b2.parse.first_mut().unwrap().at_end = false;
@@ -538,10 +538,10 @@ fn revisions_extents_and_parse_state_follow_appends() {
 
 #[test]
 fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
-    let w = world();
+    let w = test_archive();
     let store = hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap();
     let mut first = batch("i", 0, 0, vec![], &[]);
-    first.piece = Some(Piece::prepare(&store, b"line\npartial").unwrap());
+    first.new_blob = Some(NewBlob::prepare(&store, b"line\npartial").unwrap());
     first.length = 12;
     let parse = first.parse.first_mut().unwrap();
     parse.parsed_upto = 5;
@@ -552,7 +552,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     assert!(pool.reader().unwrap().known_inputs("m").unwrap()[0].waiting);
 
     let mut append = batch("i", 0, 12, vec![], &[]);
-    append.piece = Some(Piece::prepare(&store, b"rest").unwrap());
+    append.new_blob = Some(NewBlob::prepare(&store, b"rest").unwrap());
     append.length = 16;
     append.parse.clear();
     w.writer.send(append).unwrap();
@@ -571,7 +571,7 @@ fn a_copy_in_a_spawned_session_never_takes_the_message_from_its_origin() {
     // A compaction call repeats its parent's message; whichever file is read
     // first, the message stays in the parent with the parent's record.
     for main_first in [true, false] {
-        let w = world();
+        let w = test_archive();
         let original = text_message("h1", "s", Role::User, "original", None);
         let copy = text_message("h1", "agent-c", Role::User, "copy", None);
         let main = batch("main", 0, 0, vec![row(0, original)], &["s"]);
@@ -607,7 +607,7 @@ fn a_release_runs_once_when_its_batch_is_dropped() {
     drop(copy);
     assert_eq!(released.load(Ordering::SeqCst), 0, "a clone holds nothing");
     // The writer keeps a batch until its transaction commits, then drops it.
-    let w = world();
+    let w = test_archive();
     w.writer.send(b).unwrap();
     w.writer.flush().unwrap();
     assert_eq!(released.load(Ordering::SeqCst), 7);
@@ -629,11 +629,11 @@ fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Ba
         remote: remote.map(Into::into),
         root_commit: Some(root.into()),
     });
-    p.accounting = accounting(1);
+    p.counts = counts(1);
     b
 }
 
-fn repo_of(w: &World, session: &str) -> (Option<String>, Option<String>) {
+fn repo_of(w: &TestArchive, session: &str) -> (Option<String>, Option<String>) {
     // Repository attribution is derived.
     w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -651,7 +651,7 @@ fn repo_of(w: &World, session: &str) -> (Option<String>, Option<String>) {
 
 #[test]
 fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
-    let w = world();
+    let w = test_archive();
     let mut b = batch("i1", 0, 0, vec![], &[]);
     let out = &mut b.parse.first_mut().unwrap().output;
     out.sessions
@@ -721,7 +721,7 @@ fn call_message(id: &str, call: &str) -> Message {
     m
 }
 
-fn reasons(w: &World) -> Vec<(String, String)> {
+fn reasons(w: &TestArchive) -> Vec<(String, String)> {
     // Outcome reasons of calls left behind are derived.
     w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
@@ -744,7 +744,7 @@ fn reasons(w: &World) -> Vec<(String, String)> {
 
 #[test]
 fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
-    let w = world();
+    let w = test_archive();
     w.writer
         .send(batch(
             "i1",
@@ -771,12 +771,12 @@ fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
 
 #[test]
 fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
-    let World {
+    let TestArchive {
         _dir,
         archive,
         _lock,
         writer,
-    } = world();
+    } = test_archive();
     let sender = writer.sender().unwrap();
     sender
         .send(batch(
@@ -832,7 +832,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
 #[test]
 fn source_arrival_order_does_not_change_message_order_or_derived_title() {
     let view = |inputs: [&str; 2]| {
-        let w = world();
+        let w = test_archive();
         for input in inputs {
             let rows = if input == "input-a" {
                 vec![
@@ -913,7 +913,7 @@ mod failed_inputs;
 
 #[test]
 fn first_build_stays_in_wal_and_settles_while_a_read_stays_open() {
-    let w = world();
+    let w = test_archive();
     let reader_pool = ReadPool::open(&w.archive).unwrap();
     let reader = reader_pool.reader().unwrap();
     assert_eq!(

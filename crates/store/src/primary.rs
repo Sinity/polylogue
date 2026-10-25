@@ -81,7 +81,7 @@ pub enum Record {
 pub struct ExcisionRecord {
     pub id: String,
     /// `session:<id>`, `document:<id>` or `input:<id>`.
-    pub scope: String,
+    pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub created_at: i64,
@@ -287,7 +287,7 @@ fn forget_uncommitted(
 ) -> Result<()> {
     if let Some(id) = observation {
         tx.execute(
-            "DELETE FROM observation_container WHERE observation_id = ?1",
+            "DELETE FROM observation_zip WHERE observation_id = ?1",
             [id],
         )?;
         tx.execute("DELETE FROM observation WHERE id = ?1", [id])?;
@@ -360,8 +360,8 @@ pub(crate) fn forget_inputs(
 
 /// The excision record of a committed excision `id`.
 pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRecord> {
-    let (scope, reason, created_at) = conn.query_row(
-        "SELECT scope, reason, created_at FROM excision WHERE id = ?1",
+    let (target, reason, created_at) = conn.query_row(
+        "SELECT target, reason, created_at FROM excision WHERE id = ?1",
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
@@ -377,7 +377,7 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
     }
     Ok(ExcisionRecord {
         id: id.to_owned(),
-        scope,
+        target,
         reason,
         created_at,
         excised,
@@ -390,11 +390,11 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
 /// Sinex with their requests).
 fn excision_again(tx: &Connection, excision: &ExcisionRecord, seq: i64) -> Result<()> {
     tx.execute(
-        "INSERT OR IGNORE INTO excision(id, scope, reason, created_at, commit_seq)
+        "INSERT OR IGNORE INTO excision(id, target, reason, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             excision.id,
-            excision.scope,
+            excision.target,
             excision.reason,
             excision.created_at,
             seq

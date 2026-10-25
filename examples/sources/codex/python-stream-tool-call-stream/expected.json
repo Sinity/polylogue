@@ -1,15 +1,15 @@
 {
-  "accounting": {
-    "framed": 6,
-    "materialized": {
+  "counts": {
+    "records": 6,
+    "used": {
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "response_item/message": 2,
       "response_item/token_count": 1,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

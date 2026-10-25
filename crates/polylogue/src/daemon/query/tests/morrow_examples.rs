@@ -315,7 +315,7 @@ fn ids(v: &Value) -> Vec<String> {
 /// A grouped result is rows. `limit`, `where` and `sort` after a
 /// group act on the groups, never on the ungrouped rows.
 #[test]
-fn law_129_a_grouped_result_is_rows() {
+fn a_grouped_result_is_rows() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
@@ -351,10 +351,10 @@ fn law_129_a_grouped_result_is_rows() {
 }
 
 /// Three-valued filters. `U where C`, `U where NOT C` and
-/// `U where F:unknown` partition U; no owner matches both `exists` and
+/// `U where F:unknown` partition U; no row matches both `exists` and
 /// `NOT exists`.
 #[test]
-fn law_132_three_valued_filters_partition() {
+fn three_valued_filters_partition() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
@@ -400,7 +400,7 @@ fn law_132_three_valued_filters_partition() {
 /// Defaults are bound once. A condition every row satisfies,
 /// nested where it is not a top-level condition, leaves the rows unchanged.
 #[test]
-fn law_133_a_nested_condition_does_not_drop_a_default() {
+fn a_nested_condition_does_not_drop_a_default() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
@@ -417,7 +417,7 @@ fn law_133_a_nested_condition_does_not_drop_a_default() {
 /// A value outside a field's closed set is refused, never an empty
 /// answer; every value of the set, `*` and `unknown` (where allowed) pass.
 #[test]
-fn law_137_a_value_outside_a_closed_set_is_refused() {
+fn a_value_outside_a_closed_set_is_refused() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();

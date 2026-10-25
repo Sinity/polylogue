@@ -5,7 +5,7 @@ use crate::daemon::query::*;
 use polylogue_model::{Event, Json, Output, Session, SessionId, SessionKind, Timestamp};
 use polylogue_query::fields::{live_state, live_until};
 use polylogue_store::ReadPool;
-use polylogue_store::fixture::writer::WriterWorld;
+use polylogue_store::fixture::writer::WriterArchive;
 use serde_json::json;
 
 fn ask(text: &str, now: i64) -> Ask<'_> {
@@ -33,7 +33,7 @@ fn sid(n: &str) -> SessionId {
 
 /// Stores hook lines `(session, kind, minutes after T0, payload)` as one
 /// step of the hook spool.
-fn hooks(w: &mut WriterWorld, lines: &[(&str, &str, i64, Json)]) {
+fn hooks(w: &mut WriterArchive, lines: &[(&str, &str, i64, Json)]) {
     let start = w.offset();
     let events: Vec<Event> = lines
         .iter()
@@ -62,7 +62,7 @@ fn hooks(w: &mut WriterWorld, lines: &[(&str, &str, i64, Json)]) {
 }
 
 /// `(session, state, until in minutes after T0)` at `min` minutes.
-fn states(w: &WriterWorld, min: i64) -> Vec<(String, String, Option<i64>)> {
+fn states(w: &WriterArchive, min: i64) -> Vec<(String, String, Option<i64>)> {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let now = T0 + min * MIN;
@@ -98,7 +98,7 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
 #[test]
 fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // Live state on hook evidence alone (no process lines).
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     hooks(
         &mut w,
         &[
@@ -157,7 +157,7 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
 
 #[test]
 fn a_wait_ends_with_the_next_event_and_an_idle_notice_is_not_a_wait() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     hooks(
         &mut w,
         &[
@@ -330,7 +330,7 @@ fn peers_are_symmetric() {
 
 #[test]
 fn the_change_feed_continues_from_its_cursor() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     hooks(
         &mut w,
         &[
@@ -351,7 +351,7 @@ fn the_change_feed_continues_from_its_cursor() {
     let r = pool.reader().unwrap();
     let all = run(&r, ask("changes", T0)).unwrap();
     assert_eq!(refs(&all), ["claude-code:a", "claude-code:b"]);
-    let cursor = all["view"]["cursor"].as_str().unwrap().to_owned();
+    let cursor = all["read_at"]["cursor"].as_str().unwrap().to_owned();
     let after = format!("changes where after:{cursor}");
     assert!(refs(&run(&r, ask(&after, T0)).unwrap()).is_empty());
     drop(r);

@@ -55,7 +55,7 @@ fn prompts_group_into_their_conversation_oldest_first() {
         .find(|e| e.kind == "activity")
         .unwrap();
     assert_eq!(activity.data["verb"], "Used");
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]
@@ -125,6 +125,6 @@ fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
         ["unknown", "known first", "known second"]
     );
     assert!(prompts[0].message.at.is_none());
-    assert_eq!(step.accounting.framed, 4);
-    assert_eq!(step.accounting.refused.values().sum::<u64>(), 1);
+    assert_eq!(step.counts.records, 4);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
 }

@@ -14,7 +14,7 @@ which reads through Store and presents through Query and Render.
 | Crate | What it owns |
 |---|---|
 | [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates; no I/O. |
-| [Sources](../crates/sources/src/lib.rs) | Reading each origin's formats. An [origin declaration](../crates/sources/src/origin.rs) holds everything known about an origin: its locations, how to recognize and frame its files, its parser and its tool facts. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) turn records into model values with byte ranges and accounting. |
+| [Sources](../crates/sources/src/lib.rs) | Reading each origin's formats. An [origin declaration](../crates/sources/src/origin.rs) holds everything known about an origin: its locations, how to recognize its files and split them into records, its parser and its tool facts. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) turn records into model values with byte ranges and record counts. |
 | [Engine](../crates/engine/src/lib.rs) | The loop: find changed files, store their bytes, schedule parsing and derivations. The [parse pool](../crates/engine/src/pool.rs) feeds Store's writer; it holds no SQL. |
 | [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
 | [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
@@ -45,9 +45,9 @@ are gone; notes live in `archive.db` and survive it. A
 message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
 keeps one `message_source` row per input chain that holds it and shows one
 version: within an input the newest chain; within a chain the earliest record,
-or the latest for inputs whose records restate whole conversations; across
+or the latest for inputs whose records repeat whole conversations; across
 inputs the session it started in, then a complete version, then the more
-faithful route, then the smaller content hash. Messages are ordered by source
+faithful arrival, then the smaller content hash. Messages are ordered by source
 position, with message IDs breaking ties; no time is invented.
 [Import rebuild tests](../crates/engine/src/import/tests/replay.rs) cover
 rebuilds from stored imports.
@@ -78,7 +78,7 @@ from inside a record, such as inline images, are stored as blobs of that
 input.
 
 A ZIP import stores the ZIP itself and each file in it as inputs, linked by
-`observation_container`. Export [attachments](attachments.md) are found
+`observation_zip`. Export [attachments](attachments.md) are found
 through those links and the [asset lookup](../crates/store/src/assets.rs).
 
 Parsers count every record and field they were given, keep what they could
@@ -94,26 +94,26 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
-A [tool database](../crates/store/src/tool_databases.rs) is read from one
-SQLite read of the tool's file; complete changes are written before its
+A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
+dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
 is done in turns, so other inputs are served between them.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An
 identical retry is a no-op; a partial matching tail is completed and a
-different one refused. Each capture restates the conversation, so the latest
+different one refused. Each capture repeats the whole conversation, so the latest
 capture's version of a message is shown, and a message missing from a later
 capture stays.
 
 A Gemini page capture and a Takeout export of one conversation are one
 session, but they share no turn ID: the capture has the page's text with
-no times, the export has times and no message IDs. Both routes stay
+no times, the export has times and no message IDs. Both arrivals stay
 stored. The [duplicates derivation](../crates/store/src/derive/duplicates.rs)
 shows a turn once, from the export, when its prompt text occurs once in
-each route, the matched prompts keep one order, and the replies have the
+each arrival, the matched prompts keep one order, and the replies have the
 same roles; the capture's messages then name the export message
-(`duplicate_of`) and the reason. Other turns show from both routes, and
+(`duplicate_of`) and the reason. Other turns show from both arrivals, and
 `duplicate:*` lists the hidden copies.
 
 Text that is not a conversation is a [Document](../crates/model/src/document.rs)

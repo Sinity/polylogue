@@ -54,8 +54,8 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id DESC)").unwrap();
         }
         let r = pool.reader().unwrap();
-        for logical in [false, true] {
-            let selected = r.select_messages(&id, logical).unwrap();
+        for with_parents in [false, true] {
+            let selected = r.select_messages(&id, with_parents).unwrap();
             let mut visited = Vec::new();
             selected
                 .visit(|message| {
@@ -65,7 +65,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
                 .unwrap();
             assert_eq!(
                 visited, expected,
-                "logical={logical}, changed_plan={changed_plan}"
+                "with_parents={with_parents}, changed_plan={changed_plan}"
             );
             let mut key_ids = Vec::new();
             for pk in selected.keys().unwrap() {
@@ -84,7 +84,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             if changed_plan {
                 assert_eq!(
                     selected.fingerprint().unwrap(),
-                    fingerprints[usize::from(logical)]
+                    fingerprints[usize::from(with_parents)]
                 );
             } else {
                 fingerprints.push(selected.fingerprint().unwrap());

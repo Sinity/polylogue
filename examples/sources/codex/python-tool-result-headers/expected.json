@@ -1,7 +1,7 @@
 {
-  "accounting": {
-    "framed": 23,
-    "materialized": {
+  "counts": {
+    "records": 23,
+    "used": {
       "response_item/custom_tool_call": 4,
       "response_item/custom_tool_call_output": 4,
       "response_item/function_call": 6,
@@ -9,8 +9,8 @@
       "response_item/message": 2,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

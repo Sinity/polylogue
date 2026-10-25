@@ -47,7 +47,7 @@ fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
         assert!(
-            parsed["accounting"]["unknown"]
+            parsed["counts"]["skipped"]
                 .as_object()
                 .unwrap()
                 .keys()
@@ -101,12 +101,7 @@ fn hermes_verification_requires_the_native_schema_and_never_opens_marker_paths()
         assert!(sessions(&parsed).is_empty());
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
-        assert!(
-            !parsed["accounting"]["unknown"]
-                .as_object()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!parsed["counts"]["skipped"].as_object().unwrap().is_empty());
     }
     let marker = br#"{"polylogue_artifact":"hermes_verification_evidence_db","verification_db_path":"/neutral/never-open.db"}"#;
     assert!(!(by_name("hermes").unwrap().recognize)(

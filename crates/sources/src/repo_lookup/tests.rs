@@ -14,7 +14,7 @@ fn a_lookup_document_becomes_one_row() {
             root_commit: Some("abc123".into()),
         }]
     );
-    assert_eq!(step.accounting.framed, 1);
+    assert_eq!(step.counts.records, 1);
 }
 
 #[test]

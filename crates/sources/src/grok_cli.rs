@@ -3,16 +3,16 @@
 //!
 //! The history is the model's message list, appended a line at a time:
 //! `system`, `user`, `reasoning`, `assistant` (with tool calls) and
-//! `tool_result`. Lines carry no IDs and no times, so a message is named by
+//! `tool_result`. Lines hold no IDs and no times, so a message is named by
 //! its byte offset in the file, a stable place in an append-only file;
 //! unknown times stay unknown. A `reasoning` line belongs to the assistant
 //! message after it.
 
 use crate::document::{first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule};
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::parse::{MessageRow, Output, Parse, Parser};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Block, Event, Json, Message, MessageId, PromptKind, Role, Session, SessionKind, ToolAction,
     ToolOutcome,
@@ -80,7 +80,7 @@ pub struct GrokCli {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Carry {
+pub struct ParserState {
     /// The previous message, the next one's parent.
     last: Option<MessageId>,
     /// Reasoning waiting for the assistant message it belongs to.
@@ -140,7 +140,7 @@ fn text_of(content: Option<&Json>) -> Option<String> {
 }
 
 impl Parser for GrokCli {
-    type Carry = Carry;
+    type ParserState = ParserState;
 
     fn kind(&self, value: &Json) -> String {
         str_of(value, "type").unwrap_or("?").to_owned()
@@ -148,24 +148,24 @@ impl Parser for GrokCli {
 
     fn parse_record(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let kind = self.kind(value);
         records.fields(&kind, value, &FIELDS);
         let Some(sid) = session_id(ORIGIN, &self.place.session) else {
-            return Disposition::refused("unusable session directory name");
+            return RecordOutcome::unreadable("unusable session directory name");
         };
-        if !carry.announced {
+        if !parser_state.announced {
             let mut session = Session::new(sid.clone(), SessionKind::Main);
             if let Some(cwd) = &self.place.cwd {
                 session.offer_cwd(cwd);
             }
             out.sessions.push(session);
-            carry.announced = true;
+            parser_state.announced = true;
         }
         let end = record.offset + record.bytes.len() as u64;
         if kind == "reasoning" {
@@ -177,12 +177,12 @@ impl Parser for GrokCli {
                 .filter_map(|s| str_of(s, "text"))
                 .collect();
             let text = (!summaries.is_empty()).then(|| summaries.join("\n"));
-            carry.thinking.push(Block::Thinking {
+            parser_state.thinking.push(Block::Thinking {
                 redacted: text.is_none() && value.get("encrypted_content").is_some(),
                 text,
                 signature: None,
             });
-            return Disposition::Materialized;
+            return RecordOutcome::Used;
         }
         if kind == "backend_tool_call" {
             // A tool the provider ran itself (web search).
@@ -190,11 +190,11 @@ impl Parser for GrokCli {
                 session: Some(sid),
                 kind: "backend_tool_call".into(),
                 at: None,
-                after: carry.last.clone(),
+                after: parser_state.last.clone(),
                 range: Some((record.offset, end)),
                 data: value.get("kind").cloned().unwrap_or(Json::Null),
             });
-            return Disposition::Materialized;
+            return RecordOutcome::Used;
         }
         let (role, prompt_kind, blocks) = match kind.as_str() {
             "system" => (
@@ -219,7 +219,7 @@ impl Parser for GrokCli {
                 )
             }
             "assistant" => {
-                let mut blocks = std::mem::take(&mut carry.thinking);
+                let mut blocks = std::mem::take(&mut parser_state.thinking);
                 if let Some(text) = text_of(value.get("content")) {
                     blocks.push(Block::Text { text });
                 }
@@ -267,11 +267,11 @@ impl Parser for GrokCli {
                     attachments: Vec::new(),
                 }],
             ),
-            other => return Disposition::unknown(format!("record type {other}")),
+            other => return RecordOutcome::skipped(format!("record type {other}")),
         };
         let Some(id) = message_id(ORIGIN, &format!("{}@{}", self.place.session, record.offset))
         else {
-            return Disposition::refused("unusable message ID");
+            return RecordOutcome::unreadable("unusable message ID");
         };
         let production = polylogue_model::Production {
             effort: string_of(value, "reasoning_effort"),
@@ -283,7 +283,7 @@ impl Parser for GrokCli {
             message: Message {
                 id: id.clone(),
                 session: sid,
-                parent: carry.last.replace(id),
+                parent: parser_state.last.replace(id),
                 role,
                 at: None,
                 model: string_of(value, "model_id"),
@@ -296,10 +296,10 @@ impl Parser for GrokCli {
                 production,
             },
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
-    fn flush(&self, _carry: &mut Carry, _out: &mut Output) {}
+    fn flush(&self, _carry: &mut ParserState, _out: &mut Output) {}
 }
 
 #[cfg(test)]

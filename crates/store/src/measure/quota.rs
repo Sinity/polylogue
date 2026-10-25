@@ -5,7 +5,7 @@
 //! when it refuses a turn); a window nothing reported is inferred and
 //! labelled so. A figure no source gives is `None`.
 
-use super::{Scope, UsageReport, usage};
+use super::{Selection, UsageReport, usage};
 use crate::{Reader, Result};
 use polylogue_model::{QuotaLimit, QuotaReading, Timestamp};
 use serde::Serialize;
@@ -18,9 +18,9 @@ pub const WEEK: i64 = 10_080;
 /// The subscription a window belongs to: the tool's limit name.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Observation {
-    /// Record/emission time, not necessarily provider observation time.
+    /// Record/emission time, not necessarily when the provider measured it.
     pub at: Option<i64>,
-    pub observed_at: Option<i64>,
+    pub measured_at: Option<i64>,
     /// The origin that reported it (`claude-code`, `codex`).
     pub tool: String,
     /// The tool's name for the limit (`codex`, `five_hour`, `seven_day`, …).
@@ -39,7 +39,7 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Credits {
     pub balance: String,
-    pub observed_at: Option<i64>,
+    pub measured_at: Option<i64>,
     pub recorded_at: Option<i64>,
 }
 
@@ -62,8 +62,8 @@ pub struct Window {
     pub source: WindowSource,
     pub starts_at: i64,
     pub resets_at: i64,
-    /// The latest observation inside this window.
-    pub observed_at: Option<i64>,
+    /// The latest report inside this window.
+    pub measured_at: Option<i64>,
     pub used_percent: Option<f64>,
     pub remaining_percent: Option<f64>,
     /// Percent per hour, from two or more observations in the window.
@@ -107,7 +107,7 @@ fn observations(tool: &str, at: Option<i64>, reading: &QuotaReading) -> Vec<Obse
         .iter()
         .map(|w| Observation {
             at,
-            observed_at: at,
+            measured_at: at,
             tool: tool.to_owned(),
             limit: w.limit.limit.to_string(),
             window_minutes: w.limit.minutes,
@@ -203,7 +203,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                     tool.clone(),
                     Credits {
                         balance: balance.clone(),
-                        observed_at: Some(at),
+                        measured_at: Some(at),
                         recorded_at: Some(at),
                     },
                 ));
@@ -214,10 +214,10 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             }
         }
     }
-    super::observations::visit::<polylogue_model::QuotaObservation>(
+    super::reports::visit::<polylogue_model::QuotaReport>(
         reader,
-        &Scope::default(),
-        polylogue_model::observations::QUOTA_OBSERVATION,
+        &Selection::default(),
+        polylogue_model::reports::QUOTA_REPORT,
         |tool, recorded_at, value| {
             if let Some(plan) = &value.reading.plan {
                 plans.push((tool.to_owned(), plan.clone()));
@@ -227,7 +227,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                     tool.to_owned(),
                     Credits {
                         balance: balance.clone(),
-                        observed_at: value.observed_at.map(Timestamp::unix_ms),
+                        measured_at: value.measured_at.map(Timestamp::unix_ms),
                         recorded_at,
                     },
                 ));
@@ -236,7 +236,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             // timing is inferred from it.
             let mut readings = observations(tool, recorded_at, &value.reading);
             for reading in &mut readings {
-                reading.observed_at = value.observed_at.map(Timestamp::unix_ms);
+                reading.measured_at = value.measured_at.map(Timestamp::unix_ms);
             }
             obs.extend(readings);
             if !tools.iter().any(|t| t == tool) {
@@ -269,7 +269,8 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 ));
             }
         }
-        let boundaries_unknown = usage::unknown_scope(reader, &Scope::default().for_tool(tool))?;
+        let boundaries_unknown =
+            usage::unknown_scope(reader, &Selection::default().for_tool(tool))?;
         let mut windows = vec![];
         for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine
@@ -316,10 +317,10 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             windows,
             unplaced: mine
                 .iter()
-                .filter(|o| o.resets_at.is_none() && o.observed_at.is_none())
+                .filter(|o| o.resets_at.is_none() && o.measured_at.is_none())
                 .map(|o| (*o).clone())
                 .collect(),
-            recorded_usage: usage::recorded(reader, &Scope::default().for_tool(tool))?,
+            recorded_usage: usage::recorded(reader, &Selection::default().for_tool(tool))?,
         });
     }
     Ok(Quota { now, tools: out })
@@ -350,7 +351,7 @@ fn build(
 ) -> Result<Window> {
     let inside: Vec<&Observation> = obs
         .iter()
-        .filter(|o| match o.observed_at {
+        .filter(|o| match o.measured_at {
             Some(at) => start <= at && at < end,
             None => o.resets_at == Some(end),
         })
@@ -358,18 +359,18 @@ fn build(
     let last = inside.last();
     let used = last.and_then(|o| o.used_percent);
     let burn = last
-        .and_then(|o| o.observed_at)
+        .and_then(|o| o.measured_at)
         .and_then(|_| percent_burn(&inside));
     let exhausted_at = inside
         .iter()
         .find(|o| o.used_percent.is_some_and(|p| p >= 100.0))
-        .and_then(|o| o.observed_at)
+        .and_then(|o| o.measured_at)
         .or_else(|| {
             let (rate, o) = (burn?, last?);
             let left = 100.0 - o.used_percent?;
             (rate > 0.0)
                 .then(|| {
-                    o.observed_at
+                    o.measured_at
                         .map(|at| at + (left / rate * HOUR as f64) as i64)
                 })
                 .flatten()
@@ -377,10 +378,10 @@ fn build(
         });
     let usage = usage::report(
         reader,
-        &Scope {
+        &Selection {
             since: Some(start),
             until: Some(now.min(end)),
-            ..Scope::default()
+            ..Selection::default()
         }
         .for_tool(tool),
     )?;
@@ -391,7 +392,7 @@ fn build(
     let tokens = total_tokens(&usage);
     let per_hour = |x: f64| hours.filter(|&h| h > 0.0).map(|h| x / h);
     let unknown_time =
-        usage::recorded(reader, &Scope::default().for_tool(tool))?.untimed_observations > 0;
+        usage::recorded(reader, &Selection::default().for_tool(tool))?.untimed_observations > 0;
     let tokens_per_hour = (!unknown_time && usage.messages.is_some())
         .then(|| per_hour(tokens as f64))
         .flatten();
@@ -407,7 +408,7 @@ fn build(
         source,
         starts_at: start,
         resets_at: end,
-        observed_at: last.and_then(|o| o.observed_at),
+        measured_at: last.and_then(|o| o.measured_at),
         used_percent: used,
         remaining_percent: used.map(|u| (100.0 - u).max(0.0)),
         burn_percent_per_hour: burn,
@@ -426,10 +427,10 @@ fn build(
 fn percent_burn(inside: &[&Observation]) -> Option<f64> {
     let with: Vec<&&Observation> = inside
         .iter()
-        .filter(|o| o.used_percent.is_some() && o.observed_at.is_some())
+        .filter(|o| o.used_percent.is_some() && o.measured_at.is_some())
         .collect();
     let (a, b) = (with.first()?, with.last()?);
-    let span = b.observed_at? - a.observed_at?;
+    let span = b.measured_at? - a.measured_at?;
     (span >= 5 * MINUTE).then(|| {
         (b.used_percent.unwrap_or(0.0) - a.used_percent.unwrap_or(0.0)).max(0.0)
             / (span as f64 / HOUR as f64)

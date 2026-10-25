@@ -1,7 +1,7 @@
 //! Recorded usage is independent of output-item membership. The producer
 //! persists items before completion and can retry without a durable boundary.
 use super::*;
-use polylogue_model::{BlobHash, UsageObservation};
+use polylogue_model::{BlobHash, UsageReport};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Counters {
@@ -80,10 +80,10 @@ impl Observer {
     pub(super) fn read(
         &mut self,
         info: &Json,
-        observation: String,
+        report_id: String,
         model: Option<String>,
         tier: Option<String>,
-    ) -> Option<UsageObservation> {
+    ) -> Option<UsageReport> {
         let total = info.get("total_token_usage").and_then(Counters::read);
         let last_value = info.get("last_token_usage");
         let last = last_value.and_then(Counters::read);
@@ -114,7 +114,7 @@ impl Observer {
         if last.is_some_and(|last| last.input == 0 && last.output == 0 && last.total > 0) {
             return None;
         }
-        if self.recorded.as_ref() == Some(&observation) {
+        if self.recorded.as_ref() == Some(&report_id) {
             return None;
         }
         let n = |key: &str| raw.get(key).and_then(Json::as_u64);
@@ -165,14 +165,14 @@ impl Observer {
         if completion {
             self.consumed = total;
         }
-        self.recorded = Some(observation.clone());
-        Some(UsageObservation {
-            observation,
+        self.recorded = Some(report_id.clone());
+        Some(UsageReport {
+            report_id,
             usage,
             model,
             response: None,
-            completion_observed: completion.then_some(true),
-            observed_at: None,
+            measured_completion: completion.then_some(true),
+            measured_at: None,
             input_including_cache: input,
             output_including_reasoning: output,
         })

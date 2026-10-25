@@ -1,7 +1,7 @@
-//! ATOF runtime observations are not conversations. Native run/scope IDs stay
-//! in the observation; it belongs to its input when no conversation is proved.
+//! ATOF runtime records: each becomes one event, with its run and scope IDs
+//! in the event data. An event names a session only when the record does.
 use super::{Event, Json, Parse, Sink, lines};
-use crate::Disposition;
+use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use std::path::Path;
@@ -101,7 +101,7 @@ impl ExportParser for Atof {
         if value.get("atof_version").and_then(Json::as_str) != Some("0.1") {
             sink.records.record(
                 "atof",
-                &Disposition::unknown("unsupported ATOF version; original record kept"),
+                &RecordOutcome::skipped("unsupported ATOF version; original record kept"),
             );
             return Ok(());
         }
@@ -113,7 +113,7 @@ impl ExportParser for Atof {
         }) else {
             sink.records.record(
                 "atof",
-                &Disposition::unknown(
+                &RecordOutcome::skipped(
                     "unsupported ATOF envelope or scope phase; original record kept",
                 ),
             );
@@ -135,7 +135,7 @@ impl ExportParser for Atof {
             range: None,
             data: value,
         });
-        sink.records.record("atof", &Disposition::Materialized);
+        sink.records.record("atof", &RecordOutcome::Used);
         Ok(())
     }
 }

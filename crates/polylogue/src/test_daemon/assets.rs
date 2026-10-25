@@ -1,8 +1,8 @@
 //! Shared synthetic source for the real MCP and HTTP attachment operations.
 use super::*;
 
-pub fn seed(world: &TestDaemon) -> &'static str {
-    let source = world.home.join("asset-export");
+pub fn seed(daemon: &TestDaemon) -> &'static str {
+    let source = daemon.home.join("asset-export");
     std::fs::create_dir_all(&source).unwrap();
     let conversation = serde_json::json!([{"id":"transport-session","title":"Synthetic transport attachment","mapping":{"n":{"id":"n","parent":null,"children":[],"message":{"id":"transport-message","author":{"role":"user"},"content":{"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Transport"}]},"metadata":{}}}},"current_node":"n"}]);
     std::fs::write(
@@ -26,7 +26,7 @@ pub fn seed(world: &TestDaemon) -> &'static str {
             request_id: "synthetic-attachment-import".into(),
             paths: vec![source.clone()],
         },
-        &world.daemon,
+        &daemon.daemon,
     );
     let Response::Ok { data } = imported else {
         panic!("{imported:?}")

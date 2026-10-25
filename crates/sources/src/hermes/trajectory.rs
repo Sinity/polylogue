@@ -1,9 +1,10 @@
-//! ATIF is recorded interaction evidence. A run/trajectory identifier is not
-//! a conversation identifier, and a source role does not establish a writer.
+//! ATIF trajectory files: each becomes a transcript document and a
+//! `hermes_trajectory` event. Its run ID is not a session ID, and a step's
+//! role does not say who wrote it.
 mod step;
 
 use super::{Event, Json, Parse, Sink, identity};
-use crate::Disposition;
+use crate::RecordOutcome;
 use crate::export::{self, ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{Output, Step};
@@ -201,20 +202,22 @@ impl ExportParser for Trajectory {
                     range: Some((facts.start, facts.end)),
                     data,
                 });
-                records.record("atif_trajectory", &Disposition::Materialized);
+                records.record("atif_trajectory", &RecordOutcome::Used);
             } else {
                 records.record(
                     "atif_trajectory",
-                    &Disposition::unknown(facts.diagnostic.unwrap_or("unreadable ATIF trajectory")),
+                    &RecordOutcome::skipped(
+                        facts.diagnostic.unwrap_or("unreadable ATIF trajectory"),
+                    ),
                 );
             }
         }
         Ok(Some(Step {
             output,
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
 
@@ -236,7 +239,7 @@ impl ExportParser for Trajectory {
         if !facts.valid {
             sink.records.record(
                 "atif_step",
-                &Disposition::unknown(facts.diagnostic.unwrap_or("unreadable ATIF trajectory")),
+                &RecordOutcome::skipped(facts.diagnostic.unwrap_or("unreadable ATIF trajectory")),
             );
             return Ok(());
         }
@@ -244,7 +247,7 @@ impl ExportParser for Trajectory {
         if !value.is_object() {
             sink.records.record(
                 "atif_step",
-                &Disposition::unknown("ATIF step is not an object; original value kept"),
+                &RecordOutcome::skipped("ATIF step is not an object; original value kept"),
             );
             return Ok(());
         }
@@ -373,12 +376,12 @@ impl ExportParser for Trajectory {
                 data: serde_json::json!({"reason":limits}),
             });
         }
-        let disposition = if limits.is_empty() {
-            Disposition::Materialized
+        let outcome = if limits.is_empty() {
+            RecordOutcome::Used
         } else {
-            Disposition::unknown("ATIF step has parts kept unread")
+            RecordOutcome::skipped("ATIF step has parts kept unread")
         };
-        sink.records.record("atif_step", &disposition);
+        sink.records.record("atif_step", &outcome);
         Ok(())
     }
 }

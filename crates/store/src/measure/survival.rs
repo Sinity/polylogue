@@ -2,7 +2,7 @@
 //! derivation keeps: time to a session's first failed tool call, and time
 //! to a session ending on an unanswered prompt.
 
-use super::Scope;
+use super::Selection;
 use crate::{Reader, Result};
 use serde::Serialize;
 
@@ -86,9 +86,9 @@ struct Facts {
     last_prompt_unanswered: bool,
 }
 
-/// The facts of every session in the scope that has messages.
-fn facts(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Facts>> {
-    let (cond, params) = scope.session_condition("f.session_pk")?;
+/// The facts of every session in the selection that has messages.
+fn facts(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<Facts>> {
+    let (cond, params) = selection.session_condition("f.session_pk")?;
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT first_at, last_at, first_failure_at, prompts_to_failure, prompted,
                 last_prompt_unanswered
@@ -134,10 +134,10 @@ fn survival(
 /// a wall-clock axis (minutes) or a turn axis (human prompts). A session
 /// with no failure is censored at its last activity, whether it ended or is
 /// still running: its last message is not an outcome.
-pub fn first_failure(reader: &Reader<'_>, scope: &Scope, turns: bool) -> Result<Survival> {
+pub fn first_failure(reader: &Reader<'_>, selection: &Selection, turns: bool) -> Result<Survival> {
     let mut obs = vec![];
     let mut unmeasured = 0;
-    for f in facts(reader, scope)? {
+    for f in facts(reader, selection)? {
         let (Some(first), Some(last)) = (f.first_at, f.last_at) else {
             unmeasured += 1;
             continue;
@@ -181,10 +181,10 @@ pub const QUIET: i64 = 6 * 3_600_000;
 /// no model message. A session that ended answered is censored at its end,
 /// and so is one still within the quiet period. Structural only: what the
 /// prompt asked is never read.
-pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Survival> {
+pub fn unanswered_end(reader: &Reader<'_>, selection: &Selection, now: i64) -> Result<Survival> {
     let mut obs = vec![];
     let mut unmeasured = 0;
-    for f in facts(reader, scope)? {
+    for f in facts(reader, selection)? {
         let (Some(first), Some(last)) = (f.first_at, f.last_at) else {
             unmeasured += 1;
             continue;

@@ -13,7 +13,7 @@ fn names_are_unique_and_valid_origins() {
 
 #[test]
 fn imports_have_no_live_locations() {
-    for o in ORIGINS.iter().filter(|o| o.route == Route::Import) {
+    for o in ORIGINS.iter().filter(|o| o.arrival == Arrival::Import) {
         assert!(o.locations.is_empty(), "{}", o.name);
     }
 }
@@ -39,7 +39,7 @@ fn every_spool_lies_in_polylogue_s_state_directory() {
             ("ai-studio", PathBuf::from("polylogue/drive/ai-studio")),
         ]
     );
-    for o in ORIGINS.iter().filter(|o| o.route == Route::Spool) {
+    for o in ORIGINS.iter().filter(|o| o.arrival == Arrival::Spool) {
         assert_eq!(o.root, Root::STATE, "{}", o.name);
         assert!(o.spool_dir().unwrap().starts_with(STATE_DIR), "{}", o.name);
     }

@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-testkit"
-description = "Test worlds: the Morrow example archive built through the real import path"
+description = "Test archives: the Morrow example archive built through the real import path"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -6,7 +6,7 @@ const T0: i64 = 1_790_000_000_000;
 fn a_past_reset_is_carried_forward_by_the_window_length() {
     let o = vec![Observation {
         at: Some(T0),
-        observed_at: Some(T0),
+        measured_at: Some(T0),
         tool: "codex".into(),
         limit: "codex".into(),
         window_minutes: WEEK,
@@ -88,7 +88,7 @@ fn blocks_start_on_the_hour_and_last_five_hours() {
 fn burn_needs_two_reports_five_minutes_apart() {
     let o = |at, p| Observation {
         at: Some(at),
-        observed_at: Some(at),
+        measured_at: Some(at),
         tool: "codex".into(),
         limit: "codex".into(),
         window_minutes: FIVE_HOURS,

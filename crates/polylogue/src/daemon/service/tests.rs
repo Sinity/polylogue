@@ -15,7 +15,7 @@ fn read(
             ),
             view: view.into(),
             format: format.into(),
-            logical: false,
+            with_parents: false,
             budget,
             cursor: cursor.map(Into::into),
         },
@@ -147,8 +147,8 @@ fn a_panicking_test_drops_its_in_process_daemon_workers() {
     let (sent, received) = sync_channel(1);
     assert!(
         std::panic::catch_unwind(|| {
-            let world = test_daemon::start("panic fixture");
-            sent.send(Arc::downgrade(&world.daemon)).unwrap();
+            let daemon = test_daemon::start("panic fixture");
+            sent.send(Arc::downgrade(&daemon.daemon)).unwrap();
             panic!("synthetic test panic");
         })
         .is_err()
@@ -159,9 +159,9 @@ fn a_panicking_test_drops_its_in_process_daemon_workers() {
 #[test]
 fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
     for _ in 0..3 {
-        let world = test_daemon::start("owned fixture");
-        let weak = Arc::downgrade(&world.daemon);
-        drop(world);
+        let daemon = test_daemon::start("owned fixture");
+        let weak = Arc::downgrade(&daemon.daemon);
+        drop(daemon);
         assert!(weak.upgrade().is_none());
     }
 }
@@ -356,6 +356,6 @@ mod read_pages;
 
 mod hook_errors;
 
-mod codex_observations;
+mod codex_reports;
 
 mod attachments;

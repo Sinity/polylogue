@@ -231,8 +231,8 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         let row = RowPacker::new().unwrap().pack_json(&message).unwrap();
         assert_eq!(unpack_json::<Message>(&row).unwrap(), message);
     }
-    let reading = polylogue_model::UsageObservation {
-        observation: "synthetic-reading".into(),
+    let reading = polylogue_model::UsageReport {
+        report_id: "synthetic-reading".into(),
         usage: polylogue_model::Usage {
             input: Some(0),
             output: None,
@@ -240,14 +240,14 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         },
         model: None,
         response: None,
-        completion_observed: None,
-        observed_at: None,
+        measured_completion: None,
+        measured_at: None,
         input_including_cache: Some(0),
         output_including_reasoning: None,
     };
     let event = Event {
         session: Some(polylogue_model::SessionId::parse("codex:thread").unwrap()),
-        kind: "usage_observation".into(),
+        kind: "usage_report".into(),
         at: None,
         after: None,
         range: Some((1, 2)),
@@ -255,7 +255,7 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
     };
     let (_, packed) = RowPacker::new().unwrap().pack_event(&event).unwrap();
     assert_eq!(
-        unpack_json::<polylogue_model::UsageObservation>(&packed).unwrap(),
+        unpack_json::<polylogue_model::UsageReport>(&packed).unwrap(),
         reading
     );
 }

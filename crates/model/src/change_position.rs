@@ -1,4 +1,5 @@
-//! Independent index and archive positions, scoped to one derived index.
+//! A change feed position, `GENERATION:INDEX:ARCHIVE`: the index generation
+//! and the index and archive write counters read at that point.
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

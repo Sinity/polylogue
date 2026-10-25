@@ -6,7 +6,7 @@
 //! backlog.
 
 use crate::Config;
-use polylogue_sources::{ORIGINS, OriginSpec, Route, Support};
+use polylogue_sources::{Arrival, ORIGINS, OriginSpec, Support};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ pub(crate) fn requires_scan(event: &notify::Event) -> bool {
 fn collected() -> impl Iterator<Item = &'static OriginSpec> {
     ORIGINS
         .iter()
-        .filter(|o| o.support == Support::Parsed && o.route != Route::Import)
+        .filter(|o| o.support == Support::Parsed && o.arrival != Arrival::Import)
 }
 
 /// Every file matching a live or spool location, and the directories that

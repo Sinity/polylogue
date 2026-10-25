@@ -1,4 +1,4 @@
-use super::{Scope, hidden_sessions};
+use super::{Selection, hidden_sessions};
 use crate::{Reader, Result};
 use serde::Serialize;
 
@@ -28,7 +28,7 @@ pub struct TokensByKind {
 /// A total with unpriced messages is partial and never ranked as complete.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Money {
-    /// `None` when nothing in scope is priced.
+    /// `None` when nothing in selection is priced.
     pub known_usd: Option<f64>,
     pub priced_messages: u64,
     pub unpriced_messages: u64,
@@ -139,8 +139,8 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     })
 }
 
-pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> {
-    let (cond, params) = scope.condition();
+pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<UsageReport> {
+    let (cond, params) = selection.condition();
     let conn = reader.conn()?;
     let mut total = conn.query_row(
         &format!("SELECT {TOKEN_SUMS} FROM message m WHERE {RESPONSE_ROWS} AND {cond}"),
@@ -175,15 +175,15 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
                 .then(|| (name.to_owned(), m.messages))
         })
         .collect();
-    let recorded_usage = recorded(reader, scope)?;
+    let recorded_usage = recorded(reader, selection)?;
     let unknown_boundary_items = unknown_items(reader, &cond, &params)?;
     let unknown = unknown_boundary_items > 0
         || recorded_usage.observations > 0
-        || unknown_scope(reader, scope)?;
+        || unknown_scope(reader, selection)?;
     mark_unknown(&mut total.tokens, &mut total.api, unknown);
     total.reported.response_total_unknown = unknown;
     Ok(UsageReport {
-        grain: "physical",
+        grain: "own",
         timed_by: "source_record_time",
         sessions: conn.query_row(
             &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m WHERE {cond}"),
@@ -201,20 +201,20 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         price_catalog: catalog.version.clone(),
         by_model,
         unpriced_models,
-        hidden_sessions: hidden_sessions(reader, scope)?,
+        hidden_sessions: hidden_sessions(reader, selection)?,
     })
 }
 
-/// One session's usage at both grains: `physical` counts the responses
-/// stored in the session, each response once across the archive; `logical`
+/// One session's usage at both grains: `own` counts the responses
+/// stored in the session, each response once across the archive; `with_parents`
 /// counts what the session shows, the responses it inherited through fork
-/// and resume included, so a resumed session's logical figures repeat its
+/// and resume included, so a resumed session's figures with parents repeat its
 /// parent's.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SessionUsage {
     pub session: String,
-    pub physical: Totals,
-    pub logical: Totals,
+    pub own: Totals,
+    pub with_parents: Totals,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -222,16 +222,16 @@ pub struct Totals {
     /// Response total, unknown when source items lack response boundaries.
     pub messages: Option<u64>,
     pub known_response_messages: u64,
-    /// None at logical grain: unassociated physical observations cannot be
+    /// None with parents: readings not tied to a response cannot be
     /// assigned to inherited response history.
     pub recorded_usage: Option<RecordedUsage>,
     pub tokens: TokensByKind,
     pub api_cost: Money,
 }
 
-/// Usage of each session in the scope (by session key), at both grains.
-pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<SessionUsage>> {
-    let (cond, params) = scope.condition();
+/// Usage of each session in the selection (by session key), at both grains.
+pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionUsage>> {
+    let (cond, params) = selection.condition();
     let conn = reader.conn()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m JOIN session s ON s.pk = m.session_pk
@@ -247,32 +247,32 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
         let Ok(sid) = polylogue_model::SessionId::parse(&id) else {
             continue;
         };
-        let mut physical = totals(reader, &format!("m.session_pk = {pk}"))?;
-        let own_scope = Scope {
+        let mut own = totals(reader, &format!("m.session_pk = {pk}"))?;
+        let own_scope = Selection {
             sessions: Some(vec![pk]),
-            ..Scope::default()
+            ..Selection::default()
         };
         let observations = recorded(reader, &own_scope)?;
         if observations.observations > 0 || unknown_scope(reader, &own_scope)? {
-            physical.messages = None;
-            mark_unknown(&mut physical.tokens, &mut physical.api_cost, true);
+            own.messages = None;
+            mark_unknown(&mut own.tokens, &mut own.api_cost, true);
         }
-        physical.recorded_usage = Some(observations);
-        let keys = reader.logical_message_keys(&sid)?;
+        own.recorded_usage = Some(observations);
+        let keys = reader.message_keys_with_parents(&sid)?;
         let list = keys
             .iter()
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let mut logical = totals(reader, &format!("m.pk IN ({list})"))?;
-        if physical.messages.is_none() {
-            logical.messages = None;
-            mark_unknown(&mut logical.tokens, &mut logical.api_cost, true);
+        let mut with_parents = totals(reader, &format!("m.pk IN ({list})"))?;
+        if own.messages.is_none() {
+            with_parents.messages = None;
+            mark_unknown(&mut with_parents.tokens, &mut with_parents.api_cost, true);
         }
         out.push(SessionUsage {
             session: id,
-            physical,
-            logical,
+            own,
+            with_parents,
         });
     }
     Ok(out)
@@ -328,15 +328,15 @@ pub(super) fn unknown_items(
     )?)
 }
 
-pub(super) fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> {
-    // Missing boundary evidence is a property of the selected source scope;
+pub(super) fn unknown_scope(reader: &Reader<'_>, selection: &Selection) -> Result<bool> {
+    // Missing boundary evidence is a property of the selected source selection;
     // a later record-time window cannot turn it into known boundaries.
-    let scope = Scope {
+    let selection = Selection {
         since: None,
         until: None,
-        ..scope.clone()
+        ..selection.clone()
     };
-    let (cond, params) = scope.condition();
+    let (cond, params) = selection.condition();
     Ok(reader.conn()?.query_row(
         &format!(
             "SELECT EXISTS(SELECT 1 FROM event m
@@ -347,26 +347,26 @@ pub(super) fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> 
     )?)
 }
 
-pub(super) fn recorded(reader: &Reader<'_>, scope: &Scope) -> Result<RecordedUsage> {
-    recorded_with(reader, scope, |_, _, _| Ok(()))
+pub(super) fn recorded(reader: &Reader<'_>, selection: &Selection) -> Result<RecordedUsage> {
+    recorded_with(reader, selection, |_, _, _| Ok(()))
 }
 
 pub(super) fn recorded_with(
     reader: &Reader<'_>,
-    scope: &Scope,
-    mut visit: impl FnMut(Option<i64>, &polylogue_model::UsageObservation, Option<i64>) -> Result<()>,
+    selection: &Selection,
+    mut visit: impl FnMut(Option<i64>, &polylogue_model::UsageReport, Option<i64>) -> Result<()>,
 ) -> Result<RecordedUsage> {
     let mut out = RecordedUsage::default();
-    super::observations::visit::<polylogue_model::UsageObservation>(
+    super::reports::visit::<polylogue_model::UsageReport>(
         reader,
-        scope,
-        polylogue_model::observations::USAGE_OBSERVATION,
+        selection,
+        polylogue_model::reports::USAGE_REPORT,
         |_, at, value| {
             out.observations += 1;
-            if value.observed_at.is_none() {
+            if value.measured_at.is_none() {
                 out.untimed_observations += 1;
             }
-            if value.completion_observed != Some(true) {
+            if value.measured_completion != Some(true) {
                 out.unconfirmed_observations += 1;
                 return Ok(());
             }

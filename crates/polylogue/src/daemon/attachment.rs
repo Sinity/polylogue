@@ -1,5 +1,5 @@
 //! An attachment's stored bytes go only to the interactive CLI, checked on
-//! the socket. Ordinary application calls return masked descriptors.
+//! the socket. Ordinary application calls return masked descriptions.
 use super::service::{Daemon, error, store_error};
 use super::{Request, Response};
 use base64::Engine as _;
@@ -12,7 +12,7 @@ pub(crate) use operator::check_cli;
 pub(crate) struct BytePage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<serde_json::Value>,
-    pub asset: String,
+    pub input: String,
     pub blob: polylogue_model::BlobHash,
     pub size: u64,
     pub offset: u64,
@@ -26,7 +26,7 @@ struct Cursor {
     version: u8,
     binding: String,
     generation: String,
-    asset: String,
+    input: String,
     offset: u64,
     blob: polylogue_model::BlobHash,
 }
@@ -50,7 +50,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         message,
         block,
         attachment,
-        asset,
+        input,
         length,
         cursor,
         ..
@@ -93,9 +93,9 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         }
         None => None,
     };
-    let chosen = asset
+    let chosen = input
         .as_deref()
-        .or_else(|| decoded.as_ref().map(|cursor| cursor.asset.as_str()));
+        .or_else(|| decoded.as_ref().map(|cursor| cursor.input.as_str()));
     let found = match chosen {
         Some(input) => resolution.matches.iter().find(|found| found.input == input),
         None if resolution.matches.len() == 1 => resolution.matches.first(),
@@ -109,9 +109,9 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     };
     if decoded
         .as_ref()
-        .is_some_and(|cursor| cursor.asset != found.input)
+        .is_some_and(|cursor| cursor.input != found.input)
     {
-        return error("bad_request", "the cursor selects another asset");
+        return error("bad_request", "the cursor selects another input");
     }
     let offset = decoded.as_ref().map_or(0, |cursor| cursor.offset);
     let blob = match decoded.as_ref().map(|cursor| cursor.blob).or(found.blob) {
@@ -140,7 +140,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
             version: 1,
             binding: resolution.binding.clone(),
             generation,
-            asset: found.input.clone(),
+            input: found.input.clone(),
             offset: end,
             blob,
         }) {
@@ -166,7 +166,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     };
     let page = BytePage {
         descriptor,
-        asset: found.input.clone(),
+        input: found.input.clone(),
         blob,
         size: found.size,
         offset,

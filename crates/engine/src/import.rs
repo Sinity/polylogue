@@ -4,7 +4,7 @@
 //! origins accept it, by the layout its path sits in.
 
 use super::*;
-use polylogue_sources::origin::Route;
+use polylogue_sources::origin::Arrival;
 
 mod assets;
 mod exports;
@@ -14,7 +14,7 @@ impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
     /// bytes. The bytes are hashed and compressed into a private file; the
     /// writer stores them (row first, then file) before they are parsed.
-    /// Document-framed origins still parse a whole document in one job.
+    /// Origins read as whole documents still parse one document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
@@ -28,7 +28,7 @@ impl Engine {
         for path in paths {
             let mut selected = Vec::new();
             files_under(path, &mut selected)?;
-            let acquisition = uuid::Uuid::now_v7().to_string();
+            let import_id = uuid::Uuid::now_v7().to_string();
             let root = if path.is_dir() {
                 path.as_path()
             } else {
@@ -44,10 +44,10 @@ impl Engine {
                     selected,
                     polylogue_store::ImportMember {
                         version: 1,
-                        acquisition: acquisition.clone(),
+                        import_id: import_id.clone(),
                         member,
                         format: None,
-                        container: None,
+                        zip: None,
                     },
                 ));
             }
@@ -124,7 +124,7 @@ impl Engine {
     }
 
     /// Stores the complete import once, then parses it without making
-    /// further pieces. A retry can rebuild parser state from offset zero.
+    /// further new blobs. A retry can rebuild parser state from offset zero.
     fn import_plan(
         &mut self,
         path: &Path,
@@ -174,12 +174,12 @@ impl Engine {
             input: InputKey {
                 id,
                 format: origin.name.into(),
-                route_rank: 2,
+                arrival_rank: 2,
             },
             change: Change::First,
             observation: Some(observation),
             continues: false,
-            piece: None,
+            new_blob: None,
             blobs: Vec::new(),
             length: size,
             parse: Vec::new(),
@@ -244,7 +244,7 @@ fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::R
     Ok(())
 }
 
-/// A completed acquisition: its bytes hashed and compressed into a private
+/// A completed import: its bytes hashed and compressed into a private
 /// file, with their first bytes for recognition.
 struct Captured {
     prepared: polylogue_store::staging::PreparedBytes,
@@ -317,7 +317,7 @@ pub(super) const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 /// The origin an imported file belongs to. Several recognizers can accept
 /// one file (Claude Code takes any JSON-lines transcript, since an exported
 /// transcript can sit anywhere); the one whose own layout the path ends in
-/// is preferred, so a Grok CLI history or a hook carrier copied with its
+/// wins, so a Grok CLI history or a hook spool file copied with its
 /// directories keeps its origin.
 pub(super) fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static OriginSpec> {
     let found = ORIGINS
@@ -329,7 +329,7 @@ pub(super) fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static Orig
     found
         .clone()
         .find(|o| o.locations.iter().any(|l| collect::ends_in(path, l)))
-        .or_else(|| found.clone().find(|o| o.route == Route::Import))
+        .or_else(|| found.clone().find(|o| o.arrival == Arrival::Import))
         .or_else(|| {
             found.clone().find(|o| {
                 matches!(

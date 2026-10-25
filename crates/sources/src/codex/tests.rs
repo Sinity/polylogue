@@ -141,12 +141,12 @@ fn texts(msgs: &[Message]) -> Vec<String> {
 
 #[test]
 fn a_turn_becomes_one_message_per_item() {
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&turn()), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&turn()), 0).unwrap();
     assert!(
-        step.accounting.refused.is_empty(),
+        step.counts.unreadable.is_empty(),
         "{:?}",
-        step.accounting.refused
+        step.counts.unreadable
     );
     let msgs = final_messages(std::slice::from_ref(&step));
     let roles: Vec<_> = msgs.iter().map(|m| m.role).collect();
@@ -181,26 +181,26 @@ fn a_turn_becomes_one_message_per_item() {
     assert_eq!(session.tool_version.as_deref(), Some("0.160.0"));
 }
 
-fn readings(step: &Step) -> Vec<polylogue_model::UsageObservation> {
+fn readings(step: &Step) -> Vec<polylogue_model::UsageReport> {
     step.output
         .events
         .iter()
-        .filter(|e| e.kind == polylogue_model::observations::USAGE_OBSERVATION)
+        .filter(|e| e.kind == polylogue_model::reports::USAGE_REPORT)
         .map(|e| serde_json::from_value(e.data.clone()).unwrap())
         .collect()
 }
 
 #[test]
 fn usage_is_independent_of_items_and_partial_counters_do_not_prove_completion() {
-    let step = run(&rollout(), &mut Carry::default(), &jsonl(&turn()), 0).unwrap();
+    let step = run(&rollout(), &mut ParserState::default(), &jsonl(&turn()), 0).unwrap();
     let readings = readings(&step);
     assert_eq!(readings.len(), 2);
     assert_eq!(readings[0].usage.input, Some(400));
     assert_eq!(readings[0].usage.output, Some(30));
     assert_eq!(readings[1].usage.input, Some(200));
     assert!(readings.iter().all(|r| r.response.is_none()
-        && r.completion_observed.is_none()
-        && r.observed_at.is_none()));
+        && r.measured_completion.is_none()
+        && r.measured_at.is_none()));
     assert!(
         step.output
             .messages
@@ -211,12 +211,12 @@ fn usage_is_independent_of_items_and_partial_counters_do_not_prove_completion() 
 
 #[test]
 fn rate_limits_are_stored_independently_when_they_change() {
-    let step = run(&rollout(), &mut Carry::default(), &jsonl(&turn()), 0).unwrap();
+    let step = run(&rollout(), &mut ParserState::default(), &jsonl(&turn()), 0).unwrap();
     assert_eq!(
         step.output
             .events
             .iter()
-            .filter(|e| e.kind == "quota_observation")
+            .filter(|e| e.kind == "quota_report")
             .count(),
         1
     );
@@ -232,8 +232,8 @@ fn rate_limits_are_stored_independently_when_they_change() {
 
 #[test]
 fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&turn()), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&turn()), 0).unwrap();
     let msgs = final_messages(&[step]);
     let Block::ToolCall { command, tool, .. } = &msgs[3].blocks[0] else {
         panic!("{:?}", msgs[3].blocks)
@@ -255,17 +255,17 @@ fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
 #[test]
 fn parsing_in_pieces_equals_parsing_at_once() {
     let input = jsonl(&turn());
-    let mut whole_carry = Carry::default();
+    let mut whole_carry = ParserState::default();
     let whole = final_messages(&[run(&rollout(), &mut whole_carry, &input, 0).unwrap()]);
     let mut cut = 0;
     while cut < input.len() {
-        let mut carry = Carry::default();
-        let first = run(&rollout(), &mut carry, &input[..cut], 0).unwrap();
-        // The carry crosses a restart as JSON.
-        let mut carry: Carry =
-            serde_json::from_value(serde_json::to_value(&carry).unwrap()).unwrap();
+        let mut parser_state = ParserState::default();
+        let first = run(&rollout(), &mut parser_state, &input[..cut], 0).unwrap();
+        // The parser state crosses a restart as JSON.
+        let mut parser_state: ParserState =
+            serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
         let used = first.consumed as usize;
-        let second = run(&rollout(), &mut carry, &input[used..], used as u64).unwrap();
+        let second = run(&rollout(), &mut parser_state, &input[used..], used as u64).unwrap();
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
         cut += 37;
     }
@@ -300,8 +300,8 @@ fn a_command_left_running_is_updated_when_it_ends() {
             "output": "Chunk ID: y\nWall time: 5.0 seconds\nProcess exited with code 1\nOutput:\nerror"}),
         ),
     ];
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let msgs = final_messages(std::slice::from_ref(&step));
     let Block::ToolResult { outcome, .. } = &msgs[1].blocks[0] else {
         panic!()
@@ -322,7 +322,7 @@ fn a_command_left_running_is_updated_when_it_ends() {
             reason: Some(ErrorReason::ExitCode(1))
         }
     );
-    assert!(carry.running.is_empty());
+    assert!(parser_state.running.is_empty());
 }
 
 #[test]
@@ -351,8 +351,8 @@ fn commands_a_script_ran_are_recovered_as_calls() {
             "output": [{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\na\nb"}]}),
         ),
     ];
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let msgs = final_messages(&[step]);
     assert_eq!(msgs.len(), 3);
     let recovered = &msgs[1];
@@ -409,8 +409,8 @@ fn a_subagents_copied_history_is_stored_once_in_the_parent() {
             "content": [{"type": "input_text", "text": "your task"}]}),
         ),
     ];
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let msgs = final_messages(std::slice::from_ref(&step));
     let placed: Vec<_> = msgs
         .iter()
@@ -428,7 +428,7 @@ fn a_subagents_copied_history_is_stored_once_in_the_parent() {
             ("msg_c1".into(), THREAD.into())
         ]
     );
-    assert_eq!(step.accounting.unknown.values().sum::<u64>(), 2);
+    assert_eq!(step.counts.skipped.values().sum::<u64>(), 2);
     let session = &step.output.sessions[0];
     assert_eq!(session.kind, SessionKind::Subagent);
     assert_eq!(session.title.as_ref().unwrap().text, "Volta");
@@ -457,8 +457,8 @@ fn spawned_agents_are_linked_from_the_call() {
             "output": "{\"agent_id\":\"019a0000-0000-7000-8000-0000000000bb\",\"nickname\":\"Euler\"}"}),
         ),
     ];
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let [l] = step.output.links.as_slice() else {
         panic!()
     };
@@ -484,9 +484,9 @@ fn rollouts_from_2025_have_a_header_and_bare_items() {
         json!({"type": "function_call_output", "call_id": "call_l",
                "output": "{\"output\":\"a\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"}),
     ];
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
-    assert!(step.accounting.refused.is_empty(), "{:?}", step.accounting);
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
+    assert!(step.counts.unreadable.is_empty(), "{:?}", step.counts);
     let msgs = final_messages(std::slice::from_ref(&step));
     assert_eq!(msgs.len(), 4);
     assert!(msgs.iter().all(|m| m.at.is_none()));
@@ -509,12 +509,12 @@ fn every_record_is_accounted_for() {
     let mut records = turn();
     records.push(json!({"type": "brand_new_envelope", "payload": {"x": 1}}));
     records.push(json!([1, 2]));
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
-    assert_eq!(step.accounting.accounted(), step.accounting.framed);
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
+    assert_eq!(step.counts.counted(), step.counts.records);
     assert_eq!(
-        step.accounting
-            .unknown
+        step.counts
+            .skipped
             .get("brand_new_envelope: unrecognized record type"),
         Some(&1)
     );
@@ -542,8 +542,8 @@ fn the_index_names_threads_and_the_history_keeps_prompts() {
         json!({"id": THREAD, "thread_name": "first", "updated_at": "2026-03-01T10:00:00Z"}),
         json!({"id": THREAD, "thread_name": "renamed", "updated_at": "2026-03-01T11:00:00Z"}),
     ]);
-    let mut carry = index::Names::default();
-    let step = run(&index::SessionIndex, &mut carry, &names, 0).unwrap();
+    let mut parser_state = index::Names::default();
+    let step = run(&index::SessionIndex, &mut parser_state, &names, 0).unwrap();
     assert_eq!(step.output.sessions.len(), 1);
     assert_eq!(
         step.output.sessions[0].title.as_ref().unwrap().text,
@@ -551,8 +551,8 @@ fn the_index_names_threads_and_the_history_keeps_prompts() {
     );
     let history =
         jsonl(&[json!({"session_id": THREAD, "ts": 1_772_359_200, "text": "run the tests"})]);
-    let mut carry = index::NoState::default();
-    let step = run(&index::History, &mut carry, &history, 0).unwrap();
+    let mut parser_state = index::NoState::default();
+    let step = run(&index::History, &mut parser_state, &history, 0).unwrap();
     let [e] = step.output.events.as_slice() else {
         panic!()
     };
@@ -572,8 +572,8 @@ fn the_thread_settings_give_later_usage_its_service_tier() {
                    "thread_settings": {"model": "gpt-6.1-sol", "service_tier": "flex"}}),
         ),
     );
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let readings = readings(&step);
     let priced: Vec<_> = readings.iter().collect();
     assert!(!priced.is_empty());
@@ -622,4 +622,4 @@ fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
     }
 }
 
-mod observations;
+mod reports;

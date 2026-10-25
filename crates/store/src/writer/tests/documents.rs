@@ -23,7 +23,7 @@ fn doc_batch(input: &str, doc: Document, prepared: bool) -> Batch {
         end: 83,
         document: doc,
     });
-    batch.parse[0].accounting = accounting(1);
+    batch.parse[0].counts = counts(1);
     if prepared {
         batch.parse[0].prepare();
     }
@@ -32,7 +32,7 @@ fn doc_batch(input: &str, doc: Document, prepared: bool) -> Batch {
 
 #[test]
 fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_chat_rows() {
-    let w = world();
+    let w = test_archive();
     let original = document("project:a:doc:native", "Exact document λ🙂\nsecond line", 1);
     w.writer
         .send(doc_batch("a", original.clone(), false))
@@ -85,7 +85,7 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
         .unwrap()
         .sources()
         .unwrap();
-    assert_eq!(sources.iter().filter(|s| s.preferred).count(), 1);
+    assert_eq!(sources.iter().filter(|s| s.shown).count(), 1);
     assert_eq!(
         sources
             .iter()
@@ -98,7 +98,7 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
 
 #[test]
 fn equal_text_with_distinct_document_ids_keeps_both_records_and_shared_text() {
-    let w = world();
+    let w = test_archive();
     let a = document("project:a:doc:a", "Shared supplied text", 0);
     let b = document("project:a:doc:b", "Shared supplied text", 0);
     w.writer.send(doc_batch("one", a.clone(), true)).unwrap();
@@ -152,7 +152,7 @@ fn document_hash_uses_sorted_json_and_does_not_change_message_hash_domain() {
 #[test]
 fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
     use std::ops::ControlFlow;
-    let w = world();
+    let w = test_archive();
     let mut original = document("native", "old first block", 1);
     original.blocks.push(Block::Text {
         text: "old second block".into(),
@@ -202,7 +202,7 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
 
 #[test]
 fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed() {
-    let w = world();
+    let w = test_archive();
     let body = "Shared message and document text λ🙂";
     let message = text_message("m", "s", Role::User, body, None);
     w.writer
@@ -241,10 +241,10 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
         hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap(),
     );
     for (id, scope, expected) in [
-        ("message", crate::excise::Scope::Session(sid("s")), 1),
+        ("message", crate::excise::ExciseTarget::Session(sid("s")), 1),
         (
             "document",
-            crate::excise::Scope::Input("document-input".into()),
+            crate::excise::ExciseTarget::Input("document-input".into()),
             0,
         ),
     ] {
@@ -252,7 +252,7 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
             .excise(
                 crate::excise::ExciseRequest {
                     id: id.into(),
-                    scope,
+                    target: scope,
                     reason: None,
                     dry_run: false,
                 },

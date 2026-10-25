@@ -53,7 +53,7 @@ fn a_chatgpt_capture_reads_the_provider_json_under_the_export_ids() {
             .iter()
             .any(|e| e.kind == "browser_capture")
     );
-    assert_eq!(step.accounting.materialized["capture"], 1);
+    assert_eq!(step.counts.used["capture"], 1);
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Message content: blocks, tool-result outcomes and what kind of user
 //! message a record is.
 
-use crate::parse::InlineBlob;
+use crate::parse::ExtractedBlob;
 use base64::Engine;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
@@ -9,7 +9,7 @@ use polylogue_model::{
 };
 
 /// The blocks of `message.content`, which is a string or an array.
-pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<InlineBlob>) -> Vec<Block> {
+pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<ExtractedBlob>) -> Vec<Block> {
     match content {
         Json::String(text) => vec![Block::Text { text: text.clone() }],
         Json::Array(items) => {
@@ -48,7 +48,7 @@ pub fn action(tool: &str) -> ToolAction {
     }
 }
 
-fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<InlineBlob>) -> Block {
+fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<ExtractedBlob>) -> Block {
     match ty(item) {
         "text" => Block::Text {
             text: string(item, "text").unwrap_or_default(),
@@ -89,7 +89,11 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<InlineBl
 }
 
 /// An image or document block. Inline base64 bytes become a blob.
-fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<InlineBlob>) -> Attachment {
+fn image(
+    item: &Json,
+    direction: AttachmentDirection,
+    blobs: &mut Vec<ExtractedBlob>,
+) -> Attachment {
     let source = item.get("source").unwrap_or(&Json::Null);
     let mut attachment = Attachment {
         media_type: string(source, "media_type"),
@@ -104,7 +108,7 @@ fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<InlineBlob
         let hash = BlobHash::of(&bytes);
         attachment.size = Some(bytes.len() as u64);
         attachment.blob = Some(hash);
-        blobs.push(InlineBlob {
+        blobs.push(ExtractedBlob {
             hash,
             size: bytes.len() as u64,
             bytes,
@@ -117,7 +121,7 @@ fn tool_result(
     record: &Json,
     item: &Json,
     sole_result: bool,
-    blobs: &mut Vec<InlineBlob>,
+    blobs: &mut Vec<ExtractedBlob>,
 ) -> Block {
     // `toolUseResult` describes the record's result only when there is
     // exactly one.

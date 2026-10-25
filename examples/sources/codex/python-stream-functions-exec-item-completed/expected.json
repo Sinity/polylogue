@@ -1,14 +1,14 @@
 {
-  "accounting": {
-    "framed": 14,
-    "materialized": {
+  "counts": {
+    "records": 14,
+    "used": {
       "event_msg/item_completed": 5,
       "response_item/custom_tool_call": 4,
       "response_item/custom_tool_call_output": 4,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

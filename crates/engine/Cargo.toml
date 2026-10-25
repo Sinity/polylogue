@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-engine"
-description = "The convergence loop: collect, store, parse, derive, excise"
+description = "The loop: collect, store, parse, derive, excise"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

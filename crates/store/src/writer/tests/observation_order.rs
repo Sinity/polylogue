@@ -14,7 +14,7 @@ fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
 
 #[test]
 fn the_latest_observation_is_the_last_inserted_despite_earlier_times() {
-    let w = world();
+    let w = test_archive();
     let mut db =
         crate::archive::open_write(&w.archive.archive_db(), crate::archive::cache::SETUP).unwrap();
     db.execute("INSERT INTO input VALUES ('input','synthetic-text')", [])
@@ -45,7 +45,7 @@ fn independent_archives_cannot_assign_the_same_observation_identity() {
     let mut ids = Vec::new();
     let mut coordinates = Vec::new();
     for seen_at in [900, 1] {
-        let w = world();
+        let w = test_archive();
         let mut db =
             crate::archive::open_write(&w.archive.archive_db(), crate::archive::cache::SETUP)
                 .unwrap();

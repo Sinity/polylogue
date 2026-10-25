@@ -1,7 +1,7 @@
 {
-  "accounting": {
-    "framed": 17,
-    "materialized": {
+  "counts": {
+    "records": 17,
+    "used": {
       "ai-title": 1,
       "custom-title": 1,
       "permission-mode": 1,
@@ -13,10 +13,10 @@
       "system/turn_duration": 1,
       "user": 1
     },
-    "refused": {
+    "unreadable": {
       "?: malformed JSON: key must be a string at line 1 column 18": 1
     },
-    "unknown": {
+    "skipped": {
       "agent-color: terminal colour only; names no agent": 1,
       "atis-latch: always empty in observed data": 1,
       "brand-new-record: unrecognized record type": 1,

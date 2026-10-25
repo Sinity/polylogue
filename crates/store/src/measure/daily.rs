@@ -1,7 +1,7 @@
 //! Series over the operator's logical days: a daily series with its
 //! baseline and level changes, and prompts by weekday and hour.
 
-use super::{Scope, usage};
+use super::{Selection, usage};
 use crate::{Reader, Result};
 use polylogue_model::LogicalDay;
 use serde::Serialize;
@@ -113,8 +113,13 @@ pub static DAILY_METRICS: &[&str] = &DAILY_NAMES;
 
 /// A daily series of `metric` (one of [`DAILY_METRICS`]) over logical
 /// days. A day with no activity is 0.
-pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay) -> Result<Series> {
-    let (cond, params) = scope.condition();
+pub fn daily(
+    reader: &Reader<'_>,
+    selection: &Selection,
+    metric: &str,
+    day: &LogicalDay,
+) -> Result<Series> {
+    let (cond, params) = selection.condition();
     let Some((_, expr, from)) = DAILY.iter().find(|(name, _, _)| *name == metric) else {
         return Err(crate::StoreError::Invalid(format!(
             "no daily metric `{metric}`: {}",
@@ -123,7 +128,7 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
     };
     let measured = matches!(metric, "tokens" | "api_cost");
     let mut response_unknown = measured
-        && (usage::unknown_scope(reader, scope)?
+        && (usage::unknown_scope(reader, selection)?
             || usage::unknown_items(reader, &cond, &params)? > 0);
     let mut incomplete = response_unknown;
     let mut unknown_spend_time = false;
@@ -137,10 +142,10 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
         _ => "0",
     };
     if measured {
-        let untimed = Scope {
+        let untimed = Selection {
             since: None,
             until: None,
-            ..scope.clone()
+            ..selection.clone()
         };
         let (condition, values) = untimed.condition();
         incomplete |= reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m WHERE {known_rows} AND m.at IS NULL AND {condition})"),rusqlite::params_from_iter(values.iter()),|r|r.get::<_,bool>(0))?;
@@ -168,7 +173,7 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
         }
     }
     if measured {
-        let recorded = usage::recorded_with(reader, scope, |at, observation, cost| {
+        let recorded = usage::recorded_with(reader, selection, |at, observation, cost| {
             let Some(at) = at else {
                 unplaced_observations += 1;
                 return Ok(());
@@ -273,8 +278,8 @@ pub struct Rhythm {
     pub grid: [[u64; 24]; 7],
 }
 
-pub fn rhythm(reader: &Reader<'_>, scope: &Scope, day: &LogicalDay) -> Result<Rhythm> {
-    let (cond, params) = scope.condition();
+pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &LogicalDay) -> Result<Rhythm> {
+    let (cond, params) = selection.condition();
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT m.at FROM message m WHERE m.at IS NOT NULL AND m.written_by = 'human'
            AND m.prompt_kind = 'prose' AND {cond}"

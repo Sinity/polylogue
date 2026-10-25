@@ -7,19 +7,19 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     let home = ClaudeHome::new();
     home.append("s.jsonl", &claude_user("m1", "s", "stored exact text"));
     let (mut engine, lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     for n in 2..=6 {
         home.append(
             "s.jsonl",
             &claude_user(&format!("m{n}"), "s", &format!("later record {n}")),
         );
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
     }
     let initial = {
         let pool = home.reads();
         run(&pool.reader().unwrap(), ask("sessions", T0)).unwrap()
     };
-    let cursor = initial["view"]["cursor"].as_str().unwrap();
+    let cursor = initial["read_at"]["cursor"].as_str().unwrap();
     engine.writer().unwrap().user(UserRequest {
         id: "saved-feed".into(), machine: "synthetic".into(), at: Timestamp::from_unix_ms(T0).unwrap(),
         write: UserWrite::AddNote { note: serde_json::from_value(json!({"kind":"saved_query","key":"old-feed","value":format!("changes where after:{cursor}"),"author":"operator","targets":["repo:synthetic"]})).unwrap() },
@@ -30,7 +30,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     // The rebuild uses stored bytes, even after the provider file disappears.
     std::fs::remove_file(home.file("s.jsonl")).unwrap();
     let (mut engine, _lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let texts = home.texts("s");
     assert_eq!(texts.len(), 6);
     assert_eq!(texts[0], "stored exact text");
@@ -58,10 +58,13 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         );
     }
     let fresh = run(&reader, ask("sessions", T0)).unwrap();
-    assert_ne!(fresh["view"]["generation"], initial["view"]["generation"]);
+    assert_ne!(
+        fresh["read_at"]["generation"],
+        initial["read_at"]["generation"]
+    );
     let after = format!(
         "changes where after:{}",
-        fresh["view"]["cursor"].as_str().unwrap()
+        fresh["read_at"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
 }
@@ -78,13 +81,13 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
         &claude_user("k1", "kept", "keep this exact text"),
     );
     let (mut engine, _lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let pool = home.reads();
     let pinned = pool.reader().unwrap();
     let initial = run(&pinned, ask("sessions", T0)).unwrap();
     let after = format!(
         "changes where after:{}",
-        initial["view"]["cursor"].as_str().unwrap()
+        initial["read_at"]["cursor"].as_str().unwrap()
     );
     engine
         .writer()
@@ -111,7 +114,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     engine
         .excise(polylogue_store::excise::ExciseRequest {
             id: "remove-gone".into(),
-            scope: polylogue_store::excise::Scope::Session(sid("gone")),
+            target: polylogue_store::excise::ExciseTarget::Session(sid("gone")),
             reason: None,
             dry_run: false,
         })
@@ -119,12 +122,17 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
-    assert_eq!(changes["view"]["generation"], initial["view"]["generation"]);
-    assert!(
-        changes["view"]["index"].as_i64().unwrap() > initial["view"]["index"].as_i64().unwrap()
+    assert_eq!(
+        changes["read_at"]["generation"],
+        initial["read_at"]["generation"]
     );
     assert!(
-        changes["view"]["archive"].as_i64().unwrap() > initial["view"]["archive"].as_i64().unwrap()
+        changes["read_at"]["index"].as_i64().unwrap()
+            > initial["read_at"]["index"].as_i64().unwrap()
+    );
+    assert!(
+        changes["read_at"]["archive"].as_i64().unwrap()
+            > initial["read_at"]["archive"].as_i64().unwrap()
     );
     let rows = changes["rows"].as_array().unwrap();
     assert!(
@@ -137,7 +145,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     );
     let excision = rows.iter().find(|r| r["kind"] == "excision").unwrap();
     assert_eq!(excision["ref"], "remove-gone");
-    assert_eq!(excision["scope"], "session:claude-code:gone");
+    assert_eq!(excision["target"], "session:claude-code:gone");
     assert_eq!(excision["sessions"], json!(["claude-code:gone"]));
     assert!(
         excision["messages"]
@@ -150,7 +158,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     assert_eq!(replay["rows"], json!([excision]));
     let after = format!(
         "changes where after:{}",
-        changes["view"]["cursor"].as_str().unwrap()
+        changes["read_at"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
 }
@@ -220,17 +228,17 @@ fn excision_changes_list_the_removed_sessions_and_messages() {
 #[test]
 fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
     use crate::daemon::{Request, Response, service::handle};
-    let world = crate::test_daemon::start("synthetic source");
+    let daemon = crate::test_daemon::start("synthetic source");
     let result = handle(
         Request::Keep {
             request_id: "stale-keep".into(),
             text: "changes where after:obsolete:0:0 | limit 1".into(),
             name: None,
         },
-        &world.daemon,
+        &daemon.daemon,
     );
     assert!(matches!(result, Response::Error { kind, .. } if kind == "resync_required"));
-    let pool = polylogue_store::ReadPool::open(&world.daemon.archive).unwrap();
+    let pool = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     assert_eq!(
         pool.reader()
             .unwrap()

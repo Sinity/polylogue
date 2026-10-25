@@ -1,17 +1,17 @@
 //! Turns a session holds twice under different message IDs, because two
-//! routes describe the same conversation without a shared turn ID: a
+//! inputs describe the same conversation without a shared turn ID: a
 //! browser capture read from the page text (the Gemini app) and an export
 //! (Gemini's Takeout activity). Both stay stored; the session shows each
 //! such turn once, from the export, and the capture's messages name the
 //! export message they repeat (`duplicate_of`) and why (`duplicate_reason`).
 //!
-//! A turn is a prompt and the replies after it, in one route's order. Two
+//! A turn is a prompt and the replies after it, in one input's order. Two
 //! turns are the same only on exact evidence: the prompt's text, with
-//! whitespace runs read as one space, occurs once in each route; the
-//! paired prompts keep the same order in both routes; and the turns have
+//! whitespace runs read as one space, occurs once in each input; the
+//! paired prompts keep the same order in both inputs; and the turns have
 //! the same roles after the prompt. A repeated prompt ("continue") or a
-//! turn whose shape differs stays shown from both routes. The result
-//! depends only on the stored rows, never on which route arrived first.
+//! turn whose shape differs stays shown from both inputs. The result
+//! depends only on the stored rows, never on which input arrived first.
 
 use super::{Derivation, Version};
 use crate::Result;
@@ -36,7 +36,7 @@ const REASON: &str =
     "the export records the turn's time and line breaks; the page capture has neither";
 
 #[derive(Clone, Copy, PartialEq)]
-enum Route {
+enum Arrival {
     Capture,
     Export,
 }
@@ -84,20 +84,20 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut captured = Vec::new();
     let mut exported = Vec::new();
-    // A message both routes already share ends the turn it would extend.
+    // A message both arrivals already share ends the turn it would extend.
     let mut open: [Option<usize>; 2] = [None, None];
     for (pk, id, role, sources, from_capture) in rows {
-        let route = match from_capture {
-            0 => Route::Export,
-            n if n == sources => Route::Capture,
+        let arrival = match from_capture {
+            0 => Arrival::Export,
+            n if n == sources => Arrival::Capture,
             _ => {
                 open = [None, None];
                 continue;
             }
         };
-        let (turns, slot) = match route {
-            Route::Capture => (&mut captured, 0),
-            Route::Export => (&mut exported, 1),
+        let (turns, slot) = match arrival {
+            Arrival::Capture => (&mut captured, 0),
+            Arrival::Export => (&mut exported, 1),
         };
         if role == "user" {
             turns.push(Turn {
@@ -149,7 +149,7 @@ fn prompt_key(tx: &Transaction<'_>, message_pk: i64) -> Result<String> {
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// Capture and export turns whose prompt text occurs once in each route,
+/// Capture and export turns whose prompt text occurs once in each input,
 /// keeping the longest set of pairs in the same order in both.
 fn paired(captured: &[Turn], exported: &[Turn]) -> Vec<(usize, usize)> {
     fn once(turns: &[Turn]) -> HashMap<&str, Option<usize>> {

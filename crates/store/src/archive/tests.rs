@@ -50,7 +50,7 @@ fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
     // A stop after the archive's commit: the excision is recorded and its
     // blob marked, but the index and the file were not reached.
     let archive_db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    archive_db.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
+    archive_db.execute("INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
     archive_db
         .execute(
             "INSERT INTO blob(hash,size,stored_size,place,encoding,state) VALUES (?1,?2,?2,'file','plain','deleting')",
@@ -97,7 +97,7 @@ fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     drop(index);
     let archive_conn = open_archive_writer(&archive).unwrap();
     let value = "archive note value independent of row dictionary";
-    archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
+    archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
     drop(archive_conn);
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();

@@ -43,7 +43,7 @@ pub enum UserWrite {
         /// The stored rows, match rows and their columns, as JSON.
         rows_json: String,
         /// What the query read: its resolved time, as JSON.
-        view: String,
+        read_at: String,
     },
     SetSetting {
         key: String,
@@ -191,15 +191,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             author,
             reason,
         } => {
-            let root = root_of(tx, note)?;
+            let first_note = first_note_of(tx, note)?;
             tx.execute(
-                "INSERT INTO note(id, root, kind, value, author, machine, created_at, commit_seq)
+                "INSERT INTO note(id, first_note, kind, value, author, machine, created_at, commit_seq)
                  VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)",
                 params![r.id, reason, author.to_string(), r.machine, at, seq],
             )?;
             tx.execute(
                 "INSERT INTO note_relation(note_id, kind, other) VALUES (?1, 'withdraws', ?2)",
-                params![r.id, format!("note:{root}")],
+                params![r.id, format!("note:{first_note}")],
             )?;
             Ok(UserOutcome {
                 id: r.id.clone(),
@@ -258,12 +258,12 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             name,
             query,
             rows_json,
-            view,
+            read_at,
         } => {
             tx.execute(
-                "INSERT INTO kept_result(id, name, query, ran_at, view, rows_json)
+                "INSERT INTO kept_result(id, name, query, ran_at, read_at, rows_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![r.id, name, query, at, view, rows_json],
+                params![r.id, name, query, at, read_at, rows_json],
             )?;
             Ok(UserOutcome {
                 id: r.id.clone(),
@@ -344,19 +344,25 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
     }
 }
 
-/// The note family a request adds to or withdraws, once applied in `tx`.
-pub(crate) fn note_root(tx: &Transaction<'_>, r: &UserRequest) -> Result<Option<String>> {
+/// The first note of the note a request adds or withdraws, once applied in
+/// `tx`.
+pub(crate) fn first_note_of_request(
+    tx: &Transaction<'_>,
+    r: &UserRequest,
+) -> Result<Option<String>> {
     match &r.write {
-        UserWrite::AddNote { .. } => root_of(tx, &r.id).map(Some),
-        UserWrite::Withdraw { note, .. } => root_of(tx, note).map(Some),
+        UserWrite::AddNote { .. } => first_note_of(tx, &r.id).map(Some),
+        UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
         _ => Ok(None),
     }
 }
 
-fn root_of(tx: &Transaction<'_>, note: &str) -> Result<String> {
-    tx.query_row("SELECT root FROM note WHERE id = ?1", [note], |r| r.get(0))
-        .optional()?
-        .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
+fn first_note_of(tx: &Transaction<'_>, note: &str) -> Result<String> {
+    tx.query_row("SELECT first_note FROM note WHERE id = ?1", [note], |r| {
+        r.get(0)
+    })
+    .optional()?
+    .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
 }
 
 fn add_note(
@@ -370,16 +376,16 @@ fn add_note(
             "a note needs at least one target".into(),
         ));
     }
-    let root = match &note.revises {
-        Some(prev) => root_of(tx, prev)?,
+    let first_note = match &note.revises {
+        Some(prev) => first_note_of(tx, prev)?,
         None => r.id.clone(),
     };
     tx.execute(
-        "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, valid_until, commit_seq)
+        "INSERT INTO note(id, first_note, kind, key, value, author, machine, created_at, valid_until, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             r.id,
-            root,
+            first_note,
             note.kind.as_str(),
             note.key,
             note.value,

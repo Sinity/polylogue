@@ -1,4 +1,4 @@
-//! Tool databases as typed logical exports: a database
+//! Tool databases as typed row dumps: a database
 //! that disappears must not take archived rows with it, but every version
 //! of its pages is not needed.
 //!
@@ -179,13 +179,13 @@ fn value(v: ValueRef<'_>) -> Result<Value, ExportError> {
             .map(Value::Number)
             .ok_or_else(|| {
                 ExportError::Invalid(
-                    "non-finite SQLite REAL cannot be represented in a logical export".into(),
+                    "non-finite SQLite REAL cannot be represented in a row dump".into(),
                 )
             })?,
         ValueRef::Text(t) => std::str::from_utf8(t)
             .map_err(|_| {
                 ExportError::Invalid(
-                    "non-UTF-8 SQLite TEXT cannot be represented in a logical export".into(),
+                    "non-UTF-8 SQLite TEXT cannot be represented in a row dump".into(),
                 )
             })?
             .into(),

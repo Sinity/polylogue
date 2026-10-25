@@ -273,7 +273,7 @@ pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
 
 fn exec_plan(data: &Value) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let Some(native) = data.get("native").filter(|n| !n.is_null()) else {
+    let Some(native) = data.get("harness_command").filter(|n| !n.is_null()) else {
         eprintln!(
             "polylogue: this session has no native resume; continue with context instead: {}",
             data["context_assisted"]["program"]

@@ -123,14 +123,14 @@ fn new_messages_do_not_read_a_previous_source() {
     );
     let reads = observed.load(Ordering::Relaxed);
     println!("source-version reads for {messages} new messages: {reads}");
-    // The current-message lookup reads the preferred version once per message.
+    // The current-message lookup reads the shown version once per message.
     assert_eq!(reads, messages, "new sources still query a previous value");
 }
 
 #[test]
 fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
     for mode in ["unprepared", "prepared", "repeated"] {
-        let w = world();
+        let w = test_archive();
         let mut message = text_message(
             "answer",
             "s",
@@ -211,7 +211,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
 #[test]
 fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
     for removed in [vec![0], vec![1], vec![0, 1, 2]] {
-        let w = world();
+        let w = test_archive();
         let messages = (0..3)
             .map(|n| {
                 let mut m = text_message(
@@ -265,7 +265,7 @@ fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
 #[test]
 fn misaligned_prepared_rows_refuse_before_writing() {
     for change_id in [false, true] {
-        let w = world();
+        let w = test_archive();
         let mut b = batch(
             "input1",
             0,

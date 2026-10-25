@@ -1,13 +1,13 @@
 {
-  "accounting": {
-    "framed": 5,
-    "materialized": {
+  "counts": {
+    "records": 5,
+    "used": {
       "assistant": 2,
       "conversation": 1,
       "human": 2
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

@@ -94,12 +94,7 @@ fn ai_studio_uses_the_chunk_role_for_every_attachment_shape() {
         "drive://output-file",
         "a file part keeps its URI"
     );
-    assert!(
-        p["accounting"]["unread_fields"]
-            .as_object()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(p["counts"]["unread_fields"].as_object().unwrap().is_empty());
 }
 
 fn capture(turns: Value, attachments: Value) -> Value {
@@ -128,12 +123,7 @@ fn browser_capture_turn_attachments_use_the_turn_role() {
     let assistant = message(&p, ":assistant-turn");
     assert_eq!(directions(assistant), ["output"]);
     assert_eq!(attachments(assistant)[0]["type"], "image");
-    assert!(
-        p["accounting"]["unread_fields"]
-            .as_object()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(p["counts"]["unread_fields"].as_object().unwrap().is_empty());
 }
 
 #[test]

@@ -16,25 +16,25 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let config = config_at(dir.path());
     std::fs::create_dir_all(&config.home).unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    let ctx = Arc::new(Ctx::at(&config, &archive).unwrap());
+    let host = Arc::new(BrowserHost::at(&config, &archive).unwrap());
     let first = capture("rapid", "first earlier version");
     let second = capture("rapid", "second current version");
-    let ack = exchange(&ctx, "POST", "/v1/browser-captures", &first);
+    let ack = exchange(&host, "POST", "/v1/browser-captures", &first);
     assert_eq!(ack.status, 200);
     assert_eq!(
-        exchange(&ctx, "POST", "/v1/browser-captures", &second).status,
+        exchange(&host, "POST", "/v1/browser-captures", &second).status,
         200
     );
-    let path = ctx.spool.join(ack.json()["artifact_ref"].as_str().unwrap());
+    let path = host.spool.join(ack.json()["artifact_ref"].as_str().unwrap());
     let before = std::fs::read(&path).unwrap();
     assert_eq!(
-        exchange(&ctx, "POST", "/v1/browser-captures", &first).json()["outcome"],
+        exchange(&host, "POST", "/v1/browser-captures", &first).json()["outcome"],
         "noop"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let sid = SessionId::parse("chatgpt:rapid").unwrap();
     let mut engine = Engine::new(config.clone(), archive.clone()).unwrap();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     {
         let pool = ReadPool::open(&archive).unwrap();
@@ -46,7 +46,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     }
     drop(engine);
     let mut engine = Engine::new(config, archive.clone()).unwrap();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert_eq!(pass.bytes_read, 0, "restart must use durable progress");
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     let pool = ReadPool::open(&archive).unwrap();
@@ -61,10 +61,10 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     reversion["provenance"]["captured_at"] = json!("2026-03-01T11:00:00Z");
     let reversion = serde_json::to_vec(&reversion).unwrap();
     assert_eq!(
-        exchange(&ctx, "POST", "/v1/browser-captures", &reversion).status,
+        exchange(&host, "POST", "/v1/browser-captures", &reversion).status,
         200
     );
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(
         pass.bytes_read,
@@ -93,7 +93,7 @@ fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {
     }
     let (_archive, _lock) = Archive::open_or_create(&archive.root).unwrap();
     let mut engine = Engine::new(config, archive.clone()).unwrap();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     engine
 }

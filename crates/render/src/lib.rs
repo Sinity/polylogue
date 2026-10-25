@@ -113,30 +113,30 @@ pub fn shell_quote(w: &str) -> String {
 
 /// One block as the stream carries it: its kind and its masked text.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Piece {
+pub struct RenderedBlock {
     pub kind: &'static str,
     pub label: Option<String>,
     pub text: String,
 }
 
-/// The pieces a block renders to under a view.
-fn pieces(message: &Message, view: View) -> Vec<Piece> {
+/// The rendered blocks a block renders to under a view.
+fn rendered_blocks(message: &Message, view: View) -> Vec<RenderedBlock> {
     message
         .blocks
         .iter()
         .filter(|b| view.keeps(message, b))
-        .filter_map(piece)
+        .filter_map(block)
         .collect()
 }
 
-fn piece(block: &Block) -> Option<Piece> {
+fn block(block: &Block) -> Option<RenderedBlock> {
     Some(match block {
-        Block::Text { text } => Piece {
+        Block::Text { text } => RenderedBlock {
             kind: "text",
             label: None,
             text: text.clone(),
         },
-        Block::Thinking { text, redacted, .. } => Piece {
+        Block::Thinking { text, redacted, .. } => RenderedBlock {
             kind: "thinking",
             label: None,
             text: match text {
@@ -151,7 +151,7 @@ fn piece(block: &Block) -> Option<Piece> {
             path,
             input,
             ..
-        } => Piece {
+        } => RenderedBlock {
             kind: "tool_call",
             label: Some(tool.clone().unwrap_or_else(|| "tool".into())),
             text: command
@@ -161,12 +161,12 @@ fn piece(block: &Block) -> Option<Piece> {
         },
         Block::ToolResult {
             outcome, output, ..
-        } => Piece {
+        } => RenderedBlock {
             kind: "tool_result",
             label: Some(outcome_label(outcome)),
             text: output.clone().unwrap_or_default(),
         },
-        Block::Image(a) | Block::File(a) => Piece {
+        Block::Image(a) | Block::File(a) => RenderedBlock {
             kind: if matches!(block, Block::Image(_)) {
                 "image"
             } else {
@@ -175,7 +175,7 @@ fn piece(block: &Block) -> Option<Piece> {
             label: a.media_type.clone(),
             text: a.name.clone().or_else(|| a.url.clone()).unwrap_or_default(),
         },
-        Block::Other { type_name, .. } => Piece {
+        Block::Other { type_name, .. } => RenderedBlock {
             kind: "other",
             label: Some(type_name.clone()),
             text: String::new(),
@@ -355,7 +355,7 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 writeln!(out)?;
             }
             Rendered::Message(m) => {
-                let ps = pieces(m, view);
+                let ps = rendered_blocks(m, view);
                 if ps.is_empty() {
                     continue;
                 }
@@ -419,7 +419,7 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 )?;
             }
             Rendered::Message(m) => {
-                let ps = pieces(m, view);
+                let ps = rendered_blocks(m, view);
                 if ps.is_empty() {
                     continue;
                 }

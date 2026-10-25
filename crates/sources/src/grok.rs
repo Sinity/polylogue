@@ -6,7 +6,7 @@ use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, TitleSource,
 };
@@ -89,17 +89,17 @@ impl ExportParser for Export {
         records.record(
             "export",
             &if metadata.get("conversations").is_some_and(Json::is_array) {
-                Disposition::Materialized
+                RecordOutcome::Used
             } else {
-                Disposition::refused("Grok export has no conversations array")
+                RecordOutcome::unreadable("Grok export has no conversations array")
             },
         );
         Ok(Some(Step {
             output: Output::default(),
-            accounting: records.finish().map_err(|error| error.to_string())?,
+            counts: records.finish().map_err(|error| error.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
 
@@ -120,14 +120,14 @@ impl Export {
         let Some(conversation) = value.get("conversation").filter(|value| value.is_object()) else {
             sink.records.record(
                 "conversation",
-                &Disposition::refused("no Grok conversation object"),
+                &RecordOutcome::unreadable("no Grok conversation object"),
             );
             return;
         };
         let Some(responses) = value.get("responses").and_then(Json::as_array) else {
             sink.records.record(
                 "conversation",
-                &Disposition::refused("no Grok responses array"),
+                &RecordOutcome::unreadable("no Grok responses array"),
             );
             return;
         };
@@ -154,14 +154,14 @@ impl Export {
             }
             Err(reason) => {
                 sink.records
-                    .record("conversation", &Disposition::refused(reason));
+                    .record("conversation", &RecordOutcome::unreadable(reason));
                 return;
             }
         };
         let Some(sid) = session_id(ORIGIN, &native) else {
             sink.records.record(
                 "conversation",
-                &Disposition::refused("unusable Grok conversation identity"),
+                &RecordOutcome::unreadable("unusable Grok conversation identity"),
             );
             return;
         };
@@ -175,8 +175,7 @@ impl Export {
         }
         session.started = time(conversation, &mut warnings);
         sink.out.sessions.push(session);
-        sink.records
-            .record("conversation", &Disposition::Materialized);
+        sink.records.record("conversation", &RecordOutcome::Used);
         let mut occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
@@ -190,7 +189,7 @@ impl Export {
             let Some(fields) = fields.as_object().map(|_| fields) else {
                 sink.records.record(
                     "response",
-                    &Disposition::refused("Grok response is not an object"),
+                    &RecordOutcome::unreadable("Grok response is not an object"),
                 );
                 warnings.push(
                     "a response is not an object; original bytes stay in the stored input".into(),
@@ -208,7 +207,7 @@ impl Export {
                 _ => {
                     sink.records.record(
                         "response",
-                        &Disposition::unknown(
+                        &RecordOutcome::skipped(
                             "unrecognized Grok sender; authorship was not assigned",
                         ),
                     );
@@ -222,7 +221,7 @@ impl Export {
             let Some(text) = fields.get("message").and_then(Json::as_str) else {
                 sink.records.record(
                     "response",
-                    &Disposition::refused("Grok message is not a supplied string"),
+                    &RecordOutcome::unreadable("Grok message is not a supplied string"),
                 );
                 warnings.push("missing, null or structured message is not read as text; original bytes stay in the stored input".into());
                 continue;
@@ -241,7 +240,7 @@ impl Export {
                 }
                 Err(reason) => {
                     sink.records
-                        .record("response", &Disposition::refused(reason));
+                        .record("response", &RecordOutcome::unreadable(reason));
                     warnings.push(reason.into());
                     continue;
                 }
@@ -249,7 +248,7 @@ impl Export {
             let Some(id) = message_id(ORIGIN, &native_message) else {
                 sink.records.record(
                     "response",
-                    &Disposition::refused("unusable Grok message identity"),
+                    &RecordOutcome::unreadable("unusable Grok message identity"),
                 );
                 continue;
             };
@@ -292,7 +291,7 @@ impl Export {
                     production: Default::default(),
                 },
             });
-            sink.records.record("response", &Disposition::Materialized);
+            sink.records.record("response", &RecordOutcome::Used);
         }
         if !warnings.is_empty() {
             warnings.sort();

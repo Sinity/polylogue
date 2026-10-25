@@ -98,7 +98,7 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("mcpMeta", Kept("MCP result metadata; no reader yet")),
     (
         "turnCompanion",
-        Kept("companion text the harness showed; no reader yet"),
+        Kept("extra text the harness showed; no reader yet"),
     ),
     (
         "planContent",

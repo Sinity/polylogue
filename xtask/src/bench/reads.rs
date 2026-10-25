@@ -3,7 +3,7 @@
 use super::*;
 use devkit::{Nextest, Run};
 
-const SCENARIO: &str = "cli::read_bench::native_read_benchmark";
+const SCENARIO: &str = "cli::read_bench::read_benchmark";
 const POPULATION: &str = "native-reads-v1";
 
 pub(super) fn execute(repetitions: u32, full_walk: bool) -> ExitCode {
@@ -43,7 +43,7 @@ pub(super) fn execute(repetitions: u32, full_walk: bool) -> ExitCode {
         let load = load.finish()?;
         let metrics = read_result(&fs::read_to_string(&report).map_err(|e|e.to_string())?, repetitions, full_walk)?;
         let store = Store::open().map_err(|e|e.to_string())?;
-        let bench_id = bench::record(&store, &run.root, "polylogue", "native_reads", POPULATION, &out, &load, &metrics).map_err(|e|e.to_string())?;
+        let bench_id = bench::record(&store, &run.root, "polylogue", "reads", POPULATION, &out, &load, &metrics).map_err(|e|e.to_string())?;
         println!("{}", json!({"run":bench_id,"history_run":id,"result":metrics,"load":load.to_json(),"load_checks_passed":load.checks_passed()}));
         Ok(())
     });

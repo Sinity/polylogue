@@ -11,7 +11,6 @@ pub mod archive;
 pub mod assets;
 pub mod blobs;
 pub mod chat_actions;
-mod containers;
 pub mod context;
 pub mod derive;
 pub mod documents;
@@ -43,15 +42,16 @@ pub mod user_writes;
 pub mod vectors;
 mod write_lock;
 pub mod writer;
+mod zip_members;
 
 pub use archive::{Archive, ArchiveLock};
-pub use blobs::{Change, FileFacts, Piece};
+pub use blobs::{Change, FileFacts, NewBlob};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use read::{BehindChain, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status};
 pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
-    Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
-    Writer, WriterSender,
+    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,
+    WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -92,8 +92,8 @@ pub enum StoreError {
     ExcisionInterrupted(#[source] Box<StoreError>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
-    #[error("session ancestry is incomplete: {0}")]
-    IncompleteLineage(read::LineageIssue),
+    #[error("the session's parents are incomplete: {0}")]
+    IncompleteParents(read::ParentIssue),
     #[error("{0} not found")]
     NotFound(String),
     #[error("excision refused for {target}: {reason}")]

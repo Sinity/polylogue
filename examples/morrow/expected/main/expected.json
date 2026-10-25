@@ -145,7 +145,7 @@
         ]
       ]
     ],
-    "25 lineage:codex:01a20000-0005-7000-8000-000000000005": [
+    "25 connected:codex:01a20000-0005-7000-8000-000000000005": [
       "#6",
       "#5"
     ],
@@ -192,7 +192,7 @@
       ]
     ],
     "33 near:\"ambiguous date formats\"": {
-      "outcome": "degraded",
+      "outcome": "incomplete",
       "rows": [
         "#8",
         "#6",

@@ -37,7 +37,7 @@ fn fired(h: &[Handoff]) -> Vec<(String, How)> {
 
 #[test]
 fn a_duration_fires_at_its_deadline_with_no_new_data() {
-    // Law 140: `sessions where live:waiting` with `for: 20m`: V1 waits from
+    // `sessions where live:waiting` with `for: 20m`: V1 waits from
     // 14:41 and fires at 15:01; a wait answered before 20 minutes fires
     // nothing.
     let rule = Rule {
@@ -243,7 +243,7 @@ fn a_restart_neither_repeats_nor_forgets() {
 fn rule_notes_are_read_or_refused_by_name() {
     let note = |value: &str, author: Author| Note {
         id: "n2".into(),
-        root: "n1".into(),
+        first_note: "n1".into(),
         kind: NoteKind::Signal,
         key: None,
         value: Some(value.into()),

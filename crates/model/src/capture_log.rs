@@ -3,14 +3,12 @@
 //! the exact submitted JSON bytes.
 
 pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
-pub const HEADER_LEN: usize = 151;
+pub const HEADER_LEN: usize = 86;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     pub length: u64,
     pub digest: String,
-    /// The same digest again; the header format holds it twice.
-    pub observed_digest: String,
 }
 
 impl Header {
@@ -18,24 +16,17 @@ impl Header {
         Self {
             length: bytes.len() as u64,
             digest: blake3::hash(bytes).to_hex().to_string(),
-            observed_digest: blake3::hash(bytes).to_hex().to_string(),
         }
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        format!(
-            "{:020} {} {}\n",
-            self.length, self.digest, self.observed_digest
-        )
-        .into_bytes()
+        format!("{:020} {}\n", self.length, self.digest).into_bytes()
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != HEADER_LEN
             || bytes[20] != b' '
-            || bytes[85] != b' '
-            || bytes[150] != b'\n'
-            || !bytes[86..150].iter().all(u8::is_ascii_hexdigit)
+            || bytes[85] != b'\n'
             || !bytes[..20].iter().all(u8::is_ascii_digit)
             || !bytes[21..85].iter().all(u8::is_ascii_hexdigit)
         {
@@ -46,13 +37,7 @@ impl Header {
             .parse()
             .map_err(|e: std::num::ParseIntError| e.to_string())?;
         let digest = String::from_utf8(bytes[21..85].to_vec()).map_err(|e| e.to_string())?;
-        let observed_digest =
-            String::from_utf8(bytes[86..150].to_vec()).map_err(|e| e.to_string())?;
-        Ok(Self {
-            length,
-            digest,
-            observed_digest,
-        })
+        Ok(Self { length, digest })
     }
 
     pub fn verifies(&self, bytes: &[u8]) -> bool {

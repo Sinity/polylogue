@@ -1,12 +1,12 @@
 use super::*;
-use polylogue_engine::{ExciseRequest, ExciseScope};
+use polylogue_engine::{ExciseRequest, ExciseTarget};
 use polylogue_model::SessionId;
 use polylogue_testkit::{ClaudeHome, claude_user as user};
 
 fn remove(id: &str) -> ExciseRequest {
     ExciseRequest {
         id: format!("remove-{id}"),
-        scope: ExciseScope::Session(SessionId::parse(&format!("claude-code:{id}")).unwrap()),
+        target: ExciseTarget::Session(SessionId::parse(&format!("claude-code:{id}")).unwrap()),
         reason: None,
         dry_run: false,
     }
@@ -22,7 +22,7 @@ fn failed_replacement_cache_rolls_back_excision_and_keeps_previous_exclusions() 
         &user("b1", "second", "second synthetic body"),
     );
     let (mut engine, _lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.excise(remove("first")).unwrap();
     fault::arm(
         "exclusion_cache.insert",
@@ -41,7 +41,7 @@ fn failed_replacement_cache_rolls_back_excision_and_keeps_previous_exclusions() 
         "different.jsonl",
         &user("a2", "first", "still excluded after failed replacement"),
     );
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(w.texts("first").is_empty());
     assert_eq!(w.texts("second"), ["second synthetic body"]);
     engine.excise(remove("second")).unwrap();
@@ -55,7 +55,7 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
     let w = ClaudeHome::new();
     w.append("original.jsonl", &user("a1", "removed", "removed body"));
     let (mut engine, lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.excise(remove("removed")).unwrap();
     w.append(
         "mixed.jsonl",
@@ -63,7 +63,7 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
             + &user("b1", "stored", "stored after retry")),
     );
     fault::arm("exclusion_cache.lookup", "messages", Action::Fail, 0, 1);
-    let failed = engine.converge().unwrap();
+    let failed = engine.run_pass().unwrap();
     assert!(
         failed
             .errors
@@ -76,7 +76,7 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
     drop(engine);
     drop(lock);
     let (mut engine, _lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(w.texts("removed").is_empty());
     assert_eq!(w.texts("stored"), ["stored after retry"]);
     fault::clear();
@@ -88,7 +88,7 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
     let w = ClaudeHome::new();
     w.append("original.jsonl", &user("a1", "removed", "removed body"));
     let (mut engine, _lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.excise(remove("removed")).unwrap();
     w.append(
         "mixed.jsonl",
@@ -96,7 +96,7 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
             + &user("b1", "stored", "stored after retry")),
     );
     fault::arm("exclusion_cache.lookup", "messages", Action::Fail, 0, 1);
-    let failed = engine.converge().unwrap();
+    let failed = engine.run_pass().unwrap();
     assert!(
         failed
             .errors
@@ -106,7 +106,7 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
     );
     assert!(w.texts("removed").is_empty());
     assert!(w.texts("stored").is_empty());
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(w.texts("removed").is_empty());
     assert_eq!(w.texts("stored"), ["stored after retry"]);
     fault::clear();
@@ -123,7 +123,7 @@ fn logical_span_failures_roll_back_before_a_shared_input_is_replaced() {
                 + &user("two", "kept", "kept shared body")),
         );
         let (mut engine, _lock) = w.engine(64 << 20);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
         let observations = w.count("SELECT count(*) AS n FROM a.observation");
         fault::arm(point, "", Action::Fail, 0, 1);
         let error = engine.excise(remove("removed")).unwrap_err();

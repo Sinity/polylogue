@@ -1,5 +1,5 @@
-//! The attachment operation installs a file only after every bound range and
-//! the complete BLAKE3 have passed. Temporary output is private and disposable.
+//! `attachment --out` writes the file only after every byte range and the
+//! whole BLAKE3 check out. The temporary file is private and removed on failure.
 use super::*;
 use base64::Engine as _;
 
@@ -54,7 +54,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
         if page.offset != offset {
             return Err("attachment range is not contiguous".into());
         }
-        let identity = (page.asset.clone(), page.blob, page.size);
+        let identity = (page.input.clone(), page.blob, page.size);
         if selected
             .as_ref()
             .is_some_and(|previous| previous != &identity)

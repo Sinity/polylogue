@@ -37,7 +37,7 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
             input.len()
         ));
     }
-    let value = sorted(serde_json::json!({"output": step.output, "accounting": step.accounting}));
+    let value = sorted(serde_json::json!({"output": step.output, "counts": step.counts}));
     let got = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n";
     let expected_path = dir.join("expected.json");
     let bless = std::env::var_os("POLYLOGUE_BLESS").is_some();

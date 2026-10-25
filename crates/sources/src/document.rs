@@ -6,9 +6,9 @@ use crate::parse::Output;
 use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
 
 /// What a document or conversation parser writes into. `next` supplies
-/// logical message positions. Framing drivers replace these
-/// temporary positions with the enclosing record's actual byte range and
-/// carry logical order separately to the writer.
+/// message positions in reading order. The code that splits an input into
+/// records replaces these temporary positions with the record's byte range
+/// and sends the reading order to the writer as the record position.
 pub struct Sink<'a> {
     pub out: &'a mut Output,
     pub records: &'a mut Records,

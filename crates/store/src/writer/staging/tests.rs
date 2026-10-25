@@ -6,7 +6,7 @@ fn batch(id: &str, length: u64) -> Batch {
         input: InputKey {
             id: id.into(),
             format: "export-file".into(),
-            route_rank: 2,
+            arrival_rank: 2,
         },
         change: Change::First,
         observation: Some(Observation {
@@ -18,7 +18,7 @@ fn batch(id: &str, length: u64) -> Batch {
             import: None,
         }),
         continues: false,
-        piece: None,
+        new_blob: None,
         blobs: Vec::new(),
         length,
         parse: Vec::new(),
@@ -93,7 +93,7 @@ fn concurrent_excision_and_an_exact_write_cannot_bring_back_a_deleted_blob() {
             writer.excise(
                 crate::excise::ExciseRequest {
                     id: "concurrent-remove".into(),
-                    scope: crate::excise::Scope::Input(id),
+                    target: crate::excise::ExciseTarget::Input(id),
                     reason: None,
                     dry_run: false,
                 },
@@ -131,7 +131,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let source_hash = source.hash();
     let stray_hash = stray.hash();
     let mut batch = batch(&source_hash.to_string(), source.len());
-    batch.piece = Some(Piece {
+    batch.new_blob = Some(NewBlob {
         hash: source_hash,
         size: source.len(),
         stored: Stored::File { stored_size: 0 },

@@ -90,7 +90,7 @@ fn observed(path: &str, change: Change, length: u64) -> Batch {
         input: InputKey {
             id: "synthetic-input".into(),
             format: "claude-code".into(),
-            route_rank: 0,
+            arrival_rank: 0,
         },
         change,
         observation: Some(Observation {
@@ -102,7 +102,7 @@ fn observed(path: &str, change: Change, length: u64) -> Batch {
             import: None,
         }),
         continues: false,
-        piece: None,
+        new_blob: None,
         blobs: Vec::new(),
         length,
         parse: Vec::new(),
@@ -260,7 +260,7 @@ fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuil
             .excise(
                 crate::excise::ExciseRequest {
                     id: "0199d8a0-0000-7000-8000-00000000d001".into(),
-                    scope: crate::excise::Scope::Input("synthetic-input".into()),
+                    target: crate::excise::ExciseTarget::Input("synthetic-input".into()),
                     reason: None,
                     dry_run: false,
                 },
@@ -361,7 +361,7 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
                     seen_at: b.observation.unwrap().seen_at_ms,
                     details_json: None,
                     excision: None,
-                    container: None,
+                    zip: None,
                 }),
             }),
         }

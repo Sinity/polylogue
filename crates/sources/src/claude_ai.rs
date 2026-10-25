@@ -14,8 +14,8 @@ mod sidecars;
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
+use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
@@ -123,17 +123,19 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     let Some(native) = str_of(conv, "uuid") else {
         sink.records
-            .record("conversation", &Disposition::refused("no uuid"));
+            .record("conversation", &RecordOutcome::unreadable("no uuid"));
         return;
     };
     let Some(sid) = session_id(ORIGIN, native) else {
         sink.records
-            .record("conversation", &Disposition::refused("unusable uuid"));
+            .record("conversation", &RecordOutcome::unreadable("unusable uuid"));
         return;
     };
     let Some(messages) = conv.get("chat_messages").and_then(Json::as_array) else {
-        sink.records
-            .record("conversation", &Disposition::refused("no chat_messages"));
+        sink.records.record(
+            "conversation",
+            &RecordOutcome::unreadable("no chat_messages"),
+        );
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -147,8 +149,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.records
-        .record("conversation", &Disposition::Materialized);
+    sink.records.record("conversation", &RecordOutcome::Used);
 
     // Account, project, settings and model are kept whole as one event.
     if let Some(obj) = conv.as_object() {
@@ -193,7 +194,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                 let at = msg.at.map(|t| t.unix_ms());
                 let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
                 rows.push((at, index, i, msg));
-                sink.records.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &RecordOutcome::Used);
             }
             Err(d) => sink.records.record(&kind, &d),
         }
@@ -227,7 +228,7 @@ fn message(
     position: usize,
     m: &Json,
     model: Option<&str>,
-) -> Result<Message, Disposition> {
+) -> Result<Message, RecordOutcome> {
     // A message the export wrote without a uuid keeps its identity by its
     // place in the conversation: the same place is the
     // same message, and changed text there is a new version of it.
@@ -241,7 +242,8 @@ fn message(
             format!("{conversation}#{place}")
         }
     };
-    let id = message_id(ORIGIN, &native).ok_or_else(|| Disposition::refused("unusable uuid"))?;
+    let id =
+        message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable uuid"))?;
     let (role, prompt_kind, direction) = match str_of(m, "sender") {
         Some("human") => (
             Role::User,
@@ -249,8 +251,8 @@ fn message(
             AttachmentDirection::Input,
         ),
         Some("assistant") => (Role::Assistant, None, AttachmentDirection::Output),
-        Some(other) => return Err(Disposition::unknown(format!("sender {other}"))),
-        None => return Err(Disposition::refused("no sender")),
+        Some(other) => return Err(RecordOutcome::skipped(format!("sender {other}"))),
+        None => return Err(RecordOutcome::unreadable("no sender")),
     };
     let mut blocks = Vec::new();
     let content = m.get("content").and_then(Json::as_array);
@@ -374,11 +376,11 @@ fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment 
     }
 }
 
-fn collect_inline(value: &Json, blobs: &mut Vec<InlineBlob>) {
+fn collect_inline(value: &Json, blobs: &mut Vec<ExtractedBlob>) {
     if let Some(bytes) = inline_bytes(value) {
         let hash = BlobHash::of(&bytes);
         if !blobs.iter().any(|blob| blob.hash == hash) {
-            blobs.push(InlineBlob {
+            blobs.push(ExtractedBlob {
                 hash,
                 size: bytes.len() as u64,
                 bytes,
@@ -507,12 +509,12 @@ impl DocumentParser for Design {
             Ok(_) => {
                 return sink
                     .records
-                    .record("chat", &Disposition::refused("not an object"));
+                    .record("chat", &RecordOutcome::unreadable("not an object"));
             }
             Err(e) => {
                 return sink.records.record(
                     "chat",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
+                    &RecordOutcome::unreadable(format!("malformed JSON: {e}")),
                 );
             }
         };
@@ -523,7 +525,7 @@ impl DocumentParser for Design {
 fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     let Some(sid) = str_of(chat, "uuid").and_then(|u| session_id(DESIGN_ORIGIN, u)) else {
         sink.records
-            .record("chat", &Disposition::refused("no uuid"));
+            .record("chat", &RecordOutcome::unreadable("no uuid"));
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -534,7 +536,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.records.record("chat", &Disposition::Materialized);
+    sink.records.record("chat", &RecordOutcome::Used);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
         sink.out.events.push(Event {
             session: Some(sid.clone()),
@@ -555,7 +557,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         let role_name = str_of(m, "role").unwrap_or("?").to_owned();
         let Some(id) = str_of(m, "uuid").and_then(|u| message_id(DESIGN_ORIGIN, u)) else {
             sink.records
-                .record(&role_name, &Disposition::refused("no uuid"));
+                .record(&role_name, &RecordOutcome::unreadable("no uuid"));
             continue;
         };
         let (role, prompt_kind, direction) = match role_name.as_str() {
@@ -567,7 +569,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             "assistant" => (Role::Assistant, None, AttachmentDirection::Output),
             other => {
                 sink.records
-                    .record(other, &Disposition::unknown(format!("role {other}")));
+                    .record(other, &RecordOutcome::skipped(format!("role {other}")));
                 continue;
             }
         };
@@ -619,7 +621,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             end: offset + 1,
             message,
         });
-        sink.records.record(&role_name, &Disposition::Materialized);
+        sink.records.record(&role_name, &RecordOutcome::Used);
     }
 }
 

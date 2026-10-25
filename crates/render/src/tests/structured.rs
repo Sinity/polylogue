@@ -145,18 +145,17 @@ fn explicit_harness_authorship_keeps_the_recorded_assistant_role() {
 }
 
 #[test]
-fn incomplete_ancestry_notices_are_visible_and_html_escaped() {
+fn incomplete_parents_notices_are_visible_and_html_escaped() {
     let session = Session::new(
         SessionId::parse("claude-code:s").unwrap(),
         SessionKind::Main,
     );
-    let notices =
-        ["Incomplete session ancestry: parent <unknown> & its anchor are unavailable".to_owned()];
+    let notices = ["Parents incomplete: parent <unknown> & its anchor are unavailable".to_owned()];
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let rendered =
             crate::session(&session, None, vec![], View::Prompts, format, &notices).unwrap();
         let text = rendered["content"].as_str().unwrap();
-        assert!(text.contains("Incomplete session ancestry"));
+        assert!(text.contains("Parents incomplete"));
         if format == Format::Html {
             assert!(text.contains("&lt;unknown&gt; &amp;"));
             assert!(!text.contains("<unknown>"));

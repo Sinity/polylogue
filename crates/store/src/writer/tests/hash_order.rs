@@ -64,7 +64,7 @@ fn version_hash_ignores_nested_json_member_order() {
     );
     let mut counts = Vec::new();
     for prepared in [false, true] {
-        let w = world();
+        let w = test_archive();
         for (input, rank, message) in [("first", 0, first.clone()), ("second", 1, second.clone())] {
             let mut b = batch(input, rank, 0, vec![row(1, message)], &["hash-order"]);
             if prepared {
@@ -118,7 +118,7 @@ fn distinct_structured_values_remain_inspectable_versions() {
             data["array"].as_array_mut().unwrap().reverse();
         }
         assert_ne!(first, different);
-        let w = world();
+        let w = test_archive();
         for (input, rank, message) in [
             ("first", 0, first.clone()),
             ("different", 1, different.clone()),

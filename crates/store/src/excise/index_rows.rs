@@ -85,7 +85,7 @@ pub(super) fn refuse_shared(
     plan: &Plan,
     input_named: bool,
 ) -> Result<()> {
-    crate::containers::refuse_inside_zip(archive, &plan.inputs)?;
+    crate::zip_members::refuse_inside_zip(archive, &plan.inputs)?;
     let refuse = |target: &str, reason: String| -> Result<()> {
         Err(StoreError::ExcisionRefused {
             target: target.to_owned(),

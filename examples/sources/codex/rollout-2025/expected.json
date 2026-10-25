@@ -1,15 +1,15 @@
 {
-  "accounting": {
-    "framed": 8,
-    "materialized": {
+  "counts": {
+    "records": 8,
+    "used": {
       "older_header": 1,
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "response_item/message": 2,
       "response_item/reasoning": 1
     },
-    "refused": {},
-    "unknown": {
+    "unreadable": {},
+    "skipped": {
       "state: turn-state marker of 2025 rollouts; holds no content": 2
     },
     "unread_fields": {}

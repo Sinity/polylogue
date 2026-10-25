@@ -1,5 +1,5 @@
 //! An explicit browser selection becomes an ordinary operator note.
-use super::Ctx;
+use super::BrowserHost;
 use crate::daemon::{Request, Response};
 use polylogue_model::{Author, MessageId, NewNote, NoteKind, Target};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ fn invalid(message: &str) -> Response {
     crate::daemon::service::error("bad_request", message)
 }
 
-pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
+pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
     let source = &input.source;
     if uuid::Uuid::parse_str(&input.request_id).is_err()
         || input.body.trim().is_empty()
@@ -80,7 +80,7 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
         session: None,
         fields: vec!["id".into(), "session".into()],
     };
-    let data = match ctx.ask(&query) {
+    let data = match host.ask(&query) {
         Some(Response::Ok { data }) => data,
         Some(error) => return error,
         None => {
@@ -112,7 +112,7 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
         revises: None,
         valid_until: None,
     };
-    ctx.ask(&Request::AddNote {
+    host.ask(&Request::AddNote {
         request_id: input.request_id,
         note,
     })

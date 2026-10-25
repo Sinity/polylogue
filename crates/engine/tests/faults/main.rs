@@ -1,4 +1,4 @@
-//! Laws that need a failure injected at a chosen point (the `faults`
+//! Properties that need a failure injected at a chosen point (the `faults`
 //! feature): run with `cargo nextest run -p polylogue-engine --features
 //! faults --test faults`.
 
@@ -11,13 +11,13 @@ use std::fs;
 
 mod older_chains;
 
-/// Law 7: a failure at any step of a write loses nothing. The writer fails
+/// a failure at any step of a write loses nothing. The writer fails
 /// at its n-th archive commit, between its archive and index commits, or at
 /// its index commit; the engine is dropped as a crashed process would leave
-/// it, and a fresh one converges to the uninterrupted view with every input
+/// it, and a fresh one runs a pass and comes back to the uninterrupted view with every input
 /// reading back byte for byte.
 #[test]
-fn law_7_a_failed_write_step_loses_nothing() {
+fn a_failed_write_step_loses_nothing() {
     let reference = Morrow::build(Set::Main).view();
     for point in [
         "write.archive_commit",
@@ -30,11 +30,11 @@ fn law_7_a_failed_write_step_loses_nothing() {
             fault::arm(point, "", Action::Fail, skip, 1);
             {
                 let (mut engine, _lock) = w.engine();
-                let _ = engine.converge();
+                let _ = engine.run_pass();
                 let _ = w.import_exports(&mut engine);
             }
             fault::clear();
-            w.converge();
+            w.run_pass();
             assert_eq!(
                 w.view(),
                 reference,
@@ -54,17 +54,17 @@ fn law_7_a_failed_write_step_loses_nothing() {
     }
 }
 
-/// Law 63: a failing parser loses only its input. #2's parser panics: every
+/// a failing parser loses only its input. #2's parser panics: every
 /// other session is built, the pass names the failure, an unchanged file is
 /// not tried again, and a change to it parses it once the parser works.
 #[test]
-fn law_63_a_panicking_parser_loses_only_its_input() {
+fn a_panicking_parser_loses_only_its_input() {
     fault::clear();
     let w = Morrow::lay_out(Set::Main);
     let two = "7f3a2c10-0002-4000-8000-000000000002.jsonl";
     fault::arm("parse", two, Action::Panic, 0, u32::MAX);
     let (mut engine, _lock) = w.engine();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(
         pass.errors
             .iter()
@@ -80,7 +80,7 @@ fn law_63_a_panicking_parser_loses_only_its_input() {
     drop(r);
     drop(pool);
     // Unchanged: not tried again.
-    let again = engine.converge().unwrap();
+    let again = engine.run_pass().unwrap();
     assert!(
         again.errors.is_empty(),
         "retried an unchanged failing input: {:?}",
@@ -96,7 +96,7 @@ fn law_63_a_panicking_parser_loses_only_its_input() {
     let mut text = fs::read_to_string(&file).unwrap();
     text.push_str("{\"type\":\"user\",\"uuid\":\"u2-late\",\"sessionId\":\"7f3a2c10-0002-4000-8000-000000000002\",\"timestamp\":\"2026-10-08T09:00:00Z\",\"promptSource\":\"typed\",\"message\":{\"role\":\"user\",\"content\":\"later\"}}\n");
     fs::write(&file, text).unwrap();
-    let after = engine.converge().unwrap();
+    let after = engine.run_pass().unwrap();
     assert!(after.errors.is_empty(), "{:?}", after.errors);
     drop(engine);
     assert!(
@@ -109,9 +109,9 @@ fn law_63_a_panicking_parser_loses_only_its_input() {
     );
 }
 
-/// Law 45 (store part): a failed read is an error, never an empty answer.
+/// a failed read is an error, never an empty answer.
 #[test]
-fn law_45_a_failed_read_is_never_empty() {
+fn a_failed_read_is_never_empty() {
     fault::clear();
     let w = Morrow::build(Set::Main);
     let pool = w.reads();

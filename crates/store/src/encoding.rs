@@ -243,7 +243,7 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
 
 /// An event's id includes its message anchor: identical state recorded at
 /// different messages is distinct. Physical ranges do not change the fact's
-/// identity when another route supplies it.
+/// identity when another input supplies it.
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let (id, data) = event_bytes(e)?;
     Ok((id, pack_bytes(&data)?))
@@ -286,11 +286,11 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
 /// A usage or quota reading names its own identity, which every copy of
 /// it shares: it is stored once per origin under that identity.
 fn reading_id(e: &Event) -> Option<String> {
-    use polylogue_model::observations::{QUOTA_OBSERVATION, USAGE_OBSERVATION};
-    if e.kind != USAGE_OBSERVATION && e.kind != QUOTA_OBSERVATION {
+    use polylogue_model::reports::{QUOTA_REPORT, USAGE_REPORT};
+    if e.kind != USAGE_REPORT && e.kind != QUOTA_REPORT {
         return None;
     }
-    let reading = e.data.get("observation")?.as_str()?;
+    let reading = e.data.get("report_id")?.as_str()?;
     let origin = e.session.as_ref()?.origin();
     let mut h = blake3::Hasher::new_derive_key("polylogue reading v1");
     for part in [e.kind.as_str(), origin.as_str(), reading] {
@@ -303,7 +303,7 @@ fn reading_id(e: &Event) -> Option<String> {
 /// Whether a reading's payload reports a measured completion, which wins
 /// over a copy that does not.
 pub(crate) fn reading_confirmed(data: &serde_json::Value) -> bool {
-    data.get("completion_observed")
+    data.get("measured_completion")
         .and_then(serde_json::Value::as_bool)
         == Some(true)
 }

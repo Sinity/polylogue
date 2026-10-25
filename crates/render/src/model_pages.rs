@@ -1,7 +1,7 @@
 //! Reading for models, consuming one message at a time. Whole original blocks
 //! are masked before splitting; no unmasked text is carried in a position.
 
-use crate::{View, pieces};
+use crate::{View, rendered_blocks};
 use polylogue_model::Message;
 use polylogue_model::masking::MessageMasker;
 use std::ops::ControlFlow;
@@ -19,19 +19,19 @@ pub struct Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Position {
     pub message: usize,
-    pub piece: usize,
+    pub block: usize,
     pub character: usize,
 }
 
 /// Private source-stream state before one message. It can contain source
 /// characters from an open PEM block; never serialize it into a read cursor.
 #[derive(Clone)]
-pub struct Checkpoint {
+pub struct PageEnd {
     message: usize,
     masker: MessageMasker,
 }
 
-impl Checkpoint {
+impl PageEnd {
     pub fn message(&self) -> usize {
         self.message
     }
@@ -44,7 +44,7 @@ pub struct Pager {
     resumed: bool,
     message: usize,
     masker: MessageMasker,
-    checkpoint: Option<Checkpoint>,
+    page_end: Option<PageEnd>,
     validated: bool,
     used: usize,
     text: String,
@@ -62,7 +62,7 @@ impl Pager {
             resumed: position.is_some(),
             message: 0,
             masker: MessageMasker::default(),
-            checkpoint: None,
+            page_end: None,
             validated: position.is_none(),
             used: 0,
             text: String::new(),
@@ -73,15 +73,15 @@ impl Pager {
     }
 
     /// Restore private state only after the caller validates the content binding.
-    pub fn resume(view: View, budget: usize, position: Position, checkpoint: Checkpoint) -> Self {
+    pub fn resume(view: View, budget: usize, position: Position, page_end: PageEnd) -> Self {
         let mut pager = Self::new(view, budget, Some(position));
-        pager.message = checkpoint.message;
-        pager.masker = checkpoint.masker;
+        pager.message = page_end.message;
+        pager.masker = page_end.masker;
         pager
     }
 
-    pub fn checkpoint(&self) -> Option<Checkpoint> {
-        self.next.and(self.checkpoint.clone())
+    pub fn page_end(&self) -> Option<PageEnd> {
+        self.next.and(self.page_end.clone())
     }
 
     /// Consume the message at the requested position, then following messages.
@@ -95,7 +95,7 @@ impl Pager {
         mut message: Message,
         labels: impl FnOnce(&Message) -> Vec<crate::AttachmentLabel>,
     ) -> Result<ControlFlow<()>, &'static str> {
-        self.checkpoint = Some(Checkpoint {
+        self.page_end = Some(PageEnd {
             message: self.message,
             masker: self.masker.clone(),
         });
@@ -107,7 +107,7 @@ impl Pager {
         }
         let labels = labels(&message);
         let annotations = crate::attachments::apply(&mut message, self.view, labels);
-        let ps = pieces(&message, self.view);
+        let ps = rendered_blocks(&message, self.view);
         self.push_pieces(ps, header(&message), annotations)
     }
 
@@ -117,7 +117,7 @@ impl Pager {
 
     fn push_pieces(
         &mut self,
-        ps: Vec<crate::Piece>,
+        ps: Vec<crate::RenderedBlock>,
         heading: String,
         annotations: Vec<crate::attachments::Annotation>,
     ) -> Result<ControlFlow<()>, &'static str> {
@@ -127,17 +127,17 @@ impl Pager {
             return Ok(ControlFlow::Continue(()));
         }
 
-        if self.resumed && !self.validated && self.at.piece >= ps.len() {
-            return Err("the read cursor piece is outside the selected record");
+        if self.resumed && !self.validated && self.at.block >= ps.len() {
+            return Err("the read cursor block is outside the selected record");
         }
-        while self.at.piece < ps.len() {
-            let p = &ps[self.at.piece];
+        while self.at.block < ps.len() {
+            let p = &ps[self.at.block];
             let mut body = match (p.kind, &p.label) {
                 ("tool_call", Some(l)) => format!("→ {l}: {}\n", p.text),
                 ("tool_result", Some(l)) => format!("← {l}\n{}\n", p.text),
                 _ => format!("{}\n", p.text),
             };
-            if self.at.piece == 0 {
+            if self.at.block == 0 {
                 let sep = if self.at.message > 0 { "\n" } else { "" };
                 body = format!("{sep}{}{body}", heading);
             }
@@ -147,7 +147,7 @@ impl Pager {
                 .saturating_sub(p.text.chars().count() + 1);
             let length = body.chars().count();
             if self.at.character >= length {
-                return Err("the read cursor character is outside the piece");
+                return Err("the read cursor character is outside the block");
             }
             self.validated = true;
             let room = self.budget.saturating_sub(self.used);
@@ -155,7 +155,7 @@ impl Pager {
             let take = remaining.min(room);
             for annotation in annotations
                 .iter()
-                .filter(|annotation| annotation.piece == self.at.piece)
+                .filter(|annotation| annotation.block == self.at.block)
             {
                 if prefix + annotation.from < self.at.character + take
                     && prefix + annotation.until > self.at.character
@@ -172,11 +172,11 @@ impl Pager {
                 self.next = Some(self.at);
                 return Ok(ControlFlow::Break(()));
             }
-            self.at.piece += 1;
+            self.at.block += 1;
             self.at.character = 0;
         }
         self.at.message += 1;
-        self.at.piece = 0;
+        self.at.block = 0;
         Ok(ControlFlow::Continue(()))
     }
 
@@ -214,7 +214,7 @@ impl BlockPager {
     ) -> Result<ControlFlow<()>, &'static str> {
         self.stream.masker.block(&mut block);
         let ps = if self.stream.view.keeps_block(false, &block) {
-            crate::piece(&block).into_iter().collect()
+            crate::block(&block).into_iter().collect()
         } else {
             Vec::new()
         };

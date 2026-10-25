@@ -53,18 +53,18 @@ with tempfile.TemporaryDirectory(prefix="scan-tests-") as temporary:
     assert result.returncode != 0
     report = json.loads(result.stdout)
     assert report["incomplete_inputs"] == 1 and report["records"] == 1
-    assert report["unknown"] == 1 and report["inputs"][0]["unconsumed_bytes"] == 8
+    assert report["skipped"] == 1 and report["inputs"][0]["unconsumed_bytes"] == 8
 
-    refused = root / "refused.jsonl"
-    refused.write_text(marker + "\n")
-    result = run("claude-code", refused)
+    unreadable = root / "unreadable.jsonl"
+    unreadable.write_text(marker + "\n")
+    result = run("claude-code", unreadable)
     assert result.returncode == 0
     report = json.loads(result.stdout)
-    assert report["refused"] == 1 and report["unknown"] == report["failed_inputs"] == 0
+    assert report["unreadable"] == 1 and report["skipped"] == report["failed_inputs"] == 0
 
     result = run("claude-code", valid)
     assert result.returncode == 0
     report = json.loads(result.stdout)
-    assert report["files"] == 1 and report["records"] == report["unknown"] == 1
+    assert report["files"] == 1 and report["records"] == report["skipped"] == 1
     assert report["failed_inputs"] == report["incomplete_inputs"] == 0
 print("scanner CLI tests passed")

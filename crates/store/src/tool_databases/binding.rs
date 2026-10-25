@@ -24,7 +24,7 @@ impl Binding {
         }
         if observation.machine.is_empty() || !path.is_absolute() {
             return Err(ExportError::Invalid(
-                "logical source needs a machine and absolute native path".into(),
+                "a tool database needs a machine and an absolute path".into(),
             ));
         }
         Ok(Self {

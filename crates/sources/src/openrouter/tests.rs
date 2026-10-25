@@ -52,11 +52,11 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     assert_eq!(a.reported_cost_usd.as_ref().unwrap().to_string(), "0.0012");
     assert!(step.output.events.iter().any(|e| e.kind == "room_models"));
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]

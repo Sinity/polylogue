@@ -82,10 +82,10 @@ impl Engine {
 
     /// Completes a finite capture batch. The daemon also discovers source
     /// changes and handles queued requests between its turns.
-    pub fn converge(&mut self) -> Result<Pass, EngineError> {
-        let mut total = self.converge_turn()?;
+    pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
+        let mut total = self.run_turn()?;
         while total.capture_pending {
-            let next = self.converge_work(false)?;
+            let next = self.one_pass(false)?;
             total.inputs_seen += next.inputs_seen;
             total.inputs_changed += next.inputs_changed;
             total.bytes_read += next.bytes_read;
@@ -102,11 +102,11 @@ impl Engine {
     }
 
     /// Services ordinary inputs and one cooperative SQLite capture turn.
-    pub fn converge_turn(&mut self) -> Result<Pass, EngineError> {
-        self.converge_work(true)
+    pub fn run_turn(&mut self) -> Result<Pass, EngineError> {
+        self.one_pass(true)
     }
 
-    fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
+    fn one_pass(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
         let pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
         self.load()?;
@@ -135,7 +135,7 @@ impl Engine {
         }
         let databases = found
             .iter()
-            .filter(|f| f.origin.capture == Capture::LogicalExport)
+            .filter(|f| f.origin.capture == Capture::RowDump)
             .filter_map(|f| {
                 let name = polylogue_sources::origin::export_name(&f.path)?;
                 Some((
@@ -158,13 +158,13 @@ impl Engine {
         }
         let mut found: Vec<_> = found
             .into_iter()
-            .filter(|f| f.origin.capture != Capture::LogicalExport)
+            .filter(|f| f.origin.capture != Capture::RowDump)
             .collect();
         // Accepted captures remain inputs even if their provider disappears
         // while a pinned source view is being read.
         for out in self.exporter.paths() {
             if let Some(origin) = ORIGINS.iter().find(|o| {
-                o.capture == Capture::LogicalExport
+                o.capture == Capture::RowDump
                     && out.starts_with(self.archive.exports_dir().join(o.name))
             }) {
                 found.push(collect::Found {
@@ -200,7 +200,7 @@ impl Engine {
                         parsed_upto: 0,
                         parsed: false,
                         waiting: false,
-                        carry: None,
+                        parser_state: None,
                         tail: None,
                         chain: None,
                         failed: None,
@@ -221,7 +221,7 @@ impl Engine {
             .inputs
             .iter()
             .filter(|(p, s)| {
-                (discover || s.origin.capture == Capture::LogicalExport)
+                (discover || s.origin.capture == Capture::RowDump)
                     && s.facts.is_some()
                     && !seen.contains(*p)
                     && !p.exists()
@@ -235,7 +235,7 @@ impl Engine {
                 input: InputKey {
                     id: st.input_id.clone(),
                     format: st.origin.name.into(),
-                    route_rank: 0,
+                    arrival_rank: 0,
                 },
                 change: Change::Disappeared,
                 observation: Some(Observation {
@@ -247,7 +247,7 @@ impl Engine {
                     import: None,
                 }),
                 continues: false,
-                piece: None,
+                new_blob: None,
                 blobs: vec![],
                 length: st.stored,
                 parse: Vec::new(),
@@ -261,7 +261,7 @@ impl Engine {
             .inputs
             .iter()
             .filter(|(p, s)| {
-                (discover || s.origin.capture == Capture::LogicalExport) && !seen.contains(*p)
+                (discover || s.origin.capture == Capture::RowDump) && !seen.contains(*p)
             })
             .map(|(p, _)| p.clone())
             .collect();
@@ -319,7 +319,7 @@ impl Engine {
         }
         if let Change::Appended { from } = &mut change {
             // The source observation may describe a larger file than the
-            // committed prefix after an interrupted acquisition.
+            // committed prefix after an interrupted import.
             *from = st.stored;
             if st.tail.is_none() && *from > 0 {
                 let reader = self.reads.reader()?;
@@ -341,7 +341,7 @@ impl Engine {
             }
         }
         let never_parsed = parsed && !st.parsed;
-        let (piece_pos, parse_pos, carry, priority) = match &change {
+        let (stored_upto, parse_pos, parser_state, priority) = match &change {
             Change::First | Change::Rewritten => {
                 st.stored = 0;
                 st.parsed_upto = 0;
@@ -349,11 +349,16 @@ impl Engine {
                 (0, 0, None, Priority::Bulk)
             }
             Change::Appended { .. } => {
-                let resumable = st.carry.is_some()
+                let resumable = st.parser_state.is_some()
                     || st.parsed_upto == 0
                     || (st.origin.open)(path).is_some_and(|p| p.is_capture_log());
                 if resumable && !never_parsed {
-                    (st.stored, st.parsed_upto, st.carry.take(), Priority::Live)
+                    (
+                        st.stored,
+                        st.parsed_upto,
+                        st.parser_state.take(),
+                        Priority::Live,
+                    )
                 } else {
                     (st.stored, 0, None, Priority::Live)
                 }
@@ -362,10 +367,10 @@ impl Engine {
             Change::Reparse { .. } => unreachable!(),
         };
         // A document is parsed whole: any change parses it from its start.
-        let (parse_pos, carry) = if whole(st.origin, path) {
+        let (parse_pos, parser_state) = if whole(st.origin, path) {
             (0, None)
         } else {
-            (parse_pos, carry)
+            (parse_pos, parser_state)
         };
         Ok(Some(Plan {
             path: path.to_path_buf(),
@@ -373,16 +378,16 @@ impl Engine {
             input: InputKey {
                 id: st.input_id.clone(),
                 format: st.origin.name.into(),
-                route_rank: 0,
+                arrival_rank: 0,
             },
             change,
             observation: Some(obs),
             facts: Some(now),
             size: now.size,
-            piece_pos,
+            stored_upto,
             parse_pos,
-            piece_started: false,
-            carry,
+            storing_started: false,
+            parser_state,
             tail: None,
             span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,
@@ -468,7 +473,7 @@ impl Engine {
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    route_rank: state.route_rank,
+                    arrival_rank: state.arrival_rank,
                 },
                 &state,
                 None,
@@ -498,27 +503,27 @@ impl Engine {
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
         let state = polylogue_store::read::ChainProgress {
             chain,
-            route_rank: 0,
+            arrival_rank: 0,
             waiting: st.waiting,
             length: st.stored,
             parsed_upto: st.parsed_upto,
             parsed: st.parsed,
         };
-        let route_rank = self
+        let arrival_rank = self
             .reads
             .reader()?
             .input_progress(&input_id)?
             .ok_or_else(|| {
                 polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
-            .route_rank;
+            .arrival_rank;
         self.reparse_plan(
             path.to_path_buf(),
             origin,
             InputKey {
                 id: input_id,
                 format: origin.name.into(),
-                route_rank,
+                arrival_rank,
             },
             &state,
             facts,
@@ -697,11 +702,11 @@ impl Engine {
             return;
         }
         if let Some(st) = self.inputs.get_mut(&plan.path) {
-            st.stored = plan.piece_pos.max(st.stored);
+            st.stored = plan.stored_upto.max(st.stored);
             if plan.failed {
                 // Tried again when the bytes change; the facts stay old, so
                 // a change is still seen as one.
-                st.carry = None;
+                st.parser_state = None;
                 st.waiting = false;
                 st.failed = plan.facts;
                 return;
@@ -714,7 +719,7 @@ impl Engine {
             st.parsed_upto = plan.parse_pos.min(plan.size);
             st.parsed = true;
             st.waiting = plan.waiting;
-            st.carry = if recent { plan.carry } else { None };
+            st.parser_state = if recent { plan.parser_state } else { None };
             st.tail = plan.tail;
         }
     }
@@ -746,7 +751,7 @@ impl Engine {
             }
             busy(true);
             let pending;
-            let finished = match self.converge_work(discover) {
+            let finished = match self.one_pass(discover) {
                 Ok(pass) => {
                     pending = pass.capture_pending;
                     pass

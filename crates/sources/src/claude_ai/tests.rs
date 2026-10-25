@@ -71,7 +71,7 @@ fn a_turn_with_a_server_tool_keeps_call_and_result_together() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn a_design_chat_is_a_linear_session() {
     assert_eq!(msgs[0].session.to_string(), "claude-design:d1");
     assert_eq!(msgs[1].parent.as_ref().unwrap().native().as_str(), "m1");
     assert_eq!(msgs[1].text(), "Done.");
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]
@@ -244,11 +244,11 @@ fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
     );
     assert!(
         !step
-            .accounting
+            .counts
             .unread_fields
             .keys()
             .any(|k| k.contains("compaction_summary")),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
 }

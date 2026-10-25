@@ -76,8 +76,8 @@ fn every_branch_is_kept_and_the_active_leaf_is_marked() {
         .find(|e| e.kind == "active_leaf")
         .unwrap();
     assert_eq!(leaf.after.as_ref().unwrap().native().as_str(), "a2");
-    assert_eq!(step.accounting.framed, 5, "one conversation, four messages");
-    assert_eq!(step.accounting.materialized["text"], 4);
+    assert_eq!(step.counts.records, 5, "one conversation, four messages");
+    assert_eq!(step.counts.used["text"], 4);
 }
 
 #[test]
@@ -168,14 +168,14 @@ fn empty_objects_and_broken_items_are_accounted_for() {
     no_role["author"] = json!({});
     let c = conv("c4", "n-x", vec![node("n-x", None, no_role)]);
     let step = export(&[json!({}), json!({"id": "c5"}), c]);
-    assert_eq!(step.accounting.framed, 4);
+    assert_eq!(step.counts.records, 4);
     assert_eq!(
-        step.accounting.unknown["conversation: empty object in the export"],
+        step.counts.skipped["conversation: empty object in the export"],
         1
     );
-    assert_eq!(step.accounting.refused["conversation: no mapping"], 1);
-    assert_eq!(step.accounting.refused["text: no author role"], 1);
-    assert_eq!(step.accounting.materialized["conversation"], 1);
+    assert_eq!(step.counts.unreadable["conversation: no mapping"], 1);
+    assert_eq!(step.counts.unreadable["text: no author role"], 1);
+    assert_eq!(step.counts.used["conversation"], 1);
 }
 
 #[test]

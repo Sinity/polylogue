@@ -73,9 +73,7 @@ impl Catalog {
                 self.binding = Some(current);
                 Ok(())
             }
-            _ => Err(invalid(
-                "logical export source binding differs or is missing",
-            )),
+            _ => Err(invalid("row dump source binding differs or is missing")),
         }
     }
 

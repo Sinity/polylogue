@@ -124,7 +124,7 @@ fn engine_never_collects_a_failed_database_export() {
         )
         .unwrap();
     let (mut engine, _lock) = w.engine();
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let out = fs::read_dir(w.root.join("exports/codex-database"))
         .unwrap()
         .map(|entry| entry.unwrap().path().join("state_99.sqlite.jsonl"))
@@ -134,12 +134,12 @@ fn engine_never_collects_a_failed_database_export() {
     source
         .execute_batch("UPDATE threads SET title='failed';")
         .unwrap();
-    engine.converge().unwrap();
+    engine.run_pass().unwrap();
     // This fault leaves a complete, synced output but returns an error before
     // the disposable comparison transaction commits. Mere file presence must
     // still not authorize collection by this failed call.
     fault::arm("tool_export.after_complete", "", Action::Fail, 0, 1);
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     fault::clear();
     assert!(
         pass.errors
@@ -149,7 +149,7 @@ fn engine_never_collects_a_failed_database_export() {
         pass.errors
     );
     assert_eq!(w.stored_bytes(&out).unwrap(), before);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(
         String::from_utf8(w.stored_bytes(&out).unwrap())
             .unwrap()

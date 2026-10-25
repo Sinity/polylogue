@@ -10,14 +10,14 @@ mod watched;
 #[test]
 fn a_refused_import_installs_no_file() {
     for changed in [false, true] {
-        let world = ClaudeHome::new();
-        let path = world.dir.path().join("manual.jsonl");
-        let original = claude_user("u1", "original-session", "synthetic original acquisition");
+        let home = ClaudeHome::new();
+        let path = home.dir.path().join("manual.jsonl");
+        let original = claude_user("u1", "original-session", "synthetic original import");
         std::fs::write(&path, &original).unwrap();
         let hash = hashed_blobs::Hash::of(original.as_bytes());
         {
-            let (mut engine, _lock) = engine(&world, 64);
-            let conn = rusqlite::Connection::open(world.root.join("archive.db")).unwrap();
+            let (mut engine, _lock) = engine(&home, 64);
+            let conn = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
             conn.execute_batch("CREATE TRIGGER reject_first_import BEFORE INSERT ON input BEGIN SELECT RAISE(ABORT,'synthetic first write refusal'); END;").unwrap();
             let rejected = engine.import(std::slice::from_ref(&path)).unwrap();
             assert!(!rejected.pass.errors.is_empty());
@@ -27,27 +27,23 @@ fn a_refused_import_installs_no_file() {
             );
             for table in ["input", "revision", "extent", "blob", "observation"] {
                 assert_eq!(
-                    world.count(&format!("SELECT count(*) AS n FROM a.{table}")),
+                    home.count(&format!("SELECT count(*) AS n FROM a.{table}")),
                     0,
                     "{table}"
                 );
             }
         }
-        let (mut engine, _lock) = engine(&world, 64);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        let (mut engine, _lock) = engine(&home, 64);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
         assert!(!engine.blobs.contains(&hash));
         if changed {
             std::fs::write(
                 &path,
-                claude_user(
-                    "u2",
-                    "replacement-session",
-                    "synthetic replacement acquisition",
-                ),
+                claude_user("u2", "replacement-session", "synthetic replacement import"),
             )
             .unwrap();
         }
-        let conn = rusqlite::Connection::open(world.root.join("archive.db")).unwrap();
+        let conn = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
         conn.execute_batch("DROP TRIGGER reject_first_import")
             .unwrap();
         let retry = engine.import(std::slice::from_ref(&path)).unwrap();
@@ -59,7 +55,7 @@ fn a_refused_import_installs_no_file() {
         engine
             .excise(ExciseRequest {
                 id: format!("remove-{changed}"),
-                scope: ExciseScope::Input(id),
+                target: ExciseTarget::Input(id),
                 reason: None,
                 dry_run: false,
             })
@@ -73,14 +69,14 @@ fn a_refused_import_installs_no_file() {
 
 #[test]
 fn equal_inline_bytes_install_no_file_copy() {
-    let world = ClaudeHome::new();
+    let home = ClaudeHome::new();
     let original = claude_user("inline-user", "inline-session", "synthetic inline content");
-    world.append("inline-session.jsonl", &original);
-    let path = world.dir.path().join("manual-inline.jsonl");
+    home.append("inline-session.jsonl", &original);
+    let path = home.dir.path().join("manual-inline.jsonl");
     std::fs::write(&path, &original).unwrap();
     let hash = hashed_blobs::Hash::of(original.as_bytes());
-    let (mut engine, _lock) = engine(&world, 1024);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    let (mut engine, _lock) = engine(&home, 1024);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(!engine.blobs.contains(&hash));
     let report = engine.import(&[path]).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
@@ -89,9 +85,9 @@ fn equal_inline_bytes_install_no_file_copy() {
         "inline deduplication must discard its private file stage"
     );
     assert_eq!(
-        world.count("SELECT count(*) AS n FROM a.blob WHERE place='inline'"),
+        home.count("SELECT count(*) AS n FROM a.blob WHERE place='inline'"),
         1
     );
-    assert_eq!(world.count("SELECT count(*) AS n FROM a.extent"), 2);
-    assert_eq!(world.texts("inline-session"), ["synthetic inline content"]);
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 2);
+    assert_eq!(home.texts("inline-session"), ["synthetic inline content"]);
 }

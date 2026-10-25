@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn mcp_read_pages_use_bound_continuations() {
-    let world = test_daemon::start("synthetic MCP prompt λ🙂 long enough for pages");
-    let archive = Archive::at(&world.daemon.archive.root);
+    let daemon = test_daemon::start("synthetic MCP prompt λ🙂 long enough for pages");
+    let archive = Archive::at(&daemon.daemon.archive.root);
     let first = call(
         &archive,
         "read",

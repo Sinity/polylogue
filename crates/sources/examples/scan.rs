@@ -5,18 +5,18 @@
 //! Lists contain one path per line, optionally prefixed by a decimal size and
 //! one space. Selection must be nonempty. Every selected input, including
 //! duplicates, has one ordered outcome. Failed/incomplete inputs exit nonzero;
-//! accounted unknown/refused records remain separate parser dispositions.
+//! skipped and unreadable records remain separate record outcomes.
 //!
-//! Lines and capture logs use 64 MiB read steps and ordinary parser carry.
+//! Lines and capture logs use 64 MiB read steps and ordinary parser state.
 //! Documents use the parser's whole-input contract. Exports require
 //! their item reader and are refused here. A trailing unconsumed suffix is
-//! incomplete input, not an invented unknown record. Counts include rows
+//! incomplete input, not an invented skipped record. Counts include rows
 //! produced by completed steps, including upserts, not unique stored rows.
 
 #[path = "scan/input.rs"]
 mod input;
 
-use polylogue_sources::{Accounting, Parse, ParseError};
+use polylogue_sources::{Parse, ParseError, RecordCounts};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ const STEP: usize = 64 << 20;
 #[derive(Default)]
 struct Counts {
     bytes: u64,
-    accounting: Accounting,
+    counts: RecordCounts,
     messages: u64,
     documents: u64,
     events: u64,
@@ -73,7 +73,7 @@ impl Failure {
         }
     }
     fn parse(error: ParseError) -> Self {
-        // Capture-log and carry diagnostics may contain source values. Keep the
+        // Capture-log and parser state diagnostics may contain source values. Keep the
         // error category, not the diagnostic text, in this counts-only tool.
         Self::Parse {
             kind: match error {
@@ -81,7 +81,7 @@ impl Failure {
                 ParseError::Export => "export_reader_required",
                 ParseError::CaptureLog(_) => "capture_log",
                 ParseError::Counts(_) => "counts",
-                ParseError::Carry(_) => "carry",
+                ParseError::ParserState(_) => "parser_state",
             },
         }
     }
@@ -122,7 +122,7 @@ fn scan_file(origin: &str, path: &Path) -> Scanned {
 
 fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
     let mut counts = Counts::default();
-    let mut carry = None;
+    let mut parser_state = None;
     let mut pending = Vec::new();
     let mut base = 0;
     let mut chunk = vec![0; STEP];
@@ -146,7 +146,7 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
         if parser.is_document() && n != 0 {
             continue;
         }
-        let (steps, next) = match parser.steps(carry.as_ref(), &pending, base) {
+        let (steps, next) = match parser.steps(parser_state.as_ref(), &pending, base) {
             Ok(result) => result,
             Err(error) => {
                 return Scanned {
@@ -162,7 +162,7 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
         let mut consumed = 0;
         for step in steps {
             consumed = consumed.max(step.consumed as usize);
-            counts.accounting.merge(&step.accounting);
+            counts.counts.merge(&step.counts);
             counts.messages += step.output.messages.len() as u64;
             counts.documents += step.output.documents.len() as u64;
             counts.events += step.output.events.len() as u64;
@@ -170,7 +170,7 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
             counts.background += step.output.background.len() as u64;
             counts.sessions = counts.sessions.max(step.output.sessions.len() as u64);
         }
-        carry = Some(next);
+        parser_state = Some(next);
         pending.drain(..consumed);
         base += consumed as u64;
         if n == 0 {
@@ -253,9 +253,9 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
         }
         outcomes.push(json!({"input": index, "outcome": result.outcome,
             "bytes_read": result.counts.bytes, "unconsumed_bytes": result.remaining,
-            "records": result.counts.accounting.framed}));
+            "records": result.counts.counts.records}));
         total.bytes += result.counts.bytes;
-        total.accounting.merge(&result.counts.accounting);
+        total.counts.merge(&result.counts.counts);
         total.messages += result.counts.messages;
         total.documents += result.counts.documents;
         total.events += result.counts.events;
@@ -273,16 +273,16 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
             "bytes_read": (!unknown_bytes).then_some(total.bytes), "known_bytes_read": total.bytes,
             "mb": (!unknown_bytes).then_some(total.bytes as f64 / 1e6), "seconds": secs,
             "mb_per_s": (!unknown_bytes).then_some(total.bytes as f64 / 1e6 / secs), "threads": selection.threads,
-            "records": total.accounting.framed,
-            "materialized": total.accounting.materialized.values().sum::<u64>(),
-            "unknown": total.accounting.unknown.values().sum::<u64>(),
-            "refused": total.accounting.refused.values().sum::<u64>(),
+            "records": total.counts.records,
+            "used": total.counts.used.values().sum::<u64>(),
+            "skipped": total.counts.skipped.values().sum::<u64>(),
+            "unreadable": total.counts.unreadable.values().sum::<u64>(),
             "messages": total.messages, "documents": total.documents, "events": total.events, "links": total.links,
             "background_updates": total.background, "sessions": total.sessions,
-            "unknown_by_reason": top(&total.accounting.unknown),
-            "refused_by_reason": top(&total.accounting.refused),
-            "unread_fields": top(&total.accounting.unread_fields),
-            "materialized_by_kind": top(&total.accounting.materialized),
+            "skipped_by_reason": top(&total.counts.skipped),
+            "unreadable_by_reason": top(&total.counts.unreadable),
+            "unread_fields": top(&total.counts.unread_fields),
+            "used_by_kind": top(&total.counts.used),
         }),
         failed == 0 && incomplete == 0 && worker_error.is_none(),
     )

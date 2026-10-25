@@ -5,10 +5,10 @@
 //! a later line renames.
 
 use super::{items::str_field, session_id};
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::parse::{Output, Parser};
 use crate::time;
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ pub struct History;
 pub struct NoState {}
 
 impl Parser for History {
-    type Carry = NoState;
+    type ParserState = NoState;
 
     fn kind(&self, _: &Json) -> String {
         "prompt".into()
@@ -32,12 +32,12 @@ impl Parser for History {
         v: &Json,
         out: &mut Output,
         _: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let Some(session) = str_field(v, "session_id").and_then(session_id) else {
-            return Disposition::refused("prompt without a session ID");
+            return RecordOutcome::unreadable("prompt without a session ID");
         };
         if v.get("text").and_then(Json::as_str).is_none() {
-            return Disposition::unknown("prompt without text");
+            return RecordOutcome::skipped("prompt without text");
         }
         out.events.push(Event {
             session: Some(session),
@@ -47,7 +47,7 @@ impl Parser for History {
             range: Some((record.offset, record.offset + record.bytes.len() as u64)),
             data: v.clone(),
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     fn flush(&self, _: &mut NoState, _: &mut Output) {}
@@ -63,7 +63,7 @@ pub struct Names {
 }
 
 impl Parser for SessionIndex {
-    type Carry = Names;
+    type ParserState = Names;
 
     fn kind(&self, _: &Json) -> String {
         "thread_name".into()
@@ -71,24 +71,24 @@ impl Parser for SessionIndex {
 
     fn parse_record(
         &self,
-        carry: &mut Names,
+        parser_state: &mut Names,
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
         _: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let (Some(id), Some(name)) = (str_field(v, "id"), str_field(v, "thread_name")) else {
-            return Disposition::unknown("index line without a thread ID or name");
+            return RecordOutcome::skipped("index line without a thread ID or name");
         };
         if session_id(id).is_none() {
-            return Disposition::refused("thread ID is empty");
+            return RecordOutcome::unreadable("thread ID is empty");
         }
-        carry.names.insert(id.to_owned(), name.to_owned());
-        Disposition::Materialized
+        parser_state.names.insert(id.to_owned(), name.to_owned());
+        RecordOutcome::Used
     }
 
-    fn flush(&self, carry: &mut Names, out: &mut Output) {
-        for (id, name) in &carry.names {
+    fn flush(&self, parser_state: &mut Names, out: &mut Output) {
+        for (id, name) in &parser_state.names {
             if let Some(sid) = session_id(id) {
                 let mut s = Session::new(sid, SessionKind::Main);
                 s.offer_title(name, TitleSource::Generated);

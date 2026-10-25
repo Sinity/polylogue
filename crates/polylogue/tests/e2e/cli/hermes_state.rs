@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_ancestry() {
+fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_parents() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let native = home.join(".hermes/state.db");
@@ -69,10 +69,10 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_a
     assert_eq!(messages[1]["role"], "system");
     assert_eq!(messages[1]["prompt_kind"], "harness");
     assert_eq!(messages[1]["blocks"][0]["data"], result);
-    let logical = cli(&env, &["--json", "read", child, "--logical"]);
-    assert!(logical.status.success(), "{logical:?}");
-    let logical = json(&logical);
-    assert_eq!(logical["messages"].as_array().unwrap().len(), 2);
+    let with_parents = cli(&env, &["--json", "read", child, "--with-parents"]);
+    assert!(with_parents.status.success(), "{with_parents:?}");
+    let with_parents = json(&with_parents);
+    assert_eq!(with_parents["messages"].as_array().unwrap().len(), 2);
     let exported = cli(&env, &["export", child, "--format", "json"]);
     assert!(exported.status.success(), "{exported:?}");
     let document =

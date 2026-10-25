@@ -67,7 +67,7 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
             "polylogue.excision",
             serde_json::to_value(event::Excision {
                 excision: excision.id.clone(),
-                scope: excision.scope.clone(),
+                scope: excision.target.clone(),
                 reason: excision.reason.clone(),
                 created_at: time(
                     Timestamp::from_unix_ms(excision.created_at)
@@ -220,7 +220,7 @@ pub(crate) fn request_event(
             name,
             query,
             rows_json,
-            view,
+            read_at,
         } => (
             "polylogue.kept_result",
             serde_json::to_value(event::KeptResult {
@@ -228,7 +228,7 @@ pub(crate) fn request_event(
                 name: name.clone(),
                 query: query.clone(),
                 ran_at: at,
-                view: serde_json::from_str(view)?,
+                view: serde_json::from_str(read_at)?,
                 rows: serde_json::from_str(rows_json)?,
             })?,
         ),

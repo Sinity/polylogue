@@ -82,7 +82,7 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
         let (pk,version,body):(i64,Vec<u8>,Vec<u8>)=conn.query_row(
-            "SELECT m.pk,ms.version_hash,b.body FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.preferred=1 JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND b.idx=?2",
+            "SELECT m.pk,ms.version_hash,b.body FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND b.idx=?2",
             params![message.to_string(),i64::try_from(block).map_err(|_|StoreError::Invalid("block index is out of range".into()))?],
             |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
@@ -99,10 +99,10 @@ impl Reader<'_> {
             }
         };
         let mut scopes = conn.prepare(
-            "SELECT DISTINCT own.acquisition FROM message_source ms
+            "SELECT DISTINCT own.import_id FROM message_source ms
             JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.acquisition",
+            WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.import_id",
         )?;
         let scopes = scopes
             .query_map(params![pk, version], |r| r.get::<_, String>(0))?
@@ -113,7 +113,7 @@ impl Reader<'_> {
         if let Some(source_id) = identity {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT m.input,m.member FROM import_member m
-                WHERE m.acquisition=?1 AND m.source_id=?2
+                WHERE m.import_id=?1 AND m.source_id=?2
                   AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
                 ORDER BY m.input,m.member",
             )?;
@@ -143,7 +143,7 @@ impl Reader<'_> {
                     let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.source_version FROM import_member m
                         JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
                         JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
-                        WHERE m.acquisition=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
+                        WHERE m.import_id=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
                           AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
                         ORDER BY m.input,x.ordinal")?;
                     for row in meta.query_map(params![scope, source_id], |r| {

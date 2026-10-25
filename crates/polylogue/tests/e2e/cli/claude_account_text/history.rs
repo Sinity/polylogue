@@ -73,7 +73,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     let status = cli(&env, &["--json", "status"]);
     assert!(status.status.success());
     assert!(
-        json(&status)["store"]["unrecognized"]
+        json(&status)["store"]["unused"]
             .to_string()
             .contains("project_document")
     );

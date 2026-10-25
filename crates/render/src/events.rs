@@ -1,4 +1,4 @@
-//! Observation payloads are structured facts, never synthetic chat turns.
+//! Events printed as their JSON data, masked, not as chat messages.
 use crate::{Format, Rendered, View};
 use polylogue_model::Event;
 use serde_json::{Value, json};

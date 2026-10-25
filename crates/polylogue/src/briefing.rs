@@ -70,7 +70,7 @@ pub enum Ask {
         #[serde(default)]
         for_session: Option<SessionId>,
     },
-    /// Past work relevant to a text, with a receipt of how it was found.
+    /// Past work relevant to a text, with a summary of how it was found.
     Recall {
         text: String,
         #[serde(default)]
@@ -109,14 +109,14 @@ pub struct Prepared {
     pub left_out: Vec<LeftOut>,
     /// Recall only: how it searched.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub receipt: Option<Receipt>,
+    pub search_summary: Option<SearchSummary>,
     /// Nothing worth sending: the caller sends nothing.
     pub empty: bool,
 }
 
 /// How a recall searched, so a reader can judge what it may have missed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Receipt {
+pub struct SearchSummary {
     pub words: Vec<String>,
     /// Full-text indexes searched: `prose` and `output`. The semantic index
     /// is listed when embeddings are on.
@@ -400,7 +400,7 @@ fn session_start(
         text,
         refs,
         left_out,
-        receipt: None,
+        search_summary: None,
         empty,
     })
 }
@@ -461,8 +461,8 @@ fn takeover(
         what: "tool calls and their output".into(),
         reason: "a takeover carries prompts, notes and the last answer".into(),
     }];
-    for issue in &selected.lineage().issues {
-        let _ = writeln!(text, "Incomplete session ancestry: {issue}");
+    for issue in &selected.parents().issues {
+        let _ = writeln!(text, "Parents incomplete: {issue}");
         left_out.push(LeftOut {
             what: "inherited session content".into(),
             reason: issue.to_string(),
@@ -507,7 +507,7 @@ fn takeover(
         text,
         refs,
         left_out,
-        receipt: None,
+        search_summary: None,
         empty: false,
     })
 }
@@ -665,7 +665,7 @@ fn recall(
             refs.push(format!("note:{}", n.id));
         }
     }
-    let receipt = Receipt {
+    let search_summary = SearchSummary {
         words,
         indexes: vec!["prose", "output"],
         hits: hits.len(),
@@ -676,8 +676,8 @@ fn recall(
         out,
         "\nHow this was found: full-text search for every word over prose and tool output; \
          {} hits in {} sessions{}.",
-        receipt.hits,
-        receipt.sessions,
+        search_summary.hits,
+        search_summary.sessions,
         if more {
             "; more exist: add words to narrow it"
         } else {
@@ -696,7 +696,7 @@ fn recall(
         text: out,
         refs,
         left_out,
-        receipt: Some(receipt),
+        search_summary: Some(search_summary),
         empty: false,
     })
 }
