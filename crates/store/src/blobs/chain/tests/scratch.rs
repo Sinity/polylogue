@@ -77,7 +77,7 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
 
 fn child(dir: &Path) {
     let conn = Connection::open_in_memory().unwrap();
-    crate::schema::create_archive(&conn).unwrap();
+    crate::schema::ensure_archive(&conn).unwrap();
     conn.execute(
         "INSERT INTO input(id,format) VALUES ('input','synthetic')",
         [],

@@ -128,8 +128,8 @@ the same change.
 - **writer**: the one thread that writes the databases.
 - **read pool**, **reader**, **reader slot**: readers see one SQLite read
   transaction each; a slot bounds how many run at once.
-- **write lock**: what writers take so readers start from a consistent pair
-  of databases.
+- **write lock**: what a register commit holds so readers start from a
+  consistent pair of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
 - **mode**: `standalone`, or `primary` with Sinex holding the archive.
 - **register**: the archive's rows for inputs and for what people and agents

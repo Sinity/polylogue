@@ -71,7 +71,7 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     for bit in [1, 2] {
         let mut after = 0;
         loop {
-            let tx = crate::write_lock::transaction(conn, TransactionBehavior::Immediate)?;
+            let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
             let mut bytes = 0;
             let mut last = after;
             {
@@ -115,7 +115,7 @@ pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
 
 fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
-    let tx = crate::write_lock::transaction(conn, TransactionBehavior::Immediate)?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
     // Finish the queue cursor before removing its entries. Bodies are fetched
     // individually, so the row-count limit does not multiply the text held.

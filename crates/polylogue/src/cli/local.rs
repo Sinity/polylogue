@@ -11,7 +11,17 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("polylogue: {e}");
-            ExitCode::FAILURE
+            let other_schema = e
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
+                .is_some_and(|inner| {
+                    matches!(inner, polylogue_store::StoreError::OtherSchema { .. })
+                });
+            if other_schema {
+                ExitCode::from(crate::EXIT_OTHER_SCHEMA)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }

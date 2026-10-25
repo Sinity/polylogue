@@ -184,7 +184,10 @@ impl Writer {
         sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
     ) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        let _lock = crate::write_lock::hold(&index)?;
+        // The search thread is the only other index writer, and its
+        // transactions are bounded, so the writer waits for one as long as it
+        // takes rather than failing a batch after the usual timeout.
+        index.busy_timeout(std::time::Duration::from_millis(i32::MAX as u64))?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -642,7 +645,6 @@ impl Inner {
             return Ok(());
         }
         self.build_deferred()?;
-        let _lock = crate::write_lock::hold(&self.index)?;
         let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
@@ -668,16 +670,13 @@ impl Inner {
         crate::text_rows::index_marked(&self.index)?;
         add(Stage::SearchIndex, started.elapsed());
         let started = std::time::Instant::now();
-        let lock = crate::write_lock::hold(&self.index)?;
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
             [],
         )?;
         add(Stage::TrigramIndex, started.elapsed());
-        drop(lock);
         let started = std::time::Instant::now();
         for sql in std::mem::take(&mut self.deferred_indexes) {
-            let _lock = crate::write_lock::hold(&self.index)?;
             self.index.execute(&sql, [])?;
         }
         add(Stage::SecondaryIndexes, started.elapsed());
@@ -941,7 +940,7 @@ impl Inner {
         &mut self,
         request: &crate::user_writes::UserRequest,
     ) -> Result<crate::user_writes::UserOutcome> {
-        let tx = crate::write_lock::transaction(&self.archive, TransactionBehavior::Deferred)?;
+        let tx = self.archive.transaction()?;
         let seq = bump_counter(&tx)?;
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
         if outcome.repeat {
@@ -956,7 +955,7 @@ impl Inner {
                 let material = sinex.send_change(&change)?;
                 crate::primary::change_material(&tx, &change, &material)?;
             }
-            tx.commit()?;
+            crate::write_lock::commit(tx)?;
         }
         Ok(outcome)
     }
@@ -973,7 +972,6 @@ impl Inner {
                 p.counts.check()?;
             }
         }
-        let _lock = crate::write_lock::hold(&self.archive)?;
         let atx = self.archive.transaction()?;
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();
@@ -985,7 +983,7 @@ impl Inner {
             chains.push(chain);
         }
         crate::fault::check("write.archive_commit", "")?;
-        atx.commit()?;
+        crate::write_lock::commit(atx)?;
         crate::fault::check("write.between_commits", "")?;
 
         let itx = self

@@ -55,10 +55,6 @@ impl Inner {
         if group.is_empty() {
             return Vec::new();
         }
-        let write = match crate::write_lock::hold(&self.archive) {
-            Ok(write) => write,
-            Err(error) => return errors(&group, error),
-        };
         let previous: i64 = match self
             .archive
             .pragma_query_value(None, "synchronous", |r| r.get(0))
@@ -73,7 +69,6 @@ impl Inner {
             Ok(stored) => stored,
             Err(error) => {
                 let _ = self.archive.pragma_update(None, "synchronous", previous);
-                drop(write);
                 if group.len() > 1
                     && !group
                         .iter()
@@ -163,7 +158,7 @@ impl Inner {
             for item in &group {
                 crate::fault::check("import.installed", &item.batch.input.id)?;
             }
-            tx.commit()?;
+            crate::write_lock::commit(tx)?;
             self.report.transactions += 1;
             Ok(())
         })();
@@ -177,7 +172,6 @@ impl Inner {
                 *outcome = Some(error.to_string());
             }
         }
-        drop(write);
         let mut parsed = Vec::new();
         for ((mut item, stored), outcome) in group.into_iter().zip(&stored).zip(&outcomes) {
             if outcome.is_none() && !item.batch.parse.is_empty() {
@@ -303,7 +297,7 @@ impl Inner {
                 already_stored,
             });
         }
-        tx.commit()?;
+        crate::write_lock::commit(tx)?;
         self.report.transactions += 1;
         self.report.batches += group.iter().filter(|g| g.batch.parse.is_empty()).count() as u64;
         Ok(stored)

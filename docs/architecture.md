@@ -126,12 +126,15 @@ nothing.
 
 The [read pool](../crates/store/src/read.rs) holds a bounded number of reader
 slots. A reader sees one read transaction on `index.db` with `archive.db`
-attached; it starts on first use, under the shared [write lock](../crates/store/src/write_lock.rs),
-so the two databases are a committed pair. Writers hold the write lock for
-each transaction. A thread that would wait for a slot while holding one gets
-an error instead of a deadlock. Closing the pool refuses new reads; started
-readers finish. Cache sizes are SQLite page-cache targets with mmap off, not a
-limit on process memory.
+attached; it starts on first use, under the shared
+[write lock](../crates/store/src/write_lock.rs), so the two databases are a
+committed pair. Writers hold the write lock only while the register commits,
+and through schema setup, an index replacement or an excision; index writes
+never take it. Outside an excision a reader waits at most for one register
+commit, however long the writer keeps writing. A thread that would wait for a
+slot while holding one gets an error instead of a deadlock. Closing the pool
+refuses new reads; started readers finish. Cache sizes are SQLite page-cache
+targets with mmap off, not a limit on process memory.
 
 Every query answer has a total order: its sort keys, then the unit's
 identity. A page's cursor holds the last row's values of those keys, with the

@@ -70,8 +70,11 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
-    #[error("{database}.db has format {found}; this Polylogue reads format 1")]
-    Version { database: &'static str, found: u32 },
+    #[error(
+        "{database}.db has another schema than this Polylogue build creates; \
+         export the archive with the build that wrote it and import that export with this one"
+    )]
+    OtherSchema { database: &'static str },
     #[error("index format {found} is not {wanted}; it is rebuilt")]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]

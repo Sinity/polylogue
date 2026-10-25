@@ -424,3 +424,47 @@ mod attachments;
 
 #[cfg(target_os = "linux")]
 mod read_bench;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_daemon_refuses_an_archive_with_another_schema_and_exits_with_its_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("archive");
+    let home = dir.path().join("home");
+    let config = dir.path().join("config");
+    std::fs::create_dir_all(&home).unwrap();
+    let (opened, lock) = polylogue_store::Archive::open_or_create(&archive).unwrap();
+    drop(lock);
+    // As an archive written before the `excised` table was declared.
+    rusqlite::Connection::open(opened.archive_db())
+        .unwrap()
+        .execute_batch("DROP TABLE excised")
+        .unwrap();
+    let mut command = Command::new(crate::BIN);
+    command
+        .arg("daemon")
+        .env("POLYLOGUE_ARCHIVE", &archive)
+        .env("POLYLOGUE_HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
+    let mut stderr = String::new();
+    daemon
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let status = daemon.0.wait().unwrap();
+    assert_eq!(status.code(), Some(78), "{stderr}");
+    assert!(
+        stderr.contains("archive.db has another schema")
+            && stderr.contains("export")
+            && stderr.contains("import"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("serving"), "{stderr}");
+    assert!(!archive.join("daemon.sock").exists());
+}

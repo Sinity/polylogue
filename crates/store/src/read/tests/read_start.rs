@@ -42,10 +42,14 @@ fn a_first_read_cannot_see_states_separated_by_two_commits() {
             } else {
                 &mut index
             };
-            let _lock = crate::write_lock::hold(conn).unwrap();
+            // As the writer does: only register commits take the lock.
             let tx = conn.transaction().unwrap();
             tx.execute("INSERT INTO meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[counter.to_string()]).unwrap();
-            tx.commit().unwrap();
+            if archive_write {
+                crate::write_lock::commit(tx).unwrap();
+            } else {
+                tx.commit().unwrap();
+            }
             let counter = |conn: &Connection| {
                 conn.query_row(
                     "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
@@ -141,8 +145,7 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
 
 fn mark_index_unsynced(archive: &Archive) {
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let tx =
-        crate::write_lock::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
     tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
     tx.commit().unwrap();
     drop(conn);
@@ -217,4 +220,93 @@ fn a_first_read_creates_no_file_in_a_read_only_archive_directory() {
     std::fs::set_permissions(&fixture.archive.root, original).unwrap();
     result.unwrap();
     assert_eq!(names(), before);
+}
+
+/// A first collection keeps the writer committing back to back for hours;
+/// a read must still start within one register commit, not after the
+/// writer runs dry.
+#[test]
+fn reads_answer_promptly_while_the_writer_works_through_a_backlog() {
+    use crate::fixture::writer::{prose, sid, step};
+    use polylogue_model::{MessageRow, Output, Session, SessionKind};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    const MESSAGES_PER_BATCH: u64 = 8_000;
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let writer = crate::Writer::start(&archive).unwrap();
+    let sender = writer.sender().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let feeding = {
+        let stop = Arc::clone(&stop);
+        // The writer's queue is short, so this keeps it full: every batch
+        // the writer takes is replaced at once.
+        std::thread::spawn(move || {
+            let mut sent = 0_u64;
+            while !stop.load(Ordering::Relaxed) {
+                let session = format!("backlog-{sent}");
+                let messages = (0..MESSAGES_PER_BATCH)
+                    .map(|n| MessageRow {
+                        offset: n,
+                        end: n + 1,
+                        message: prose(
+                            &session,
+                            n as u32,
+                            1_000 + n as i64,
+                            &format!("synthetic backlog text {sent} {n}, long enough to cost a page write"),
+                        )
+                        .remove(0),
+                    })
+                    .collect();
+                let output = Output {
+                    sessions: vec![Session::new(sid(&session), SessionKind::Main)],
+                    messages,
+                    ..Output::default()
+                };
+                let batch = step(
+                    &format!("input-{session}"),
+                    "claude-code",
+                    &format!("/p/{session}"),
+                    output,
+                    0,
+                    MESSAGES_PER_BATCH,
+                );
+                sender.send(batch).unwrap();
+                sent += 1;
+            }
+            sent
+        })
+    };
+    let pool = ReadPool::open(&archive).unwrap();
+    let mut slowest = Duration::ZERO;
+    let mut reads = 0;
+    let mut positions = Vec::new();
+    let reading = Instant::now();
+    while reading.elapsed() < Duration::from_secs(5) {
+        let started = Instant::now();
+        let reader = pool.reader().unwrap();
+        reader.status().unwrap();
+        positions.push(reader.change_position().unwrap().archive);
+        drop(reader);
+        slowest = slowest.max(started.elapsed());
+        reads += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    stop.store(true, Ordering::Relaxed);
+    let sent = feeding.join().unwrap();
+    drop(writer);
+    positions.dedup();
+    assert!(
+        positions.len() >= 3,
+        "the writer did not commit throughout the reads: {positions:?}, {sent} batches sent"
+    );
+    // Reads that waited for whole writer transactions managed about eight
+    // in these five seconds, the slowest over a second.
+    assert!(
+        reads >= 20 && slowest < Duration::from_secs(1),
+        "{reads} reads, the slowest took {slowest:?}, while the writer committed {} times",
+        positions.len()
+    );
 }

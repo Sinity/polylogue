@@ -1,14 +1,19 @@
 //! The write lock: an OS file lock on the register (`archive.db`, or
-//! `sinex.db` in primary mode). Writers hold it
-//! exclusively for each transaction that writes `archive.db` or `index.db`;
-//! a reader holds it shared only while it starts its first read, so the two
-//! databases it reads are a committed pair. The file is stable while open,
-//! so readers need no writable directory or extra lock file.
+//! `sinex.db` in primary mode). A reader holds it shared while one statement
+//! starts its read, first on `index.db`, then on the register. A register
+//! commit between those two starts is the only way the reader could see a
+//! pair of states that never existed together; an index commit there is
+//! harmless, because the register then reads as it was when the index read
+//! started. So writers hold the lock exclusively only while the register
+//! commits ([`commit`]), and for the few steps that must also keep readers
+//! or each other out for longer: schema setup, replacing the index, an
+//! excision and the embedding check. Index transactions take no lock, so a
+//! reader waits at most for one register commit. The file is stable while
+//! open, so readers need no writable directory or extra lock file.
 use crate::{Archive, Result, StoreError};
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::Connection;
 use std::cell::Cell;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::ops::Deref;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -21,7 +26,7 @@ fn identity(file: &File) -> std::io::Result<FileIdentity> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
-/// Held for paired transactions and DDL only. Take it before SQLite's write
+/// Held exclusively, as the module describes. Take it before SQLite's write
 /// locks and drop it before file cleanup after the commit. A second lock on
 /// the same thread refuses.
 #[must_use]
@@ -72,41 +77,13 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     })
 }
 
-/// A transaction that holds the write lock. SQLite rolls back before the lock
-/// is released, also on an error or early return. In-memory test databases
-/// have no shared pair.
-#[must_use]
-pub(crate) struct Transaction<'a> {
-    tx: rusqlite::Transaction<'a>,
-    lock: WriteLock,
-}
-pub(crate) fn transaction(
-    conn: &Connection,
-    behavior: TransactionBehavior,
-) -> Result<Transaction<'_>> {
-    let lock = hold(conn)?;
-    let tx = rusqlite::Transaction::new_unchecked(conn, behavior)?;
-    Ok(Transaction { tx, lock })
-}
-impl<'a> Deref for Transaction<'a> {
-    type Target = rusqlite::Transaction<'a>;
-    fn deref(&self) -> &Self::Target {
-        &self.tx
-    }
-}
-impl Transaction<'_> {
-    pub(crate) fn commit(self) -> Result<()> {
-        let Self { tx, lock } = self;
-        let result = tx.commit();
-        drop(lock);
-        Ok(result?)
-    }
-    pub(crate) fn rollback(self) -> Result<()> {
-        let Self { tx, lock } = self;
-        let result = tx.rollback();
-        drop(lock);
-        Ok(result?)
-    }
+/// Commits a register transaction under the lock.
+pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
+    let lock = hold(&tx)?;
+    let committed = tx.commit();
+    drop(lock);
+    committed?;
+    Ok(())
 }
 
 /// Takes the lock shared for a reader's first read; the caller drops the

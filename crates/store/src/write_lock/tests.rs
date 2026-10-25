@@ -24,18 +24,21 @@ fn both_database_handles_lock_the_archive_file() {
 }
 
 #[test]
-fn failed_or_dropped_transactions_release_the_write_lock() {
+fn a_register_transaction_takes_the_lock_only_to_commit() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
-    let archive_conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    {
-        let tx = transaction(&archive_conn, rusqlite::TransactionBehavior::Deferred).unwrap();
-        assert!(
-            tx.execute("INSERT INTO no_such_table VALUES (1)", [])
-                .is_err()
-        );
-    }
-    wait_shared(&archive, || panic!("the write lock was not released")).unwrap();
+    let mut archive_conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let tx = archive_conn.transaction().unwrap();
+    tx.execute("INSERT INTO meta(key, value) VALUES ('synthetic', '1')", [])
+        .unwrap();
+    wait_shared(&archive, || panic!("an open transaction holds the lock")).unwrap();
+    commit(tx).unwrap();
+    wait_shared(&archive, || panic!("the commit kept the lock")).unwrap();
+    // A commit refuses inside a held lock instead of waiting for itself.
+    let tx = archive_conn.transaction().unwrap();
+    let outer = hold(&tx).unwrap();
+    assert!(commit(tx).is_err());
+    drop(outer);
 }
 
 #[test]
@@ -122,22 +125,16 @@ fn the_write_lock_excludes_other_processes_and_releases_on_exit() {
 }
 
 #[test]
-fn panic_and_failed_begin_clear_ownership_before_another_transaction() {
+fn a_panic_clears_ownership_before_another_commit() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
-    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let existing = conn.unchecked_transaction().unwrap();
-    assert!(transaction(&conn, rusqlite::TransactionBehavior::Deferred).is_err());
-    existing.rollback().unwrap();
+    let mut conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _transaction = transaction(&conn, rusqlite::TransactionBehavior::Deferred).unwrap();
+        let _lock = hold(&conn).unwrap();
         panic!("synthetic application failure");
     }));
     assert!(panic.is_err());
-    transaction(&conn, rusqlite::TransactionBehavior::Deferred)
-        .unwrap()
-        .commit()
-        .unwrap();
+    commit(conn.transaction().unwrap()).unwrap();
 }
 
 #[test]

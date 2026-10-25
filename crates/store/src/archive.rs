@@ -172,6 +172,17 @@ impl Archive {
         let lock = Self::lock(root)?;
         let archive = Self::on_sinex(root, store);
         clear_directory(&archive.parts_dir())?;
+        // The register is a copy of what Sinex holds: one with another
+        // schema is rebuilt, not refused.
+        if archive.archive_db().exists() {
+            let register = open_read(&archive.archive_db())?;
+            let current =
+                schema::version(&register)? == 1 && schema::same_schema(&register, &schema::SINEX)?;
+            drop(register);
+            if !current {
+                remove_database(&archive.archive_db())?;
+            }
+        }
         if !archive.archive_db().exists() {
             // The index describes the register it was built from.
             remove_database(&archive.index_db())?;
@@ -227,10 +238,10 @@ impl Archive {
         generation::open(self)
     }
 
-    /// The caller holds the archive lock. An index built by another version,
-    /// left unsynced by a stop in the middle of a first build, or missing an
-    /// excision the archive holds is deleted and created again empty; the
-    /// loop then rebuilds it from the stored inputs.
+    /// The caller holds the archive lock. An index built by another version
+    /// or with another schema, left unsynced by a stop in the middle of a
+    /// first build, or missing an excision the archive holds is deleted and
+    /// created again empty; the loop then rebuilds it from the stored inputs.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;
@@ -256,6 +267,7 @@ impl Archive {
             return Ok(false);
         }
         Ok(found != schema::INDEX_VERSION
+            || !schema::same_schema(&index, &[schema::INDEX])?
             || schema::unsynced(&index)?
             || crate::excise::index_behind(archive, &index)?)
     }

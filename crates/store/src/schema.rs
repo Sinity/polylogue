@@ -1,7 +1,9 @@
 //! Table declarations. `archive.db` and `embeddings.db` are created at
-//! version 1, the only version; a file at any other version is refused.
-//! `index.db` is never migrated: a new version builds a new file and swaps
-//! it in.
+//! version 1, the only version. A file whose version or tables differ from
+//! what this build creates is refused: its data crosses to a new schema only
+//! by an export with the build that wrote it and an import with this one.
+//! `index.db` is never migrated: a new version or a different schema builds a
+//! new file and swaps it in.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -26,13 +28,6 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
     Ok(())
 }
 
-/// Creates `archive.db` at version 1.
-pub fn create_archive(conn: &Connection) -> Result<()> {
-    conn.execute_batch(ARCHIVE)?;
-    set_version(conn, 1)?;
-    Ok(())
-}
-
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     crate::archive::generation::create(conn)?;
@@ -40,15 +35,10 @@ pub fn create_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn create_embeddings(conn: &Connection) -> Result<()> {
-    conn.execute_batch(EMBEDDINGS)?;
-    set_version(conn, 1)?;
-    Ok(())
-}
-
 /// Creates the index in an empty file. An index at another version is an
-/// error here; [`crate::Archive::open_or_create`] moves such a file aside
-/// first, so the loop rebuilds the index from `archive.db`.
+/// error here; [`crate::Archive::open_or_create`] deletes such a file, or
+/// one with another schema, first, so the loop rebuilds the index from
+/// `archive.db`.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     match version(conn)? {
         0 => create_index(conn),
@@ -72,36 +62,115 @@ pub fn unsynced(conn: &Connection) -> Result<bool> {
     Ok(v.as_deref() == Some("1"))
 }
 
-/// Creates `archive.db` in an empty file; refuses a file at another version.
+/// Creates `archive.db` in an empty file; refuses a file with another schema.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
-    ensure(conn, "archive", create_archive)
+    ensure(conn, "archive", &[ARCHIVE])
 }
 
-/// Creates `sinex.db`, primary mode's register: the archive's tables and
-/// the Sinex material of each part. Refuses a file at another version.
+/// The tables of `sinex.db`, primary mode's register: the archive's tables
+/// and the Sinex material of each part.
+pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
+
+/// Creates `sinex.db` in an empty file; refuses a file with another schema.
 pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", |conn| {
-        conn.execute_batch(ARCHIVE)?;
-        conn.execute_batch(crate::primary::SCHEMA)?;
-        set_version(conn, 1)
-    })
+    ensure(conn, "sinex", &SINEX)
 }
 
-/// Creates `embeddings.db` in an empty file; refuses a file at another version.
+/// Creates `embeddings.db` in an empty file; refuses a file with another
+/// schema.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(conn, "embeddings", create_embeddings)
+    ensure(conn, "embeddings", &[EMBEDDINGS])
 }
 
-fn ensure(
-    conn: &Connection,
-    database: &'static str,
-    create: fn(&Connection) -> Result<()>,
-) -> Result<()> {
+fn ensure(conn: &Connection, database: &'static str, sql: &[&str]) -> Result<()> {
     match version(conn)? {
-        0 => create(conn),
-        1 => Ok(()),
-        found => Err(StoreError::Version { database, found }),
+        0 => {
+            for part in sql {
+                conn.execute_batch(part)?;
+            }
+            set_version(conn, 1)
+        }
+        1 if same_schema(conn, sql)? => Ok(()),
+        _ => Err(StoreError::OtherSchema { database }),
     }
+}
+
+/// Whether the database holds exactly the tables, indexes and triggers that
+/// `sql` creates. Comments and spacing inside the statements do not count.
+pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    for part in sql {
+        expected.execute_batch(part)?;
+    }
+    Ok(shape(conn)? == shape(&expected)?)
+}
+
+fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+    Ok(conn
+        .prepare(
+            "SELECT type, name, sql FROM main.sqlite_master
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite~_%' ESCAPE '~'
+             ORDER BY type, name",
+        )?
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, statement(&r.get::<_, String>(2)?)))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// A statement without its comments, and with space only where it separates
+/// two words. Quoted text is kept as written.
+fn statement(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    let mut space = false;
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    while let Some(c) = chars.next() {
+        match c {
+            '-' if chars.peek() == Some(&'-') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+                space = true;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut star = false;
+                for c in chars.by_ref() {
+                    if star && c == '/' {
+                        break;
+                    }
+                    star = c == '*';
+                }
+                space = true;
+            }
+            c if c.is_whitespace() => space = true,
+            '\'' | '"' | '`' | '[' => {
+                if space && out.chars().last().is_some_and(word) {
+                    out.push(' ');
+                }
+                space = false;
+                let close = if c == '[' { ']' } else { c };
+                out.push(c);
+                for c in chars.by_ref() {
+                    out.push(c);
+                    if c == close {
+                        break;
+                    }
+                }
+            }
+            c => {
+                if space && word(c) && out.chars().last().is_some_and(word) {
+                    out.push(' ');
+                }
+                space = false;
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// Ordinary tables in `index.db` and their column names.
