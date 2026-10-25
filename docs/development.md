@@ -7,12 +7,22 @@ work and keeps its log.
 | Check | Command | When |
 | --- | --- | --- |
 | Compile | `agentctl job start polylogue compile --workspace <worktree> -- -p <crate>` | while editing |
+| Formatting | `agentctl job start polylogue fmt --workspace <worktree>` | before committing |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing |
 | Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing |
-| Full suite | `agentctl job start polylogue check --workspace <worktree>` | before merging a batch |
+| Full suite | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
 | End-to-end scenarios | `agentctl job start polylogue scenarios --workspace <worktree>` | after daemon, CLI or MCP changes |
 | Package build | `agentctl job start polylogue package --workspace <worktree>` | after dependency or packaging changes |
 | Extension | `agentctl job start polylogue extension --workspace <worktree> -- ci`, then `-- test` | after extension changes |
+| Lockfile | `agentctl job start polylogue lock --workspace <worktree> -- -p <crate>` | when updating a dependency |
+
+Start a job, then wait for it in the background with `agentctl job wait <id>`.
+A failed wait prints the failing tests, the compiler errors and the `xtask
+history failures N` pointer. The host runs the `baseline` operation (the full
+suite) on each new master head in the reserved checkout
+`/realm/worktree/polylogue-master`; read the newest `polylogue:baseline` job
+(`agentctl job list --project polylogue`) to see whether a failure is already
+on master.
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
   Clippy over every target, tests included, with warnings denied: once with
@@ -21,7 +31,10 @@ work and keeps its log.
 - **Full suite:** the fast check, then `cargo nextest run --workspace
   --features polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
   (configuration in `.config/nextest.toml`). Each test runs in its own
-  process; one still running after two minutes fails.
+  process; one still running after two minutes fails. `focused` and
+  `scenarios` build exactly the same: `xtask test` always selects the whole
+  workspace with these features and turns `-p` and `-E` into one filterset
+  that chooses which tests run. It refuses feature flags.
 - **Fault tests:** the `faults` features add a fault registry that starts
   empty; only a test's own `polylogue_store::fault::arm` call activates a
   point, in that process. They stop work between an excision's database
@@ -83,11 +96,21 @@ agentctl job start sinex exec --workspace <sinex> --wait -- \
 
 The dev profile builds dependencies at `opt-level = 2` and workspace crates
 at `opt-level = 1`, because tests spend most of their CPU in SQLite, JSON and
-the credential masker. Keep the package and feature set the same across a
-connected edit and narrow tests with `-E`: a different package set can change
-Cargo's unified features and rebuild libraries. For store and engine work,
-`focused -- -p polylogue-store -p polylogue-engine --features faults -E '<filter>'`
-reuses one build.
+the credential masker. Every test run builds the whole workspace with one
+feature set, so `focused`, `scenarios` and `check` reuse each other's
+artifacts whatever packages or filters they select. The first test run in a
+checkout builds every test binary; a new checkout's target starts as a
+reflink copy of the master baseline's warm target, so that build compiles
+only what differs from master.
+
+The dev shell links with mold (`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`):
+on a cold test build the workspace's test binaries spent 169 s linking with
+the default linker and 37 s with mold. The Nix package build keeps the default.
+
+Every operation that runs Cargo holds a place under the host's `cargo` cap:
+at most three Cargo builds run at once across the normal and bulk queues,
+each with an 8 GiB `MemoryHigh`. A job that waits for a place logs it, and
+the wait does not count against its timeout. `check` stops after 20 minutes.
 
 AgentCTL takes `CARGO_TARGET_DIR` from the caller when it queues a job. Give
 each target directory one building job at a time.
@@ -114,9 +137,10 @@ everything that depends on them.
 `agentctl job start polylogue bench --workspace <worktree> -- run` measures a
 first build and incremental updates; `-- reads --repetitions 3` measures
 interactive reads. `agentctl job start polylogue measure --workspace
-<worktree> -- <command>` runs another performance driver. Both use the normal
-queue, which has no I/O bandwidth cap; record the pool and resource limits
-with the timings.
+<worktree> -- <command>` runs another performance driver. Both use the
+one-slot measure queue, so they never hold a slot a check needs, and refuse to start while host I/O pressure (`full avg60`) is above 5%,
+because timings taken under load are not valid; start them again when the
+host is quiet. Record the pool and resource limits with the timings.
 
 A first-build report gives wall time, time per stage (pool time in
 thread-seconds, which do not add up to wall time), input bytes, physical I/O,

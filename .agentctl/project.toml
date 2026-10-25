@@ -17,15 +17,30 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
 description = "Formatting, crate boundaries and the full workspace test suite (cargo nextest)"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
-timeout_seconds = 3600
+timeout_seconds = 1200
 scratch = "tmpfs"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
+
+[operations.baseline]
+description = "The full suite on the master-baseline checkout; the host queues it on each new master head"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
+pool = "bulk"
+result = "exit"
+timeout_seconds = 1200
+scratch = "tmpfs"
+cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.scenarios]
 description = "End-to-end runs of the real daemon, CLI and MCP server over synthetic archives"
@@ -35,6 +50,8 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
 description = "Compile selected packages without waiting behind bulk qualification"
@@ -45,6 +62,8 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
 description = "Selected package or test checks with the normal development queue"
@@ -55,6 +74,8 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.package]
 description = "Clean Nix build of the polylogue package (nix flake check)"
@@ -64,6 +85,7 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
+cap = "cargo"
 
 [operations.exec]
 description = "Run a command in the Nix development shell"
@@ -79,19 +101,42 @@ cache = "none"
 description = "Run the corpus benchmark through the shared job queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "bench"]
 arguments = "required"
-pool = "normal"
+pool = "measure"
 result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
+cap = "cargo"
+max_io_pressure = 5
 
 [operations.measure]
 description = "Run performance measurements without the background I/O cap"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
-pool = "normal"
+pool = "measure"
 result = "exit"
 timeout_seconds = 7200
+scratch = "nvme"
+cache = "none"
+cap = "cargo"
+max_io_pressure = 5
+
+[operations.fmt]
+description = "Format the workspace"
+exec = ["nix", "develop", "--command", "cargo", "fmt", "--all"]
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
+scratch = "nvme"
+cache = "none"
+
+[operations.lock]
+description = "Update selected Cargo.lock entries, e.g. -- -p serde"
+exec = ["nix", "develop", "--command", "cargo", "update"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
 scratch = "nvme"
 cache = "none"
 
