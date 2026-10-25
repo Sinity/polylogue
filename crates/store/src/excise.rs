@@ -243,8 +243,8 @@ pub struct Transactions<'a, 'b> {
     pub counter: i64,
 }
 
-/// Runs an excision and records local file cleanup with its canonical rows.
-/// The writer replays that cleanup after all database transactions commit.
+/// Runs an excision, marking blobs it no longer needs `deleting`. The writer
+/// deletes their files after all database transactions commit.
 pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
     if !req.dry_run && crate::row_batches::on_sinex(t.archive)? {
         return Err(StoreError::ExcisionOnSinex);

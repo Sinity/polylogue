@@ -1,8 +1,8 @@
-//! Freeze matched targets before changing canonical notes or their relations.
+//! Select matched targets before changing notes or their relations.
 use super::*;
 use rusqlite::Connection;
 
-/// Message membership comes from the selection frozen before index deletion.
+/// Message membership comes from the selection made before index deletion.
 pub(super) fn remove(
     archive: &Transaction<'_>,
     sessions: &[String],

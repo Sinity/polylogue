@@ -155,9 +155,8 @@ impl StoredText {
     }
 }
 
-/// A piece is durable before its canonical rows are written. A later failure
-/// rolls back those rows and the extent deletion. Prepared files may remain
-/// unreferenced after rollback, as with the other blob-writing paths.
+/// The piece's file is installed before its rows are written; a later
+/// failure rolls back the rows and leaves that file unreferenced.
 fn install_piece(
     t: &Transactions<'_, '_>,
     req: &ExciseRequest,

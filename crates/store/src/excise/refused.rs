@@ -13,7 +13,7 @@ pub(super) fn session_selection<'de, D: serde::Deserializer<'de>>(
     Vec::<SessionId>::deserialize(de).map(Some)
 }
 
-/// Reconstructed writer lookup; canonical excision rows own the policy.
+/// The writer's lookup, rebuilt from the excision rows.
 #[derive(Debug, Default)]
 pub struct Refused(Option<Connection>);
 
