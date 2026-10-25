@@ -2,7 +2,7 @@
 use crate::rows::{self, Encoded};
 use crate::{Confirmed, Error, Result, Sinex, checked, content_name};
 use polylogue_store::StoreError;
-use polylogue_store::row_batches::{RowBatch, Snapshot};
+use polylogue_store::row_batches::{BatchReader, RowBatch};
 use sinex_model::event_types::polylogue::PolylogueRows;
 use sinex_model::{Class, RecordLocation};
 use sinex_protocol::{Ingress, ProducerEvent};
@@ -24,9 +24,9 @@ impl Sinex {
     /// hold yet, in write order, each after the blobs it cites. A batch whose
     /// bytes are still being written ends the pass; the next pass sends it.
     pub async fn send_missing(&mut self, root: &Path) -> Result<Sent> {
-        let snapshot = Snapshot::open(root)?;
+        let batch_reader = BatchReader::open(root)?;
         self.finish_staged().await?;
-        let archive = snapshot
+        let archive = batch_reader
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
         let (mut position, mut after) = match &self.confirmed {
@@ -37,7 +37,7 @@ impl Sinex {
         };
         let mut sent = Sent::default();
         loop {
-            let page = snapshot.batches(after.as_ref(), PAGE)?;
+            let page = batch_reader.batches(after.as_ref(), PAGE)?;
             if page.is_empty() {
                 return Ok(sent);
             }
@@ -52,7 +52,7 @@ impl Sinex {
                         checked(acknowledgment.clone())?;
                     }
                     None => match self
-                        .send_batch(&snapshot, &archive, position, &batch, name, &mut sent)
+                        .send_batch(&batch_reader, &archive, position, &batch, name, &mut sent)
                         .await
                     {
                         Err(Error::Store(StoreError::InputPending { .. })) => return Ok(sent),
@@ -71,15 +71,15 @@ impl Sinex {
 
     async fn send_batch(
         &mut self,
-        snapshot: &Snapshot,
+        batch_reader: &BatchReader,
         archive: &str,
         position: u64,
         batch: &RowBatch,
         name: String,
         sent: &mut Sent,
     ) -> Result<()> {
-        let mut encoded = rows::encode(snapshot, batch)?;
-        self.place_blobs(snapshot, archive, &encoded.blobs, sent)
+        let mut encoded = rows::encode(batch_reader, batch)?;
+        self.place_blobs(batch_reader, archive, &encoded.blobs, sent)
             .await?;
         let material = self.place_rows(archive, &mut encoded).await?;
         let event = PolylogueRows {
@@ -119,7 +119,7 @@ impl Sinex {
     /// Places each cited blob Sinex does not hold yet.
     async fn place_blobs(
         &mut self,
-        snapshot: &Snapshot,
+        batch_reader: &BatchReader,
         archive: &str,
         blobs: &[hashed_blobs::Hash],
         sent: &mut Sent,
@@ -134,7 +134,7 @@ impl Sinex {
                 checked(acknowledgment.clone())?;
                 continue;
             }
-            let (length, mut bytes) = snapshot.blob(&polylogue_model::BlobHash(hash.0))?;
+            let (length, mut bytes) = batch_reader.blob(&polylogue_model::BlobHash(hash.0))?;
             self.material(
                 name,
                 hash,

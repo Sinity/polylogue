@@ -134,7 +134,7 @@ fn malformed_exports_without_a_marker_are_preserved_and_refused() {
                 .is_err()
         );
         assert_eq!(fs::read_to_string(&out).unwrap(), suffix);
-        assert!(!publication::checkpoint(&out).exists());
+        assert!(!synced_prefix::checkpoint(&out).exists());
     }
 }
 
@@ -178,7 +178,7 @@ fn exports_without_a_marker_replay_rows_and_removals_without_repeating_them() {
         .map(|v| format!("{v}\n"))
         .collect::<String>();
     fs::write(&out, &bytes).unwrap();
-    fs::remove_file(publication::checkpoint(&out)).unwrap();
+    fs::remove_file(synced_prefix::checkpoint(&out)).unwrap();
     source.execute("DELETE FROM t WHERE id=2", []).unwrap();
     assert_eq!(
         Exporter::default()

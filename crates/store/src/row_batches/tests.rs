@@ -37,14 +37,14 @@ fn deliver(writer: &Writer, id: &str) {
 
 /// Every batch with its rows, in write order.
 fn contents(root: &Path) -> Vec<(RowBatch, Vec<String>)> {
-    let snapshot = Snapshot::open(root).unwrap();
-    snapshot
+    let batch_reader = BatchReader::open(root).unwrap();
+    batch_reader
         .batches(None, usize::MAX)
         .unwrap()
         .into_iter()
         .map(|batch| {
             let mut rows = Vec::new();
-            snapshot
+            batch_reader
                 .rows(&batch, |row| {
                     rows.push(format!("{} {:?} {:?}", row.table, row.columns, row.values));
                     Ok(())
@@ -67,13 +67,13 @@ fn batches_page_in_write_order() {
             &format!("synthetic note {n}"),
         );
     }
-    let snapshot = Snapshot::open(dir.path()).unwrap();
-    let all = snapshot.batches(None, usize::MAX).unwrap();
+    let batch_reader = BatchReader::open(dir.path()).unwrap();
+    let all = batch_reader.batches(None, usize::MAX).unwrap();
     assert_eq!(all.len(), 5);
     assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
     let mut paged = Vec::new();
     loop {
-        let page = snapshot.batches(paged.last(), 2).unwrap();
+        let page = batch_reader.batches(paged.last(), 2).unwrap();
         if page.is_empty() {
             break;
         }
@@ -118,11 +118,11 @@ fn rows_restore_into_an_empty_archive_and_a_repeat_changes_nothing() {
         deliver(&writer, "delivery");
     }
     let expected = contents(&source);
-    let snapshot = Snapshot::open(&source).unwrap();
+    let batch_reader = BatchReader::open(&source).unwrap();
     let (archive, _lock) = Archive::open_or_create(&target).unwrap();
     let mut restore = Restore::begin(&archive).unwrap();
     // Batches may arrive in any order, and twice.
-    for batch in snapshot
+    for batch in batch_reader
         .batches(None, usize::MAX)
         .unwrap()
         .iter()
@@ -130,7 +130,7 @@ fn rows_restore_into_an_empty_archive_and_a_repeat_changes_nothing() {
         .cycle()
         .take(4)
     {
-        snapshot.rows(batch, |row| restore.insert(row)).unwrap();
+        batch_reader.rows(batch, |row| restore.insert(row)).unwrap();
     }
     let inserted = restore.finish("synthetic-archive").unwrap();
     assert_eq!(contents(&target), expected);
@@ -141,7 +141,7 @@ fn rows_restore_into_an_empty_archive_and_a_repeat_changes_nothing() {
             .map(|(_, rows)| rows.len() as u64)
             .sum::<u64>()
     );
-    let restored = Snapshot::open(&target).unwrap();
+    let restored = BatchReader::open(&target).unwrap();
     assert_eq!(restored.archive_id().unwrap(), "synthetic-archive");
     let counter: String = restored
         .conn

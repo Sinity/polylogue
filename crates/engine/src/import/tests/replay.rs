@@ -247,14 +247,14 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
 fn row_batches(
     root: &std::path::Path,
 ) -> Vec<(polylogue_store::row_batches::RowBatch, Vec<String>)> {
-    let snapshot = polylogue_store::row_batches::Snapshot::open(root).unwrap();
-    snapshot
+    let batch_reader = polylogue_store::row_batches::BatchReader::open(root).unwrap();
+    batch_reader
         .batches(None, 10_000)
         .unwrap()
         .into_iter()
         .map(|batch| {
             let mut rows = Vec::new();
-            snapshot
+            batch_reader
                 .rows(&batch, |row| {
                     rows.push(format!("{} {:?} {:?}", row.table, row.columns, row.values));
                     Ok(())

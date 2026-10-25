@@ -2,7 +2,7 @@ use super::*;
 use polylogue_store::{
     StoreError,
     fault::{self, Action},
-    row_batches::{RowBatch, Snapshot},
+    row_batches::{BatchReader, RowBatch},
     staging::PendingState,
 };
 
@@ -36,7 +36,7 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert_eq!(status.pending_inputs.len(), 1);
             assert_eq!(status.pending_inputs[0].state, PendingState::Writing);
             assert_eq!(status.stored_bytes, 0);
-            let rows = Snapshot::open(&world.root).unwrap();
+            let rows = BatchReader::open(&world.root).unwrap();
             let batch = RowBatch {
                 commit_seq: world.count("SELECT max(commit_seq) AS n FROM a.revision"),
                 kind: "revision".into(),

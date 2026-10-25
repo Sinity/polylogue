@@ -84,7 +84,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         parse: vec![ParseStep {
             order_from: None,
             reset: start == 0,
-            snapshot: false,
+            restates: false,
             output: Output {
                 sessions: sessions
                     .iter()

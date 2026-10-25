@@ -127,12 +127,12 @@ const REVISION_EXTENTS: &str = "SELECT e.* FROM extent e JOIN revision r
           WHERE p.input = r.input AND p.chain = r.chain AND p.number < r.number), 0)";
 
 /// One read transaction over `archive.db`, held for a whole Sinex pass.
-pub struct Snapshot {
+pub struct BatchReader {
     conn: Connection,
     blobs: hashed_blobs::Store,
 }
 
-impl Snapshot {
+impl BatchReader {
     pub fn open(root: &Path) -> Result<Self> {
         let conn = crate::archive::open_read(&root.join("archive.db"))?;
         // Ordering every batch of a large archive may spill past the cache.

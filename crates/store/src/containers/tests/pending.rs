@@ -1,6 +1,6 @@
 use super::*;
 use crate::fault::{self, Action};
-use crate::row_batches::Snapshot;
+use crate::row_batches::BatchReader;
 use crate::staging::PendingState;
 use polylogue_model::BlobHash;
 
