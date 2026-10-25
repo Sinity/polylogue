@@ -24,7 +24,7 @@ pub(crate) enum Prepared {
     /// Compressed, to be moved under its content name in `blobs/`.
     Local {
         store: std::sync::Arc<hashed_blobs::Store>,
-        prepared: hashed_blobs::PreparedPlain,
+        prepared: Box<hashed_blobs::PreparedPlain>,
     },
     /// The bytes as they are, in `parts/`, to be sent to Sinex.
     Part {
@@ -131,7 +131,10 @@ impl crate::Archive {
             store.prepare_plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
         Ok(PreparedBytes {
             owner: self.root.clone(),
-            file: Prepared::Local { store, prepared },
+            file: Prepared::Local {
+                store,
+                prepared: Box::new(prepared),
+            },
         })
     }
 }

@@ -417,7 +417,7 @@ pub(super) fn send_to_sinex(
         if record.observation.is_some() {
             let record = crate::primary::Record::Observation {
                 input,
-                stored: record.clone(),
+                stored: Box::new(record.clone()),
             };
             let material = sinex.send_record(&record)?;
             crate::primary::record_material(tx, &record, &material)?;

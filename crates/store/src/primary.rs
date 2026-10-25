@@ -63,7 +63,7 @@ pub enum Record {
     /// back, or an import of bytes already stored).
     Observation {
         input: InputName,
-        stored: InputRecord,
+        stored: Box<InputRecord>,
     },
     /// A request a person or agent made, with the note family it joined
     /// when it adds or withdraws a note.
