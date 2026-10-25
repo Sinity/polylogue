@@ -5,8 +5,12 @@ use polylogue_store::StoreError;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[test]
-fn a_partially_committed_excision_stops_writes_until_restart() {
-    for point in ["excision.between_commits", "excision.after_index_commit"] {
+fn a_stop_between_commits_stops_the_writer_and_reopening_finishes() {
+    for point in [
+        "excision.after_embeddings_commit",
+        "excision.after_archive_commit",
+        "excision.after_index_commit",
+    ] {
         fault::clear();
         let w = ClaudeHome::new();
         w.append(
@@ -53,35 +57,38 @@ fn a_partially_committed_excision_stops_writes_until_restart() {
                 dry_run: false,
             });
             assert!(later.is_err());
-            let pool = w.reads();
-            assert!(matches!(
-                pool.reader().unwrap().status(),
-                Err(StoreError::ExcisionPending)
-            ));
         }
         fault::clear();
         let (mut e, _lock) = w.engine(64 << 20);
         assert!(e.converge().unwrap().errors.is_empty());
         assert_eq!(w.export("claude-code:kept"), expected);
-        assert!(
+        // Before the archive's commit nothing was excised; after it the
+        // reopened archive rebuilds an index that missed the excision.
+        let in_force = point != "excision.after_embeddings_commit";
+        assert_eq!(
             w.reads()
                 .reader()
                 .unwrap()
                 .messages(&SessionId::parse("claude-code:victim").unwrap(), false)
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            in_force,
+            "{point}"
         );
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 1);
+        assert_eq!(
+            w.count("SELECT count(*) AS n FROM a.excision"),
+            i64::from(in_force)
+        );
     }
 }
 
 #[test]
-fn restart_finishes_vector_removal_without_discarding_other_purchased_vectors() {
+fn vectors_of_excised_texts_go_first_and_others_stay() {
     use polylogue_store::vectors::Vector;
     for point in [
-        "excision.between_commits",
+        "excision.after_embeddings_commit",
+        "excision.after_archive_commit",
         "excision.after_index_commit",
-        "excision.after_vector_commit",
     ] {
         fault::clear();
         let w = ClaudeHome::new();
@@ -117,6 +124,7 @@ fn restart_finishes_vector_removal_without_discarding_other_purchased_vectors() 
                     .hash
                     .clone();
                 let mut vectors = reader.vectors_writer().unwrap();
+                // A vector for a text the index does not hold is not stored.
                 let entries: Vec<_> = [&removed, &kept, &unrelated]
                     .into_iter()
                     .map(|hash| Vector {
@@ -143,39 +151,22 @@ fn restart_finishes_vector_removal_without_discarding_other_purchased_vectors() 
                 })
                 .is_err()
             );
-            assert!(matches!(
-                held.put(
-                    key,
-                    &[Vector {
-                        text_hash: removed.clone(),
-                        chunk: 0,
-                        values: vec![1.0]
-                    }]
-                ),
-                Err(StoreError::ExcisionPending)
-            ));
-            assert!(matches!(
-                held.fail(key, &removed, "late provider failure"),
-                Err(StoreError::ExcisionPending)
-            ));
-            assert!(matches!(
-                w.reads().reader().unwrap().status(),
-                Err(StoreError::ExcisionPending)
-            ));
+            // A build that read the text before the excision cannot store
+            // its vector afterwards.
+            let late = held.put(
+                key,
+                &[Vector {
+                    text_hash: removed.clone(),
+                    chunk: 0,
+                    values: vec![1.0],
+                }],
+            );
+            let late_failure = held.fail(key, &removed, "late provider failure");
+            if point == "excision.after_archive_commit" {
+                assert!(late.is_err() && late_failure.is_err(), "{point}");
+            }
         }
         fault::clear();
-        fault::arm("excision.after_vector_cleanup", "", Action::Fail, 0, 1);
-        assert!(polylogue_store::Archive::open_or_create(&w.root).is_err());
-        fault::clear();
-        let canonical = rusqlite::Connection::open(w.root.join("archive.db")).unwrap();
-        assert_eq!(
-            canonical
-                .query_row("SELECT count(*) FROM pending_vector_excision", [], |r| r
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        drop(canonical);
         for _ in 0..2 {
             let (mut e, _lock) = w.engine(64 << 20);
             assert!(e.converge().unwrap().errors.is_empty());
@@ -183,15 +174,17 @@ fn restart_finishes_vector_removal_without_discarding_other_purchased_vectors() 
             let reader = pool.reader().unwrap();
             let vectors = reader.vectors().unwrap();
             let done = vectors.done(key).unwrap();
-            assert!(
-                !done.contains(&removed),
-                "restart retained vectors/failures of the excised text"
-            );
+            // A stop before the archive's commit excised nothing.
+            let in_force = point != "excision.after_embeddings_commit";
+            let mut expected: std::collections::HashSet<_> = [kept.clone()].into_iter().collect();
+            if !in_force {
+                expected.insert(removed.clone());
+            }
+            assert_eq!(done, expected, "{point}");
             assert_eq!(
-                done,
-                [kept.clone(), unrelated.clone()].into_iter().collect()
+                vectors.status().unwrap().keys[0].failures,
+                u64::from(!in_force)
             );
-            assert_eq!(vectors.status().unwrap().keys[0].failures, 0);
         }
     }
 }

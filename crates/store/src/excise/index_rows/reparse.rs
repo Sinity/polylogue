@@ -30,7 +30,7 @@ pub(in crate::excise) fn clear_for_reparse(
          CREATE TEMP TABLE excision_reparse_input(pk INTEGER PRIMARY KEY,id TEXT NOT NULL);",
     )?;
     // Start with matching current texts. Freed texts join this table only
-    // after the complete session and input selections have been frozen.
+    // after the complete session and input selections are made.
     if let Some(text) = text {
         let mut stmt = i.prepare("SELECT id, hash, body FROM text")?;
         let mut rows = stmt.query([])?;
@@ -123,7 +123,7 @@ pub(in crate::excise) fn clear_for_reparse(
         "DELETE FROM event WHERE session_pk IS NULL AND input_pk IN (SELECT pk FROM temp.excision_reparse_input)",
         [],
     )?;
-    // Clear input-owned rows and their dependents through the same frozen set.
+    // Clear input-owned rows and their dependents through the same selection.
     let tables = crate::schema::index_columns(i)?;
     for (table, cols) in &tables {
         if table == "document"

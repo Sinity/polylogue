@@ -57,7 +57,6 @@ pub(super) fn scan(
         if prefix == MAGIC {
             plan.framed(key)?;
             feed(&[b' '; MAGIC.len()])?;
-            let mut ordinal = 0;
             while reader.position() < length {
                 let at = reader.position();
                 let mut encoded = [0; HEADER_LEN];
@@ -68,7 +67,7 @@ pub(super) fn scan(
                     .checked_add(header.length)
                     .filter(|end| *end <= length)
                     .ok_or_else(|| StoreError::Invalid("incomplete snapshot payload".into()))?;
-                plan.frame(key, ordinal, at, &header)?;
+                plan.frame(key, at, &header)?;
                 feed(&[b' '; HEADER_LEN])?;
                 let mut before = blake3::Hasher::new();
                 while reader.position() < end {
@@ -85,7 +84,6 @@ pub(super) fn scan(
                         "snapshot payload digest mismatch".into(),
                     ));
                 }
-                ordinal += 1;
             }
         } else {
             if !prefix.is_empty() && MAGIC.starts_with(prefix) {
@@ -114,7 +112,7 @@ pub(super) fn rewrite(
     key: &Chain,
     fill: u8,
 ) -> Result<()> {
-    plan.visit_frames(key, |ordinal, at, mut header| {
+    for (at, mut header) in plan.frames(key) {
         let start = at + HEADER_LEN as u64;
         let end = start + header.length;
         let mut reader = bytes.reader(plan, archive, store, key, start..end)?;
@@ -133,8 +131,8 @@ pub(super) fn rewrite(
         let digest = after.finalize().to_hex().to_string();
         if digest != header.digest {
             header.digest = digest;
-            plan.patch(&key.0, key.1, ordinal, at, &header.encode())?;
+            plan.patch(&key.0, key.1, at, &header.encode())?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }

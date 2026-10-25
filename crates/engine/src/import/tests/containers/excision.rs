@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn selected_member_retires_original_but_sibling_survives_restart_and_rebuild() {
+fn removing_a_member_removes_its_zip_and_keeps_the_other_member_across_rebuild() {
     let w = ClaudeHome::new();
     let (path, original) = archive(&w);
     let original_id = blake3::hash(&original).to_hex().to_string();
@@ -68,7 +68,7 @@ fn selected_member_retires_original_but_sibling_survives_restart_and_rebuild() {
 }
 
 #[test]
-fn nested_real_zips_retire_each_original_and_keep_both_levels_siblings() {
+fn nested_zips_are_all_removed_and_members_at_both_levels_stay() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let (inner, inner_bytes) = archive(&w);
@@ -96,7 +96,7 @@ fn nested_real_zips_retire_each_original_and_keep_both_levels_siblings() {
         .unwrap();
     assert_eq!(
         removed
-            .containers_retired
+            .zips_removed
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>(),
         [

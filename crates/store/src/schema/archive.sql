@@ -203,7 +203,7 @@ CREATE TABLE excision (
   scope         TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'text:<blake3>', 'note:<id>'
   reason        TEXT,
   created_at    INTEGER NOT NULL,
-  refused_json  TEXT NOT NULL DEFAULT '[]',  -- removed IDs, hashes and locations, never content: the (machine, path,
+  refused_json  TEXT NOT NULL DEFAULT '{}',  -- removed IDs, hashes and locations, never content: the (machine, path,
                                          --   device, inode) locations and the BLAKE3 of every revision and
                                          --   blob the excision removed; collect and store refuse them
   usage_json    TEXT NOT NULL DEFAULT '[]',  -- session scope: usage as numbers only, per (provider account,
@@ -305,89 +305,12 @@ CREATE TABLE delivery_event (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
 
-INSERT INTO meta(key,value) VALUES ('excision_revision','');
-INSERT INTO meta(key,value) VALUES ('excision_version','0');
-CREATE TRIGGER excision_revision_insert AFTER INSERT ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER excision_revision_update AFTER UPDATE ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER excision_revision_delete AFTER DELETE ON excision BEGIN
-    UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
-    UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-
--- Exact local cleanup intent survives separate archive/index/vector commits.
-CREATE TABLE pending_vector_excision (
-    text_hash BLOB PRIMARY KEY CHECK(length(text_hash)=32),
-    excision_id TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-
--- Only exact deletion intents of committed local excisions are replayed.
-CREATE TABLE pending_blob_excision (
-    hash BLOB PRIMARY KEY CHECK(length(hash)=32),
-    excision_id TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE vector_deletion_policy (
- excision_id TEXT PRIMARY KEY REFERENCES excision(id),
- version INTEGER NOT NULL,
- hashes_json TEXT NOT NULL
-) STRICT, WITHOUT ROWID;
-INSERT INTO meta(key,value) VALUES ('vector_policy_revision','');
-CREATE TRIGGER vector_policy_insert AFTER INSERT ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER vector_policy_update AFTER UPDATE ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER vector_policy_delete AFTER DELETE ON vector_deletion_policy BEGIN
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='vector_policy_revision';
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-
 -- Document excisions: the documents each one selected.
 CREATE TABLE excision_document (
   excision_id TEXT NOT NULL REFERENCES excision(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL,
   PRIMARY KEY(excision_id,document_id)
 ) STRICT, WITHOUT ROWID;
-CREATE TRIGGER document_policy_insert AFTER INSERT ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER document_policy_update AFTER UPDATE ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-CREATE TRIGGER document_policy_delete AFTER DELETE ON excision_document BEGIN
- UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='excision_version';
- UPDATE meta SET value=lower(hex(randomblob(16))) WHERE key='excision_revision';
-END;
-
--- Decoded bytes belong to their actual retained source envelope, separately
--- from raw byte extents. A late extraction is its own row batch.
-CREATE TABLE extracted_blob (
-  input TEXT NOT NULL REFERENCES input(id),
-  chain INTEGER NOT NULL,
-  source_start INTEGER NOT NULL CHECK(source_start>=0),
-  source_end INTEGER NOT NULL CHECK(source_end>source_start),
-  source_hash BLOB NOT NULL CHECK(length(source_hash)=32),
-  blob BLOB NOT NULL REFERENCES blob(hash),
-  state TEXT NOT NULL CHECK(state IN ('writing','present')),
-  commit_seq INTEGER NOT NULL CHECK(commit_seq>0),
-  PRIMARY KEY(input,chain,source_start,source_end,source_hash,blob)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX extracted_blob_hash ON extracted_blob(blob);
-CREATE INDEX extracted_blob_sequence ON extracted_blob(commit_seq);
 
 -- A physical member interpretation belongs to this exact original container.
 -- The relationship travels in the member observation's row batch.

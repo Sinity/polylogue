@@ -64,7 +64,6 @@ pub struct Reader<'a> {
 enum SnapshotState {
     Deferred,
     Ready,
-    Refused,
     IndexReplaced,
 }
 type IndexIdentity = (u64, u64);
@@ -110,8 +109,8 @@ pub struct RetainedInput {
 /// not be read is an error, not a 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
-    /// Canonically reserved byte extents that have not been admitted as present.
-    pub unfinished_inputs: Vec<crate::retention::Unfinished>,
+    /// Inputs whose bytes are still being written.
+    pub unfinished_inputs: Vec<crate::staging::Unfinished>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -361,7 +360,6 @@ impl Reader<'_> {
                 &self.pool.archive,
                 self.pool.cache_kib,
                 writable,
-                crate::excise::recovery::current(self.conn()?)?,
             )?);
         }
         Ok(std::cell::RefMut::map(vectors, |v| {
@@ -376,7 +374,6 @@ impl Reader<'_> {
             .expect("reader holds a connection until dropped");
         match self.snapshot.get() {
             SnapshotState::Ready => {}
-            SnapshotState::Refused => return Err(StoreError::ExcisionPending),
             SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             SnapshotState::Deferred => {
                 // Unused reservations hold no snapshot or publication lock.
@@ -417,12 +414,17 @@ impl Reader<'_> {
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
-                self.snapshot.set(SnapshotState::Refused);
                 if Some(index_identity(&self.pool.archive)?) != self.index_identity {
                     self.snapshot.set(SnapshotState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
-                crate::excise::recovery::check_snapshot(conn)?;
+                // One statement reads both databases while admission excludes
+                // writers, so the index and archive snapshots are a committed pair.
+                conn.query_row(
+                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM a.meta)",
+                    [],
+                    |_| Ok(()),
+                )?;
                 self.snapshot.set(SnapshotState::Ready);
             }
         }
@@ -684,7 +686,7 @@ impl Reader<'_> {
             unrecognized.push((w, n as u64));
         }
         Ok(Status {
-            unfinished_inputs: crate::retention::unfinished(c, "a.")?,
+            unfinished_inputs: crate::staging::unfinished(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM message")?,
             documents: count("SELECT COUNT(*) FROM document")?,
@@ -712,7 +714,7 @@ impl Reader<'_> {
         chain: i64,
         range: std::ops::Range<u64>,
     ) -> Result<()> {
-        crate::retention::require_range(self.conn()?, "a.", input, chain, range)
+        crate::staging::require_range(self.conn()?, "a.", input, chain, range)
     }
 
     pub fn stored_chain(

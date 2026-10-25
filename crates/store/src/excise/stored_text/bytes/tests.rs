@@ -227,13 +227,7 @@ fn many_snapshot_headers_share_one_verified_decode_and_rewrite_exact_payloads() 
     )
     .unwrap();
     assert_eq!(plan.counts().unwrap()["test"], count);
-    let mut frames = 0;
-    plan.visit_frames(&key, |_, _, _| {
-        frames += 1;
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(frames, count);
+    assert_eq!(plan.frames(&key).len() as u64, count);
     framing::rewrite(&archive, &store, &mut cache, &plan, &key, b' ').unwrap();
     let mut reader = cache
         .reader(&plan, &archive, &store, &key, 0..original.len() as u64)

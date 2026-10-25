@@ -91,7 +91,7 @@ fn a_refused_zip_member_prevents_container_and_sibling_publication() {
     assert_eq!(
         w.count("SELECT count(*) AS n FROM a.observation"),
         observations,
-        "a linked acquisition must not split a rejected reservation into separately published inputs"
+        "a refused ZIP stores none of its members"
     );
     assert!(
         !engine
@@ -152,7 +152,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
 }
 
 #[test]
-fn session_and_document_removal_retire_original_while_unrelated_input_still_removes() {
+fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_goes() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let path = w.dir.path().join("scoped.zip");
@@ -210,7 +210,7 @@ fn session_and_document_removal_retire_original_while_unrelated_input_still_remo
             .unwrap();
         if index == 0 {
             assert_eq!(
-                removed.containers_retired.as_slice(),
+                removed.zips_removed.as_slice(),
                 std::slice::from_ref(&original_id)
             );
         }

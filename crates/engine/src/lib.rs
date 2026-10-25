@@ -173,7 +173,7 @@ impl Config {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unfinished_inputs: Vec<polylogue_store::retention::Unfinished>,
+    pub unfinished_inputs: Vec<polylogue_store::staging::Unfinished>,
     /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -631,7 +631,7 @@ impl Engine {
         let started = Instant::now();
         let unfinished_inputs = self
             .writer
-            .reconcile_retained_bytes(Arc::clone(&self.blobs))?
+            .finish_writing(Arc::clone(&self.blobs))?
             .unfinished;
         self.load()?;
         self.restore_failed_writes()?;
@@ -833,9 +833,9 @@ impl Engine {
             {
                 Ok(()) => {}
                 Err(polylogue_store::StoreError::InputUnfinished { .. }) => {
-                    // A new full capture never substitutes current provider
-                    // bytes into the older reservation. Exact bytes can dedup;
-                    // edited bytes acquire a separate retained chain.
+                    // Bytes still being written are never replaced by what the
+                    // file holds now: equal bytes are stored again under the
+                    // same hash, edited bytes start a new chain.
                     change = Change::Rewritten;
                 }
                 Err(error) => return Err(error.into()),

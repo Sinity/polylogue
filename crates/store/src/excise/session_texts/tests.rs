@@ -51,7 +51,7 @@ fn texts_deduplicate_order_and_count_by_exact_bytes() {
 }
 
 #[test]
-fn a_many_text_session_visits_one_value_at_a_time_in_lexical_order() {
+fn a_many_text_session_visits_values_in_lexical_order() {
     let mut texts = SessionTexts::default();
     let value = |n| format!("session text {n:05} {}", "neutral payload ".repeat(32));
     for n in (0..10000).rev() {
@@ -59,16 +59,6 @@ fn a_many_text_session_visits_one_value_at_a_time_in_lexical_order() {
     }
     texts.insert(&value(5000)).unwrap();
     assert_eq!(texts.missing().unwrap(), 10000);
-    let conn = texts.0.as_ref().unwrap();
-    assert_eq!(conn.path(), Some(""));
-    let bytes: i64 = conn
-        .query_row(
-            "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(bytes > 1 << 20);
     let mut actual = blake3::Hasher::new();
     let mut count = 0;
     texts

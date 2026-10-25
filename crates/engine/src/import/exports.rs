@@ -1,4 +1,4 @@
-//! A complete retained export, framed and externally ordered before publication.
+//! A whole export, stored, then framed and ordered before its items are written.
 use super::*;
 use polylogue_model::{Accounting, Output};
 use polylogue_sources::export::{self, ExportParser, ExportState};
@@ -101,7 +101,7 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if matches!(plan.source, pool::Bytes::File) {
-            self.retain_export(plan, pass)?;
+            self.store_export(plan, pass)?;
         }
         let mut scratch = ExportItems::new()?;
         let pool::Bytes::Stored(chain) = &plan.source else {
@@ -124,7 +124,6 @@ impl Engine {
                 0,
                 true,
                 true,
-                None,
                 false,
                 pass,
             )?;
@@ -151,7 +150,6 @@ impl Engine {
                 0,
                 true,
                 false,
-                None,
                 snapshot,
                 pass,
             )?;
@@ -176,7 +174,6 @@ impl Engine {
                 order_from,
                 first,
                 false,
-                Some((range, polylogue_model::BlobHash::of(&bytes))),
                 snapshot,
                 pass,
             )?;
@@ -191,7 +188,6 @@ impl Engine {
             order_from,
             first,
             true,
-            None,
             snapshot,
             pass,
         )?;
@@ -199,10 +195,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Native watched exports retain their next source extent before parsing.
-    /// The existing revision chain assembles genuine appends; rewrites start
-    /// a new chain. Parsing then uses that pinned representation.
-    fn retain_export(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+    /// A watched export's new bytes are stored before it is parsed: an
+    /// append extends the chain, a rewrite starts a new one. Parsing then
+    /// reads the stored chain.
+    fn store_export(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
@@ -213,19 +209,18 @@ impl Engine {
         file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
         file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.piece_pos))?;
-        let captured = Captured::read(
-            &self.archive,
+        let prepared = self.archive.prepare_bytes(
             &self.config.blob_roots,
             (&mut file).take(plan.size - plan.piece_pos),
         )?;
         if FileFacts::of(&file.metadata()?) != before
-            || captured.prepared.len() != plan.size - plan.piece_pos
+            || prepared.len() != plan.size - plan.piece_pos
         {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
-        let bytes = captured.prepared.len();
-        self.writer.retain_bytes(
-            captured.prepared,
+        let bytes = prepared.len();
+        self.writer.store_bytes(
+            prepared,
             Batch {
                 input: plan.input.clone(),
                 change: plan.change.clone(),
@@ -271,26 +266,12 @@ impl Engine {
         order_from: u64,
         reset: bool,
         done: bool,
-        source: Option<(std::ops::Range<u64>, polylogue_model::BlobHash)>,
         snapshot: bool,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
         let mut files = Vec::new();
-        let mut extracted = Vec::new();
-        if !output.blobs.is_empty() {
-            let (range, source_hash) = match source {
-                Some(source) => source,
-                None => {
-                    let pool::Bytes::Stored(chain) = &plan.source else {
-                        return Err(std::io::Error::other(
-                            "decoded export metadata needs a retained source",
-                        )
-                        .into());
-                    };
-                    (0..plan.size, chain.range_hash(&self.blobs, 0, plan.size)?)
-                }
-            };
+        {
             for blob in std::mem::take(&mut output.blobs) {
                 let (piece, file) = self
                     .archive
@@ -301,11 +282,6 @@ impl Engine {
                     )
                     .into());
                 }
-                extracted.push(polylogue_store::retention::Extraction {
-                    range: range.clone(),
-                    source_hash,
-                    blob: piece.hash,
-                });
                 files.extend(file);
                 blobs.push(piece);
             }
@@ -331,15 +307,11 @@ impl Engine {
             parse: vec![parse],
             release: Default::default(),
         };
-        if files.is_empty() && extracted.is_empty() {
+        if files.is_empty() {
             self.writer.send(batch)?;
         } else {
-            for result in self.writer.sender()?.retain_group(
-                vec![polylogue_store::retention::PreparedBatch {
-                    batch,
-                    files,
-                    extracted,
-                }],
+            for result in self.writer.sender()?.store_group(
+                vec![polylogue_store::staging::PreparedBatch { batch, files }],
                 Arc::clone(&self.blobs),
             )? {
                 result?;

@@ -1,5 +1,6 @@
 use super::*;
-use crate::archive::{cache, open_read, open_write};
+use crate::archive::open_read;
+use polylogue_model::BlobHash;
 use std::collections::BTreeSet;
 
 fn id(body: &[u8]) -> String {
@@ -27,13 +28,13 @@ fn admit(writer: &Writer, store: &Arc<hashed_blobs::Store>, group: Vec<PreparedB
     let results = writer
         .sender()
         .unwrap()
-        .retain_group(group, Arc::clone(store))
+        .store_group(group, Arc::clone(store))
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
 }
 
 #[test]
-fn shared_selected_input_retires_each_containing_acquisition_and_keeps_unrelated_units() {
+fn a_shared_member_removes_each_zip_holding_it_and_keeps_unrelated_inputs() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
@@ -57,10 +58,7 @@ fn shared_selected_input_retires_each_containing_acquisition_and_keeps_unrelated
     writer.user(crate::user_writes::UserRequest::now("unrelated-note".into(), crate::user_writes::UserWrite::AddNote { note: serde_json::from_value(serde_json::json!({"kind":"note","value":"unrelated authored note","author":"operator","targets":["repo:synthetic"]})).unwrap() })).unwrap();
     let removed = remove(&writer, Arc::clone(&store), "shared-member").unwrap();
     assert_eq!(
-        removed
-            .containers_retired
-            .into_iter()
-            .collect::<BTreeSet<_>>(),
+        removed.zips_removed.into_iter().collect::<BTreeSet<_>>(),
         [id(ORIGINAL), id(other)].into_iter().collect()
     );
     assert_eq!(
@@ -120,7 +118,7 @@ fn nested_container_closure_is_iterative_beyond_sixty_four_levels() {
     }
     admit(&writer, &store, group);
     let removed = remove(&writer, store, "nested-member").unwrap();
-    assert_eq!(removed.containers_retired.len(), 70);
+    assert_eq!(removed.zips_removed.len(), 70);
     assert_eq!(removed.inputs_removed.len(), 71);
     assert_eq!(
         open_read(&archive.archive_db())
@@ -132,45 +130,8 @@ fn nested_container_closure_is_iterative_beyond_sixty_four_levels() {
 }
 
 #[test]
-fn malformed_or_missing_container_basis_refuses_before_mutation() {
-    for cycle in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-        let writer = Writer::start(&archive).unwrap();
-        let store = Arc::new(hashed_blobs::Store::open(&archive.root, vec![], 0o600).unwrap());
-        admit(&writer, &store, linked(&archive, "bad", false));
-        let db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-        if cycle {
-            // Forge a two-node cycle with otherwise valid immutable source facts.
-            db.execute(
-                "INSERT INTO observation_container SELECT id,?1,1 FROM observation WHERE input=?2",
-                rusqlite::params![id(MEMBER), id(ORIGINAL)],
-            )
-            .unwrap();
-        } else {
-            db.execute_batch("DELETE FROM extent WHERE input IN (SELECT container_input FROM observation_container)").unwrap();
-        }
-        let before: i64 = db
-            .query_row("SELECT count(*) FROM extent", [], |r| r.get(0))
-            .unwrap();
-        assert!(remove(&writer, Arc::clone(&store), "malformed").is_err());
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            before
-        );
-        assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
-    }
-}
-
-#[test]
 #[cfg(feature = "faults")]
-fn committed_container_retirement_replays_pending_private_cleanup_after_restart() {
+fn reopening_deletes_the_files_of_a_committed_zip_removal() {
     crate::fault::clear();
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -178,13 +139,13 @@ fn committed_container_retirement_replays_pending_private_cleanup_after_restart(
     let store = Arc::new(hashed_blobs::Store::open(&archive.root, vec![], 0o600).unwrap());
     admit(&writer, &store, linked(&archive, "interrupted", false));
     crate::fault::arm(
-        "excision.before_blob_delete",
+        "blob.before_delete",
         &id(ORIGINAL),
         crate::fault::Action::Fail,
         0,
         1,
     );
-    assert!(remove(&writer, Arc::clone(&store), "interrupted-retirement").is_err());
+    assert!(remove(&writer, Arc::clone(&store), "interrupted-removal").is_err());
     crate::fault::clear();
     drop(writer);
     drop(lock);
@@ -200,9 +161,12 @@ fn committed_container_retirement_replays_pending_private_cleanup_after_restart(
         0
     );
     assert_eq!(
-        db.query_row("SELECT count(*) FROM pending_blob_excision", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
+        db.query_row(
+            "SELECT count(*) FROM blob WHERE state = 'deleting'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
         0
     );
 }
@@ -332,7 +296,7 @@ fn dry_run_reports_originals_without_changing_linked_bytes_or_policy() {
         )
         .unwrap();
     assert!(result.dry_run);
-    assert_eq!(result.containers_retired, [id(ORIGINAL)]);
+    assert_eq!(result.zips_removed, [id(ORIGINAL)]);
     assert_eq!(
         result.inputs_removed.into_iter().collect::<BTreeSet<_>>(),
         [id(ORIGINAL), id(MEMBER)].into_iter().collect()

@@ -1,14 +1,15 @@
 use super::*;
 use crate::blobs::Stored;
-use crate::retention::PreparedBatch;
+use crate::staging::PreparedBatch;
 use crate::writer::{InFlight, InputKey};
 use crate::{Archive, Change, ImportMember, Observation, Piece, Writer};
+use polylogue_model::BlobHash;
 use std::sync::{Arc, Barrier};
 
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
 const MEMBER: &[u8] = b"synthetic independently retained member";
 
-// Store checks custody and canonical relationships; actual ZIP decoding is tested in Engine.
+// Store checks how ZIPs and members are stored and linked; ZIP decoding is tested in Engine.
 fn stage(
     archive: &Archive,
     body: &[u8],
@@ -52,7 +53,6 @@ fn stage(
     PreparedBatch {
         batch,
         files: vec![prepared],
-        extracted: vec![],
     }
 }
 
@@ -112,7 +112,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         let outcomes = writer
             .sender()
             .unwrap()
-            .retain_group(linked(&archive, acquisition, true), Arc::clone(&store))
+            .store_group(linked(&archive, acquisition, true), Arc::clone(&store))
             .unwrap();
         assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
     }
@@ -146,10 +146,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         2
     );
     let removed = remove(&writer, store, "linked-member").unwrap();
-    assert_eq!(
-        removed.containers_retired,
-        [BlobHash::of(ORIGINAL).to_string()]
-    );
+    assert_eq!(removed.zips_removed, [BlobHash::of(ORIGINAL).to_string()]);
     assert_eq!(count("excision"), 1);
     assert_eq!(count("extent"), 0);
     assert_eq!(count("observation_container"), 0);
@@ -166,7 +163,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
         writer
             .sender()
             .unwrap()
-            .retain_group(vec![initial], Arc::clone(&store))
+            .store_group(vec![initial], Arc::clone(&store))
             .unwrap()
             .pop()
             .unwrap()
@@ -177,7 +174,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
             let outcomes = writer
                 .sender()
                 .unwrap()
-                .retain_group(group, Arc::clone(&store))
+                .store_group(group, Arc::clone(&store))
                 .unwrap();
             assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
             assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
@@ -190,7 +187,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 barrier.wait();
-                sender.retain_group(group, store).unwrap()
+                sender.store_group(group, store).unwrap()
             })
         };
         let exclusion = {
@@ -250,7 +247,7 @@ fn a_container_in_one_acquisition_can_be_a_real_member_in_another() {
             }),
         ),
     ];
-    let results = writer.sender().unwrap().retain_group(group, store).unwrap();
+    let results = writer.sender().unwrap().store_group(group, store).unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     let pool = crate::ReadPool::open(&archive).unwrap();
     let (members, _) = pool.reader().unwrap().unindexed_import_members().unwrap();

@@ -14,7 +14,7 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
-fn an_index_left_unsynced_is_set_aside_and_rebuilt() {
+fn an_index_left_unsynced_is_rebuilt() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
@@ -33,49 +33,57 @@ fn an_index_left_unsynced_is_set_aside_and_rebuilt() {
 }
 
 #[test]
-fn conflicting_history_refuses_before_blob_only_cleanup() {
-    for retired in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
-        let hash = store
-            .put(b"synthetic unresolved history".as_slice(), 1)
-            .unwrap();
-        let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-        canonical.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
-        let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-        crate::excise::recovery::acknowledge(&canonical, &index).unwrap();
-        canonical
-            .execute(
-                "UPDATE excision SET scope='session:claude-code:other' WHERE id='removed'",
+fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    let bytes = vec![7u8; crate::blobs::INLINE_LIMIT + 1];
+    let hash = store.put(bytes.as_slice(), 1).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index
+        .execute(
+            "INSERT INTO meta VALUES ('stale-marker', 'from before')",
+            [],
+        )
+        .unwrap();
+    drop(index);
+    // A stop after the archive's commit: the excision is recorded and its
+    // blob marked, but the index and the file were not reached.
+    let archive_db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    archive_db.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
+    archive_db
+        .execute(
+            "INSERT INTO blob(hash,size,stored_size,place,encoding,state) VALUES (?1,?2,?2,'file','plain','deleting')",
+            rusqlite::params![&hash.0[..], bytes.len() as i64],
+        )
+        .unwrap();
+    drop(archive_db);
+    drop(lock);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert!(!store.contains(&hash));
+    let archive_db = open_read(&archive.archive_db()).unwrap();
+    assert_eq!(
+        archive_db
+            .query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let index = open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key='stale-marker'",
                 [],
+                |r| r.get::<_, i64>(0)
             )
-            .unwrap();
-        canonical
-            .execute(
-                "INSERT INTO pending_blob_excision VALUES (?1,'pending')",
-                [&hash.0[..]],
-            )
-            .unwrap();
-        assert!(!crate::excise::vector_cleanup::pending(&canonical).unwrap());
-        drop(index);
-        if retired {
-            fs::rename(archive.index_db(), archive.root.join("index.db.v26")).unwrap();
-        }
-        drop(canonical);
-        drop(lock);
-        assert!(matches!(
-            Archive::open_or_create(dir.path()),
-            Err(StoreError::ExcisionConflict { .. })
-        ));
-        assert!(store.contains(&hash));
-        let canonical = open_read(&archive.archive_db()).unwrap();
-        assert!(crate::excise::blob_cleanup::pending(&canonical).unwrap());
-    }
+            .unwrap(),
+        0
+    );
+    assert!(!crate::excise::index_behind(&archive_db, &index).unwrap());
 }
 
 #[test]
-fn previous_row_format_is_retired_before_a_new_index_is_opened() {
+fn an_index_of_another_version_is_replaced_and_the_archive_kept() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();

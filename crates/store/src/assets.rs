@@ -162,7 +162,7 @@ impl Reader<'_> {
             [],
             |r| r.get(0),
         )?;
-        // A linked group's original is material custody, not one of its attachment members.
+        // A ZIP is the source of its members, not one of the attachments among them.
         let mut originals =
             std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
         let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.acquisition') FROM a.observation o

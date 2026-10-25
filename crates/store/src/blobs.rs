@@ -1,8 +1,8 @@
 //! The blob layer: inputs, revisions and extents over `hashed-blobs`
 //! (architecture 4.2). A blob under 128 KiB lives inline in `archive.db`,
 //! zstd-compressed; larger ones are files of seekable zstd frames. Hashing
-//! and compression run before Writer admission. The Writer reserves canonical
-//! ownership before installing private file stages, then finalizes completion.
+//! and compression run before the writer; the writer writes a file's blob row
+//! (`writing`) before installing the file, then marks it `present`.
 
 use crate::Result;
 use polylogue_model::BlobHash;
@@ -158,6 +158,70 @@ impl Piece {
         };
         Ok(Self { hash, size, stored })
     }
+}
+
+/// Marks a blob for deletion when no archive row refers to it, and says
+/// whether it did. The caller holds the archive writer and has checked that
+/// no index row refers to it; [`delete_marked`] removes the file after the
+/// caller's transaction commits.
+pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<bool> {
+    refuse_delta_base(archive, hash)?;
+    Ok(archive.execute(
+        "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state IN ('present', 'writing')
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
+        [&hash.0[..]],
+    )? > 0)
+}
+
+/// Refuses when `hash` is the base another blob is stored as a delta of.
+pub(crate) fn refuse_delta_base(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<()> {
+    let delta_base: bool = archive.query_row(
+        "SELECT EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
+        [&hash.0[..]],
+        |r| r.get(0),
+    )?;
+    if delta_base {
+        return Err(crate::StoreError::ExcisionBlobReferenced(*hash));
+    }
+    Ok(())
+}
+
+/// Deletes the files of blobs marked for deletion, then their rows. The
+/// writer runs it after each excision and when it starts, so a stop between
+/// the commit and the file deletion leaves nothing behind.
+pub(crate) fn delete_marked(
+    archive: &rusqlite::Connection,
+    store: &hashed_blobs::Store,
+) -> Result<u64> {
+    let marked: Vec<(Vec<u8>, String)> = archive
+        .prepare("SELECT hash, place FROM blob WHERE state = 'deleting'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (hash, place) in &marked {
+        let referenced: bool = archive.query_row(
+            "SELECT EXISTS(SELECT 1 FROM extent WHERE blob = ?1)
+                 OR EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
+            [hash],
+            |r| r.get(0),
+        )?;
+        let hash = BlobHash(
+            hash.as_slice()
+                .try_into()
+                .map_err(|_| crate::StoreError::Invalid("invalid blob hash".into()))?,
+        );
+        if referenced {
+            return Err(crate::StoreError::ExcisionBlobReferenced(hash));
+        }
+        if place == "file" {
+            crate::fault::check("blob.before_delete", &hash.to_string())?;
+            match store.delete(&hashed_blobs::Hash(hash.0)) {
+                Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        archive.execute("DELETE FROM blob WHERE hash = ?1", [&hash.0[..]])?;
+    }
+    Ok(marked.len() as u64)
 }
 
 /// Reads a stored blob back whole: inline rows decompress, files go

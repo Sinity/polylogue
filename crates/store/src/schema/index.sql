@@ -599,12 +599,6 @@ CREATE TABLE file_edit (
   PRIMARY KEY (session_pk, path, tool_call_pk)
 ) STRICT, WITHOUT ROWID;
 
--- Applied removal rules survive as receipts until an index rebuild verifies
--- their inclusion in the archive. No removed content is retained here.
-CREATE TABLE excision_applied (
-  id_hash BLOB PRIMARY KEY CHECK(length(id_hash)=32),
-  policy_hash BLOB NOT NULL CHECK(length(policy_hash)=32)
-) STRICT, WITHOUT ROWID;
 
 -- Text that is not a conversation (claude.ai documents, for example), with the
 -- same preferred-version rule as messages and interned text.

@@ -9,11 +9,11 @@ fn prompt(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn watched_export_refusal_never_publishes_unowned_bytes() {
+fn a_refused_watched_export_installs_no_file() {
     let world = ClaudeHome::new();
     let dir = world.config(64).spool_dir("ai-studio");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("custody.json");
+    let path = dir.join("stored.json");
     let original = prompt("synthetic watched acquisition");
     let hash = hashed_blobs::Hash::of(&original);
     std::fs::write(&path, &original).unwrap();
@@ -35,12 +35,12 @@ fn watched_export_refusal_never_publishes_unowned_bytes() {
 }
 
 #[test]
-fn watched_export_pending_capture_recovers_only_its_reserved_version() {
-    for point in ["import.reserved", "import.installed"] {
+fn a_stopped_watched_export_finishes_only_its_stored_bytes() {
+    for point in ["import.install", "import.installed"] {
         let world = ClaudeHome::new();
         let dir = world.config(64).spool_dir("ai-studio");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("custody.json");
+        let path = dir.join("stored.json");
         let original = prompt("synthetic watched reserved version");
         let hash = hashed_blobs::Hash::of(&original);
         std::fs::write(&path, &original).unwrap();
@@ -56,7 +56,7 @@ fn watched_export_pending_capture_recovers_only_its_reserved_version() {
         let (mut engine, _lock) = engine(&world, 64);
         let pass = engine.converge().unwrap();
         assert!(pass.errors.is_empty(), "{point}: {:?}", pass.errors);
-        if point == "import.reserved" {
+        if point == "import.install" {
             assert_eq!(pass.unfinished_inputs.len(), 1);
             assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);
         } else {

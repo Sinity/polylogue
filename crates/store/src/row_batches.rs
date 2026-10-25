@@ -3,7 +3,7 @@
 //! A row batch is what one archive write added and Sinex holds whole: a
 //! revision with its input, extents, blob rows and observations; a note with
 //! its targets and relations; an excision; a setting; a delivery; a later
-//! observation; a later delivery event; or an extracted blob. Batches are
+//! observation; or a later delivery event. Batches are
 //! ordered by the archive's write counter (`commit_seq`), then kind and key.
 //! The archive only appends batches once Sinex holds it (excision refuses),
 //! so a batch's position in that order never changes.
@@ -14,7 +14,7 @@
 use crate::{Archive, Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::types::{Value as Sql, ValueRef};
-use rusqlite::{Connection, MAIN_DB, OptionalExtension, params, params_from_iter};
+use rusqlite::{Connection, MAIN_DB, params, params_from_iter};
 use std::io::Read;
 use std::path::Path;
 
@@ -27,7 +27,7 @@ pub struct RowBatch {
     pub commit_seq: i64,
     pub kind: String,
     /// `<input>/<number>` for a revision, a JSON array of the primary key for
-    /// a delivery event or an extracted blob, and the row ID otherwise.
+    /// a delivery event, and the row ID otherwise.
     pub key: String,
 }
 
@@ -78,7 +78,6 @@ const TABLES: &[&str] = &[
     "revision",
     "blob",
     "extent",
-    "extracted_blob",
     "machine",
     "observation",
     "observation_container",
@@ -87,7 +86,6 @@ const TABLES: &[&str] = &[
     "note_relation",
     "excision",
     "excision_document",
-    "vector_deletion_policy",
     "setting",
     "delivery",
     "delivery_event",
@@ -100,10 +98,6 @@ const COMMIT_BATCHES: &str = "
     UNION ALL SELECT 'excision', id FROM excision WHERE commit_seq = ?1
     UNION ALL SELECT 'setting', id FROM setting WHERE commit_seq = ?1
     UNION ALL SELECT 'delivery', id FROM delivery WHERE commit_seq = ?1
-    UNION ALL SELECT 'extracted_blob',
-        json_array(input, chain, source_start, source_end, lower(hex(source_hash)),
-                   lower(hex(blob)))
-        FROM extracted_blob WHERE commit_seq = ?1
     UNION ALL SELECT 'observation', id FROM observation WHERE commit_seq = ?1
     UNION ALL SELECT 'delivery_event', json_array(delivery, what, at)
         FROM delivery_event WHERE commit_seq = ?1";
@@ -116,7 +110,6 @@ const NEXT_COMMIT: &str = "SELECT MIN(seq) FROM (
     UNION ALL SELECT MIN(commit_seq) FROM excision WHERE commit_seq > ?1
     UNION ALL SELECT MIN(commit_seq) FROM setting WHERE commit_seq > ?1
     UNION ALL SELECT MIN(commit_seq) FROM delivery WHERE commit_seq > ?1
-    UNION ALL SELECT MIN(commit_seq) FROM extracted_blob WHERE commit_seq > ?1
     UNION ALL SELECT MIN(commit_seq) FROM observation WHERE commit_seq > ?1
     UNION ALL SELECT MIN(commit_seq) FROM delivery_event WHERE commit_seq > ?1)";
 
@@ -266,33 +259,6 @@ impl Snapshot {
                     &args,
                 )?;
             }
-            "extracted_blob" => {
-                let args = extracted_key(&batch.key)?;
-                let input = match &args[0] {
-                    Sql::Text(input) => input.clone(),
-                    _ => String::new(),
-                };
-                let matching = "input = ?1 AND chain = ?2 AND source_start = ?3
-                    AND source_end = ?4 AND source_hash = ?5 AND blob = ?6";
-                let written: Option<bool> = self
-                    .conn
-                    .query_row(
-                        &format!("SELECT state = 'present' FROM extracted_blob WHERE {matching}"),
-                        params_from_iter(&args),
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if written == Some(false) {
-                    return Err(unfinished_input(&input));
-                }
-                self.require_present(&input, "SELECT ?6", &args)?;
-                add("blob", &format!("{PLAIN_BLOB} WHERE hash = ?6"), &args)?;
-                add(
-                    "extracted_blob",
-                    &format!("SELECT * FROM extracted_blob WHERE {matching}"),
-                    &args,
-                )?;
-            }
             "observation" => {
                 // Wait for the bytes of the observed input and of the container
                 // it was read from.
@@ -368,11 +334,6 @@ impl Snapshot {
                 add(
                     "excision_document",
                     "SELECT * FROM excision_document WHERE excision_id = ?1 ORDER BY document_id",
-                    &key,
-                )?;
-                add(
-                    "vector_deletion_policy",
-                    "SELECT * FROM vector_deletion_policy WHERE excision_id = ?1",
                     &key,
                 )?;
                 add("observation", &format!("{excised} ORDER BY rowid"), &key)?;
@@ -599,25 +560,6 @@ fn revision_key(key: &str) -> Result<(&str, i64)> {
         .and_then(|(input, number)| Some((input, number.parse().ok()?)))
         .filter(|(_, number)| *number > 0)
         .ok_or_else(|| invalid("invalid revision batch key"))
-}
-
-/// The extracted blob primary key, in column order.
-fn extracted_key(key: &str) -> Result<Vec<Sql>> {
-    let (input, chain, start, end, source, blob): (String, i64, i64, i64, String, String) =
-        serde_json::from_str(key).map_err(|_| invalid("invalid extracted blob batch key"))?;
-    let hash = |hex: &str| {
-        BlobHash::parse(hex)
-            .map(|hash| Sql::Blob(hash.0.to_vec()))
-            .map_err(|_| invalid("invalid extracted blob batch key"))
-    };
-    Ok(vec![
-        Sql::Text(input),
-        Sql::Integer(chain),
-        Sql::Integer(start),
-        Sql::Integer(end),
-        hash(&source)?,
-        hash(&blob)?,
-    ])
 }
 
 fn unfinished_input(input: &str) -> StoreError {

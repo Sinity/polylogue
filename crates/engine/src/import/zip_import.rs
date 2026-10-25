@@ -1,4 +1,5 @@
-//! A ZIP is one linked acquisition: every representation is reserved before publication.
+//! A ZIP import stores the ZIP as one input and each file member as its own
+//! input that names the ZIP, all in one writer group.
 use super::*;
 
 impl Engine {
@@ -11,46 +12,46 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {
         let acquisition = uuid::Uuid::now_v7().to_string();
-        let (original, mut members) = self.archive.inspect_and_prepare_bytes(
-            &self.config.blob_roots,
-            &mut file,
-            |scratch| {
-                let mut archive = zip::ZipArchive::new(scratch)
-                    .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
-                let mut captured = Vec::new();
-                for index in 0..archive.len() {
-                    let mut member = archive.by_index(index).map_err(|e| {
-                        std::io::Error::other(format!("{} member {index}: {e}", path.display()))
-                    })?;
-                    if !member.is_file() {
-                        continue;
-                    }
-                    let name = member.name().to_owned();
-                    let declared = member.size();
-                    let mut bytes =
-                        Captured::read(&self.archive, &self.config.blob_roots, &mut member)?;
-                    if bytes.prepared.len() != declared {
-                        return Err(std::io::Error::other(
-                            "ZIP member length differs from its declaration",
-                        )
-                        .into());
-                    }
-                    bytes.member = Some(polylogue_store::ImportMember {
-                        version: 1,
-                        acquisition: acquisition.clone(),
-                        member: name.clone(),
-                        format: None,
-                        container: None,
-                    });
-                    captured.push((
-                        PathBuf::from(format!("{}!/{name}", path.display())),
-                        index as u64,
-                        bytes,
-                    ));
+        let mut members = {
+            let mut archive = zip::ZipArchive::new(&mut file)
+                .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
+            let mut captured = Vec::new();
+            for index in 0..archive.len() {
+                let mut member = archive.by_index(index).map_err(|e| {
+                    std::io::Error::other(format!("{} member {index}: {e}", path.display()))
+                })?;
+                if !member.is_file() {
+                    continue;
                 }
-                Ok(captured)
-            },
-        )?;
+                let name = member.name().to_owned();
+                let declared = member.size();
+                let mut bytes =
+                    Captured::stream(&self.archive, &self.config.blob_roots, &mut member)?;
+                if bytes.prepared.len() != declared {
+                    return Err(std::io::Error::other(
+                        "ZIP member length differs from its declaration",
+                    )
+                    .into());
+                }
+                bytes.member = Some(polylogue_store::ImportMember {
+                    version: 1,
+                    acquisition: acquisition.clone(),
+                    member: name.clone(),
+                    format: None,
+                    container: None,
+                });
+                captured.push((
+                    PathBuf::from(format!("{}!/{name}", path.display())),
+                    index as u64,
+                    bytes,
+                ));
+            }
+            captured
+        };
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
+        let original = self
+            .archive
+            .prepare_bytes(&self.config.blob_roots, &mut file)?;
         unchanged(&file, facts, original.len())?;
         let original_id = original.hash().to_string();
         for (_, index, member) in &mut members {
@@ -102,19 +103,18 @@ impl Engine {
                 stored: polylogue_store::blobs::Stored::File { stored_size: 0 },
             });
             metadata.push((at, origin, facts, batch.input.clone()));
-            group.push(polylogue_store::retention::PreparedBatch {
+            group.push(polylogue_store::staging::PreparedBatch {
                 batch,
                 files: vec![captured.prepared],
-                extracted: Vec::new(),
             });
         }
         let outcomes = self
             .writer
             .sender()?
-            .retain_group(group, Arc::clone(&self.blobs))?;
+            .store_group(group, Arc::clone(&self.blobs))?;
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
             let admitted = match outcome {
-                Ok(retained) => retained,
+                Ok(stored) => stored,
                 Err(error) => {
                     report.pass.errors.push(error.to_string());
                     continue;

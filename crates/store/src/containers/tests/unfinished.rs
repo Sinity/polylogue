@@ -1,11 +1,12 @@
 use super::*;
 use crate::fault::{self, Action};
-use crate::retention::UnfinishedState;
 use crate::row_batches::Snapshot;
+use crate::staging::UnfinishedState;
+use polylogue_model::BlobHash;
 
 #[test]
-fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
-    for point in ["import.reserved", "import.installed"] {
+fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
+    for point in ["import.install", "import.installed"] {
         fault::clear();
         let dir = tempfile::tempdir().unwrap();
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -21,7 +22,7 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
         let outcomes = writer
             .sender()
             .unwrap()
-            .retain_group(linked(&archive, "unfinished", false), Arc::clone(&store))
+            .store_group(linked(&archive, "unfinished", false), Arc::clone(&store))
             .unwrap();
         assert!(outcomes.iter().any(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
@@ -37,28 +38,24 @@ fn linked_reservations_remain_owned_across_reserved_and_installed_failures() {
         }
         assert!(
             refused >= 2,
-            "unfinished original and its member relationship must not publish"
+            "an unfinished ZIP and its member are not sent to Sinex"
         );
-        assert!(matches!(
-            remove(&writer, Arc::clone(&store), "unfinished-removal"),
-            Err(StoreError::InputUnfinished { .. })
-        ));
         drop(source);
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
-        let reconciled = writer.reconcile_retained_bytes(Arc::clone(&store)).unwrap();
-        if point == "import.reserved" {
-            assert_eq!(reconciled.unfinished.len(), 1);
-            assert_eq!(reconciled.unfinished[0].blob, BlobHash::of(ORIGINAL));
-            assert_eq!(reconciled.unfinished[0].state, UnfinishedState::Missing);
+        let finished = writer.finish_writing(Arc::clone(&store)).unwrap();
+        if point == "import.install" {
+            assert_eq!(finished.unfinished.len(), 1);
+            assert_eq!(finished.unfinished[0].blob, BlobHash::of(ORIGINAL));
+            assert_eq!(finished.unfinished[0].state, UnfinishedState::Missing);
             let outcomes = writer
                 .sender()
                 .unwrap()
-                .retain_group(linked(&archive, "exact-retry", false), Arc::clone(&store))
+                .store_group(linked(&archive, "exact-retry", false), Arc::clone(&store))
                 .unwrap();
             assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
         } else {
-            assert!(reconciled.unfinished.is_empty());
+            assert!(finished.unfinished.is_empty());
         }
         let source = Snapshot::open(&archive.root).unwrap();
         for batch in source.batches(None, 10_000).unwrap() {

@@ -78,7 +78,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -89,7 +89,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "credential-masking"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.5.20#3d0c30b2e9166b550c08e346802fc47648e60396"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.6.0#efd549646a8e83c082d5898539a154d06afeffdd"
 
 [[package]]
 name = "crossbeam-channel"
@@ -734,7 +734,7 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.5.20#3d0c30b2e9166b550c08e346802fc47648e60396"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.6.0#efd549646a8e83c082d5898539a154d06afeffdd"
 dependencies = [
  "blake3",
  "clap",
@@ -748,7 +748,7 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.5.20#3d0c30b2e9166b550c08e346802fc47648e60396"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.6.0#efd549646a8e83c082d5898539a154d06afeffdd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1724,7 +1724,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.5.20#3d0c30b2e9166b550c08e346802fc47648e60396"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.6.0#efd549646a8e83c082d5898539a154d06afeffdd"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -3386,7 +3386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3427,7 +3427,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

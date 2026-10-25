@@ -138,21 +138,6 @@ fn interrupted_admission_does_not_wait_for_publication() {
     );
 }
 
-#[test]
-fn rejected_privacy_snapshot_releases_the_admission_lock() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let canonical = open_write(&fixture.archive.archive_db(), cache::SETUP).unwrap();
-    canonical.execute("INSERT INTO meta(key,value) VALUES ('excision_version','1'),('excision_revision','synthetic') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
-    let pool = fixture.reads().unwrap();
-    assert!(matches!(
-        pool.reader().unwrap().change_position(),
-        Err(StoreError::ExcisionPending)
-    ));
-    let file = File::open(fixture.archive.archive_db()).unwrap();
-    file.try_lock().unwrap();
-}
-
 fn mark_index_unsynced(archive: &Archive) {
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
     let tx =
@@ -189,19 +174,15 @@ fn reserved_old_index_refuses_while_idle_connections_refresh() {
 }
 
 #[test]
-fn pinned_pair_preserves_the_existing_index_retirement_refusal() {
+fn a_pinned_reader_keeps_its_view_while_the_index_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let old = reader.change_position().unwrap();
-    mark_index_unsynced(&fixture.archive);
-    assert!(
-        matches!(fixture.archive.prepare_index(),Err(StoreError::Invalid(message)) if message.contains("still in use"))
-    );
+    replace_index(&fixture.archive);
     assert_eq!(reader.change_position().unwrap(), old);
     drop(reader);
-    fixture.archive.prepare_index().unwrap();
     let current = pool.reader().unwrap().change_position().unwrap();
     assert_ne!(current.generation, old.generation);
 }

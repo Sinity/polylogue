@@ -1,7 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
-pub(crate) mod retired;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -130,7 +129,7 @@ impl Archive {
         }
         let archive = Self::at(root);
         fs::create_dir_all(archive.blobs_dir())?;
-        let mut a = open_write(&archive.archive_db(), cache::SETUP)?;
+        let a = open_write(&archive.archive_db(), cache::SETUP)?;
         let identity_publication = crate::publication::write(&a)?;
         schema::ensure_archive(&a)?;
         // The archive's identity: Sinex keys this archive's published rows
@@ -143,100 +142,52 @@ impl Archive {
         let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        archive.validate_excision_indexes(&a)?;
-        crate::excise::vector_cleanup::recover(&archive, &mut a)?;
-        crate::excise::blob_cleanup::recover(&archive, &a)?;
+        // Blob files an excision marked for deletion before a stop.
+        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
+        crate::blobs::delete_marked(&a, &store)?;
         archive.prepare_index()?;
         generation::open(&archive)?;
         Ok((archive, ArchiveLock { _file: file }))
     }
 
-    pub(crate) fn validate_excision_indexes(&self, canonical: &Connection) -> Result<()> {
-        if self.index_db().exists() {
-            validate_index_excision(canonical, &open_read(&self.index_db())?)?;
-        }
-        retired::validate(self, canonical)
-    }
-
-    /// The caller holds the archive lock. A newly created index has no old
-    /// content; future parses use the archive's standing excision rules.
+    /// The caller holds the archive lock. An index built by another version,
+    /// left unsynced by a stop in the middle of a first build, or missing an
+    /// excision the archive holds is deleted and created again empty; the
+    /// loop then rebuilds it from the stored inputs.
     pub(crate) fn prepare_index(&self) -> Result<()> {
-        let canonical = open_read(&self.archive_db())?;
-        let _publication = crate::publication::write(&canonical)?;
-        self.validate_excision_indexes(&canonical)?;
-        retired::remove(self, &canonical)?;
-        retire_old_index(self, &canonical)?;
-        crate::fault::check("index.after_retirement", "")?;
+        let archive = open_read(&self.archive_db())?;
+        let _write = crate::publication::write(&archive)?;
+        if self.index_db().exists() && self.index_out_of_date(&archive)? {
+            for suffix in ["", "-wal", "-shm"] {
+                match fs::remove_file(self.root.join(format!("index.db{suffix}"))) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            File::open(&self.root)?.sync_all()?;
+        }
+        crate::fault::check("index.after_removal", "")?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
         crate::fault::check("index.after_creation", "")?;
         if fresh {
-            let tx = index.unchecked_transaction()?;
-            crate::excise::recovery::acknowledge(&canonical, &tx)?;
-            tx.commit()?;
+            crate::excise::mark_applied(&archive, &index)?;
         }
-        drop(index);
-        retired::remove(self, &canonical)?;
         Ok(())
     }
-}
 
-/// An index built by another version, or left unsynced by a stop in the
-/// middle of a first build, is moved aside until its replacement is created,
-/// then disposed of. Removal rules are checked before retiring it.
-fn retire_old_index(archive: &Archive, canonical: &Connection) -> Result<()> {
-    let path = archive.index_db();
-    if !path.exists() {
-        return Ok(());
-    }
-    let conn = open_read(&path)?;
-    let found = schema::version(&conn)?;
-    let has_meta: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
-        [],
-        |r| r.get(0),
-    )?;
-    // Check known removal rules before every retirement path, including an
-    // ordinary schema upgrade and an interrupted first build.
-    let excision_stale = validate_index_excision(canonical, &conn)?;
-    let unsynced = has_meta && schema::unsynced(&conn)?;
-    drop(conn);
-    let suffix_for = if excision_stale {
-        format!("excision-{}", uuid::Uuid::now_v7())
-    } else if unsynced {
-        "unsynced".to_owned()
-    } else if found == 0 || found == schema::INDEX_VERSION {
-        return Ok(());
-    } else {
-        format!("v{found}")
-    };
-    retired::checkpoint(&path)?;
-    for suffix in ["", "-wal", "-shm"] {
-        let from = archive.root.join(format!("index.db{suffix}"));
-        let to = archive.root.join(format!("index.db.{suffix_for}{suffix}"));
-        if from.exists() {
-            if to.exists() {
-                fs::remove_file(&to)?;
-            }
-            fs::rename(&from, to)?;
+    fn index_out_of_date(&self, archive: &Connection) -> Result<bool> {
+        let index = open_read(&self.index_db())?;
+        let found = schema::version(&index)?;
+        if found == 0 {
+            return Ok(false);
         }
+        Ok(found != schema::INDEX_VERSION
+            || schema::unsynced(&index)?
+            || crate::excise::index_behind(archive, &index)?)
     }
-    File::open(&archive.root)?.sync_all()?;
-    Ok(())
-}
-
-/// Preserve known removal rules before either cleanup or index retirement.
-fn validate_index_excision(canonical: &Connection, index: &Connection) -> Result<bool> {
-    let has_meta: bool = index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_meta {
-        return Ok(false);
-    }
-    crate::excise::recovery::needs_rebuild(canonical, index)
 }
 
 /// Turns copy-on-write off for a new, empty directory on btrfs, so files

@@ -36,10 +36,10 @@ recovery and preservation rules:
 
 | Store | Contents and recovery boundary |
 |---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; standing excision rules and extracted-blob ownership. [`schema.rs`](../crates/store/src/schema.rs) creates it at version 1, the only version, and refuses any other. |
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Canonical input identities, revisions, extents and observations; authored notes, settings, variants, kept results and deliveries; excision rules and blob rows. [`schema.rs`](../crates/store/src/schema.rs) creates it at version 1, the only version, and refuses any other. |
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages and documents, each with one shown version and the sources that hold it; search and derived products. It is rebuilt from the stored inputs when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
-| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors, provider failures and archive-bound deletion receipts. Exact deletion policy reconciliation preserve unrelated or subsequently repurchased vectors. This database is separate from the disposable index. |
-| [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed retained bytes. Canonical ownership determines retention; a filename's presence alone does not establish a complete admitted input. |
+| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart from the index so a rebuild does not buy them again. |
+| [`blobs/`](../crates/store/src/blobs.rs) | Content-addressed stored bytes. A file counts once its blob row says `present`; a row still `writing` is reported as unfinished. |
 
 Index rebuilds parse the stored inputs, including manual imports whose
 provider files have disappeared. Authored targets, recorded hashes and anchors
@@ -63,37 +63,29 @@ An unfinished index build has a durably synchronized marker and is rebuilt on
 reopen. Index replacement and an operating-system boot change replace the public
 generation; same-boot restarts preserve it. These mechanisms belong to
 [archive generation](../crates/store/src/archive/generation.rs) and
-[index retirement](../crates/store/src/archive/retired.rs), including validation
-that previously applied removal rules are still present.
+[`Archive::prepare_index`](../crates/store/src/archive.rs), which also rebuilds
+an index that holds fewer excisions than the archive.
 
 ## Acquisition, interpretation and provenance
 
-[Import](../crates/engine/src/import.rs) and watched collection retain the bytes
-that parsing will read. The [writer's retention operation](../crates/store/src/writer/retention.rs)
-checks standing refusals, durably reserves ownership before installing file
-blobs, then admits verified installed bytes. Rejected first admissions discard
-their private stage. An interruption leaves an exact unfinished reservation:
-readers refuse its ranges, status reports `unfinished_inputs`, and recovery
-requires those exact bytes. A changed provider file cannot silently replace
-them. [Custody tests](../crates/engine/src/import/tests/custody.rs) cover imports,
-watched inputs and parse-pool groups.
+[Import](../crates/engine/src/import.rs) and watched collection store the
+bytes that parsing will read. The [writer](../crates/store/src/writer/staging.rs)
+checks the excision refusals, writes the blob rows as `writing` with their
+revision and extents, installs the files, then marks the rows `present`. A
+stop in between leaves rows still `writing`: the next pass marks those whose
+file exists `present` and reports the rest in `unfinished_inputs`, readers
+refuse their ranges, and only the same bytes can finish them. A changed
+provider file starts a new chain instead. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
+cover imports, watched inputs and parse-pool groups. Bytes a parser decodes,
+such as inline images, are stored as blobs of the input that holds them.
 
-[Extracted blobs](../crates/store/src/retention/extracted.rs), such as decoded
-inline media, cite a retained input/chain and the exact enclosing source range
-and hash. They have independent durable owners and row batches.
-Editing or excising source bytes invalidates affected associations; surviving
-owners retain shared bytes. Recovery does not sweep unregistered historical CAS
-files.
-
-[Export attachments](attachments.md) resolve through acquisition/member facts in
-retained observations and the [derived asset lookup](../crates/store/src/assets.rs).
-Resolution uses the admitted current message and byte basis; descriptors and
-masked display labels do not rewrite source attachments. Exact byte delivery is
-an interactive CLI operation with verified temporary-file installation. ZIP
-import retains original and member bytes with canonical observation relationships.
-Member removal retires containing originals and preserves unrelated member Inputs;
-original bytes with surviving unrelated owners refuse before mutation. [Public controls](../crates/polylogue/tests/e2e/cli/attachments.rs)
-cover paging, transport privacy, stale delivery and directory/ZIP imports.
+[Export attachments](attachments.md) resolve through ZIP and member
+observations and the [asset lookup](../crates/store/src/assets.rs). A ZIP
+import stores the original ZIP and each member as inputs, linked by
+`observation_container`. Excising bytes read from a ZIP removes that ZIP too
+and keeps its other members; a ZIP whose bytes another kept input uses
+refuses. [CLI tests](../crates/polylogue/tests/e2e/cli/attachments.rs)
+cover paging, stale delivery and directory and ZIP imports.
 
 Parsers account for supplied records and fields, retain unknown source material,
 and distinguish unknown values from zero or empty collections. Native compaction
@@ -105,7 +97,7 @@ Document-framed imports validate the complete wrapper before publishing any
 staged items. The [export driver](../crates/engine/src/import/exports.rs) keeps
 ordering/deduplication state and compressed items in disposable disk-backed
 scratch, then waits for each item's writer commit before decoding the next.
-Retry rescans retained bytes and idempotently replays committed items; there is
+Retry rescans stored bytes and idempotently replays committed items; there is
 no durable scanner cursor. Memory still includes the largest individual record,
 conversation or decoded output. A synchronous export can delay new live work
 until another discovery pass; it has no preemption or latency guarantee.
@@ -114,8 +106,7 @@ until another discovery pass; it has no preemption or latency guarantee.
 SQLite snapshot, stages complete logical changes and synchronizes them before
 advancing its completed-prefix checkpoint. Recovery preserves altered completed
 bytes and refuses ambiguous history. Capture identity binds the machine and
-normalized native path, independently of clocks or host labels. Legacy unbound exports remain retained
-without an inferred native profile. Cooperative
+normalized native path, independently of clocks or host labels. Cooperative
 capture turns let convergence service controls and ordinary inputs between
 turns; a single SQLite call or record can exceed the turn budget. The owning
 [capture tests](../crates/store/src/tool_databases/tests.rs) cover completion and
@@ -149,13 +140,12 @@ bounded SQLite connections. A checkout that would wait while its thread already
 holds a slot refuses rather than deadlocking. Closing the pool wakes waiters and
 refuses unused reservations; already pinned readers can finish.
 
-On first read, shared publication exclusion pins the attached archive/index
-snapshots and validates removal revisions and pending cleanup. Writers take
+On first read, one statement pins the attached archive and index snapshots
+together under the shared write lock. Writers take
 exclusive publication exclusion before SQLite write locks. A pinned WAL reader
 then releases that exclusion, allowing later publications while retaining its
 view. An idle old-index handle refreshes; a reserved replaced handle refuses.
-An embeddings snapshot has its own checked removal revision and is not a claim
-that all three databases were pinned simultaneously. [Admission tests](../crates/store/src/read/tests/snapshot_admission.rs)
+An embeddings snapshot is pinned separately. [Admission tests](../crates/store/src/read/tests/snapshot_admission.rs)
 cover those races. Cache budgets are SQLite targets with mmap disabled, not hard
 process memory or result-size limits.
 
@@ -219,19 +209,13 @@ shutdown deadline.
 
 ## Excision
 
-[Excision](excision.md) owns supported removals, standing refusals and known
-representation limits. It preserves unrelated shared content and canonical
-identities, leaves original provider files untouched, and refuses unsupported
-rewrites before committing. Exact pending blob/vector deletion intents survive
-interrupted paired commits. Readers refuse inconsistent removal state; reopening
-validates prior rules before recovery or rebuilding the derived index.
-
-Each new excision records an immutable exact vector-deletion policy. Embeddings
-reconciliation commits deletion and its archive-bound receipt together; repeated
-restore preserves later repurchases. Legacy missing policies mean unknown
-coverage, not an empty deletion set, and cannot retrospectively identify vectors
-to remove. [Vector cleanup](../crates/store/src/excise/vector_cleanup.rs)
-owns this distinction.
+[Excision](excision.md) removes a session, document, input or text by
+overwriting stored bytes in place and parsing the changed inputs again. It
+commits embeddings, then the archive, then the index, and deletes the files
+of blobs it marked `deleting` last; reopening the archive finishes a stopped
+excision by deleting those files and rebuilding an index that holds fewer
+excisions than the archive. Provider files are never edited, and what the
+design cannot overwrite refuses before anything changes.
 
 ## Sinex primary mode
 
@@ -240,7 +224,7 @@ the archive: Polylogue's raw inputs and user state. A
 [row batch](../crates/store/src/row_batches.rs) is what one archive write
 added: a revision with its input, extents, blob rows and observations; a note
 with its targets and relations; an excision; a setting; a delivery; or a
-later observation, delivery event or extracted blob. Batches are ordered by
+later observation or delivery event. Batches are ordered by
 the write counter, then kind and key. Store lists them and visits their rows;
 the [Sinex client](../crates/sinex/src/lib.rs) encodes each batch as JSON
 lines and sends it, after the blobs its rows cite, as a `polylogue.rows`

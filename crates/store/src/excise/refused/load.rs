@@ -139,13 +139,7 @@ impl<'de> DeserializeSeed<'de> for Policy<'_, '_> {
 impl<'de> Visitor<'de> for Policy<'_, '_> {
     type Value = bool;
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("an exclusion policy object or its legacy empty array")
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<bool, A::Error> {
-        if seq.next_element::<IgnoredAny>()?.is_some() {
-            return Err(A::Error::custom("legacy exclusion array must be empty"));
-        }
-        Ok(false)
+        f.write_str("an exclusion policy object")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<bool, A::Error> {
         let mut known = false;

@@ -1,4 +1,4 @@
-//! Frozen session selection belongs to the index transaction, without foreign keys.
+//! The selected sessions live in the index transaction, without foreign keys.
 use crate::Result;
 use rusqlite::{Connection, params};
 

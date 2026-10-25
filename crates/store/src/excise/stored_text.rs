@@ -107,17 +107,15 @@ impl StoredText {
         refused: &mut RefusedJson,
     ) -> Result<()> {
         self.plan.stage_affected(t.archive)?;
+        // A blob another blob is a delta of cannot go; refuse before writing.
+        self.plan
+            .visit_blobs(|hash| crate::blobs::refuse_delta_base(t.archive, &hash))?;
         // A shared blob may contribute only a fragment of a match to one input.
         // Copy each referring extent, applying only that chain's matches. This
         // leaves unrelated input bytes exact and drops unused blob padding.
         self.plan.visit_blobs(|hash| {
             self.plan.freeze_extents(t.archive, hash)?;
             self.plan.visit_extents(|e| {
-                let sources = crate::retention::extracted::candidates(
-                    t.archive,
-                    Some((&e.input, e.chain, e.offset, e.offset + e.length)),
-                    None,
-                )?;
                 let key = (e.input.clone(), e.chain);
                 let mut edits = self.plan.edits(&key, e.offset)?;
                 let mut buffer = Vec::with_capacity(WRITE_CHUNK);
@@ -145,10 +143,6 @@ impl StoredText {
                 if !buffer.is_empty() {
                     install_piece(t, req, &e, &mut offset, &buffer)?;
                 }
-                let retired = crate::retention::extracted::invalidate(t.archive, t.store, sources)?;
-                refused
-                    .blobs
-                    .extend(retired.iter().map(|hash| hex(&hash.0)));
                 Ok(())
             })?;
             refused.blobs.push(hex(&hash.0));
@@ -161,9 +155,8 @@ impl StoredText {
     }
 }
 
-/// A piece is durable before its canonical rows are written. A later failure
-/// rolls back those rows and the extent deletion. Prepared files may remain
-/// unreferenced after rollback, as with the other blob-writing paths.
+/// The piece's file is installed before its rows are written; a later
+/// failure rolls back the rows and leaves that file unreferenced.
 fn install_piece(
     t: &Transactions<'_, '_>,
     req: &ExciseRequest,

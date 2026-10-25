@@ -1,5 +1,17 @@
 use super::*;
 
+/// Index text rows for `hashes`: vectors are stored only for texts the
+/// index holds.
+fn texts(archive: &Archive, hashes: &[&[u8]]) {
+    let index =
+        crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    for hash in hashes {
+        index
+            .execute("INSERT INTO text(hash, body) VALUES (?1, x'00')", [hash])
+            .unwrap();
+    }
+}
+
 fn unit(v: &[f32]) -> Vec<f32> {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     v.iter().map(|x| x / n).collect()
@@ -9,6 +21,7 @@ fn unit(v: &[f32]) -> Vec<f32> {
 fn stores_scans_and_survives_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1], &[2], &[3]]);
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let mut v = reader.vectors_writer().unwrap();
@@ -91,9 +104,10 @@ fn admitted_readers_share_one_budget_with_their_single_optional_vector_connectio
 }
 
 #[test]
-fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
+fn vector_write_upgrade_keeps_its_cache_and_retains_read_results() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1]]);
     let pool = crate::ReadPool::with_budget(&archive, 1, 3 << 20).unwrap();
     let reader = pool.reader().unwrap();
     assert!(reader.vectors().unwrap().status().unwrap().keys.is_empty());
@@ -106,17 +120,7 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
         .conn
         .pragma_query_value(None, "mmap_size", |r| r.get(0))
         .unwrap();
-    assert_eq!(cache, -512);
-    let metadata_cache: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
-        .unwrap();
-    let metadata_mmap: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "mmap_size", |r| r.get(0))
-        .unwrap();
-    assert_eq!(metadata_cache, -512);
-    assert_eq!(metadata_mmap, 0);
+    assert_eq!(cache, -1024);
     assert_eq!(mmap, 0);
     vectors
         .put(
@@ -139,6 +143,7 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
 fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1; 32], &[2; 32]]);
     let pool = crate::ReadPool::with_budget(&archive, 1, 3 * 1024).unwrap();
     let reader = pool.reader().unwrap();
     let mut vectors = reader.vectors_writer().unwrap();
@@ -146,12 +151,7 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
         .conn
         .pragma_query_value(None, "cache_size", |r| r.get(0))
         .unwrap();
-    let canonical: i64 = vectors
-        .conn
-        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
-        .unwrap();
     assert_eq!(main, -1);
-    assert_eq!(canonical, 0);
     vectors
         .put(
             "synthetic",
@@ -166,65 +166,4 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
         .fail("synthetic", &[2; 32], "synthetic failure")
         .unwrap();
     assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
-}
-
-#[test]
-fn writable_reads_pin_admission_and_data_then_release_the_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
-    let pool = crate::ReadPool::open(&archive).unwrap();
-    let reader = pool.reader().unwrap();
-    assert!(reader.vectors().unwrap().done("test").unwrap().is_empty());
-    let mut vectors = reader.vectors_writer().unwrap();
-    vectors
-        .put(
-            "test",
-            &[Vector {
-                text_hash: vec![1; 32],
-                chunk: 0,
-                values: vec![1.0],
-            }],
-        )
-        .unwrap();
-    let snapshot = vectors.read_snapshot().unwrap();
-    let other = open_write(&archive.embeddings_db(), crate::archive::cache::SETUP).unwrap();
-    other.execute_batch("BEGIN IMMEDIATE; DELETE FROM embedded; DELETE FROM vector_meta WHERE key='policy_revision'; COMMIT").unwrap();
-    crate::excise::vector_policy::check(&vectors.conn).unwrap();
-    let count: i64 = vectors
-        .conn
-        .query_row("SELECT count(*) FROM embedded", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 1);
-    drop(snapshot);
-    assert!(matches!(
-        vectors.done("test"),
-        Err(StoreError::ExcisionPending)
-    ));
-    assert!(matches!(
-        vectors.nearest("test", &[1.0], 1),
-        Err(StoreError::ExcisionPending)
-    ));
-    assert!(matches!(vectors.status(), Err(StoreError::ExcisionPending)));
-    crate::excise::vector_cleanup::recover(
-        &archive,
-        &mut open_write(&archive.archive_db(), crate::archive::cache::SETUP).unwrap(),
-    )
-    .unwrap();
-    for _ in 0..2 {
-        assert!(vectors.done("test").unwrap().is_empty());
-        assert!(vectors.nearest("test", &[1.0], 1).unwrap().is_empty());
-        assert!(vectors.status().unwrap().keys.is_empty());
-    }
-    vectors
-        .put(
-            "test",
-            &[Vector {
-                text_hash: vec![2; 32],
-                chunk: 0,
-                values: vec![1.0],
-            }],
-        )
-        .unwrap();
-    vectors.fail("test", &[3; 32], "synthetic").unwrap();
-    assert_eq!(vectors.done("test").unwrap().len(), 2);
 }

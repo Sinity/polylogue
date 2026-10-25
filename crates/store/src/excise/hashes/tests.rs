@@ -1,8 +1,9 @@
 use super::*;
+use crate::StoreError;
 use std::collections::BTreeSet;
 
 #[test]
-fn hash_policy_bytes_and_counts_match_the_previous_sorted_set() {
+fn texts_are_counted_once_and_visited_in_order() {
     let mut db = Connection::open_in_memory().unwrap();
     for size in [0, 1, 2, 17, 4096] {
         let tx = db.transaction().unwrap();
@@ -14,12 +15,6 @@ fn hash_policy_bytes_and_counts_match_the_previous_sorted_set() {
             hashes.text(&hash).unwrap();
             expected.insert(hash.to_vec());
         }
-        let old: Vec<_> = expected
-            .iter()
-            .map(|hash| crate::encoding::hex(hash))
-            .collect();
-        let old_json = serde_json::to_string(&old).unwrap();
-        assert_eq!(hashes.text_policy_json().unwrap(), old_json);
         assert_eq!(hashes.text_count().unwrap(), expected.len() as u64);
         let mut selected = Vec::new();
         hashes
@@ -36,7 +31,7 @@ fn hash_policy_bytes_and_counts_match_the_previous_sorted_set() {
 }
 
 #[test]
-fn blob_candidates_are_distinct_from_text_exclusion_authority() {
+fn blob_candidates_are_kept_apart_from_texts() {
     let mut db = Connection::open_in_memory().unwrap();
     let tx = db.transaction().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
@@ -53,10 +48,6 @@ fn blob_candidates_are_distinct_from_text_exclusion_authority() {
         .unwrap();
     assert_eq!(blobs, [vec![2; 32], vec![9; 32]]);
     assert_eq!(hashes.text_count().unwrap(), 1);
-    assert_eq!(
-        hashes.text_policy_json().unwrap(),
-        serde_json::to_string(&vec![crate::encoding::hex(&[4; 32])]).unwrap()
-    );
     hashes.finish().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes
@@ -88,7 +79,6 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     assert!(hashes.text(&[3; 32]).is_err());
     assert!(hashes.blob_candidate(&[3; 32]).is_err());
     assert!(hashes.text_count().is_err());
-    assert!(hashes.text_policy_json().is_err());
     assert!(hashes.finish().is_err());
     tx.rollback().unwrap();
     let tx = db.transaction().unwrap();

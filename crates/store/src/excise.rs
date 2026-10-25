@@ -33,14 +33,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod authored;
-pub(crate) mod blob_cleanup;
 mod documents;
 mod hashes;
 mod index_rows;
 mod messages;
 mod notes;
 mod record_ranges;
-pub(crate) mod recovery;
 mod refused;
 pub use refused::Refused;
 pub(crate) use refused::RefusedIds;
@@ -50,8 +48,6 @@ mod spans;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
-pub(crate) mod vector_cleanup;
-pub(crate) mod vector_policy;
 
 use hashes::RemovalHashes;
 use index_rows::*;
@@ -127,9 +123,10 @@ pub struct Excised {
     pub texts: u64,
     /// Inputs removed whole.
     pub inputs_removed: Vec<String>,
-    /// Original ZIP representations retired while independent member bytes survive.
+    /// ZIPs removed because bytes read from them were removed; their other
+    /// members stay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub containers_retired: Vec<String>,
+    pub zips_removed: Vec<String>,
     /// Inputs whose bytes were overwritten in place, and how many spans.
     pub inputs_overwritten: BTreeMap<String, u64>,
     /// Shared whole documents (exports) where some of the session's texts
@@ -208,9 +205,6 @@ struct RefusedJson {
 
 impl RefusedJson {
     fn decode(value: &str) -> Result<Self> {
-        if refused::legacy_empty(value) {
-            return Ok(Self::default());
-        }
         if !value.trim_start().starts_with('{') {
             return Err(StoreError::Invalid(
                 "invalid excision refusal payload".into(),
@@ -249,8 +243,8 @@ pub struct Transactions<'a, 'b> {
     pub counter: i64,
 }
 
-/// Runs an excision and records local file cleanup with its canonical rows.
-/// The writer replays that cleanup after all database transactions commit.
+/// Runs an excision, marking blobs it no longer needs `deleting`. The writer
+/// deletes their files after all database transactions commit.
 pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
     if !req.dry_run && crate::row_batches::on_sinex(t.archive)? {
         return Err(StoreError::ExcisionOnSinex);
@@ -463,7 +457,7 @@ impl<'a> Plan<'a> {
         }
         self.whole.extend(originals.iter().cloned());
         crate::containers::require_removable(t.archive, t.index, &originals, &self.whole)?;
-        done.containers_retired = originals.iter().cloned().collect();
+        done.zips_removed = originals.iter().cloned().collect();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
@@ -570,7 +564,7 @@ impl<'a> Plan<'a> {
         if !req.dry_run {
             hashes.visit_blob_candidates(|hash| {
                 let used: bool = t.archive.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1) OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)",
+                    "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
                     [hash],
                     |r| r.get(0),
                 )? || t.index.query_row(
@@ -581,43 +575,13 @@ impl<'a> Plan<'a> {
                 if used {
                     return Ok(());
                 }
-                let place: Option<String> = t
-                    .archive
-                    .query_row("SELECT place FROM blob WHERE hash = ?1", [hash], |r| {
-                        r.get(0)
-                    })
-                    .optional()?;
-                let Some(place) = place else { return Ok(()) };
-                blob_cleanup::require_no_delta_base(
-                    t.archive,
-                    &BlobHash(
-                        hash.try_into()
-                            .map_err(|_| StoreError::Invalid("invalid blob hash".into()))?,
-                    ),
-                )?;
-                t.archive
-                    .execute("DELETE FROM blob WHERE hash = ?1", [hash])?;
-                done.blobs_deleted += 1;
-                if place == "file"
-                    && let Ok(arr) = <[u8; 32]>::try_from(hash)
-                {
-                    blob_cleanup::record(t.archive, &req.id, &BlobHash(arr))?;
+                let hash = BlobHash(
+                    hash.try_into()
+                        .map_err(|_| StoreError::Invalid("invalid blob hash".into()))?,
+                );
+                if crate::blobs::mark_for_deletion(t.archive, &hash)? {
+                    done.blobs_deleted += 1;
                 }
-                Ok(())
-            })?;
-        }
-
-        if !req.dry_run {
-            t.archive.execute(
-                "INSERT INTO vector_deletion_policy VALUES (?1,1,?2)",
-                params![req.id, hashes.text_policy_json()?],
-            )?;
-            hashes.visit_texts(|hash| {
-                t.archive.execute(
-                    "INSERT INTO pending_vector_excision(text_hash,excision_id) VALUES (?1,?2)
-                     ON CONFLICT(text_hash) DO UPDATE SET excision_id=excluded.excision_id",
-                    params![hash, req.id],
-                )?;
                 Ok(())
             })?;
         }
@@ -638,11 +602,6 @@ impl<'a> Plan<'a> {
                 };
                 Ok(())
             })?;
-        }
-        if !req.dry_run
-            && let Some(e) = t.embeddings
-        {
-            vector_policy::acknowledge(e, t.archive, &req.id)?;
         }
         done.texts = hashes.text_count()?;
 
@@ -665,7 +624,7 @@ impl<'a> Plan<'a> {
             )?;
         }
         if !req.dry_run {
-            recovery::acknowledge(t.archive, t.index)?;
+            mark_applied(t.archive, t.index)?;
         }
         hashes.finish()?;
         self.sessions.finish()?;
@@ -713,6 +672,44 @@ impl<'a> Plan<'a> {
         done.on_disk = on_disk.into_iter().collect();
         Ok(())
     }
+}
+
+/// Which excisions an `index.db` has applied: the count and the largest
+/// write counter of the archive's excision rows. An index whose mark differs
+/// from the archive's (a stop between the archive's commit and the index's)
+/// is rebuilt from the already excised stored inputs.
+fn excisions(archive: &rusqlite::Connection) -> Result<String> {
+    Ok(archive.query_row(
+        "SELECT count(*) || ':' || COALESCE(max(commit_seq), 0) FROM excision",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// Records in `index` that it holds every excision `archive` holds.
+pub(crate) fn mark_applied(
+    archive: &rusqlite::Connection,
+    index: &rusqlite::Connection,
+) -> Result<()> {
+    index.execute(
+        "INSERT INTO meta(key, value) VALUES ('excisions', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [excisions(archive)?],
+    )?;
+    Ok(())
+}
+
+/// Whether `index` lacks an excision `archive` holds.
+pub(crate) fn index_behind(
+    archive: &rusqlite::Connection,
+    index: &rusqlite::Connection,
+) -> Result<bool> {
+    let applied: Option<String> = index
+        .query_row("SELECT value FROM meta WHERE key = 'excisions'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(applied.as_deref() != Some(excisions(archive)?.as_str()))
 }
 
 fn now_ms() -> i64 {

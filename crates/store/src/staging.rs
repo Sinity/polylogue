@@ -1,29 +1,19 @@
-//! Retained source bytes and unfinished canonical ownership.
+//! Bytes hashed and compressed off the writer thread into a private file,
+//! waiting for the writer to give them a blob row and install them.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
-pub(crate) mod extracted;
-
-/// One decoded value's actual enclosing source record. The hash binds the
-/// exact retained bytes, including same-length source rewrites.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Extraction {
-    pub range: std::ops::Range<u64>,
-    pub source_hash: BlobHash,
-    pub blob: BlobHash,
-}
-
-/// One pool batch and its private file stages. Inline pieces remain in Batch.
+/// One pool batch and the private files its pieces were written to. Inline
+/// pieces stay in the batch.
 pub struct PreparedBatch {
     pub batch: crate::Batch,
     pub files: Vec<PreparedBytes>,
-    pub extracted: Vec<Extraction>,
 }
 
-/// Private staging tied to one archive and its configured read roots. Only
-/// the Writer can publish it after reserving canonical ownership.
+/// A private file for one archive, installed under its content name only by
+/// the writer, after the blob's row exists.
 pub struct PreparedBytes {
     pub(crate) owner: std::path::PathBuf,
     pub(crate) store: std::sync::Arc<hashed_blobs::Store>,
@@ -73,10 +63,10 @@ impl crate::Archive {
         ))
     }
 
-    /// Inspect the same private bytes that will be prepared, without reopening
-    /// a mutable provider or installing a public CAS name. The decoded scratch
-    /// file costs one streamed copy and is dropped after preparation.
-    pub fn inspect_and_prepare_bytes<T>(
+    /// Prepares bytes that can be read only once (a ZIP member), after
+    /// `inspect` has read them from a scratch file. A file on disk is
+    /// inspected in place and prepared with [`Self::prepare_bytes`] instead.
+    pub fn prepare_stream<T>(
         &self,
         roots: &[std::path::PathBuf],
         mut reader: impl std::io::Read,
@@ -91,8 +81,8 @@ impl crate::Archive {
         Ok((self.prepare_bytes(roots, &mut scratch)?, facts))
     }
 
-    /// Compress and hash without publishing a CAS name. Dropping the returned
-    /// handle discards only its private stage.
+    /// Compresses and hashes into a private file. Dropping the returned
+    /// handle deletes the file.
     pub fn prepare_bytes(
         &self,
         roots: &[std::path::PathBuf],
@@ -113,8 +103,9 @@ impl crate::Archive {
     }
 }
 
+/// Where a stored batch's bytes are: its input and revision chain.
 #[derive(Debug, Clone)]
-pub struct Retained {
+pub struct StoredInput {
     pub input: String,
     pub chain: i64,
     pub length: u64,
@@ -136,8 +127,9 @@ pub struct Unfinished {
     pub state: UnfinishedState,
 }
 
+/// What finishing blobs left `writing` by a stop found.
 #[derive(Debug, Default)]
-pub struct Reconciled {
+pub struct Finished {
     pub completed: u64,
     pub unfinished: Vec<Unfinished>,
 }
@@ -170,7 +162,7 @@ fn check(
 ) -> Result<()> {
     let position = |value| {
         i64::try_from(value)
-            .map_err(|_| StoreError::Invalid("retained range exceeds archive address space".into()))
+            .map_err(|_| StoreError::Invalid("byte range exceeds archive address space".into()))
     };
     let from = range
         .as_ref()
@@ -191,7 +183,7 @@ fn check(
     if let Some(state) = pending {
         return Err(StoreError::InputUnfinished {
             input: input.into(),
-            reason: format!("retained bytes are {state}"),
+            reason: format!("its bytes are {state}"),
         });
     }
     Ok(())
@@ -200,8 +192,8 @@ fn check(
 pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<Unfinished>> {
     let sql=format!("SELECT input,hash,size FROM (
         SELECT DISTINCT i.id AS input,b.hash,b.size FROM {schema}input i JOIN {schema}revision r ON r.input=i.id
-        JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob WHERE b.state='writing'
-        UNION SELECT x.input,b.hash,b.size FROM {schema}extracted_blob x JOIN {schema}blob b ON b.hash=x.blob WHERE x.state='writing' OR b.state='writing') ORDER BY input,hash");
+        JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob WHERE b.state='writing')
+        ORDER BY input,hash");
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
