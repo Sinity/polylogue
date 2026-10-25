@@ -175,12 +175,10 @@ impl Reader<'_> {
     }
 
     /// A chat action attachment's bytes, checked against their hash.
-    /// `roots` are the further directories blobs are read from.
     pub fn chat_attachment(
         &self,
         action: &str,
         attachment: &str,
-        roots: &[std::path::PathBuf],
     ) -> Result<(ChatAttachment, Vec<u8>)> {
         use std::io::Read;
         let a = self
@@ -204,11 +202,7 @@ impl Reader<'_> {
             zstd::stream::read::Decoder::new(conn.blob_open(c"a", "blob", "data", rowid, true)?)?
                 .read_to_end(&mut bytes)?;
         } else {
-            let store = hashed_blobs::Store::open(
-                self.archive_root().to_path_buf(),
-                roots.to_vec(),
-                0o600,
-            )?;
+            let store = self.blob_store()?;
             store
                 .read_plain(&hashed_blobs::Hash(a.blob.0), Some(a.size), || Ok(()))?
                 .read_to_end(&mut bytes)?;

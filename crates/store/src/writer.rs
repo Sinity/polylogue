@@ -167,6 +167,22 @@ impl Writer {
     /// the mark; an index still marked when the archive is next opened is
     /// set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
+        Self::start_with(archive, None)
+    }
+
+    /// Starts the writer on an archive Sinex holds: every register row is
+    /// sent to `sinex` first and commits only once Sinex acknowledged it.
+    pub fn start_on_sinex(
+        archive: &Archive,
+        sinex: std::sync::Arc<dyn crate::primary::Sinex>,
+    ) -> Result<Self> {
+        Self::start_with(archive, Some(sinex))
+    }
+
+    fn start_with(
+        archive: &Archive,
+        sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
+    ) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
         let _lock = crate::write_lock::hold(&index)?;
         let empty: bool =
@@ -219,6 +235,7 @@ impl Writer {
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
             excisions,
+            sinex,
         };
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
@@ -299,7 +316,7 @@ impl Writer {
     }
 
     /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
-    /// `file` is the private file [`crate::Archive::prepare_piece`] wrote
+    /// `file` is the private file [`crate::Archive::prepare_decoded`] wrote
     /// for a piece too large to keep inline.
     pub fn store_blob(
         &self,
@@ -445,6 +462,8 @@ struct Inner {
     /// Whether the archive holds an excision, whose sessions, messages and
     /// bytes are never written again.
     excisions: bool,
+    /// In primary mode, where every register row goes before it commits.
+    sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
 }
 
 impl Inner {
@@ -711,7 +730,8 @@ impl Inner {
         // Then the blob files and rows go, and the database files are
         // scrubbed of every freed page.
         let result = result.and_then(|done| {
-            crate::blobs::delete_marked(&self.archive, store)
+            let files = self.sinex.is_none().then_some(store);
+            crate::blobs::delete_marked(&self.archive, files)
                 .and_then(|_| {
                     let _lock = crate::write_lock::hold(&self.archive)?;
                     self.scrub_after_excision()
@@ -782,7 +802,18 @@ impl Inner {
             seq,
             counter,
         };
-        let done = match crate::excise::apply(&txs, request, plan) {
+        let materials = match &self.sinex {
+            Some(_) => crate::primary::materials_of_inputs(&atx, plan.inputs()),
+            None => Ok(Vec::new()),
+        };
+        let applied = materials.and_then(|materials| {
+            let done = crate::excise::apply(&txs, request, plan)?;
+            if let (Some(sinex), false) = (&self.sinex, request.dry_run) {
+                excise_on_sinex(sinex.as_ref(), &atx, request, plan, &done, materials)?;
+            }
+            Ok(done)
+        });
+        let done = match applied {
             Ok(done) => done,
             Err(error) => {
                 rollback(&embeddings);
@@ -890,8 +921,12 @@ impl Inner {
             |r| r.get(0),
         )?;
         if !present {
-            let store = std::sync::Arc::clone(&file.store);
-            file.prepared.install_checked::<StoreError>(|| Ok(()))?;
+            let crate::staging::Prepared::Local { store, prepared } = file.file else {
+                return Err(StoreError::Invalid(
+                    "bytes for Sinex reached the blob store".into(),
+                ));
+            };
+            prepared.install_checked::<StoreError>(|| Ok(()))?;
             let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(piece.hash.0))?)
                 .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
             self.archive.execute(
@@ -913,6 +948,14 @@ impl Inner {
             // A resent request: nothing to keep, not even the counter bump.
             tx.rollback()?;
         } else {
+            if let Some(sinex) = &self.sinex {
+                let record = crate::primary::Record::Request {
+                    request: Box::new(request.clone()),
+                    root: crate::user_writes::note_root(&tx, request)?,
+                };
+                let material = sinex.send_record(&record)?;
+                crate::primary::record_material(&tx, &record, &material)?;
+            }
             tx.commit()?;
         }
         Ok(outcome)
@@ -935,7 +978,11 @@ impl Inner {
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();
         for b in batches.clone() {
-            chains.push(write_bytes(&atx, b, seq)?);
+            let (chain, record) = write_bytes(&atx, b, seq)?;
+            if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
+                staging::send_to_sinex(sinex.as_ref(), &atx, record, None, b.piece.as_ref())?;
+            }
+            chains.push(chain);
         }
         crate::fault::check("write.archive_commit", "")?;
         atx.commit()?;
@@ -962,6 +1009,29 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
+}
+
+/// In primary mode, before an excision commits: Sinex excises the parts and
+/// records of the removed inputs and the requests of the removed notes, then
+/// keeps the excision itself, so a rebuild keeps refusing what it removed.
+fn excise_on_sinex(
+    sinex: &dyn crate::primary::Sinex,
+    archive: &Connection,
+    request: &crate::excise::ExciseRequest,
+    plan: &crate::excise::Plan,
+    done: &crate::excise::Excised,
+    mut materials: Vec<String>,
+) -> Result<()> {
+    materials.extend(crate::primary::materials_of_records(archive, &done.notes)?);
+    if !materials.is_empty() {
+        sinex.excise(&materials)?;
+    }
+    crate::primary::forget_inputs(archive, plan.inputs())?;
+    crate::primary::forget_records(archive, &done.notes)?;
+    let record =
+        crate::primary::Record::Excision(crate::primary::excision_record(archive, &request.id)?);
+    let material = sinex.send_record(&record)?;
+    crate::primary::record_material(archive, &record, &material)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

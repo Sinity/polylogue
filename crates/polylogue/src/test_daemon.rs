@@ -14,6 +14,8 @@ use std::time::Duration;
 
 pub struct TestDaemon {
     pub home: PathBuf,
+    /// The loop's settings the daemon was started with.
+    pub config: Config,
     pub daemon: Arc<Daemon>,
     server: server::Server,
     runtime: service::Runtime,
@@ -39,7 +41,7 @@ pub fn start(text: &str) -> TestDaemon {
     config.workers = 2;
     let runtime = service::start(
         &dir.path().join("archive"),
-        config,
+        config.clone(),
         service::ArchiveMode::Standalone,
     )
     .unwrap();
@@ -48,6 +50,7 @@ pub fn start(text: &str) -> TestDaemon {
     let world = TestDaemon {
         _dir: dir,
         home,
+        config,
         daemon,
         server,
         runtime,

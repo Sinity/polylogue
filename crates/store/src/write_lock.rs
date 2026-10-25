@@ -1,4 +1,5 @@
-//! The write lock: an OS file lock on `archive.db`. Writers hold it
+//! The write lock: an OS file lock on the register (`archive.db`, or
+//! `sinex.db` in primary mode). Writers hold it
 //! exclusively for each transaction that writes `archive.db` or `index.db`;
 //! a reader holds it shared only while it starts its first read, so the two
 //! databases it reads are a committed pair. The file is stable while open,
@@ -45,7 +46,11 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     };
     let path = Path::new(path);
     let archive_db = match path.file_name().and_then(|name| name.to_str()) {
-        Some("archive.db") => path.to_path_buf(),
+        Some("archive.db" | "sinex.db") => path.to_path_buf(),
+        // The index's register beside it: `sinex.db` in primary mode.
+        Some("index.db") if path.with_file_name("sinex.db").exists() => {
+            path.with_file_name("sinex.db")
+        }
         Some("index.db") => path.with_file_name("archive.db"),
         _ => {
             return Err(StoreError::Invalid(

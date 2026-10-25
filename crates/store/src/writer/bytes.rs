@@ -1,11 +1,17 @@
-//! `archive.db` rows for stored bytes: blobs, revisions, extents and
+//! Register rows for stored bytes: blobs, revisions, extents and
 //! observations, numbered by the archive's write counter.
 
 use super::*;
+use crate::input_record::{Extent, InputRecord, ObservationRecord, Revision};
 
 /// Stores the bytes' rows and returns the revision chain the batch's
-/// records are in, or `None` when there is none (a disappearance).
-pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<Option<i64>> {
+/// records are in (`None` when there is none: a disappearance before any
+/// revision), with the register record it wrote, if any.
+pub(super) fn write_bytes(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    seq: i64,
+) -> Result<(Option<i64>, Option<InputRecord>)> {
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
     for piece in &b.blobs {
@@ -23,30 +29,55 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
                 "a reparse must name stored bytes".into(),
             ));
         }
-        return Ok(Some(chain));
+        return Ok((Some(chain), None));
     }
-    let latest: Option<(i64, i64, i64)> = tx
+    let (chain, record) = input_record(tx, b, seq)?;
+    if let Some(piece) = &b.piece {
+        insert_blob(tx, piece)?;
+    }
+    record.insert(tx, seq)?;
+    Ok((chain, Some(record)))
+}
+
+/// What one step of an input adds to the register, from the input's latest
+/// revision and the step's change.
+/// Returns it with the revision chain the step's records are in.
+fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRecord)> {
+    let latest: Option<(i64, i64, i64, String)> = tx
         .prepare_cached(
-            "SELECT number, chain, length FROM revision WHERE input = ?1
+            "SELECT number, chain, length, produced FROM revision WHERE input = ?1
              ORDER BY number DESC LIMIT 1",
         )?
-        .query_row([&b.input.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_row([&b.input.id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
         .optional()?;
-    let next = latest.map_or(1, |l| l.0 + 1);
-
+    let next = latest.as_ref().map_or(1, |l| l.0 + 1);
+    let mut record = InputRecord {
+        input: b.input.id.clone(),
+        format: b.input.format.clone(),
+        revision: None,
+        extent: None,
+        observation: None,
+    };
+    let revision = |number, produced: &str, chain| Revision {
+        number,
+        produced: produced.to_owned(),
+        chain,
+        length: b.length as i64,
+    };
     let (number, chain, offset) = match (&b.change, b.continues, latest) {
-        (Change::Disappeared, _, l) => {
-            insert_observation(tx, b, "deleted", None, seq)?;
-            return Ok(l.map(|l| l.1));
+        (Change::Disappeared, _, latest) => {
+            record.observation = observation(tx, b, "deleted", None, seq)?;
+            return Ok((latest.map(|l| l.1), record));
         }
-        (_, true, Some((number, chain, length))) => {
-            tx.prepare_cached("UPDATE revision SET length = ?3 WHERE input = ?1 AND number = ?2")?
-                .execute(params![b.input.id, number, b.length as i64])?;
+        (_, true, Some((number, chain, length, produced))) => {
+            record.revision = Some(revision(number, &produced, chain));
             (number, chain, length as u64)
         }
-        (Change::Unchanged, _, Some((number, chain, _))) => (number, chain, b.length),
-        (Change::Appended { from }, false, Some((_, chain, _))) => {
-            insert_revision(tx, b, next, chain, "appended", seq)?;
+        (Change::Unchanged, _, Some((number, chain, _, _))) => (number, chain, b.length),
+        (Change::Appended { from }, false, Some((_, chain, _, _))) => {
+            record.revision = Some(revision(next, "appended", chain));
             (next, chain, *from)
         }
         (change, _, _) => {
@@ -55,24 +86,17 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
                 (Change::First, _) => "first",
                 _ => "rewritten",
             };
-            insert_revision(tx, b, next, next, produced, seq)?;
+            record.revision = Some(revision(next, produced, next));
             (next, next, 0)
         }
     };
-
     if let Some(piece) = &b.piece {
-        insert_blob(tx, piece)?;
-        tx.prepare_cached(
-            "INSERT OR IGNORE INTO extent(input, chain, offset, length, blob, blob_offset)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-        )?
-        .execute(params![
-            b.input.id,
+        record.extent = Some(Extent {
             chain,
-            offset as i64,
-            piece.size as i64,
-            &piece.hash.0[..]
-        ])?;
+            offset: offset as i64,
+            length: piece.size as i64,
+            blob: piece.hash,
+        });
     }
     if b.observation.is_some() && !b.continues {
         let class = match &b.change {
@@ -85,32 +109,9 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
             Change::Reparse { .. } => unreachable!(),
             Change::Disappeared => "deleted",
         };
-        insert_observation(tx, b, class, Some(number), seq)?;
+        record.observation = observation(tx, b, class, Some(number), seq)?;
     }
-    Ok(Some(chain))
-}
-
-pub(super) fn insert_revision(
-    tx: &Transaction<'_>,
-    b: &Batch,
-    number: i64,
-    chain: i64,
-    produced: &str,
-    seq: i64,
-) -> Result<()> {
-    tx.prepare_cached(
-        "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?
-    .execute(params![
-        b.input.id,
-        number,
-        produced,
-        chain,
-        b.length as i64,
-        seq
-    ])?;
-    Ok(())
+    Ok((Some(chain), record))
 }
 
 pub(super) fn insert_blob(tx: &Transaction<'_>, piece: &Piece) -> Result<()> {
@@ -168,51 +169,53 @@ pub(super) fn check_import_format(
     Ok(())
 }
 
-pub(super) fn insert_observation(
+/// The observation a step records, checked against what the archive
+/// already holds for the input.
+pub(super) fn observation(
     tx: &Transaction<'_>,
     b: &Batch,
     class: &str,
     revision: Option<i64>,
     seq: i64,
-) -> Result<()> {
+) -> Result<Option<ObservationRecord>> {
     let Some(o) = &b.observation else {
-        return Ok(());
+        return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    tx.prepare_cached("INSERT OR IGNORE INTO machine(id, host, first_seen) VALUES (?1, ?2, ?3)")?
-        .execute(params![o.machine, o.host, o.seen_at_ms])?;
+    let container = match o
+        .import
+        .as_ref()
+        .and_then(|member| member.container.as_ref())
+    {
+        Some(container) => Some(crate::containers::check(tx, &b.input.id, container)?),
+        None => None,
+    };
     let f = o.facts;
-    let id = observation_id(tx, seq, &b.input.id)?;
-    tx.prepare_cached(
-        "INSERT INTO observation(id, input, machine, path, class, revision, length, device, inode,
-             size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq, details_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-    )?
-    .execute(params![
-        id,
-        b.input.id,
-        o.machine,
-        o.path,
-        class,
+    Ok(Some(ObservationRecord {
+        id: observation_id(tx, seq, &b.input.id)?,
+        machine: o.machine.clone(),
+        host: o.host.clone(),
+        path: o.path.clone(),
+        class: class.to_owned(),
         revision,
-        revision.map(|_| b.length as i64),
-        f.map(|f| f.device as i64),
-        f.map(|f| f.inode as i64),
-        f.map(|f| f.size as i64),
-        f.map(|f| f.mtime_ns as i64),
-        f.map(|f| f.ctime_ns as i64),
-        env!("CARGO_PKG_VERSION"),
-        o.seen_at_ms,
-        seq,
-        o.import
+        length: revision.map(|_| b.length as i64),
+        device: f.map(|f| f.device as i64),
+        inode: f.map(|f| f.inode as i64),
+        size: f.map(|f| f.size as i64),
+        mtime_ns: f.map(|f| f.mtime_ns as i64),
+        ctime_ns: f.map(|f| f.ctime_ns as i64),
+        polylogue_version: env!("CARGO_PKG_VERSION").to_owned(),
+        seen_at: o.seen_at_ms,
+        details_json: o
+            .import
             .as_ref()
-            .map(|member| serde_json::to_string(
-                &serde_json::json!({"import": member, "import_format": member.format})
-            ))
+            .map(|member| {
+                serde_json::to_string(
+                    &serde_json::json!({"import": member, "import_format": member.format}),
+                )
+            })
             .transpose()?,
-    ])?;
-    if let Some(member) = &o.import {
-        crate::containers::record(tx, &id, member)?;
-    }
-    Ok(())
+        excision: None,
+        container,
+    }))
 }

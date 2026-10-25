@@ -68,7 +68,12 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
         "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         // The Sinex client sends and restores row batches through the store; its
         // rebuild test drives the engine.
-        "polylogue-sinex" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
+        "polylogue-sinex" => &[
+            "polylogue-model",
+            "polylogue-query",
+            "polylogue-store",
+            "polylogue-engine",
+        ],
         "polylogue" => &[
             "polylogue-model",
             "polylogue-sources",

@@ -278,7 +278,7 @@ impl Engine {
         self.execute(plans, &mut pass)?;
         self.restore_failed_writes()?;
         self.refresh_import_assets(&mut pass)?;
-        pass.sessions_derived = self.writer.derive()?;
+        pass.sessions_derived = self.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
     }
@@ -632,7 +632,6 @@ impl Engine {
             self.writer.sender()?,
             Arc::clone(&self.blobs),
             self.archive.clone(),
-            self.config.blob_roots.clone(),
             done_tx,
         );
         let mut running: HashMap<PathBuf, Plan> = HashMap::new();

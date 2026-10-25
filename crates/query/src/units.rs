@@ -916,7 +916,8 @@ pub static UNITS: &[UnitSpec] = &[
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
 /// such start; a session with no prompt is one turn. Duplicates are left out.
-const TURNS: &str = "(SELECT g.*, \
+/// Every turn of every session, as a subquery: the `turns` unit's rows.
+pub const TURNS: &str = "(SELECT g.*, \
      (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
         AND ax.written_by = 'model') AS attempts, \
      (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \

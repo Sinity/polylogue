@@ -41,7 +41,6 @@ impl ClaudeHome {
             machine: "test-machine".into(),
             host: "test".into(),
             chunk,
-            blob_roots: Vec::new(),
             rescan_every: std::time::Duration::from_secs(60),
         }
     }

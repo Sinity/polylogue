@@ -12,7 +12,7 @@ use std::time::Duration;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 fn ctx(w: &TestDaemon) -> Arc<Ctx> {
-    Arc::new(Ctx::at(&w.daemon.config, &w.daemon.archive).unwrap())
+    Arc::new(Ctx::at(&w.config, &w.daemon.archive).unwrap())
 }
 
 struct Answer {

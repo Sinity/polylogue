@@ -7,19 +7,40 @@ fn loaded(home: &ClaudeHome, text: &str) -> ArchiveMode {
     crate::sinex::configured_at(&path)
 }
 
-fn primary(home: &ClaudeHome, restore: bool) -> ArchiveMode {
+/// Primary mode on a Sinex that cannot be reached.
+fn primary(home: &ClaudeHome) -> ArchiveMode {
     loaded(
         home,
         &format!(
-            "mode = 'primary'\nnats = 'invalid://'\nstore = {:?}\n{}",
+            "mode = 'primary'\nnats = 'invalid://'\nstore = {:?}\n",
             home.dir.path().join("sinex-store"),
-            if restore {
-                "archive = 'synthetic-archive'\n"
-            } else {
-                ""
-            }
         ),
     )
+}
+
+/// A Sinex that holds nothing and accepts nothing.
+struct Empty;
+
+impl polylogue_store::primary::Sinex for Empty {
+    fn send_part(
+        &self,
+        _: &polylogue_store::primary::Part,
+        _: &mut dyn std::io::Read,
+    ) -> polylogue_store::Result<String> {
+        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
+    }
+    fn send_record(&self, _: &polylogue_store::primary::Record) -> polylogue_store::Result<String> {
+        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
+    }
+    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
+        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
+    }
+    fn held(&self, _: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
+        Ok(vec![])
+    }
+    fn send_sessions(&self, _: &polylogue_store::ReadPool) -> polylogue_store::Result<()> {
+        Ok(())
+    }
 }
 
 fn seeded() -> ClaudeHome {
@@ -44,7 +65,6 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     assert!(runtime.engine.is_none());
     assert!(runtime.signals.is_none());
     assert!(runtime.signals_stop.is_none());
-    assert!(runtime.sinex.is_none());
     let status = data(Request::Status, runtime);
     assert_eq!(status["mode"]["state"], "blocked");
     assert_eq!(status["mode"]["path"], path.to_str().unwrap());
@@ -167,58 +187,45 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
 }
 
 #[test]
-fn missing_config_is_standalone_and_nonempty_primary_is_readable_offline() {
+fn missing_config_is_standalone() {
     let w = seeded();
     let missing = crate::sinex::configured_at(&w.dir.path().join("missing.toml"));
-    let mut runtime = start(&w.root, w.config(64 << 20), missing).unwrap();
+    let runtime = start(&w.root, w.config(64 << 20), missing).unwrap();
     assert!(runtime.daemon.writes.is_some());
     assert_eq!(
         data(Request::Status, &runtime)["mode"]["state"],
         "standalone"
     );
-    runtime.shutdown().unwrap();
-    let runtime = start(&w.root, w.config(64 << 20), primary(&w, true)).unwrap();
-    assert!(runtime.daemon.writes.is_some());
-    assert!(runtime.sinex.is_some());
-    assert_eq!(data(Request::Status, &runtime)["mode"]["state"], "primary");
-    assert_eq!(w.texts("s1"), ["Stored question"]);
 }
 
 #[test]
-fn required_empty_restore_failure_never_collects_fresh_sources() {
+fn primary_without_sinex_or_a_local_copy_does_not_start() {
     let w = ClaudeHome::new();
     w.append(
         "new.jsonl",
         &user("new", "new", "Cannot become a fresh standalone archive"),
     );
-    let runtime = start(&w.root, w.config(64 << 20), primary(&w, true)).unwrap();
-    blocked(&runtime, &w.dir.path().join("sinex.toml"));
-    let state = data(Request::Status, &runtime)["mode"].clone();
-    assert_eq!(state["configured"], "primary");
-    assert!(
-        state["error"]
-            .as_str()
-            .unwrap()
-            .contains("restoring archive synthetic-archive")
-    );
-    assert_eq!(w.count("SELECT count(*) AS n FROM input_ref"), 0);
-    assert_eq!(w.count("SELECT count(*) AS n FROM message"), 0);
+    let refused = start(&w.root, w.config(64 << 20), primary(&w));
+    let error = refused.err().expect("no archive to open").to_string();
+    assert!(error.contains("no local copy"), "{error}");
+    assert!(!w.root.join("archive.db").exists());
+    assert!(!w.root.join("sinex.db").exists());
 }
 
 #[test]
-fn an_unreadable_local_archive_blocks_startup_instead_of_counting_as_empty() {
-    let w = seeded();
-    let archive = rusqlite::Connection::open(w.root.join("archive.db")).unwrap();
-    archive.execute_batch("DROP TABLE delivery_event").unwrap();
-    drop(archive);
-    let runtime = start(&w.root, w.config(64 << 20), primary(&w, true)).unwrap();
-    blocked(&runtime, &w.dir.path().join("sinex.toml"));
-    let state = data(Request::Status, &runtime)["mode"].clone();
-    assert!(
-        state["error"]
-            .as_str()
-            .unwrap()
-            .contains("reading the local archive")
+fn primary_with_a_local_copy_reads_offline_and_pauses_writes() {
+    let w = ClaudeHome::new();
+    w.append(
+        "later.jsonl",
+        &user("later", "later", "Must wait for Sinex"),
     );
-    assert_eq!(w.texts("s1"), ["Stored question"]);
+    let store = w.dir.path().join("sinex-store");
+    drop(polylogue_store::Archive::open_primary(&w.root, &store, &Empty).unwrap());
+    let runtime = start(&w.root, w.config(64 << 20), primary(&w)).unwrap();
+    blocked(&runtime, &w.dir.path().join("sinex.toml"));
+    assert_eq!(
+        data(Request::Status, &runtime)["mode"]["configured"],
+        "primary"
+    );
+    assert!(!w.root.join("archive.db").exists());
 }

@@ -123,7 +123,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let (mut e, lock) = engine(&w, 1024);
     let opaque = e.import(std::slice::from_ref(&unknown)).unwrap();
     assert_eq!(opaque.imported.as_slice(), std::slice::from_ref(&unknown));
-    let prior = row_batches(&w.root);
+    let prior = register(&w.root);
     let parsed = e.import(std::slice::from_ref(&standard)).unwrap();
     assert!(parsed.pass.errors.is_empty(), "{:?}", parsed.pass.errors);
     assert_eq!(
@@ -145,11 +145,11 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
             .unwrap()[0]["format"],
         "export-file"
     );
-    let after = row_batches(&w.root);
+    let after = register(&w.root);
     assert_eq!(
         after[..prior.len()],
         prior[..],
-        "recognition must not change row batches Sinex may already hold"
+        "recognition must not change register rows already written"
     );
     // A later opaque acquisition must not discard the captured parser path.
     e.import(std::slice::from_ref(&unknown)).unwrap();
@@ -213,12 +213,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
             .is_empty()
     );
     let before = w.count("SELECT count(*) AS n FROM a.observation");
-    let mut captured = Captured::stream(
-        &e.archive,
-        &e.config.blob_roots,
-        std::fs::File::open(&path).unwrap(),
-    )
-    .unwrap();
+    let mut captured = Captured::stream(&e.archive, std::fs::File::open(&path).unwrap()).unwrap();
     captured.member = Some(polylogue_store::ImportMember {
         version: 1,
         acquisition: "competing".into(),
@@ -245,24 +240,24 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), before);
 }
 
-/// Every row batch and its rows, in write order.
-fn row_batches(
-    root: &std::path::Path,
-) -> Vec<(polylogue_store::row_batches::RowBatch, Vec<String>)> {
-    let batch_reader = polylogue_store::row_batches::BatchReader::open(root).unwrap();
-    batch_reader
-        .batches(None, 10_000)
-        .unwrap()
-        .into_iter()
-        .map(|batch| {
-            let mut rows = Vec::new();
-            batch_reader
-                .rows(&batch, |row| {
-                    rows.push(format!("{} {:?} {:?}", row.table, row.columns, row.values));
-                    Ok(())
-                })
-                .unwrap();
-            (batch, rows)
-        })
-        .collect()
+/// Every revision, extent and observation row, in write order.
+fn register(root: &std::path::Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(root.join("archive.db")).unwrap();
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT input, number, produced, chain, length FROM revision ORDER BY commit_seq, input, number",
+        "SELECT input, chain, offset, length, hex(blob) FROM extent ORDER BY input, chain, offset",
+        "SELECT id, input, class, revision, path FROM observation ORDER BY rowid",
+    ] {
+        let mut statement = conn.prepare(sql).unwrap();
+        let columns = statement.column_count();
+        let mut query = statement.query([]).unwrap();
+        while let Some(row) = query.next().unwrap() {
+            let values: Vec<String> = (0..columns)
+                .map(|i| format!("{:?}", row.get_ref(i).unwrap()))
+                .collect();
+            rows.push(values.join(" "));
+        }
+    }
+    rows
 }

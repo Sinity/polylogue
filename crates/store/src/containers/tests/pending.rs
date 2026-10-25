@@ -1,6 +1,5 @@
 use super::*;
 use crate::fault::{self, Action};
-use crate::row_batches::BatchReader;
 use crate::staging::PendingState;
 use polylogue_model::BlobHash;
 
@@ -26,21 +25,6 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
             .unwrap();
         assert!(outcomes.iter().any(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
-        let source = BatchReader::open(&archive.root).unwrap();
-        let mut refused = 0;
-        for batch in source.batches(None, 10_000).unwrap() {
-            if matches!(
-                source.rows(&batch, |_| Ok(())),
-                Err(StoreError::InputPending { .. })
-            ) {
-                refused += 1;
-            }
-        }
-        assert!(
-            refused >= 2,
-            "a pending ZIP and its member are not sent to Sinex"
-        );
-        drop(source);
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
         let finished = writer.finish_writing(Arc::clone(&store)).unwrap();
@@ -56,10 +40,6 @@ fn a_zip_group_stopped_before_or_after_installing_finishes_or_reports() {
             assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
         } else {
             assert!(finished.pending.is_empty());
-        }
-        let source = BatchReader::open(&archive.root).unwrap();
-        for batch in source.batches(None, 10_000).unwrap() {
-            source.rows(&batch, |_| Ok(())).unwrap();
         }
     }
 }

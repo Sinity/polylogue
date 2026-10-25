@@ -25,8 +25,7 @@ impl Engine {
                 }
                 let name = member.name().to_owned();
                 let declared = member.size();
-                let mut bytes =
-                    Captured::stream(&self.archive, &self.config.blob_roots, &mut member)?;
+                let mut bytes = Captured::stream(&self.archive, &mut member)?;
                 if bytes.prepared.len() != declared {
                     return Err(std::io::Error::other(
                         "ZIP member length differs from its declaration",
@@ -49,9 +48,7 @@ impl Engine {
             captured
         };
         std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
-        let original = self
-            .archive
-            .prepare_bytes(&self.config.blob_roots, &mut file)?;
+        let original = self.archive.prepare_bytes(&mut file)?;
         unchanged(&file, facts, original.len())?;
         let original_id = original.hash().to_string();
         for (_, index, member) in &mut members {

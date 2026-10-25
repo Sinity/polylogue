@@ -267,7 +267,7 @@ pub(super) fn remove_document(
 
 /// The note targets naming a removed session, one of its messages or one
 /// of its tool calls.
-pub(super) fn note_references(
+pub(crate) fn note_references(
     archive: &Connection,
     sessions: &[String],
     messages: &BTreeSet<String>,
@@ -299,8 +299,11 @@ pub(super) fn note_references(
 }
 
 /// Removes the note targets naming `references`; a note left without
-/// targets goes whole. Returns how many notes went.
-pub(super) fn remove_notes_about(archive: &Connection, references: &[String]) -> Result<u64> {
+/// targets goes whole. Returns the notes that went.
+pub(crate) fn remove_notes_about(
+    archive: &Connection,
+    references: &[String],
+) -> Result<Vec<String>> {
     let mut notes = BTreeSet::new();
     for reference in references {
         notes.extend(
@@ -311,7 +314,7 @@ pub(super) fn remove_notes_about(archive: &Connection, references: &[String]) ->
         );
         archive.execute("DELETE FROM note_target WHERE ref = ?1", [reference])?;
     }
-    let mut removed = 0;
+    let mut removed = Vec::new();
     for note in notes {
         let remains: bool = archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM note_target WHERE note_id = ?1)",
@@ -321,7 +324,7 @@ pub(super) fn remove_notes_about(archive: &Connection, references: &[String]) ->
         if !remains {
             archive.execute("DELETE FROM note_relation WHERE note_id = ?1", [&note])?;
             archive.execute("DELETE FROM note WHERE id = ?1", [&note])?;
-            removed += 1;
+            removed.push(note);
         }
     }
     Ok(removed)

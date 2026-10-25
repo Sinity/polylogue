@@ -34,6 +34,9 @@ pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
 #[derive(Debug, Clone)]
 pub struct Archive {
     pub root: PathBuf,
+    /// In primary mode, Sinex's store root: its content store holds the
+    /// inputs' bytes, and the register is a cache of what Sinex holds.
+    sinex_store: Option<PathBuf>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -43,8 +46,30 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
+    /// The register of inputs and of what people and agents wrote. In
+    /// standalone mode it is `archive.db`, the archive's record; in primary
+    /// mode it is `sinex.db`, a copy of what Sinex holds, written only after
+    /// Sinex acknowledged it and rebuilt from Sinex when missing.
     pub fn archive_db(&self) -> PathBuf {
-        self.root.join("archive.db")
+        match self.sinex_store {
+            None => self.root.join("archive.db"),
+            Some(_) => self.root.join("sinex.db"),
+        }
+    }
+
+    /// Whether Sinex holds the archive.
+    pub fn is_primary(&self) -> bool {
+        self.sinex_store.is_some()
+    }
+
+    /// The content store the inputs' bytes are read from: this directory's
+    /// `blobs/` (standalone), or Sinex's content store (primary), which
+    /// Polylogue only reads.
+    pub fn blobs(&self) -> Result<hashed_blobs::Store> {
+        Ok(match &self.sinex_store {
+            None => hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)?,
+            Some(store) => hashed_blobs::Store::open(store.clone(), vec![], 0o600)?,
+        })
     }
 
     pub fn index_db(&self) -> PathBuf {
@@ -74,6 +99,16 @@ impl Archive {
     pub fn at(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
+            sinex_store: None,
+        }
+    }
+
+    /// The archive at `root` held by the Sinex whose store root is `store`,
+    /// without opening it.
+    pub fn on_sinex(root: &Path, store: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            sinex_store: Some(store.to_path_buf()),
         }
     }
 
@@ -105,9 +140,64 @@ impl Archive {
     }
 
     /// Creates the directory with copy-on-write off and the three databases
-    /// at their current versions, or opens an existing one. Takes the writer lock; a second daemon on the
-    /// same archive is refused.
+    /// at their current versions, or opens an existing one. Takes the writer
+    /// lock; a second daemon on the same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
+        let lock = Self::lock(root)?;
+        let archive = Self::at(root);
+        fs::create_dir_all(archive.blobs_dir())?;
+        let a = open_write(&archive.archive_db(), cache::SETUP)?;
+        let schema_lock = crate::write_lock::hold(&a)?;
+        schema::ensure_archive(&a)?;
+        drop(schema_lock);
+        // Whatever a stop left of blob writes: files not yet moved under
+        // their content names, rows still `writing` or `deleting`.
+        let store = archive.blobs()?;
+        let blob_lock = crate::write_lock::hold(&a)?;
+        clear_directory(&archive.blobs_dir().join("tmp"))?;
+        crate::blobs::settle(&a, &store)?;
+        drop(blob_lock);
+        archive.finish_open()?;
+        Ok((archive, lock))
+    }
+
+    /// Opens the archive at `root` held by Sinex (primary mode), whose
+    /// store root is `store`. A missing register is rebuilt from what Sinex
+    /// holds, and the index with it; there is no local blob store.
+    pub fn open_primary(
+        root: &Path,
+        store: &Path,
+        sinex: &dyn crate::primary::Sinex,
+    ) -> Result<(Self, ArchiveLock)> {
+        let lock = Self::lock(root)?;
+        let archive = Self::on_sinex(root, store);
+        clear_directory(&archive.parts_dir())?;
+        if !archive.archive_db().exists() {
+            // The index describes the register it was built from.
+            remove_database(&archive.index_db())?;
+            let building = root.join("sinex.db.building");
+            remove_database(&building)?;
+            let mut a = open_write(&building, cache::SETUP)?;
+            schema::ensure_sinex(&a)?;
+            crate::primary::load(&mut a, sinex, &archive.blobs()?)?;
+            drop(a);
+            fs::rename(&building, archive.archive_db())?;
+            File::open(root)?.sync_all()?;
+        }
+        let a = open_write(&archive.archive_db(), cache::SETUP)?;
+        schema::ensure_sinex(&a)?;
+        drop(a);
+        archive.finish_open()?;
+        Ok((archive, lock))
+    }
+
+    /// Where input bytes wait, in primary mode, until the writer sends them
+    /// to Sinex; emptied when the archive opens.
+    pub fn parts_dir(&self) -> PathBuf {
+        self.root.join("parts")
+    }
+
+    fn lock(root: &Path) -> Result<ArchiveLock> {
         let fresh = !root.exists();
         fs::create_dir_all(root)?;
         if fresh {
@@ -116,42 +206,25 @@ impl Archive {
             fs::create_dir_all(&exports)?;
             compressed(&exports);
         }
-        let lock_path = root.join("lock");
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(&lock_path)?;
+            .open(root.join("lock"))?;
         if file.try_lock().is_err() {
             return Err(StoreError::Locked {
                 path: root.to_path_buf(),
             });
         }
-        let archive = Self::at(root);
-        fs::create_dir_all(archive.blobs_dir())?;
-        let a = open_write(&archive.archive_db(), cache::SETUP)?;
-        let identity_lock = crate::write_lock::hold(&a)?;
-        schema::ensure_archive(&a)?;
-        // The archive's identity: Sinex keys the rows this archive sent
-        // by it, so two archives never collide.
-        a.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
-            [uuid::Uuid::now_v7().to_string()],
-        )?;
-        drop(identity_lock);
-        let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
+        Ok(ArchiveLock { _file: file })
+    }
+
+    fn finish_open(&self) -> Result<()> {
+        let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        // Whatever a stop left of blob writes: files not yet moved under
-        // their content names, rows still `writing` or `deleting`.
-        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
-        let blob_lock = crate::write_lock::hold(&a)?;
-        clear_directory(&archive.blobs_dir().join("tmp"))?;
-        crate::blobs::settle(&a, &store)?;
-        drop(blob_lock);
-        archive.prepare_index()?;
-        generation::open(&archive)?;
-        Ok((archive, ArchiveLock { _file: file }))
+        self.prepare_index()?;
+        generation::open(self)
     }
 
     /// The caller holds the archive lock. An index built by another version,
@@ -162,13 +235,7 @@ impl Archive {
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;
         if self.index_db().exists() && self.index_out_of_date(&archive)? {
-            for suffix in ["", "-wal", "-shm"] {
-                match fs::remove_file(self.root.join(format!("index.db{suffix}"))) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
-            }
+            remove_database(&self.index_db())?;
             File::open(&self.root)?.sync_all()?;
         }
         crate::fault::check("index.after_removal", "")?;
@@ -192,6 +259,20 @@ impl Archive {
             || schema::unsynced(&index)?
             || crate::excise::index_behind(archive, &index)?)
     }
+}
+
+/// Deletes a SQLite database and its journal files.
+fn remove_database(path: &Path) -> Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        match fs::remove_file(&name) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Deletes every file in `dir`. Blob files are written there before they

@@ -190,12 +190,8 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
         let path = path.clone();
         scope.spawn(move || {
             let (mut e, _lock) = engine(w, 8);
-            let captured = Captured::stream(
-                &e.archive,
-                &e.config.blob_roots,
-                &mut fs::File::open(&path).unwrap(),
-            )
-            .unwrap();
+            let captured =
+                Captured::stream(&e.archive, &mut fs::File::open(&path).unwrap()).unwrap();
             let origin = polylogue_sources::origin::by_name("chatgpt").unwrap();
             let mut report = ImportReport::default();
             let mut plan = e
@@ -306,12 +302,7 @@ fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
         (&path, "chatgpt", Priority::Bulk),
         (&live_path, "claude-code", Priority::Live),
     ] {
-        let captured = Captured::stream(
-            &e.archive,
-            &e.config.blob_roots,
-            fs::File::open(path).unwrap(),
-        )
-        .unwrap();
+        let captured = Captured::stream(&e.archive, fs::File::open(path).unwrap()).unwrap();
         let mut plan = e
             .import_plan(
                 path,
@@ -388,12 +379,7 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
         scope.spawn(move || {
             let (mut e, _lock) = engine(w, 8);
             e.converge().unwrap();
-            let captured = Captured::stream(
-                &e.archive,
-                &e.config.blob_roots,
-                fs::File::open(&bulk).unwrap(),
-            )
-            .unwrap();
+            let captured = Captured::stream(&e.archive, fs::File::open(&bulk).unwrap()).unwrap();
             let origin = polylogue_sources::origin::by_name("chatgpt").unwrap();
             let mut plan = e
                 .import_plan(&bulk, origin, captured, None, &mut ImportReport::default())

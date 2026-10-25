@@ -116,7 +116,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     let offset = decoded.as_ref().map_or(0, |cursor| cursor.offset);
     let blob = match decoded.as_ref().map(|cursor| cursor.blob).or(found.blob) {
         Some(hash) => hash,
-        None => match reader.attachment_hash(found, &d.config.blob_roots) {
+        None => match reader.attachment_hash(found) {
             Ok(hash) => hash,
             Err(error) => return store_error(&error),
         },
@@ -131,7 +131,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         );
     }
     let end = offset.saturating_add(length as u64).min(found.size);
-    let bytes = match reader.attachment_range(found, &d.config.blob_roots, offset..end) {
+    let bytes = match reader.attachment_range(found, offset..end) {
         Ok(bytes) => bytes,
         Err(e) => return store_error(&e),
     };

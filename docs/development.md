@@ -93,7 +93,7 @@ agentctl job start sinex exec --workspace <sinex> --wait -- \
   CARGO_TARGET_DIR=<polylogue>/target/sinex-shell \
   SINEXD=<sinex target>/debug/sinexd SINEX_SCHEMA=<sinex target>/debug/sinex-schema \
   cargo nextest run --locked --manifest-path <polylogue>/Cargo.toml -p polylogue-sinex \
-  --run-ignored only -E 'test(an_archive_restored_from_sinex_gives_the_same_answers)'
+  --run-ignored only -E 'test(the_morrow_example_rebuilt_from_sinex_gives_the_same_answers)'
 ```
 
 `<sinex target>` is the dev shell's `CARGO_TARGET_DIR`.

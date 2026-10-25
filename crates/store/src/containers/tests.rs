@@ -17,7 +17,7 @@ fn stage(
     member: &str,
     container: Option<ImportContainer>,
 ) -> PreparedBatch {
-    let prepared = archive.prepare_bytes(&[], body).unwrap();
+    let prepared = archive.prepare_bytes(body).unwrap();
     let batch = Batch {
         input: InputKey {
             id: prepared.hash().to_string(),

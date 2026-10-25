@@ -115,7 +115,7 @@ pub struct UserOutcome {
 }
 
 /// One user write with the request that carries it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserRequest {
     pub id: String,
     pub machine: String,
@@ -341,6 +341,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: false,
             })
         }
+    }
+}
+
+/// The note family a request adds to or withdraws, once applied in `tx`.
+pub(crate) fn note_root(tx: &Transaction<'_>, r: &UserRequest) -> Result<Option<String>> {
+    match &r.write {
+        UserWrite::AddNote { .. } => root_of(tx, &r.id).map(Some),
+        UserWrite::Withdraw { note, .. } => root_of(tx, note).map(Some),
+        _ => Ok(None),
     }
 }
 

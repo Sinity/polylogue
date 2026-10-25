@@ -209,10 +209,9 @@ impl Engine {
         file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
         file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.piece_pos))?;
-        let prepared = self.archive.prepare_bytes(
-            &self.config.blob_roots,
-            (&mut file).take(plan.size - plan.piece_pos),
-        )?;
+        let prepared = self
+            .archive
+            .prepare_bytes((&mut file).take(plan.size - plan.piece_pos))?;
         if FileFacts::of(&file.metadata()?) != before
             || prepared.len() != plan.size - plan.piece_pos
         {
@@ -273,9 +272,7 @@ impl Engine {
         let mut files = Vec::new();
         {
             for blob in std::mem::take(&mut output.blobs) {
-                let (piece, file) = self
-                    .archive
-                    .prepare_piece(&self.config.blob_roots, &blob.bytes)?;
+                let (piece, file) = self.archive.prepare_decoded(&blob.bytes)?;
                 if piece.hash != blob.hash || piece.size != blob.size {
                     return Err(std::io::Error::other(
                         "decoded export bytes differ from their declared hash or length",

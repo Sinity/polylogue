@@ -1,29 +1,28 @@
-//! Polylogue on Sinex. In `standalone` mode, the default,
-//! this crate is not used. In `primary` mode Sinex holds the archive: every
-//! row batch of `archive.db` and every input blob its rows cite, so an empty
-//! archive restores from Sinex and the loop rebuilds `index.db` from it.
+//! Polylogue on Sinex. In `standalone` mode, the default, this crate is not
+//! used. In `primary` mode Sinex holds the archive and Polylogue is one of its
+//! producers:
 //!
-//! A row batch crosses as materials and one event: the blobs it cites, its
-//! rows as JSON lines, and a `polylogue.rows` event naming both, sent under
-//! the name `rows:<archive>:<position>` (its position in write order). Each
-//! pass asks Sinex which names it holds and sends the rest in order, so Sinex
-//! always holds a prefix of the archive. Sinex never deletes what it
-//! holds; excision refuses once Sinex holds the archive.
-use async_nats::jetstream;
-use futures_util::StreamExt;
+//! - each piece of a captured file is a material of its real input (origin,
+//!   path, host), a growing file a chain of parts, named with the Polylogue
+//!   parser that reads it ([`parts`]);
+//! - a look at a file that found no new bytes, and each request a person or
+//!   agent makes, is a small record material, with a typed event for notes,
+//!   settings, kept results and deliveries ([`records`]);
+//! - parsed sessions, messages, tool calls and turns are events keyed by
+//!   Polylogue's IDs and anchored at their records ([`sessions`]).
+//!
+//! The local register and index are written only after Sinex acknowledged
+//! what they describe, and are rebuilt from what Sinex holds.
 use serde::Deserialize;
-use sinex_protocol::{Acknowledgment, Have, Subjects};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Mutex;
 
-mod frames;
-mod restore;
-mod rows;
-mod send;
+mod client;
+mod parts;
+mod records;
+mod sessions;
 
-pub use restore::Restored;
-pub use send::Sent;
+use client::Client;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -45,6 +44,15 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl From<Error> for polylogue_store::StoreError {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Store(error) => error,
+            other => polylogue_store::StoreError::Sinex(other.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -53,8 +61,9 @@ pub enum Mode {
 }
 
 /// `$XDG_CONFIG_HOME/polylogue/sinex.toml`. It lives outside the archive,
-/// so a restore can start from an empty one.
+/// so an archive can be rebuilt from Sinex into an empty directory.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub mode: Mode,
     /// NATS server URL, with the producer's credentials when required.
@@ -66,12 +75,9 @@ pub struct Config {
     #[serde(default = "default_producer")]
     pub producer: String,
     /// Sinex's store root on this host. Polylogue writes the bytes it sends
-    /// under it and reads restored bytes from its content store.
+    /// into spool directories under it and reads stored bytes from its
+    /// content store.
     pub store: PathBuf,
-    /// The archive Sinex holds for this machine: restored from Sinex when
-    /// the local archive is empty.
-    #[serde(default)]
-    pub archive: Option<String>,
 }
 
 fn default_subjects() -> String {
@@ -110,127 +116,104 @@ impl Config {
     }
 }
 
-/// The last batch Sinex confirmed in this connection, so a pass starts after
-/// it instead of asking about the whole archive again.
-struct Confirmed {
-    archive: String,
-    position: u64,
-    batch: polylogue_store::row_batches::RowBatch,
-}
-
-/// A connection to Sinex as the producer `config.producer`.
+/// A connection to Sinex as the producer `config.producer`, used by the
+/// writer thread and the loop. One frame is in flight at a time.
 pub struct Sinex {
-    client: async_nats::Client,
-    subjects: Subjects,
-    producer: String,
-    max_message: usize,
-    store_root: PathBuf,
-    acknowledgments: async_nats::Subscriber,
-    acknowledgment_wait: Duration,
-    confirmed: Option<Confirmed>,
+    runtime: tokio::runtime::Runtime,
+    /// `None` only while dropping.
+    client: Mutex<Option<Client>>,
+    /// This host's name, for the records Polylogue writes.
+    host: String,
+    /// Where the sessions last sent stand, beside the index they were read
+    /// from ([`sessions`]).
+    sent: PathBuf,
 }
-
-const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 
 impl Sinex {
-    pub async fn connect(config: &Config) -> Result<Self> {
-        let client = async_nats::connect(&config.nats)
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let subjects = Subjects::new(config.subjects.clone());
-        let acknowledgments = client
-            .subscribe(subjects.ack(&config.producer))
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        client
-            .flush()
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let max_message = client.server_info().max_payload;
-        std::fs::create_dir_all(&config.store)?;
+    /// Connects to Sinex for the archive at `root`.
+    pub fn connect(config: &Config, root: &Path) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let client = runtime.block_on(Client::connect(config))?;
+        let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .map(|h| h.trim().to_owned())
+            .unwrap_or_default();
         Ok(Self {
-            client,
-            subjects,
-            producer: config.producer.clone(),
-            max_message,
-            store_root: config.store.clone(),
-            acknowledgments,
-            acknowledgment_wait: ACKNOWLEDGMENT_WAIT,
-            confirmed: None,
+            runtime,
+            client: Mutex::new(Some(client)),
+            host,
+            sent: root.join("sinex-sent.json"),
         })
     }
 
-    /// Sinex's store root, an extra read root for Polylogue's blobs.
-    pub fn store_root(&self) -> &Path {
-        &self.store_root
+    /// Runs `work` on the connection; frames never interleave.
+    fn with<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+        let mut client = self
+            .client
+            .lock()
+            .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
+        let client = client
+            .as_mut()
+            .ok_or_else(|| Error::Invalid("the Sinex connection is closed".into()))?;
+        self.runtime.block_on(work(client))
     }
 
-    /// What Sinex recorded under these names.
-    pub async fn have(&self, names: &[String]) -> Result<HashMap<String, Acknowledgment>> {
-        let mut out = HashMap::new();
-        for chunk in names.chunks(500) {
-            let request = Have {
-                frames: chunk.to_vec(),
-            };
-            let reply = self
-                .client
-                .request(
-                    self.subjects.have(&self.producer),
-                    serde_json::to_vec(&request)?.into(),
-                )
-                .await
-                .map_err(|e| Error::Unreachable(e.to_string()))?;
-            let acknowledgments: Vec<Acknowledgment> = serde_json::from_slice(&reply.payload)?;
-            out.extend(acknowledgments.into_iter().map(|a| (a.frame.clone(), a)));
-        }
-        Ok(out)
+    /// Sinex's store root.
+    pub fn store_root(&self) -> Result<PathBuf> {
+        self.with(async |client| Ok(client.store_root.clone()))
     }
 
-    /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
-    /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
-    /// with the frame's events, is. A lost acknowledgment is an error here;
-    /// the next pass asks `have` for it.
-    async fn transmit(&mut self, name: &str, body: Vec<u8>) -> Result<Acknowledgment> {
-        let js = jetstream::new(self.client.clone());
-        js.publish(self.subjects.ingress(&self.producer), body.into())
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        loop {
-            let message =
-                tokio::time::timeout(self.acknowledgment_wait, self.acknowledgments.next())
-                    .await
-                    .map_err(|_| Error::Unreachable(format!("no acknowledgment of {name}")))?
-                    .ok_or_else(|| Error::Unreachable("acknowledgments closed".into()))?;
-            let acknowledgment: Acknowledgment = serde_json::from_slice(&message.payload)?;
-            if acknowledgment.frame == name {
-                return checked(acknowledgment);
-            }
+    /// Whether Sinex answers.
+    pub fn reachable(&self) -> Result<()> {
+        self.with(async |client| client.have(&["polylogue-reachable".into()]).await.map(drop))
+    }
+}
+
+impl Drop for Sinex {
+    /// The NATS client's subscriptions unsubscribe on a task of the runtime
+    /// they were made in.
+    fn drop(&mut self) {
+        let _inside = self.runtime.enter();
+        if let Ok(client) = self.client.get_mut() {
+            drop(client.take());
         }
     }
 }
 
-fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {
-    match &acknowledgment.refusal {
-        Some(reason) => Err(Error::Refused {
-            name: acknowledgment.frame.clone(),
-            reason: reason.clone(),
-        }),
-        None => Ok(acknowledgment),
+impl polylogue_store::primary::Sinex for Sinex {
+    fn send_part(
+        &self,
+        part: &polylogue_store::primary::Part,
+        bytes: &mut dyn std::io::Read,
+    ) -> polylogue_store::Result<String> {
+        Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
     }
-}
 
-/// `blake3:<hex>`, the form Sinex names bytes by.
-fn content_name(hash: &hashed_blobs::Hash) -> String {
-    format!("blake3:{}", hash.hex())
-}
+    fn send_record(
+        &self,
+        record: &polylogue_store::primary::Record,
+    ) -> polylogue_store::Result<String> {
+        Ok(self.with(async |client| records::send(client, &self.host, record).await)?)
+    }
 
-fn parse_content_name(name: &str) -> Result<hashed_blobs::Hash> {
-    name.strip_prefix("blake3:")
-        .and_then(|hex| polylogue_model::BlobHash::parse(hex).ok())
-        .map(|hash| hashed_blobs::Hash(hash.0))
-        .ok_or_else(|| Error::Invalid(format!("{name} is not a BLAKE3 content name")))
+    fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {
+        Ok(self.with(async |client| client.excise(materials).await)?)
+    }
+
+    fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
+        Ok(self.with(async |client| {
+            let page = client.materials(after).await?;
+            let store = hashed_blobs::Reader::new(client.store_root.clone(), vec![]);
+            page.into_iter()
+                .map(|held| parts::held(&store, held))
+                .collect::<Result<Vec<_>>>()
+        })?)
+    }
+
+    fn send_sessions(&self, reads: &polylogue_store::ReadPool) -> polylogue_store::Result<()> {
+        Ok(sessions::send(self, reads)?)
+    }
 }
 
 #[cfg(test)]

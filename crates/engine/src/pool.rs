@@ -107,7 +107,6 @@ impl Pool {
         writer: WriterSender,
         blobs: Arc<hashed_blobs::Store>,
         archive: polylogue_store::Archive,
-        roots: Vec<PathBuf>,
         done: Sender<Done>,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -128,10 +127,9 @@ impl Pool {
                 let blobs = Arc::clone(&blobs);
                 let done = done.clone();
                 let archive = archive.clone();
-                let roots = roots.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &archive, &roots, &done))
+                    .spawn(move || work(&shared, &writer, &blobs, &archive, &done))
                     .expect("spawn a parse worker")
             })
             .collect();
@@ -192,7 +190,6 @@ fn work(
     writer: &WriterSender,
     store: &Arc<hashed_blobs::Store>,
     archive: &polylogue_store::Archive,
-    roots: &[PathBuf],
     done: &Sender<Done>,
 ) {
     let mut group = Group {
@@ -225,7 +222,7 @@ fn work(
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, roots, store);
+        let (batch, result) = run(job, archive, store);
         group.held.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
@@ -301,7 +298,6 @@ fn flush(
 fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    roots: &[PathBuf],
     store: &hashed_blobs::Store,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
@@ -338,7 +334,7 @@ fn run(
     let mut files = Vec::new();
     let piece = match job.piece_from {
         Some(from) => match time(Stage::Store, || {
-            archive.prepare_piece(roots, &bytes[(from - job.start) as usize..])
+            archive.prepare_piece(&bytes[(from - job.start) as usize..])
         }) {
             Ok((p, file)) => {
                 files.extend(file);
@@ -379,7 +375,7 @@ fn run(
                     let mut parsed = Vec::new();
                     for mut step in steps {
                         for blob in std::mem::take(&mut step.output.blobs) {
-                            match time(Stage::Store, || archive.prepare_piece(roots, &blob.bytes)) {
+                            match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
                                 Ok((p, file)) => {
                                     if p.hash!=blob.hash || p.size!=blob.size {
                                         out.error=Some("decoded bytes differ from their declared hash or length".into());

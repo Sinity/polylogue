@@ -23,11 +23,7 @@ fn spellings(needle: &str) -> Result<Vec<Vec<u8>>> {
 /// Blobs holding part of `needle` in a stored chain.
 pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<BlobHash>> {
     let conn = crate::archive::open_read(&archive.archive_db())?;
-    let store = Arc::new(hashed_blobs::Store::open(
-        archive.root.clone(),
-        vec![],
-        0o600,
-    )?);
+    let store = Arc::new(archive.blobs()?);
     let chains: Vec<(String, i64, i64)> = conn
         .prepare("SELECT input, chain, max(length) FROM revision GROUP BY input, chain")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
