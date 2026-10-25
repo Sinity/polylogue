@@ -6,7 +6,7 @@ use super::{Chain, Extent, extent};
 use crate::Result;
 use crate::excise::text_matches::{HitSink, Scope};
 use polylogue_model::BlobHash;
-use polylogue_model::snapshot_log::Header;
+use polylogue_model::capture_log::Header;
 use rusqlite::{Connection, params};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -135,7 +135,7 @@ impl Plan {
 
     /// Writes use ordered, nonoverlapping ranges; counts keep exact hits.
     pub(super) fn normalize(&self, input: &str, chain: i64) -> Result<()> {
-        use polylogue_model::snapshot_log::{HEADER_LEN, MAGIC};
+        use polylogue_model::capture_log::{HEADER_LEN, MAGIC};
         let key = (input.to_owned(), chain);
         let mut state = self.state.borrow_mut();
         // A hit in the log's magic or a frame header is structure, not text.
