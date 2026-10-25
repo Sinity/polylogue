@@ -904,7 +904,7 @@ mod statement_cache;
 #[cfg(test)]
 mod prepared;
 
-mod batch_order;
+mod observation_order;
 
 mod excluded;
 mod text_projection;

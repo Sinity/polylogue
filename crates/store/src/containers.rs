@@ -2,7 +2,7 @@
 //! from it is its own input whose import observation names the ZIP it came
 //! from (`observation_container`).
 use crate::{Batch, ImportContainer, Result, StoreError};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 mod excision;
 pub(crate) use excision::refuse_inside_zip;
@@ -34,31 +34,21 @@ pub(crate) fn require_original(conn: &Connection, input: &str) -> Result<()> {
 }
 
 /// Records which ZIP the member observed by `observation` was read from.
-pub(crate) fn record(
+/// The ZIP a member observation of `input` was read from, and its index
+/// there; the ZIP must be stored already, and is never its own member.
+pub(crate) fn check(
     conn: &Connection,
-    observation: &str,
-    member: &crate::ImportMember,
-) -> Result<()> {
-    let Some(container) = &member.container else {
-        return Ok(());
-    };
+    input: &str,
+    container: &crate::ImportContainer,
+) -> Result<(String, i64)> {
     require_original(conn, &container.input)?;
-    let own: String = conn.query_row(
-        "SELECT input FROM observation WHERE id=?1",
-        [observation],
-        |r| r.get(0),
-    )?;
-    if own == container.input {
+    if input == container.input {
         return Err(StoreError::Invalid("a ZIP cannot be its own member".into()));
     }
     let index = i64::try_from(container.member_index).map_err(|_| {
         StoreError::Invalid("ZIP member index exceeds archive address space".into())
     })?;
-    conn.execute(
-        "INSERT INTO observation_container VALUES (?1,?2,?3)",
-        params![observation, container.input, index],
-    )?;
-    Ok(())
+    Ok((container.input.clone(), index))
 }
 
 #[cfg(test)]

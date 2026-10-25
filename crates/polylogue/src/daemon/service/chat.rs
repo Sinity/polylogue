@@ -70,7 +70,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             };
             let stored = d
                 .archive
-                .prepare_piece(&d.config.blob_roots, &bytes)
+                .prepare_decoded(&bytes)
                 .and_then(|(piece, file)| writes.store_blob(piece, file));
             match stored {
                 Ok(hash) => ok(serde_json::json!({
@@ -135,7 +135,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             )
         }
         Request::ChatAttachment { id, attachment } => {
-            match reader.chat_attachment(&id, &attachment, &d.config.blob_roots) {
+            match reader.chat_attachment(&id, &attachment) {
                 Ok((a, bytes)) => ok(serde_json::json!({
                     "media_type": a.media_type,
                     "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),

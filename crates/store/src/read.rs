@@ -760,16 +760,15 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// The archive directory this reader reads.
-    pub(crate) fn archive_root(&self) -> &std::path::Path {
-        &self.pool.archive.root
+    /// The content store the archive's bytes are read from.
+    pub fn blob_store(&self) -> Result<hashed_blobs::Store> {
+        self.pool.archive.blobs()
     }
 
     /// Reads a range of the selected stored attachment in this reader's read.
     pub fn attachment_range(
         &self,
         asset: &crate::assets::AssetMatch,
-        roots: &[std::path::PathBuf],
         range: std::ops::Range<u64>,
     ) -> Result<Vec<u8>> {
         self.current_attachment(asset)?;
@@ -778,8 +777,7 @@ impl Reader<'_> {
                 "attachment range is outside the stored bytes".into(),
             ));
         }
-        let store =
-            hashed_blobs::Store::open(self.pool.archive.root.clone(), roots.to_vec(), 0o600)?;
+        let store = self.blob_store()?;
         self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
     }
 
@@ -788,15 +786,10 @@ impl Reader<'_> {
     pub fn attachment_hash(
         &self,
         asset: &crate::assets::AssetMatch,
-        roots: &[std::path::PathBuf],
     ) -> Result<polylogue_model::BlobHash> {
         self.current_attachment(asset)?;
         use std::io::Read;
-        let store = std::sync::Arc::new(hashed_blobs::Store::open(
-            self.pool.archive.root.clone(),
-            roots.to_vec(),
-            0o600,
-        )?);
+        let store = std::sync::Arc::new(self.blob_store()?);
         let mut source = self
             .stored_chain(&asset.input, asset.chain, asset.size)?
             .reader(store);

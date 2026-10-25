@@ -210,7 +210,6 @@ impl Engine {
         file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.piece_pos))?;
         let prepared = self.archive.prepare_bytes(
-            &self.config.blob_roots,
             (&mut file).take(plan.size - plan.piece_pos),
         )?;
         if FileFacts::of(&file.metadata()?) != before
@@ -275,7 +274,7 @@ impl Engine {
             for blob in std::mem::take(&mut output.blobs) {
                 let (piece, file) = self
                     .archive
-                    .prepare_piece(&self.config.blob_roots, &blob.bytes)?;
+                    .prepare_decoded(&blob.bytes)?;
                 if piece.hash != blob.hash || piece.size != blob.size {
                     return Err(std::io::Error::other(
                         "decoded export bytes differ from their declared hash or length",

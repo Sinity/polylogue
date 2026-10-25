@@ -20,9 +20,6 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     read_checkpoints: read::checkpoints::Cache,
-    /// The loop's settings: where the browser host spools captures for
-    /// the loop to read.
-    pub config: Config,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
@@ -577,8 +574,6 @@ pub struct Runtime {
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
-    #[cfg(feature = "sinex")]
-    sinex: Option<crate::sinex::Sending>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
 
@@ -618,12 +613,6 @@ impl Runtime {
                     });
                 }
             }
-        }
-        #[cfg(feature = "sinex")]
-        if let Some(mut sinex) = self.sinex.take()
-            && let Err(error) = sinex.shutdown()
-        {
-            failure.get_or_insert(error);
         }
         self.daemon.read_checkpoints.clear();
         self.daemon.reads.close();
@@ -713,54 +702,57 @@ pub fn start(
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
-    let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
-    let paths = config.clone();
-    #[allow(unused_mut)]
-    let mut config = config;
-    #[cfg(feature = "sinex")]
-    let mut sinex_thread = None;
-    let mode = match mode {
-        ArchiveMode::Standalone => ModeState::Standalone,
+    let settings = config.clone();
+    let (archive, lock, mode, engine) = match mode {
+        ArchiveMode::Standalone => {
+            let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
+            (archive, lock, ModeState::Standalone, Some(engine))
+        }
         #[cfg(feature = "sinex")]
         ArchiveMode::Blocked {
             configured,
             path,
             error,
-        } => ModeState::Blocked {
-            configured,
-            path,
-            error,
-        },
+        } => {
+            let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
+            let state = ModeState::Blocked {
+                configured,
+                path,
+                error,
+            };
+            (archive, lock, state, None)
+        }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary {
             config: sinex,
             path,
-        } => match crate::sinex::start(&archive, &mut config, sinex) {
-            Ok(started) => {
-                sinex_thread = Some(started);
-                ModeState::Primary
+        } => match crate::sinex::open(root, &sinex)? {
+            (archive, lock, Ok(connection)) => {
+                let engine = Engine::on_sinex(config, archive.clone(), connection)
+                    .map_err(|e| to_io(&e))?;
+                (archive, lock, ModeState::Primary, Some(engine))
             }
-            Err(error) => ModeState::Blocked {
-                configured: Some("primary"),
-                path,
-                error: error.to_string(),
-            },
+            (archive, lock, Err(error)) => {
+                let state = ModeState::Blocked {
+                    configured: Some("primary"),
+                    path,
+                    error,
+                };
+                (archive, lock, state, None)
+            }
         },
     };
-    let mut engine = if mode.blocked() {
-        None
-    } else {
-        Some(Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?)
-    };
+    let mut engine = engine;
     let writes = engine
         .as_ref()
         .map(Engine::writer)
         .transpose()
         .map_err(|e| to_io(&e))?;
-    let per_reader = paths
+    let per_reader = settings
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;
-    let reads = ReadPool::with_budget(&archive, paths.workers, per_reader * paths.workers as u64)
+    let reads = ReadPool::with_budget(&archive, settings.workers, per_reader * settings.workers as u64)
         .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     // The loop's first pass starts as soon as it runs.
@@ -772,7 +764,6 @@ pub fn start(
         archive,
         reads,
         read_checkpoints: read::checkpoints::Cache::default(),
-        config: paths,
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -786,8 +777,6 @@ pub fn start(
         signals_stop: None,
         signals: None,
         engine: None,
-        #[cfg(feature = "sinex")]
-        sinex: sinex_thread,
         lock: Some(lock),
     };
     let Some(mut engine) = engine.take() else {

@@ -192,7 +192,6 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
             let (mut e, _lock) = engine(w, 8);
             let captured = Captured::stream(
                 &e.archive,
-                &e.config.blob_roots,
                 &mut fs::File::open(&path).unwrap(),
             )
             .unwrap();
@@ -308,7 +307,6 @@ fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
     ] {
         let captured = Captured::stream(
             &e.archive,
-            &e.config.blob_roots,
             fs::File::open(path).unwrap(),
         )
         .unwrap();
@@ -390,7 +388,6 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
             e.converge().unwrap();
             let captured = Captured::stream(
                 &e.archive,
-                &e.config.blob_roots,
                 fs::File::open(&bulk).unwrap(),
             )
             .unwrap();

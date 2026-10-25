@@ -167,6 +167,22 @@ impl Writer {
     /// the mark; an index still marked when the archive is next opened is
     /// set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
+        Self::start_with(archive, None)
+    }
+
+    /// Starts the writer on an archive Sinex holds: every register row is
+    /// sent to `sinex` first and commits only once Sinex acknowledged it.
+    pub fn start_on_sinex(
+        archive: &Archive,
+        sinex: std::sync::Arc<dyn crate::primary::Sinex>,
+    ) -> Result<Self> {
+        Self::start_with(archive, Some(sinex))
+    }
+
+    fn start_with(
+        archive: &Archive,
+        sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
+    ) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
         let _lock = crate::write_lock::hold(&index)?;
         let empty: bool =
@@ -219,6 +235,7 @@ impl Writer {
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
             excisions,
+            sinex,
         };
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
@@ -299,7 +316,7 @@ impl Writer {
     }
 
     /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
-    /// `file` is the private file [`crate::Archive::prepare_piece`] wrote
+    /// `file` is the private file [`crate::Archive::prepare_decoded`] wrote
     /// for a piece too large to keep inline.
     pub fn store_blob(
         &self,
@@ -445,6 +462,8 @@ struct Inner {
     /// Whether the archive holds an excision, whose sessions, messages and
     /// bytes are never written again.
     excisions: bool,
+    /// In primary mode, where every register row goes before it commits.
+    sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
 }
 
 impl Inner {
@@ -890,8 +909,12 @@ impl Inner {
             |r| r.get(0),
         )?;
         if !present {
-            let store = std::sync::Arc::clone(&file.store);
-            file.prepared.install_checked::<StoreError>(|| Ok(()))?;
+            let crate::staging::Prepared::Local { store, prepared } = file.file else {
+                return Err(StoreError::Invalid(
+                    "bytes for Sinex reached the blob store".into(),
+                ));
+            };
+            prepared.install_checked::<StoreError>(|| Ok(()))?;
             let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(piece.hash.0))?)
                 .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
             self.archive.execute(
@@ -913,6 +936,12 @@ impl Inner {
             // A resent request: nothing to keep, not even the counter bump.
             tx.rollback()?;
         } else {
+            if let Some(sinex) = &self.sinex {
+                sinex.send_record(&crate::primary::Record::Request {
+                    request: request.clone(),
+                    root: crate::user_writes::note_root(&tx, request)?,
+                })?;
+            }
             tx.commit()?;
         }
         Ok(outcome)
@@ -935,7 +964,11 @@ impl Inner {
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();
         for b in batches.clone() {
-            chains.push(write_bytes(&atx, b, seq)?);
+            let (chain, record) = write_bytes(&atx, b, seq)?;
+            if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
+                staging::send_to_sinex(sinex.as_ref(), &atx, record, None, b.piece.as_ref())?;
+            }
+            chains.push(chain);
         }
         crate::fault::check("write.archive_commit", "")?;
         atx.commit()?;

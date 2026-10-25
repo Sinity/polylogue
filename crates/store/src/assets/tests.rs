@@ -16,7 +16,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     let original = "prefix λ🙂 suffix".as_bytes();
     let split = 8; // Inside the UTF-8 sequence; this API delivers bytes.
     for (start, end, continues) in [(0, split, false), (split, original.len(), true)] {
-        let (piece, file) = archive.prepare_piece(&[], &original[start..end]).unwrap();
+        let (piece, file) = archive.prepare_piece(&original[start..end]).unwrap();
         assert!(file.is_none());
         writer
             .send(Batch {
@@ -53,26 +53,26 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
             declared_sizes: vec![],
         };
         assert_eq!(
-            reader.attachment_hash(&asset, &[]).unwrap(),
+            reader.attachment_hash(&asset).unwrap(),
             BlobHash::of(original)
         );
         assert_eq!(
-            reader.attachment_range(&asset, &[], 2..13).unwrap(),
+            reader.attachment_range(&asset, 2..13).unwrap(),
             &original[2..13]
         );
         assert_eq!(
-            reader.attachment_range(&asset, &[], 0..asset.size).unwrap(),
+            reader.attachment_range(&asset, 0..asset.size).unwrap(),
             original
         );
         assert!(
             reader
-                .attachment_range(&asset, &[], asset.size..asset.size + 1)
+                .attachment_range(&asset, asset.size..asset.size + 1)
                 .is_err()
         );
         asset
     };
     let replacement = b"replacement body";
-    let (piece, file) = archive.prepare_piece(&[], replacement).unwrap();
+    let (piece, file) = archive.prepare_piece(replacement).unwrap();
     assert!(file.is_none());
     writer
         .send(Batch {
@@ -89,6 +89,6 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         .unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
-    assert!(reader.attachment_hash(&asset, &[]).is_err());
-    assert!(reader.attachment_range(&asset, &[], 0..asset.size).is_err());
+    assert!(reader.attachment_hash(&asset).is_err());
+    assert!(reader.attachment_range(&asset, 0..asset.size).is_err());
 }

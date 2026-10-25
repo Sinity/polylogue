@@ -1,0 +1,138 @@
+//! The register rows one stored step of an input writes: its revision, the
+//! extent its new bytes fill and the observation that found them. The writer
+//! builds one [`InputRecord`] per step and inserts it; in primary mode Sinex
+//! keeps it with the bytes it describes (or alone, when the step found no new
+//! bytes), and a rebuild from Sinex inserts the same records again.
+use crate::Result;
+use polylogue_model::BlobHash;
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRecord {
+    pub input: String,
+    /// The origin that parses it (`claude-code`).
+    pub format: String,
+    /// A new revision, or the current one grown by a later chunk of the
+    /// same read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<Revision>,
+    /// Where the step's new bytes sit in the revision chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<Extent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<ObservationRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revision {
+    pub number: i64,
+    pub produced: String,
+    pub chain: i64,
+    pub length: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extent {
+    pub chain: i64,
+    pub offset: i64,
+    pub length: i64,
+    pub blob: BlobHash,
+}
+
+/// One look at a path that found something.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationRecord {
+    pub id: String,
+    pub machine: String,
+    pub host: String,
+    pub path: String,
+    pub class: String,
+    pub revision: Option<i64>,
+    pub length: Option<i64>,
+    pub device: Option<i64>,
+    pub inode: Option<i64>,
+    pub size: Option<i64>,
+    pub mtime_ns: Option<i64>,
+    pub ctime_ns: Option<i64>,
+    pub polylogue_version: String,
+    pub seen_at: i64,
+    pub details_json: Option<String>,
+    /// The export ZIP it was read from, and its index there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<(String, i64)>,
+}
+
+impl InputRecord {
+    /// Inserts the rows at write counter `seq`. A revision already present
+    /// takes the recorded length (a later chunk grew it); everything else
+    /// present is left as it is, so inserting a record twice changes
+    /// nothing.
+    pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
+        tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
+            .execute(params![self.input, self.format])?;
+        if let Some(r) = &self.revision {
+            tx.prepare_cached(
+                "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
+            )?
+            .execute(params![
+                self.input,
+                r.number,
+                r.produced,
+                r.chain,
+                r.length,
+                seq
+            ])?;
+        }
+        if let Some(e) = &self.extent {
+            tx.prepare_cached(
+                "INSERT OR IGNORE INTO extent(input, chain, offset, length, blob, blob_offset)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+            )?
+            .execute(params![
+                self.input,
+                e.chain,
+                e.offset,
+                e.length,
+                &e.blob.0[..]
+            ])?;
+        }
+        if let Some(o) = &self.observation {
+            tx.prepare_cached(
+                "INSERT OR IGNORE INTO machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
+            )?
+            .execute(params![o.machine, o.host, o.seen_at])?;
+            tx.prepare_cached(
+                "INSERT OR IGNORE INTO observation(id, input, machine, path, class, revision, length,
+                     device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq,
+                     details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            )?
+            .execute(params![
+                o.id,
+                self.input,
+                o.machine,
+                o.path,
+                o.class,
+                o.revision,
+                o.length,
+                o.device,
+                o.inode,
+                o.size,
+                o.mtime_ns,
+                o.ctime_ns,
+                o.polylogue_version,
+                o.seen_at,
+                seq,
+                o.details_json,
+            ])?;
+            if let Some((container, index)) = &o.container {
+                tx.prepare_cached("INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3)")?
+                    .execute(params![o.id, container, index])?;
+            }
+        }
+        Ok(())
+    }
+}

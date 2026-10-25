@@ -22,7 +22,6 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         let (mut engine, _lock) = engine(&w, 64);
         let captured = Captured::stream(
             &engine.archive,
-            &engine.config.blob_roots,
             std::fs::File::open(&path).unwrap(),
         )
         .unwrap();
@@ -61,7 +60,6 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
         let (mut engine, _lock) = engine(&w, 64);
         let captured = Captured::stream(
             &engine.archive,
-            &engine.config.blob_roots,
             std::fs::File::open(&path).unwrap(),
         )
         .unwrap();
@@ -107,7 +105,7 @@ fn capture_failure_leaves_no_catalog_input() {
     }
     let w = polylogue_testkit::ClaudeHome::new();
     let (engine, _lock) = engine(&w, 64);
-    assert!(Captured::stream(&engine.archive, &engine.config.blob_roots, Failed).is_err());
+    assert!(Captured::stream(&engine.archive, Failed).is_err());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 0);
 }
@@ -126,7 +124,6 @@ pub(super) fn engine(
         machine: "test-machine".into(),
         host: "test".into(),
         chunk,
-        blob_roots: Vec::new(),
         rescan_every: std::time::Duration::from_secs(60),
     };
     (Engine::new(config, archive).unwrap(), lock)
@@ -222,7 +219,7 @@ fn acquisition_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
         max_request: 0,
     };
     let captured =
-        Captured::stream(&engine.archive, &engine.config.blob_roots, &mut generated).unwrap();
+        Captured::stream(&engine.archive, &mut generated).unwrap();
     assert_eq!(captured.prepared.len(), size);
     assert_eq!(captured.head, vec![b'x'; 64]);
     assert_eq!(generated.left, 0);
@@ -240,7 +237,6 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
         let (mut engine, _lock) = engine(&w, 64);
         let captured = Captured::stream(
             &engine.archive,
-            &engine.config.blob_roots,
             std::fs::File::open(&path).unwrap(),
         )
         .unwrap();
@@ -272,7 +268,6 @@ fn replayed_import_does_not_replace_the_native_winner() {
         engine.converge().unwrap();
         let captured = Captured::stream(
             &engine.archive,
-            &engine.config.blob_roots,
             std::fs::File::open(&path).unwrap(),
         )
         .unwrap();

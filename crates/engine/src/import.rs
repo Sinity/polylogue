@@ -72,7 +72,6 @@ impl Engine {
             } else {
                 let mut captured = Captured::file(
                     &self.archive,
-                    &self.config.blob_roots,
                     &mut file,
                     polylogue_export,
                 )?;
@@ -98,7 +97,7 @@ impl Engine {
             }
         }
         self.refresh_import_assets(&mut report.pass)?;
-        report.pass.sessions_derived = self.writer.derive()?;
+        report.pass.sessions_derived = self.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }
@@ -262,7 +261,6 @@ impl Captured {
     /// A file already inspected in place.
     fn file(
         archive: &Archive,
-        roots: &[PathBuf],
         file: &mut std::fs::File,
         polylogue_export: bool,
     ) -> polylogue_store::Result<Self> {
@@ -271,7 +269,7 @@ impl Captured {
             size: 0,
             head: Vec::new(),
         };
-        let prepared = archive.prepare_bytes(roots, &mut reader)?;
+        let prepared = archive.prepare_bytes(&mut reader)?;
         Ok(Self {
             prepared,
             head: reader.head,
@@ -283,7 +281,6 @@ impl Captured {
     /// Bytes that can be read only once, inspected from a scratch copy.
     fn stream(
         archive: &Archive,
-        roots: &[PathBuf],
         reader: impl std::io::Read,
     ) -> polylogue_store::Result<Self> {
         let mut reader = CaptureReader {
@@ -292,7 +289,7 @@ impl Captured {
             head: Vec::new(),
         };
         let (prepared, polylogue_export) =
-            archive.prepare_stream(roots, &mut reader, |scratch| {
+            archive.prepare_stream(&mut reader, |scratch| {
                 Ok(polylogue_sources::polylogue_export::recognize_reader(
                     scratch,
                 )?)

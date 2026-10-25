@@ -56,7 +56,6 @@ fn config(home: &Path) -> Config {
         machine: "m".into(),
         host: "h".into(),
         chunk: 1 << 20,
-        blob_roots: Vec::new(),
         rescan_every: std::time::Duration::from_secs(60),
     }
 }

@@ -22,13 +22,14 @@ pub mod export_items;
 pub mod fault;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+pub mod input_record;
 mod live;
 pub mod measure;
 pub mod notes;
+pub mod primary;
 mod ordered_blocks;
 pub mod read;
 mod repo_lookup;
-pub mod row_batches;
 pub mod schema;
 pub mod search;
 pub mod session_export;
@@ -89,8 +90,6 @@ pub enum StoreError {
     ExcisionBlobReferenced(polylogue_model::BlobHash),
     #[error("the excision stopped part way; reopen the archive to finish it: {0}")]
     ExcisionInterrupted(#[source] Box<StoreError>),
-    #[error("excision is not supported while Sinex holds this archive (primary mode)")]
-    ExcisionOnSinex,
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("session ancestry is incomplete: {0}")]
@@ -105,6 +104,9 @@ pub enum StoreError {
     ExcisionInsideZip { input: String, file: String },
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
+    /// Sinex could not be reached, or refused what was sent (primary mode).
+    #[error("Sinex: {0}")]
+    Sinex(String),
     #[error("{0}")]
     Invalid(String),
 }

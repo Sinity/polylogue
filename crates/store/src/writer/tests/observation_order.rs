@@ -1,7 +1,19 @@
 use super::*;
 
+/// Records `b`'s observation as a disappearance.
+fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
+    let record = crate::input_record::InputRecord {
+        input: b.input.id.clone(),
+        format: b.input.format.clone(),
+        revision: None,
+        extent: None,
+        observation: bytes::observation(tx, b, "deleted", None, seq).unwrap(),
+    };
+    record.insert(tx, seq).unwrap();
+}
+
 #[test]
-fn same_transaction_observations_replay_in_insertion_order_despite_nonmonotonic_times() {
+fn the_latest_observation_is_the_last_inserted_despite_earlier_times() {
     let w = world();
     let mut db =
         crate::archive::open_write(&w.archive.archive_db(), crate::archive::cache::SETUP).unwrap();
@@ -14,24 +26,9 @@ fn same_transaction_observations_replay_in_insertion_order_despite_nonmonotonic_
         let observation = b.observation.as_mut().unwrap();
         observation.seen_at_ms = at;
         observation.path = format!("location-{at}");
-        insert_observation(&tx, &b, "deleted", None, seq).unwrap();
+        observe(&tx, &b, seq);
     }
     tx.commit().unwrap();
-    let actual: Vec<String> = db
-        .prepare("SELECT id FROM observation ORDER BY rowid")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let batch_reader = crate::row_batches::BatchReader::open(&w.archive.root).unwrap();
-    let batches: Vec<String> = batch_reader
-        .batches(None, 100)
-        .unwrap()
-        .into_iter()
-        .map(|batch| batch.key)
-        .collect();
-    assert_eq!(batches, actual);
     assert_eq!(
         db.query_row(
             "SELECT path FROM observation ORDER BY rowid DESC LIMIT 1",
@@ -58,7 +55,7 @@ fn independent_archives_cannot_assign_the_same_observation_identity() {
         let seq = bump_counter(&tx).unwrap();
         let mut b = batch("input", 0, 0, vec![], &[]);
         b.observation.as_mut().unwrap().seen_at_ms = seen_at;
-        insert_observation(&tx, &b, "deleted", None, seq).unwrap();
+        observe(&tx, &b, seq);
         tx.commit().unwrap();
         ids.push(
             db.query_row("SELECT id FROM observation", [], |r| r.get::<_, String>(0))

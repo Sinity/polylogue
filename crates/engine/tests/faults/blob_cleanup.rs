@@ -23,18 +23,14 @@ fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
         w.append("kept.jsonl", &kept);
         let victim_hash = hashed_blobs::Hash(*blake3::hash(victim.as_bytes()).as_bytes());
         let kept_hash = hashed_blobs::Hash(*blake3::hash(kept.as_bytes()).as_bytes());
-        let external_root = w.dir.path().join("external");
-        let external = hashed_blobs::Store::open(external_root.clone(), vec![], 0o600).unwrap();
         let local = hashed_blobs::Store::open(w.root.clone(), vec![], 0o600).unwrap();
         {
             let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
-            let mut config: Config = w.config(64 << 20);
-            config.blob_roots = vec![external_root];
+            let config: Config = w.config(64 << 20);
             let mut e = Engine::new(config, archive).unwrap();
             assert!(e.converge().unwrap().errors.is_empty());
             assert!(local.contains(&victim_hash));
             assert!(local.contains(&kept_hash));
-            assert_eq!(external.put(victim.as_bytes(), 1).unwrap(), victim_hash);
             let subject = if point == "excision.after_index_commit" {
                 "interrupted-files".to_owned()
             } else {
@@ -65,10 +61,6 @@ fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
             assert!(
                 !local.contains(&victim_hash),
                 "restart left an uncatalogued removed file in the primary store"
-            );
-            assert!(
-                external.contains(&victim_hash),
-                "cleanup must preserve external read roots"
             );
             assert!(local.contains(&kept_hash));
             assert_eq!(

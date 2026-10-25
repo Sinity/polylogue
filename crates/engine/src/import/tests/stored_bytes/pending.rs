@@ -2,7 +2,6 @@ use super::*;
 use polylogue_store::{
     StoreError,
     fault::{self, Action},
-    row_batches::{BatchReader, RowBatch},
     staging::PendingState,
 };
 
@@ -36,20 +35,6 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert_eq!(status.pending_inputs.len(), 1);
             assert_eq!(status.pending_inputs[0].state, PendingState::Writing);
             assert_eq!(status.stored_bytes, 0);
-            let rows = BatchReader::open(&world.root).unwrap();
-            let batch = RowBatch {
-                commit_seq: world.count("SELECT max(commit_seq) AS n FROM a.revision"),
-                kind: "revision".into(),
-                key: format!("{id}/1"),
-            };
-            assert!(
-                matches!(
-                    rows.rows(&batch, |_| Ok(())),
-                    Err(StoreError::InputPending { .. })
-                ),
-                "pending bytes must not be sent to Sinex as present"
-            );
-            drop(rows);
         }
         // The provider file now holds other bytes; only the stored hash may
         // finish the import, never this replacement.

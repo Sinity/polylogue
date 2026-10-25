@@ -1,6 +1,6 @@
-//! Bytes hashed and compressed off the writer thread into a private file,
-//! waiting for the writer to give them a blob row and move them into the
-//! blob store.
+//! Bytes hashed off the writer thread into a private file, waiting for the
+//! writer to give them their rows: in standalone mode compressed, then moved
+//! into the blob store; in primary mode as they are, then sent to Sinex.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
@@ -13,20 +13,39 @@ pub struct PreparedBatch {
     pub files: Vec<PreparedBytes>,
 }
 
-/// A private file for one archive, installed under its content name only by
-/// the writer, after the blob's row exists.
+/// A private file for one archive, stored only by the writer, after the
+/// rows that place it exist.
 pub struct PreparedBytes {
     pub(crate) owner: std::path::PathBuf,
-    pub(crate) store: std::sync::Arc<hashed_blobs::Store>,
-    pub(crate) prepared: hashed_blobs::PreparedPlain,
+    pub(crate) file: Prepared,
+}
+
+pub(crate) enum Prepared {
+    /// Compressed, to be moved under its content name in `blobs/`.
+    Local {
+        store: std::sync::Arc<hashed_blobs::Store>,
+        prepared: hashed_blobs::PreparedPlain,
+    },
+    /// The bytes as they are, in `parts/`, to be sent to Sinex.
+    Part {
+        file: tempfile::NamedTempFile,
+        hash: BlobHash,
+        length: u64,
+    },
 }
 
 impl PreparedBytes {
     pub fn hash(&self) -> BlobHash {
-        BlobHash(self.prepared.hash().0)
+        match &self.file {
+            Prepared::Local { prepared, .. } => BlobHash(prepared.hash().0),
+            Prepared::Part { hash, .. } => *hash,
+        }
     }
     pub fn len(&self) -> u64 {
-        self.prepared.decoded_len()
+        match &self.file {
+            Prepared::Local { prepared, .. } => prepared.decoded_len(),
+            Prepared::Part { length, .. } => *length,
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -34,26 +53,13 @@ impl PreparedBytes {
 }
 
 impl crate::Archive {
-    /// Preserve inline storage while preparing file pieces privately.
-    pub fn prepare_piece(
-        &self,
-        roots: &[std::path::PathBuf],
-        bytes: &[u8],
-    ) -> Result<(crate::Piece, Option<PreparedBytes>)> {
-        if bytes.len() < crate::blobs::INLINE_LIMIT {
-            return Ok((
-                crate::Piece {
-                    hash: BlobHash::of(bytes),
-                    size: bytes.len() as u64,
-                    stored: crate::blobs::Stored::Inline(zstd::bulk::compress(
-                        bytes,
-                        crate::blobs::LEVEL,
-                    )?),
-                },
-                None,
-            ));
+    /// An input's bytes: small ones inline in standalone mode, the rest in a
+    /// private file. In primary mode every piece is a file, sent to Sinex.
+    pub fn prepare_piece(&self, bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+        if bytes.len() < crate::blobs::INLINE_LIMIT && !self.is_primary() {
+            return inline(bytes);
         }
-        let prepared = self.prepare_bytes(roots, bytes)?;
+        let prepared = self.prepare_bytes(bytes)?;
         Ok((
             crate::Piece {
                 hash: prepared.hash(),
@@ -64,12 +70,22 @@ impl crate::Archive {
         ))
     }
 
+    /// Bytes no provider file holds as they are: what a parser decoded from
+    /// inside a record (a base64 image), or a file uploaded for a chat
+    /// action. A parse makes them again, so in primary mode they stay in
+    /// the register inline and are not sent to Sinex.
+    pub fn prepare_decoded(&self, bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+        if self.is_primary() {
+            return inline(bytes);
+        }
+        self.prepare_piece(bytes)
+    }
+
     /// Prepares bytes that can be read only once (a ZIP member), after
     /// `inspect` has read them from a scratch file. A file on disk is
     /// inspected in place and prepared with [`Self::prepare_bytes`] instead.
     pub fn prepare_stream<T>(
         &self,
-        roots: &[std::path::PathBuf],
         mut reader: impl std::io::Read,
         inspect: impl FnOnce(&mut std::fs::File) -> Result<T>,
     ) -> Result<(PreparedBytes, T)> {
@@ -79,29 +95,59 @@ impl crate::Archive {
         scratch.rewind()?;
         let facts = inspect(&mut scratch)?;
         scratch.rewind()?;
-        Ok((self.prepare_bytes(roots, &mut scratch)?, facts))
+        Ok((self.prepare_bytes(&mut scratch)?, facts))
     }
 
-    /// Compresses and hashes into a private file. Dropping the returned
-    /// handle deletes the file.
-    pub fn prepare_bytes(
-        &self,
-        roots: &[std::path::PathBuf],
-        reader: impl std::io::Read,
-    ) -> Result<PreparedBytes> {
-        let store = std::sync::Arc::new(hashed_blobs::Store::open(
-            self.root.clone(),
-            roots.to_vec(),
-            0o600,
-        )?);
+    /// Hashes (and in standalone mode compresses) into a private file.
+    /// Dropping the returned handle deletes the file.
+    pub fn prepare_bytes(&self, mut reader: impl std::io::Read) -> Result<PreparedBytes> {
+        if self.is_primary() {
+            std::fs::create_dir_all(self.parts_dir())?;
+            let mut file = tempfile::NamedTempFile::new_in(self.parts_dir())?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buffer = vec![0; 1 << 16];
+            let mut length = 0u64;
+            loop {
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+                std::io::Write::write_all(&mut file, &buffer[..n])?;
+                length += n as u64;
+            }
+            file.as_file().sync_all()?;
+            return Ok(PreparedBytes {
+                owner: self.root.clone(),
+                file: Prepared::Part {
+                    file,
+                    hash: BlobHash(*hasher.finalize().as_bytes()),
+                    length,
+                },
+            });
+        }
+        let store = std::sync::Arc::new(self.blobs()?);
         let prepared =
             store.prepare_plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
         Ok(PreparedBytes {
             owner: self.root.clone(),
-            store,
-            prepared,
+            file: Prepared::Local { store, prepared },
         })
     }
+}
+
+fn inline(bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+    Ok((
+        crate::Piece {
+            hash: BlobHash::of(bytes),
+            size: bytes.len() as u64,
+            stored: crate::blobs::Stored::Inline(zstd::bulk::compress(
+                bytes,
+                crate::blobs::LEVEL,
+            )?),
+        },
+        None,
+    ))
 }
 
 /// Where a stored batch's bytes are: its input and revision chain.

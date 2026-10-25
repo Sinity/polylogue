@@ -103,7 +103,6 @@ impl Morrow {
             machine: "morrow-machine".into(),
             host: "morrow".into(),
             chunk: 64 << 20,
-            blob_roots: Vec::new(),
             rescan_every: std::time::Duration::from_secs(60),
         }
     }
@@ -166,7 +165,7 @@ impl Morrow {
         let pool = self.reads();
         let r = pool.reader().map_err(|e| e.to_string())?;
         let known = r
-            .known_inputs(&self.config().machine)
+            .known_watched_inputs(&self.config().machine)
             .map_err(|e| e.to_string())?;
         let input = known
             .iter()

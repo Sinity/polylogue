@@ -436,7 +436,7 @@ fn binary_attachments_and_enqueue_use_the_daemon_action_owner() {
         let (status, _, raw) = send(&r, enqueue(&body)).await;
         assert_eq!(status, StatusCode::CREATED, "{raw}");
         let action: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let stored = r.w.daemon.reads.reader().unwrap().chat_attachment(action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap(), &[]).unwrap().1;
+        let stored = r.w.daemon.reads.reader().unwrap().chat_attachment(action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap()).unwrap().1;
         assert_eq!(stored, bytes);
         let mut changed = body;
         changed["text"] = "Different draft".into();

@@ -73,9 +73,6 @@ pub struct Config {
     /// is stored and parsed in steps. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
-    /// Further directories stored blobs are read from: in `primary` mode,
-    /// Sinex's content store, which holds the archive's bytes.
-    pub blob_roots: Vec<PathBuf>,
     /// The running loop scans every watched location at least this often,
     /// even when no change is reported (a minute).
     pub rescan_every: Duration,
@@ -168,7 +165,6 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
-            blob_roots: Vec::new(),
             rescan_every: Duration::from_secs(60),
         }
     }
@@ -251,6 +247,9 @@ pub struct Engine {
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
+    /// In primary mode, the Sinex that holds the archive: sessions go to it
+    /// as events once derived.
+    sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
 }
 
 fn now_ms() -> i64 {
@@ -268,14 +267,30 @@ impl Engine {
 
     /// Starts the writer on an archive the caller has locked.
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
-        let reader_memory = config.reader_memory_per_connection()?;
         let writer = Writer::start(&archive)?;
+        Self::with_writer(config, archive, writer, None)
+    }
+
+    /// Starts the writer on an archive Sinex holds (primary mode), opened
+    /// with [`Archive::open_primary`].
+    pub fn on_sinex(
+        config: Config,
+        archive: Archive,
+        sinex: Arc<dyn polylogue_store::primary::Sinex>,
+    ) -> Result<Self, EngineError> {
+        let writer = Writer::start_on_sinex(&archive, Arc::clone(&sinex))?;
+        Self::with_writer(config, archive, writer, Some(sinex))
+    }
+
+    fn with_writer(
+        config: Config,
+        archive: Archive,
+        writer: Writer,
+        sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
+    ) -> Result<Self, EngineError> {
+        let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
-        let blobs = Arc::new(hashed_blobs::Store::open(
-            archive.root.clone(),
-            config.blob_roots.clone(),
-            0o600,
-        )?);
+        let blobs = Arc::new(archive.blobs()?);
         Ok(Self {
             config,
             archive,
@@ -289,7 +304,19 @@ impl Engine {
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
+            sinex,
         })
+    }
+
+    /// Derives what changed, then, in primary mode, sends Sinex the events
+    /// of every session whose rows changed. Returns how many sessions were
+    /// derived.
+    fn derive(&self) -> Result<u64, EngineError> {
+        let derived = self.writer.derive()?;
+        if let Some(sinex) = &self.sinex {
+            sinex.send_sessions(&self.reads)?;
+        }
+        Ok(derived)
     }
 
     /// Runs an excision through the writer and stops collecting the paths
@@ -300,7 +327,7 @@ impl Engine {
         if done.dry_run {
             return Ok(done);
         }
-        self.writer.derive()?;
+        self.derive()?;
         let prefix = format!("{}:", self.config.machine);
         for p in &done.refused_paths {
             if let Some(path) = p.strip_prefix(&prefix) {

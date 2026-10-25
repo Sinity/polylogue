@@ -2605,6 +2605,7 @@ dependencies = [
  "hashed-blobs",
  "polylogue-engine",
  "polylogue-model",
+ "polylogue-query",
  "polylogue-store",
  "polylogue-testkit",
  "rusqlite",
@@ -3319,7 +3320,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=25db6e03a83f9be9562c80d1eef2e7c32cc941ed#25db6e03a83f9be9562c80d1eef2e7c32cc941ed"
+source = "git+https://github.com/Sinity/sinex?rev=5e932546a0ea3bd4454ce3d2669b1153636aa357#5e932546a0ea3bd4454ce3d2669b1153636aa357"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3329,7 +3330,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=25db6e03a83f9be9562c80d1eef2e7c32cc941ed#25db6e03a83f9be9562c80d1eef2e7c32cc941ed"
+source = "git+https://github.com/Sinity/sinex?rev=5e932546a0ea3bd4454ce3d2669b1153636aa357#5e932546a0ea3bd4454ce3d2669b1153636aa357"
 dependencies = [
  "blake3",
  "caseless",
@@ -3348,7 +3349,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=25db6e03a83f9be9562c80d1eef2e7c32cc941ed#25db6e03a83f9be9562c80d1eef2e7c32cc941ed"
+source = "git+https://github.com/Sinity/sinex?rev=5e932546a0ea3bd4454ce3d2669b1153636aa357#5e932546a0ea3bd4454ce3d2669b1153636aa357"
 dependencies = [
  "serde",
  "serde_json",
@@ -3358,7 +3359,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=25db6e03a83f9be9562c80d1eef2e7c32cc941ed#25db6e03a83f9be9562c80d1eef2e7c32cc941ed"
+source = "git+https://github.com/Sinity/sinex?rev=5e932546a0ea3bd4454ce3d2669b1153636aa357#5e932546a0ea3bd4454ce3d2669b1153636aa357"
 dependencies = [
  "blake3",
  "tempfile",

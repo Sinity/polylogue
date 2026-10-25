@@ -131,9 +131,6 @@ pub(crate) fn plan(
     index: &Connection,
     request: &ExciseRequest,
 ) -> Result<Plan> {
-    if !request.dry_run && crate::row_batches::on_sinex(archive)? {
-        return Err(StoreError::ExcisionOnSinex);
-    }
     let recorded: Option<String> = archive
         .query_row(
             "SELECT scope FROM excision WHERE id = ?1",

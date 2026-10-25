@@ -23,8 +23,8 @@ is kept for reference; the rewrite uses its own archive.
   Every command is one entry in the command table (`commands.rs`); the CLI,
   MCP tools and HTTP API are built from it, so a new operation is a table
   entry, not code on each surface.
-- `crates/sinex`: primary mode on Sinex (row batches sent to Sinex, restore
-  from it), behind the `sinex` feature.
+- `crates/sinex`: primary mode on Sinex (inputs, records and parsed sessions
+  sent to Sinex; the local copy rebuilt from it), behind the `sinex` feature.
 - `crates/testkit`: test archives built through the real loop (the synthetic
   example archive in `examples/morrow/`, and a Claude Code home).
 - `xtask`: developer checks (`fast`, `check`, `boundaries`), on `devkit`.

@@ -20,7 +20,7 @@ which reads through Store and presents through Query and Render.
 | [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
 | [Render](../crates/render/src/lib.rs) | Views of typed content as terminal text, Markdown, HTML and JSON, and pages sized for models. |
 | [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
-| [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: send row batches and blobs to Sinex, and restore an empty archive from them. |
+| [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
 A new origin is an origin declaration and a parser, a new command is a
@@ -174,7 +174,7 @@ object keys. Stored bytes never change.
 
 The daemon owns the archive; CLI commands that touch it need a running
 daemon in either mode. The application runtime owns the loop, signal workers,
-the Sinex thread and the archive lock; transports own listeners and client
+and the archive lock; transports own listeners and client
 work. Shutdown stops accepting requests and closes the read pool, joins
 transports and workers, then releases the archive lock. Writes already
 accepted finish. [TestDaemon](../crates/polylogue/src/daemon/service/tests.rs)
@@ -192,27 +192,41 @@ finishes a stopped excision. Provider files are never edited.
 ## Sinex primary mode
 
 With the `sinex` feature and `mode = "primary"` in `sinex.toml`, Sinex holds
-the archive: Polylogue's inputs and what people and agents added. A
-[row batch](../crates/store/src/row_batches.rs) is what one archive write
-added: a revision with its input, extents, blob rows and observations; a note
-with its targets and relations; an excision; a setting; a delivery; or a
-later observation or delivery event. Batches are ordered by the write counter,
-then kind and key. Store lists them and visits their rows; the
-[Sinex client](../crates/sinex/src/lib.rs) encodes each batch as JSON lines
-and sends it, after the blobs its rows cite, as a `polylogue.rows` event named
-`rows:<archive>:<position>`. Each pass asks Sinex which names it holds and
-sends the rest in order, so Sinex holds a prefix of the archive. A blob or
-batch's bytes go to its frame's spool directory under Sinex's store root on
-this host, and Sinex stores them before it records the frame. A send is done
-when Sinex acknowledges it; one cut short by an outage or a lost
-acknowledgment is found missing by the next pass and sent again from the
-archive's own bytes. A batch whose bytes are still being written waits for a
-later pass.
+the archive and Polylogue is one of its producers. The modes differ only
+where the archive's records go ([primary](../crates/store/src/primary.rs));
+capture, parsing, the index, queries and every surface are the same, and
+queries always read `index.db`.
 
-Once Sinex holds the archive, excision refuses, and Sinex never deletes what
-it holds. An empty archive with `archive = "<id>"` configured is restored from
-every batch Sinex has, in one transaction, after checking each batch and blob
-against its content name and that positions 1 to the last are all present.
-The loop then builds `index.db` from the restored rows, reading blobs from
-Sinex's content store. The [rebuild test](../crates/sinex/tests/rebuild/main.rs)
-runs this against a real `sinexd`.
+| | standalone | primary |
+|---|---|---|
+| input bytes | `blobs/` and inline rows | Sinex's content store, read-only |
+| register of inputs, notes, settings, deliveries | `archive.db`, the record | `sinex.db`, a copy of what Sinex holds |
+| parsed sessions, search, derived rows | `index.db` | `index.db` |
+| embedding vectors | `embeddings.db` | `embeddings.db` |
+
+- **Inputs.** Each piece of a captured file is sent as one material of its
+  real input: its origin, path and host, a growing file a chain of parts,
+  named with the parser `polylogue-<origin>` and its version. The material's
+  manifest holds the [register rows](../crates/store/src/input_record.rs)
+  that place the piece. A look that found no new bytes (a file gone or back,
+  an import of bytes already stored) is sent as a small record material.
+- **Records.** Each request a person or agent makes is sent as a record
+  material; notes, settings, kept results and deliveries also become their
+  typed `polylogue.*` events.
+- **Order.** The writer sends a piece or record and waits for Sinex's
+  acknowledgment before the transaction that writes its rows commits, so
+  `sinex.db` and `index.db` hold only what Sinex holds. Bytes wait in
+  `parts/` until then. An outage fails the write; the loop tries again.
+- **Sessions.** After each derive step, the loop sends the session, message,
+  tool-call and turn events of every session whose rows changed, keyed by
+  Polylogue's IDs and anchored at their records, in frames named by their
+  content ([sessions](../crates/sinex/src/sessions.rs)). A changed parser
+  re-sends the same keys, and the newer reading replaces the older one.
+- **Rebuild.** When `sinex.db` is missing, opening the archive pages through
+  every material Sinex holds from Polylogue and inserts the same rows again;
+  the loop then rebuilds `index.db` from the stored bytes. The
+  [rebuild test](../crates/sinex/tests/rebuild/main.rs) runs this on the
+  Morrow example against a real `sinexd`.
+- **Excision** in primary mode is Sinex's excision of the input's materials,
+  with Polylogue as the actor. Until Sinex takes that request, excision in
+  primary mode refuses.

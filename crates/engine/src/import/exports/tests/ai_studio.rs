@@ -21,7 +21,6 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         let (mut e, _lock) = engine(&w, 8);
         let captured = Captured::stream(
             &e.archive,
-            &e.config.blob_roots,
             fs::File::open(&path).unwrap(),
         )
         .unwrap();

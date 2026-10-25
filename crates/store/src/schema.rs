@@ -77,6 +77,16 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", create_archive)
 }
 
+/// Creates `sinex.db`, primary mode's register: the archive's tables and
+/// the Sinex material of each part. Refuses a file at another version.
+pub fn ensure_sinex(conn: &Connection) -> Result<()> {
+    ensure(conn, "sinex", |conn| {
+        conn.execute_batch(ARCHIVE)?;
+        conn.execute_batch(crate::primary::SCHEMA)?;
+        set_version(conn, 1)
+    })
+}
+
 /// Creates `embeddings.db` in an empty file; refuses a file at another version.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
     ensure(conn, "embeddings", create_embeddings)
