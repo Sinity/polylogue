@@ -94,7 +94,7 @@ fn recognizes_captures_by_their_first_key() {
 }
 
 #[test]
-fn grok_endpoint_bundle_preserves_native_identity_parents_and_files() {
+fn a_grok_capture_keeps_the_providers_ids_parents_and_files() {
     let bytes = capture(
         json!({
             "conversation": {"conversationId":"g1", "title":"Grok fixture", "createTime":"2026-06-27T12:00:00Z"},

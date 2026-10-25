@@ -34,6 +34,11 @@
     return ids.at(-1) || null;
   }
 
+  // The conversation's own page: this one, or where it would open.
+  function pageUrl(id) {
+    return conversationId(location.href) === id ? location.href : `${location.origin}/c/${encodeURIComponent(id)}`;
+  }
+
   async function currentConversation() {
     const id = conversationId(location.href);
     if (id) return { id, temporary: false };
@@ -81,7 +86,7 @@
     if (failed) return failed;
     return {
       status: 200,
-      info: { id: current.id, temporary: current.temporary, url: location.href },
+      info: { id: current.id, temporary: current.temporary, url: current.temporary ? location.href : pageUrl(current.id) },
       body: await response.blob(),
     };
   }

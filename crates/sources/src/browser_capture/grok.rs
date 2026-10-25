@@ -1,7 +1,7 @@
 use super::*;
 
 /// Grok exposes metadata and responses through separate endpoints. Keep
-/// provider IDs and parent links when adapting that bundle to shared turns.
+/// provider IDs and parent links when reading those answers as turns.
 pub(super) fn conversation(raw: &Json, fallback: &Json, sink: &mut Sink<'_>) {
     let metadata = raw
         .get("conversation")

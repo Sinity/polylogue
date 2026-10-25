@@ -68,7 +68,7 @@ async function sha256(blob) {
 
 export class Capturer {
   /**
-   * `chrome` and `host` are the browser and the native host; `outbox`
+   * `chrome` and `host` are the browser and the host; `outbox`
    * keeps captures until the host has them; `seen` remembers each
    * conversation's last stored provider JSON (a chrome.storage area).
    */

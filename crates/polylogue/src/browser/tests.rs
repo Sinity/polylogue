@@ -28,7 +28,7 @@ impl Answer {
     }
 }
 
-/// One exchange as the extension's `nativeFetch` makes it.
+/// One exchange as the extension's `exchange` (`background/host.js`) makes it.
 fn exchange(host: &Arc<BrowserHost>, method: &str, path: &str, body: &[u8]) -> Answer {
     let mut input = Vec::new();
     write_frame(

@@ -27,7 +27,7 @@ fn selection() -> Value {
 }
 
 #[test]
-fn selected_passage_notes_survive_restart_and_identical_native_retries() {
+fn selected_passage_notes_survive_restart_and_identical_retries() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env();
     config.home = dir.path().join("home");
