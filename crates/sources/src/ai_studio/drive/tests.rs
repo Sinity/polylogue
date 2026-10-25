@@ -62,14 +62,14 @@ fn serve(revisions: Vec<(&'static str, &'static str)>) -> (String, Arc<Mutex<Vec
     (base, seen)
 }
 
-fn collector(base: &str, dir: &Path) -> Collector {
+fn collector(base: &str, dir: &Path) -> Drive {
     let token_path = dir.join("token.json");
     std::fs::write(
         &token_path,
         r#"{"client_id":"c","client_secret":"s","refresh_token":"r","token":"old"}"#,
     )
     .unwrap();
-    Collector {
+    Drive {
         endpoints: Endpoints {
             api: format!("{base}/drive"),
             token: format!("{base}/token"),
@@ -107,7 +107,7 @@ fn each_sync_writes_the_next_revision_until_all_are_written() {
 #[test]
 fn a_missing_token_is_a_typed_error() {
     let dir = tempfile::tempdir().unwrap();
-    let c = Collector {
+    let c = Drive {
         endpoints: Endpoints::default(),
         token_path: dir.path().join("absent.json"),
         spool: dir.path().join("spool"),

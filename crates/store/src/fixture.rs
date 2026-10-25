@@ -51,7 +51,6 @@ pub struct MessageFacts<'a> {
     pub text: Option<&'a str>,
     pub thinking: Option<&'a str>,
     pub cost_nusd: Option<i64>,
-    pub inherited_from: Option<&'a str>,
     pub on_active_path: Option<bool>,
 }
 
@@ -185,8 +184,8 @@ impl Fixture {
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
-                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, order_input_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, (SELECT id FROM input_ref WHERE pk = ?3))",
+                 model, at, input_pk, cost_nusd, on_active_path, words, order_input_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, (SELECT id FROM input_ref WHERE pk = ?3))",
             params![
                 m.id,
                 session_pk,
@@ -198,7 +197,6 @@ impl Fixture {
                 m.model,
                 m.at,
                 m.cost_nusd,
-                m.inherited_from,
                 m.on_active_path.map(i64::from),
                 words
             ],
@@ -312,21 +310,12 @@ impl Fixture {
         format: &str,
         what: &str,
         count: i64,
-        first_at: i64,
         counted_only: bool,
     ) -> Result<()> {
         self.index.execute(
-            "INSERT INTO unrecognized(input_pk, chain, format, what, count, counted_only, first_at,
-                 last_at, first_offset)
-             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?6, 0)",
-            params![
-                self.input_pk,
-                format,
-                what,
-                count,
-                i64::from(counted_only),
-                first_at
-            ],
+            "INSERT INTO unrecognized(input_pk, chain, format, what, count, counted_only)
+             VALUES (?1, 1, ?2, ?3, ?4, ?5)",
+            params![self.input_pk, format, what, count, i64::from(counted_only)],
         )?;
         Ok(())
     }

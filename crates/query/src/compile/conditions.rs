@@ -181,15 +181,11 @@ impl<'a> Compiler<'a> {
                 let p = self.text_param(&like_prefix(id));
                 self.id_checks.push(IdCheck {
                     word: id.to_owned(),
-                    sql: "SELECT id FROM session WHERE native_id LIKE ?1 ESCAPE '\\' \
-                          UNION SELECT s.id FROM message m JOIN session s ON s.pk = m.session_pk \
-                          WHERE m.native_message_id LIKE ?1 ESCAPE '\\' LIMIT 5"
+                    sql: "SELECT id FROM session WHERE native_id LIKE ?1 ESCAPE '\\' LIMIT 5"
                         .into(),
                     params: vec![Param::Text(like_prefix(id))],
                 });
-                format!(
-                    "({s}.native_id LIKE {p} ESCAPE '\\' OR {s}.pk IN (SELECT session_pk FROM message WHERE native_message_id LIKE {p} ESCAPE '\\'))"
-                )
+                format!("{s}.native_id LIKE {p} ESCAPE '\\'")
             }
         })
     }
@@ -201,7 +197,7 @@ impl<'a> Compiler<'a> {
         scope: &Scope,
         span: Span,
     ) -> Result<String, QueryError> {
-        let id = provider_url(url).ok_or_else(|| QueryError::Invalid {
+        let id = provider_url(&self.opts.chat_pages, url).ok_or_else(|| QueryError::Invalid {
             message: format!("{url} is not a conversation URL Polylogue recognizes"),
             position: span.start,
         })?;
@@ -467,19 +463,7 @@ impl<'a> Compiler<'a> {
                     unit: target,
                     a: n.clone(),
                 };
-                let cond = if (target, rest) == (Unit::Sessions, "agent_type") {
-                    // child.agent_type: the agent type recorded on the link.
-                    let FieldOp::Match(Value::One { text, .. }) = op else {
-                        return Err(QueryError::Invalid {
-                            message: "child.agent_type takes child.agent_type:VALUE".into(),
-                            position: span.start,
-                        });
-                    };
-                    let p = self.text_param(text);
-                    format!("lower(json_extract(lc.attrs_json, '$.agent_type')) = lower({p})")
-                } else {
-                    self.field_cond(rest, op, &inner, sub, false)?
-                };
+                let cond = self.field_cond(rest, op, &inner, sub, false)?;
                 Ok(relation_sql(template, a, &n, target, &cond))
             }
         }

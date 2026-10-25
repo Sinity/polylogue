@@ -259,7 +259,7 @@ pub fn failing(data: &Value) -> String {
     out
 }
 
-/// Drift by format: what each parser did not know, newest first.
+/// Drift by format: what each parser did not know, most frequent first.
 pub fn drift(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
@@ -273,13 +273,11 @@ pub fn drift(data: &Value) -> String {
             ""
         };
         out.push_str(&format!(
-            "{}  {}  {} in {} input(s) · first {} · last {}{note}\n",
+            "{}  {}  {} in {} input(s){note}\n",
             d["format"].as_str().unwrap_or("?"),
             d["what"].as_str().unwrap_or("?"),
             d["count"],
             d["inputs"],
-            time(&d["first_at"]),
-            time(&d["last_at"]),
         ));
     }
     out

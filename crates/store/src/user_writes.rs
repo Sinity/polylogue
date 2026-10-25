@@ -8,7 +8,7 @@
 //! same ID with other content is refused as a conflict.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Author, NewNote, Timestamp};
+use polylogue_model::{Author, DeliveryOutcome, NewNote, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,33 @@ pub enum UserWrite {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
     },
+    /// A chat action the operator queued; a resent request finds the
+    /// action it made.
+    ChatEnqueue(crate::chat_actions::NewChatAction),
+    /// The extension instance `by` takes the oldest queued chat action;
+    /// `NotFound` when none is queued or another is out.
+    ChatClaim {
+        by: String,
+    },
+    /// What the instance holding a chat action's claim reports.
+    ChatReport {
+        action: String,
+        by: String,
+        outcome: String,
+        phase: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<serde_json::Value>,
+    },
+    /// The operator approves or declines a held submit.
+    ChatDecide {
+        action: String,
+        approve: bool,
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,26 +102,6 @@ pub struct Delivery {
 pub struct LeftOut {
     pub what: String,
     pub reason: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryOutcome {
-    Delivered,
-    Failed,
-    NotSent,
-    Used,
-}
-
-impl DeliveryOutcome {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Delivered => "delivered",
-            Self::Failed => "failed",
-            Self::NotSent => "not_sent",
-            Self::Used => "used",
-        }
-    }
 }
 
 /// What a user write created, or found already created by the same
@@ -260,6 +267,53 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             )?;
             Ok(UserOutcome {
                 id: r.id.clone(),
+                repeat: false,
+            })
+        }
+        UserWrite::ChatEnqueue(new) => {
+            let id = crate::chat_actions::enqueue(tx, new, at, seq)?;
+            Ok(UserOutcome {
+                repeat: id != new.id,
+                id,
+            })
+        }
+        UserWrite::ChatClaim { by } => Ok(UserOutcome {
+            id: crate::chat_actions::claim(tx, by, at, seq)?,
+            repeat: false,
+        }),
+        UserWrite::ChatReport {
+            action,
+            by,
+            outcome,
+            phase,
+            detail,
+            receipt,
+        } => {
+            crate::chat_actions::report(
+                tx,
+                action,
+                by,
+                outcome,
+                phase,
+                detail.as_deref(),
+                receipt.as_ref(),
+                at,
+                seq,
+            )?;
+            Ok(UserOutcome {
+                id: action.clone(),
+                repeat: false,
+            })
+        }
+        UserWrite::ChatDecide {
+            action,
+            approve,
+            by,
+            detail,
+        } => {
+            crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), at, seq)?;
+            Ok(UserOutcome {
+                id: action.clone(),
                 repeat: false,
             })
         }

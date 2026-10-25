@@ -139,7 +139,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
     }
 }
 
-fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
+pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
     Response::Error {
         kind: refused.1.into(),
         message: refused.1.into(),
@@ -231,32 +231,14 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(e) => store_error(&e),
             }
         }
-        Request::BrowserEnqueue { action } => {
-            let enabled = match reader.setting("browser.actions", &machine_id()) {
-                Ok(value) => value.as_deref() == Some("on"),
-                Err(error) => return store_error(&error),
-            };
-            let ctx = match crate::browser::Ctx::at(&d.config, &d.archive) {
-                Ok(ctx) => ctx,
-                Err(error) => return self::error("store", error),
-            };
-            match crate::browser::actions::enqueue(&ctx, &action, enabled) {
-                Ok((created, action)) => {
-                    ok(serde_json::json!({ "ok": true, "created": created, "action": action }))
-                }
-                Err(refused) => browser_refusal(refused),
-            }
-        }
-        Request::BrowserUpload { bytes } => {
-            let ctx = match crate::browser::Ctx::at(&d.config, &d.archive) {
-                Ok(ctx) => ctx,
-                Err(error) => return self::error("store", error),
-            };
-            match crate::browser::actions::upload(&ctx, &bytes) {
-                Ok(value) => ok(value),
-                Err(refused) => browser_refusal(refused),
-            }
-        }
+        Request::ChatEnqueue { .. }
+        | Request::ChatUpload { .. }
+        | Request::ChatActions
+        | Request::ChatAction { .. }
+        | Request::ChatClaim { .. }
+        | Request::ChatReport { .. }
+        | Request::ChatDecide { .. }
+        | Request::ChatAttachment { .. } => chat::handle(request, d, reader),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",
@@ -469,10 +451,6 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 },
             )
         }
-        Request::Notes { filter } => match reader.notes(&filter) {
-            Ok(notes) => ok(notes),
-            Err(e) => store_error(&e),
-        },
         Request::Context {
             request_id,
             ask,
@@ -498,7 +476,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             )
         }
         Request::Resumable { cwd, limit } => {
-            match crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10)) {
+            match crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10), user_writes::now()) {
                 Ok(c) => ok(c),
                 Err(e) => store_error(&e),
             }
@@ -536,13 +514,6 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     machine: machine.then(machine_id),
                 },
             )
-        }
-        other => {
-            let op = serde_json::to_value(&other)
-                .ok()
-                .and_then(|v| v.get("op").and_then(|o| o.as_str()).map(str::to_owned))
-                .unwrap_or_default();
-            error("not_built", format!("`{op}` is not built yet"))
         }
     }
 }
@@ -843,6 +814,7 @@ pub fn start(
     Ok(runtime)
 }
 
+mod chat;
 mod read;
 
 #[cfg(test)]

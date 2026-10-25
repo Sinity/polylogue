@@ -8,18 +8,16 @@
 //!  "rate_limit": {"count": 1, "window": "1h"}}
 //! ```
 //!
-//! The evaluator follows the joint reference
-//! (`polylogue-sinex-joint/prototype/signals/`): each rule fires once per
-//! matching row; `for` holds a row until it has matched that long, judged
-//! against the clock, so a deadline fires with no new data and a row that
-//! stops matching first fires nothing; an interrupting notice waits out
-//! quiet hours; past the rate limit a notice waits for the next briefing;
+//! Each rule fires once per matching row; `for` holds a row until it has
+//! matched that long, judged against the clock, so a deadline fires with no
+//! new data and a row that stops matching first fires nothing; an
+//! interrupting notice waits out quiet hours; past the rate limit a notice waits for the next briefing;
 //! agent-written rules share one interrupt budget, past which their
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
 
 use crate::daemon::service::{Daemon, now_ms};
-use polylogue_model::{Author, Note, NoteKind};
+use polylogue_model::{Author, Note, NoteKind, Timestamp};
 use polylogue_store::{Delivery, UserRequest, UserWrite};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -410,13 +408,18 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             }
             continue;
         };
-        let filter = polylogue_store::NoteFilter {
-            kinds: vec![NoteKind::Signal],
-            ..Default::default()
-        };
+        let signals = Timestamp::from_unix_ms(now)
+            .map(|at| {
+                crate::daemon::query::notes::list(
+                    &reader,
+                    &format!("kind:{}", NoteKind::Signal.as_str()),
+                    at,
+                )
+            })
+            .unwrap_or(Ok(Vec::new()));
         let mut rules: Vec<Rule> = vec![];
         let mut unusable: Vec<Unusable> = vec![];
-        for note in reader.notes(&filter).unwrap_or_default() {
+        for note in signals.unwrap_or_default() {
             match rule(&note) {
                 Ok(r) => rules.push(r),
                 Err(u) => unusable.push(u),
@@ -470,8 +473,8 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             let delivery = Delivery {
                 recipient_kind: "operator".into(),
                 recipient_id: None,
-                sender: "signal".into(),
-                event: "signal".into(),
+                sender: polylogue_model::DeliverySender::Signal.as_str().into(),
+                event: polylogue_model::DeliveryEvent::Signal.as_str().into(),
                 cwd: None,
                 text: notice(rule, &h),
                 refs,
@@ -489,11 +492,11 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             let event = match h.how {
                 How::Notice => None,
                 How::Interrupt => Some((
-                    polylogue_store::DeliveryOutcome::NotSent,
+                    polylogue_model::DeliveryOutcome::NotSent,
                     "no notifier is configured",
                 )),
                 How::Deferred => Some((
-                    polylogue_store::DeliveryOutcome::NotSent,
+                    polylogue_model::DeliveryOutcome::NotSent,
                     "rate limit: kept for the next briefing",
                 )),
             };

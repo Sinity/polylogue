@@ -139,6 +139,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             Some("tool_use"),
         );
         message.blocks.push(Block::ToolCall {
+            run_by_script: false,
             call_id: Some("call-1".into()),
             tool: Some("Bash".into()),
             action: polylogue_model::ToolAction::Shell,

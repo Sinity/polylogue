@@ -49,14 +49,6 @@ pub static MEASURES: &[Measure] = &[
         text: text::usage,
     },
     Measure {
-        name: "cost",
-        help: "The same report as `usage`: cost sits beside the tokens it prices",
-        whole_archive: false,
-        metrics: &[],
-        run: |r, x| json(measure::usage(r, &x.scope)),
-        text: text::usage,
-    },
-    Measure {
         name: "sessions",
         help: "Each session's tokens and cost, physical (its own responses) and logical (what it shows, inherited responses included)",
         whole_archive: false,

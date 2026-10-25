@@ -118,6 +118,7 @@ fn every_result_of_a_tool_call_points_at_the_call() {
         .collect();
     match blocks[1] {
         Block::ToolCall {
+            run_by_script: false,
             call_id,
             tool,
             command,

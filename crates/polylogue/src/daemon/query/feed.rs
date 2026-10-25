@@ -164,6 +164,7 @@ pub(crate) fn prepare(
             saved: Default::default(),
             fields: Vec::new(),
             kept: Default::default(),
+            chat_pages: Vec::new(),
         };
         let program = polylogue_query::compile(&text, &opts)?;
         validate(reader, &program)?;

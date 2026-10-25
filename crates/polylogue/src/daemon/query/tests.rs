@@ -215,7 +215,7 @@ fn morrow() -> World {
     )
     .unwrap();
     fx.link(&ids[1], &ids[2], "subagent", "fresh").unwrap();
-    // #4 claude-code, Oct 3, continues #2, cost 1.59; an inherited copy.
+    // #4 claude-code, Oct 3, continues #2, cost 1.59.
     let s4 = fx
         .session(SessionFacts {
             id: &ids[3],
@@ -225,20 +225,6 @@ fn morrow() -> World {
             ..SessionFacts::default()
         })
         .unwrap();
-    fx.message(
-        s4,
-        MessageFacts {
-            inherited_from: Some("m2p0"),
-            ..msg(
-                "m4c0",
-                "user",
-                "human",
-                "let's use chrono, not time",
-                at(2, 9),
-            )
-        },
-    )
-    .unwrap();
     for i in 0..3 {
         fx.message(
             s4,
@@ -465,7 +451,7 @@ fn session_queries_follow_the_morrow_examples() {
     assert_eq!(v["rows"][1]["cost"], 2.85);
     // 9: cost:unknown.
     assert_eq!(ids(&q(&w, "cost:unknown")), ["#8", "#6", "#5", "#7"]);
-    // 11: own messages only; #4's inherited copy is not counted.
+    // 11: own messages only.
     let v = q(&w, "sessions where messages >= 6");
     assert_eq!(ids(&v), ["#1"]);
     // 12.
@@ -555,12 +541,10 @@ fn row_units_and_their_defaults() {
         groups(&v, "action"),
         [("shell".into(), 9), ("file_edit".into(), 1)]
     );
-    // 13 and 14: inherited copies drop out unless asked for.
+    // 13.
     let v = q(&w, "messages where written_by:human \"chrono\"");
     // Relevance first, then the more recent message.
     assert_eq!(ids(&v), ["#8", "#2"]);
-    let v = q(&w, "messages where written_by:human inherited:* \"chrono\"");
-    assert_eq!(v["count"], 3);
     // 23: the abandoned branch.
     let v = q(&w, "messages where active:false");
     assert_eq!(ids(&v), ["#7", "#7"]);

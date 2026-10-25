@@ -587,6 +587,7 @@ impl Rollout {
                     );
                 }
                 let block = Block::ToolCall {
+                    run_by_script: false,
                     call_id: id,
                     action: items::action(&tool),
                     command: items::call_command(&tool, &input),
@@ -625,6 +626,7 @@ impl Rollout {
                 };
                 let blocks = vec![
                     Block::ToolCall {
+                        run_by_script: false,
                         call_id: id.clone(),
                         tool: Some("web_search".into()),
                         action: ToolAction::Web,

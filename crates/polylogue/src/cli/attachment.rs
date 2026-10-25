@@ -87,9 +87,6 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                     Response::Error { kind, message, .. } => {
                         return Err(format!("{kind}: {message}"));
                     }
-                    Response::Accepted { .. } => {
-                        return Err("attachment range was not completed".into());
-                    }
                 };
             }
             None => {

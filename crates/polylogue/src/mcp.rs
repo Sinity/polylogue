@@ -71,7 +71,6 @@ pub fn call(
                 .to_owned())
         }
         Ok(Response::Ok { data }) => Ok(serde_json::to_string_pretty(&data).unwrap_or_default()),
-        Ok(Response::Accepted { request_id }) => Ok(format!("accepted {request_id}")),
         Ok(Response::Error {
             kind,
             message,

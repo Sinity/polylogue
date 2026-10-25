@@ -9,6 +9,7 @@ mod block;
 pub mod capture_log;
 mod change_position;
 pub mod command;
+mod delivery;
 mod document;
 mod event;
 pub mod export;
@@ -28,15 +29,16 @@ pub use batch::{
     OrderKey, Output, RepoLookup,
 };
 pub use block::{
-    Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,
-    UnknownReason,
+    Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,
+    ToolOutcome, UnknownReason,
 };
 pub use change_position::ChangePosition;
+pub use delivery::{DELIVERY_STATES, DeliveryEvent, DeliveryOutcome, DeliverySender};
 pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod observations;
-pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role};
+pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy};
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use observations::{QuotaObservation, UsageObservation};
 pub use session::{Session, SessionKind, Title, TitleSource};

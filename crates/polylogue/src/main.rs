@@ -12,6 +12,7 @@ mod hook;
 mod mcp;
 mod resume;
 mod row_numbers;
+mod runtime_dir;
 mod signals;
 #[cfg(feature = "sinex")]
 mod sinex;

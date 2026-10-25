@@ -210,18 +210,6 @@ pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     any_of(x, parts)
 }
 
-pub(crate) fn collection(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let s = x.s();
-    let mut parts = vec![];
-    for v in x.values() {
-        let p = c.text_param(&v.to_lowercase());
-        parts.push(format!(
-            "(lower({s}.collection_name) = {p} OR lower({s}.collection_id) = {p})"
-        ));
-    }
-    any_of(x, parts)
-}
-
 pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let mut states = vec![];
     for v in x.values() {
@@ -558,11 +546,10 @@ pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     let a = &x.scope.a;
     Ok(format!(
         "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'subagent' \
-         AND lc.parent_id = {s}.id AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) \
+         AND lc.parent_id = {s}.id AND lc.spawning_call = {t}.call_id \
          AND (lcs.id = {e} OR lcs.id LIKE {p} ESCAPE '\\'))",
         s = a.s,
         t = a.t,
-        cb = a.cb
     ))
 }
 
@@ -596,12 +583,11 @@ pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     session_id_in(c, x, "{r}.recipient_id")
 }
 
+/// A note about the reference; a bare session ID is a `session:` reference.
 pub(crate) fn note_target(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let v = x.value()?;
-    let p = c.text_param(&v);
-    let pp = c.text_param(&like_prefix(&v));
+    let p = c.text_param(&x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM a.note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref LIKE {pp} ESCAPE '\\' OR nt.ref = 'session:' || {p}))",
+        "EXISTS (SELECT 1 FROM a.note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref = 'session:' || {p}))",
         r = x.row()
     ))
 }

@@ -56,8 +56,8 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     };
     let requests =
         vec![
-        Request::BrowserUpload { bytes: vec![1, 2, 3] },
-        Request::BrowserEnqueue { action: serde_json::from_value(serde_json::json!({
+        Request::ChatUpload { bytes: vec![1, 2, 3] },
+        Request::ChatEnqueue { action: serde_json::from_value(serde_json::json!({
             "provider":"chatgpt", "operation":"conversation.create", "text":"Synthetic draft",
             "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}
         })).unwrap() },
@@ -75,10 +75,6 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             request_id: "delivery".into(),
             ask,
             sender: Some("hook".into()),
-        },
-        Request::Hook {
-            event: "synthetic".into(),
-            payload: serde_json::json!({}),
         },
         Request::Keep {
             request_id: "keep".into(),

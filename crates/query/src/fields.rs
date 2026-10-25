@@ -12,8 +12,9 @@ use crate::ast::Unit;
 use crate::compile::custom_fields::{self as custom, Custom};
 use crate::compile::{ColKind, ColumnReference};
 use polylogue_model::{
-    BlockKind, DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind,
-    Role, SessionKind, WorkNodeKind,
+    BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender, DocumentAuthorship,
+    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WorkNodeKind,
+    WrittenBy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -220,7 +221,7 @@ const fn has_names<const N: usize>(table: &[Has; N]) -> [&'static str; N] {
     out
 }
 
-pub const SESSION_HAS: [Has; 9] = [
+pub const SESSION_HAS: [Has; 8] = [
     Has {
         name: "thinking",
         sql: |s| {
@@ -288,16 +289,8 @@ pub const SESSION_HAS: [Has; 9] = [
             )
         },
     },
-    Has {
-        name: "secret",
-        sql: |s| {
-            format!(
-                "EXISTS (SELECT 1 FROM block xb WHERE xb.session_pk = {s}.pk AND xb.looks_like_secret = 1)"
-            )
-        },
-    },
 ];
-static SESSION_HAS_NAMES: [&str; 9] = has_names(&SESSION_HAS);
+static SESSION_HAS_NAMES: [&str; 8] = has_names(&SESSION_HAS);
 
 pub const MESSAGE_HAS: [Has; 4] = [
     Has {
@@ -336,7 +329,6 @@ pub const MESSAGE_HAS: [Has; 4] = [
 ];
 static MESSAGE_HAS_NAMES: [&str; 4] = has_names(&MESSAGE_HAS);
 
-pub const TOOL_OUTCOMES: &[&str] = &["ok", "error", "pending", "unknown"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
 
 pub static FIELDS: &[Field] = &[
@@ -359,8 +351,6 @@ pub static FIELDS: &[Field] = &[
     ).sql("{s}.kind"),
     f(Sessions, "title", Substring, "the displayed title").sql("COALESCE({s}.title, {s}.derived_title)"),
     sp(Sessions, "repo", "the repository: name, owner/name or URL", custom::repo).sql("{s}.repo"),
-    f(Sessions, "checkout", Subtree, "the worktree path").sql("{s}.checkout"),
-    sp(Sessions, "collection", "the provider's grouping: name or ID", custom::collection).sql("COALESCE({s}.collection_name, {s}.collection_id)"),
     f(Sessions, "branch", Match, "the git branch, as recorded").sql("{s}.branch"),
     sp(Sessions, "commit", "a commit recorded or linked (prefix, 7+ hex digits)", custom::commit),
     sp(Sessions, "pr", "a pull request linked to the session", custom::pr),
@@ -378,7 +368,7 @@ pub static FIELDS: &[Field] = &[
         &["present", "missing"],
         "whether a transcript was stored",
     ).sql("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END"),
-    sv(Sessions, "live", LIVE_STATES, "the live state now, from hook and process records and the time", custom::live).sql_clock(sessions_live),
+    sv(Sessions, "live", LIVE_STATES, "the live state now, from hook records and the time", custom::live).sql_clock(sessions_live),
     sp(Sessions, "waiting", "the live state is waiting", custom::waiting).sql_clock(sessions_waiting).boolean(),
     sp(Sessions, "running", "the live state is working, waiting, idle or unknown", custom::running).sql_clock(sessions_running).boolean(),
     v(
@@ -393,12 +383,6 @@ pub static FIELDS: &[Field] = &[
         Match,
         "the live task: a job ID or Bead ID",
     ).sql("{s}.live_task"),
-    f(
-        Sessions,
-        "process_alive",
-        Bool,
-        "whether the harness process is alive",
-    ).sql("{s}.live_root_alive"),
     f(
         Sessions,
         "live_until",
@@ -421,7 +405,7 @@ pub static FIELDS: &[Field] = &[
         Sessions,
         "peers",
         Substring,
-        "other working, waiting or idle sessions sharing its repository, checkout or working directory",
+        "other working, waiting or idle sessions sharing its repository or working directory",
     )
     .sql_clock(sessions_peers),
     f(Sessions, "repo_root", Prefix, "the repository's identity: its root commit hash, when found").sql("{s}.repo_root"),
@@ -436,7 +420,6 @@ pub static FIELDS: &[Field] = &[
     ),
     sp(Sessions, "tag", "a tag note; tag:key:value for key:value tags", custom::tag),
     sv(Sessions, "has", &SESSION_HAS_NAMES, "the session has thinking, tool calls, errors, …", custom::has),
-    f(Sessions, "temporary", Bool, "temporary web chats").sql("{s}.temporary"),
     sp(Sessions, "parent", "sessions linked from the given session", custom::parent),
     sp(Sessions, "root", "the subagent tree under the given session", custom::root),
     sp(Sessions, "depth", "depth in the subagent tree", custom::depth),
@@ -444,13 +427,6 @@ pub static FIELDS: &[Field] = &[
     sp(Sessions, "continues", "sessions continuing the given session", custom::continues),
     sp(Sessions, "continued_by", "sessions the given session continues", custom::continued_by),
     sp(Sessions, "lineage", "every session connected through links", custom::lineage),
-    f(Sessions, "team", Match, "the agent team").sql("{s}.team"),
-    f(
-        Sessions,
-        "agent_name",
-        Match,
-        "the member's name in an agent team",
-    ).sql("{s}.agent_name"),
     sp(Sessions, "path", "a file path the session read, wrote or edited", custom::session_tool_call),
     sp(Sessions, "tool", "the session made such a tool call", custom::session_tool_call),
     sp(Sessions, "action", "the session made such a tool call", custom::session_tool_call),
@@ -515,7 +491,7 @@ pub static FIELDS: &[Field] = &[
     v(
         Messages,
         "written_by",
-        &["human", "model", "harness", "unknown"],
+        WrittenBy::NAMES,
         "who wrote it",
     ).sql("{m}.written_by"),
     v(
@@ -524,20 +500,8 @@ pub static FIELDS: &[Field] = &[
         PromptKind::NAMES,
         "for user messages: prose, command, or text the harness or another model wrote",
     ).sql("{m}.prompt_kind"),
-    v(
-        Messages,
-        "authorship",
-        &["authored", "pasted", "mixed", "unknown"],
-        "for human messages",
-    ).sql("COALESCE({m}.authorship, 'unknown')"),
     f(Messages, "model", Match, "the model that wrote it").sql("{m}.model"),
     f(Messages, "at", Time, "provider time").sql("{m}.at"),
-    f(
-        Messages,
-        "inherited",
-        Bool,
-        "a copy of an earlier session's message",
-    ).sql("({m}.inherited_from IS NOT NULL)"),
     f(
         Messages,
         "duplicate",
@@ -558,13 +522,6 @@ pub static FIELDS: &[Field] = &[
         "per message; unknown when unpriced",
     ).sql("{m}.cost_nusd"),
     f(Messages, "stop_reason", Match, "").sql("{m}.stop_reason"),
-    f(
-        Messages,
-        "from_session",
-        Prefix,
-        "the sending session of an agent-to-agent message",
-    ).sql("{m}.from_session"),
-    f(Messages, "from_name", Match, "the sender's name as written").sql("{m}.from_name"),
     sp(Messages, "since", "at or after the time", custom::since),
     sp(Messages, "until", "at or before the time", custom::until),
     sp(Messages, "near", "semantic similarity (a ranking)", custom::near),
@@ -606,15 +563,14 @@ pub static FIELDS: &[Field] = &[
     v(
         ToolCalls,
         "outcome",
-        TOOL_OUTCOMES,
+        CallOutcome::NAMES,
         "ok, error, pending or unknown",
     ).sql(
-        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_root_alive = 1 \
+        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_open_tool_pk = {t}.pk \
              THEN 'pending' ELSE {t}.outcome END",
     ),
     f(ToolCalls, "exit_code", Number, "").sql("{t}.exit_code"),
     f(ToolCalls, "at", Time, "").sql("{t}.at"),
-    f(ToolCalls, "duration", Duration, "").sql("{t}.duration_ms"),
     sp(ToolCalls, "since", "ended at or after the time, or still open", custom::since),
     sp(ToolCalls, "until", "started at or before the time", custom::until),
     sp(ToolCalls, "child", "for subagent calls: the child session", custom::spawned_child),
@@ -673,19 +629,6 @@ pub static FIELDS: &[Field] = &[
         Prefix,
         "the message where the child branched off",
     ).sql("{r}.branch_point"),
-    f(Links, "spawned_by", Prefix, "the spawning tool call").sql("{r}.spawned_by"),
-    f(
-        Links,
-        "retry_of",
-        Prefix,
-        "the earlier spawning call this one retries",
-    ).sql("{r}.retry_of"),
-    v(
-        Links,
-        "result_use",
-        &["returned", "referenced", "unknown"],
-        "how the child's result reached the parent",
-    ).sql("COALESCE({r}.result_use, 'unknown')"),
     // notes
     f(Notes, "kind", Match, "tag, note, title, decision, claim, …").sql("{r}.kind"),
     f(Notes, "key", Match, "").sql("{r}.key"),
@@ -696,13 +639,14 @@ pub static FIELDS: &[Field] = &[
         Match,
         "operator, a session ID, agent or script",
     ).sql("{r}.author"),
-    sp(Notes, "target", "a reference", custom::note_target),
+    f(Notes, "agent", Bool, "an agent wrote it").sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
+    sp(Notes, "target", "a reference it is about: session:ID, repo:NAME, cwd:PATH, …", custom::note_target),
     f(
         Notes,
-        "source",
-        Prefix,
-        "the message an inline marker came from",
-    ).sql("{r}.source"),
+        "write_counter",
+        Number,
+        "the archive's write counter when it was written",
+    ).sql("{r}.commit_seq"),
     f(Notes, "created_at", Time, "").sql("{r}.created_at"),
     f(Notes, "root", Prefix, "the revision family").sql("{r}.root"),
     f(Notes, "current", Bool, "no later revision replaces it").sql_fn(notes_current),
@@ -710,54 +654,29 @@ pub static FIELDS: &[Field] = &[
         Notes,
         "withdrawn",
         Bool,
-        "a current withdrawal withdraws it",
+        "a withdrawal names it",
     ).sql_fn(notes_withdrawn),
     sp(Notes, "since", "created at or after the time", custom::since),
     sp(Notes, "until", "created at or before the time", custom::until),
-    // runs
-    f(Runs, "id", Prefix, "").sql("{r}.id"),
-    v(Runs, "kind", &["task", "attempt"], "").sql("{r}.kind"),
-    f(Runs, "task", Prefix, "an attempt's task").sql("{r}.task_id"),
-    v(
-        Runs,
-        "state",
-        &["running", "completed", "failed", "cancelled", "unknown"],
-        "",
-    ).sql("{r}.state"),
-    f(Runs, "instruction", Substring, "").sql("{r}.instruction"),
-    f(Runs, "attempts", Number, "for a task: how many attempts").sql("(SELECT count(*) FROM run ra WHERE ra.task_id = {r}.id)"),
-    f(Runs, "started", Time, "").sql("{r}.started_at"),
-    f(Runs, "ended", Time, "").sql("{r}.ended_at"),
-    f(Runs, "duration", Duration, "").sql("({r}.ended_at - {r}.started_at)"),
-    f(Runs, "evidence", Match, "").sql("{r}.evidence"),
     // deliveries
     f(Deliveries, "id", Prefix, "").sql("{r}.id"),
     sp(Deliveries, "recipient", "the receiving session", custom::recipient).sql("{r}.recipient_id"),
     v(
         Deliveries,
         "event",
-        &[
-            "session_start",
-            "resume",
-            "compaction",
-            "takeover",
-            "recall",
-            "advisory",
-            "ping",
-            "signal",
-        ],
+        DeliveryEvent::NAMES,
         "what the delivery answered",
     ).sql("{r}.event"),
     v(
         Deliveries,
         "sender",
-        &["hook", "mcp", "cli", "ping", "signal"],
+        DeliverySender::NAMES,
         "what prepared it; signal notices have sender signal",
     ).sql("{r}.sender"),
     v(
         Deliveries,
         "outcome",
-        &["prepared", "delivered", "failed", "not_sent", "used"],
+        DELIVERY_STATES,
         "what last happened to it; prepared until a delivery event says more",
     ).sql_fn(deliveries_outcome),
     f(
@@ -850,18 +769,6 @@ pub static FIELDS: &[Field] = &[
         Bool,
         "a current correction note targets the turn's answer",
     ).sql_fn(turns_corrected),
-    // processes
-    v(Processes, "role", &["harness", "child"], "").sql("{r}.role"),
-    f(Processes, "comm", Match, "the command name").sql("{r}.comm"),
-    f(
-        Processes,
-        "argv",
-        Substring,
-        "the argument list, as observed",
-    ).sql("{r}.argv_json"),
-    f(Processes, "alive", Bool, "no end seen yet").sql("({r}.ended_at IS NULL)"),
-    f(Processes, "started_at", Time, "").sql("{r}.started_at"),
-    f(Processes, "ended_at", Time, "").sql("{r}.ended_at"),
     v(
         Work,
         "kind",
@@ -995,19 +902,19 @@ impl Aliases {
     }
 }
 
-/// Own messages of session `s`: not inherited, not a duplicate, on the active path.
+/// Own messages of session `s`: not a duplicate, on the active path.
 pub fn own_messages(s: &str, x: &str) -> String {
     format!(
-        "{x}.session_pk = {s}.pk AND {x}.inherited_from IS NULL AND {x}.duplicate_of IS NULL \
+        "{x}.session_pk = {s}.pk AND {x}.duplicate_of IS NULL \
          AND COALESCE({x}.on_active_path, 1) = 1"
     )
 }
 
-/// A Codex code-mode wrapper whose children are counted in its place.
-/// Children are the `exec_command` calls the wrapper ran; a wrapper with none counts itself.
+/// A script call whose commands are recorded is counted through them; a
+/// script call with no recorded command counts itself.
 pub fn counted_call(t: &str) -> String {
     format!(
-        "NOT ({t}.action = 'code' AND EXISTS (SELECT 1 FROM tool_call cw WHERE cw.session_pk = {t}.session_pk AND cw.tool = 'exec_command'))"
+        "NOT ({t}.action = 'code' AND EXISTS (SELECT 1 FROM tool_call cw WHERE cw.session_pk = {t}.session_pk AND cw.run_by_script = 1))"
     )
 }
 
@@ -1015,7 +922,7 @@ fn own_calls(s: &str, x: &str, extra: &str) -> String {
     format!(
         "(SELECT count(*) FROM tool_call {x} JOIN block {x}b ON {x}b.pk = {x}.call_block_pk \
          JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
-         WHERE {x}.session_pk = {s}.pk AND {x}m.inherited_from IS NULL AND {x}m.duplicate_of IS NULL \
+         WHERE {x}.session_pk = {s}.pk AND {x}m.duplicate_of IS NULL \
          AND COALESCE({x}m.on_active_path, 1) = 1 AND {}{extra})",
         counted_call(x)
     )
@@ -1052,19 +959,14 @@ pub fn live_state(s: &str, now: i64) -> String {
     let d = LIVE_DAY_MS;
     let ev = format!("MIN({s}.live_last_event_at, {now})");
     let grew = format!("MIN({s}.last_activity_at, {now})");
-    let live = format!(
-        "({s}.live_root_alive = 1 OR ({s}.live_root_alive IS NULL \
-         AND {s}.live_last_event_at IS NOT NULL AND {now} - {ev} <= {w}))"
-    );
+    let live = format!("({s}.live_last_event_at IS NOT NULL AND {now} - {ev} <= {w})");
     format!(
         "(CASE \
-         WHEN {s}.live_last_event = 'hook_session_end' \
-              OR ({s}.live_root_alive = 0 AND {s}.live_last_event = 'hook_stop') THEN 'ended' \
-         WHEN {s}.live_root_alive = 0 THEN 'stale' \
+         WHEN {s}.live_last_event = 'hook_session_end' THEN 'ended' \
          WHEN {live} AND {s}.live_waiting_on IS NOT NULL THEN 'waiting' \
          WHEN {live} AND {s}.live_last_event IN ('hook_stop', 'hook_notification') THEN 'idle' \
          WHEN {live} THEN 'working' \
-         WHEN {s}.live_last_event IS NULL AND {s}.live_root_alive IS NULL \
+         WHEN {s}.live_last_event IS NULL \
               AND {s}.last_activity_at IS NOT NULL AND {now} - {grew} <= {w} THEN 'unknown' \
          WHEN COALESCE({s}.live_last_event_at, {s}.last_activity_at) IS NOT NULL \
               AND {now} - MAX(COALESCE({ev}, 0), COALESCE({grew}, 0)) <= {d} THEN 'stale' \
@@ -1084,9 +986,9 @@ pub fn live_until(s: &str, now: i64) -> String {
     format!(
         "(CASE {state} \
          WHEN 'ended' THEN NULL \
-         WHEN 'stale' THEN CASE WHEN {s}.live_root_alive = 0 THEN NULL ELSE {last} + {d} END \
+         WHEN 'stale' THEN {last} + {d} \
          WHEN 'unknown' THEN {grew} + {w} \
-         ELSE CASE WHEN {s}.live_root_alive = 1 THEN NULL ELSE {ev} + {w} END END)",
+         ELSE {ev} + {w} END)",
         state = live_state(s, now)
     )
 }
@@ -1209,7 +1111,7 @@ fn sessions_cost(a: &Aliases) -> String {
 
 fn sessions_tree_cost(a: &Aliases) -> String {
     format!(
-        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL AND x.duplicate_of IS NULL \
+        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.duplicate_of IS NULL \
          AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
         subtree(&a.s)
     )
@@ -1243,7 +1145,7 @@ fn sessions_live_rank(a: &Aliases, now: i64) -> String {
 }
 
 /// Peers: the other sessions working, waiting or idle that
-/// share a repository or checkout, or, when either has no git evidence, a
+/// share a repository, or, when either has no git evidence, a
 /// working directory where one lies at or below the other, by whole path
 /// components. Symmetric by construction.
 fn sessions_peers(a: &Aliases, now: i64) -> String {
@@ -1257,8 +1159,7 @@ fn sessions_peers(a: &Aliases, now: i64) -> String {
     format!(
         "(SELECT group_concat(pe.id, ' ') FROM (SELECT pp.id FROM session pp WHERE pp.pk <> {s}.pk \
          AND {mine} AND {theirs} AND ((pp.repo_root IS NOT NULL AND pp.repo_root = {s}.repo_root) \
-         OR (pp.checkout IS NOT NULL AND pp.checkout = {s}.checkout) \
-         OR (((pp.repo_root IS NULL AND pp.checkout IS NULL) OR ({s}.repo_root IS NULL AND {s}.checkout IS NULL)) \
+         OR ((pp.repo_root IS NULL OR {s}.repo_root IS NULL) \
              AND pp.cwd IS NOT NULL AND {s}.cwd IS NOT NULL AND ({a_in_b} OR {b_in_a}))) \
          ORDER BY pp.id) pe)",
         mine = active(s),
@@ -1291,11 +1192,10 @@ pub fn current_note(n: &str) -> String {
     )
 }
 
+/// Whether note `n`'s family is withdrawn: a withdrawal names its first note.
 pub fn withdrawn_note(n: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM a.note nw JOIN a.note_target nwt ON nwt.note_id = nw.id \
-         WHERE nw.kind = 'withdrawal' AND nwt.ref = 'note:' || {n}.root \
-         AND NOT EXISTS (SELECT 1 FROM a.note nw2 WHERE nw2.root = nw.root AND nw2.commit_seq > nw.commit_seq))"
+        "EXISTS (SELECT 1 FROM a.note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.root)"
     )
 }
 

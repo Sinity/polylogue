@@ -78,7 +78,7 @@ pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Server> {
 
 fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
     use std::future::IntoFuture;
-    let key = access::archive_key(&daemon.archive.root);
+    let key = crate::runtime_dir::archive_key(&daemon.archive.root);
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -91,7 +91,7 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
         tokio::net::TcpListener::from_std(listener)?
     };
     let token = access::new_token()?;
-    let directory = access::runtime_dir(&key);
+    let directory = crate::runtime_dir::runtime_dir(&key);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
@@ -277,7 +277,6 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
         Response::Error { kind, message, .. } => {
             return failed(StatusCode::INTERNAL_SERVER_ERROR, &kind, &message);
         }
-        Response::Accepted { .. } => serde_json::Value::Null,
     };
     let sessions = match ask(
         &web,
@@ -327,7 +326,6 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
             let e = serde_json::json!({ "kind": kind, "message": access::scrub(&message, &web.daemon.archive.root), "detail": detail });
             page(pages::search(&p.q, None, Some(&e)))
         }
-        Response::Accepted { .. } => page(pages::search(&p.q, None, None)),
     }
 }
 
@@ -370,9 +368,6 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
         ),
-        Response::Accepted { .. } => {
-            failed(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no data")
-        }
     }
 }
 
@@ -437,7 +432,6 @@ async fn session(
                         Response::Error { message, .. } => {
                             serde_json::json!({"error": access::scrub(&message, &web.daemon.archive.root)})
                         }
-                        Response::Accepted { .. } => serde_json::json!({"error": "no link data"}),
                     };
                     page(pages::session(&s, &m, view, &view_name, &data, &links))
                 }
@@ -459,9 +453,6 @@ async fn session(
                 &kind,
                 &access::scrub(&message, &web.daemon.archive.root),
             )
-        }
-        Response::Accepted { .. } => {
-            failed(StatusCode::INTERNAL_SERVER_ERROR, "internal", "no data")
         }
     }
 }
@@ -522,11 +513,6 @@ async fn document(
             },
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
-        ),
-        Response::Accepted { .. } => failed(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "no document data",
         ),
     }
 }
@@ -613,11 +599,6 @@ async fn js() -> HttpResponse {
 pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
     match response {
         Response::Ok { data } => axum::Json(scrubbed(web, data)).into_response(),
-        Response::Accepted { request_id } => (
-            StatusCode::ACCEPTED,
-            axum::Json(serde_json::json!({ "request_id": request_id })),
-        )
-            .into_response(),
         Response::Error {
             kind,
             message,

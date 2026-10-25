@@ -16,9 +16,9 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
-mod imports;
+mod behind_index;
 mod lineage;
-pub use imports::StoredImport;
+pub use behind_index::{BehindChain, ImportedAs};
 mod rows;
 
 pub use lineage::{Lineage, LineageIssue, MessageSelection};
@@ -509,6 +509,7 @@ impl Reader<'_> {
 
     /// Fingerprint stored message facts without decompressing bodies. A strict
     /// caller cannot mistake incomplete ancestry for a complete selection.
+    #[cfg(test)]
     pub fn message_fingerprint(&self, id: &SessionId, logical: bool) -> Result<String> {
         let selected = self.select_messages(id, logical)?;
         selected.require_complete()?;
@@ -759,6 +760,11 @@ impl Reader<'_> {
         Ok(())
     }
 
+    /// The archive directory this reader reads.
+    pub(crate) fn archive_root(&self) -> &std::path::Path {
+        &self.pool.archive.root
+    }
+
     /// Reads a range of the selected stored attachment in this reader's read.
     pub fn attachment_range(
         &self,
@@ -815,11 +821,13 @@ impl Reader<'_> {
 
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
         self.known_inputs_at(machine, None, true)
     }
 
     /// Committed state of one source path after a rejected write.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn known_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
         Ok(self.known_inputs_at(machine, Some(path), true)?.pop())
     }
@@ -917,26 +925,6 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// Every stored chain of an input, with its parser progress.
-    pub fn chain_progress(&self, id: &str) -> Result<Vec<(i64, ChainProgress)>> {
-        let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.input_pk IS NOT NULL,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
-        Ok(stmt
-            .query_map([id], |r| {
-                Ok((
-                    r.get(0)?,
-                    ChainProgress {
-                        chain: r.get(0)?,
-                        length: r.get::<_, i64>(1)? as u64,
-                        parsed_upto: r.get::<_, i64>(2)? as u64,
-                        parsed: r.get(3)?,
-                        waiting: r.get(4)?,
-                        route_rank: if r.get::<_, bool>(5)? { 2 } else { 0 },
-                    },
-                ))
-            })?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
     /// The input's latest revision and its chain's parser progress.
     pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
         let row = self
@@ -964,7 +952,7 @@ impl Reader<'_> {
         };
         let route_rank = match produced.as_str() {
             "imported" => 2,
-            "first" | "appended" | "head_rewritten" | "rewritten" | "snapshot" => 0,
+            "first" | "appended" | "rewritten" => 0,
             _ => {
                 return Err(StoreError::Invalid(format!(
                     "unknown revision source: {produced}"

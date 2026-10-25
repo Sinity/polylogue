@@ -114,9 +114,9 @@ const NEXT_COMMIT: &str = "SELECT MIN(seq) FROM (
     UNION ALL SELECT MIN(commit_seq) FROM delivery_event WHERE commit_seq > ?1)";
 
 /// In Sinex every blob is a plain file in its content store, so a batch's
-/// blob rows say so: no inline bytes and no delta base.
+/// blob rows say so: no inline bytes.
 const PLAIN_BLOB: &str = "SELECT hash, size, size AS stored_size, 'file' AS place,
-    'plain' AS encoding, NULL AS base, 'present' AS state, NULL AS data FROM blob";
+    'plain' AS encoding, 'present' AS state, NULL AS data FROM blob";
 
 /// The extents a revision added to its chain: from the end of the chain's
 /// previous revision to its own end.

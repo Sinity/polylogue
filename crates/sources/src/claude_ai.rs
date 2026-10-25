@@ -318,6 +318,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
             }
         }
         "tool_use" => Block::ToolCall {
+            run_by_script: false,
             call_id: string_of(b, "id"),
             tool: string_of(b, "name"),
             action: action(str_of(b, "name").unwrap_or("")),

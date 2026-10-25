@@ -21,16 +21,13 @@ CREATE TABLE session (
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
   kind              TEXT NOT NULL,          -- main | subagent | sidechain | compaction (continuations are links, not a kind)
-  stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook or process line naming a session that has no
+  stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
   title_source      TEXT,                   -- title provenance; precedence is owned by model TitleSource
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
-  title_at          INTEGER,                -- the provider time of the title
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
-  attrs_json        TEXT,                   -- provider fields with no column (account IDs, job facts: name, intent,
-                                            --   state); not all of them are exported
   started_at        INTEGER,                -- from the messages and events the session counts as its own
   last_activity_at  INTEGER,
   cwd               TEXT,
@@ -39,24 +36,14 @@ CREATE TABLE session (
   mode              TEXT,                   -- harness mode as recorded, e.g. background
   record_repo       TEXT,                   -- the repository the session's own records name
   repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
-  checkout          TEXT,                   -- worktree path, when it differs from cwd's repository root
-  collection_id     TEXT,                   -- provider grouping: ChatGPT project or custom GPT, claude.ai project
-  collection_name   TEXT,
   branch            TEXT,
-  "commit"          TEXT,
   harness           TEXT,
   harness_version   TEXT,
-  machine           TEXT,                   -- machine.id the session ran on, when known
-  team              TEXT,                   -- agent team (Claude Code teamName), when the session ran in one
-  agent_name        TEXT,                   -- its name in the team or its subagent name, as given
-  temporary         INTEGER NOT NULL DEFAULT 0,
   -- Live facts: updated in the session's write transaction
-  -- when a hook line or process line for it is written, so they follow data, not
+  -- when a hook line for it is written, so they follow data, not
   -- the clock; the live state itself is computed at read time from these and now.
   live_last_event   TEXT,                   -- type of the latest hook event
   live_last_event_at INTEGER,
-  live_root         TEXT,                   -- process identity 'boot_id:pid:start' of the current harness process
-  live_root_alive   INTEGER,                -- 1 | 0 | NULL (no process evidence), from the latest process line
   live_open_tool_pk INTEGER,                -- tool_call with a pre-tool event and no post-tool event yet
   live_waiting_on   TEXT,                   -- permission | question | notification | NULL
   live_waiting_since INTEGER,
@@ -72,14 +59,12 @@ CREATE INDEX session_started  ON session(started_at);         -- started between
 CREATE INDEX session_changed  ON session(changed);            -- change feed; derive step
 CREATE INDEX session_cwd      ON session(cwd);                -- cwd: prefix as a range; briefings; resume
 CREATE INDEX session_repo     ON session(repo) WHERE repo IS NOT NULL;
-CREATE INDEX session_collection ON session(collection_id) WHERE collection_id IS NOT NULL;
-CREATE INDEX session_live ON session(live_last_event_at) WHERE live_root_alive = 1 OR live_waiting_on IS NOT NULL;   -- running:, waiting:, the overview
-CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 1;   -- peers
+CREATE INDEX session_live ON session(live_last_event_at) WHERE live_last_event_at IS NOT NULL;   -- running:, waiting:, the overview
 CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- inherited marking matches on it
+  id                TEXT NOT NULL UNIQUE,
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
@@ -91,36 +76,18 @@ CREATE TABLE message (
   prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
   at                INTEGER,                -- provider time
-  completed_at      INTEGER,                -- a message from several timed records: the last record's time
-  at_quality        TEXT,                   -- time_quality of `at`: intrinsic | file_mtime | unknown
-  at_precision      TEXT,                   -- instant | second | minute | day | month | year | bounded
-  at_until          INTEGER,                -- the end of a bounded `at`; NULL otherwise
-  first_seen        INTEGER,                -- when Polylogue first had its bytes; NULL for at
-                                            --   most a minute, until an observation covers them
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (preferred) version came from
   source_chain      INTEGER,                -- the revision chain the byte range is in (archive.db revision.chain):
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
-  id_kind           TEXT,                   -- provider | provisional
-  native_message_id TEXT,                   -- the provider's own message ID as written (a ChatGPT node ID, a uuid), stored
-                                            --   whole so the derive step can find a copy across sessions; never split from id
-  response_id       TEXT,                   -- a model message: the provider's response ID (Claude Code message.id)
-  request_id        TEXT,                   --   and request ID (requestId), so the derive step can match a response a
-                                            --   fork re-emits under new uuids; NULL elsewhere
   in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced
-  pasted_spans_json TEXT,                   -- written_by human: pasted byte ranges
-  authorship        TEXT,                   -- written_by human: authored | pasted | mixed | unknown
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
-  inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
-  copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
   duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another route's message the
                                             --   session shows for the same turn (no shared turn ID, matched by prompt text)
   duplicate_reason  TEXT,                   --   and why that route's message is the one shown
-  from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
-  from_name         TEXT,                   --   and the sender's name as the provider wrote it
   attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
                                             --   (attribution, effort, Codex phase, citations, speech or
                                             --   recap markers); one JSON object, export field `attrs`
@@ -131,7 +98,6 @@ CREATE TABLE message (
   cache_write_5m_tokens INTEGER,            -- the part written with a 5-minute lifetime, when reported
   cache_write_1h_tokens INTEGER,            -- the part written with a 1-hour lifetime, when reported
   reasoning_tokens  INTEGER,
-  web_requests      INTEGER,                -- server-side web search and fetch requests
   speed             TEXT,                   -- e.g. 'fast', when the provider reports a mode priced differently
   service_tier      TEXT,                   -- batch | flex | priority | ..., when recorded
   provider_cost_nusd INTEGER,               -- the provider's own cost figure, when given
@@ -143,11 +109,7 @@ CREATE TABLE message (
 ) STRICT;
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
-CREATE INDEX message_unseen  ON message(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
-CREATE INDEX message_copy    ON message(inherited_from) WHERE inherited_from IS NOT NULL;   -- derive: copies of a changed source
-CREATE INDEX message_response ON message(response_id, request_id) WHERE response_id IS NOT NULL;   -- derive: re-emitted responses
-CREATE INDEX message_native ON message(native_message_id) WHERE native_message_id IS NOT NULL;      -- derive: copies by node ID
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it (the preferred version's row repeats the
@@ -183,26 +145,14 @@ CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
   message_pk        INTEGER NOT NULL,
   session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- position in the content list: Claude Code counts every item, thinking included;
-                                            --   Codex counts non-reasoning items and reasoning in reasoning_idx; id = message id:idx
-  reasoning_idx     INTEGER,                -- formats whose rewrites drop reasoning (Codex): position among its reasoning items; id = message id:r<reasoning_idx>
-  attach_key        TEXT,                   -- attachment listed outside the content list: 'a:<id>' or 'a:~<hash>-<n>'
-                                            --   exactly one of idx, reasoning_idx and attach_key is set
+  idx               INTEGER,                -- position in the message's content list; id = message id:idx
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
   body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
                                             --   text moved to `text` (text_id): reading a block back is lossless
-  input_pk          INTEGER REFERENCES input_ref(pk),  -- only when a field came from another input than the message's
-  source_chain      INTEGER,                -- with input_pk: the revision chain the range is in (as message.source_chain)
-  source_start      INTEGER,                -- with input_pk: where the block's bytes are in that chain, for a
-  source_end        INTEGER,                --   field from another input or a value too large to index
   call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
-  input_json        TEXT,                   -- tool_call: arguments as given (export field `input`)
   blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
   direction         TEXT,                   -- image/file: input | output | unknown
-  member            TEXT,                   -- image/file inside an archive stored whole: 'zip:<input>/<member>', read in
-                                            --   place; blob_hash is then NULL
-  produced_by_pk    INTEGER,                -- image/file output: the block of the tool call or image request that made it
   media_type        TEXT,
   file_name         TEXT,                   -- export `name`
   size              INTEGER,                -- image/file
@@ -210,16 +160,11 @@ CREATE TABLE block (
   signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  data_json         TEXT,                   -- other: payload as given; encrypted thinking data; tool_call and
-                                            --   tool_result: structured tool output kept as given (export `data`)
-  looks_like_secret INTEGER NOT NULL DEFAULT 0, -- has:secret
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
-CREATE UNIQUE INDEX block_attach ON block(message_pk, attach_key) WHERE attach_key IS NOT NULL;
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
-CREATE INDEX block_secret ON block(message_pk) WHERE looks_like_secret = 1;
 
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output
@@ -271,8 +216,7 @@ CREATE TABLE tool_call (
                                             --   `pending` is computed at read time from live state
   outcome_reason    TEXT,                   -- a reason code (no_result, background_never_reported, ...)
   exit_code         INTEGER,
-  duration_ms       INTEGER,                -- NULL (unknown) when the times are equal or reversed
-  child_session_id  TEXT,                   -- natural id of a spawned subagent (may arrive later)
+  run_by_script     INTEGER NOT NULL DEFAULT 0, -- a command a script call ran, with no call of its own
   FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk),
   FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk)
 ) STRICT;
@@ -296,16 +240,6 @@ CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('hashsize', 67108864);
 
--- Where two versions of one message disagree: written by the writer in the
--- merge's transaction, rebuilt with the file. `status` counts them per input.
-CREATE TABLE message_disagreement (
-  message_pk        INTEGER NOT NULL REFERENCES message(pk),
-  field             TEXT NOT NULL,          -- the field that differs (role, text, attachment:<id>, ...)
-  other_input_pk    INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding the version not kept
-  other_value       TEXT,                   -- a short value (under 200 bytes) or the BLAKE3 of the longer one
-  PRIMARY KEY (message_pk, field, other_input_pk)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX message_disagreement_input ON message_disagreement(other_input_pk);   -- status; foreign-key check
 
 CREATE TABLE link (
   pk                INTEGER PRIMARY KEY,
@@ -317,17 +251,9 @@ CREATE TABLE link (
   how               TEXT NOT NULL,          -- subagent: fresh | copied | summarized; continuation: resume | fork
                                             -- | after_compaction; reference: briefing | ping | mention
   branch_point      TEXT,                   -- natural message id where the child branches off
-  spawned_by        TEXT,                   -- natural block id of the parent's spawning tool call; resolved by the
-                                            --   derive step from spawning_call once the parent session is stored
   spawning_call     TEXT,                   -- the spawning call's ID as the evidence names it (a tool-use ID)
-  spawn_evidence    TEXT,                   -- which input field named that call: meta.toolUseId, or the parent's
-                                            --   toolUseResult.agentId
   evidence          TEXT NOT NULL,          -- which input field established the parent
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
-  attrs_json        TEXT,                   -- provider facts as given: agent type, description, role, depth,
-                                            --   worktree, stopped by user, Codex edge status
-  retry_of          TEXT,                   -- natural block id of the spawning call this one retries (harness evidence only)
-  result_use        TEXT,                   -- returned | referenced | unknown
   UNIQUE (parent_id, child_id, kind, how)
 ) STRICT;
 CREATE INDEX link_child  ON link(child_pk);                    -- lineage up
@@ -354,65 +280,9 @@ CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
--- Tasks and attempts a harness records.
-CREATE TABLE run (
-  pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native run id>'
-  kind              TEXT NOT NULL,          -- task | attempt
-  task_id           TEXT,                   -- for an attempt (may arrive later)
-  instruction       TEXT,                   -- as given
-  state             TEXT NOT NULL,          -- as the harness recorded: running | completed | failed | cancelled | unknown
-  started_at        INTEGER,
-  ended_at          INTEGER,
-  evidence          TEXT NOT NULL,          -- the input field that established it (sources/)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
-) STRICT;
-CREATE INDEX run_task ON run(task_id) WHERE task_id IS NOT NULL;
 
-CREATE TABLE run_session (
-  run_pk            INTEGER NOT NULL REFERENCES run(pk),
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  PRIMARY KEY (run_pk, session_pk)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX run_session_session ON run_session(session_pk);
 
--- Harness processes and their descendants, from the process
--- identity in hook lines and the daemon's process spool.
-CREATE TABLE process (
-  pk                INTEGER PRIMARY KEY,
-  boot_id           TEXT NOT NULL,
-  pid               INTEGER NOT NULL,
-  start_ticks       INTEGER NOT NULL,       -- /proc/<pid>/stat field 22
-  ppid              INTEGER,
-  role              TEXT NOT NULL,          -- harness | child
-  comm              TEXT,
-  argv_json         TEXT,                   -- as observed; flagged by has:secret like tool commands
-  cwd               TEXT,
-  started_at        INTEGER,
-  ended_at          INTEGER,                -- NULL while alive
-  end_kind          TEXT,                   -- exited (seen gone between two samples) | gone_while_down (found gone at
-                                            --   daemon start or after a reboot) | NULL while alive
-  ended_after_ms    INTEGER,                -- for gone_while_down: the last time it was seen alive, a lower bound on its end
-  cpu_ms            INTEGER,                -- user plus system CPU time at the last sample before it ended; NULL while alive or unknown (a lower bound)
-  rss_peak_kb       INTEGER,                -- largest resident size seen by the samples (a lower bound)
-  usage_partial     INTEGER NOT NULL DEFAULT 0, -- 1 when a daemon restart lost part of the samples
-  tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- only when timing and ancestry both match
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  UNIQUE (boot_id, pid, start_ticks)
-) STRICT;
-CREATE INDEX process_alive ON process(pk) WHERE ended_at IS NULL;   -- live view, process trees
 
--- Which sessions a harness process ran, and when: one process can run several
--- sessions (Claude Code's /clear starts a new session in the same process).
-CREATE TABLE process_session (
-  process_pk        INTEGER NOT NULL REFERENCES process(pk),
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  from_at           INTEGER,                -- the first hook line naming this session from this process
-  until_at          INTEGER,                -- the next session's first line in the same process, or the process end
-  PRIMARY KEY (process_pk, session_pk)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX process_session_session ON process_session(session_pk);   -- live view; foreign-key check
-CREATE INDEX process_tool_call ON process(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
 -- Which inputs produced which sessions.
 CREATE TABLE parsed (
@@ -428,24 +298,17 @@ CREATE INDEX parsed_session ON parsed(session_pk);             -- rebuild a sess
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at observed EOF;
-                                            --   done: at the stored length; companion: read with its main input
-                                            --   (detail: that input's id); no_sessions | refused | failed
-  companions_json   TEXT,                   -- [[companion input id, revision], ...] the companion revisions this
-                                            --   chain was parsed with; a companion with a newer revision means the
-                                            --   chain is parsed again
+  status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at
+                                            --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  carry             BLOB,                   -- the parser's carried state at parsed_upto; NULL = start over
-  detail            TEXT,                   -- the reason for refused, failed and no_sessions; for
-                                            --   waiting: the observed source-end offset, valid only at that stored length
+  detail            TEXT,                   -- waiting: the stored length it waits at
   framed            INTEGER NOT NULL DEFAULT 0,  -- every framed record of this chain is counted:
-  used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + ignored + unrecognized + undecodable; an append
-  ignored           INTEGER NOT NULL DEFAULT 0,  --   adds to the counts, a whole parse replaces them; written in the
-  unrecognized_n    INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
-  undecodable       INTEGER NOT NULL DEFAULT 0,
+  used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + unrecognized_n + undecodable; an append adds
+  unrecognized_n    INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
+  undecodable       INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
   PRIMARY KEY (input_pk, chain)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX parse_state_status ON parse_state(status) WHERE status NOT IN ('done', 'companion');   -- status, waiting work
+CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
 
 -- Record types and fields a parser did not understand, and record types it
 -- deliberately only counts (sources/ lists them), per input: an append adds to
@@ -454,24 +317,13 @@ CREATE TABLE unrecognized (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- also the example input status shows
   chain             INTEGER NOT NULL,       -- the revision chain counted; a whole re-parse of a chain replaces its rows
   format            TEXT NOT NULL,
-  what              TEXT NOT NULL,          -- 'record:<type>'; 'field:<json path>'; 'user:<first tag>' (a user record
-                                            --   whose content starts with an unknown tag); 'invalid_utf8';
-                                            --   'time_unparsed'; 'undecodable' (a record that is not JSON)
+  what              TEXT NOT NULL,          -- 'record:<type>', 'field:<json path>' or 'undecodable:<reason>' (a record
+                                            --   that could not be read)
   count             INTEGER NOT NULL,
   counted_only      INTEGER NOT NULL DEFAULT 0,  -- 1: a known type kept only as a count, by design
-  first_at          INTEGER,                -- the record time (or, without one, the input's first observation) of the
-  last_at           INTEGER,                --   first and last occurrence in this input; status shows the min and max
-  first_offset      INTEGER,                -- byte offset of the first occurrence in that chain
   PRIMARY KEY (input_pk, chain, what)
 ) STRICT, WITHOUT ROWID;
 
--- Marker IDs the current parse extracts: a marker
--- note is in force while its ID is here. Rebuilt with the messages.
-CREATE TABLE marker (
-  note_id           TEXT PRIMARY KEY,       -- archive.db note.id
-  message_pk        INTEGER NOT NULL REFERENCES message(pk)
-) STRICT;
-CREATE INDEX marker_message ON marker(message_pk);
 
 -- Sessions removed without a surviving row (rebuild or excision), for the change
 -- feed. Emptied only when a new generation starts.
@@ -488,7 +340,6 @@ CREATE TABLE commit_link (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   commit_hash       TEXT NOT NULL,          -- full hash; the one place the commit is a key, so it is named
                                             --   commit_hash here and `commit` everywhere else
-  repo              TEXT,
   evidence_block_pk INTEGER REFERENCES block(pk) ON DELETE CASCADE,  -- the git commit tool call; NULL for a
                                             --   trailer. Derived: a rewrite of the call removes it, and the
                                             --   derive step makes it again
@@ -599,14 +450,6 @@ CREATE TABLE session_survival (
   last_prompt_unanswered INTEGER NOT NULL   -- 1 when no model message follows the last prose prompt
 ) STRICT;
 
--- Files a session's tool calls touched, for the `changes` view.
-CREATE TABLE file_edit (
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  path              TEXT NOT NULL,
-  tool_call_pk      INTEGER NOT NULL REFERENCES tool_call(pk),
-  kind              TEXT NOT NULL CHECK (kind IN ('read','write','edit','delete')),
-  PRIMARY KEY (session_pk, path, tool_call_pk)
-) STRICT, WITHOUT ROWID;
 
 
 -- Text that is not a conversation (claude.ai documents, for example), with the

@@ -98,10 +98,12 @@ impl Reader<'_> {
                 ));
             }
         };
-        let mut scopes=conn.prepare("SELECT DISTINCT own.acquisition FROM message_source ms
-            JOIN input_ref ir ON ir.pk=ms.input_pk AND ir.format='chatgpt' JOIN a.input i ON i.id=ir.id
+        let mut scopes = conn.prepare(
+            "SELECT DISTINCT own.acquisition FROM message_source ms
+            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.acquisition")?;
+            WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.acquisition",
+        )?;
         let scopes = scopes
             .query_map(params![pk, version], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

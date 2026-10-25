@@ -222,10 +222,6 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 ExitCode::SUCCESS
             }
         },
-        Response::Accepted { request_id } => {
-            println!("accepted {request_id}");
-            ExitCode::SUCCESS
-        }
         Response::Error {
             kind,
             message,

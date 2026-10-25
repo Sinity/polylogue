@@ -8,7 +8,6 @@ use polylogue_sources::origin::Route;
 
 mod assets;
 mod exports;
-mod replay;
 mod zip_import;
 
 impl Engine {
@@ -23,7 +22,7 @@ impl Engine {
         let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
         report.pass.pending_inputs = finished.pending;
         if finished.completed > 0 {
-            self.replay_imports(None, &mut report.pass)?;
+            self.reparse_behind(None, &mut report.pass)?;
         }
         let mut files = Vec::new();
         for path in paths {
@@ -224,27 +223,21 @@ impl Engine {
                 Arc::clone(&self.blobs),
             )?)))
         };
-        Ok(Some(Plan {
-            path: path.to_path_buf(),
+        let mut plan = Plan::stored(
+            path.to_path_buf(),
             origin,
             input,
-            change: Change::Unchanged,
-            observation: None,
+            Change::Unchanged,
             facts,
             size,
-            piece_pos: size,
-            parse_pos: 0,
-            piece_started: true,
-            carry: None,
-            tail: None,
-            span: span(origin, path, self.config.chunk),
-            chunk: self.config.chunk,
-            priority: Priority::Live,
-            tracked: false,
-            failed: false,
-            waiting: false,
+            0,
             source,
-        }))
+            self.config.chunk,
+            false,
+        );
+        // The operator is waiting on an import.
+        plan.priority = Priority::Live;
+        Ok(Some(plan))
     }
 }
 

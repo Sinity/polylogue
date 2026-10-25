@@ -6,13 +6,15 @@ use serde::Deserializer as _;
 use serde::de::{Error as _, MapAccess, Visitor};
 use std::io::Read;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AssetMetadata {
-    pub source_id: String,
-    pub name: Option<String>,
-    pub media_type: Option<String>,
-    pub size: Option<u64>,
-}
+pub use crate::origin::AssetMetadata;
+
+/// ChatGPT export assets: files named by their file ID beside the
+/// conversations, and the sidecars that name them.
+pub const RULES: crate::origin::ExportAssets = crate::origin::ExportAssets {
+    member_id,
+    sidecar_kind,
+    metadata: |member, reader, emit| metadata(member, reader, emit),
+};
 
 /// IDs are anchored at a member basename or rendition separator. An arbitrary
 /// embedded ID or an original filename is not identity evidence.

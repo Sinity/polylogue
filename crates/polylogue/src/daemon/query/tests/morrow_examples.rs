@@ -39,10 +39,6 @@ const GAPS: &[(&str, &str)] = &[
         "11",
         "Codex is stored one message per item, so #5 and #6 have more messages than FACTS counts",
     ),
-    (
-        "14",
-        "inherited:* does not yet return inherited copies as rows",
-    ),
     ("21", "seq() does not yet take search words over tool calls"),
     (
         "34",
@@ -416,12 +412,6 @@ fn law_133_a_nested_condition_does_not_drop_a_default() {
     );
     let chrono = |text: &str| rows(&q(&r, text)).len();
     assert_eq!(chrono(r#"messages where written_by:human "chrono""#), 2);
-    assert_eq!(
-        chrono(
-            r#"messages where written_by:human (inherited:true OR NOT inherited:true) "chrono""#
-        ),
-        2
-    );
 }
 
 /// A value outside a field's closed set is refused, never an empty

@@ -35,13 +35,13 @@ and the checks at open. One writer thread makes every change.
 
 | File | Holds |
 |---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, variants, kept results and deliveries; excisions; blob rows. Created at schema version 1; any other version refuses. |
+| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; excisions; blob rows. Created at schema version 1; any other version refuses. |
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
 A rebuild parses the stored inputs, including imports whose original files
-are gone; notes and their anchors live in `archive.db` and survive it. A
+are gone; notes live in `archive.db` and survive it. A
 message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
 keeps one `message_source` row per input chain that holds it and shows one
 version: within an input the newest chain; within a chain the earliest record,

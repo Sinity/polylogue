@@ -27,7 +27,7 @@ fn every_spec_example_parses() {
         "sessions where messages >= 10",
         "sessions where tool_calls > 5",
         "messages where written_by:human \"chrono\"",
-        "messages where written_by:human inherited:* \"chrono\"",
+        "messages where written_by:human duplicate:* \"chrono\"",
         "tool_calls where outcome:error",
         "tool_calls where outcome:error | group by session | count",
         "tool_calls | group by action | count",

@@ -17,10 +17,11 @@
 
 use crate::briefing::{Ask, StartSource};
 use crate::daemon::{Request, Response};
+use polylogue_model::DeliveryOutcome;
 use polylogue_model::SessionId;
 use polylogue_sources::origin::by_name;
 use polylogue_sources::{ORIGINS, Support};
-use polylogue_store::{Archive, DeliveryOutcome};
+use polylogue_store::Archive;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -140,7 +141,7 @@ fn context(ask: Ask) -> Option<(String, String)> {
         &Request::Context {
             request_id,
             ask,
-            sender: Some("hook".into()),
+            sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
         },
         CONTEXT_BUDGET,
     )?;

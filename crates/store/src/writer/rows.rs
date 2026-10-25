@@ -554,12 +554,7 @@ impl Ctx<'_, '_> {
         v: &Version,
         order: (i64, (i64, i64)),
     ) -> Result<i64> {
-        let written_by = match (m.role, m.prompt_kind) {
-            (_, Some(PromptKind::Harness)) | (Role::System, _) => "harness",
-            (Role::Assistant, _) | (Role::User, Some(PromptKind::Model)) => "model",
-            (Role::User, Some(_)) => "human",
-            (Role::User, None) => "unknown",
-        };
+        let written_by = polylogue_model::WrittenBy::of(m.role, m.prompt_kind).as_str();
         let words: i64 = m
             .blocks
             .iter()
@@ -787,9 +782,18 @@ impl Ctx<'_, '_> {
                 action,
                 command,
                 path,
+                run_by_script,
                 ..
             } => self.insert_call(
-                block_pk, session_pk, call_id, tool, *action, command, path, at,
+                block_pk,
+                session_pk,
+                call_id,
+                tool,
+                *action,
+                command,
+                path,
+                at,
+                *run_by_script,
             ),
             Block::ToolResult {
                 call_id: Some(call_id),
@@ -821,13 +825,14 @@ impl Ctx<'_, '_> {
         command: &Option<String>,
         path: &Option<String>,
         at: Option<i64>,
+        run_by_script: bool,
     ) -> Result<()> {
         let tool = tool.as_deref().unwrap_or("unknown");
         self.tx
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
-                     command, path, outcome, outcome_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result')",
+                     command, path, outcome, outcome_reason, run_by_script)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result', ?9)",
             )?
             .execute(params![
                 session_pk,
@@ -837,7 +842,8 @@ impl Ctx<'_, '_> {
                 tool,
                 action.as_str(),
                 command,
-                path
+                path,
+                run_by_script
             ])?;
         let pk = self.tx.last_insert_rowid();
         if !self.bulk {
@@ -951,6 +957,20 @@ impl Ctx<'_, '_> {
                 e.range.map(|r| r.1 as i64),
                 data,
             ])?;
+        if crate::encoding::reading_confirmed(&e.data) {
+            // A copy of a reading that reports a measured completion
+            // replaces one stored without it.
+            let stored: Vec<u8> = self
+                .tx
+                .prepare_cached("SELECT data FROM event WHERE id = ?1")?
+                .query_row([&*id], |r| r.get(0))?;
+            let stored: serde_json::Value = crate::encoding::unpack_json(&stored)?;
+            if !crate::encoding::reading_confirmed(&stored) {
+                self.tx
+                    .prepare_cached("UPDATE event SET data = ?2 WHERE id = ?1")?
+                    .execute(params![&*id, data])?;
+            }
+        }
         Ok(())
     }
 
@@ -1076,18 +1096,20 @@ impl Ctx<'_, '_> {
 }
 
 pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {
-    match o {
-        ToolOutcome::Ok => ("ok", None, None),
-        ToolOutcome::Error { reason } => match reason {
-            Some(ErrorReason::ExitCode(code)) => ("error", Some("exit_code".into()), Some(*code)),
-            Some(ErrorReason::Denied(label)) => ("error", Some(format!("denied:{label}")), None),
-            Some(ErrorReason::Interrupted) => ("error", Some("interrupted".into()), None),
-            Some(ErrorReason::TimedOut) => ("error", Some("timed_out".into()), None),
-            None => ("error", None, None),
+    let (reason, exit) = match o {
+        ToolOutcome::Ok | ToolOutcome::Error { reason: None } => (None, None),
+        ToolOutcome::Error {
+            reason: Some(reason),
+        } => match reason {
+            ErrorReason::ExitCode(code) => (Some("exit_code".into()), Some(*code)),
+            ErrorReason::Denied(label) => (Some(format!("denied:{label}")), None),
+            ErrorReason::Interrupted => (Some("interrupted".into()), None),
+            ErrorReason::TimedOut => (Some("timed_out".into()), None),
         },
-        ToolOutcome::NoResult => ("unknown", Some("no_result".into()), None),
-        ToolOutcome::Unknown { reason } => ("unknown", Some(name(reason)), None),
-    }
+        ToolOutcome::NoResult => (Some("no_result".into()), None),
+        ToolOutcome::Unknown { reason } => (Some(name(reason)), None),
+    };
+    (o.stored().as_str(), reason, exit)
 }
 
 /// A provider's reported amount is an observed fact, separate from catalog pricing.

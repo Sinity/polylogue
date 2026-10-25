@@ -134,7 +134,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          JOIN message xm ON xm.pk = xb.message_pk \
-         WHERE {}{} AND xm.inherited_from IS NULL AND xm.duplicate_of IS NULL \
+         WHERE {}{} AND xm.duplicate_of IS NULL \
          AND COALESCE(xm.on_active_path, 1) = 1 \
          AND xm.session_pk IN ({})",
         h.block_kind("xb"),
@@ -327,11 +327,6 @@ const SESSION_VISIBLE: &[Default] = &[
 /// Own, active-path messages, and the session defaults.
 const MESSAGE_DEFAULTS: &[Default] = &[
     d(
-        Expr::Template("{m}.inherited_from IS NULL"),
-        &["inherited"],
-        true,
-    ),
-    d(
         Expr::Template("{m}.duplicate_of IS NULL"),
         &["duplicate"],
         true,
@@ -390,16 +385,7 @@ pub static UNITS: &[UnitSpec] = &[
         defaults: &[
             d(
                 Expr::Fn(main_sessions),
-                &[
-                    "kind",
-                    "parent",
-                    "root",
-                    "depth",
-                    "lineage",
-                    "link",
-                    "team",
-                    "agent_name",
-                ],
+                &["kind", "parent", "root", "depth", "lineage", "link"],
                 true,
             ),
             d(Expr::Template("{s}.stub = 0"), &["source"], false),
@@ -466,7 +452,6 @@ pub static UNITS: &[UnitSpec] = &[
             ("written_by", T("{m}.written_by"), Text),
             ("at", T("{m}.at"), Time),
             ("model", T("{m}.model"), Text),
-            ("inherited", T("({m}.inherited_from IS NOT NULL)"), Bool),
         ],
         time: "{m}.at",
         newest_first: false,
@@ -492,7 +477,7 @@ pub static UNITS: &[UnitSpec] = &[
             "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
         key: "{b}.pk",
-        identity: &["{m}.id", "{b}.idx", "{b}.reasoning_idx", "{b}.attach_key"],
+        identity: &["{m}.id", "{b}.idx"],
         columns: &[
             (
                 "session",
@@ -540,12 +525,7 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
         ),
         key: "{t}.pk",
-        identity: &[
-            "{m}.id",
-            "{cb}.idx",
-            "{cb}.reasoning_idx",
-            "{cb}.attach_key",
-        ],
+        identity: &["{m}.id", "{cb}.idx"],
         columns: &[
             (
                 "session",
@@ -560,14 +540,11 @@ pub static UNITS: &[UnitSpec] = &[
             ("outcome", T("{t}.outcome"), Text),
             ("exit_code", T("{t}.exit_code"), Number),
             ("at", T("{t}.at"), Time),
-            ("duration", T("{t}.duration_ms"), Duration),
         ],
         time: "{t}.at",
         newest_first: false,
         session_order: false,
-        since: Some(
-            "(COALESCE({t}.at + {t}.duration_ms, {t}.at) >= {v} OR {t}.result_block_pk IS NULL)",
-        ),
+        since: Some("({t}.at >= {v} OR {t}.result_block_pk IS NULL)"),
         until: Some("{t}.at < {v}"),
         in_session: true,
         session_pk: "{t}.session_pk",
@@ -577,11 +554,6 @@ pub static UNITS: &[UnitSpec] = &[
             rows: tool_call_hits,
         },
         defaults: &[
-            d(
-                Expr::Template("{m}.inherited_from IS NULL"),
-                &["inherited"],
-                true,
-            ),
             d(
                 Expr::Template("{m}.duplicate_of IS NULL"),
                 &["duplicate"],
@@ -605,7 +577,7 @@ pub static UNITS: &[UnitSpec] = &[
                 Via::Exists {
                     cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.pk = lc.child_pk \
                            WHERE lc.kind = 'subagent' AND lc.parent_id = {s}.id \
-                           AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) AND {cond})",
+                           AND lc.spawning_call = {t}.call_id AND {cond})",
                     value: None,
                 },
             ),
@@ -717,7 +689,7 @@ pub static UNITS: &[UnitSpec] = &[
             (
                 "target",
                 T(
-                    "(SELECT group_concat(nt.ref, ' ') FROM a.note_target nt WHERE nt.note_id = {r}.id)",
+                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM a.note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))",
                 ),
                 Text,
             ),
@@ -735,6 +707,7 @@ pub static UNITS: &[UnitSpec] = &[
         ),
         search: Search::Substring("{r}.value"),
         defaults: &[
+            d(Expr::Template("{r}.kind <> 'withdrawal'"), &["kind"], false),
             d(
                 Expr::Fn(current_note),
                 &["current", "root", "withdrawn"],
@@ -830,54 +803,6 @@ pub static UNITS: &[UnitSpec] = &[
         parents: &[],
     },
     UnitSpec {
-        unit: Unit::Runs,
-        name: "runs",
-        singular: "run",
-        from: Expr::Template("run {r}"),
-        key: "{r}.pk",
-        identity: &["{r}.id"],
-        columns: &[
-            ("id", T("{r}.id"), Text),
-            ("kind", T("{r}.kind"), Text),
-            ("state", T("{r}.state"), Text),
-            ("instruction", T("{r}.instruction"), Text),
-            ("started", T("{r}.started_at"), Time),
-            ("ended", T("{r}.ended_at"), Time),
-        ],
-        time: "{r}.started_at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: Some(
-            "EXISTS (SELECT 1 FROM run_session rs WHERE rs.run_pk = {r}.pk AND rs.session_pk IN ({sessions}))",
-        ),
-        search: Search::None,
-        defaults: &[],
-        relations: &[
-            rel(
-                "session",
-                Unit::Sessions,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM run_session rs JOIN {from} ON {ns}.pk = rs.session_pk \
-                           WHERE rs.run_pk = {r}.pk AND {cond})",
-                    value: None,
-                },
-            ),
-            rel(
-                "task",
-                Unit::Runs,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM {from} WHERE {nr}.id = {r}.task_id AND {cond})",
-                    value: None,
-                },
-            ),
-        ],
-        parents: &[],
-    },
-    UnitSpec {
         unit: Unit::Deliveries,
         name: "deliveries",
         singular: "delivery",
@@ -905,53 +830,6 @@ pub static UNITS: &[UnitSpec] = &[
         relations: &[
             rel("session", Unit::Sessions, Via::Same),
             rel("recipient", Unit::Sessions, Via::Same),
-        ],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Processes,
-        name: "processes",
-        singular: "process",
-        from: Expr::Template("process {r}"),
-        key: "{r}.pk",
-        identity: &["{r}.boot_id", "{r}.pid", "{r}.start_ticks"],
-        columns: &[
-            ("role", T("{r}.role"), Text),
-            ("comm", T("{r}.comm"), Text),
-            ("pid", T("{r}.pid"), Number),
-            ("started_at", T("{r}.started_at"), Time),
-            ("ended_at", T("{r}.ended_at"), Time),
-        ],
-        time: "{r}.started_at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: false,
-        session_pk: "{r}.session_pk",
-        session_scope: Some(
-            "EXISTS (SELECT 1 FROM process_session ps WHERE ps.process_pk = {r}.pk AND ps.session_pk IN ({sessions}))",
-        ),
-        search: Search::None,
-        defaults: &[],
-        relations: &[
-            rel(
-                "session",
-                Unit::Sessions,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM process_session rs JOIN {from} ON {ns}.pk = rs.session_pk \
-                           WHERE rs.process_pk = {r}.pk AND {cond})",
-                    value: None,
-                },
-            ),
-            rel(
-                "tool_call",
-                Unit::ToolCalls,
-                Via::Exists {
-                    cond: "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = {r}.tool_call_pk AND {cond})",
-                    value: None,
-                },
-            ),
         ],
         parents: &[],
     },
@@ -1037,8 +915,7 @@ pub static UNITS: &[UnitSpec] = &[
 /// One row per turn: along the active path (or file
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
-/// such start; a session with no prompt is one turn. Copies are counted in
-/// the session that originated them, so inherited messages are left out.
+/// such start; a session with no prompt is one turn. Duplicates are left out.
 const TURNS: &str = "(SELECT g.*, \
      (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
         AND ax.written_by = 'model') AS attempts, \
@@ -1052,7 +929,7 @@ const TURNS: &str = "(SELECT g.*, \
                 substr(min(printf('%012d ', tm.ord) || tm.id), 14)) AS id, \
        substr(max(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS last_prompt, \
        max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at, \
-       min(tm.at) AS start, max(COALESCE(tm.completed_at, tm.at)) AS \"end\", \
+       min(tm.at) AS start, max(tm.at) AS \"end\", \
        sum(tm.hp) AS burst, \
        json_group_array(tm.id ORDER BY tm.ord) FILTER (WHERE tm.hp) AS prompts, \
        substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
@@ -1067,7 +944,7 @@ const TURNS: &str = "(SELECT g.*, \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
          row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id) AS ord \
        FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.written_by, m.prompt_kind, \
-             m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
+             m.at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
                ORDER BY m.order_input_id, m.seq, m.record_position, m.id), 0) AS prev_hp, \
@@ -1075,8 +952,7 @@ const TURNS: &str = "(SELECT g.*, \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
-           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
-             AND m.duplicate_of IS NULL \
+           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.duplicate_of IS NULL \
              AND m.written_by IN ('human', 'model')) o) tm \
      GROUP BY tm.session_pk, tm.turn) g)";
 

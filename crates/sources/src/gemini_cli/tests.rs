@@ -39,7 +39,10 @@ fn a_turn_with_a_tool_call_and_its_result() {
     assert_eq!(msgs[1].usage.reasoning, Some(20));
     match &msgs[1].blocks[2] {
         Block::ToolCall {
-            command, action, ..
+            run_by_script: false,
+            command,
+            action,
+            ..
         } => {
             assert_eq!(command.as_deref(), Some("ls"));
             assert_eq!(*action, polylogue_model::ToolAction::Shell);

@@ -337,6 +337,7 @@ fn parts(m: &Json) -> Vec<Block> {
                 redacted: false,
             }),
             Some("tool_call") => blocks.push(Block::ToolCall {
+                run_by_script: false,
                 call_id: p.get("id").and_then(Json::as_str).map(str::to_owned),
                 tool: p.get("name").and_then(Json::as_str).map(str::to_owned),
                 action: ToolAction::Other,

@@ -206,9 +206,11 @@ fn note_lists_and_queries_carry_every_option() {
     ])
     .unwrap();
     let r = request_json(c, &v, &cli_caller());
-    assert_eq!(r["filter"]["kinds"], json!(["lesson", "handoff"]));
-    assert_eq!(r["filter"]["agents"], true);
-    assert_eq!(r["filter"]["limit"], 3);
+    assert_eq!(
+        r["text"],
+        r#"notes where (target:"repo:x") (kind:lesson OR kind:handoff) agent:true"#
+    );
+    assert_eq!(r["page_size"], 3);
 
     let (c, v) = crate::cli::parse(&[
         "polylogue",
@@ -373,11 +375,9 @@ fn browser_body_commands_are_http_only_and_build_typed_requests() {
         panic!("wrong body codec")
     };
     let request = build(json!({"provider":"chatgpt","operation":"conversation.create","text":"Synthetic draft", "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}})).unwrap();
-    assert!(
-        matches!(request, Request::BrowserEnqueue { action } if action.text == "Synthetic draft")
-    );
+    assert!(matches!(request, Request::ChatEnqueue { action } if action.text == "Synthetic draft"));
     let Action::BytesRequest(build) = command("browser-actions attachments").unwrap().action else {
         panic!("wrong body codec")
     };
-    assert!(matches!(build(vec![0,255,1]), Request::BrowserUpload { bytes } if bytes == [0,255,1]));
+    assert!(matches!(build(vec![0,255,1]), Request::ChatUpload { bytes } if bytes == [0,255,1]));
 }

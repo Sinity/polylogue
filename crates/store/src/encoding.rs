@@ -251,6 +251,9 @@ pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
 
 fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
     let data = serde_json::to_vec(&e.data)?;
+    if let Some(id) = reading_id(e) {
+        return Ok((id, data));
+    }
     let mut h = blake3::Hasher::new();
     if let Some(session) = &e.session {
         h.update(session.to_string().as_bytes());
@@ -278,6 +281,31 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
         h.update(after.to_string().as_bytes());
     }
     Ok((h.finalize().to_hex().to_string(), data))
+}
+
+/// A usage or quota reading names its own identity, which every copy of
+/// it shares: it is stored once per origin under that identity.
+fn reading_id(e: &Event) -> Option<String> {
+    use polylogue_model::observations::{QUOTA_OBSERVATION, USAGE_OBSERVATION};
+    if e.kind != USAGE_OBSERVATION && e.kind != QUOTA_OBSERVATION {
+        return None;
+    }
+    let reading = e.data.get("observation")?.as_str()?;
+    let origin = e.session.as_ref()?.origin();
+    let mut h = blake3::Hasher::new_derive_key("polylogue reading v1");
+    for part in [e.kind.as_str(), origin.as_str(), reading] {
+        h.update(&(part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
+    Some(h.finalize().to_hex().to_string())
+}
+
+/// Whether a reading's payload reports a measured completion, which wins
+/// over a copy that does not.
+pub(crate) fn reading_confirmed(data: &serde_json::Value) -> bool {
+    data.get("completion_observed")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 /// Reads a block back from `block.body`.

@@ -76,6 +76,7 @@ fn tool_projection_aliases_reuse_redaction_and_independent_values_keep_their_typ
             text: "-----BEGIN PRIVATE KEY-----private-prefix".into(),
         },
         Block::ToolCall {
+            run_by_script: false,
             call_id: None,
             tool: Some("Bash".into()),
             action: ToolAction::Shell,
@@ -119,6 +120,7 @@ fn tool_projection_aliases_reuse_redaction_and_independent_values_keep_their_typ
 fn argument_object_values_are_complete_values_not_a_source_chronology() {
     use crate::{Block, ToolAction};
     let mut block = Block::ToolCall {
+        run_by_script: false,
         call_id: None,
         tool: Some("tool".into()),
         action: ToolAction::Other,

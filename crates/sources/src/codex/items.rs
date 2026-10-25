@@ -505,6 +505,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
             let name = format!("mcp__{server}__{tool}");
             return Some(vec![
                 Block::ToolCall {
+                    run_by_script: false,
                     call_id: Some(id.clone()),
                     tool: Some(name),
                     action: ToolAction::Mcp,
@@ -529,6 +530,8 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
     };
     Some(vec![
         Block::ToolCall {
+            // A command execution item is a command a code-mode script ran.
+            run_by_script: tool == "exec_command",
             call_id: Some(id.clone()),
             tool: Some(tool.to_owned()),
             action: action(tool),

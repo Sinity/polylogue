@@ -3,19 +3,46 @@
 //! ID so a resent write is a no-op.
 
 use crate::briefing::Ask;
+use polylogue_model::DeliveryOutcome;
 use polylogue_model::{Author, DocumentId, NewNote, SessionId};
-use polylogue_store::{DeliveryOutcome, NoteFilter};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
-    BrowserEnqueue {
+    /// Queues a chat action; only the operator does.
+    ChatEnqueue {
         action: Box<crate::browser::actions::ActionRequest>,
     },
-    BrowserUpload {
+    /// Stores bytes a later chat action attaches.
+    ChatUpload {
         bytes: Vec<u8>,
+    },
+    ChatActions,
+    ChatAction {
+        id: String,
+    },
+    /// The extension instance `by` takes the oldest queued chat action,
+    /// while chat actions are on.
+    ChatClaim {
+        by: String,
+    },
+    ChatReport {
+        id: String,
+        update: crate::browser::actions::Update,
+    },
+    ChatDecide {
+        id: String,
+        approve: bool,
+        by: String,
+        #[serde(default)]
+        detail: Option<String>,
+    },
+    /// A chat action attachment's bytes, base64.
+    ChatAttachment {
+        id: String,
+        attachment: String,
     },
     Status,
     Attachment {
@@ -82,9 +109,6 @@ pub enum Request {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-    },
-    Notes {
-        filter: NoteFilter,
     },
     Withdraw {
         request_id: String,
@@ -154,14 +178,6 @@ pub enum Request {
         #[serde(default)]
         yes: bool,
     },
-    /// One harness hook event, as the hook command received it.
-    Hook {
-        event: String,
-        payload: serde_json::Value,
-    },
-    Cancel {
-        request_id: String,
-    },
 }
 
 impl Request {
@@ -175,23 +191,26 @@ impl Request {
             | Self::Changes { .. }
             | Self::Read { .. }
             | Self::Export { .. }
-            | Self::Notes { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
-            | Self::Sql { .. } => true,
+            | Self::Sql { .. }
+            | Self::ChatActions
+            | Self::ChatAction { .. }
+            | Self::ChatAttachment { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
-            Self::BrowserEnqueue { .. }
-            | Self::BrowserUpload { .. }
+            Self::ChatEnqueue { .. }
+            | Self::ChatUpload { .. }
+            | Self::ChatClaim { .. }
+            | Self::ChatReport { .. }
+            | Self::ChatDecide { .. }
             | Self::Import { .. }
             | Self::AddNote { .. }
             | Self::Keep { .. }
             | Self::Withdraw { .. }
             | Self::DeliveryEvent { .. }
-            | Self::Excise { .. }
-            | Self::Hook { .. }
-            | Self::Cancel { .. } => false,
+            | Self::Excise { .. } => false,
         }
     }
 }
@@ -235,10 +254,6 @@ pub enum Response {
     Ok {
         data: serde_json::Value,
     },
-    /// Accepted; progress and the outcome are separate records.
-    Accepted {
-        request_id: String,
-    },
     Error {
         kind: String,
         message: String,
@@ -255,7 +270,6 @@ impl Response {
     pub(crate) fn masked(mut self) -> Self {
         match &mut self {
             Self::Ok { data } => polylogue_render::mask_json(data),
-            Self::Accepted { request_id } => *request_id = polylogue_render::mask(request_id),
             Self::Error {
                 kind,
                 message,

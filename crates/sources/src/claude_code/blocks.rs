@@ -67,6 +67,7 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<InlineBl
             let input = item.get("input").cloned().unwrap_or(Json::Null);
             let tool = string(item, "name");
             Block::ToolCall {
+                run_by_script: false,
                 call_id: string(item, "id"),
                 action: action(tool.as_deref().unwrap_or("")),
                 tool,

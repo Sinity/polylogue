@@ -1,7 +1,7 @@
 use super::*;
 use crate::user_writes::{UserRequest, UserWrite};
 use crate::{Archive, ReadPool, Writer};
-use polylogue_model::{NewNote, SessionId};
+use polylogue_model::NewNote;
 
 fn note(kind: NoteKind, author: Author, target: &str, value: &str) -> NewNote {
     NewNote {
@@ -56,7 +56,7 @@ fn notes_are_written_once_per_request_and_revised_in_families() {
 
     let mut revised = note(NoteKind::Lesson, Author::Operator, s, "run cargo nextest");
     revised.revises = Some(out.id.clone());
-    writer
+    let second = writer
         .user(UserRequest::now(
             "018f0000-0000-7000-8000-000000000002".into(),
             UserWrite::AddNote { note: revised },
@@ -64,54 +64,29 @@ fn notes_are_written_once_per_request_and_revised_in_families() {
         .unwrap();
 
     let r = reads.reader().unwrap();
-    let current = r.notes(&NoteFilter::default()).unwrap();
-    assert_eq!(current.len(), 1);
-    assert_eq!(current[0].value.as_deref(), Some("run cargo nextest"));
-    assert_eq!(current[0].root, out.id);
-    let history = r
-        .notes(&NoteFilter {
-            history: true,
-            ..NoteFilter::default()
-        })
-        .unwrap();
-    assert_eq!(history.len(), 2);
+    let current = r.note(&second.id).unwrap().unwrap();
+    assert_eq!(current.value.as_deref(), Some("run cargo nextest"));
+    assert_eq!(current.root, out.id);
+    assert_eq!(r.note(&out.id).unwrap().unwrap().root, out.id);
 }
 
 #[test]
-fn withdrawn_families_and_agent_notes_are_filtered() {
+fn a_withdrawal_names_the_family_it_withdraws() {
     let (_dir, _a, _lock, writer, reads) = setup();
-    let s = "repo:polylogue";
     let lesson = writer
         .user(UserRequest::now(
             "018f0000-0000-7000-8000-00000000000a".into(),
             UserWrite::AddNote {
-                note: note(NoteKind::Lesson, Author::Operator, s, "keep it plain"),
+                note: note(
+                    NoteKind::Lesson,
+                    Author::Operator,
+                    "repo:polylogue",
+                    "keep it plain",
+                ),
             },
         ))
         .unwrap();
-    let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
-    writer
-        .user(UserRequest::now(
-            "018f0000-0000-7000-8000-00000000000b".into(),
-            UserWrite::AddNote {
-                note: note(NoteKind::Lesson, agent, s, "an agent's idea"),
-            },
-        ))
-        .unwrap();
-
-    let r = reads.reader().unwrap();
-    let by_operator = r
-        .notes(&NoteFilter {
-            targets: vec![Target::parse(s).unwrap()],
-            agents: Some(false),
-            ..NoteFilter::default()
-        })
-        .unwrap();
-    assert_eq!(by_operator.len(), 1);
-    assert_eq!(by_operator[0].author, Author::Operator);
-    drop(r);
-
-    writer
+    let withdrawal = writer
         .user(UserRequest::now(
             "018f0000-0000-7000-8000-00000000000c".into(),
             UserWrite::Withdraw {
@@ -122,10 +97,18 @@ fn withdrawn_families_and_agent_notes_are_filtered() {
         ))
         .unwrap();
     let r = reads.reader().unwrap();
-    let left = r.notes(&NoteFilter::default()).unwrap();
-    assert_eq!(left.len(), 1);
-    assert!(left[0].author.is_agent());
+    let named: String = r
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT other FROM a.note_relation WHERE note_id = ?1 AND kind = 'withdraws'",
+            [&withdrawal.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(named, format!("note:{}", lesson.id));
     assert!(r.note(&lesson.id).unwrap().is_some());
+    assert!(r.note(&withdrawal.id).unwrap().is_none());
 }
 
 #[test]

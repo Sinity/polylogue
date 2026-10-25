@@ -18,12 +18,10 @@ CREATE TABLE blob (
   size          INTEGER NOT NULL,        -- uncompressed bytes
   stored_size   INTEGER NOT NULL,        -- compressed bytes
   place         TEXT NOT NULL,           -- inline | file
-  encoding      TEXT NOT NULL,           -- plain (seekable zstd) | delta | page_patch
-  base          BLOB REFERENCES blob(hash), -- delta: the plain blob it was made against (zstd patch-from, base as prefix)
+  encoding      TEXT NOT NULL,           -- plain (seekable zstd)
   state         TEXT NOT NULL,           -- writing | present | deleting
   data          BLOB                     -- zstd bytes, when place = 'inline'
 ) STRICT;
-CREATE INDEX blob_base ON blob(base) WHERE base IS NOT NULL;
 
 -- One logical file: one location's history, or one imported file.
 CREATE TABLE input (
@@ -41,16 +39,10 @@ CREATE TABLE input (
 CREATE TABLE revision (
   input         TEXT NOT NULL REFERENCES input(id),
   number        INTEGER NOT NULL,        -- 1, 2, ... in order observed
-  produced      TEXT NOT NULL,           -- first | imported | appended | head_rewritten | rewritten | snapshot;
-                                         --   first: a location's first revision; head_rewritten starts a new chain
-                                         --   whose extents are a new first line plus the previous chain's blob
-                                         --   ranges after its first line (nothing is copied)
+  produced      TEXT NOT NULL,           -- first (a location's first revision) | imported | appended | rewritten
   chain         INTEGER NOT NULL,        -- the revision that started this revision chain (itself for first,
-                                         --   imported, head_rewritten, rewritten and snapshot revisions)
-  base          INTEGER,                 -- snapshot patch: the plain snapshot revision it overlays
+                                         --   imported and rewritten revisions)
   length        INTEGER NOT NULL,        -- of the revision's full bytes
-  blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
-                                         --   not even by excision (an excised revision is verified by its blobs)
   commit_seq    INTEGER NOT NULL,        -- local order: the write counter at the insert; orders the
                                          --   row batches sent to Sinex in `primary` mode
   PRIMARY KEY (input, number)
@@ -59,13 +51,10 @@ CREATE INDEX revision_commit_seq ON revision(commit_seq);
 
 -- Where bytes come from: ranges of blobs placed at offsets in a revision chain
 -- (appends share their chain's extents; a revision reads the extents covering
--- [0, length)) or in a snapshot patch revision (overlaid on its base). Every
--- record has a byte range in its chain. A head-rewritten chain's extents point
--- into the same blobs as the chain before it, shifted by the first line's change
--- in length, so the rewrite stores only the new first line and the appended bytes.
+-- [0, length)). Every record has a byte range in its chain.
 CREATE TABLE extent (
   input         TEXT NOT NULL,
-  chain         INTEGER NOT NULL,        -- a revision number: the chain, or the patch revision
+  chain         INTEGER NOT NULL,        -- the revision number that started the chain
   offset        INTEGER NOT NULL,        -- position in the chain's bytes
   length        INTEGER NOT NULL,
   blob          BLOB NOT NULL REFERENCES blob(hash),
@@ -79,8 +68,8 @@ CREATE INDEX extent_blob ON extent(blob);
 -- The record of which input a path belongs to;
 -- locations, first_seen, source:gone and message.first_seen are queries over it.
 -- An input's latest observation is the last one inserted locally (the largest
--- rowid), not the largest seen_at: a rename and an append found in one round
--- share a seen_at. Like commit_seq, that order is local and never compared
+-- rowid), not the largest seen_at: two changes found in one round share a
+-- seen_at. Like commit_seq, that order is local and never compared
 -- across archives. Its location is the path of its latest observation at a
 -- location path: a filesystem path, 'drive:<file id>' (a Drive file) or
 -- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads).
@@ -93,19 +82,14 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
-  class         TEXT NOT NULL,           -- first | appended | head_rewritten | replaced | rewritten | renamed
-                                         -- | deleted | back | imported | excised | download_attempt
+  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported | excised
   revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)
   excision      TEXT REFERENCES excision(id),  -- excised: the excision that changed this input's stored bytes
   length        INTEGER,                 -- that revision's length
   device        INTEGER, inode INTEGER, size INTEGER,
-  mtime_ns      INTEGER, ctime_ns INTEGER, birth_ns INTEGER,
-  mode          INTEGER, owner INTEGER, grp INTEGER,
-  symlink_target TEXT,                   -- the path was a symlink: its target
-  details_json  TEXT,                    -- download_attempt: URL, outcome, error and retry_at; no content
-  provider_version TEXT,                 -- when the content states it
+  mtime_ns      INTEGER, ctime_ns INTEGER,
+  details_json  TEXT,                    -- imported: the import member it was read as, and its format
   polylogue_version TEXT NOT NULL,
-  zone          TEXT,                    -- the collecting machine's IANA zone
   seen_at       INTEGER NOT NULL,        -- Polylogue's clock
   commit_seq    INTEGER NOT NULL DEFAULT 0
 ) STRICT;
@@ -127,8 +111,7 @@ CREATE TABLE client_request (
 
 CREATE TABLE note (
   id            TEXT PRIMARY KEY,        -- the writing request's ID (UUIDv7, chosen by the client), with '.<n>' for
-                                         --   its n-th further row; for an inline marker, derived from the record's
-                                         --   message ID, the marker line and its occurrence
+                                         --   its n-th further row
   root          TEXT NOT NULL,           -- first note of its revision family; = id for a first note
   kind          TEXT NOT NULL,           -- tag | note | title | decision | claim | lesson | blocker | question
                                          -- | finding | judgment | outcome | hidden | withdrawal | saved_query
@@ -138,14 +121,10 @@ CREATE TABLE note (
   key           TEXT,                    -- key:value tags; a saved query's name
   value         TEXT,                    -- text or JSON; a saved query's text, plus `unit` and
                                          --   `denominator` when it defines a reported figure
-  check_json    TEXT,                    -- claim only: its check, {"query", "expect": "rows"|"no_rows"|{"count": op, "n"}
-                                         --   |{"aggregate": column, "op": op, "n"}}
-                                         --   its state is computed at read, never stored
   author        TEXT NOT NULL,           -- operator | agent session id | agent | script
   machine       TEXT NOT NULL,           -- where it was written
   created_at    INTEGER NOT NULL,        -- the writer's clock: display and the evidence cutoff only, never orders revisions
   valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings
-  source        TEXT,                    -- for inline markers: the message it came from
   commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
 ) STRICT;
 CREATE INDEX note_commit_seq ON note(commit_seq);              -- the change feed
@@ -156,11 +135,6 @@ CREATE INDEX note_kind ON note(kind, key, value);        -- tag:, outcome:, hidd
 CREATE TABLE note_target (
   note_id       TEXT NOT NULL REFERENCES note(id),
   ref           TEXT NOT NULL,           -- 'session:...', 'message:...', 'block:...', 'result:...', ...
-  seen_hash     BLOB,                    -- BLAKE3 of the target's text when the note was written
-  anchor_input  TEXT,                    -- optional exact anchor for a citation: the input, the revision chain
-  anchor_chain  INTEGER,                 --   and the byte range of the cited record in that chain (exact even if
-  anchor_start  INTEGER,                 --   the index is rebuilt from another backend)
-  anchor_end    INTEGER,
   PRIMARY KEY (note_id, ref)
 ) STRICT;
 CREATE INDEX note_target_ref ON note_target(ref);       -- notes about X; the hidden filter
@@ -180,7 +154,6 @@ CREATE TABLE kept_result (
   id            TEXT PRIMARY KEY,        -- UUIDv7; referenced as result:<id>
   name          TEXT,                    -- optional label
   query         TEXT NOT NULL,
-  query_note    TEXT,                    -- the saved_query revision it ran, when it ran one
   ran_at        INTEGER NOT NULL,
   view          TEXT NOT NULL,           -- the view it read (index generation, index counter, archive
                                          --   counter, embeddings high-water id) and up_to_date, as JSON
@@ -198,36 +171,6 @@ CREATE TABLE excision (
   commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
 ) STRICT;
 CREATE INDEX excision_commit_seq ON excision(commit_seq);
-
--- Variants: transformed copies of content. Content, not
--- claims, so not notes. A new version of a variant is a new row revising the old.
-CREATE TABLE variant (
-  id            TEXT PRIMARY KEY,        -- UUIDv7
-  revises       TEXT REFERENCES variant(id),
-  target        TEXT NOT NULL,           -- a reference: session, message, block, span (block:<id>#<start>-<end>) or note
-  seen_hash     BLOB NOT NULL,           -- the target text it was made from
-  kind          TEXT NOT NULL,           -- translation | transliteration | simplification | summary
-  source_lang   TEXT,
-  target_lang   TEXT,
-  coverage      TEXT NOT NULL,           -- whole | partial
-  body          TEXT NOT NULL,           -- the transformed text
-  author        TEXT NOT NULL,           -- 'operator' or a session id (the model session that made it)
-  machine       TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
-) STRICT;
-CREATE INDEX variant_target ON variant(target);
-
--- Which span of a variant comes from which span of its source.
-CREATE TABLE variant_alignment (
-  variant       TEXT NOT NULL REFERENCES variant(id),
-  n             INTEGER NOT NULL,
-  variant_start INTEGER NOT NULL,        -- Unicode code points in variant.body
-  variant_end   INTEGER NOT NULL,
-  source_ref    TEXT NOT NULL,           -- a span reference into the target
-  relation      TEXT NOT NULL,           -- translates | transliterates | simplifies | summarizes | omits | expands | reorders
-  exact         INTEGER NOT NULL,        -- 1 only for an exact copy, whose character map is then exact
-  PRIMARY KEY (variant, n)
-) STRICT, WITHOUT ROWID;
 
 -- Settings (day.zone, subscription.anthropic, embeddings, ...).
 -- The Sinex mode and address live in `$XDG_CONFIG_HOME/polylogue/sinex.toml`
@@ -261,8 +204,8 @@ CREATE TABLE delivery (
   id                TEXT PRIMARY KEY,       -- UUIDv7 chosen when prepared; also in the injected reference line
   recipient_kind    TEXT NOT NULL,          -- session | operator
   recipient_id      TEXT,                   -- session id when recipient_kind = session (the session may arrive later)
-  sender            TEXT NOT NULL,          -- hook | mcp | cli | ping | signal
-  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | advisory | ping | signal
+  sender            TEXT NOT NULL,          -- hook | mcp | signal (model DeliverySender)
+  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | signal
   cwd               TEXT,                   -- where the recipient was working, when known
   at                INTEGER NOT NULL,       -- prepared at
   content_hash      BLOB NOT NULL,          -- BLAKE3 of the delivered text
@@ -296,6 +239,8 @@ CREATE TABLE excised (
   kind        TEXT NOT NULL CHECK(kind IN ('session','message','document','input','blob','location')),
   value       TEXT NOT NULL,
   PRIMARY KEY(kind, value, excision_id)
+
+
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX excised_excision ON excised(excision_id, kind);
 

@@ -253,6 +253,19 @@ fn request(op: &str, conversation: &str, policy: &str, key: &str) -> actions::Ac
     .unwrap()
 }
 
+/// Queues `req` as the operator does; the action, or the refusal's code.
+fn enqueue(w: &TestDaemon, req: actions::ActionRequest) -> Result<Value, String> {
+    match crate::daemon::service::handle(
+        crate::daemon::Request::ChatEnqueue {
+            action: Box::new(req),
+        },
+        &w.daemon,
+    ) {
+        crate::daemon::Response::Ok { data } => Ok(data["action"].clone()),
+        crate::daemon::Response::Error { kind, .. } => Err(kind),
+    }
+}
+
 fn report(ctx: &Arc<Ctx>, id: &str, who: &str, outcome: &str) -> Answer {
     exchange(
         ctx,
@@ -279,22 +292,21 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     };
     // Off by default: nothing queues and nothing is handed out.
     assert_eq!(
-        actions::enqueue(
-            &ctx,
-            &request("conversation.create", "new", "stage_only", "k1"),
-            false
+        enqueue(
+            &w,
+            request("conversation.create", "new", "stage_only", "k1")
         )
         .unwrap_err(),
-        actions::Refused(409, "browser_actions_off")
+        "browser_actions_off"
     );
     w.set("browser.actions", "on");
     assert!(ctx.actions_enabled());
-    let (_, a) = actions::enqueue(
-        &ctx,
-        &request("conversation.create", "new", "stage_only", "k1"),
-        true,
+    let a = enqueue(
+        &w,
+        request("conversation.create", "new", "stage_only", "k1"),
     )
     .unwrap();
+    let a_id = a["action_id"].as_str().unwrap().to_owned();
     // The extension cannot queue.
     let body =
         serde_json::to_vec(&request("conversation.create", "new", "stage_only", "k0")).unwrap();
@@ -304,42 +316,39 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     );
 
     let got = claim("tab-a");
-    assert_eq!(got["actions"][0]["action_id"], a.action_id.as_str());
+    assert_eq!(got["actions"][0]["action_id"], a_id.as_str());
     assert_eq!(got["actions"][0]["status"], "claimed");
     // One action out at a time.
-    let (_, b) = actions::enqueue(
-        &ctx,
-        &request("conversation.create", "new", "stage_only", "k2"),
-        true,
+    let b = enqueue(
+        &w,
+        request("conversation.create", "new", "stage_only", "k2"),
     )
     .unwrap();
+    let b_id = b["action_id"].as_str().unwrap().to_owned();
     assert_eq!(claim("tab-b")["actions"], json!([]));
 
     // Only the owner reports; a draft-only action cannot submit.
-    assert_eq!(report(&ctx, &a.action_id, "tab-b", "drafted").status, 409);
-    assert_eq!(report(&ctx, &a.action_id, "tab-a", "submitted").status, 409);
-    let done = report(&ctx, &a.action_id, "tab-a", "drafted");
+    assert_eq!(report(&ctx, &a_id, "tab-b", "drafted").status, 409);
+    assert_eq!(report(&ctx, &a_id, "tab-a", "submitted").status, 409);
+    let done = report(&ctx, &a_id, "tab-a", "drafted");
     assert_eq!(done.status, 200);
     assert_eq!(done.json()["action"]["status"], "drafted");
-    assert_eq!(
-        claim("tab-b")["actions"][0]["action_id"],
-        b.action_id.as_str()
-    );
+    assert_eq!(claim("tab-b")["actions"][0]["action_id"], b_id.as_str());
 
     // A submit into an existing conversation waits for the operator.
-    let (_, held) = actions::enqueue(
-        &ctx,
-        &request("conversation.reply", "conv-9", "submit_once", "k3"),
-        true,
+    let held = enqueue(
+        &w,
+        request("conversation.reply", "conv-9", "submit_once", "k3"),
     )
     .unwrap();
-    assert_eq!(held.status, actions::Status::AwaitingApproval);
-    report(&ctx, &b.action_id, "tab-b", "failed");
+    assert_eq!(held["status"], "awaiting_approval");
+    let held_id = held["action_id"].as_str().unwrap().to_owned();
+    report(&ctx, &b_id, "tab-b", "failed");
     assert_eq!(claim("tab-a")["actions"], json!([]));
     let approve = exchange(
         &ctx,
         "POST",
-        &format!("/v1/browser-actions/{}/approval", held.action_id),
+        &format!("/v1/browser-actions/{}/approval", held_id),
         br#"{"extension_instance_id":"popup","decision":"approve"}"#,
     );
     assert_eq!(approve.status, 200);
@@ -350,10 +359,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(v["actions"], json!([]));
     assert_eq!(v["enabled"], false);
     w.set("browser.actions", "on");
-    assert_eq!(
-        claim("tab-a")["actions"][0]["action_id"],
-        held.action_id.as_str()
-    );
+    assert_eq!(claim("tab-a")["actions"][0]["action_id"], held_id.as_str());
 }
 
 #[test]

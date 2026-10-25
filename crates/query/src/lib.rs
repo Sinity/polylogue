@@ -11,8 +11,8 @@ pub mod time;
 pub mod units;
 
 pub use compile::{
-    Attach, ColKind, Column, ColumnReference, IdCheck, Kept, Measure, Near, Options, OrderKey,
-    Param, Program, Shape, WhyClause, compile,
+    Attach, ChatPage, ColKind, Column, ColumnReference, IdCheck, Kept, Measure, Near, Options,
+    OrderKey, Param, Program, Shape, WhyClause, compile,
 };
 pub use parse::parse;
 pub use time::Clock;

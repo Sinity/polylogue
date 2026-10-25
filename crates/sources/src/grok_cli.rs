@@ -236,6 +236,7 @@ impl Parser for GrokCli {
                         None => raw.cloned().unwrap_or(Json::Null),
                     };
                     blocks.push(Block::ToolCall {
+                        run_by_script: false,
                         call_id: string_of(call, "id"),
                         tool: string_of(call, "name"),
                         action: action(str_of(call, "name").unwrap_or("")),

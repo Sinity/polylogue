@@ -308,9 +308,6 @@ pub struct Note {
     pub targets: Vec<Target>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<(Relation, String)>,
-    /// From an inline marker in this message, not a write request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<MessageId>,
 }
 
 impl Note {

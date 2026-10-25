@@ -785,6 +785,7 @@ fn tool_call(native: &str, tool: &str, content: &Json) -> Block {
     };
     let action = action(tool);
     Block::ToolCall {
+        run_by_script: false,
         call_id: Some(native.to_owned()),
         tool: Some(tool.to_owned()),
         action,

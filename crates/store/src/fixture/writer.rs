@@ -72,6 +72,7 @@ pub fn call(
         Role::Assistant,
         at,
         vec![Block::ToolCall {
+            run_by_script: false,
             call_id: Some(call_id.clone()),
             tool: Some(tool.into()),
             // A parser decides the action from its tool names; here a call

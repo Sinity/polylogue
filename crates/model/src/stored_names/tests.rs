@@ -42,6 +42,7 @@ fn block_kind_names_are_the_serde_tags() {
             redacted: false,
         },
         Block::ToolCall {
+            run_by_script: false,
             call_id: None,
             tool: None,
             action: ToolAction::Other,

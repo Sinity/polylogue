@@ -3,7 +3,7 @@
 //! archive's runtime directory, and `@N` in a later command is replaced by
 //! the ID before the command runs. Output for programs (`--json`) is never remembered.
 
-use crate::web::access;
+use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -28,7 +28,7 @@ fn terminal() -> Option<String> {
 
 fn rows_file(root: &Path) -> Option<PathBuf> {
     let tty = terminal()?;
-    Some(access::runtime_dir(&access::archive_key(root)).join(format!("rows-{tty}")))
+    Some(runtime_dir(&archive_key(root)).join(format!("rows-{tty}")))
 }
 
 /// Keeps the IDs of a list just printed in this terminal. Failing to

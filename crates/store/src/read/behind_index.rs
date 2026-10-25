@@ -1,0 +1,84 @@
+//! Revision chains whose index lags their stored bytes: what the loop
+//! parses again from the archive, for watched and imported inputs alike.
+use super::*;
+
+/// One revision chain the index has not parsed to its stored length.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BehindChain {
+    pub input: String,
+    /// The chain holds the input's latest revision.
+    pub current: bool,
+    /// For an imported input, the format and path it was imported as.
+    pub imported: Option<ImportedAs>,
+    pub progress: ChainProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedAs {
+    pub format: String,
+    /// The path the parser reads the bytes as, never a file to open.
+    pub path: Option<String>,
+}
+
+impl Reader<'_> {
+    /// Every chain of every input whose index is behind its stored bytes,
+    /// by input and chain. A chain that ends in an incomplete record the
+    /// parser is waiting on is not behind.
+    pub fn chains_behind_index(&self) -> Result<Vec<BehindChain>> {
+        let mut stmt = self.conn()?.prepare(
+            "WITH chains AS (
+                SELECT input, chain, max(length) AS length, max(produced = 'imported') AS imported
+                FROM a.revision GROUP BY input, chain
+            ), latest AS (
+                SELECT r.input, r.chain FROM a.revision r
+                WHERE r.number = (SELECT max(number) FROM a.revision x WHERE x.input = r.input)
+            ), formats AS (
+                SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
+                    row_number() OVER (PARTITION BY o.input
+                        ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
+                                 o.rowid DESC) AS choice
+                FROM a.observation o WHERE o.class = 'imported' AND json_valid(o.details_json)
+                    AND json_type(o.details_json, '$.import_format') = 'text'
+            )
+            SELECT c.input, c.chain, c.length, l.chain = c.chain,
+                (SELECT max(produced = 'imported') FROM a.revision x WHERE x.input = c.input),
+                COALESCE(f.format, i.format),
+                COALESCE(f.path, (SELECT o.path FROM a.observation o
+                    WHERE o.input = c.input AND o.class <> 'excised' ORDER BY o.rowid LIMIT 1)),
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting', 0)
+            FROM chains c JOIN a.input i ON i.id = c.input
+            JOIN latest l ON l.input = c.input
+            LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
+            LEFT JOIN input_ref ir ON ir.id = c.input
+            LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
+            WHERE c.length > 0
+              AND NOT (p.input_pk IS NOT NULL AND (p.status = 'waiting' OR p.parsed_upto >= c.length))
+            ORDER BY c.input, c.chain",
+        )?;
+        Ok(stmt
+            .query_map([], |r| {
+                let imported: bool = r.get(4)?;
+                Ok(BehindChain {
+                    input: r.get(0)?,
+                    current: r.get(3)?,
+                    imported: imported
+                        .then(|| -> rusqlite::Result<_> {
+                            Ok(ImportedAs {
+                                format: r.get(5)?,
+                                path: r.get(6)?,
+                            })
+                        })
+                        .transpose()?,
+                    progress: ChainProgress {
+                        chain: r.get(1)?,
+                        length: r.get::<_, i64>(2)? as u64,
+                        parsed_upto: r.get::<_, i64>(7)? as u64,
+                        parsed: r.get(8)?,
+                        waiting: r.get(9)?,
+                        route_rank: if imported { 2 } else { 0 },
+                    },
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+}
