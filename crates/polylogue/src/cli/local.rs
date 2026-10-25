@@ -11,14 +11,18 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("polylogue: {e}");
-            let other_schema = e
+            let refused = e
                 .get_ref()
                 .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
                 .is_some_and(|inner| {
-                    matches!(inner, polylogue_store::StoreError::OtherSchema { .. })
+                    matches!(
+                        inner,
+                        polylogue_store::StoreError::NewerSchema { .. }
+                            | polylogue_store::StoreError::NoMigration { .. }
+                    )
                 });
-            if other_schema {
-                ExitCode::from(crate::EXIT_OTHER_SCHEMA)
+            if refused {
+                ExitCode::from(crate::EXIT_SCHEMA_REFUSED)
             } else {
                 ExitCode::FAILURE
             }

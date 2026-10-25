@@ -32,10 +32,11 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Exit code when a command needs the daemon and it is not running.
 pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 
-/// Exit code when the daemon refuses an archive written with another schema
-/// (sysexits' `EX_CONFIG`). Starting again cannot help, so a service manager
-/// should not restart on it (systemd: `RestartPreventExitStatus=78`).
-pub const EXIT_OTHER_SCHEMA: u8 = 78;
+/// Exit code when the daemon refuses an archive newer than this build or one
+/// it has no migration from (sysexits' `EX_CONFIG`). Starting again cannot
+/// help, so a service manager should not restart on it (systemd:
+/// `RestartPreventExitStatus=78`).
+pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 
 fn main() -> ExitCode {
     // Chrome runs a native messaging host with the calling extension's

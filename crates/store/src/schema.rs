@@ -1,9 +1,10 @@
-//! Table declarations. `archive.db` and `embeddings.db` are created at
-//! version 1, the only version. A file whose version or tables differ from
-//! what this build creates is refused: its data crosses to a new schema only
-//! by an export with the build that wrote it and an import with this one.
-//! `index.db` is never migrated: a new version or a different schema builds a
-//! new file and swaps it in.
+//! Table declarations. `archive.db` holds what cannot be recomputed, so an
+//! older one is brought forward by numbered migrations
+//! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
+//! build, or one whose tables match no version this build knows, is refused.
+//! `embeddings.db` has one version and no migrations yet. `index.db` is never
+//! migrated: a new version or a different schema builds a new file and swaps
+//! it in.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -17,6 +18,16 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// index schema, the row encoding, or what any parser produces from the same
 /// bytes changes.
 pub const INDEX_VERSION: u32 = 42;
+
+/// The steps that bring `archive.db` forward: the first takes version 1 to
+/// version 2, and so on. A change to `archive.sql` appends one step, which
+/// must leave exactly the tables `archive.sql` creates (where `ALTER TABLE`
+/// cannot, the step creates the new table, copies the rows and renames it).
+/// The schema tests check that version 1 and these steps give `archive.sql`.
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
+
+/// The version `archive.sql` creates.
+pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {
@@ -62,37 +73,62 @@ pub fn unsynced(conn: &Connection) -> Result<bool> {
     Ok(v.as_deref() == Some("1"))
 }
 
-/// Creates `archive.db` in an empty file; refuses a file with another schema.
+/// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
-    ensure(conn, "archive", &[ARCHIVE])
+    ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
 /// The tables of `sinex.db`, primary mode's register: the archive's tables
 /// and the Sinex material of each part.
 pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
 
-/// Creates `sinex.db` in an empty file; refuses a file with another schema.
+/// Creates `sinex.db` in an empty file and brings an older one forward with
+/// the archive's migrations.
 pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", &SINEX)
+    ensure(conn, "sinex", &SINEX, ARCHIVE_MIGRATIONS)
 }
 
-/// Creates `embeddings.db` in an empty file; refuses a file with another
-/// schema.
+/// Creates `embeddings.db` in an empty file; refuses one with other tables.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
-    ensure(conn, "embeddings", &[EMBEDDINGS])
+    ensure(conn, "embeddings", &[EMBEDDINGS], &[])
 }
 
-fn ensure(conn: &Connection, database: &'static str, sql: &[&str]) -> Result<()> {
-    match version(conn)? {
-        0 => {
-            for part in sql {
-                conn.execute_batch(part)?;
-            }
-            set_version(conn, 1)
-        }
-        1 if same_schema(conn, sql)? => Ok(()),
-        _ => Err(StoreError::OtherSchema { database }),
+/// Creates the database from `sql` in an empty file, or applies the
+/// migrations it lacks in one transaction. A database newer than the
+/// migrations, or whose tables then differ from `sql`, is refused unchanged.
+pub(crate) fn ensure(
+    conn: &Connection,
+    database: &'static str,
+    sql: &[&str],
+    migrations: &[&str],
+) -> Result<()> {
+    let current = 1 + migrations.len() as u32;
+    let found = version(conn)?;
+    if found > current {
+        return Err(StoreError::NewerSchema {
+            database,
+            found,
+            current,
+        });
     }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if found == 0 {
+        for part in sql {
+            tx.execute_batch(part)?;
+        }
+    } else {
+        for step in &migrations[found as usize - 1..] {
+            tx.execute_batch(step)?;
+        }
+        if !same_schema(&tx, sql)? {
+            return Err(StoreError::NoMigration { database, found });
+        }
+    }
+    if found != current {
+        set_version(&tx, current)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Whether the database holds exactly the tables, indexes and triggers that
@@ -119,7 +155,7 @@ fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {
 }
 
 /// A statement without its comments, and with space only where it separates
-/// two words. Quoted text is kept as written.
+/// two words. Quoted text is kept as written; quoted names lose their quotes.
 fn statement(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
@@ -152,13 +188,21 @@ fn statement(sql: &str) -> String {
                     out.push(' ');
                 }
                 space = false;
+                // Text keeps its quotes; a quoted name (SQLite quotes a
+                // renamed table's) compares as the bare name.
+                let text = c == '\'';
                 let close = if c == '[' { ']' } else { c };
-                out.push(c);
-                for c in chars.by_ref() {
+                if text {
                     out.push(c);
+                }
+                for c in chars.by_ref() {
                     if c == close {
+                        if text {
+                            out.push(c);
+                        }
                         break;
                     }
+                    out.push(c);
                 }
             }
             c => {

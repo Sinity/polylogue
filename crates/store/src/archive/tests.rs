@@ -138,38 +138,46 @@ fn replaced_index_keeps_the_archive(change: &str) {
 }
 
 #[test]
-fn an_archive_with_another_schema_is_refused_and_left_as_it_is() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    drop(lock);
-    // As an archive written before the `excised` table was declared.
-    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    conn.execute_batch("DROP TABLE excised").unwrap();
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .unwrap();
-    drop(conn);
-    let before = std::fs::read(archive.archive_db()).unwrap();
-    let error = Archive::open_or_create(dir.path()).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            StoreError::OtherSchema {
-                database: "archive"
-            }
-        ),
-        "{error}"
-    );
-    let message = error.to_string();
-    assert!(
-        message.contains("export") && message.contains("import"),
-        "{message}"
-    );
-    assert_eq!(std::fs::read(archive.archive_db()).unwrap(), before);
-    // The refusal released the lock: a second try gets the same answer.
-    assert!(matches!(
-        Archive::open_or_create(dir.path()),
-        Err(StoreError::OtherSchema { .. })
-    ));
+fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
+    let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
+    // The second as an archive written by a build that declared the current
+    // version with other tables.
+    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE excised", false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        drop(lock);
+        let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+        conn.execute_batch(change).unwrap();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(archive.archive_db()).unwrap();
+        let error = Archive::open_or_create(dir.path()).unwrap_err();
+        let refused = if newer {
+            matches!(
+                error,
+                StoreError::NewerSchema {
+                    database: "archive",
+                    ..
+                }
+            )
+        } else {
+            matches!(
+                error,
+                StoreError::NoMigration {
+                    database: "archive",
+                    ..
+                }
+            )
+        };
+        assert!(refused, "{change}: {error}");
+        assert_eq!(std::fs::read(archive.archive_db()).unwrap(), before);
+        // The refusal released the lock: a second try gets the same answer.
+        assert_eq!(
+            Archive::open_or_create(dir.path()).unwrap_err().to_string(),
+            error.to_string()
+        );
+    }
 }
 
 #[test]

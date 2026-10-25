@@ -427,7 +427,7 @@ mod read_bench;
 
 #[cfg(target_os = "linux")]
 #[test]
-fn the_daemon_refuses_an_archive_with_another_schema_and_exits_with_its_code() {
+fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_code() {
     let dir = tempfile::tempdir().unwrap();
     let archive = dir.path().join("archive");
     let home = dir.path().join("home");
@@ -435,7 +435,8 @@ fn the_daemon_refuses_an_archive_with_another_schema_and_exits_with_its_code() {
     std::fs::create_dir_all(&home).unwrap();
     let (opened, lock) = polylogue_store::Archive::open_or_create(&archive).unwrap();
     drop(lock);
-    // As an archive written before the `excised` table was declared.
+    // As an archive written by a build that declared version 1 with other
+    // tables.
     rusqlite::Connection::open(opened.archive_db())
         .unwrap()
         .execute_batch("DROP TABLE excised")
@@ -460,9 +461,7 @@ fn the_daemon_refuses_an_archive_with_another_schema_and_exits_with_its_code() {
     let status = daemon.0.wait().unwrap();
     assert_eq!(status.code(), Some(78), "{stderr}");
     assert!(
-        stderr.contains("archive.db has another schema")
-            && stderr.contains("export")
-            && stderr.contains("import"),
+        stderr.contains("has tables this Polylogue build has no migration from"),
         "{stderr}"
     );
     assert!(!stderr.contains("serving"), "{stderr}");

@@ -43,10 +43,11 @@ holds `archive.db` (what cannot be recomputed: inputs and their revisions,
 notes, excisions, settings, delivery records), `index.db` (everything parsed
 and derived, rebuilt from the stored inputs when it is deleted or its format
 changes), `embeddings.db` and `blobs/`.
-The daemon refuses an `archive.db` or `embeddings.db` written with another
-schema and exits with code 78: export the archive with the build that wrote
-it, then import that export with the new one. A service manager should not
-restart on that code (systemd: `RestartPreventExitStatus=78`).
+Opening an `archive.db` written by an older build applies the migrations it
+lacks, in one transaction. The daemon refuses an archive newer than itself,
+or one whose tables match no version it knows, and exits with code 78; a
+service manager should not restart on that code (systemd:
+`RestartPreventExitStatus=78`).
 
 ## Commands
 

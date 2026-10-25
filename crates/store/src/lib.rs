@@ -71,10 +71,18 @@ pub enum StoreError {
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
     #[error(
-        "{database}.db has another schema than this Polylogue build creates; \
-         export the archive with the build that wrote it and import that export with this one"
+        "{database}.db is at version {found}, newer than this Polylogue build's {current}; \
+         run a build at least as new"
     )]
-    OtherSchema { database: &'static str },
+    NewerSchema {
+        database: &'static str,
+        found: u32,
+        current: u32,
+    },
+    #[error(
+        "{database}.db at version {found} has tables this Polylogue build has no migration from"
+    )]
+    NoMigration { database: &'static str, found: u32 },
     #[error("index format {found} is not {wanted}; it is rebuilt")]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]

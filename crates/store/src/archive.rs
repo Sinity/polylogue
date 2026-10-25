@@ -162,8 +162,8 @@ impl Archive {
     }
 
     /// Opens the archive at `root` held by Sinex (primary mode), whose
-    /// store root is `store`. A missing register is rebuilt from what Sinex
-    /// holds, and the index with it; there is no local blob store.
+    /// store root is `store`. A missing register, or one no migration brings
+    /// to this build's tables, is rebuilt from what Sinex holds, and the index with it; there is no local blob store.
     pub fn open_primary(
         root: &Path,
         store: &Path,
@@ -172,15 +172,18 @@ impl Archive {
         let lock = Self::lock(root)?;
         let archive = Self::on_sinex(root, store);
         clear_directory(&archive.parts_dir())?;
-        // The register is a copy of what Sinex holds: one with another
-        // schema is rebuilt, not refused.
+        // The register is a copy of what Sinex holds: one no migration
+        // brings to this build's tables is rebuilt, not refused.
         if archive.archive_db().exists() {
-            let register = open_read(&archive.archive_db())?;
-            let current =
-                schema::version(&register)? == 1 && schema::same_schema(&register, &schema::SINEX)?;
+            let register = open_write(&archive.archive_db(), cache::SETUP)?;
+            let migrated = schema::ensure_sinex(&register);
             drop(register);
-            if !current {
-                remove_database(&archive.archive_db())?;
+            match migrated {
+                Ok(()) => {}
+                Err(StoreError::NewerSchema { .. } | StoreError::NoMigration { .. }) => {
+                    remove_database(&archive.archive_db())?;
+                }
+                Err(error) => return Err(error),
             }
         }
         if !archive.archive_db().exists() {
@@ -195,9 +198,6 @@ impl Archive {
             fs::rename(&building, archive.archive_db())?;
             File::open(root)?.sync_all()?;
         }
-        let a = open_write(&archive.archive_db(), cache::SETUP)?;
-        schema::ensure_sinex(&a)?;
-        drop(a);
         archive.finish_open()?;
         Ok((archive, lock))
     }

@@ -9,6 +9,8 @@ the same change.
 
 - **archive**: `archive.db` and `blobs/`, what cannot be recomputed. The
   connection to it is the archive connection.
+- **migration**: a numbered SQL step that brings `archive.db` from one
+  version to the next; opening an older archive applies the ones it lacks.
 - **index**: `index.db`, everything parsed and derived. Rebuilt from the
   archive when deleted or when `INDEX_VERSION` changes. Each build is an
   **index generation**; the change feed's positions name one.
