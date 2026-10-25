@@ -1,5 +1,5 @@
 //! Compiling a parsed query to one SQL statement with bound parameters
-//! (spec query.md, principles 1, 4 and 5; Defaults; Stages). The statement
+//!. The statement
 //! is the whole answer in order; the caller pages it with `LIMIT`/`OFFSET`
 //! inside one read, and counts it with [`Program::count_sql`]. There is no
 //! row cap: a page is how much travels now, never how much is answered.
@@ -48,7 +48,7 @@ pub struct Options {
     pub kept: std::collections::BTreeMap<String, Kept>,
 }
 
-/// A kept result's stored shape (spec user-data.md, kept results): the unit
+/// A kept result's stored shape: the unit
 /// its rows are, their columns, and the columns of its match rows when it
 /// stored them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,9 +85,9 @@ pub enum Shape {
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
-    /// Retained selection arrays, decoded from SQLite text at the result boundary.
+    /// Arrays of IDs stored as text, decoded at the result boundary.
     Ids,
-    /// A retained structured value decoded at the result boundary.
+    /// A structured value stored as text, decoded at the result boundary.
     Json,
     Number,
     /// Dollars.
@@ -122,7 +122,7 @@ pub struct Column {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdCheck {
     pub word: String,
-    /// Returns the candidate session IDs (at most a few).
+    /// Returns the session IDs the word may name (at most a few).
     pub sql: String,
     pub params: Vec<Param>,
 }
@@ -315,7 +315,7 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
 }
 
 /// Words a query may start with only quoted: command names, and near
-/// misses of unit or command names (spec query.md, principle 2).
+/// misses of unit or command names.
 fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), QueryError> {
     let Source::Sessions { cond } = &query.source else {
         return Ok(());
@@ -357,15 +357,15 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
         return Ok(());
     }
     let units: Vec<&str> = Unit::all().map(Unit::name).collect();
-    for candidate in units
+    for name in units
         .into_iter()
         .chain(opts.command_words.iter().map(String::as_str))
     {
-        if candidate != lower && strsim::damerau_levenshtein(&lower, candidate) <= allowed {
+        if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
             return Err(QueryError::NotAQuery {
                 word: word.clone(),
-                message: format!("did you mean \"{candidate}\"?"),
-                suggestion: Some(format!("{candidate} {rest}").trim_end().to_owned()),
+                message: format!("did you mean \"{name}\"?"),
+                suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
             });
         }
     }
@@ -523,10 +523,9 @@ fn match_agg(
     })
 }
 
-fn not_built(what: &str, section: &str) -> QueryError {
+fn not_built(what: &str) -> QueryError {
     QueryError::NotBuilt {
         what: what.to_owned(),
-        section: section.to_owned(),
     }
 }
 
@@ -539,7 +538,7 @@ fn and_all(parts: &[String]) -> String {
 }
 
 /// The conditions joined to the rest of the `where` by AND, with
-/// parenthesized ANDs flattened (spec query.md, Defaults, binding).
+/// parenthesized ANDs flattened.
 fn top_level(c: &Cond) -> Vec<Cond> {
     match &c.kind {
         CondKind::And { all } => all.iter().flat_map(top_level).collect(),
@@ -579,7 +578,7 @@ fn text_unit(unit: Unit) -> bool {
 }
 
 /// At least 8 characters of hex digits and dashes, containing a digit or
-/// a dash: the shape of a pasted native ID (spec query.md, Grammar).
+/// a dash: the shape of a pasted native ID.
 fn id_shaped(word: &str) -> bool {
     word.len() >= 8
         && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')

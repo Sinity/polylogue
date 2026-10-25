@@ -6,7 +6,7 @@ use super::*;
 
 impl<'a> Compiler<'a> {
     /// `query:NAME` as a condition: a saved relation over the same unit
-    /// (spec query.md, Saved queries). A shaped result cannot be a
+    ///. A shaped result cannot be a
     /// condition, and units that disagree are an error.
     pub(super) fn saved_cond(
         &mut self,
@@ -146,7 +146,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
 }
 
 /// A query that starts with `query:NAME` reads that saved query as its
-/// source (spec query.md, Saved queries): the rest of the text only narrows
+/// source: the rest of the text only narrows
 /// it. A saved relation (`U where C`) takes the rest as further conditions;
 /// a shaped result (with stages) takes only further stages.
 pub(super) fn bind_saved_source(text: &str, opts: &Options) -> Result<Option<String>, QueryError> {

@@ -1,7 +1,7 @@
 //! The query language end to end over a small archive shaped like the
-//! spec's Morrow example (spec query.md, "Examples against the Morrow
-//! archive"): the same sessions, kinds, costs, links and messages, written
-//! row by row so the queries are tested apart from any parser.
+//! Morrow example archive: the same sessions, kinds, costs, links and
+//! messages, written row by row so the queries are tested apart from any
+//! parser.
 
 use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
@@ -674,7 +674,7 @@ fn seq_matches_are_earliest_first_and_never_overlap() {
         pairs,
         [
             (
-                "bd update plnext-7 --claim".to_owned(),
+                "bd update demo-7 --claim".to_owned(),
                 "cargo test -p store".to_owned()
             ),
             (
@@ -981,11 +981,11 @@ fn worked() -> World {
         .message(s, msg("w1a", "assistant", "model", "", at(2, 12)))
         .unwrap();
     let calls: [(&str, &str, &str, i64); 5] = [
-        ("bd update plnext-7 --claim", "ok", "", 0),
+        ("bd update demo-7 --claim", "ok", "", 0),
         ("cargo test -p store", "error", "FAILED", 1),
         ("cargo test -p store", "ok", "ok", 2),
         ("git commit -m fix", "ok", "[main 0123abcd] fix", 3),
-        ("bd close plnext-7", "ok", "", 4),
+        ("bd close demo-7", "ok", "", 4),
     ];
     for (command, outcome, output, minute) in calls {
         fx.tool_call(
@@ -1013,10 +1013,10 @@ fn the_work_unit_reads_the_derived_graph() {
     let attempts = q(&w, "work where kind:attempt");
     let row = &attempts["rows"][0];
     assert_eq!(attempts["rows"].as_array().unwrap().len(), 1);
-    assert_eq!(row["title"], "plnext-7");
+    assert_eq!(row["title"], "demo-7");
     assert_eq!(row["state"], "closed");
-    assert_eq!(row["goal"], "plnext-7");
-    let checks = q(&w, "work where kind:verification goal:plnext-7");
+    assert_eq!(row["goal"], "demo-7");
+    let checks = q(&w, "work where kind:verification goal:demo-7");
     let states: Vec<&str> = checks["rows"]
         .as_array()
         .unwrap()
@@ -1039,7 +1039,7 @@ fn the_work_unit_reads_the_derived_graph() {
 }
 
 mod live;
-mod spec_examples;
+mod morrow_examples;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {
@@ -1149,7 +1149,7 @@ fn work_queries_distinguish_unknown_check_totals_from_failures() {
         )
         .unwrap();
     for (n, (command, outcome)) in [
-        ("bd update plnext-7 --claim", "ok"),
+        ("bd update demo-7 --claim", "ok"),
         ("cargo test", "unknown"),
         ("cargo check", "error"),
         ("cargo clippy", "ok"),

@@ -1,4 +1,4 @@
-//! Times, durations and money in queries (spec query.md, Times). Each query
+//! Times, durations and money in queries. Each query
 //! resolves its times once, against one `now` and one logical-day setting,
 //! and the result records both.
 

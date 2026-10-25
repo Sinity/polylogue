@@ -87,10 +87,7 @@ impl<'a> Compiler<'a> {
                         for k in keys {
                             let (name, kind) = match_column(rel, &k.field, stage.span.start)?;
                             if k.bucket.is_some() {
-                                return Err(not_built(
-                                    "time buckets after `| matches`",
-                                    "architecture 7, query language",
-                                ));
+                                return Err(not_built("time buckets after `| matches`"));
                             }
                             cols.push((name.clone(), name, kind));
                         }
@@ -112,10 +109,7 @@ impl<'a> Compiler<'a> {
                         order = Some(sorted);
                     }
                     _ => {
-                        return Err(not_built(
-                            "this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)",
-                            "architecture 7, query language",
-                        ));
+                        return Err(not_built("this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)"));
                     }
                 }
                 continue;
@@ -615,7 +609,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// The default filters a unit binds, dropped by a top-level condition
-    /// naming their field (spec query.md, Defaults, binding).
+    /// naming their field.
     pub(super) fn defaults(&mut self, scope: &Scope, top: &[Cond]) -> Vec<String> {
         let named = named_fields(top, scope.unit);
         let reference = top.iter().any(|c| self.is_reference(c));

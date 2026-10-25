@@ -115,7 +115,6 @@ impl<'a> Compiler<'a> {
                             "grouping or sorting by {prefix}.{rest} on {}",
                             scope.unit.name()
                         ),
-                        "architecture 7, query language",
                     ));
                 }
             };
@@ -350,7 +349,6 @@ impl<'a> Compiler<'a> {
         } else {
             Err(not_built(
                 &format!("attaching {} to {}", child.unit.name(), parent.unit.name()),
-                "architecture 7, query language",
             ))
         };
         let parent_link = self.under_parent(parent.unit, &sc, "?PARENT", session)?;

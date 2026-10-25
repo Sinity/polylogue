@@ -342,7 +342,7 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         return Err(x.need_value());
     }
     // Unknown when no message records a model, so neither the condition
-    // nor its NOT matches (three-valued, law 132).
+    // nor its NOT matches (three-valued).
     Ok(format!(
         "CASE WHEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL) \
          THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
@@ -634,7 +634,7 @@ impl Compiler<'_> {
     }
 }
 
-/// Retained selections are output data, not scalar query operands.
+/// Stored selections are output data, not scalar query operands.
 pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     Err(QueryError::Invalid {
         message: format!(

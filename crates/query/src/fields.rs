@@ -623,11 +623,11 @@ pub static FIELDS: &[Field] = &[
     // events
     f(Events, "id", Prefix, "the observation ID or its prefix").sql("{r}.id"),
     sp(Events, "text", "a substring in one textual observation value", custom::event_text),
-    f(Events, "input", Match, "the retained input owning this observation").sql("{r}i.id"),
+    f(Events, "input", Match, "the input this observation came from").sql("{r}i.id"),
     f(Events, "source", Match, "the input's source parser").sql("{r}i.format"),
     f(Events, "origin", Match, "conversation origin, or source format when unbound").sql("COALESCE({s}.origin,{r}i.format)"),
-    f(Events, "data", Substring, "the retained observation payload").sql("pl_block({r}.data)").json(),
-    f(Events, "source_chain", Number, "the retained source revision").sql("{r}.source_chain"),
+    f(Events, "data", Substring, "the observation payload").sql("pl_block({r}.data)").json(),
+    f(Events, "source_chain", Number, "the source revision chain").sql("{r}.source_chain"),
     f(Events, "source_start", Number, "record byte start").sql("{r}.source_start"),
     f(Events, "source_end", Number, "record byte end").sql("{r}.source_end"),
     f(
@@ -783,10 +783,10 @@ pub static FIELDS: &[Field] = &[
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
     f(Changes, "scope", Prefix, "an excision's session/input scope or text hash").sql("{r}.scope"),
-    sp(Changes, "sessions", "an excision's retained session selection; null when unknown", custom::selection).sql("{r}.sessions").ids(),
-    sp(Changes, "messages", "an excision's retained message selection", custom::selection).sql("{r}.messages").ids(),
+    sp(Changes, "sessions", "the sessions an excision selected; null when unknown", custom::selection).sql("{r}.sessions").ids(),
+    sp(Changes, "messages", "the messages an excision selected", custom::selection).sql("{r}.messages").ids(),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
-    // turns (spec query.md, turns): computed along the active path
+    // turns: computed along the active path
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),
     f(
@@ -997,7 +997,7 @@ pub fn own_messages(s: &str, x: &str) -> String {
 }
 
 /// A Codex code-mode wrapper whose children are counted in its place
-/// (spec query.md, Defaults; sources/codex.md, code mode). Children are the
+///. Children are the
 /// `exec_command` calls the wrapper ran; a wrapper with none counts itself.
 pub fn counted_call(t: &str) -> String {
     format!(
@@ -1030,7 +1030,7 @@ pub fn work_goal(r: &str) -> String {
     )
 }
 
-/// The live states (spec model.md, Live state).
+/// The live states.
 pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
 
 /// The live window: hook evidence this recent makes a session live.
@@ -1038,8 +1038,7 @@ pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// Evidence older than this, with nothing newer, means the session ended.
 pub const LIVE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The live state of session alias `s` at `now` (spec model.md, Live
-/// state): computed when asked from the stored live facts and the time,
+/// The live state of session alias `s` at `now`: computed when asked from the stored live facts and the time,
 /// never written by a clock. Rules apply in order and the result is total.
 /// A fact dated after `now` counts as at `now`.
 pub fn live_state(s: &str, now: i64) -> String {
@@ -1237,10 +1236,10 @@ fn sessions_live_rank(a: &Aliases, now: i64) -> String {
     )
 }
 
-/// Peers (spec model.md): the other sessions working, waiting or idle that
+/// Peers: the other sessions working, waiting or idle that
 /// share a repository or checkout, or, when either has no git evidence, a
 /// working directory where one lies at or below the other, by whole path
-/// components. Symmetric by construction (law 89).
+/// components. Symmetric by construction.
 fn sessions_peers(a: &Aliases, now: i64) -> String {
     let s = &a.s;
     let active = |x: &str| format!("{} IN ('working', 'waiting', 'idle')", live_state(x, now));

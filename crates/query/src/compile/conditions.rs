@@ -277,7 +277,6 @@ impl<'a> Compiler<'a> {
             }
             return Err(not_built(
                 &format!("scoping {} to sessions", scope.unit.name()),
-                "architecture 7",
             ));
         };
         Ok(scope.a.expand(t).replace("{sessions}", sessions))
@@ -318,16 +317,10 @@ impl<'a> Compiler<'a> {
                     });
                 }
                 "page" => {
-                    return Err(not_built(
-                        "page: references (pages are not built yet)",
-                        "spec user-data.md, pages",
-                    ));
+                    return Err(not_built("page: references (pages are not built yet)"));
                 }
                 "note" | "block" | "file" => {
-                    return Err(not_built(
-                        &format!("{lower}: references"),
-                        "architecture 7, query language",
-                    ));
+                    return Err(not_built(&format!("{lower}: references")));
                 }
                 _ => {}
             }
@@ -404,13 +397,13 @@ impl<'a> Compiler<'a> {
         scored.dedup_by(|a, b| a.1 == b.1);
         // Only the nearest names: one typing mistake beats two.
         let best = scored.first().map_or(0, |(d, _)| *d);
-        let candidates: Vec<String> = scored
+        let similar: Vec<String> = scored
             .iter()
             .filter(|(d, _)| *d == best)
             .take(3)
             .map(|(_, n)| (*n).to_owned())
             .collect();
-        let suggestion = match candidates.as_slice() {
+        let suggestion = match similar.as_slice() {
             [one] => Some(format!(
                 "{}{}{}",
                 &self.text[..span.start],
@@ -423,7 +416,7 @@ impl<'a> Compiler<'a> {
             field: field.to_owned(),
             unit: unit.name().to_owned(),
             position: span.start,
-            candidates,
+            similar,
             suggestion,
         }
     }

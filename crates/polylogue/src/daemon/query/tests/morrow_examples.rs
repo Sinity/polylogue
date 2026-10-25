@@ -1,4 +1,4 @@
-//! The spec's query examples over the Morrow archive built by the real
+//! The query examples over the Morrow archive built by the real
 //! loop and import (`examples/morrow/expected/main/expected.json`).
 //!
 //! Each example is compared by the shape of its expected value. Examples
@@ -17,7 +17,7 @@ const NOW: i64 = 1_791_453_600_000;
 const GAPS: &[(&str, &str)] = &[
     (
         "3",
-        "cost: the example prices from its own table (FACTS.md), not the published catalog",
+        "cost: the example prices from its own table (FACTS.md), not the real price catalog",
     ),
     (
         "6",
@@ -262,7 +262,7 @@ fn the_query_examples_match_on_the_real_archive() {
 
 #[test]
 fn counts_match_the_rows_paged() {
-    // Law 76: every example's `count` equals the rows paged to the end.
+    // Every example's `count` equals the rows paged to the end.
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
@@ -316,7 +316,7 @@ fn ids(v: &Value) -> Vec<String> {
     rows(v).iter().map(row_session).collect()
 }
 
-/// Law 129: a grouped result is rows. `limit`, `where` and `sort` after a
+/// A grouped result is rows. `limit`, `where` and `sort` after a
 /// group act on the groups, never on the ungrouped rows.
 #[test]
 fn law_129_a_grouped_result_is_rows() {
@@ -354,7 +354,7 @@ fn law_129_a_grouped_result_is_rows() {
     assert!(asc.windows(2).all(|w| w[0] <= w[1]), "{asc:?}");
 }
 
-/// Law 132: three-valued filters. `U where C`, `U where NOT C` and
+/// Three-valued filters. `U where C`, `U where NOT C` and
 /// `U where F:unknown` partition U; no owner matches both `exists` and
 /// `NOT exists`.
 #[test]
@@ -401,7 +401,7 @@ fn law_132_three_valued_filters_partition() {
     );
 }
 
-/// Law 133: defaults are bound once. A condition every row satisfies,
+/// Defaults are bound once. A condition every row satisfies,
 /// nested where it is not a top-level condition, leaves the rows unchanged.
 #[test]
 fn law_133_a_nested_condition_does_not_drop_a_default() {
@@ -424,7 +424,7 @@ fn law_133_a_nested_condition_does_not_drop_a_default() {
     );
 }
 
-/// Law 137: a value outside a field's closed set is refused, never an empty
+/// A value outside a field's closed set is refused, never an empty
 /// answer; every value of the set, `*` and `unknown` (where allowed) pass.
 #[test]
 fn law_137_a_value_outside_a_closed_set_is_refused() {

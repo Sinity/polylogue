@@ -212,7 +212,7 @@ fn when(m: &Message) -> String {
     m.at.map(|t| t.to_string()).unwrap_or_default()
 }
 
-/// A session read retains typed message fields; a view only selects blocks.
+/// A session read keeps typed message fields; a view only selects blocks.
 /// JSON is structured data, while the other formats display the selected stream.
 pub fn session(
     session: &Session,

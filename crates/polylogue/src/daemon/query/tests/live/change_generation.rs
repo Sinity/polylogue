@@ -5,7 +5,7 @@ use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 #[test]
 fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     let home = ClaudeHome::new();
-    home.append("s.jsonl", &claude_user("m1", "s", "retained exact text"));
+    home.append("s.jsonl", &claude_user("m1", "s", "stored exact text"));
     let (mut engine, lock) = home.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     for n in 2..=6 {
@@ -27,13 +27,13 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     drop(engine);
     drop(lock);
     delete_index(&home.root);
-    // The rebuild uses retained bytes, even after the provider file disappears.
+    // The rebuild uses stored bytes, even after the provider file disappears.
     std::fs::remove_file(home.file("s.jsonl")).unwrap();
     let (mut engine, _lock) = home.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     let texts = home.texts("s");
     assert_eq!(texts.len(), 6);
-    assert_eq!(texts[0], "retained exact text");
+    assert_eq!(texts[0], "stored exact text");
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     for query in [
@@ -104,7 +104,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     assert_eq!(
         run(&pinned, ask(&after, T0)).unwrap()["count"],
         0,
-        "one reader keeps both counter snapshots"
+        "one reader sees both counters at one moment"
     );
     drop(pinned);
     drop(pool);
@@ -251,7 +251,7 @@ fn sqlite_selection_types_survive_projection_and_are_checked_by_the_actual_query
 }
 
 #[test]
-fn public_keep_refuses_a_stale_change_cursor_without_publishing_a_result() {
+fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
     use crate::daemon::{Request, Response, service::handle};
     let world = crate::test_daemon::start("synthetic source");
     let result = handle(

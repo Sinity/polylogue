@@ -1,4 +1,4 @@
-//! The query language (architecture 7; spec query.md): the existing
+//! The query language: the existing
 //! language ported, not a second one. A read is a query, the
 //! columns it shows and the format it is printed in. Parsing, checking and compiling are pure: the
 //! result is SQL with bound parameters that the daemon runs against
@@ -40,12 +40,13 @@ pub enum QueryError {
     },
     #[error("parentheses nest more than {max} deep")]
     TooDeep { max: usize },
-    #[error("unknown field {field:?} at position {position}{}", hint(.candidates))]
+    #[error("unknown field {field:?} at position {position}{}", hint(.similar))]
     UnknownField {
         field: String,
         unit: String,
         position: usize,
-        candidates: Vec<String>,
+        /// Known fields with similar names.
+        similar: Vec<String>,
         suggestion: Option<String>,
     },
     /// A value the field cannot take: a closed set, or a malformed number,
@@ -67,12 +68,12 @@ pub enum QueryError {
     #[error("{message}")]
     Invalid { message: String, position: usize },
     /// Valid, but the part it needs is not built yet.
-    #[error("{what} is not built yet ({section})")]
-    NotBuilt { what: String, section: String },
+    #[error("{what} is not built yet")]
+    NotBuilt { what: String },
 }
 
-fn hint(candidates: &[String]) -> String {
-    match candidates {
+fn hint(similar: &[String]) -> String {
+    match similar {
         [] => String::new(),
         [one] => format!("; did you mean {one:?}?"),
         many => format!(

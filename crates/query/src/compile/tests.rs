@@ -40,7 +40,7 @@ fn same(a: &str, b: &str, o: &Options) {
     assert_eq!(pa.params, pb.params, "{a} / {b}");
 }
 
-/// Law 127: a saved query selects the same rows used inline or by name.
+/// A saved query selects the same rows used inline or by name.
 #[test]
 fn a_saved_query_selects_what_it_says_inline_or_by_name() {
     let o = opts(&[

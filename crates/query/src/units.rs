@@ -48,7 +48,7 @@ pub struct UnitSpec {
     pub session_scope: Option<&'static str>,
     /// How words search this unit's rows.
     pub search: Search,
-    /// Filters every query of the unit applies (spec query.md, Defaults).
+    /// Filters every query of the unit applies.
     pub defaults: &'static [Default],
     pub relations: &'static [Relation],
     /// The column tying a row to a parent row of another unit, for
@@ -315,7 +315,7 @@ fn main_sessions(a: &Aliases) -> String {
     format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
 }
 
-/// Hidden and excised sessions stay out (spec query.md, Defaults).
+/// Hidden and excised sessions stay out.
 const SESSION_VISIBLE: &[Default] = &[
     d(Expr::Fn(not_hidden), &["hidden"], true),
     d(Expr::Fn(not_excised), &[], false),
@@ -1014,7 +1014,7 @@ pub static UNITS: &[UnitSpec] = &[
     },
 ];
 
-/// One row per turn (spec query.md, turns): along the active path (or file
+/// One row per turn: along the active path (or file
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
 /// such start; a session with no prompt is one turn. Copies are counted in

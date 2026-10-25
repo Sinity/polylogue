@@ -1,4 +1,4 @@
-//! Running a query (architecture 7; spec query.md, Results): compile it,
+//! Running a query: compile it,
 //! check pasted IDs, count the whole answer, read one page, cut snippets
 //! for text matches, fill attached rows, and explain an empty result when
 //! asked. Every step reads through one reader, so the count, the page and
@@ -365,7 +365,7 @@ fn check_ids(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
                 return Err(Failure {
                     kind: "ambiguous".into(),
                     message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
-                    detail: Some(json!({ "word": check.word, "candidates": ids })),
+                    detail: Some(json!({ "word": check.word, "ids": ids })),
                 });
             }
         }
@@ -455,7 +455,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             if let Some(text) = v.as_str() {
                 *v = serde_json::from_str(text).map_err(|_| Failure {
                     kind: "store".into(),
-                    message: "invalid retained JSON value".into(),
+                    message: "invalid stored JSON value".into(),
                     detail: None,
                 })?;
             }
@@ -467,7 +467,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             let selection: Value = if let Some(text) = v.as_str() {
                 serde_json::from_str(text).map_err(|e| Failure {
                     kind: "store".into(),
-                    message: format!("invalid retained selection: {e}"),
+                    message: format!("invalid stored selection: {e}"),
                     detail: None,
                 })?
             } else {
@@ -483,7 +483,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             }) {
                 return Err(Failure {
                     kind: "store".into(),
-                    message: "retained selection must be an array of IDs".into(),
+                    message: "a stored selection must be an array of IDs".into(),
                     detail: None,
                 });
             }

@@ -242,8 +242,8 @@ pub enum Response {
     Error {
         kind: String,
         message: String,
-        /// Structured detail: for a query error, the position, the
-        /// possible words and a corrected query that runs as given.
+        /// Structured detail: for a query error, the position, similar
+        /// field names and a corrected query that runs as given.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<serde_json::Value>,
     },
