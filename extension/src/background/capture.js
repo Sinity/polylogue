@@ -83,7 +83,8 @@ export class Capturer {
 
   /**
    * Captures the conversation `id` (or the tab's own) from `tabId`.
-   * Answers `{outcome: "stored" | "unchanged", provider, conversation}`.
+   * Answers `{outcome, provider, conversation}`: `stored`, `waiting` (in
+   * the outbox until the host takes it) or `unchanged`.
    */
   async capture(tabId, provider, { id = null, reason = "changed", force = false } = {}) {
     const page = await askPage(this.chrome, tabId, { type: "conversation", id });
@@ -106,9 +107,9 @@ export class Capturer {
     }
     const body = captureBody({ ...base, files });
     await this.outbox.add({ provider, conversation, body });
-    await this.deliver();
+    const delivered = await this.deliver();
     await this.seen.set({ [key]: fingerprint });
-    return { outcome: "stored", provider, conversation };
+    return { outcome: delivered ? "stored" : "waiting", provider, conversation };
   }
 
   /** The bytes of each file the provider's JSON does not already hold. */

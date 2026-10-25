@@ -71,7 +71,11 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     if (!provider) return null;
     try {
       const done = await capturer.capture(tabId, provider, { reason, force });
-      const text = done.outcome === "stored" ? "stored" : "no change since the last capture";
+      const text = {
+        stored: "stored",
+        waiting: "waiting for Polylogue to store it",
+        unchanged: "no change since the last capture",
+      }[done.outcome];
       await remember(provider, done.conversation, { at: new Date().toISOString(), outcome: done.outcome, text });
       return done;
     } catch (error) {
