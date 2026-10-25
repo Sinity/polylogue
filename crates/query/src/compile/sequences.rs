@@ -142,18 +142,20 @@ impl<'a> Compiler<'a> {
             select.push(format!("{e} AS {n}"));
             columns.push((n.clone(), *k));
         }
+        let (hidden, order) = hidden_order(&[owner_order, child_order].concat(), "_m");
+        select.extend(hidden);
         let sql = format!(
-            "SELECT {} FROM {}, {} WHERE {} ORDER BY {}, {}",
+            "SELECT {} FROM {}, {} WHERE {} ORDER BY {}",
             select.join(", "),
             base_from(owner.unit, &owner.a),
             base_from(unit, &child.a),
             and_all(&w),
-            owner_order.join(", "),
-            child_order.join(", ")
+            order_by(&order)
         );
         Ok(MatchRel {
             sql,
             columns,
+            order,
             recursive: false,
         })
     }
@@ -325,6 +327,7 @@ impl<'a> Compiler<'a> {
         Ok(MatchRel {
             sql,
             columns,
+            order: vec![OrderKey::ascending("session"), OrderKey::ascending("match")],
             recursive: true,
         })
     }

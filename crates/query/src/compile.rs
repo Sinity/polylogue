@@ -1,8 +1,8 @@
-//! Compiling a parsed query to one SQL statement with bound parameters
-//! (spec query.md, principles 1, 4 and 5; Defaults; Stages). The statement
-//! is the whole answer in order; the caller pages it with `LIMIT`/`OFFSET`
-//! inside one read, and counts it with [`Program::count_sql`]. There is no
-//! row cap: a page is how much travels now, never how much is answered.
+//! Compiling a parsed query to one SQL statement with bound parameters.
+//! The statement is the whole answer in a total order; the caller pages it
+//! by key with [`Program::page_sql`] and counts it with
+//! [`Program::count_sql`]. There is no row cap: a page is how much travels
+//! now, never how much is answered.
 
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
@@ -48,7 +48,7 @@ pub struct Options {
     pub kept: std::collections::BTreeMap<String, Kept>,
 }
 
-/// A kept result's stored shape (spec user-data.md, kept results): the unit
+/// A kept result's stored shape: the unit
 /// its rows are, their columns, and the columns of its match rows when it
 /// stored them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,9 +85,9 @@ pub enum Shape {
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
-    /// Retained selection arrays, decoded from SQLite text at the result boundary.
+    /// Arrays of IDs stored as text, decoded at the result boundary.
     Ids,
-    /// A retained structured value decoded at the result boundary.
+    /// A structured value stored as text, decoded at the result boundary.
     Json,
     Number,
     /// Dollars.
@@ -122,7 +122,7 @@ pub struct Column {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdCheck {
     pub word: String,
-    /// Returns the candidate session IDs (at most a few).
+    /// Returns the session IDs the word may name (at most a few).
     pub sql: String,
     pub params: Vec<Param>,
 }
@@ -191,6 +191,63 @@ pub struct Program {
     /// `| measure WHAT`: the measurement to run over the sessions `sql`
     /// selects, instead of returning its rows.
     pub measure: Option<Measure>,
+    /// The answer's total order, as columns of `sql`; a page continues
+    /// after the last row's values of these columns. Empty for a summary,
+    /// which is one row.
+    pub order: Vec<OrderKey>,
+}
+
+/// One term of an answer's order: a column of the answer and its
+/// direction. SQLite sorts NULL first in ascending order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OrderKey {
+    pub column: String,
+    pub descending: bool,
+}
+
+impl OrderKey {
+    fn ascending(column: &str) -> Self {
+        Self {
+            column: column.to_owned(),
+            descending: false,
+        }
+    }
+}
+
+/// Splits an ORDER BY term into its expression and direction.
+fn order_term(term: &str) -> (&str, bool) {
+    match term.strip_suffix(" DESC") {
+        Some(expr) => (expr, true),
+        None => (term.strip_suffix(" ASC").unwrap_or(term), false),
+    }
+}
+
+/// One hidden column `{prefix}{i}` per ORDER BY term, to select beside the
+/// row, and the order keys over them.
+fn hidden_order(order: &[String], prefix: &str) -> (Vec<String>, Vec<OrderKey>) {
+    order
+        .iter()
+        .enumerate()
+        .map(|(i, term)| {
+            let (expr, descending) = order_term(term);
+            let column = format!("{prefix}{i}");
+            (
+                format!("{expr} AS {column}"),
+                OrderKey { column, descending },
+            )
+        })
+        .unzip()
+}
+
+/// An ORDER BY list over order keys.
+fn order_by(keys: &[OrderKey]) -> String {
+    keys.iter()
+        .map(|k| {
+            let dir = if k.descending { " DESC" } else { "" };
+            format!("\"{}\"{dir}", k.column)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -201,10 +258,48 @@ pub struct Measure {
 }
 
 impl Program {
-    /// The answer page by page: binds `LIMIT` and `OFFSET` after `params`.
-    pub fn page_sql(&self) -> String {
+    /// One page of the answer. With `after`, it holds the rows that sort
+    /// after a row whose order-key values are bound after `params`, one per
+    /// key; the page size is bound last.
+    pub fn page_sql(&self, after: bool) -> String {
         let n = self.params.len();
-        format!("{} LIMIT ?{} OFFSET ?{}", self.sql, n + 1, n + 2)
+        let mut sql = format!("SELECT * FROM ({})", self.sql);
+        if after && !self.order.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&self.after_condition(n));
+        }
+        if !self.order.is_empty() {
+            sql.push_str(" ORDER BY ");
+            sql.push_str(&order_by(&self.order));
+        }
+        let limit = if after {
+            n + self.order.len() + 1
+        } else {
+            n + 1
+        };
+        sql.push_str(&format!(" LIMIT ?{limit}"));
+        sql
+    }
+
+    /// Rows after the bound key values `?{first+1}`...: equal on every
+    /// earlier key and after on this one, for some key. NULL sorts first.
+    fn after_condition(&self, first: usize) -> String {
+        let mut any = vec![];
+        for (i, key) in self.order.iter().enumerate() {
+            let mut all: Vec<String> = self.order[..i]
+                .iter()
+                .enumerate()
+                .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, first + j + 1))
+                .collect();
+            let (column, value) = (format!("\"{}\"", key.column), format!("?{}", first + i + 1));
+            all.push(if key.descending {
+                format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
+            } else {
+                format!("({column} > {value} OR ({value} IS NULL AND {column} IS NOT NULL))")
+            });
+            any.push(format!("({})", all.join(" AND ")));
+        }
+        any.join(" OR ")
     }
 
     pub fn count_sql(&self) -> String {
@@ -224,7 +319,7 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
 }
 
 /// Words a query may start with only quoted: command names, and near
-/// misses of unit or command names (spec query.md, principle 2).
+/// misses of unit or command names.
 fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), QueryError> {
     let Source::Sessions { cond } = &query.source else {
         return Ok(());
@@ -266,15 +361,15 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
         return Ok(());
     }
     let units: Vec<&str> = Unit::all().map(Unit::name).collect();
-    for candidate in units
+    for name in units
         .into_iter()
         .chain(opts.command_words.iter().map(String::as_str))
     {
-        if candidate != lower && strsim::damerau_levenshtein(&lower, candidate) <= allowed {
+        if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
             return Err(QueryError::NotAQuery {
                 word: word.clone(),
-                message: format!("did you mean \"{candidate}\"?"),
-                suggestion: Some(format!("{candidate} {rest}").trim_end().to_owned()),
+                message: format!("did you mean \"{name}\"?"),
+                suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
             });
         }
     }
@@ -299,10 +394,12 @@ impl Scope {
 }
 
 /// The rows of `| matches`: an SQL body selecting `_pk` and `columns`,
-/// ordered, and whether it needs `WITH RECURSIVE`.
+/// ordered by `order` (columns it also selects), and whether it needs
+/// `WITH RECURSIVE`.
 struct MatchRel {
     sql: String,
     columns: Vec<(String, ColKind)>,
+    order: Vec<OrderKey>,
     recursive: bool,
 }
 
@@ -430,10 +527,9 @@ fn match_agg(
     })
 }
 
-fn not_built(what: &str, section: &str) -> QueryError {
+fn not_built(what: &str) -> QueryError {
     QueryError::NotBuilt {
         what: what.to_owned(),
-        section: section.to_owned(),
     }
 }
 
@@ -446,7 +542,7 @@ fn and_all(parts: &[String]) -> String {
 }
 
 /// The conditions joined to the rest of the `where` by AND, with
-/// parenthesized ANDs flattened (spec query.md, Defaults, binding).
+/// parenthesized ANDs flattened.
 fn top_level(c: &Cond) -> Vec<Cond> {
     match &c.kind {
         CondKind::And { all } => all.iter().flat_map(top_level).collect(),
@@ -486,7 +582,7 @@ fn text_unit(unit: Unit) -> bool {
 }
 
 /// At least 8 characters of hex digits and dashes, containing a digit or
-/// a dash: the shape of a pasted native ID (spec query.md, Grammar).
+/// a dash: the shape of a pasted native ID.
 fn id_shaped(word: &str) -> bool {
     word.len() >= 8
         && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')

@@ -149,12 +149,13 @@ An embeddings snapshot is pinned separately. [Admission tests](../crates/store/s
 cover those races. Cache budgets are SQLite targets with mmap disabled, not hard
 process memory or result-size limits.
 
-Ordinary query pages bind the resolved question, clock/seed, index generation
-and index/archive counters. An intervening publication returns `stale_cursor`;
-no transaction survives between requests. Page size may change. Semantic ranking
-supports complete single-page answers, without continuation over a changing
-vector set. [Query page tests](../crates/polylogue/src/daemon/query/tests/page_binding.rs)
-own this contract.
+Every query answer has a total order (its sort keys, then the row's key). A
+page's cursor holds the last row's values of those keys with the resolved
+question, clock and random seed; the next page reads the rows after them, so a
+write between pages neither refuses the cursor nor repeats or skips rows whose
+keys did not change. Page size may change. A query ranked by `near:` returns
+one complete page. [Query page tests](../crates/polylogue/src/daemon/query/tests/pages.rs)
+cover this.
 
 Budgeted session and document reads instead bind selected content, view and
 index generation. Unrelated writes can leave them usable; changed content or a

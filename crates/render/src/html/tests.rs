@@ -44,7 +44,7 @@ fn calls_show_their_outcome_and_result_once() {
 }
 
 #[test]
-fn attribute_text_and_ids_are_encoded_without_interpreting_markup() {
+fn attribute_text_and_ids_are_encoded_as_text_not_markup() {
     assert_eq!(escape("<&\"'"), "&lt;&amp;&quot;&#39;");
     assert_eq!(
         encode_path_segment("codex:a/b?c#dé"),

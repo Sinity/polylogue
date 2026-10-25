@@ -13,7 +13,7 @@ fn cond(text: &str) -> CondKind {
 
 #[test]
 fn every_spec_example_parses() {
-    // spec query.md, "Examples against the Morrow archive".
+    // The query examples over the Morrow archive.
     for text in [
         "origin:claude-code",
         "origin:claude-code kind:subagent",

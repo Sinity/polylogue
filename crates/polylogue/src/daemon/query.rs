@@ -1,7 +1,6 @@
-//! Running a query (architecture 7; spec query.md, Results): compile it,
-//! check pasted IDs, count the whole answer, read one page, cut snippets
-//! for text matches, fill attached rows, and explain an empty result when
-//! asked. Every step reads through one reader, so the count, the page and
+//! Running a query: compile it, check pasted IDs, count the whole answer,
+//! read one page, cut snippets for text matches, fill attached rows, and
+//! explain an empty result when asked. Every step reads through one reader, so the count, the page and
 //! the attachments agree.
 
 use polylogue_model::LogicalDay;
@@ -191,14 +190,17 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     )?;
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    let position = reader.change_position()?;
-    if let Some(cursor) = &cursor {
-        cursor.check_view(&position)?;
-        cursor.check_question(&page::question(&program, &opts, ask.why)?)?;
-        if program.near.is_some() {
-            return Err(page::semantic_paging());
+    let question = page::question(&program, &opts, ask.why)?;
+    let after = match &cursor {
+        Some(cursor) => {
+            let after = cursor.check(&program, &question)?;
+            if program.near.is_some() {
+                return Err(page::semantic_paging());
+            }
+            Some(after)
         }
-    }
+        None => None,
+    };
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
         let hits = f(&near.text).map_err(|message| Failure {
             kind: "embed".into(),
@@ -231,38 +233,25 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .first()
         .and_then(|r| r["count(*)"].as_u64())
         .unwrap_or(0);
-    let offset = cursor.as_ref().map_or(0, |c| c.offset);
     let page_size = program.page_size.max(1);
-    if cursor.is_some() && offset >= count {
-        return Err(Failure {
-            kind: "bad_request".into(),
-            message: "the page cursor position is outside its answer".into(),
-            detail: None,
-        });
+    let mut page_params = params.clone();
+    if let Some(after) = after {
+        page_params.extend(after.iter().map(key_value));
     }
-    let end = offset.saturating_add(page_size);
-    let more = end < count;
+    // One row past the page says whether another page follows.
+    page_params.push(SqlValue::Int(
+        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
+    ));
+    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
+    let more = rows.len() as u64 > page_size;
+    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
     if more && program.near.is_some() {
         return Err(page::semantic_paging());
     }
-    let next = if more {
-        Some(
-            Cursor::new(
-                end,
-                program.now,
-                seed,
-                position,
-                page::question(&program, &opts, ask.why)?,
-            )
-            .encode()?,
-        )
-    } else {
-        None
+    let next = match rows.last() {
+        Some(last) if more => Some(Cursor::after_row(&program, last, seed, question).encode()?),
+        _ => None,
     };
-    let mut page_params = params.clone();
-    page_params.push(SqlValue::Int(i64::try_from(page_size).unwrap_or(i64::MAX)));
-    page_params.push(SqlValue::Int(i64::try_from(offset).unwrap_or(i64::MAX)));
-    let mut rows = reader.query(&program.page_sql(), &page_params)?;
 
     if program.shape == Shape::Rows {
         snippets(reader, &program, &mut rows)?;
@@ -308,6 +297,20 @@ fn view(reader: &Reader<'_>) -> Result<Value, Failure> {
     Ok(
         json!({ "generation": position.generation, "index": position.index, "archive": position.archive, "cursor": position.to_string() }),
     )
+}
+
+/// An order-key value from a cursor, bound as the type it was read as.
+fn key_value(value: &Value) -> SqlValue {
+    match value {
+        Value::Null => SqlValue::Null,
+        Value::Bool(b) => SqlValue::Int(i64::from(*b)),
+        Value::Number(n) => n.as_i64().map_or_else(
+            || SqlValue::Real(n.as_f64().unwrap_or_default()),
+            SqlValue::Int,
+        ),
+        Value::String(s) => SqlValue::Text(s.clone()),
+        other => SqlValue::Text(other.to_string()),
+    }
 }
 
 pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
@@ -361,7 +364,7 @@ fn check_ids(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
                 return Err(Failure {
                     kind: "ambiguous".into(),
                     message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
-                    detail: Some(json!({ "word": check.word, "candidates": ids })),
+                    detail: Some(json!({ "word": check.word, "ids": ids })),
                 });
             }
         }
@@ -433,10 +436,11 @@ fn attach(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<
     Ok(())
 }
 
-/// Times as RFC 3339, booleans as booleans; `_pk` is the reader's own.
+/// Times as RFC 3339, booleans as booleans. Columns starting with `_`
+/// (the row key and order keys) are the reader's own.
 fn present(program: &Program, row: &mut Value) -> Result<(), Failure> {
     if let Some(obj) = row.as_object_mut() {
-        obj.remove("_pk");
+        obj.retain(|name, _| !name.starts_with('_'));
     }
     for col in &program.columns {
         shape_value(col.kind, &mut row[col.name.as_str()])?;
@@ -450,7 +454,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             if let Some(text) = v.as_str() {
                 *v = serde_json::from_str(text).map_err(|_| Failure {
                     kind: "store".into(),
-                    message: "invalid retained JSON value".into(),
+                    message: "invalid stored JSON value".into(),
                     detail: None,
                 })?;
             }
@@ -462,7 +466,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             let selection: Value = if let Some(text) = v.as_str() {
                 serde_json::from_str(text).map_err(|e| Failure {
                     kind: "store".into(),
-                    message: format!("invalid retained selection: {e}"),
+                    message: format!("invalid stored selection: {e}"),
                     detail: None,
                 })?
             } else {
@@ -478,7 +482,7 @@ fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
             }) {
                 return Err(Failure {
                     kind: "store".into(),
-                    message: "retained selection must be an array of IDs".into(),
+                    message: "a stored selection must be an array of IDs".into(),
                     detail: None,
                 });
             }

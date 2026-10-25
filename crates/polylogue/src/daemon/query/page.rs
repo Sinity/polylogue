@@ -1,20 +1,19 @@
-//! Stateless page continuation over one unchanged view and resolved question.
+//! Page continuation by key: a cursor holds the last row's order-key
+//! values, and the next page reads the rows after them. Writes between
+//! pages neither refuse the cursor nor repeat or skip rows whose keys did
+//! not change.
 use super::{Failure, Options, Program};
 use base64::Engine as _;
-use polylogue_model::ChangePosition;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-const VERSION: u8 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Cursor {
-    version: u8,
-    pub offset: u64,
+    /// The previous page's last row, one value per order key.
+    pub after: Vec<Value>,
     pub now: i64,
     pub seed: u64,
-    position: ChangePosition,
     question: String,
 }
 
@@ -27,33 +26,30 @@ fn invalid(message: &str) -> Failure {
 }
 
 impl Cursor {
-    pub fn new(
-        offset: u64,
-        now: i64,
-        seed: u64,
-        position: ChangePosition,
-        question: String,
-    ) -> Self {
+    pub fn new(after: Vec<Value>, now: i64, seed: u64, question: String) -> Self {
         Self {
-            version: VERSION,
-            offset,
+            after,
             now,
             seed,
-            position,
             question,
         }
+    }
+
+    /// The cursor for the page after `row`, from its order-key columns.
+    pub fn after_row(program: &Program, row: &Value, seed: u64, question: String) -> Self {
+        let after = program
+            .order
+            .iter()
+            .map(|key| row[key.column.as_str()].clone())
+            .collect();
+        Self::new(after, program.now, seed, question)
     }
 
     pub fn decode(text: &str) -> Result<Self, Failure> {
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(text)
             .map_err(|_| invalid("the page cursor is invalid"))?;
-        let cursor: Self = serde_json::from_slice(&bytes)
-            .map_err(|_| invalid("the page cursor is invalid or from an unsupported version"))?;
-        if cursor.version != VERSION {
-            return Err(invalid("the page cursor version is not supported"));
-        }
-        Ok(cursor)
+        serde_json::from_slice(&bytes).map_err(|_| invalid("the page cursor is invalid"))
     }
 
     pub fn encode(&self) -> Result<String, Failure> {
@@ -62,24 +58,14 @@ impl Cursor {
         Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
     }
 
-    pub fn check_view(&self, position: &ChangePosition) -> Result<(), Failure> {
-        if &self.position != position {
-            return Err(Failure {
-                kind: "stale_cursor".into(),
-                message: "the query view changed; run the query again".into(),
-                detail: Some(serde_json::json!({"reason":"view_changed"})),
-            });
-        }
-        Ok(())
-    }
-
-    pub fn check_question(&self, question: &str) -> Result<(), Failure> {
-        if self.question != question {
+    /// Checks the cursor belongs to this query and returns its key values.
+    pub fn check(&self, program: &Program, question: &str) -> Result<&[Value], Failure> {
+        if self.question != question || self.after.len() != program.order.len() {
             return Err(invalid(
                 "the cursor belongs to a different query or query context",
             ));
         }
-        Ok(())
+        Ok(&self.after)
     }
 }
 
@@ -121,5 +107,9 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
 }
 
 pub(super) fn semantic_paging() -> Failure {
-    Failure { kind: "not_built".into(), message: "semantic ranking pagination is not available; request a page large enough for the selected answer".into(), detail: None }
+    Failure {
+        kind: "not_built".into(),
+        message: "a query ranked by `near:` has no further pages; request a page large enough for the whole answer".into(),
+        detail: None,
+    }
 }

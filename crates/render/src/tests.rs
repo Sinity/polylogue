@@ -142,7 +142,7 @@ fn html_escapes_text() {
 }
 
 #[test]
-fn json_retains_typed_action_blocks() {
+fn json_keeps_typed_action_blocks() {
     let t = render_to(Format::Json, View::Actions);
     let v: serde_json::Value = serde_json::from_str(&t).unwrap();
     let blocks: Vec<&str> = v["messages"]

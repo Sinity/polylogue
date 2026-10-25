@@ -22,8 +22,13 @@ pub struct UnitSpec {
     /// The singular form `exists` and `seq` use.
     pub singular: &'static str,
     pub from: Expr,
-    /// The row key, `_pk` in the output.
+    /// The row key, `_pk` in the output. It can change when the index is
+    /// rebuilt.
     pub key: &'static str,
+    /// What names one row, unchanged by an index rebuild where the source
+    /// gives the row a position; the last term of every order, so the
+    /// order is total and pages continue after a rebuild.
+    pub identity: &'static str,
     /// The default columns: name, SQL template, kind.
     pub columns: &'static [(&'static str, Expr, ColKind)],
     /// The time rows are ordered by.
@@ -44,7 +49,7 @@ pub struct UnitSpec {
     pub session_scope: Option<&'static str>,
     /// How words search this unit's rows.
     pub search: Search,
-    /// Filters every query of the unit applies (spec query.md, Defaults).
+    /// Filters every query of the unit applies.
     pub defaults: &'static [Default],
     pub relations: &'static [Relation],
     /// The column tying a row to a parent row of another unit, for
@@ -311,7 +316,7 @@ fn main_sessions(a: &Aliases) -> String {
     format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
 }
 
-/// Hidden and excised sessions stay out (spec query.md, Defaults).
+/// Hidden and excised sessions stay out.
 const SESSION_VISIBLE: &[Default] = &[
     d(Expr::Fn(not_hidden), &["hidden"], true),
     d(Expr::Fn(not_excised), &[], false),
@@ -348,6 +353,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "session",
         from: Expr::Template("session {s}"),
         key: "{s}.pk",
+        identity: "{s}.id",
         columns: &[
             (
                 "id",
@@ -402,6 +408,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "document",
         from: Expr::Template("document {r}"),
         key: "{r}.pk",
+        identity: "{r}.id",
         columns: &[
             (
                 "id",
@@ -436,6 +443,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "message",
         from: Expr::Template("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
         key: "{m}.pk",
+        identity: "{m}.id",
         columns: &[
             (
                 "id",
@@ -477,6 +485,7 @@ pub static UNITS: &[UnitSpec] = &[
             "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
         ),
         key: "{b}.pk",
+        identity: "json_array({m}.id, {b}.idx, CASE WHEN {b}.idx IS NULL THEN {b}.pk END)",
         columns: &[
             (
                 "session",
@@ -524,6 +533,7 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
         ),
         key: "{t}.pk",
+        identity: "json_array({m}.id, {cb}.idx, CASE WHEN {cb}.idx IS NULL THEN {t}.pk END)",
         columns: &[
             (
                 "session",
@@ -606,6 +616,7 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN session {s} ON {s}.pk = {r}.session_pk",
         ),
         key: "{r}.pk",
+        identity: "json_array({s}.id, {r}.path)",
         columns: &[
             (
                 "session",
@@ -640,6 +651,7 @@ pub static UNITS: &[UnitSpec] = &[
             "event {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk JOIN input_ref {r}i ON {r}i.pk={r}.input_pk",
         ),
         key: "{r}.pk",
+        identity: "{r}.id",
         columns: &[
             ("id", T("{r}.id"), Text),
             (
@@ -676,6 +688,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "note",
         from: Expr::Template("a.note {r}"),
         key: "{r}.rowid",
+        identity: "{r}.id",
         columns: &[
             ("id", Expr::Reference("{r}.id", ColumnReference::Note), Text),
             ("kind", T("{r}.kind"), Text),
@@ -723,6 +736,7 @@ pub static UNITS: &[UnitSpec] = &[
             "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
         ),
         key: "{r}.pk",
+        identity: "json_array({r}.parent_id, {r}.child_id, {r}.kind, {r}.how)",
         columns: &[
             (
                 "parent",
@@ -761,6 +775,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "turn",
         from: Expr::Fn(turns_from),
         key: "{r}.pk",
+        identity: "{r}.id",
         columns: &[
             ("id", T("{r}.id"), Text),
             (
@@ -803,6 +818,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "run",
         from: Expr::Template("run {r}"),
         key: "{r}.pk",
+        identity: "{r}.id",
         columns: &[
             ("id", T("{r}.id"), Text),
             ("kind", T("{r}.kind"), Text),
@@ -850,6 +866,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "delivery",
         from: Expr::Template("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
         key: "{r}.rowid",
+        identity: "{r}.id",
         columns: &[
             ("id", T("{r}.id"), Text),
             ("recipient", T("{r}.recipient_id"), Text),
@@ -880,6 +897,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "process",
         from: Expr::Template("process {r}"),
         key: "{r}.pk",
+        identity: "json_array({r}.boot_id, {r}.pid, {r}.start_ticks)",
         columns: &[
             ("role", T("{r}.role"), Text),
             ("comm", T("{r}.comm"), Text),
@@ -926,6 +944,7 @@ pub static UNITS: &[UnitSpec] = &[
         singular: "work",
         from: Expr::Template("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
         key: "{r}.pk",
+        identity: "{r}.key",
         columns: &[
             ("kind", T("{r}.kind"), Text),
             ("title", T("{r}.title"), Text),
@@ -970,6 +989,7 @@ pub static UNITS: &[UnitSpec] = &[
                (ce.refused_json -> '$.sessions'), ce.message_ids_json FROM a.excision ce) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
+        identity: "({r}.kind || ':' || {r}.ref)",
         columns: &[
             ("kind", T("{r}.kind"), Text),
             ("ref", T("{r}.ref"), Text),
@@ -995,7 +1015,7 @@ pub static UNITS: &[UnitSpec] = &[
     },
 ];
 
-/// One row per turn (spec query.md, turns): along the active path (or file
+/// One row per turn: along the active path (or file
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
 /// such start; a session with no prompt is one turn. Copies are counted in

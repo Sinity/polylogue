@@ -97,7 +97,7 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
 
 #[test]
 fn live_state_is_a_function_of_stored_facts_and_the_time() {
-    // Law 85, on hook evidence alone (no process lines).
+    // Live state on hook evidence alone (no process lines).
     let mut w = WriterWorld::new();
     hooks(
         &mut w,
@@ -185,7 +185,7 @@ fn a_wait_ends_with_the_next_event_and_an_idle_notice_is_not_a_wait() {
 
 #[test]
 fn live_state_is_total_for_sessions_without_hooks() {
-    // Law 101: historical sessions with no hook or process evidence have
+    // Historical sessions with no hook or process evidence have
     // ended; one whose transcript grew within the window is `unknown`.
     use polylogue_store::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
@@ -233,7 +233,7 @@ fn live_state_is_total_for_sessions_without_hooks() {
 
 #[test]
 fn peers_are_symmetric() {
-    // Law 89, with the spec's own examples, through the live query.
+    // Peers are symmetric, through the live query.
     use polylogue_store::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();

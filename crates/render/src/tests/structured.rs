@@ -47,7 +47,7 @@ fn structured_read_keeps_message_metadata_and_original_tool_fields() {
 }
 
 #[test]
-fn structured_export_uses_the_whole_importable_document_without_reinterpreting_blocks() {
+fn structured_export_uses_the_whole_importable_document_without_rebuilding_blocks() {
     let mut session = Session::new(
         SessionId::parse("claude-code:s").unwrap(),
         SessionKind::Main,

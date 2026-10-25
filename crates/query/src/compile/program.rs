@@ -87,10 +87,7 @@ impl<'a> Compiler<'a> {
                         for k in keys {
                             let (name, kind) = match_column(rel, &k.field, stage.span.start)?;
                             if k.bucket.is_some() {
-                                return Err(not_built(
-                                    "time buckets after `| matches`",
-                                    "architecture 7, query language",
-                                ));
+                                return Err(not_built("time buckets after `| matches`"));
                             }
                             cols.push((name.clone(), name, kind));
                         }
@@ -103,11 +100,7 @@ impl<'a> Compiler<'a> {
                     } if !grouped && then.is_empty() => {
                         let (name, _) = match_column(rel, field, stage.span.start)?;
                         let dir = if *descending { " DESC" } else { "" };
-                        let mut sorted = vec![
-                            format!("{name} IS NULL"),
-                            format!("{name}{dir}"),
-                            format!("_pk{dir}"),
-                        ];
+                        let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
                         for identity in ["owner", "session", "match"] {
                             if rel.columns.iter().any(|(name, _)| name == identity) {
                                 sorted.push(format!("\"{identity}\"{dir}"));
@@ -118,7 +111,6 @@ impl<'a> Compiler<'a> {
                     _ => {
                         return Err(not_built(
                             "this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)",
-                            "architecture 7, query language",
                         ));
                     }
                 }
@@ -321,7 +313,7 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
-        let (sql, shape, columns) = if let Some(rel) = matched {
+        let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
                     "SELECT * FROM ({sql}) LIMIT {} OFFSET {}",
@@ -348,7 +340,7 @@ impl<'a> Compiler<'a> {
                     .collect();
                 if keys.is_empty() {
                     let sql = format!("{ctes}SELECT {} FROM ({}) mr", select.join(", "), rel.sql);
-                    (sql, Shape::Summary, columns)
+                    (sql, Shape::Summary, columns, vec![])
                 } else {
                     let group_by = keys
                         .iter()
@@ -363,13 +355,15 @@ impl<'a> Compiler<'a> {
                         });
                         o
                     });
+                    let (hidden, keys) = hidden_order(&order, "_o");
                     let sql = format!(
-                        "{ctes}SELECT {} FROM ({}) mr GROUP BY {group_by} ORDER BY {}",
+                        "{ctes}SELECT *, {} FROM (SELECT {} FROM ({}) mr GROUP BY {group_by}) g ORDER BY {}",
+                        hidden.join(", "),
                         select.join(", "),
                         rel.sql,
-                        order.join(", ")
+                        order_by(&keys)
                     );
-                    (limit(sql), Shape::Groups, columns)
+                    (limit(sql), Shape::Groups, columns, keys)
                 }
             } else {
                 let columns: Vec<Column> = rel
@@ -381,15 +375,21 @@ impl<'a> Compiler<'a> {
                         reference: None,
                     })
                     .collect();
-                let sql = match order {
-                    Some(o) => format!(
-                        "{ctes}SELECT * FROM ({}) mr ORDER BY {}",
-                        rel.sql,
-                        o.join(", ")
-                    ),
-                    None => format!("{ctes}{}", rel.sql),
+                let (sql, keys) = match order {
+                    Some(o) => {
+                        let (hidden, mut keys) = hidden_order(&o, "_o");
+                        keys.extend(rel.order.iter().cloned());
+                        let sql = format!(
+                            "{ctes}SELECT *, {} FROM ({}) mr ORDER BY {}",
+                            hidden.join(", "),
+                            rel.sql,
+                            order_by(&keys)
+                        );
+                        (sql, keys)
+                    }
+                    None => (format!("{ctes}{}", rel.sql), rel.order.clone()),
                 };
-                (limit(sql), Shape::Matches, columns)
+                (limit(sql), Shape::Matches, columns, keys)
             }
         } else if group.is_some() || aggs.is_some() {
             let keys = group.clone().unwrap_or_default();
@@ -409,7 +409,7 @@ impl<'a> Compiler<'a> {
                 .collect();
             if keys.is_empty() {
                 let sql = format!("{ctes}SELECT {} FROM {from} WHERE {wh}", select.join(", "));
-                (sql, Shape::Summary, std::mem::take(&mut columns))
+                (sql, Shape::Summary, std::mem::take(&mut columns), vec![])
             } else {
                 let group_by = keys
                     .iter()
@@ -428,10 +428,12 @@ impl<'a> Compiler<'a> {
                     o.extend(keys.iter().map(|(n, _, _)| format!("{n} IS NULL, {n}")));
                     o
                 });
+                let (hidden, keys) = hidden_order(&order, "_o");
                 let mut sql = format!(
-                    "{ctes}SELECT * FROM ({inner}) g WHERE {} ORDER BY {}",
+                    "{ctes}SELECT *, {} FROM ({inner}) g WHERE {} ORDER BY {}",
+                    hidden.join(", "),
                     and_all(&having),
-                    order.join(", ")
+                    order_by(&keys)
                 );
                 if let Some((lim, off)) = selection {
                     sql = format!(
@@ -440,7 +442,7 @@ impl<'a> Compiler<'a> {
                         off.unwrap_or(0)
                     );
                 }
-                (sql, Shape::Groups, columns)
+                (sql, Shape::Groups, columns, keys)
             }
         } else {
             if selection.is_some() {
@@ -486,25 +488,34 @@ impl<'a> Compiler<'a> {
             }
             let mut select: Vec<String> = vec![format!("{pk} AS _pk")];
             select.extend(cols.iter().map(|(n, e, _, _)| format!("{e} AS {n}")));
-            let sql = if distinct {
+            let (sql, keys) = if distinct {
+                // Distinct rows are identified by their values alone.
+                let keys: Vec<OrderKey> = columns
+                    .iter()
+                    .map(|c| OrderKey::ascending(&c.name))
+                    .collect();
                 let names = columns
                     .iter()
                     .map(|c| c.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!(
-                    "{ctes}SELECT min(_pk) AS _pk, {names} FROM (SELECT {} FROM {from} WHERE {wh} ORDER BY {}) GROUP BY {names}",
+                let sql = format!(
+                    "{ctes}SELECT min(_pk) AS _pk, {names} FROM (SELECT {} FROM {from} WHERE {wh}) GROUP BY {names} ORDER BY {}",
                     select.join(", "),
-                    order.join(", ")
-                )
+                    order_by(&keys)
+                );
+                (sql, keys)
             } else {
-                format!(
+                let (hidden, keys) = hidden_order(&order, "_o");
+                select.extend(hidden);
+                let sql = format!(
                     "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
                     select.join(", "),
-                    order.join(", ")
-                )
+                    order_by(&keys)
+                );
+                (sql, keys)
             };
-            (sql, Shape::Rows, columns)
+            (sql, Shape::Rows, columns, keys)
         };
 
         let mut attach = vec![];
@@ -564,6 +575,7 @@ impl<'a> Compiler<'a> {
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
             measure,
+            order,
         })
     }
 
@@ -598,7 +610,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// The default filters a unit binds, dropped by a top-level condition
-    /// naming their field (spec query.md, Defaults, binding).
+    /// naming their field.
     pub(super) fn defaults(&mut self, scope: &Scope, top: &[Cond]) -> Vec<String> {
         let named = named_fields(top, scope.unit);
         let reference = top.iter().any(|c| self.is_reference(c));
@@ -630,7 +642,7 @@ impl<'a> Compiler<'a> {
             o.push(format!("{}.order_input_id", a.m));
             o.push(format!("{}.seq", a.m));
         }
-        o.push(format!("{}{desc}", a.expand(spec.key)));
+        o.push(format!("{}{desc}", a.expand(spec.identity)));
         o
     }
 }

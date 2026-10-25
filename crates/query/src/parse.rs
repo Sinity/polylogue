@@ -9,8 +9,7 @@ use pest::Parser;
 use pest::iterators::Pair;
 
 /// Parentheses nest at most this deep: the parser is recursive, and deeper
-/// nesting would exhaust its stack (spec query.md, "No limit on what may be
-/// asked, one physical one").
+/// nesting would exhaust its stack.
 pub const MAX_DEPTH: usize = 64;
 
 pub fn parse(text: &str) -> Result<Query, QueryError> {
@@ -196,7 +195,7 @@ fn not_a_unit(text: &str, bad: &Pair<'_, Rule>) -> QueryError {
 }
 
 fn number(p: Pair<'_, Rule>) -> u64 {
-    // The grammar admits only digits; a value too large for u64 saturates,
+    // The grammar accepts only digits; a value too large for u64 saturates,
     // which is still "more rows than exist".
     p.as_str().parse().unwrap_or(u64::MAX)
 }
@@ -658,18 +657,18 @@ fn rule_name(r: Rule) -> Option<&'static str> {
 
 /// Simple repairs, tried in order; the first that parses is suggested.
 fn repair(text: &str, at: usize) -> Option<String> {
-    let mut candidates = vec![];
+    let mut fixes = vec![];
     if unbalanced_quotes(text) {
-        candidates.push(format!("{text}\""));
+        fixes.push(format!("{text}\""));
     }
     let (open, close) = parens(text);
     if open > close {
-        candidates.push(format!("{text}{}", ")".repeat(open - close)));
+        fixes.push(format!("{text}{}", ")".repeat(open - close)));
     }
     if let Some(quoted) = quote_word_at(text, at) {
-        candidates.push(quoted);
+        fixes.push(quoted);
     }
-    candidates
+    fixes
         .into_iter()
         .find(|c| Grammar::parse(Rule::query, c).is_ok())
 }

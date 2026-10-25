@@ -218,7 +218,7 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
         .as_str()
         .unwrap()
         .to_owned();
-    // A synthetic canonical transaction with two notes sharing one counter.
+    // A synthetic archive transaction with two notes sharing one counter.
     let mut db = rusqlite::Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = db.transaction().unwrap();
     for id in ["a", "b"] {
