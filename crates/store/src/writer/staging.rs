@@ -336,11 +336,11 @@ impl Inner {
                 "an import must be named by its complete bytes".into(),
             ));
         }
-        if let Some(observation) = &b.observation {
+        if self.excisions
+            && let Some(observation) = &b.observation
+        {
             for piece in b.piece.iter().chain(&b.blobs) {
-                if self
-                    .refused
-                    .raw_import(&b.input.id, &piece.hash, observation)?
+                if crate::excise::raw_import(&self.archive, &b.input.id, &piece.hash, observation)?
                 {
                     return Err(StoreError::InputRefused {
                         input: b.input.id.clone(),

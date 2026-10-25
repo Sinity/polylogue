@@ -68,7 +68,7 @@ it.
 | `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. |
 | `changes [--since POSITION]` | The change feed: JSON lines naming changed sessions, notes, removals and excisions since a position, ending with the next position. |
 | `sql STATEMENT` | Read-only SQL over the stable views. |
-| `excise TARGET` | Remove a session, input, document or text ([excision](docs/excision.md)). |
+| `excise TARGET` | Remove a session, document or input whole, with everything parsed from it ([excision](docs/excision.md)). |
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
 | `setting KEY [VALUE]` | Read or set a setting. |
 | `web` | Open the web reader. |

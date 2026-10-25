@@ -192,18 +192,19 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
 }
 
 #[test]
-fn sqlite_selection_types_survive_projection_and_are_checked_by_the_actual_query() {
+fn excision_changes_list_the_removed_sessions_and_messages() {
     use polylogue_store::fixture::Fixture;
-    for selection in [
-        None,
-        Some(Value::Null),
-        Some(json!([])),
-        Some(json!(["claude-code:a"])),
+    for (sessions, messages) in [
+        (&[][..], &[][..]),
+        (
+            &["claude-code:a"][..],
+            &["claude-code:a1", "claude-code:a2"][..],
+        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         fixture
-            .excision("remove", "input:synthetic", selection.as_ref(), &json!([]))
+            .excision("remove", "session:claude-code:a", sessions, messages)
             .unwrap();
         let pool = fixture.reads().unwrap();
         let result = run(
@@ -211,42 +212,8 @@ fn sqlite_selection_types_survive_projection_and_are_checked_by_the_actual_query
             ask("changes where kind:excision", T0),
         )
         .unwrap();
-        assert_eq!(
-            result["rows"][0]["sessions"],
-            selection.unwrap_or(Value::Null)
-        );
-        assert_eq!(result["rows"][0]["messages"], json!([]));
-    }
-    for selection in [
-        json!(1),
-        json!(true),
-        json!("[\"claude-code:a\"]"),
-        json!({}),
-        json!([1]),
-    ] {
-        for messages in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-            let empty = json!([]);
-            let (sessions, ids) = if messages {
-                (Some(&empty), &selection)
-            } else {
-                (Some(&selection), &empty)
-            };
-            fixture
-                .excision("remove", "input:synthetic", sessions, ids)
-                .unwrap();
-            let pool = fixture.reads().unwrap();
-            let error = run(
-                &pool.reader().unwrap(),
-                ask("changes where kind:excision", T0),
-            )
-            .unwrap_err();
-            assert_eq!(
-                error.kind, "store",
-                "selection={selection} messages={messages}"
-            );
-        }
+        assert_eq!(result["rows"][0]["sessions"], json!(sessions));
+        assert_eq!(result["rows"][0]["messages"], json!(messages));
     }
 }
 
@@ -282,12 +249,7 @@ fn kept_change_selections_preserve_their_json_type_when_read_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     fixture
-        .excision(
-            "remove",
-            "input:synthetic",
-            Some(&json!(["claude-code:a"])),
-            &json!([]),
-        )
+        .excision("remove", "input:synthetic", &["claude-code:a"], &[])
         .unwrap();
     let pool = fixture.reads().unwrap();
     let mut kept = keep(

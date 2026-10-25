@@ -10,7 +10,12 @@ fn background_only_groups_use_the_exclusion_lookup() {
             [format!("session:{}", sid("removed"))],
         )
         .unwrap();
-    let cache = crate::excise::Refused::load(&archive_conn).unwrap();
+    archive_conn
+        .execute(
+            "INSERT INTO excised(excision_id,kind,value) VALUES ('remove','session',?1)",
+            [sid("removed").to_string()],
+        )
+        .unwrap();
     let mut b = batch("source", 0, 0, vec![], &[]);
     b.parse[0]
         .output
@@ -24,7 +29,7 @@ fn background_only_groups_use_the_exclusion_lookup() {
         });
     {
         let group = [Box::new(b)];
-        let hits = matching(&group, &cache).unwrap();
+        let hits = matching(&group, &archive_conn).unwrap();
         assert_eq!(
             hits.sessions,
             std::collections::HashSet::from([sid("removed").to_string()])

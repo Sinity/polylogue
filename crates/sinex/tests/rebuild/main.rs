@@ -255,11 +255,19 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     converge(&a, &home, vec![], |engine| {
         let refused = engine.excise(polylogue_store::excise::ExciseRequest {
             id: "after-sinex".into(),
-            scope: polylogue_store::excise::Scope::Text("Exact supplied document".into()),
+            scope: polylogue_store::excise::Scope::Input("synthetic-input".into()),
             reason: None,
             dry_run: false,
         });
-        assert!(refused.is_err(), "{refused:?}");
+        assert!(
+            matches!(
+                refused,
+                Err(polylogue_engine::EngineError::Store(
+                    polylogue_store::StoreError::ExcisionOnSinex
+                ))
+            ),
+            "{refused:?}"
+        );
     });
     assert_eq!(answers(&a), expected);
     let total = first.batches;

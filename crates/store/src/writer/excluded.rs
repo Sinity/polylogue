@@ -8,7 +8,7 @@ use super::*;
 /// decides whether a group needs filtering.
 pub(super) fn matching(
     group: &[Box<Batch>],
-    cache: &crate::excise::Refused,
+    archive: &rusqlite::Connection,
 ) -> Result<crate::excise::RefusedIds> {
     use std::collections::BTreeSet;
     let mut sessions = BTreeSet::new();
@@ -36,12 +36,7 @@ pub(super) fn matching(
             sessions.extend(o.background.iter().map(|b| b.session.to_string()));
         }
     }
-    let mut selected = cache.matching(
-        &sessions.into_iter().collect::<Vec<_>>(),
-        &messages.into_iter().collect::<Vec<_>>(),
-    )?;
-    selected.documents = cache.matching_documents(&documents.into_iter().collect::<Vec<_>>())?;
-    Ok(selected)
+    crate::excise::matching(archive, &sessions, &messages, &documents)
 }
 
 pub(super) fn refused_message(m: &Message, r: &crate::excise::RefusedIds) -> bool {

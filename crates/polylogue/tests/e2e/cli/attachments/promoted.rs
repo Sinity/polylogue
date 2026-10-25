@@ -72,14 +72,4 @@ fn check(env: &[(&str, &Path)]) {
             .unwrap()
             .contains("promoted.png")
     );
-    let refused = cli(
-        env,
-        &["--json", "excise", "text:synthetic-text-removal", "--yes"],
-    );
-    assert!(
-        !refused.status.success(),
-        "opaque input text removal must refuse: {refused:?}"
-    );
-    let after = cli(env, &["--json", "attachment", MESSAGE, "0"]);
-    assert_eq!(json(&after), json(&descriptor));
 }

@@ -54,10 +54,10 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
             message: e.to_string(),
             detail: Some(serde_json::json!({"issue": issue})),
         },
-        StoreError::ExcisionFormat { input, format, .. } => Response::Error {
+        StoreError::ExcisionRefused { target, .. } => Response::Error {
             kind: "unsupported_excision".into(),
             message: e.to_string(),
-            detail: Some(serde_json::json!({"input": input, "format": format})),
+            detail: Some(serde_json::json!({"target": target})),
         },
         StoreError::ExcisionInsideZip { input, file } => Response::Error {
             kind: "unsupported_excision".into(),
@@ -401,7 +401,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Ok(Ok(done)) => ok(done),
                 Ok(Err(polylogue_engine::EngineError::Store(
                     e @ (StoreError::NotFound(_)
-                    | StoreError::ExcisionFormat { .. }
+                    | StoreError::ExcisionRefused { .. }
                     | StoreError::ExcisionInsideZip { .. }),
                 ))) => store_error(&e),
                 Ok(Err(e)) => error("excise", e),

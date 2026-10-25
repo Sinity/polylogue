@@ -239,11 +239,14 @@ fn excision_refuses_once_sinex_holds_the_archive() {
     );
     let request = |dry_run| crate::excise::ExciseRequest {
         id: "removal".into(),
-        scope: crate::excise::Scope::Text("synthetic text".into()),
+        scope: crate::excise::Scope::Input("synthetic-input".into()),
         reason: None,
         dry_run,
     };
-    writer.excise(request(true), store.clone()).unwrap();
+    assert!(matches!(
+        writer.excise(request(true), store.clone()),
+        Err(StoreError::NotFound(_))
+    ));
     assert!(matches!(
         writer.excise(request(false), store),
         Err(StoreError::ExcisionOnSinex)

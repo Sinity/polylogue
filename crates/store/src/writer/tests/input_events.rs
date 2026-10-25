@@ -144,7 +144,7 @@ fn input_events_require_record_coordinates_and_cannot_claim_after_message_associ
 }
 
 #[test]
-fn session_excision_preserves_input_owned_facts_and_refuses_shared_record_bytes() {
+fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
     use crate::blobs::Piece;
     use crate::excise::{ExciseRequest, Scope};
     use std::sync::Arc;
@@ -184,23 +184,13 @@ fn session_excision_preserves_input_owned_facts_and_refuses_shared_record_bytes(
             },
             store.clone(),
         );
-        if shared_record {
-            assert!(
-                result.is_err(),
-                "unbound observer bytes are not owned by the conversation"
-            );
-            assert_eq!(rows(&w.archive), before);
-        } else {
-            let removed = result.unwrap();
-            assert!(removed.inputs_removed.is_empty());
-            let surviving = rows(&w.archive);
-            assert_eq!(surviving.len(), 1);
-            assert!(surviving[0]["session"].is_null());
-            assert_eq!(
-                surviving[0]["id"],
-                before.iter().find(|r| r["session"].is_null()).unwrap()["id"]
-            );
-        }
+        // Records of no session share the file: excising the session alone
+        // would remove them too, so it refuses.
+        assert!(
+            matches!(result, Err(StoreError::ExcisionRefused { .. })),
+            "{result:?}"
+        );
+        assert_eq!(rows(&w.archive), before);
     }
 }
 

@@ -4,12 +4,6 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, MAIN_DB};
 use std::io::{Read, Write};
 
-pub(crate) struct CopyStats {
-    pub bytes: u64,
-    #[cfg(test)]
-    pub decoded_bytes: u64,
-}
-
 /// Decode a catalogued plain blob using the private-destination rule of
 /// [`copy_verified`].
 pub(crate) fn copy_plain(
@@ -17,7 +11,7 @@ pub(crate) fn copy_plain(
     store: &hashed_blobs::Store,
     hash: BlobHash,
     output: impl Write,
-) -> Result<CopyStats> {
+) -> Result<()> {
     let (rowid, place, encoding, size): (i64, String, String, i64) = archive.query_row(
         "SELECT rowid,place,encoding,size FROM blob WHERE hash=?1",
         [&hash.0[..]],
@@ -32,27 +26,19 @@ pub(crate) fn copy_plain(
     match place.as_str() {
         "inline" => {
             let blob = archive.blob_open(MAIN_DB, "blob", "data", rowid, true)?;
-            let bytes = copy_verified(
+            copy_verified(
                 zstd::stream::read::Decoder::new(blob)?,
                 output,
                 hash,
                 Some(size),
             )?;
-            Ok(CopyStats {
-                bytes,
-                #[cfg(test)]
-                decoded_bytes: bytes,
-            })
+            Ok(())
         }
         "file" => {
             let mut reader =
                 store.read_plain(&hashed_blobs::Hash(hash.0), Some(size), || Ok(()))?;
-            let bytes = copy_verified(&mut reader, output, hash, Some(size))?;
-            Ok(CopyStats {
-                bytes,
-                #[cfg(test)]
-                decoded_bytes: reader.stats().decoded_bytes,
-            })
+            copy_verified(&mut reader, output, hash, Some(size))?;
+            Ok(())
         }
         _ => Err(StoreError::Invalid(format!("unknown blob place {place}"))),
     }

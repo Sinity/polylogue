@@ -7,7 +7,9 @@
 //!   facts it needs without a parser or an input file.
 //! - [`writer::WriterWorld`]: the real writer over a temporary archive, for
 //!   tests of what the writer and the derive step make of parsed records.
+//! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
+pub mod text_search;
 pub mod writer;
 
 use crate::archive::{Archive, ArchiveLock, open_write};
@@ -412,21 +414,28 @@ impl Fixture {
         )?;
         Ok(id)
     }
-    /// An excision receipt over this fixture's synthetic rows. Selections may
-    /// deliberately be malformed to exercise readers at the SQLite boundary.
+    /// An excision over this fixture's synthetic rows, naming the sessions
+    /// and messages it removed.
     pub fn excision(
         &mut self,
         id: &str,
         scope: &str,
-        sessions: Option<&serde_json::Value>,
-        messages: &serde_json::Value,
+        sessions: &[&str],
+        messages: &[&str],
     ) -> Result<()> {
         self.commit_seq += 1;
-        let mut refused = serde_json::json!({});
-        if let Some(sessions) = sessions {
-            refused["sessions"] = sessions.clone();
+        self.notes.execute(
+            "INSERT INTO excision(id, scope, created_at, commit_seq) VALUES (?1, ?2, ?3, ?3)",
+            params![id, scope, self.commit_seq],
+        )?;
+        for (kind, values) in [("session", sessions), ("message", messages)] {
+            for value in values {
+                self.notes.execute(
+                    "INSERT INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
+                    params![id, kind, value],
+                )?;
+            }
         }
-        self.notes.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES (?1,?2,?3,?4,?5,?5)", params![id,scope,refused.to_string(),messages.to_string(),self.commit_seq])?;
         crate::excise::mark_applied(&self.notes, &self.index)
     }
 }

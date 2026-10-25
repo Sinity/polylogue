@@ -182,13 +182,12 @@ uses the same lifetime.
 
 ## Excision
 
-[Excision](excision.md) removes a session, document, input or text by
-overwriting stored bytes in place and parsing the changed inputs again. It
-commits embeddings, then the archive, then the index, and deletes the files
-of blobs it marked `deleting` last; reopening the archive finishes a stopped
-excision. Provider files are never edited, and what cannot be overwritten in
-place, including anything inside an export ZIP, refuses before anything
-changes.
+[Excision](excision.md) removes whole stored inputs, with the sessions,
+documents and notes only they hold, and never rewrites stored bytes; a
+session or document whose inputs hold anything else refuses before anything
+changes. It commits embeddings, then the archive, then the index, and
+deletes the files of blobs it marked `deleting` last; reopening the archive
+finishes a stopped excision. Provider files are never edited.
 
 ## Sinex primary mode
 

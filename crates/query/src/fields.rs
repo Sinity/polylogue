@@ -789,8 +789,8 @@ pub static FIELDS: &[Field] = &[
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
     f(Changes, "scope", Prefix, "an excision's session/input scope or text hash").sql("{r}.scope"),
-    sp(Changes, "sessions", "the sessions an excision selected; null when unknown", custom::selection).sql("{r}.sessions").ids(),
-    sp(Changes, "messages", "the messages an excision selected", custom::selection).sql("{r}.messages").ids(),
+    sp(Changes, "sessions", "the sessions an excision removed", custom::selection).sql("{r}.sessions").ids(),
+    sp(Changes, "messages", "the messages an excision removed", custom::selection).sql("{r}.messages").ids(),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
     // Turns, computed along the active path.
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),

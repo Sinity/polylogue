@@ -70,15 +70,14 @@ fn a_read_honours_its_view_format_and_budget() {
 }
 
 #[test]
-fn excision_format_refusal_has_a_distinct_public_error() {
-    let error = StoreError::ExcisionFormat {
-        input: "input1".into(),
-        format: "export-file".into(),
-        detail: "an opaque file".into(),
+fn excision_refusals_have_a_distinct_public_error() {
+    let error = StoreError::ExcisionRefused {
+        target: "input1".into(),
+        reason: "it also holds another session".into(),
     };
     assert!(
         matches!(store_error(&error), Response::Error { kind, detail: Some(detail), .. }
-        if kind == "unsupported_excision" && detail["input"] == "input1" && detail["format"] == "export-file")
+        if kind == "unsupported_excision" && detail["target"] == "input1")
     );
     let error = StoreError::ExcisionInsideZip {
         input: "input2".into(),
