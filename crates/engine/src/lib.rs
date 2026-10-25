@@ -602,7 +602,7 @@ impl Engine {
     }
 
     /// Completes a finite capture batch. The daemon also discovers source
-    /// changes and services controls between its turns.
+    /// changes and handles queued requests between its turns.
     pub fn converge(&mut self) -> Result<Pass, EngineError> {
         let mut total = self.converge_turn()?;
         while total.capture_pending {
@@ -1284,7 +1284,7 @@ impl Engine {
                 if burst.elapsed() > COALESCE {
                     break;
                 }
-                // Pending captures continue after queued controls, without
+                // Pending captures continue after queued requests, without
                 // waiting for a watcher event or a coalescing delay.
                 if pending {
                     msg = rx.try_recv().map_err(|e| match e {

@@ -54,11 +54,11 @@ fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly()
         assert_eq!(events[0].range, Some((0, ROOM.len() as u64)));
         assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 3);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
-        let snapshot = serde_json::to_value((&messages, &events)).unwrap();
+        let view = serde_json::to_value((&messages, &events)).unwrap();
         if let Some(old) = previous {
-            assert_eq!(snapshot, old);
+            assert_eq!(view, old);
         }
-        previous = Some(snapshot);
+        previous = Some(view);
     }
 }
 

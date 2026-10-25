@@ -67,11 +67,11 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
             }
             assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 5);
             assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
-            let snapshot = serde_json::to_value(&shown).unwrap();
+            let view = serde_json::to_value(&shown).unwrap();
             if let Some(old) = previous {
-                assert_eq!(snapshot, old);
+                assert_eq!(view, old);
             }
-            previous = Some(snapshot);
+            previous = Some(view);
         }
     }
 }

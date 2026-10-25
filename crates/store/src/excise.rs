@@ -160,7 +160,7 @@ pub struct Excised {
     /// before the excision returns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs_reparsed: Vec<String>,
-    /// Text scope: provider locations (`machine:path`) whose retained
+    /// Text scope: provider locations (`machine:path`) whose stored
     /// history held a match. Current presence and content are not checked.
     /// Polylogue never edits them; a later full read may collect the text
     /// again until the original file is scrubbed.

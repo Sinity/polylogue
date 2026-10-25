@@ -81,7 +81,7 @@ pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
 }
 
 /// Seconds per stage since the process started (or the last [`reset`]).
-pub fn snapshot() -> Vec<(Stage, f64)> {
+pub fn stage_seconds() -> Vec<(Stage, f64)> {
     STAGES
         .iter()
         .map(|s| (*s, NANOS[s.index()].load(Ordering::Relaxed) as f64 / 1e9))

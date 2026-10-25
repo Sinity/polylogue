@@ -11,7 +11,7 @@ impl Drop for OwnedChild {
     }
 }
 
-const CHILD: &str = "POLYLOGUE_SNAPSHOT_SCRATCH_CHILD";
+const CHILD: &str = "POLYLOGUE_EXTENT_LIST_SCRATCH_CHILD";
 
 #[test]
 fn a_killed_extent_list_owner_leaves_no_named_payload() {

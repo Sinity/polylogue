@@ -910,7 +910,7 @@ mod text_projection;
 mod failed_inputs;
 
 #[test]
-fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
+fn first_build_stays_in_wal_and_settles_while_a_read_stays_open() {
     let w = world();
     let reader_pool = ReadPool::open(&w.archive).unwrap();
     let reader = reader_pool.reader().unwrap();
@@ -924,7 +924,7 @@ fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
             .unwrap()[0]["value"],
         "1"
     );
-    // This stored snapshot predates both the write and the durable build
+    // This open read predates both the write and the durable build
     // completion. Neither commit may require it to be dropped.
     w.writer
         .send(batch(

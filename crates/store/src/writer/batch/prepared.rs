@@ -1,7 +1,7 @@
 use super::*;
 
-/// Packed rows stay associated with their original message and are published
-/// together before parsed structured payloads are released.
+/// Packed rows stay with their original message and are committed together,
+/// before the parsed structured payloads are dropped.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,

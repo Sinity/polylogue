@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 // Fast row-body compression; the format remains readable across compression levels.
 const LEVEL: i32 = 1;
 
-// Immutable for this derived-index generation. Canonical rows use pack_bytes
+// Fixed for one index generation. Archive rows use pack_bytes
 // below; only RowPacker may introduce dictionary frames.
 const ROW_DICTIONARY: &[u8] = include_bytes!("encoding/rows.dict");
 static ROW_ENCODER: LazyLock<zstd::dict::EncoderDictionary<'static>> =
