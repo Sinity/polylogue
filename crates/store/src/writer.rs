@@ -766,7 +766,6 @@ impl Inner {
             replacements,
         };
         let applied = crate::excise::apply(&txs, request);
-        drop(txs);
         let rollback = |embeddings: &Option<rusqlite::Connection>| {
             if let Some(e) = embeddings {
                 let _ = e.execute_batch("ROLLBACK");
