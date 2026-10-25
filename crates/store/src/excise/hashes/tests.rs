@@ -31,7 +31,7 @@ fn texts_are_counted_once_and_visited_in_order() {
 }
 
 #[test]
-fn blob_candidates_are_kept_apart_from_texts() {
+fn blobs_to_check_are_kept_apart_from_texts() {
     let mut db = Connection::open_in_memory().unwrap();
     let tx = db.transaction().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
@@ -51,7 +51,7 @@ fn blob_candidates_are_kept_apart_from_texts() {
     hashes.finish().unwrap();
     let hashes = RemovalHashes::new(&tx).unwrap();
     hashes
-        .visit_blobs_to_check(|_| panic!("stale candidate"))
+        .visit_blobs_to_check(|_| panic!("stale blob"))
         .unwrap();
     hashes.visit_texts(|_| panic!("stale text")).unwrap();
     hashes.finish().unwrap();
@@ -105,7 +105,7 @@ fn hash_callback_and_database_failures_refuse_then_rollback_allows_reuse() {
     let hashes = RemovalHashes::new(&tx).unwrap();
     assert_eq!(hashes.text_count().unwrap(), 0);
     hashes
-        .visit_blobs_to_check(|_| panic!("stale failed candidate"))
+        .visit_blobs_to_check(|_| panic!("stale blob after a failure"))
         .unwrap();
     hashes.finish().unwrap();
 }

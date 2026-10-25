@@ -170,7 +170,7 @@ impl TextMatches {
         utf8.extend_from_slice(bytes);
         if let Err(e) = std::str::from_utf8(&utf8) {
             if e.error_len().is_some() {
-                return Err(Error::Syntax("retained bytes are not UTF-8 text".into()));
+                return Err(Error::Syntax("stored bytes are not UTF-8 text".into()));
             }
             self.utf8_tail.extend_from_slice(&utf8[e.valid_up_to()..]);
         }
@@ -342,12 +342,12 @@ impl TextMatches {
         }
         if !self.utf8_tail.is_empty() {
             return Err(Error::Syntax(
-                "retained UTF-8 text ends inside a character".into(),
+                "stored UTF-8 text ends inside a character".into(),
             ));
         }
         if self.json == Some(true) && self.quoted {
             return Err(Error::Syntax(
-                "retained JSON ends inside a string value".into(),
+                "stored JSON ends inside a string value".into(),
             ));
         }
         Ok(())

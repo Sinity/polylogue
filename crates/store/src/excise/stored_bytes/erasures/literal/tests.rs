@@ -70,7 +70,7 @@ fn zero_matches_are_complete_and_a_new_scan_invalidates_prior_results() {
             ranges.begin()?;
             assert!(ranges.ranges(|_, _| Ok(())).is_err());
             assert_eq!(ranges.finish()?, 0);
-            ranges.ranges(|_, _| panic!("new scan retained an earlier range"))?;
+            ranges.ranges(|_, _| panic!("a new scan kept an earlier range"))?;
             Ok(())
         })
         .unwrap();

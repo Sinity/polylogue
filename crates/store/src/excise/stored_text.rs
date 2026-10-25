@@ -42,7 +42,7 @@ fn extent(r: &rusqlite::Row<'_>) -> rusqlite::Result<Extent> {
     })
 }
 
-/// Preflight every retained chain before any replacement is installed. Appends
+/// Check every stored chain before any replacement is written. Appends
 /// share a chain: its longest revision includes every earlier prefix.
 pub(super) fn find(t: &Transactions<'_, '_>, needle: &str) -> Result<StoredText> {
     find_in(t.archive, t.store, needle)
@@ -72,7 +72,7 @@ pub(super) fn find_in(
         let (input, chain, length, format) = row?;
         if format == "export-file" {
             return Err(StoreError::ExcisionFormat { input, format,
-                detail: "input was captured as opaque; text/media excision for that byte format remains unsupported after later interpretation".into() });
+                detail: "the input was stored as an opaque export file; text and media excision cannot rewrite that format".into() });
         }
         let key = (input, chain);
         framing::scan(archive, store, &mut bytes, &plan, &key, length, needle)?;

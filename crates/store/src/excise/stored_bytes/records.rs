@@ -24,10 +24,10 @@ pub(super) fn preflight(
             |r| r.get(0),
         )?;
         let length =
-            length.ok_or_else(|| refuse("source chain has no retained revision".into()))?;
+            length.ok_or_else(|| refuse("source chain has no stored revision".into()))?;
         if spans.invalid_bounds(input, chain, length)? {
             return Err(refuse(
-                "source citation is outside its retained chain".into(),
+                "source citation is outside its stored chain".into(),
             ));
         }
         let mut statement=t.archive.prepare("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM extent e JOIN blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 AND e.offset<?3 ORDER BY e.offset")?;
@@ -71,7 +71,7 @@ pub(super) fn preflight(
             position += size;
         }
         if position != length {
-            return Err(refuse("retained source pieces have a gap".into()));
+            return Err(refuse("stored source pieces have a gap".into()));
         }
         let surviving:bool=t.index.query_row("SELECT EXISTS(SELECT 1 FROM parsed p JOIN input_ref r ON r.pk=p.input_pk WHERE r.id=?1 AND p.chain=?2 AND p.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions))",params![input,chain],|r|r.get(0))?;
         if documents > 0 && erased == documents && surviving {
@@ -82,7 +82,7 @@ pub(super) fn preflight(
         Ok(())
     })?;
     if erasures.has_unchecked()? {
-        return Err(refuse("source citation has no retained piece".into()));
+        return Err(refuse("source citation has no stored piece".into()));
     }
     erasures.visit(|hash| {
         let mut uses = t

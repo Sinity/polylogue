@@ -8,9 +8,9 @@ mod erasures;
 mod plain_blob;
 mod records;
 
-/// Blobs contributing a retained input-chain match of `needle`, including
+/// Blobs holding part of a match of `needle` in a stored chain, including
 /// decoded JSON spellings and matches spanning several blobs. Uses the
-/// excision preflight, so unsupported retained representations return an error.
+/// excision's first pass, so a format excision cannot rewrite returns an error.
 pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<BlobHash>> {
     let conn = crate::archive::open_read(&archive.archive_db())?;
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;

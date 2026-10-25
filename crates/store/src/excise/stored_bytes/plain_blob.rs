@@ -78,7 +78,7 @@ impl PlainBlob {
     }
 }
 
-/// Retain only the suffix that could start a match in the next chunk.
+/// Keep only the suffix that could start a match in the next chunk.
 fn literal_ranges(
     mut reader: impl Read,
     needle: &[u8],

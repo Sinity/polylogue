@@ -226,7 +226,7 @@ fn authored_payloads_are_redacted_without_session_targets_or_identity_changes() 
 }
 
 #[test]
-fn unsupported_retained_format_refuses_before_any_committed_change() {
+fn an_unsupported_stored_format_refuses_before_any_committed_change() {
     for bytes in [
         b"PK\x03\x04secret".as_slice(),
         b"SQLite format 3\0secret",
@@ -358,7 +358,7 @@ fn matching_json_keys_refuse_before_removing_any_value() {
 }
 
 #[test]
-fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes() {
+fn a_delta_base_refuses_text_excision_without_changing_stored_bytes() {
     let w = World::new();
     w.seed("base", 1, &[b"synthetic secret"]);
     let base = BlobHash::of(b"synthetic secret");

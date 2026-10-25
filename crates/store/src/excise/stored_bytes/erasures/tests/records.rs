@@ -215,7 +215,7 @@ fn malformed_eof_cannot_expose_partial_ranges_on_a_retry() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn scratch_failures_stay_structured_and_retry_clears_unpublished_ranges() {
+fn scratch_failures_stay_structured_and_retry_clears_uncommitted_ranges() {
     use crate::fault::{self, Action};
     for (point, skip) in [
         ("excision_ranges.read", 1),

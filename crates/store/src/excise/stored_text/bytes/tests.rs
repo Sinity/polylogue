@@ -155,7 +155,7 @@ fn visitor_errors_stop_without_reading_more_logical_chunks() {
 }
 
 #[test]
-fn failed_verified_copy_publishes_no_placement_and_can_retry_exact_bytes() {
+fn a_failed_verified_copy_writes_no_file_and_can_retry_exact_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
     let index = Connection::open_in_memory().unwrap();
