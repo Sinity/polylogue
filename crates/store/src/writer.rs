@@ -184,10 +184,6 @@ impl Writer {
         sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
     ) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        // The search thread is the only other index writer, and its
-        // transactions are bounded, so the writer waits for one as long as it
-        // takes rather than failing a batch after the usual timeout.
-        index.busy_timeout(std::time::Duration::from_millis(i32::MAX as u64))?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -481,6 +477,10 @@ impl Inner {
         let mut assets = Vec::new();
         let mut blobs = Vec::new();
         while let Ok(first) = rx.recv() {
+            let turn = Arc::clone(&self.search.turn);
+            let _turn = turn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
@@ -622,7 +622,7 @@ impl Inner {
             }
             // Whatever a flush reports written is also searchable.
             if !flushes.is_empty()
-                && let Err(e) = crate::text_rows::index_pending(&self.index)
+                && let Err(e) = crate::text_rows::index_pending(&self.index, || ())
             {
                 self.report
                     .errors

@@ -33,6 +33,11 @@ fn a_refused_import_installs_no_file() {
                 );
             }
         }
+        // A trigger is a table change the archive refuses at open.
+        rusqlite::Connection::open(home.root.join("archive.db"))
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_first_import")
+            .unwrap();
         let (mut engine, _lock) = engine(&home, 64);
         assert!(engine.run_pass().unwrap().errors.is_empty());
         assert!(!engine.blobs.contains(&hash));
@@ -43,9 +48,6 @@ fn a_refused_import_installs_no_file() {
             )
             .unwrap();
         }
-        let conn = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
-        conn.execute_batch("DROP TRIGGER reject_first_import")
-            .unwrap();
         let retry = engine.import(std::slice::from_ref(&path)).unwrap();
         assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
         assert_eq!(engine.blobs.contains(&hash), !changed);

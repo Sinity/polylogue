@@ -101,11 +101,14 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Drains committed search work in bounded transactions.
-pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
+/// Drains committed search work in bounded transactions, each inside what
+/// `turn` returns (the search thread's turn at writing the index).
+pub(crate) fn index_pending<T>(conn: &Connection, mut turn: impl FnMut() -> T) -> Result<u64> {
     let mut written = 0;
     loop {
+        let held = turn();
         let count = pending_batch(conn, SEARCH_BYTES)?;
+        drop(held);
         written += count;
         if count == 0 {
             return Ok(written);
