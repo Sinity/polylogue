@@ -801,7 +801,11 @@ const WRITTEN: &[Command] = &[
             pos("text", Kind::Words, "What to write"),
             Arg {
                 required: true,
-                ..opt("model", Kind::Text, "The model, as the provider's model menu names it")
+                ..opt(
+                    "model",
+                    Kind::Text,
+                    "The model, as the provider's model menu names it",
+                )
             },
             opt(
                 "effort",
@@ -818,7 +822,11 @@ const WRITTEN: &[Command] = &[
                 Kind::Text,
                 "Start the conversation in this project",
             ),
-            opt("submit", Kind::Bool, "Send the turn instead of leaving a draft"),
+            opt(
+                "submit",
+                Kind::Bool,
+                "Send the turn instead of leaving a draft",
+            ),
             Arg {
                 cli_only: true,
                 ..opt("attach", Kind::List, "Files to attach")
@@ -859,7 +867,11 @@ const WRITTEN: &[Command] = &[
         name: "backfill start",
         help: "Ask the browser extension to capture a web chat's older conversations: every one the archive lacks or holds an older copy of. One job runs per provider; starting again shows it",
         args: &[
-            pos("provider", Kind::Text, "The web chat: chatgpt, claude-ai or grok"),
+            pos(
+                "provider",
+                Kind::Text,
+                "The web chat: chatgpt, claude-ai or grok",
+            ),
             opt(
                 "since",
                 Kind::Text,

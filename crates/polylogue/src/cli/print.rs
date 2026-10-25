@@ -166,7 +166,11 @@ pub fn chat_actions(data: &Value) -> String {
 pub fn backfill_jobs(data: &Value) -> String {
     let jobs: Vec<&Value> = match data["jobs"].as_array() {
         Some(jobs) => jobs.iter().collect(),
-        None => data.get("job").filter(|j| !j.is_null()).into_iter().collect(),
+        None => data
+            .get("job")
+            .filter(|j| !j.is_null())
+            .into_iter()
+            .collect(),
     };
     if jobs.is_empty() {
         return "no backfill jobs\n".into();

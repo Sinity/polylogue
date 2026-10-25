@@ -257,7 +257,16 @@ fn the_operator_queues_chat_actions_only_while_switched_on() {
         assert_eq!(s, StatusCode::CONFLICT);
         assert!(raw.contains("idempotency_key_reused"));
     });
-    assert_eq!(r.w.daemon.reads.reader().unwrap().chat_actions().unwrap().len(), 1);
+    assert_eq!(
+        r.w.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .chat_actions()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -334,7 +343,13 @@ fn backfill_jobs_start_and_list_over_http() {
         assert_eq!(s, StatusCode::OK, "{started}");
         let started: serde_json::Value = serde_json::from_str(&started).unwrap();
         assert_eq!(started["job"]["status"], "waiting");
-        let (s, _, listed) = send(&r, authed(get("/api/v1/backfill/list")).body(Body::empty()).unwrap()).await;
+        let (s, _, listed) = send(
+            &r,
+            authed(get("/api/v1/backfill/list"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK, "{listed}");
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(listed["jobs"][0]["id"], started["job"]["id"]);

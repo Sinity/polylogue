@@ -232,7 +232,10 @@ fn malformed_exchanges_are_refused_with_an_error_frame() {
     assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
     // Not a capture.
     let a = exchange(&host, "POST", "/v1/captures", b"[1]");
-    assert_eq!((a.status, a.json()["error"].clone()), (400, json!("capture_not_json")));
+    assert_eq!(
+        (a.status, a.json()["error"].clone()),
+        (400, json!("capture_not_json"))
+    );
 }
 
 fn chat_request(conversation: Option<&str>, submit: bool) -> actions::ChatRequest {
@@ -281,7 +284,13 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let w = test_daemon::start("x");
     let host = host(&w);
     let claim = |by: &str| {
-        exchange(&host, "GET", &format!("/v1/chat-actions?claim_by={by}"), b"").json()
+        exchange(
+            &host,
+            "GET",
+            &format!("/v1/chat-actions?claim_by={by}"),
+            b"",
+        )
+        .json()
     };
     // Off by default: nothing queues and nothing is handed out.
     assert_eq!(
@@ -289,7 +298,10 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
         "browser_actions_off"
     );
     w.set("browser.actions", "on");
-    assert_eq!(exchange(&host, "GET", "/v1/status", b"").json()["chat_actions"], true);
+    assert_eq!(
+        exchange(&host, "GET", "/v1/status", b"").json()["chat_actions"],
+        true
+    );
     let file = actions::ChatFile {
         name: "notes.txt".into(),
         media_type: "text/plain".into(),
@@ -402,7 +414,10 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     assert_eq!(exchange(&host, "POST", "/v1/captures", &bytes).status, 200);
     let progress = json!({"kind": "progress", "position": "0:28",
         "counts": {"listed": 28, "captured": 1, "unchanged": 27, "failed": 0}});
-    assert_eq!(backfill_report(&host, &id, "ext-1", progress.clone()).status, 200);
+    assert_eq!(
+        backfill_report(&host, &id, "ext-1", progress.clone()).status,
+        200
+    );
     assert_eq!(backfill_report(&host, &id, "ext-2", progress).status, 409);
 
     // A restarted extension instance claims its job again and continues
@@ -493,24 +508,31 @@ fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
     assert_eq!(read.json()["files"][0]["url"], "users/u/raw-file/content");
     let mut capture: Value = serde_json::from_slice(&body).unwrap();
     capture["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
-    let sent = exchange(&host, "POST", "/v1/captures", &serde_json::to_vec(&capture).unwrap());
+    let sent = exchange(
+        &host,
+        "POST",
+        "/v1/captures",
+        &serde_json::to_vec(&capture).unwrap(),
+    );
     assert_eq!(sent.status, 200);
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
-        || {
-            match host.ask(&crate::daemon::Request::Read {
-                target: crate::daemon::ReadTarget::Session(session.clone()),
-                view: "full".into(),
-                format: "markdown".into(),
-                with_parents: false,
-                budget: None,
-                cursor: None,
-            }) {
-                Some(crate::daemon::Response::Ok { data }) => data["content"].clone(),
-                _ => Value::Null,
-            }
+        || match host.ask(&crate::daemon::Request::Read {
+            target: crate::daemon::ReadTarget::Session(session.clone()),
+            view: "full".into(),
+            format: "markdown".into(),
+            with_parents: false,
+            budget: None,
+            cursor: None,
+        }) {
+            Some(crate::daemon::Response::Ok { data }) => data["content"].clone(),
+            _ => Value::Null,
         },
-        |content| content.as_str().is_some_and(|text| text.contains("raw provider question")),
+        |content| {
+            content
+                .as_str()
+                .is_some_and(|text| text.contains("raw provider question"))
+        },
     );
     let hash = polylogue_model::BlobHash::of(b"fetched file bytes");
     let messages = w

@@ -21,10 +21,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let second = capture("rapid", "second current version");
     let ack = exchange(&host, "POST", "/v1/captures", &first);
     assert_eq!(ack.status, 200);
-    assert_eq!(
-        exchange(&host, "POST", "/v1/captures", &second).status,
-        200
-    );
+    assert_eq!(exchange(&host, "POST", "/v1/captures", &second).status, 200);
     assert_eq!(ack.json()["new"], true);
     let path = host.capture_log("chatgpt", "rapid");
     let before = std::fs::read(&path).unwrap();

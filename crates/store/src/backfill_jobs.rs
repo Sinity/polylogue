@@ -139,11 +139,7 @@ impl BackfillJob {
     /// The totals and list position of the latest report.
     pub fn progress(&self) -> (BackfillCounts, Option<&str>) {
         let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
-        let position = self
-            .events
-            .iter()
-            .rev()
-            .find_map(|e| e.position.as_deref());
+        let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
         (counts, position)
     }
 }

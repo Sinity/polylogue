@@ -208,7 +208,14 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
         }
         Request::BackfillReport { id, by, report } => {
             drop(reader);
-            backfill_then_view(d, UserWrite::BackfillReport { job: id, by, report })
+            backfill_then_view(
+                d,
+                UserWrite::BackfillReport {
+                    job: id,
+                    by,
+                    report,
+                },
+            )
         }
         Request::Conversations { provider, ids } => {
             let sessions: Vec<_> = ids
@@ -235,9 +242,6 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
                 .collect();
             ok(json!({ "provider": provider, "conversations": conversations }))
         }
-        other => error(
-            "bad_request",
-            format!("{other:?} is not a browser request"),
-        ),
+        other => error("bad_request", format!("{other:?} is not a browser request")),
     }
 }

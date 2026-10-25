@@ -355,7 +355,15 @@ fn chat_send_reads_attached_files_on_the_command_line() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("notes.md"), b"synthetic").unwrap();
     let (c, v) = crate::cli::parse(&[
-        "polylogue", "chat", "send", "chatgpt", "draft", "this", "--model", "X", "--attach",
+        "polylogue",
+        "chat",
+        "send",
+        "chatgpt",
+        "draft",
+        "this",
+        "--model",
+        "X",
+        "--attach",
         "notes.md",
     ])
     .unwrap();
@@ -369,10 +377,21 @@ fn chat_send_reads_attached_files_on_the_command_line() {
     }) else {
         panic!("chat send builds ChatSend")
     };
-    assert_eq!((action.text.as_str(), action.model.as_str(), action.submit), ("draft this", "X", false));
+    assert_eq!(
+        (action.text.as_str(), action.model.as_str(), action.submit),
+        ("draft this", "X", false)
+    );
     assert_eq!(files.len(), 1);
-    assert_eq!((files[0].name.as_str(), files[0].media_type.as_str()), ("notes.md", "text/plain"));
+    assert_eq!(
+        (files[0].name.as_str(), files[0].media_type.as_str()),
+        ("notes.md", "text/plain")
+    );
     assert_eq!(files[0].bytes, b"synthetic");
     // Over MCP there is no file to read.
-    assert!(command("chat send").unwrap().args_for(Surface::Mcp).all(|a| a.name != "attach"));
+    assert!(
+        command("chat send")
+            .unwrap()
+            .args_for(Surface::Mcp)
+            .all(|a| a.name != "attach")
+    );
 }

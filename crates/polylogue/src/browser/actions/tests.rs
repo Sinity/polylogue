@@ -52,5 +52,10 @@ fn a_request_is_checked_before_it_is_stored() {
     let attached = new_action("k", &request(None, false), vec![attachment(&file, blob)]).unwrap();
     assert_eq!(attached.attachments[0].size, 5);
     // The same request with other files is other content under the same key.
-    assert_ne!(attached.request_hash, new_action("k", &request(None, false), vec![]).unwrap().request_hash);
+    assert_ne!(
+        attached.request_hash,
+        new_action("k", &request(None, false), vec![])
+            .unwrap()
+            .request_hash
+    );
 }

@@ -20,7 +20,9 @@ pub fn files(bytes: &[u8]) -> Result<Json, String> {
         .zip(conversation)
         .and_then(|(provider, id)| session_for(provider, id));
     if expected.as_ref() != Some(&session.id) {
-        return Err("the provider's conversation has another identity than the capture names".into());
+        return Err(
+            "the provider's conversation has another identity than the capture names".into(),
+        );
     }
     let mut files = Vec::new();
     for row in &step.output.messages {

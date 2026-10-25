@@ -48,7 +48,9 @@ mod zip_members;
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
-pub use read::{BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status};
+pub use read::{
+    BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
+};
 pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,

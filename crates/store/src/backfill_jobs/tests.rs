@@ -86,7 +86,10 @@ fn one_job_runs_per_provider_and_a_restarted_instance_continues_where_it_reporte
     let job = reads.reader().unwrap().backfill_job("j1").unwrap().unwrap();
     let (counts, position) = job.progress();
     assert_eq!((counts.captured, position), (3, Some("0:56")));
-    assert_eq!(job.status(job.events.last().unwrap().at).0, BackfillStatus::Running);
+    assert_eq!(
+        job.status(job.events.last().unwrap().at).0,
+        BackfillStatus::Running
+    );
 
     // A second instance takes the other provider's job.
     let other = write(&writer, UserWrite::BackfillClaim { by: "ext-2".into() }).unwrap();
@@ -139,7 +142,10 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
             },
         ],
     };
-    assert_eq!(job.status(10 + CLAIM_MS), (BackfillStatus::Running, Some("ext")));
+    assert_eq!(
+        job.status(10 + CLAIM_MS),
+        (BackfillStatus::Running, Some("ext"))
+    );
     assert_eq!(job.status(11 + CLAIM_MS), (BackfillStatus::Waiting, None));
 
     let (_dir, _archive, _lock, writer, reads) = setup();

@@ -168,7 +168,11 @@ async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
 async fn capture_files(body: Bytes) -> HttpResponse {
     match blocking(move || polylogue_sources::browser_capture::files(&body)).await {
         Some(Ok(result)) => Json(result).into_response(),
-        Some(Err(error)) => refuse(StatusCode::UNPROCESSABLE_ENTITY, "capture_unreadable", &error),
+        Some(Err(error)) => refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "capture_unreadable",
+            &error,
+        ),
         None => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
             "capture_unreadable",

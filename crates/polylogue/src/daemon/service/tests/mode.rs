@@ -77,8 +77,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         cwd: None,
         for_session: None,
     };
-    let requests =
-        vec![
+    let requests = vec![
         Request::ChatSend {
             request_id: "send".into(),
             action: crate::browser::actions::ChatRequest {

@@ -233,6 +233,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     if (alarm.name === TICK) void tick();
     if (alarm.name === SWEEP) void sweep("sweep");
   });
+  chrome.tabs.onRemoved?.addListener((tabId) => running.delete(tabId));
   chrome.runtime.onInstalled.addListener(() => void wake("installed"));
   chrome.runtime.onStartup.addListener(() => void wake("started"));
 
