@@ -7,7 +7,7 @@ impl Engine {
         selected: Option<&[String]>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        let imports = self.reads.reader()?.retained_imports()?;
+        let imports = self.reads.reader()?.stored_imports()?;
         for input in imports {
             if selected.is_some_and(|ids| !ids.contains(&input.id)) {
                 continue;
@@ -24,28 +24,28 @@ impl Engine {
             }
             let path = PathBuf::from(input.path.ok_or_else(|| {
                 std::io::Error::other(format!(
-                    "retained import {} has no captured parser path",
+                    "stored import {} has no recorded parser path",
                     input.id
                 ))
             })?);
             if (origin.open)(&path).is_none() {
                 return Err(std::io::Error::other(format!(
-                    "retained import {} has no parser for its captured path",
+                    "stored import {} has no parser for its recorded path",
                     input.id
                 ))
                 .into());
             }
-            let retained_chain =
+            let stored_chain =
                 match self
                     .reads
                     .reader()?
                     .stored_chain(&input.id, state.chain, state.length)
                 {
                     Ok(chain) => chain,
-                    Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                    Err(polylogue_store::StoreError::InputPending { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 };
-            let source = pool::Bytes::Stored(Arc::new(retained_chain));
+            let source = pool::Bytes::Stored(Arc::new(stored_chain));
             self.execute(
                 vec![Plan {
                     path: path.clone(),

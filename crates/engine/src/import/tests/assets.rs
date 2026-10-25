@@ -55,10 +55,10 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
             resolution.state,
             polylogue_store::assets::AttachmentState::Available
         );
-        assert_eq!(resolution.candidates.len(), 1);
-        assert_eq!(resolution.candidates[0].names, ["named.png"]);
+        assert_eq!(resolution.matches.len(), 1);
+        assert_eq!(resolution.matches[0].names, ["named.png"]);
         assert_eq!(
-            resolution.candidates[0].blob,
+            resolution.matches[0].blob,
             Some(polylogue_model::BlobHash::of(b"native bytes"))
         );
         assert_eq!(
@@ -92,16 +92,16 @@ fn identical_conversations_in_conflicting_acquisitions_do_not_pick_an_asset() {
         resolution.state,
         polylogue_store::assets::AttachmentState::Ambiguous
     );
-    assert_eq!(resolution.candidates.len(), 2);
+    assert_eq!(resolution.matches.len(), 2);
     assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
 }
 
 #[test]
-fn directory_import_retains_attachment_bytes_after_provider_removal() {
+fn directory_import_keeps_attachment_bytes_after_provider_removal() {
     let w = ClaudeHome::new();
     let directory = w.dir.path().join("account-export");
     std::fs::create_dir_all(&directory).unwrap();
-    let bytes = b"synthetic retained attachment\0\xff";
+    let bytes = b"synthetic stored attachment\0\xff";
     let path = directory.join("file-native.dat");
     std::fs::write(&path, bytes).unwrap();
     let (mut engine, _lock) = engine(&w, 1024);
@@ -110,22 +110,22 @@ fn directory_import_retains_attachment_bytes_after_provider_removal() {
     std::fs::remove_file(&path).unwrap();
     let reader = engine.reads.reader().unwrap();
     let id = blake3::hash(bytes).to_hex().to_string();
-    let retained = reader.retained_input(&id).unwrap();
+    let progress = reader.input_progress(&id).unwrap();
     assert!(
-        retained.is_some(),
-        "directory attachment bytes were not retained"
+        progress.is_some(),
+        "directory attachment bytes were not stored"
     );
-    let retained = retained.unwrap();
+    let progress = progress.unwrap();
     assert_eq!(
         reader
-            .stored_range(&id, retained.chain, 0, retained.length, &engine.blobs)
+            .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
             .unwrap(),
         bytes
     );
 }
 
 #[test]
-fn duplicate_zip_member_content_retains_each_physical_source_association() {
+fn duplicate_zip_member_content_keeps_each_member_association() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let path = w.dir.path().join("export.zip");
@@ -133,7 +133,7 @@ fn duplicate_zip_member_content_retains_each_physical_source_association() {
     for name in ["file-first.dat", "file-second.dat"] {
         zip.start_file(name, zip::write::SimpleFileOptions::default())
             .unwrap();
-        zip.write_all(b"same retained bytes").unwrap();
+        zip.write_all(b"same stored bytes").unwrap();
     }
     zip.finish().unwrap();
     let (mut engine, _lock) = engine(&w, 1024);
@@ -148,7 +148,7 @@ fn duplicate_zip_member_content_retains_each_physical_source_association() {
 }
 
 #[test]
-fn sidecar_interpretation_is_scoped_to_its_declared_role_in_each_acquisition() {
+fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
     let w = ClaudeHome::new();
     let (mut engine, _lock) = engine(&w, 1024);
     let names = br#"{"file-Native.dat":"native-name.png"}"#;
@@ -158,7 +158,7 @@ fn sidecar_interpretation_is_scoped_to_its_declared_role_in_each_acquisition() {
             "conversation_asset_file_names.json",
             b"first".as_slice(),
         ),
-        ("two", "uninterpreted.json", b"second".as_slice()),
+        ("two", "unparsed.json", b"second".as_slice()),
         ("three", "library_files.json", b"third".as_slice()),
     ] {
         let directory = w.dir.path().join(directory);
@@ -181,13 +181,13 @@ fn sidecar_interpretation_is_scoped_to_its_declared_role_in_each_acquisition() {
     }
     let reader = engine.reads.reader().unwrap();
     let resolution = reader.attachment(&message_id(), 0, 0).unwrap();
-    assert_eq!(resolution.candidates.len(), 3);
-    for candidate in resolution.candidates {
-        if candidate.blob == Some(polylogue_model::BlobHash::of(b"first")) {
-            assert_eq!(candidate.names, ["native-name.png"]);
+    assert_eq!(resolution.matches.len(), 3);
+    for asset in resolution.matches {
+        if asset.blob == Some(polylogue_model::BlobHash::of(b"first")) {
+            assert_eq!(asset.names, ["native-name.png"]);
         } else {
             assert!(
-                candidate.names.is_empty(),
+                asset.names.is_empty(),
                 "a filename role from another acquisition must not be borrowed"
             );
         }
@@ -230,7 +230,7 @@ fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
             resolution.state,
             polylogue_store::assets::AttachmentState::Unavailable
         );
-        assert!(resolution.candidates.is_empty());
+        assert!(resolution.matches.is_empty());
     }
     polylogue_testkit::delete_index(&w.root);
     let (mut engine, _lock) = engine(&w, 1024);
@@ -246,12 +246,12 @@ fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
             resolution.state,
             polylogue_store::assets::AttachmentState::Unavailable
         );
-        assert!(resolution.candidates.is_empty());
+        assert!(resolution.matches.is_empty());
     }
 }
 
 #[test]
-fn text_excision_refuses_opaque_assets_without_changing_basis_or_retained_bytes() {
+fn text_excision_refuses_opaque_assets_without_changing_their_stored_bytes() {
     let w = ClaudeHome::new();
     let source = w.dir.path().join("asset-source");
     std::fs::create_dir(&source).unwrap();
@@ -299,7 +299,7 @@ fn text_excision_refuses_opaque_assets_without_changing_basis_or_retained_bytes(
             let reader = engine.reads.reader().unwrap();
             assert_eq!(
                 reader
-                    .attachment_range(&before.candidates[0], &[], 0..before.candidates[0].size)
+                    .attachment_range(&before.matches[0], &[], 0..before.matches[0].size)
                     .unwrap(),
                 original.as_bytes()
             );
@@ -312,13 +312,11 @@ fn text_excision_refuses_opaque_assets_without_changing_basis_or_retained_bytes(
             resolution.state,
             polylogue_store::assets::AttachmentState::Available
         );
-        let candidate = &resolution.candidates[0];
-        let bytes = reader
-            .attachment_range(candidate, &[], 0..candidate.size)
-            .unwrap();
+        let asset = &resolution.matches[0];
+        let bytes = reader.attachment_range(asset, &[], 0..asset.size).unwrap();
         assert_eq!(bytes, original.as_bytes());
         assert_eq!(
-            candidate.blob,
+            asset.blob,
             Some(polylogue_model::BlobHash::of(original.as_bytes()))
         );
         if let Some((binding, expected)) = &current {

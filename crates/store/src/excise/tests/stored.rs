@@ -226,7 +226,7 @@ fn authored_payloads_are_redacted_without_session_targets_or_identity_changes() 
 }
 
 #[test]
-fn unsupported_retained_format_refuses_before_any_committed_change() {
+fn an_unsupported_stored_format_refuses_before_any_committed_change() {
     for bytes in [
         b"PK\x03\x04secret".as_slice(),
         b"SQLite format 3\0secret",
@@ -358,7 +358,7 @@ fn matching_json_keys_refuse_before_removing_any_value() {
 }
 
 #[test]
-fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes() {
+fn a_delta_base_refuses_text_excision_without_changing_stored_bytes() {
     let w = World::new();
     w.seed("base", 1, &[b"synthetic secret"]);
     let base = BlobHash::of(b"synthetic secret");
@@ -385,7 +385,7 @@ fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes(
 }
 
 #[test]
-fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_changes() {
+fn a_late_corrupt_capture_payload_refuses_before_installing_earlier_text_changes() {
     use polylogue_model::capture_log::{Header, MAGIC};
     let w = World::new();
     w.seed("a-matched", 1, &[b"secret"]);
@@ -397,7 +397,7 @@ fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_change
     framed.extend(payload);
     w.seed("z-corrupt", 1, &[&framed[..27], &framed[27..]]);
     assert!(
-        matches!(w.excise("secret", false), Err(StoreError::Invalid(message)) if message.contains("snapshot payload digest mismatch"))
+        matches!(w.excise("secret", false), Err(StoreError::Invalid(message)) if message.contains("capture payload digest mismatch"))
     );
     assert_eq!(w.bytes("a-matched", 1), b"secret");
     assert_eq!(w.bytes("z-corrupt", 1), framed);
@@ -461,4 +461,55 @@ fn a_later_text_replacement_piece_failure_rolls_back_rows_and_retries() {
             .unwrap(),
         3
     );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_rollback_after_a_piece_file_is_written_leaves_no_unreferenced_file() {
+    fn blob_files(root: &std::path::Path) -> std::collections::BTreeSet<std::path::PathBuf> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut dirs = vec![root.join("blobs")];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.insert(path);
+                }
+            }
+        }
+        files
+    }
+    let w = World::new();
+    let mut original = vec![b'x'; 2 * 1024 * 1024 + 32];
+    original[..6].copy_from_slice(b"secret");
+    w.seed("large", 1, &[&original]);
+    let before = blob_files(&w.archive.root);
+    let writer = crate::Writer::start(&w.archive).unwrap();
+    let request = ExciseRequest {
+        id: "file-rollback".into(),
+        scope: Scope::Text("secret".into()),
+        reason: None,
+        dry_run: false,
+    };
+    crate::fault::clear();
+    crate::fault::arm(
+        "excision.after_piece_file",
+        "",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let error = writer.excise(request.clone(), w.store.clone()).unwrap_err();
+    assert!(error.to_string().contains("injected fault"));
+    crate::fault::clear();
+    assert_eq!(w.bytes("large", 1), original);
+    assert_eq!(blob_files(&w.archive.root), before);
+    writer.excise(request, w.store.clone()).unwrap();
+    original[..6].fill(b' ');
+    assert_eq!(w.bytes("large", 1), original);
 }

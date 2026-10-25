@@ -84,7 +84,7 @@ fn a_restart_rebuilds_what_was_exported_from_the_file() {
 }
 
 #[test]
-fn dropped_tables_publish_exact_removals_and_can_reappear() {
+fn dropped_tables_commit_exact_removals_and_can_reappear() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.sqlite");
     let out = dir.path().join("state.jsonl");
@@ -134,7 +134,7 @@ fn malformed_exports_without_a_marker_are_preserved_and_refused() {
                 .is_err()
         );
         assert_eq!(fs::read_to_string(&out).unwrap(), suffix);
-        assert!(!publication::checkpoint(&out).exists());
+        assert!(!synced_prefix::checkpoint(&out).exists());
     }
 }
 
@@ -151,7 +151,7 @@ fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
     exporter.export(&db, &out, None).unwrap();
     let mut corrupt = fs::read(&out).unwrap();
     corrupt[0] = b'!';
-    corrupt.extend_from_slice(b"unpublished tail");
+    corrupt.extend_from_slice(b"uncommitted tail");
     fs::write(&out, &corrupt).unwrap();
     assert!(exporter.export(&db, &out, None).is_err());
     assert_eq!(fs::read(&out).unwrap(), corrupt);
@@ -178,7 +178,7 @@ fn exports_without_a_marker_replay_rows_and_removals_without_repeating_them() {
         .map(|v| format!("{v}\n"))
         .collect::<String>();
     fs::write(&out, &bytes).unwrap();
-    fs::remove_file(publication::checkpoint(&out)).unwrap();
+    fs::remove_file(synced_prefix::checkpoint(&out)).unwrap();
     source.execute("DELETE FROM t WHERE id=2", []).unwrap();
     assert_eq!(
         Exporter::default()

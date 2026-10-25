@@ -33,7 +33,7 @@ pub(super) fn labels(
                 .clone()
                 .or_else(|| {
                     resolution
-                        .candidates
+                        .matches
                         .first()
                         .map(|found| found.names.join(", "))
                         .filter(|name| !name.is_empty())
@@ -42,11 +42,11 @@ pub(super) fn labels(
                 .unwrap_or_else(|| "attachment".into());
             let state = match resolution.state {
                 AttachmentState::Available => {
-                    format!("{} stored bytes", resolution.candidates[0].size)
+                    format!("{} stored bytes", resolution.matches[0].size)
                 }
                 AttachmentState::Ambiguous => format!(
                     "{} stored files match, choose one with --asset",
-                    resolution.candidates.len()
+                    resolution.matches.len()
                 ),
                 AttachmentState::Unavailable => "no stored file matches".into(),
                 AttachmentState::Unknown => "byte availability unknown".into(),

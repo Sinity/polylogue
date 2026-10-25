@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn a_large_policy_stays_on_disk_and_only_current_candidates_return() {
+fn a_large_policy_loads_in_memory_and_only_current_ids_return() {
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&conn).unwrap();
     conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('large','session:codex:removed',1,1)", []).unwrap();
@@ -17,7 +17,6 @@ fn a_large_policy_stays_on_disk_and_only_current_candidates_return() {
         )
         .unwrap();
     assert!(bytes > 1 << 20);
-    assert_eq!(conn.path(), Some(""));
     let messages: Vec<_> = (0..1500)
         .map(|n| {
             if n % 3 == 0 {
@@ -46,8 +45,8 @@ fn empty_history_stays_lazy_and_opaque_ids_keep_separate_namespaces() {
     let id = "codex:opaque:\0☺'\"";
     conn.execute("INSERT INTO excision(id,scope,message_ids_json,refused_json,created_at,commit_seq) VALUES ('remove','input:source',?1,?2,1,1)", rusqlite::params![serde_json::to_string(&[id,id]).unwrap(),r#"{"sessions":["codex:session"]}"#]).unwrap();
     let cache = Refused::load(&conn).unwrap();
-    let candidates = [id.into(), "codex:session".into(), id.into()];
-    let hits = cache.matching(&candidates, &candidates).unwrap();
+    let ids = [id.into(), "codex:session".into(), id.into()];
+    let hits = cache.matching(&ids, &ids).unwrap();
     assert_eq!(hits.sessions, HashSet::from(["codex:session".into()]));
     assert_eq!(hits.messages, HashSet::from([id.into()]));
     cache
@@ -56,11 +55,11 @@ fn empty_history_stays_lazy_and_opaque_ids_keep_separate_namespaces() {
         .unwrap()
         .execute("DROP TABLE messages", [])
         .unwrap();
-    assert!(cache.matching(&[], &candidates).is_err());
+    assert!(cache.matching(&[], &ids).is_err());
 }
 
 #[test]
-fn duplicate_fields_and_malformed_suffixes_do_not_publish_partial_lookups() {
+fn duplicate_fields_and_malformed_suffixes_do_not_leave_partial_lookups() {
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&conn).unwrap();
     conn.execute("INSERT INTO excision(id,scope,refused_json,created_at,commit_seq) VALUES ('remove','input:source','{}',1,1)", []).unwrap();
@@ -93,10 +92,10 @@ fn malformed_removed_message_ids_are_not_an_empty_refusal_set() {
 }
 
 #[test]
-fn selected_sessions_are_canonical_and_malformed_policies_refuse_loading() {
+fn selected_sessions_load_and_malformed_policies_refuse_loading() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&conn).unwrap();
-    conn.execute("INSERT INTO excision(id,scope,message_ids_json,refused_json,created_at,commit_seq) VALUES ('remove','input:source','[]',?1,1,1)", [r#"{"sessions":["codex:opaque:session"],"publication":{"ignored":"for this read"}}"#]).unwrap();
+    conn.execute("INSERT INTO excision(id,scope,message_ids_json,refused_json,created_at,commit_seq) VALUES ('remove','input:source','[]',?1,1,1)", [r#"{"sessions":["codex:opaque:session"],"other":{"ignored":"for this read"}}"#]).unwrap();
     let policy = Refused::load(&conn).unwrap();
     assert!(
         policy
@@ -118,11 +117,11 @@ fn selected_sessions_are_canonical_and_malformed_policies_refuse_loading() {
         assert!(Refused::load(&conn).is_err(), "{value}");
         assert!(super::super::RefusedJson::decode(value).is_err(), "{value}");
     }
-    // Old input-scoped records have no recoverable selected-session list.
+    // An input excision must list the sessions it removed.
     conn.execute("UPDATE excision SET refused_json='{}'", [])
         .unwrap();
     assert!(
-        matches!(Refused::load(&conn), Err(StoreError::Invalid(message)) if message.contains("no retained session selection"))
+        matches!(Refused::load(&conn), Err(StoreError::Invalid(message)) if message.contains("no list of the sessions it removed"))
     );
     conn.execute("UPDATE excision SET refused_json='{\"sessions\":[]}'", [])
         .unwrap();

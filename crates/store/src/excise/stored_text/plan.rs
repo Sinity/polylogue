@@ -1,5 +1,5 @@
 //! What one text excision found and will change, held in memory: the matches
-//! in each chain, the snapshot frames whose digests change, and the blobs and
+//! in each chain, the capture frames whose digests change, and the blobs and
 //! extents the rewrite replaces.
 
 use super::{Chain, Extent, extent};
@@ -22,10 +22,10 @@ struct State {
     /// Accepted matches per chain, overlaps kept apart.
     matches: BTreeMap<Chain, BTreeSet<(u64, u64)>>,
     /// Hits inside a text whose acceptance is not yet decided.
-    candidates: HashMap<Scope, BTreeSet<(u64, u64)>>,
+    undecided: HashMap<Scope, BTreeSet<(u64, u64)>>,
     /// Matches merged into ordered, nonoverlapping ranges to blank.
     blank: BTreeMap<Chain, Vec<(u64, u64)>>,
-    /// Replacement snapshot headers, in frame order.
+    /// Replacement capture headers, in frame order.
     patches: BTreeMap<Chain, Vec<(u64, Vec<u8>)>>,
     framed: BTreeSet<Chain>,
     frames: BTreeMap<Chain, Vec<(u64, Header)>>,
@@ -289,7 +289,7 @@ impl HitSink for Hits<'_> {
         self.plan
             .state
             .borrow_mut()
-            .candidates
+            .undecided
             .entry(scope)
             .or_default()
             .insert((start, end));
@@ -298,14 +298,14 @@ impl HitSink for Hits<'_> {
 
     fn accept(&mut self, scope: Scope, parent: Scope) -> Result<()> {
         let mut state = self.plan.state.borrow_mut();
-        if let Some(hits) = state.candidates.remove(&scope) {
-            state.candidates.entry(parent).or_default().extend(hits);
+        if let Some(hits) = state.undecided.remove(&scope) {
+            state.undecided.entry(parent).or_default().extend(hits);
         }
         Ok(())
     }
 
     fn discard(&mut self, scope: Scope) -> Result<()> {
-        self.plan.state.borrow_mut().candidates.remove(&scope);
+        self.plan.state.borrow_mut().undecided.remove(&scope);
         Ok(())
     }
 }
@@ -313,7 +313,7 @@ impl HitSink for Hits<'_> {
 impl Hits<'_> {
     pub(super) fn finish(self, scope: Scope) -> Result<()> {
         let mut state = self.plan.state.borrow_mut();
-        let hits = state.candidates.remove(&scope).unwrap_or_default();
+        let hits = state.undecided.remove(&scope).unwrap_or_default();
         state
             .matches
             .entry((self.input.to_owned(), self.chain))
@@ -324,7 +324,7 @@ impl Hits<'_> {
 }
 
 /// A forward-only cursor that blanks the matched ranges and writes the new
-/// snapshot headers into chunks as they pass.
+/// capture headers into chunks as they pass.
 pub(super) struct Edits {
     ranges: Vec<(u64, u64)>,
     next: usize,

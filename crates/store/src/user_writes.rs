@@ -35,7 +35,7 @@ pub enum UserWrite {
         detail: Option<String>,
     },
     /// The exact rows a query returned, kept to be read back as
-    /// `result:<id>` (spec user-data.md, kept results).
+    /// `result:<id>`.
     KeepResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,

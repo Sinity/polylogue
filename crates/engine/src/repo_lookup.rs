@@ -1,5 +1,4 @@
-//! Writing repository lookups (spec sources/README.md, the repo-lookup
-//! record). For each working directory the index holds that exists on this
+//! Writing repository lookups. For each working directory the index holds that exists on this
 //! host, the nearest directory with `.git` above it is read with `gix`, no
 //! subprocess: its `origin` remote, credentials removed, and the root commit
 //! reached by first parents from `HEAD`. The result is a small JSON input in

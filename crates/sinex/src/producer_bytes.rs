@@ -6,7 +6,9 @@
 //! material.
 use crate::{Error, Result, Sinex, checked};
 use sinex_model::{Class, InputRef, MaterialId};
-use sinex_protocol::producer_bytes::{Bytes, Material, Publication, Role, encode_frame};
+use sinex_protocol::producer_bytes::{
+    Bytes, Material, Publication as SpoolRequest, Role, encode_frame,
+};
 use sinex_protocol::{Acknowledgment, Ingress, MaterialFrame};
 use sinex_transport::spool::{self, Frozen as Spooled};
 use std::io::Read;
@@ -34,7 +36,7 @@ impl Sinex {
             Ingress::Material { material, .. } => Some(Material::from_frame(material)),
             _ => None,
         };
-        let request = Publication {
+        let request = SpoolRequest {
             version: 1,
             frame: message.frame().to_owned(),
             class: Class::Open,
@@ -76,7 +78,7 @@ impl Sinex {
     }
 
     fn final_acknowledgment(
-        request: &Publication,
+        request: &SpoolRequest,
         acknowledgment: Acknowledgment,
     ) -> Result<Acknowledgment> {
         let acknowledgment = checked(acknowledgment)?;

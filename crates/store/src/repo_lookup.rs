@@ -1,4 +1,4 @@
-//! Repository lookups (spec sources/README.md, the repo-lookup record) are
+//! Repository lookups are
 //! stored as records; which sessions they attribute is the `repository`
 //! derivation's job. A changed lookup marks the sessions under its
 //! directory changed, so they are attributed again.

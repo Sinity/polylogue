@@ -1,5 +1,6 @@
 //! Read connections. The daemon keeps a pool; every read in one request
-//! sees one consistent snapshot of `index.db` with `archive.db` attached.
+//! sees one consistent read transaction on `index.db` with `archive.db`
+//! attached.
 
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
@@ -17,7 +18,7 @@ use std::thread::ThreadId;
 
 mod imports;
 mod lineage;
-pub use imports::RetainedImport;
+pub use imports::StoredImport;
 mod rows;
 
 pub use lineage::{Lineage, LineageIssue, MessageSelection};
@@ -46,13 +47,13 @@ struct PoolState {
 
 /// One consistent read: a read transaction on `index.db` with `archive.db`
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
-/// the pool when dropped. The first database access pins and validates both
-/// snapshots; reserving an unused slot holds no read lock.
+/// the pool when dropped. Holding a reader slot takes no read lock; the first
+/// database access starts the read on both databases and checks them.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
     index_identity: Option<IndexIdentity>,
-    snapshot: std::cell::Cell<SnapshotState>,
+    state: std::cell::Cell<ReadState>,
     owner: ThreadId,
     // ThreadId ownership detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
@@ -61,7 +62,7 @@ pub struct Reader<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SnapshotState {
+enum ReadState {
     Deferred,
     Ready,
     IndexReplaced,
@@ -93,10 +94,10 @@ pub struct KnownInput {
     pub waiting: bool,
 }
 
-/// The current retained revision and its parser progress, independent of a
-/// source path. Imports use this to retry parsing without retaining bytes twice.
+/// A revision chain's stored length and parser progress, independent of a
+/// source path. Imports use this to retry parsing without storing bytes twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetainedInput {
+pub struct ChainProgress {
     pub chain: i64,
     pub route_rank: u8,
     pub waiting: bool,
@@ -110,7 +111,7 @@ pub struct RetainedInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
-    pub unfinished_inputs: Vec<crate::staging::Unfinished>,
+    pub pending_inputs: Vec<crate::staging::PendingBlob>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -124,7 +125,7 @@ pub struct Status {
     /// The most frequent record kinds and fields parsers did not read.
     pub unrecognized: Vec<(String, u64)>,
     /// Texts stored but not yet in the search index: how far search lags
-    /// the writer (architecture 5.5c).
+    /// the writer.
     pub search_pending: u64,
 }
 
@@ -215,19 +216,19 @@ impl ReadPool {
                 }
             }
         };
-        // Own the reservation before fallible open/BEGIN work. Every failure
-        // releases its slot and wakes a waiter, including a racing close.
+        // Hold the slot before the open and BEGIN, which can fail. Every
+        // failure releases the slot and wakes a waiter, including a racing close.
         let mut reader = Reader {
             pool: self,
             conn: None,
             index_identity: None,
-            snapshot: std::cell::Cell::new(SnapshotState::Deferred),
+            state: std::cell::Cell::new(ReadState::Deferred),
             owner,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
         };
-        // Store replacements retire old files, never reinstall their inodes.
-        // Compare around open without pinning SQLite or delaying an unused slot.
+        // A replaced index is a new file, never an old inode reused. Compare
+        // around the open without starting a read or delaying an unused slot.
         let current = index_identity(&self.archive);
         let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
         let (conn, identity) = match idle {
@@ -254,8 +255,8 @@ impl ReadPool {
     }
 
     /// Refuses new reads, wakes waiting checkouts and releases idle connections.
-    /// Pinned readers keep their snapshot; unused reservations must enter
-    /// first-read admission before closure.
+    /// Readers that have started keep their read; a slot not yet used must
+    /// pass the closed check at its first read.
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
@@ -273,10 +274,8 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
-            matches!(
-                self.snapshot.get(),
-                SnapshotState::Deferred | SnapshotState::Ready
-            ) && conn.execute_batch("COMMIT").is_ok()
+            matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
+                && conn.execute_batch("COMMIT").is_ok()
         });
         let mut state = self
             .pool
@@ -332,13 +331,13 @@ pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
 }
 
 impl Reader<'_> {
-    /// The optional embeddings read connection shares this reader's allocation
-    /// and cannot outlive its admission. Only one vector guard can be held.
+    /// The optional embeddings read connection shares this reader's slot and
+    /// cannot outlive it. Only one vector guard can be held.
     pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
         self.vectors_access(false)
     }
 
-    /// An embedding build uses the same reserved connection/cache share.
+    /// An embedding build uses the same connection and cache share.
     pub fn vectors_writer(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
         self.vectors_access(true)
     }
@@ -372,17 +371,17 @@ impl Reader<'_> {
             .conn
             .as_ref()
             .expect("reader holds a connection until dropped");
-        match self.snapshot.get() {
-            SnapshotState::Ready => {}
-            SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
-            SnapshotState::Deferred => {
-                // Unused reservations hold no snapshot or publication lock.
-                // Pin and validate both databases at the first actual read.
+        match self.state.get() {
+            ReadState::Ready => {}
+            ReadState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
+            ReadState::Deferred => {
+                // An unused slot holds no read and no lock. Start the read on
+                // both databases and check them at the first actual access.
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
                 let waiting = std::time::Instant::now();
-                let _admission = crate::publication::admit(&self.pool.archive, || {
+                let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
                     if conn.is_interrupted() {
                         return Err(rusqlite::Error::SqliteFailure(
                             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
@@ -409,35 +408,35 @@ impl Reader<'_> {
                     );
                     Ok(())
                 })?;
-                // The guarded state check is first-read admission. Closing
-                // before it refuses; a read admitted here may finish afterward.
+                // This closed check under the lock is the read's start. Closing
+                // before it refuses; a read that started here may finish afterward.
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
                 if Some(index_identity(&self.pool.archive)?) != self.index_identity {
-                    self.snapshot.set(SnapshotState::IndexReplaced);
+                    self.state.set(ReadState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
-                // One statement reads both databases while admission excludes
-                // writers, so the index and archive snapshots are a committed pair.
+                // One statement reads both databases while the shared lock
+                // excludes writers, so the two reads see a committed pair.
                 conn.query_row(
                     "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM a.meta)",
                     [],
                     |_| Ok(()),
                 )?;
-                self.snapshot.set(SnapshotState::Ready);
+                self.state.set(ReadState::Ready);
             }
         }
         Ok(conn)
     }
 
-    /// Physical index identity admitted with this reader's pinned snapshot.
+    /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
         self.index_identity.ok_or(StoreError::ReadIndexReplaced)
     }
 
-    /// Both counters and the index identity from this reader's pinned view.
+    /// Both counters and the index identity from this reader's read.
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         Ok(self.conn()?.query_row(
             "SELECT (SELECT value FROM main.meta WHERE key='generation'),
@@ -496,7 +495,7 @@ impl Reader<'_> {
 
     /// Visit messages in reading order, decoding only the current message's
     /// bodies. Breaking stops before later bodies are loaded. Logical reads
-    /// retain inherited message identifiers for ordering and deduplication.
+    /// keep inherited message identifiers for ordering and deduplication.
     pub fn visit_messages(
         &self,
         id: &SessionId,
@@ -686,7 +685,7 @@ impl Reader<'_> {
             unrecognized.push((w, n as u64));
         }
         Ok(Status {
-            unfinished_inputs: crate::staging::unfinished(c, "a.")?,
+            pending_inputs: crate::staging::pending_blobs(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM message")?,
             documents: count("SELECT COUNT(*) FROM document")?,
@@ -705,10 +704,9 @@ impl Reader<'_> {
     /// Every path this machine observed, with its last facts and how far
     /// its current chain is stored and parsed. The loop compares these with
     /// the files now.
-    /// The stored bytes of an input's revision chain, for parsing them
-    /// again without the file.
-    /// Check canonical completion without copying the selected extent catalog.
-    pub fn check_retained_range(
+    /// Checks that every blob under a range of a chain is present, without
+    /// loading the chain's extents.
+    pub fn check_bytes_present(
         &self,
         input: &str,
         chain: i64,
@@ -717,17 +715,19 @@ impl Reader<'_> {
         crate::staging::require_range(self.conn()?, "a.", input, chain, range)
     }
 
+    /// The stored bytes of an input's revision chain, for parsing them
+    /// again without the file.
     pub fn stored_chain(
         &self,
         input: &str,
         chain: i64,
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
-        self.check_retained_range(input, chain, 0..length)?;
+        self.check_bytes_present(input, chain, 0..length)?;
         crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
-    /// Read only extents intersecting a retained range, including its integrity checks.
+    /// Reads only the extents a range covers, with their integrity checks.
     pub fn stored_range(
         &self,
         input: &str,
@@ -736,38 +736,38 @@ impl Reader<'_> {
         end: u64,
         store: &hashed_blobs::Store,
     ) -> Result<Vec<u8>> {
-        self.check_retained_range(input, chain, start..end)?;
+        self.check_bytes_present(input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
             .read_range(store, start, end)
     }
 
-    fn current_attachment(&self, asset: &crate::assets::AssetCandidate) -> Result<()> {
+    fn current_attachment(&self, asset: &crate::assets::AssetMatch) -> Result<()> {
         let current = self
-            .asset_basis(&asset.input)?
-            .ok_or_else(|| StoreError::NotFound("retained attachment input".into()))?;
+            .asset_source(&asset.input)?
+            .ok_or_else(|| StoreError::NotFound("attachment input".into()))?;
         if current.chain != asset.chain
             || current.length != asset.size
-            || current.hash != asset.basis
+            || current.version != asset.source_version
             || current.blob != asset.blob
         {
             return Err(StoreError::Conflict(
-                "retained attachment bytes changed; select it again".into(),
+                "the attachment's stored bytes changed; select it again".into(),
             ));
         }
         Ok(())
     }
 
-    /// Read the selected retained asset range through this same admitted view.
+    /// Reads a range of the selected stored attachment in this reader's read.
     pub fn attachment_range(
         &self,
-        asset: &crate::assets::AssetCandidate,
+        asset: &crate::assets::AssetMatch,
         roots: &[std::path::PathBuf],
         range: std::ops::Range<u64>,
     ) -> Result<Vec<u8>> {
         self.current_attachment(asset)?;
         if range.start > range.end || range.end > asset.size {
             return Err(StoreError::Invalid(
-                "attachment range is outside the retained bytes".into(),
+                "attachment range is outside the stored bytes".into(),
             ));
         }
         let store =
@@ -779,7 +779,7 @@ impl Reader<'_> {
     /// it once for an explicitly requested exact delivery, streaming the bytes.
     pub fn attachment_hash(
         &self,
-        asset: &crate::assets::AssetCandidate,
+        asset: &crate::assets::AssetMatch,
         roots: &[std::path::PathBuf],
     ) -> Result<polylogue_model::BlobHash> {
         self.current_attachment(asset)?;
@@ -805,7 +805,7 @@ impl Reader<'_> {
         }
         if length != asset.size {
             return Err(StoreError::Invalid(
-                "retained attachment length differs".into(),
+                "the stored attachment length differs".into(),
             ));
         }
         Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))
@@ -915,15 +915,14 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// The latest retained revision and any committed parse progress.
-    /// Every retained physical chain, with rebuildable parser progress.
-    pub fn retained_chains(&self, id: &str) -> Result<Vec<(i64, RetainedInput)>> {
+    /// Every stored chain of an input, with its parser progress.
+    pub fn chain_progress(&self, id: &str) -> Result<Vec<(i64, ChainProgress)>> {
         let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.input_pk IS NOT NULL,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
         Ok(stmt
             .query_map([id], |r| {
                 Ok((
                     r.get(0)?,
-                    RetainedInput {
+                    ChainProgress {
                         chain: r.get(0)?,
                         length: r.get::<_, i64>(1)? as u64,
                         parsed_upto: r.get::<_, i64>(2)? as u64,
@@ -936,7 +935,8 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn retained_input(&self, id: &str) -> Result<Option<RetainedInput>> {
+    /// The input's latest revision and its chain's parser progress.
+    pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
         let row = self
             .conn()?
             .prepare_cached(
@@ -969,7 +969,7 @@ impl Reader<'_> {
                 )));
             }
         };
-        Ok(Some(RetainedInput {
+        Ok(Some(ChainProgress {
             chain,
             route_rank,
             waiting,

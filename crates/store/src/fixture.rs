@@ -84,7 +84,7 @@ impl Fixture {
         })
     }
 
-    /// Queues search work without publishing it, for reader/index tests.
+    /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
         let id = crate::text_rows::intern(&tx, body, 1, None, false)?;
@@ -92,8 +92,8 @@ impl Fixture {
         Ok(id)
     }
 
-    /// Publishes queued search work through the normal bounded indexer.
-    pub fn publish_search(&self) -> Result<u64> {
+    /// Commits queued search work through the normal bounded indexer.
+    pub fn commit_search(&self) -> Result<u64> {
         crate::text_rows::index_pending(&self.index)
     }
 

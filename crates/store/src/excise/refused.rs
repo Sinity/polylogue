@@ -6,14 +6,15 @@ use std::collections::HashSet;
 
 mod load;
 
-/// Omission is historical unknown; a present value must be an ID array.
+/// A present value must be an ID array.
 pub(super) fn session_selection<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> std::result::Result<Option<Vec<SessionId>>, D::Error> {
     Vec::<SessionId>::deserialize(de).map(Some)
 }
 
-/// The writer's lookup, rebuilt from the excision rows.
+/// The writer's lookup of refused IDs, rebuilt from the excision rows into
+/// an in-memory database.
 #[derive(Debug, Default)]
 pub struct Refused(Option<Connection>);
 
@@ -54,7 +55,7 @@ impl Refused {
             let known = load::policy(&mut out, policy)?;
             if scope.starts_with("input:") && !known {
                 return Err(StoreError::Invalid(format!(
-                    "input excision {excision} has no retained session selection; recover its exclusion policy before collecting new inputs"
+                    "input excision {excision} has no list of the sessions it removed"
                 )));
             }
             let ids = row.get_ref(1)?;
@@ -64,20 +65,13 @@ impl Refused {
                     .map_err(|e| StoreError::Invalid(e.to_string()))?,
             )?;
         }
-        let has_documents:bool=archive.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='excision_document')",[],|r|r.get(0))?;
-        if has_documents {
-            let mut selected = archive
-                .prepare("SELECT document_id FROM excision_document ORDER BY document_id")?;
-            for id in selected.query_map([], |r| r.get::<_, String>(0))? {
-                let id = id?;
-                polylogue_model::DocumentId::parse(&id)
-                    .map_err(|e| StoreError::Invalid(e.to_string()))?;
-                out.insert("documents", &id)?;
-            }
-        } else if crate::schema::version(archive)? >= 7 {
-            return Err(StoreError::Invalid(
-                "document exclusion authority is missing from an archive at version7".into(),
-            ));
+        let mut selected =
+            archive.prepare("SELECT document_id FROM excision_document ORDER BY document_id")?;
+        for id in selected.query_map([], |r| r.get::<_, String>(0))? {
+            let id = id?;
+            polylogue_model::DocumentId::parse(&id)
+                .map_err(|e| StoreError::Invalid(e.to_string()))?;
+            out.insert("documents", &id)?;
         }
         if let Some(conn) = &out.0 {
             conn.execute_batch("COMMIT")?;
@@ -147,10 +141,9 @@ impl Refused {
     fn insert(&mut self, table: &str, id: &str) -> Result<()> {
         crate::fault::check("exclusion_cache.insert", id)?;
         if self.0.is_none() {
-            let conn = Connection::open("")?;
+            let conn = Connection::open_in_memory()?;
             conn.execute_batch(
-                "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-                 PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+                "PRAGMA journal_mode=OFF;
                  CREATE TABLE sessions(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  CREATE TABLE messages(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  CREATE TABLE documents(id TEXT PRIMARY KEY) WITHOUT ROWID;

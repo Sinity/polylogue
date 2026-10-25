@@ -119,7 +119,7 @@ fn equal_text_with_distinct_document_ids_keeps_both_records_and_shared_text() {
 }
 
 #[test]
-fn document_hash_is_canonical_and_does_not_change_message_hash_domain() {
+fn document_hash_uses_sorted_json_and_does_not_change_message_hash_domain() {
     let mut a = document("project:a:doc:a", "Source text", 0);
     let mut first = serde_json::Map::new();
     first.insert("z".into(), json!({"b":2,"a":1}));
@@ -141,16 +141,16 @@ fn document_hash_is_canonical_and_does_not_change_message_hash_domain() {
         Some("end_turn"),
     );
     let prepared = PreparedMessage::new(&message).unwrap();
-    let mut canonical = serde_json::to_value(&message).unwrap();
-    canonical.sort_all_objects();
+    let mut archive_conn = serde_json::to_value(&message).unwrap();
+    archive_conn.sort_all_objects();
     assert_eq!(
         prepared.hash,
-        *blake3::hash(&serde_json::to_vec(&canonical).unwrap()).as_bytes()
+        *blake3::hash(&serde_json::to_vec(&archive_conn).unwrap()).as_bytes()
     );
 }
 
 #[test]
-fn an_admitted_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
+fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
     use std::ops::ControlFlow;
     let w = world();
     let mut original = document("native", "old first block", 1);

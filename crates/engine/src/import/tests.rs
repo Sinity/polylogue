@@ -39,12 +39,12 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
         assert_eq!(w.texts("s1"), ["captured"]);
         let reader = engine.reads.reader().unwrap();
-        let retained = reader
-            .retained_input(blake3::hash(original.as_bytes()).to_hex().as_ref())
+        let stored = reader
+            .input_progress(blake3::hash(original.as_bytes()).to_hex().as_ref())
             .unwrap()
             .unwrap();
-        assert_eq!(retained.length, original.len() as u64);
-        assert_eq!(retained.parsed_upto, original.len() as u64);
+        assert_eq!(stored.length, original.len() as u64);
+        assert_eq!(stored.parsed_upto, original.len() as u64);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);
     }
@@ -55,7 +55,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     let w = ClaudeHome::new();
     let path = w.dir.path().join("s1.jsonl");
-    let original = claude_user("u1", "s1", "retained before parse");
+    let original = claude_user("u1", "s1", "stored before parse");
     std::fs::write(&path, &original).unwrap();
     {
         let (mut engine, _lock) = engine(&w, 64);
@@ -79,7 +79,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
     assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
     assert_eq!(retry.already_stored, [path]);
     assert_eq!(retry.pass.bytes_stored, 0);
-    assert_eq!(w.texts("s1"), ["retained before parse"]);
+    assert_eq!(w.texts("s1"), ["stored before parse"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 1);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);
@@ -132,7 +132,7 @@ pub(super) fn engine(
 }
 
 #[test]
-fn line_import_retains_a_partial_tail_without_duplicate_parts_on_retry() {
+fn line_import_keeps_a_partial_tail_without_duplicate_parts_on_retry() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     let w = ClaudeHome::new();
     let path = w.dir.path().join("s1.jsonl");
@@ -187,7 +187,7 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
             .reads
             .reader()
             .unwrap()
-            .retained_input(&id)
+            .input_progress(&id)
             .unwrap()
             .unwrap()
             .length,
@@ -233,7 +233,7 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     let w = ClaudeHome::new();
     let path = w.dir.path().join("s1.jsonl");
-    let original = claude_user("u1", "s1", "retained, source gone");
+    let original = claude_user("u1", "s1", "stored, source gone");
     std::fs::write(&path, &original).unwrap();
     {
         let (mut engine, _lock) = engine(&w, 64);
@@ -252,7 +252,7 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
     let (mut engine, _lock) = engine(&w, 64);
     let report = engine.converge().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert_eq!(w.texts("s1"), ["retained, source gone"]);
+    assert_eq!(w.texts("s1"), ["stored, source gone"]);
     assert_eq!(w.count("SELECT route_rank AS n FROM message"), 2);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);

@@ -1,11 +1,11 @@
 //! The search thread: it writes the full-text entries the writer queued
 //! in `search_pending`, in its own transactions, shortly after their rows
-//! commit (architecture 5.5c).
+//! commit.
 
 use super::*;
 
 /// The search thread's handle: it writes the entries in `search_pending`
-/// shortly after the writer commits them (architecture 5.5c), in its own
+/// shortly after the writer commits them, in its own
 /// transactions on its own connection, so search indexing is off the
 /// writer's thread.
 pub(super) struct Search {

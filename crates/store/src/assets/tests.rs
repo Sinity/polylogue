@@ -1,4 +1,4 @@
-//! Range delivery uses the admitted current chain, including segmented bytes.
+//! Range delivery reads the current chain, including bytes in several pieces.
 use super::*;
 use crate::{Archive, Batch, Change, InputKey, ReadPool, Writer};
 use polylogue_model::BlobHash;
@@ -34,44 +34,42 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     }
     assert!(writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&archive).unwrap();
-    let candidate = {
+    let asset = {
         let reader = pool.reader().unwrap();
-        let basis = reader.asset_basis(&input.id).unwrap().unwrap();
+        let source = reader.asset_source(&input.id).unwrap().unwrap();
         assert!(
-            basis.blob.is_none(),
+            source.blob.is_none(),
             "segmented bytes must not pretend to be one stored blob"
         );
-        let candidate = AssetCandidate {
+        let asset = AssetMatch {
             input: input.id.clone(),
-            chain: basis.chain,
-            blob: basis.blob,
-            basis: basis.hash,
-            size: basis.length,
+            chain: source.chain,
+            blob: source.blob,
+            source_version: source.version,
+            size: source.length,
             members: vec![],
             names: vec![],
             media_types: vec![],
             declared_sizes: vec![],
         };
         assert_eq!(
-            reader.attachment_hash(&candidate, &[]).unwrap(),
+            reader.attachment_hash(&asset, &[]).unwrap(),
             BlobHash::of(original)
         );
         assert_eq!(
-            reader.attachment_range(&candidate, &[], 2..13).unwrap(),
+            reader.attachment_range(&asset, &[], 2..13).unwrap(),
             &original[2..13]
         );
         assert_eq!(
-            reader
-                .attachment_range(&candidate, &[], 0..candidate.size)
-                .unwrap(),
+            reader.attachment_range(&asset, &[], 0..asset.size).unwrap(),
             original
         );
         assert!(
             reader
-                .attachment_range(&candidate, &[], candidate.size..candidate.size + 1)
+                .attachment_range(&asset, &[], asset.size..asset.size + 1)
                 .is_err()
         );
-        candidate
+        asset
     };
     let replacement = b"replacement body";
     let (piece, file) = archive.prepare_piece(&[], replacement).unwrap();
@@ -91,10 +89,6 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         .unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
-    assert!(reader.attachment_hash(&candidate, &[]).is_err());
-    assert!(
-        reader
-            .attachment_range(&candidate, &[], 0..candidate.size)
-            .is_err()
-    );
+    assert!(reader.attachment_hash(&asset, &[]).is_err());
+    assert!(reader.attachment_range(&asset, &[], 0..asset.size).is_err());
 }

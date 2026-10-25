@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
-fn basis(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
+fn message_sources(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
     pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
@@ -12,8 +12,8 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     let path = w.dir.path().join("same.jsonl");
     let (mut e, lock) = engine(&w, 64);
     for (id, body) in [
-        ("one", "first retained import"),
-        ("two", "second retained import"),
+        ("one", "first stored import"),
+        ("two", "second stored import"),
     ] {
         std::fs::write(&path, claude_user(id, "s", body)).unwrap();
         assert!(
@@ -24,7 +24,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
                 .is_empty()
         );
     }
-    let before = basis(&w);
+    let before = message_sources(&w);
     assert_eq!(before.len(), 2);
     assert_eq!(w.texts("s").len(), 2);
     drop(e);
@@ -34,7 +34,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     let (mut e, _lock) = engine(&w, 64);
     let first = e.converge().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
-    assert_eq!(basis(&w), before);
+    assert_eq!(message_sources(&w), before);
     assert_eq!(w.texts("s").len(), 2);
     assert!(e.inputs.is_empty());
     let quiet = e.converge().unwrap();
@@ -43,7 +43,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     assert_eq!(quiet.inputs_changed, 0);
     let pool = ReadPool::open(&e.archive).unwrap();
     let r = pool.reader().unwrap();
-    assert_eq!(r.retained_imports().unwrap().len(), 2);
+    assert_eq!(r.stored_imports().unwrap().len(), 2);
     assert!(
         r.known_watched_inputs(&e.config.machine)
             .unwrap()
@@ -91,7 +91,7 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
     let r = pool.reader().unwrap();
     let watched = r.known_watched_inputs(&e.config.machine).unwrap();
     assert_eq!(watched.len(), 1);
-    assert_ne!(watched[0].input_id, r.retained_imports().unwrap()[0].id);
+    assert_ne!(watched[0].input_id, r.stored_imports().unwrap()[0].id);
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let unknown = w.dir.path().join("renamed.json");
     let standard = w.dir.path().join("prod-grok-backend.json");
     let bytes = format!(
-        r#"{{"metadata":"{}","conversations":[{{"conversation":{{"id":"recognized-later"}},"responses":[{{"responseId":"one","sender":"human","message":"retained later interpretation"}}]}}]}}"#,
+        r#"{{"metadata":"{}","conversations":[{{"conversation":{{"id":"recognized-later"}},"responses":[{{"responseId":"one","sender":"human","message":"stored later parse"}}]}}]}}"#,
         "synthetic ".repeat(12)
     );
     std::fs::write(&unknown, &bytes).unwrap();
@@ -140,7 +140,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let refused = e
         .excise(ExciseRequest {
             id: "promoted-text".into(),
-            scope: ExciseScope::Text("retained later interpretation".into()),
+            scope: ExciseScope::Text("stored later parse".into()),
             reason: None,
             dry_run: false,
         })
@@ -180,7 +180,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
 fn explicit_kept_only_acquisitions_replay_without_errors() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("opaque.dat");
-    std::fs::write(&path, b"synthetic uninterpreted binary\0\xff").unwrap();
+    std::fs::write(&path, b"synthetic unparsed binary\0\xff").unwrap();
     let (mut e, lock) = engine(&w, 1024);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert_eq!(report.unrecognized.as_slice(), std::slice::from_ref(&path));
@@ -198,7 +198,7 @@ fn explicit_kept_only_acquisitions_replay_without_errors() {
 }
 
 #[test]
-fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence() {
+fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("prod-grok-backend.json");
     std::fs::write(&path, br#"{"conversations":[]}"#).unwrap();
@@ -238,7 +238,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
             .pass
             .errors
             .iter()
-            .any(|error| error.contains("competing parsed origin"))
+            .any(|error| error.contains("already parsed as another origin"))
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), before);
 }
@@ -247,14 +247,14 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
 fn row_batches(
     root: &std::path::Path,
 ) -> Vec<(polylogue_store::row_batches::RowBatch, Vec<String>)> {
-    let snapshot = polylogue_store::row_batches::Snapshot::open(root).unwrap();
-    snapshot
+    let batch_reader = polylogue_store::row_batches::BatchReader::open(root).unwrap();
+    batch_reader
         .batches(None, 10_000)
         .unwrap()
         .into_iter()
         .map(|batch| {
             let mut rows = Vec::new();
-            snapshot
+            batch_reader
                 .rows(&batch, |row| {
                     rows.push(format!("{} {:?} {:?}", row.table, row.columns, row.values));
                     Ok(())

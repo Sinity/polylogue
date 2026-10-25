@@ -1,5 +1,5 @@
-//! Selected observations retain their actual local Input citation. Exported
-//! sender citations are not used as local acquisition authority.
+//! Selected events keep the local input they were read from. Citations in an
+//! exported file name the sender's inputs and never decide local ones.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::export::EventExport;
 use polylogue_model::{Event, MessageId, SessionId, Timestamp};

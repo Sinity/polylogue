@@ -1,5 +1,5 @@
-//! The parse pool: N worker threads, admitted by bytes in flight, feeding
-//! the one writer (architecture 2, 5.3). A worker reads its byte range,
+//! The parse pool: N worker threads, limited by bytes in flight, feeding
+//! the one writer. A worker reads its byte range,
 //! hashes and stores or compresses the new bytes, parses, and hands the
 //! writer one batch. Live appends go before bulk work. One input has at
 //! most one job in flight, so its parser state passes from job to job.
@@ -52,7 +52,7 @@ pub enum Bytes {
     /// The file at the job's path.
     #[default]
     File,
-    /// One completely acquired import, retained before parsing begins.
+    /// One complete import, stored before parsing begins.
     Import(Arc<Mutex<read::Imported>>),
     /// What the archive stored for the input: its file changed, moved or
     /// went, or the index is being built again.
@@ -139,7 +139,7 @@ impl Pool {
     }
 
     /// Queues a job. Blocks while the bytes already in flight are at the
-    /// limit; a job larger than the limit is admitted alone.
+    /// limit; a job larger than the limit runs alone.
     pub fn submit(&self, job: Job) {
         let mut q = self.shared.queue.lock().expect("pool lock");
         while q.in_flight > 0 && q.in_flight + job.bytes() > self.shared.limit {
@@ -169,7 +169,8 @@ impl Drop for Pool {
 /// Jobs a worker groups under one blob commit, by bytes read.
 const GROUP_BYTES: u64 = 64 << 20;
 
-/// A bounded worker group whose file stages remain private until Writer admission.
+/// A bounded worker group whose prepared files stay private until the writer
+/// stores them.
 struct Group {
     held: Vec<(Option<PreparedBatch>, Done, u64)>,
     bytes: u64,
@@ -233,7 +234,7 @@ fn work(
     }
 }
 
-/// Retention acknowledgements keep each job charged until the Writer commits.
+/// A job's bytes count against the pool until the writer has stored them.
 fn flush(
     group: &mut Group,
     shared: &Arc<Shared>,
@@ -354,7 +355,7 @@ fn run(
     let mut extra = Vec::new();
     let parse = (job.origin.open)(&job.path)
         .map(|parser| {
-            // A parser that panics loses only its own input (law 63): the panic
+            // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
             let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())
@@ -398,7 +399,7 @@ fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
-                        p.snapshot = step.restates;
+                        p.restates = step.restates;
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
                         p.prepare();

@@ -250,7 +250,7 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         .queue_search_text("queued independent search text")
         .unwrap();
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
-    assert_eq!(fixture.publish_search().unwrap(), 1);
+    assert_eq!(fixture.commit_search().unwrap(), 1);
     assert_eq!(
         fixture_query(&fixture, "sessions | sort by id", first["next"].as_str(), 1).unwrap()["rows"]
             [0]["id"],
@@ -271,7 +271,7 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         "index availability did not edit session records"
     );
     assert!(changes["view"]["index"].as_i64().unwrap() > first["view"]["index"].as_i64().unwrap());
-    assert_eq!(fixture.publish_search().unwrap(), 0);
+    assert_eq!(fixture.commit_search().unwrap(), 0);
     assert_eq!(
         fixture_query(&fixture, "sessions", None, 100).unwrap()["view"],
         changes["view"]

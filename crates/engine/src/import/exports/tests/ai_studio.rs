@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn retained_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
+fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("Electrons.json");
     // Settings follow chunks on the wire. Parsing cannot assume header order.
@@ -26,7 +26,7 @@ fn retained_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         )
         .unwrap();
         let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-        // Stop after durable acquisition. The first parse must use retained bytes.
+        // Stop after durable acquisition. The first parse must use stored bytes.
         e.import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap()
             .unwrap();
@@ -100,7 +100,7 @@ fn retained_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
 }
 
 #[test]
-fn watched_ai_studio_prompt_revisions_are_retained_before_chunk_parsing() {
+fn watched_ai_studio_prompt_revisions_are_stored_before_chunk_parsing() {
     let w = ClaudeHome::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
@@ -137,16 +137,16 @@ fn watched_ai_studio_prompt_revisions_are_retained_before_chunk_parsing() {
 }
 
 #[test]
-fn an_appended_ai_studio_suffix_reuses_the_retained_prefix_without_duplicate_bytes() {
+fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes() {
     let w = ClaudeHome::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("unfinished.json");
+    let path = dir.join("incomplete.json");
     let full = br#"{"chunkedPrompt":{"chunks":[{"role":"user","text":"now complete"}]}}"#;
     fs::write(&path, &full[..full.len() - 1]).unwrap();
     let (mut e, _lock) = engine(&w, 8);
     assert!(e.converge().unwrap().errors.is_empty());
-    assert!(texts(&w, "ai-studio:unfinished").is_empty());
+    assert!(texts(&w, "ai-studio:incomplete").is_empty());
     use std::io::Write;
     fs::OpenOptions::new()
         .append(true)
@@ -157,7 +157,7 @@ fn an_appended_ai_studio_suffix_reuses_the_retained_prefix_without_duplicate_byt
     let pass = e.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.bytes_stored, 1);
-    assert_eq!(texts(&w, "ai-studio:unfinished"), ["now complete"]);
+    assert_eq!(texts(&w, "ai-studio:incomplete"), ["now complete"]);
     assert_eq!(
         w.count("SELECT SUM(length) AS n FROM a.extent"),
         full.len() as i64

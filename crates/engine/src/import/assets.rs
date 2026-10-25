@@ -1,4 +1,4 @@
-//! Derive export associations from retained observations and sidecars.
+//! Derive export associations from stored observations and sidecars.
 use super::*;
 use polylogue_store::assets::AssetRow;
 use polylogue_store::export_items::ExportItems;
@@ -35,13 +35,13 @@ impl Engine {
         let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
         for (input, member) in sidecars {
             let reader = self.reads.reader()?;
-            let Some(retained) = reader.retained_input(&input)? else {
+            let Some(progress) = reader.input_progress(&input)? else {
                 continue;
             };
-            let basis = reader
-                .asset_basis(&input)?
-                .ok_or_else(|| std::io::Error::other("retained sidecar has no byte basis"))?;
-            let chain = reader.stored_chain(&input, retained.chain, retained.length)?;
+            let source = reader
+                .asset_source(&input)?
+                .ok_or_else(|| std::io::Error::other("a stored sidecar has no current revision"))?;
+            let chain = reader.stored_chain(&input, progress.chain, progress.length)?;
             let mut staged = ExportItems::new()?;
             stage(
                 &mut staged,
@@ -80,7 +80,7 @@ impl Engine {
                 }
                 Err(error) => {
                     staged.rollback_scan()?;
-                    let error = format!("retained asset sidecar {input} ({member}): {error}");
+                    let error = format!("asset sidecar {input} ({member}): {error}");
                     pass.errors.push(error.clone());
                     Some(error)
                 }
@@ -91,7 +91,7 @@ impl Engine {
                 &AssetRow::Sidecar {
                     input,
                     sidecar: member,
-                    basis: basis.hash,
+                    source_version: source.version,
                     error,
                 },
             )?;

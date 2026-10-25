@@ -3,7 +3,7 @@ use polylogue_testkit::{ClaudeHome, claude_user as user};
 use std::io::Read;
 use std::sync::Arc;
 
-fn exact_retained(w: &ClaudeHome, file: &str) {
+fn exactly_stored(w: &ClaudeHome, file: &str) {
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let known = r
@@ -31,7 +31,7 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
     ] {
         fault::clear();
         let w = ClaudeHome::new();
-        w.append("new.jsonl", &user("one", "new", "new retained body"));
+        w.append("new.jsonl", &user("one", "new", "new stored body"));
         let (mut engine, _lock) = w.engine(256);
         fault::arm(point, "", Action::Fail, 0, 64);
         let failed = engine.converge().unwrap();
@@ -40,10 +40,10 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         fault::clear();
         let retry = engine.converge().unwrap();
         assert!(retry.errors.is_empty(), "{retry:?}");
-        assert_eq!(w.texts("new"), ["new retained body"]);
+        assert_eq!(w.texts("new"), ["new stored body"]);
         assert!(engine.converge().unwrap().errors.is_empty());
-        assert_eq!(w.texts("new"), ["new retained body"]);
-        exact_retained(&w, "new.jsonl");
+        assert_eq!(w.texts("new"), ["new stored body"]);
+        exactly_stored(&w, "new.jsonl");
     }
 }
 
@@ -81,12 +81,12 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
         } else {
             w.append("target.jsonl", &replacement);
         }
-        w.append("unrelated.jsonl", &user("other", "other", "other admitted"));
+        w.append("unrelated.jsonl", &user("other", "other", "other stored"));
         fault::arm("write.input", &known.input_id, Action::Fail, 0, 64);
         let failed = engine.converge().unwrap();
         assert!(!failed.errors.is_empty());
         assert_eq!(w.texts("target"), ["old body"]);
-        assert_eq!(w.texts("other"), ["other admitted"]);
+        assert_eq!(w.texts("other"), ["other stored"]);
         fault::clear();
         let retry = engine.converge().unwrap();
         assert!(retry.errors.is_empty(), "rewrite={rewrite}: {retry:?}");
@@ -98,14 +98,14 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
             );
         }
         assert_eq!(texts.len(), 12 + usize::from(!rewrite));
-        exact_retained(&w, "target.jsonl");
-        assert_eq!(w.texts("other"), ["other admitted"]);
+        exactly_stored(&w, "target.jsonl");
+        assert_eq!(w.texts("other"), ["other stored"]);
     }
     fault::clear();
 }
 
 #[test]
-fn a_growing_rewrite_after_restart_checks_the_retained_prefix_before_appending() {
+fn a_growing_rewrite_after_restart_checks_the_stored_prefix_before_appending() {
     let w = ClaudeHome::new();
     w.append("rewrite.jsonl", &user("same", "target", "before"));
     {
@@ -117,7 +117,7 @@ fn a_growing_rewrite_after_restart_checks_the_retained_prefix_before_appending()
     let (mut engine, _lock) = w.engine(256);
     assert!(engine.converge().unwrap().errors.is_empty());
     assert_eq!(w.texts("target"), [body]);
-    exact_retained(&w, "rewrite.jsonl");
+    exactly_stored(&w, "rewrite.jsonl");
     assert_eq!(
         w.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
         2

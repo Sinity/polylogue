@@ -4,7 +4,7 @@ use serde_json::json;
 
 #[test]
 fn no_task_from_prose() {
-    // Law 90: a Bead ID in a prompt, or read with `bd show`, claims
+    // A Bead ID in a prompt, or read with `bd show`, claims
     // nothing; a successful claim holds until a successful close.
     let mut w = WriterWorld::new();
     let mut a = prose("a", 1, 1_000, "please work on plnext-ony.7 next");

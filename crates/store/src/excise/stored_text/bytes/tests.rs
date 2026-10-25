@@ -155,7 +155,7 @@ fn visitor_errors_stop_without_reading_more_logical_chunks() {
 }
 
 #[test]
-fn failed_verified_copy_publishes_no_placement_and_can_retry_exact_bytes() {
+fn a_failed_verified_copy_writes_no_file_and_can_retry_exact_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
     let index = Connection::open_in_memory().unwrap();
@@ -191,7 +191,7 @@ fn failed_verified_copy_publishes_no_placement_and_can_retry_exact_bytes() {
 }
 
 #[test]
-fn many_snapshot_headers_share_one_verified_decode_and_rewrite_exact_payloads() {
+fn many_capture_headers_share_one_verified_decode_and_rewrite_exact_payloads() {
     use crate::excise::stored_text::framing;
     use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
     let payload = br#"{"v":"secret"}"#;
@@ -259,7 +259,7 @@ fn many_snapshot_headers_share_one_verified_decode_and_rewrite_exact_payloads() 
 }
 
 #[test]
-fn whitespace_matches_never_include_structural_snapshot_headers() {
+fn whitespace_matches_never_include_structural_capture_headers() {
     use crate::excise::stored_text::framing;
     use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
     let payload = b"x y";

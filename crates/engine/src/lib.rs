@@ -1,4 +1,4 @@
-//! The convergence loop (architecture 5). One loop runs in the daemon:
+//! The convergence loop. One loop runs in the daemon:
 //!
 //! ```text
 //! collect -> store -> parse -> derive -> excise -> wait
@@ -10,7 +10,7 @@
 //!
 //! Parser state lives in memory. After a restart it is rebuilt lazily: an
 //! input's state is rebuilt by parsing its bytes again only when that input
-//! next changes, never all at start-up (architecture 2, measured facts).
+//! next changes, never all at start-up.
 
 pub mod ai_studio_drive;
 pub mod collect;
@@ -62,7 +62,7 @@ pub struct Config {
     /// Combined SQLite page-cache target for client and convergence readers.
     /// Mapped reader pages are disabled. This is not a total RSS limit.
     pub reader_memory_bytes: u64,
-    /// Bytes admitted into the parse pool at once. The pool takes new work
+    /// Bytes in the parse pool at once. The pool takes new work
     /// only while the bytes in flight stay under this.
     pub bytes_in_flight: u64,
     /// `/etc/machine-id`: paths from two machines never collide.
@@ -78,7 +78,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// One reader slot is reserved for convergence; client reads have `workers`
+    /// One reader slot is kept for the loop; client reads have `workers`
     /// slots. All slots share one page-cache target, split again between index,
     /// archive and optional embeddings by the store. Integer division leaves unused bytes.
     pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
@@ -173,7 +173,7 @@ impl Config {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unfinished_inputs: Vec<polylogue_store::staging::Unfinished>,
+    pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
     /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -240,14 +240,14 @@ struct InputState {
     /// archive; `None` once this run stored a new chain.
     chain: Option<i64>,
     /// The file facts a parse failed at: the input is tried again only when
-    /// its bytes change (law 63) or the daemon restarts.
+    /// its bytes change or the daemon restarts.
     failed: Option<FileFacts>,
     /// Failed immutable chains wait for changed bytes or a restart.
-    failed_history: HashMap<i64, RetainedFailure>,
+    failed_history: HashMap<i64, FailedChain>,
 }
 
 #[derive(PartialEq, Eq)]
-struct RetainedFailure {
+struct FailedChain {
     length: u64,
 }
 
@@ -291,7 +291,7 @@ impl Plan {
         let piece_from = (end > self.piece_pos).then_some(self.piece_pos);
         let (change, observation, continues, length) = match piece_from {
             None if self.size == 0 && self.observation.is_some() => {
-                // An empty acquisition still publishes its revision and file facts.
+                // An empty file still commits its revision and file facts.
                 (self.change.clone(), self.observation.take(), false, end)
             }
             Some(_) if !self.piece_started => {
@@ -544,7 +544,7 @@ impl Engine {
     /// change a watched location, so another pass follows on its own.
     /// Returns the error to report on the pass, if the sync failed.
     /// Writes the repository lookups for the working directories the index
-    /// holds (spec sources/README.md, the repo-lookup record), at most once
+    /// holds, at most once
     /// a minute. The files it writes are collected in this same pass.
     fn refresh_lookups(&mut self) -> Result<(), String> {
         if self
@@ -602,7 +602,7 @@ impl Engine {
     }
 
     /// Completes a finite capture batch. The daemon also discovers source
-    /// changes and services controls between its turns.
+    /// changes and handles queued requests between its turns.
     pub fn converge(&mut self) -> Result<Pass, EngineError> {
         let mut total = self.converge_turn()?;
         while total.capture_pending {
@@ -615,7 +615,7 @@ impl Engine {
             total.sessions_derived += next.sessions_derived;
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
-            total.unfinished_inputs = next.unfinished_inputs;
+            total.pending_inputs = next.pending_inputs;
             total.errors.extend(next.errors);
             total.capture_pending = next.capture_pending;
         }
@@ -629,10 +629,7 @@ impl Engine {
 
     fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
-        let unfinished_inputs = self
-            .writer
-            .finish_writing(Arc::clone(&self.blobs))?
-            .unfinished;
+        let pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
         self.load()?;
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
@@ -648,7 +645,7 @@ impl Engine {
             (Vec::new(), Vec::new(), Vec::new())
         };
         let mut pass = Pass {
-            unfinished_inputs,
+            pending_inputs,
             unreadable_roots: unreadable,
             errors,
             ..Pass::default()
@@ -732,11 +729,11 @@ impl Engine {
                     },
                 );
             }
-            let unfinished = pass
-                .unfinished_inputs
+            let pending = pass
+                .pending_inputs
                 .iter()
                 .any(|u| u.input == self.inputs[&f.path].input_id);
-            if let Some(plan) = self.plan(&f.path, now, unfinished)? {
+            if let Some(plan) = self.plan(&f.path, now, pending)? {
                 plans.push(plan);
             }
         }
@@ -812,7 +809,7 @@ impl Engine {
         &mut self,
         path: &Path,
         now: FileFacts,
-        unfinished: bool,
+        pending: bool,
     ) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
@@ -825,14 +822,14 @@ impl Engine {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
         }
-        if unfinished && let Some(chain) = st.chain {
+        if pending && let Some(chain) = st.chain {
             match self
                 .reads
                 .reader()?
-                .check_retained_range(&st.input_id, chain, 0..st.stored)
+                .check_bytes_present(&st.input_id, chain, 0..st.stored)
             {
                 Ok(()) => {}
-                Err(polylogue_store::StoreError::InputUnfinished { .. }) => {
+                Err(polylogue_store::StoreError::InputPending { .. }) => {
                     // Bytes still being written are never replaced by what the
                     // file holds now: equal bytes are stored again under the
                     // same hash, edited bytes start a new chain.
@@ -847,12 +844,12 @@ impl Engine {
             *from = st.stored;
             if st.tail.is_none() && *from > 0 {
                 let reader = self.reads.reader()?;
-                let retained = reader.retained_input(&st.input_id)?.ok_or_else(|| {
-                    polylogue_store::StoreError::Invalid("append has no retained prefix".into())
+                let progress = reader.input_progress(&st.input_id)?.ok_or_else(|| {
+                    polylogue_store::StoreError::Invalid("append has no stored prefix".into())
                 })?;
                 st.tail = Some(reader.stored_range(
                     &st.input_id,
-                    retained.chain,
+                    progress.chain,
                     from.saturating_sub(read::TAIL as u64),
                     *from,
                     &self.blobs,
@@ -939,12 +936,12 @@ impl Engine {
             .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin))
             .collect();
         for (path, id, origin) in inputs {
-            let chains = self.reads.reader()?.retained_chains(&id)?;
+            let chains = self.reads.reader()?.chain_progress(&id)?;
             // A first parse can commit bytes but fail before InputState learns
-            // its chain. Classify history from canonical revisions instead.
+            // its chain. Classify history from the archive's revisions instead.
             let current = chains.last().map(|(chain, _)| *chain);
             for (chain, state) in chains {
-                let failure = RetainedFailure {
+                let failure = FailedChain {
                     length: state.length,
                 };
                 if self
@@ -961,7 +958,7 @@ impl Engine {
                 {
                     continue;
                 }
-                // Independent snapshots can resume at their record boundary.
+                // Capture logs can resume at their record boundary.
                 // Line parsers need the prefix to reconstruct their carry.
                 let start = if state.parsed
                     && (origin.open)(&path).is_some_and(|parser| parser.is_capture_log())
@@ -970,12 +967,12 @@ impl Engine {
                 } else {
                     0
                 };
-                let retained = match self.reads.reader()?.stored_chain(&id, chain, state.length) {
-                    Ok(retained) => retained,
-                    Err(polylogue_store::StoreError::InputUnfinished { .. }) => continue,
+                let stored = match self.reads.reader()?.stored_chain(&id, chain, state.length) {
+                    Ok(stored) => stored,
+                    Err(polylogue_store::StoreError::InputPending { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 };
-                let source = pool::Bytes::Stored(Arc::new(retained));
+                let source = pool::Bytes::Stored(Arc::new(stored));
                 let plan = Plan {
                     path: path.clone(),
                     origin,
@@ -1023,15 +1020,15 @@ impl Engine {
             (st.input_id.clone(), st.origin, st.stored, st.facts);
         let bytes = match self.reads.reader()?.stored_chain(&input_id, chain, stored) {
             Ok(bytes) => bytes,
-            Err(polylogue_store::StoreError::InputUnfinished { .. }) => return Ok(None),
+            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let route_rank = self
             .reads
             .reader()?
-            .retained_input(&input_id)?
+            .input_progress(&input_id)?
             .ok_or_else(|| {
-                polylogue_store::StoreError::Invalid("retained revision disappeared".into())
+                polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
             .route_rank;
         let source = match bytes.single_file_blob() {
@@ -1193,7 +1190,7 @@ impl Engine {
             {
                 if plan.failed {
                     st.failed_history
-                        .insert(chain, RetainedFailure { length: plan.size });
+                        .insert(chain, FailedChain { length: plan.size });
                 } else {
                     st.failed_history.remove(&chain);
                 }
@@ -1287,7 +1284,7 @@ impl Engine {
                 if burst.elapsed() > COALESCE {
                     break;
                 }
-                // Pending captures continue after queued controls, without
+                // Pending captures continue after queued requests, without
                 // waiting for a watcher event or a coalescing delay.
                 if pending {
                     msg = rx.try_recv().map_err(|e| match e {

@@ -28,4 +28,4 @@ fn finds_written_and_json_escaped_forms() {
 }
 
 mod deliveries;
-mod retained;
+mod stored;

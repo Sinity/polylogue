@@ -4,7 +4,7 @@
 //! visibility rules; this module splits words as the index does and cuts
 //! a query result's snippet. A first build writes the entries in bulk when
 //! it ends; afterwards the search thread writes them shortly after their
-//! text commits (`search_pending`, architecture 5.5c), and a flush writes
+//! text commits (`search_pending`), and a flush writes
 //! every waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is
@@ -37,7 +37,7 @@ pub fn words(text: &str) -> Vec<String> {
 const WINDOW: usize = 12;
 
 /// A query result's snippet: about 12 words around the first match, with
-/// the matches' byte ranges (spec query.md, Full-text search, Snippets).
+/// the matches' byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snippet {
     /// The cut text, with `…` where it was cut.
@@ -126,7 +126,7 @@ impl Reader<'_> {
             })?;
             if !pending.is_empty() {
                 return Err(StoreError::Invalid(
-                    "selected snippet blocks are absent from the admitted source view".into(),
+                    "selected snippet blocks are absent from this read".into(),
                 ));
             }
         }

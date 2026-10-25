@@ -56,7 +56,7 @@ fn breaking_message_visit_does_not_decode_later_bodies() {
     assert_eq!(visited, 1);
     assert!(
         reader.messages(&id, false).is_err(),
-        "control must decode the corrupt later record"
+        "the reference case must decode the corrupt later record"
     );
     assert!(
         reader.message_fingerprint(&id, false).is_ok(),

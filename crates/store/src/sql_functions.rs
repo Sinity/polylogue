@@ -40,7 +40,7 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     })?;
     conn.create_scalar_function("pl_random", 2, FLAGS, |ctx| {
         // Callers cast numeric row keys to TEXT. Hash opaque string IDs as
-        // bytes so numeric-looking IDs retain their spelling and precision.
+        // bytes so numeric-looking IDs keep their spelling and precision.
         let key: String = ctx.get(0)?;
         let seed: String = ctx.get(1)?;
         let seed: u64 = seed

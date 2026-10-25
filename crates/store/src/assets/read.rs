@@ -13,11 +13,11 @@ pub enum AttachmentState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AssetCandidate {
+pub struct AssetMatch {
     pub input: String,
     pub chain: i64,
     pub blob: Option<BlobHash>,
-    pub basis: String,
+    pub source_version: String,
     pub size: u64,
     pub members: Vec<String>,
     pub names: Vec<String>,
@@ -32,7 +32,7 @@ pub struct AttachmentResolution {
     pub attachment_index: usize,
     pub source: Attachment,
     pub state: AttachmentState,
-    pub candidates: Vec<AssetCandidate>,
+    pub matches: Vec<AssetMatch>,
     pub binding: String,
 }
 
@@ -105,8 +105,8 @@ impl Reader<'_> {
         let scopes = scopes
             .query_map(params![pk, version], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut candidates = std::collections::BTreeMap::<String, AssetCandidate>::new();
-        let mut known = std::collections::HashMap::<String, Option<AssetBasis>>::new();
+        let mut matches = std::collections::BTreeMap::<String, AssetMatch>::new();
+        let mut known = std::collections::HashMap::<String, Option<AssetSource>>::new();
         let identity = source.source_id.as_deref().filter(|id| !id.is_empty());
         if let Some(source_id) = identity {
             let mut stmt = conn.prepare(
@@ -121,31 +121,28 @@ impl Reader<'_> {
                 })? {
                     let (input, member) = row?;
                     if !known.contains_key(&input) {
-                        known.insert(input.clone(), basis(conn, "a.", &input)?);
+                        known.insert(input.clone(), asset_source(conn, "a.", &input)?);
                     }
                     let Some(current) = known[&input].as_ref() else {
                         continue;
                     };
-                    let candidate =
-                        candidates
-                            .entry(input.clone())
-                            .or_insert_with(|| AssetCandidate {
-                                input,
-                                chain: current.chain,
-                                blob: current.blob,
-                                basis: current.hash.clone(),
-                                size: current.length,
-                                members: Vec::new(),
-                                names: Vec::new(),
-                                media_types: Vec::new(),
-                                declared_sizes: Vec::new(),
-                            });
-                    candidate.members.push(member);
-                    let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.basis FROM import_member m
+                    let asset = matches.entry(input.clone()).or_insert_with(|| AssetMatch {
+                        input,
+                        chain: current.chain,
+                        blob: current.blob,
+                        source_version: current.version.clone(),
+                        size: current.length,
+                        members: Vec::new(),
+                        names: Vec::new(),
+                        media_types: Vec::new(),
+                        declared_sizes: Vec::new(),
+                    });
+                    asset.members.push(member);
+                    let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.source_version FROM import_member m
                         JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
                         JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
                         WHERE m.acquisition=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
-                          AND EXISTS(SELECT 1 FROM a.revision retained WHERE retained.input=m.input)
+                          AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
                         ORDER BY m.input,x.ordinal")?;
                     for row in meta.query_map(params![scope, source_id], |r| {
                         Ok((
@@ -158,17 +155,17 @@ impl Reader<'_> {
                     })? {
                         let (name, media, size, input, recorded) = row?;
                         if !known.contains_key(&input) {
-                            known.insert(input.clone(), basis(conn, "a.", &input)?);
+                            known.insert(input.clone(), asset_source(conn, "a.", &input)?);
                         }
-                        if known[&input].as_ref().map(|basis| basis.hash.as_str())
+                        if known[&input].as_ref().map(|source| source.version.as_str())
                             != Some(recorded.as_str())
                         {
                             continue;
                         }
-                        candidate.names.extend(name);
-                        candidate.media_types.extend(media);
+                        asset.names.extend(name);
+                        asset.media_types.extend(media);
                         if let Some(size) = size {
-                            candidate.declared_sizes.push(size.parse().map_err(|_| {
+                            asset.declared_sizes.push(size.parse().map_err(|_| {
                                 StoreError::Invalid("invalid declared asset size".into())
                             })?);
                         }
@@ -176,14 +173,14 @@ impl Reader<'_> {
                 }
             }
         }
-        let mut candidates = candidates.into_values().collect::<Vec<_>>();
-        for candidate in &mut candidates {
-            unique(&mut candidate.members);
-            unique(&mut candidate.names);
-            unique(&mut candidate.media_types);
-            unique(&mut candidate.declared_sizes);
+        let mut matches = matches.into_values().collect::<Vec<_>>();
+        for asset in &mut matches {
+            unique(&mut asset.members);
+            unique(&mut asset.names);
+            unique(&mut asset.media_types);
+            unique(&mut asset.declared_sizes);
         }
-        let state = match candidates.len() {
+        let state = match matches.len() {
             1 => AttachmentState::Available,
             0 if scopes.is_empty() || identity.is_none() => AttachmentState::Unknown,
             0 => AttachmentState::Unavailable,
@@ -196,7 +193,7 @@ impl Reader<'_> {
             &version,
             &source,
             &scopes,
-            &candidates,
+            &matches,
         ))?)
         .to_hex()
         .to_string();
@@ -206,7 +203,7 @@ impl Reader<'_> {
             attachment_index,
             source,
             state,
-            candidates,
+            matches,
             binding,
         })
     }

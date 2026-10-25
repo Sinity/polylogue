@@ -23,7 +23,7 @@ fn tentative_whitespace_is_discarded_for_json_and_kept_for_plain_or_eof() {
 fn streaming_preserves_keys_incomplete_values_nested_json_and_overlaps() {
     let cases: Vec<(&[u8], &str)> = vec![
         (br#"{"secret":"value"}"#, "secret"),
-        (br#"{"v":"secret","unfinished":"\u00"#, "secret"),
+        (br#"{"v":"secret","incomplete":"\u00"#, "secret"),
         (br#"{"v":"{\"v\":\"s\\u0065cret\"}","keep":"x"}"#, "secret"),
         (br#"{"v":"{\"v\":\"s\\u0065cret\""}"#, "secret"),
         (br#"{"v":"{\"v\":\"s\\u0065cret\u00"}"#, "secret"),

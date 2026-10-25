@@ -3,7 +3,7 @@
 //! numbers, text is a string, a blob is `{"hex": …}` and null is null. Keys
 //! are sorted, so the same rows always give the same bytes.
 use crate::{Error, Result};
-use polylogue_store::row_batches::{Row, RowBatch, Snapshot, Value};
+use polylogue_store::row_batches::{BatchReader, Row, RowBatch, Value};
 use serde::Serialize;
 use serde_json::{Map, Value as Json, json};
 use std::collections::BTreeMap;
@@ -25,7 +25,7 @@ struct Line<'a> {
     table: &'a str,
 }
 
-pub(crate) fn encode(snapshot: &Snapshot, batch: &RowBatch) -> Result<Encoded> {
+pub(crate) fn encode(batch_reader: &BatchReader, batch: &RowBatch) -> Result<Encoded> {
     let mut file = tempfile::tempfile()?;
     let mut out = Hashing {
         inner: BufWriter::new(&mut file),
@@ -34,7 +34,7 @@ pub(crate) fn encode(snapshot: &Snapshot, batch: &RowBatch) -> Result<Encoded> {
     };
     let mut rows = 0;
     let mut blobs = Vec::new();
-    snapshot.rows(batch, |row| {
+    batch_reader.rows(batch, |row| {
         if row.table == "blob"
             && let Some(Value::Blob(hash)) = column(&row, "hash")
             && let Ok(hash) = <[u8; 32]>::try_from(hash.as_slice())

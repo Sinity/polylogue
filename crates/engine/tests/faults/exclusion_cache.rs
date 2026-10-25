@@ -60,7 +60,7 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
     w.append(
         "mixed.jsonl",
         &(user("a2", "removed", "must remain excluded")
-            + &user("b1", "retained", "admitted after retry")),
+            + &user("b1", "stored", "stored after retry")),
     );
     fault::arm("exclusion_cache.lookup", "messages", Action::Fail, 0, 1);
     let failed = engine.converge().unwrap();
@@ -72,13 +72,13 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
         "{failed:?}"
     );
     assert!(w.texts("removed").is_empty());
-    assert!(w.texts("retained").is_empty());
+    assert!(w.texts("stored").is_empty());
     drop(engine);
     drop(lock);
     let (mut engine, _lock) = w.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     assert!(w.texts("removed").is_empty());
-    assert_eq!(w.texts("retained"), ["admitted after retry"]);
+    assert_eq!(w.texts("stored"), ["stored after retry"]);
     fault::clear();
 }
 
@@ -93,7 +93,7 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
     w.append(
         "mixed.jsonl",
         &(user("a2", "removed", "must remain excluded")
-            + &user("b1", "retained", "admitted after retry")),
+            + &user("b1", "stored", "stored after retry")),
     );
     fault::arm("exclusion_cache.lookup", "messages", Action::Fail, 0, 1);
     let failed = engine.converge().unwrap();
@@ -105,10 +105,10 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
         "{failed:?}"
     );
     assert!(w.texts("removed").is_empty());
-    assert!(w.texts("retained").is_empty());
+    assert!(w.texts("stored").is_empty());
     assert!(engine.converge().unwrap().errors.is_empty());
     assert!(w.texts("removed").is_empty());
-    assert_eq!(w.texts("retained"), ["admitted after retry"]);
+    assert_eq!(w.texts("stored"), ["stored after retry"]);
     fault::clear();
 }
 

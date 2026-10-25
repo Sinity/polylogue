@@ -18,7 +18,7 @@ fn native_binding_survives_restart_and_ignores_clock_and_host_changes() {
     let db = dir.path().join("profile/state.db");
     fs::create_dir_all(db.parent().unwrap()).unwrap();
     Connection::open(&db).unwrap().execute_batch("CREATE TABLE rows(id INTEGER PRIMARY KEY,value TEXT); INSERT INTO rows VALUES(1,'first')").unwrap();
-    let out = dir.path().join("retained/state.db.jsonl");
+    let out = dir.path().join("stored/state.db.jsonl");
     let mut observed = observation(&db, "machine-a");
     Exporter::default()
         .export(&db, &out, Some(&observed))

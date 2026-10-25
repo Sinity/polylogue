@@ -313,7 +313,7 @@ fn array_conversations_parse_when_the_chunk_is_smaller_than_one_record() {
         chatgpt_conversation("c2", "two")
     ]);
     fs::write(&path, serde_json::to_vec_pretty(&convs).unwrap()).unwrap();
-    // The array path admits one conversation independently of the line chunk.
+    // The array path stores one conversation independently of the line chunk.
     let (mut e, _lock) = w.engine(64);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);

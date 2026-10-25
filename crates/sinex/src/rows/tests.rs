@@ -53,8 +53,8 @@ fn dump(root: &std::path::Path) -> Vec<String> {
 #[test]
 fn every_batch_of_a_real_archive_round_trips_through_its_encoding() {
     let world = Morrow::build(Set::Main);
-    let snapshot = Snapshot::open(&world.root).unwrap();
-    let batches = snapshot.batches(None, usize::MAX).unwrap();
+    let batch_reader = BatchReader::open(&world.root).unwrap();
+    let batches = batch_reader.batches(None, usize::MAX).unwrap();
     assert!(batches.iter().any(|b| b.kind == "revision"));
     assert!(batches.iter().any(|b| b.kind == "observation"));
     let target = tempfile::tempdir().unwrap();
@@ -62,13 +62,13 @@ fn every_batch_of_a_real_archive_round_trips_through_its_encoding() {
     let mut restore = Restore::begin(&archive).unwrap();
     let mut cited = 0;
     for batch in &batches {
-        let mut encoded = encode(&snapshot, batch).unwrap();
+        let mut encoded = encode(&batch_reader, batch).unwrap();
         let mut bytes = Vec::new();
         encoded.file.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes.len() as u64, encoded.length);
         assert_eq!(hashed_blobs::Hash::of(&bytes), encoded.hash);
         assert_eq!(
-            encode(&snapshot, batch).unwrap().hash,
+            encode(&batch_reader, batch).unwrap().hash,
             encoded.hash,
             "the same rows give the same bytes"
         );
@@ -77,7 +77,7 @@ fn every_batch_of_a_real_archive_round_trips_through_its_encoding() {
         assert_eq!(rows, encoded.rows);
     }
     assert!(cited > 0);
-    restore.finish(&snapshot.archive_id().unwrap()).unwrap();
+    restore.finish(&batch_reader.archive_id().unwrap()).unwrap();
     assert_eq!(dump(target.path()), dump(&world.root));
 }
 

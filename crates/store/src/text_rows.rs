@@ -44,7 +44,7 @@ pub(crate) fn intern(
     Ok(id)
 }
 
-/// Marks an already retained text for current-block search membership.
+/// Marks an already stored text for current-block search membership.
 pub(crate) fn activate(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Result<()> {
     let changed = conn
         .prepare_cached(
@@ -71,7 +71,7 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     for bit in [1, 2] {
         let mut after = 0;
         loop {
-            let tx = crate::publication::transaction(conn, TransactionBehavior::Immediate)?;
+            let tx = crate::write_lock::transaction(conn, TransactionBehavior::Immediate)?;
             let mut bytes = 0;
             let mut last = after;
             {
@@ -115,10 +115,10 @@ pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
 
 fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
-    let tx = crate::publication::transaction(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::write_lock::transaction(conn, TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
     // Finish the queue cursor before removing its entries. Bodies are fetched
-    // individually, so the row-count limit does not multiply retained text.
+    // individually, so the row-count limit does not multiply the text held.
     let ids: Vec<(i64, i64)> = tx
         .prepare_cached(
             "SELECT p.text_id, p.fts_table FROM search_pending p JOIN text t ON t.id = p.text_id
@@ -174,7 +174,7 @@ fn write_entry(conn: &Connection, id: i64, bit: i64, packed: &[u8]) -> Result<us
 }
 
 /// Historical versions keep their text row, but only current blocks contribute
-/// documents to full-text ranking or embedding candidates.
+/// documents to full-text ranking or embedding.
 pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> {
     for (bit, kind, table) in [
         (1, "b.kind<>'tool_result'", "text_fts"),

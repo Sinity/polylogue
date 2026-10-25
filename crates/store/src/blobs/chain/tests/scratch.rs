@@ -11,23 +11,23 @@ impl Drop for OwnedChild {
     }
 }
 
-const CHILD: &str = "POLYLOGUE_SNAPSHOT_SCRATCH_CHILD";
+const CHILD: &str = "POLYLOGUE_EXTENT_LIST_SCRATCH_CHILD";
 
 #[test]
-fn a_killed_snapshot_owner_leaves_no_named_payload() {
+fn a_killed_extent_list_owner_leaves_no_named_payload() {
     if let Some(dir) = std::env::var_os(CHILD) {
         child(Path::new(&dir));
         return;
     }
     let dir = tempfile::tempdir().unwrap();
     let alias_dir = tempfile::tempdir().unwrap();
-    let alias = alias_dir.path().join("snapshot");
+    let alias = alias_dir.path().join("extents");
     std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
     let mut child = OwnedChild(
         Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "blobs::chain::tests::scratch::a_killed_snapshot_owner_leaves_no_named_payload",
+                "blobs::chain::tests::scratch::a_killed_extent_list_owner_leaves_no_named_payload",
                 "--nocapture",
             ])
             .env(CHILD, &alias)
@@ -62,7 +62,7 @@ fn a_killed_snapshot_owner_leaves_no_named_payload() {
             .iter()
             .filter(|p| p.to_string_lossy().ends_with(" (deleted)"))
             .count()
-            >= 2,
+            >= 1,
         "{descriptors:?}"
     );
     assert!(
@@ -90,7 +90,7 @@ fn child(dir: &Path) {
     )
     .unwrap();
     conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,8388608,1)", []).unwrap();
-    // Unique incompressible inline pieces force the actual snapshot beyond its cache.
+    // Unique incompressible inline pieces force the actual extents beyond its cache.
     for n in 0u64..512 {
         let bytes = (0u64..512)
             .flat_map(|i| {
@@ -109,7 +109,7 @@ fn child(dir: &Path) {
         .unwrap();
     }
     let chain = StoredChain::load(&conn, "", "input", 1, 8 << 20).unwrap();
-    let locked = chain.snapshot.as_ref().unwrap().connection();
+    let locked = chain.extents.as_ref().unwrap().connection();
     assert_eq!(locked.path(), Some(""));
     let pages: i64 = locked
         .query_row("PRAGMA page_count", [], |r| r.get(0))
@@ -122,16 +122,12 @@ fn child(dir: &Path) {
         -64
     );
     drop(locked);
-    conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('large','session:synthetic:removed',1,1)", []).unwrap();
-    conn.execute_batch("WITH RECURSIVE n(value) AS (VALUES(0) UNION ALL SELECT value+1 FROM n WHERE value<99999)
-        UPDATE excision SET message_ids_json=(SELECT json_group_array('synthetic:message:'||value) FROM n)").unwrap();
-    let _refused = crate::excise::Refused::load(&conn).unwrap();
     let start = Instant::now();
     let idle: Vec<_> = (0..32)
         .map(|_| StoredChain::load_range(&conn, "", "input", 1, 0, 1).unwrap())
         .collect();
     for chain in &idle {
-        let db = chain.snapshot.as_ref().unwrap().connection();
+        let db = chain.extents.as_ref().unwrap().connection();
         assert_eq!(
             db.query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
@@ -139,7 +135,7 @@ fn child(dir: &Path) {
         );
     }
     let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
-    std::fs::write(dir.join("ready"), format!("33 snapshots (32 small idle), one large exclusion set; total process descriptors={fds}; small snapshot capture={:?}; 64KiB cache target each (not RSS)",start.elapsed())).unwrap();
+    std::fs::write(dir.join("ready"), format!("33 extent lists (32 small idle); total process descriptors={fds}; small extents capture={:?}; 64KiB cache target each (not RSS)",start.elapsed())).unwrap();
     loop {
         std::thread::park();
     }

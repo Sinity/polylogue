@@ -2,7 +2,7 @@ use super::*;
 use crate::fixture::Fixture;
 
 #[test]
-fn closed_pools_refuse_new_readers_and_let_admitted_reads_finish() {
+fn closed_pools_refuse_new_readers_and_let_started_reads_finish() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
@@ -31,18 +31,18 @@ fn concurrent_readers_wait_at_the_cap_and_reuse_released_connections() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
-    let (admitted, received) = std::sync::mpsc::channel();
+    let (started, received) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         let mut releases = Vec::new();
         for id in 0..8 {
             let (release, released) = std::sync::mpsc::channel();
             releases.push(release);
-            let admitted = admitted.clone();
+            let started = started.clone();
             let pool = &pool;
             scope.spawn(move || {
                 let reader = pool.reader().unwrap();
                 reader.status().unwrap();
-                admitted.send(id).unwrap();
+                started.send(id).unwrap();
                 released.recv().unwrap();
             });
         }
@@ -63,7 +63,7 @@ fn concurrent_readers_wait_at_the_cap_and_reuse_released_connections() {
 }
 
 #[test]
-fn close_wakes_all_full_pool_waiters_without_cancelling_the_admitted_snapshot() {
+fn close_wakes_all_full_pool_waiters_without_cancelling_a_started_read() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
@@ -88,7 +88,7 @@ fn close_wakes_all_full_pool_waiters_without_cancelling_the_admitted_snapshot() 
 }
 
 #[test]
-fn nested_snapshots_are_allowed_but_self_exhaustion_refuses() {
+fn nested_readers_are_allowed_but_self_exhaustion_refuses() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
@@ -103,7 +103,7 @@ fn nested_snapshots_are_allowed_but_self_exhaustion_refuses() {
 }
 
 #[test]
-fn open_and_begin_failures_release_the_reservation_for_waiters() {
+fn open_and_begin_failures_release_the_slot_for_waiters() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     for begin_failure in [false, true] {
@@ -142,7 +142,7 @@ fn open_and_begin_failures_release_the_reservation_for_waiters() {
 }
 
 #[test]
-fn close_while_connecting_refuses_the_pending_admission_and_releases_its_slot() {
+fn close_while_connecting_refuses_the_pending_reader_and_releases_its_slot() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
@@ -184,7 +184,7 @@ fn failed_transaction_completion_discards_the_connection_and_releases_its_slot()
 }
 
 #[test]
-fn main_and_attached_cache_targets_reserve_the_optional_vectors_share() {
+fn main_and_attached_cache_targets_leave_room_for_the_optional_vectors_share() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 3, (8 << 20) + 123).unwrap();
@@ -214,7 +214,7 @@ fn main_and_attached_cache_targets_reserve_the_optional_vectors_share() {
 }
 
 #[test]
-fn nested_readers_keep_distinct_consistent_snapshots_when_connections_are_reused() {
+fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
@@ -235,7 +235,7 @@ fn nested_readers_keep_distinct_consistent_snapshots_when_connections_are_reused
     assert_eq!(first.status().unwrap().sessions, 0);
 }
 
-mod snapshot_admission;
+mod read_start;
 
 mod messages;
 

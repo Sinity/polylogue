@@ -60,7 +60,7 @@ fn check(env: &[(&str, &Path)]) {
     assert!(descriptor.status.success(), "{descriptor:?}");
     assert_eq!(json(&descriptor)["state"], "available");
     assert_eq!(
-        json(&descriptor)["candidates"][0]["names"],
+        json(&descriptor)["matches"][0]["names"],
         json!(["promoted.png"])
     );
     let page = cli(env, &["--json", "read", SESSION, "--budget", "100000"]);

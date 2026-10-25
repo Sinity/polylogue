@@ -24,7 +24,7 @@ pub(super) fn write_rows(
         input_pk,
         input_id: &b.input.id,
         chain,
-        snapshot: p.snapshot,
+        restates: p.restates,
         rank: i64::from(b.input.route_rank),
         counter,
         packed: &p.prepared.texts,
@@ -49,7 +49,7 @@ pub(super) fn write_rows(
         input_pk,
         input_id: &b.input.id,
         chain,
-        snapshot: p.snapshot,
+        restates: p.restates,
         rank: i64::from(b.input.route_rank),
         counter,
         packed: &p.prepared.texts,
@@ -80,7 +80,7 @@ pub(super) fn write_rows(
         };
         let position = match p.order_from {
             Some(from) => (from + i as u64) as i64,
-            None if p.snapshot => i as i64,
+            None if p.restates => i as i64,
             None => row.offset as i64,
         };
         // A kind this step states needs no lookup.
@@ -190,8 +190,8 @@ pub(super) struct Ctx<'a, 't> {
     input_pk: i64,
     input_id: &'a str,
     chain: i64,
-    /// The step's records restate whole conversations ([`ParseStep::snapshot`]).
-    snapshot: bool,
+    /// The step's records restate whole conversations ([`ParseStep::restates`]).
+    restates: bool,
     rank: i64,
     counter: i64,
     packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -409,7 +409,7 @@ impl Ctx<'_, '_> {
 
         // Within one chain the earliest record of a message wins: a later
         // duplicate (a repeated uuid) is not another version. In a chain of
-        // snapshots each record restates the conversation, so the later
+        // restating records each record restates the conversation, so the later
         // record replaces the earlier one.
         let prior: Option<i64> = self
             .tx
@@ -420,7 +420,7 @@ impl Ctx<'_, '_> {
             .query_row(params![pk, self.input_pk, self.chain], |r| r.get(0))
             .optional()?;
         if prior.is_some_and(|start| {
-            if self.snapshot {
+            if self.restates {
                 new.start < start
             } else {
                 new.start > start
@@ -429,7 +429,7 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         let order = (order_input, order_seq);
-        let new_order = if (self.snapshot && order_id == self.input_id)
+        let new_order = if (self.restates && order_id == self.input_id)
             || (self.input_id, position) < (order_id.as_str(), order_seq)
         {
             (self.input_pk, position)
@@ -449,7 +449,7 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         // A message is stored once, in the session where it originated
-        // (architecture 5.4). A spawned session's file can repeat its
+        //. A spawned session's file can repeat its
         // parent's messages (a compaction call, a side question replaying
         // the history); such a copy may become the shown version, but it
         // never moves the message out of a main session.
@@ -904,11 +904,11 @@ impl Ctx<'_, '_> {
         // An event with its own byte range sorts by it among the input's
         // messages (whose `seq` is their record offset); otherwise it takes
         // the position of the message it follows.
-        // In a snapshot step an event without a range takes the step's place.
+        // In a restating step an event without a range takes the step's place.
         let seq = order
             .map(|order| order as i64)
             .or(e.range.map(|(start, _)| start as i64))
-            .or(self.snapshot.then_some(step_start as i64))
+            .or(self.restates.then_some(step_start as i64))
             .or(after.map(|a| a.1))
             .unwrap_or(0);
         // The first input to state an event keeps it; within that input the
@@ -944,7 +944,7 @@ impl Ctx<'_, '_> {
     /// One link per kind, parent and child; parts one file lacks are filled
     /// from another (the SQL form of [`Link::merge`]).
     /// Upserts a link. Several inputs state the same link; what it records
-    /// must not depend on which arrived first (law 41), so where two
+    /// must not depend on which arrived first, so where two
     /// statements differ the smaller value is kept, and the evidence keeps
     /// the input that stated it.
     fn write_link(&self, l: &Link) -> Result<()> {

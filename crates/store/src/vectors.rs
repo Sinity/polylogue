@@ -1,5 +1,5 @@
 //! `embeddings.db`: purchased vectors keyed by embedding key and NFC text
-//! hash, never destroyed by a reindex (architecture 4.1).
+//! hash, never destroyed by a reindex.
 //! The texts come from `index.db`'s `text` table; a vector outlives every
 //! index generation because the hash, not the row, names its text.
 //!
@@ -38,7 +38,7 @@ pub struct KeyStatus {
 }
 
 /// The embeddings database. One process writes it (the daemon's embedding
-/// build); each admitted Reader owns its optional connection.
+/// build); each reader owns its optional connection.
 pub struct Vectors {
     conn: Connection,
     writable: bool,
@@ -75,10 +75,10 @@ impl Vectors {
         self.writable
     }
 
-    // Writable handles end each read snapshot before their next put/fail.
-    // Read-only handles retain the snapshot established during admission.
-    fn read_snapshot(&self) -> Result<Option<rusqlite::Transaction<'_>>> {
-        let snapshot = if self.writable {
+    // Writable handles end each read transaction before their next put or fail.
+    // Read-only handles keep the read transaction their reader started.
+    fn read_transaction(&self) -> Result<Option<rusqlite::Transaction<'_>>> {
+        let read = if self.writable {
             Some(rusqlite::Transaction::new_unchecked(
                 &self.conn,
                 rusqlite::TransactionBehavior::Deferred,
@@ -86,13 +86,13 @@ impl Vectors {
         } else {
             None
         };
-        Ok(snapshot)
+        Ok(read)
     }
 
     /// Text hashes that already have a vector or a permanent failure for
     /// `key`: the build skips them.
     pub fn done(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
-        let _snapshot = self.read_snapshot()?;
+        let _read = self.read_transaction()?;
         let mut out = HashSet::new();
         for sql in [
             "SELECT DISTINCT text_hash FROM embedded WHERE model = ?1",
@@ -126,7 +126,7 @@ impl Vectors {
     ) -> Result<T> {
         let archive = open_read(&index.with_file_name("archive.db"))?;
         let index = open_read(index)?;
-        let _lock = crate::publication::write(&index)?;
+        let _lock = crate::write_lock::hold(&index)?;
         if crate::excise::index_behind(&archive, &index)? {
             return Err(StoreError::Invalid(
                 "an excision has not reached the index yet; reopen the archive".into(),
@@ -214,7 +214,7 @@ impl Vectors {
     /// The `k` texts nearest to `query` (a unit vector) under `key`, best
     /// first, as `(text hash, cosine similarity)`.
     pub fn nearest(&self, key: &str, query: &[f32], k: usize) -> Result<Vec<(Vec<u8>, f32)>> {
-        let _snapshot = self.read_snapshot()?;
+        let _read = self.read_transaction()?;
         let mut best: HashMap<Vec<u8>, f32> = HashMap::new();
         let mut stmt = self
             .conn
@@ -260,7 +260,7 @@ impl Vectors {
     }
 
     pub fn status(&self) -> Result<VectorStatus> {
-        let _snapshot = self.read_snapshot()?;
+        let _read = self.read_transaction()?;
         let mut stmt = self.conn.prepare(
             "SELECT model, max(dims), count(DISTINCT text_hash), count(*),
                  (SELECT count(*) FROM embed_failure f WHERE f.model = e.model)

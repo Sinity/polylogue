@@ -73,13 +73,13 @@ fn array_order_and_parent_ownership_survive_newest_first_storage_and_rebuild() {
 }
 
 #[test]
-fn malformed_array_suffix_publishes_one_refusal_and_no_prefix_conversations() {
+fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
     for suffix in [",]", "] false", ""] {
         let w = ClaudeHome::new();
         let path = w.dir.path().join("conversations.json");
         let bytes = format!(
             "[{}{}",
-            conversation("never-published", 1, &[("u1", "prefix")]),
+            conversation("never-committed", 1, &[("u1", "prefix")]),
             suffix
         );
         fs::write(&path, bytes).unwrap();
@@ -128,7 +128,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn interrupted_array_delivery_replays_retained_bytes_and_resets_accounting() {
+fn interrupted_array_delivery_replays_stored_bytes_and_resets_accounting() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let bytes = serde_json::to_vec(&vec![

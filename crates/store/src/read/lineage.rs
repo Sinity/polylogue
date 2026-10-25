@@ -49,8 +49,8 @@ struct Frame {
     via: Option<(SessionId, Option<String>)>,
 }
 
-/// A message selection belongs to the Reader that admitted it. Bodies remain
-/// lazy; logical history retains keys for ordering, anchors and deduplication.
+/// A message selection belongs to the reader that made it. Bodies are read
+/// lazily; logical history keeps keys for ordering, anchors and deduplication.
 pub struct MessageSelection<'r, 'a> {
     reader: &'r Reader<'a>,
     own: Option<(i64, SessionId)>,
@@ -241,7 +241,7 @@ impl MessageSelection<'_, '_> {
     }
 
     /// Skip source messages before hydrating their blocks. Rendering callers must
-    /// restore masking state validated against this exact selected snapshot.
+    /// restore masking state checked against this exact selection.
     pub fn visit_from(
         &self,
         from: usize,

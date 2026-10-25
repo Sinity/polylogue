@@ -73,12 +73,12 @@ impl PlainBlob {
             Ok(())
         })?;
         self.0.seek(SeekFrom::Start(0))?;
-        let piece = Piece::prepare_reader(t.store, self.0)?;
+        let piece = write_piece(t, &mut self.0)?;
         record_replacement(t, hash, piece)
     }
 }
 
-/// Retain only the suffix that could start a match in the next chunk.
+/// Keep only the suffix that could start a match in the next chunk.
 fn literal_ranges(
     mut reader: impl Read,
     needle: &[u8],

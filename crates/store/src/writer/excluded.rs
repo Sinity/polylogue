@@ -49,7 +49,7 @@ pub(super) fn refused_message(m: &Message, r: &crate::excise::RefusedIds) -> boo
 }
 
 /// A copy of a batch without the rows of excised sessions and messages:
-/// they are never written again, from any input (architecture 5.6). The
+/// they are never written again, from any input. The
 /// bytes and parse position stay, so the input is not parsed again for
 /// them.
 pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch {
@@ -71,7 +71,7 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch
         p.output
             .documents
             .retain(|_| *documents.next().expect("one decision per Document"));
-        p.prepared.retain_documents(&keep_documents);
+        p.prepared.keep_documents(&keep_documents);
         let keep_events: Vec<bool> = p
             .output
             .events
@@ -87,13 +87,13 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch
             i += 1;
             keep_msgs[i - 1]
         });
-        p.prepared.retain_messages(&keep_msgs);
+        p.prepared.keep_messages(&keep_msgs);
         let mut i = 0;
         p.output.events.retain(|_| {
             i += 1;
             keep_events[i - 1]
         });
-        p.prepared.retain_events(&keep_events);
+        p.prepared.keep_events(&keep_events);
         p.output
             .sessions
             .retain(|s| !r.sessions.contains(&s.id.to_string()));

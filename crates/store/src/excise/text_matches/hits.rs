@@ -1,4 +1,4 @@
-use super::{Candidate, Error, TextMatches};
+use super::{Error, HitGroup, TextMatches};
 use crate::{Result, StoreError};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -61,7 +61,7 @@ impl Collected {
     pub(in crate::excise) fn plain(needle: &str) -> Result<Self> {
         let mut collected = Self::new(needle)?;
         collected.scanner.json = Some(false);
-        let raw = collected.scanner.raw_candidate.take().unwrap();
+        let raw = collected.scanner.raw_group.take().unwrap();
         raw.accept(&mut collected.scanner.output, &mut collected.hits)?;
         Ok(collected)
     }
@@ -73,7 +73,7 @@ impl Collected {
     }
 
     pub(in crate::excise) fn finish(mut self) -> Result<Vec<(u64, u64)>> {
-        let Candidate { scope, .. } = self
+        let HitGroup { scope, .. } = self
             .scanner
             .finish(&mut self.hits)
             .map_err(Error::into_store)?;

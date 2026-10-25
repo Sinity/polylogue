@@ -45,7 +45,7 @@ impl Captures {
 
     /// A finite discovery batch runs in order before another batch can start.
     /// Each unit is one row, replayed line or 64 KiB prefix-verification block.
-    /// A SQLite call, individual record and final publication can exceed it.
+    /// A SQLite call, one record and the final commit can exceed it.
     pub fn turn(&mut self, inputs: Inputs, limit: usize) -> Result<CaptureTurn, ExportError> {
         if !self.pending && inputs.is_empty() {
             return Ok(CaptureTurn::default());

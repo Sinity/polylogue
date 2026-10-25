@@ -1,7 +1,7 @@
 use super::*;
 
-/// Packed rows stay associated with their original message and are published
-/// together before parsed structured payloads are released.
+/// Packed rows stay with their original message and are committed together,
+/// before the parsed structured payloads are dropped.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,
@@ -41,20 +41,20 @@ impl PreparedRows {
         Ok(())
     }
 
-    pub(in crate::writer) fn retain_messages(&mut self, keep: &[bool]) {
-        retain(&mut self.messages, keep);
+    pub(in crate::writer) fn keep_messages(&mut self, keep: &[bool]) {
+        keep_flagged(&mut self.messages, keep);
     }
 
-    pub(in crate::writer) fn retain_documents(&mut self, keep: &[bool]) {
-        retain(&mut self.documents, keep);
+    pub(in crate::writer) fn keep_documents(&mut self, keep: &[bool]) {
+        keep_flagged(&mut self.documents, keep);
     }
 
-    pub(in crate::writer) fn retain_events(&mut self, keep: &[bool]) {
-        retain(&mut self.events, keep);
+    pub(in crate::writer) fn keep_events(&mut self, keep: &[bool]) {
+        keep_flagged(&mut self.events, keep);
     }
 }
 
-fn retain<T>(rows: &mut Vec<T>, keep: &[bool]) {
+fn keep_flagged<T>(rows: &mut Vec<T>, keep: &[bool]) {
     if rows.len() == keep.len() {
         let mut positions = keep.iter();
         rows.retain(|_| *positions.next().expect("one flag per row"));

@@ -1,4 +1,4 @@
-//! Document removal uses every retained source citation and the shared text owner.
+//! Document removal uses every stored source citation and the shared text owner.
 use super::*;
 
 impl Plan<'_> {

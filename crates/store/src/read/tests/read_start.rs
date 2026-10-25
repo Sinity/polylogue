@@ -6,7 +6,7 @@ use std::sync::mpsc;
 mod vfs;
 
 #[test]
-fn first_pin_cannot_combine_states_separated_by_two_publications() {
+fn a_first_read_cannot_see_states_separated_by_two_commits() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let registration = vfs::Registration::install();
@@ -16,7 +16,7 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
     let (proceed, resume) = mpsc::channel();
     registration.pause(reader.conn.as_ref().unwrap(), reached, resume);
     let location = fixture.archive.clone();
-    let publisher = std::thread::spawn(move || {
+    let writer = std::thread::spawn(move || {
         gap.recv().unwrap();
         let probe = File::open(location.archive_db()).unwrap();
         let guarded = match probe.try_lock() {
@@ -25,23 +25,24 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
                 false
             }
             Err(TryLockError::WouldBlock) => true,
-            Err(error) => panic!("publication probe: {error}"),
+            Err(error) => panic!("write lock probe: {error}"),
         };
-        // A guarded first pin must finish before publication can proceed.
-        // With the old path, finish all four commits before resuming it.
+        // A first read under the shared lock must finish before the writer
+        // can go on. Without the lock, finish all four commits before
+        // resuming it.
         if guarded {
             proceed.send(()).unwrap();
         }
-        let mut canonical = open_write(&location.archive_db(), cache::SETUP).unwrap();
+        let mut archive_conn = open_write(&location.archive_db(), cache::SETUP).unwrap();
         let mut index = open_write(&location.index_db(), cache::SETUP).unwrap();
         let mut states = vec![(0, 0)];
-        for (canonical_write, counter) in [(true, 1), (false, 1), (true, 2), (false, 2)] {
-            let conn = if canonical_write {
-                &mut canonical
+        for (archive_write, counter) in [(true, 1), (false, 1), (true, 2), (false, 2)] {
+            let conn = if archive_write {
+                &mut archive_conn
             } else {
                 &mut index
             };
-            let _publication = crate::publication::write(conn).unwrap();
+            let _lock = crate::write_lock::hold(conn).unwrap();
             let tx = conn.transaction().unwrap();
             tx.execute("INSERT INTO meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[counter.to_string()]).unwrap();
             tx.commit().unwrap();
@@ -53,7 +54,7 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
                 )
                 .unwrap_or(0)
             };
-            states.push((counter(&index), counter(&canonical)));
+            states.push((counter(&index), counter(&archive_conn)));
         }
         if !guarded {
             proceed.send(()).unwrap();
@@ -61,7 +62,7 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
         states
     });
     let position = reader.change_position().unwrap();
-    let states = publisher.join().unwrap();
+    let states = writer.join().unwrap();
     assert_eq!(states, [(0, 0), (0, 1), (1, 1), (1, 2), (2, 2)]);
     assert!(
         states.contains(&(position.index, position.archive)),
@@ -77,7 +78,7 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
 }
 
 #[test]
-fn already_pinned_reads_do_not_hold_publication_exclusion() {
+fn started_reads_do_not_hold_the_write_lock() {
     use crate::fixture::writer::{WriterWorld, prose};
     let mut world = WriterWorld::new();
     world.write("synthetic", prose("synthetic", 1, 1, "before"));
@@ -94,13 +95,13 @@ fn already_pinned_reads_do_not_hold_publication_exclusion() {
 }
 
 #[test]
-fn lazy_reservation_refuses_after_close_with_or_without_a_publication_wait() {
+fn an_unused_slot_refuses_after_close_with_or_without_waiting_for_the_lock() {
     for contended in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        let publication = File::open(fixture.archive.archive_db()).unwrap();
+        let lock = File::open(fixture.archive.archive_db()).unwrap();
         if contended {
-            publication.lock().unwrap();
+            lock.lock().unwrap();
         }
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
@@ -120,11 +121,11 @@ fn lazy_reservation_refuses_after_close_with_or_without_a_publication_wait() {
 }
 
 #[test]
-fn interrupted_admission_does_not_wait_for_publication() {
+fn an_interrupted_first_read_does_not_wait_for_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let _publication = File::open(fixture.archive.archive_db()).unwrap();
-    _publication.lock().unwrap();
+    let lock = File::open(fixture.archive.archive_db()).unwrap();
+    lock.lock().unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     reader
@@ -141,7 +142,7 @@ fn interrupted_admission_does_not_wait_for_publication() {
 fn mark_index_unsynced(archive: &Archive) {
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
     let tx =
-        crate::publication::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
+        crate::write_lock::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
     tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
     tx.commit().unwrap();
     drop(conn);
@@ -152,21 +153,21 @@ fn replace_index(archive: &Archive) {
 }
 
 #[test]
-fn reserved_old_index_refuses_while_idle_connections_refresh() {
+fn an_unused_slot_on_a_replaced_index_refuses_while_idle_connections_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
-    let reserved = pool.reader().unwrap();
+    let unused = pool.reader().unwrap();
     replace_index(&fixture.archive);
     assert!(matches!(
-        reserved.change_position(),
+        unused.change_position(),
         Err(StoreError::ReadIndexReplaced)
     ));
     assert!(matches!(
-        reserved.change_position(),
+        unused.change_position(),
         Err(StoreError::ReadIndexReplaced)
     ));
-    drop(reserved);
+    drop(unused);
     let current = pool.reader().unwrap().change_position().unwrap();
     replace_index(&fixture.archive);
     let refreshed = pool.reader().unwrap().change_position().unwrap();
@@ -174,7 +175,7 @@ fn reserved_old_index_refuses_while_idle_connections_refresh() {
 }
 
 #[test]
-fn a_pinned_reader_keeps_its_view_while_the_index_is_replaced() {
+fn a_started_reader_keeps_its_read_while_the_index_is_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
@@ -188,7 +189,7 @@ fn a_pinned_reader_keeps_its_view_while_the_index_is_replaced() {
 }
 
 #[test]
-fn first_pin_creates_no_file_in_a_read_only_archive_directory() {
+fn a_first_read_creates_no_file_in_a_read_only_archive_directory() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();

@@ -1,11 +1,11 @@
-//! Tool databases as typed logical exports (architecture 4.2): a database
+//! Tool databases as typed logical exports: a database
 //! that disappears must not take archived rows with it, but every version
 //! of its pages is not needed.
 //!
 //! A tool's SQLite database (Codex `state`, `goals`, `memories` and
 //! thread history; Hermes `state.db`) is never stored as page images.
 //! Each export reads it inside one read transaction, which sees a
-//! consistent snapshot including the WAL, and appends to an append-only
+//! consistent state including the WAL, and appends to an append-only
 //! JSON Lines file in the archive:
 //!
 //! - `{"db", "at_ms", "schema": {table: sql}}` when the schema changes;
@@ -20,8 +20,9 @@
 //!
 //! Exports wait for quiet files, with an hourly capture during continuous
 //! writes. Comparison state is a disposable disk-backed SQLite catalog.
-//! Changed rows are staged privately, then a synced completed-prefix marker
-//! publishes the batch. Recovery removes only bytes beyond that marker.
+//! Changed rows are staged privately, then a synced marker naming the
+//! completed prefix commits the batch. Bytes beyond that marker are removed
+//! on the next open.
 
 use crate::FileFacts;
 use base64::Engine as _;
@@ -39,10 +40,10 @@ const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 
 mod binding;
 mod catalog;
-mod publication;
+mod synced_prefix;
 mod turns;
 use catalog::Catalog;
-use publication::Publication;
+use synced_prefix::SyncedPrefix;
 pub use turns::{CaptureTurn, Captures};
 
 #[derive(Debug, thiserror::Error)]
@@ -81,7 +82,7 @@ struct DbState {
     exported: Option<DbFacts>,
     exported_at: Option<Instant>,
     catalog: Option<Catalog>,
-    publication: Option<Publication>,
+    synced: Option<SyncedPrefix>,
 }
 
 #[derive(Default)]
@@ -120,15 +121,15 @@ impl Exporter {
         }
         let requested = observation.map(binding::Binding::observed).transpose()?;
         let st = self.dbs.entry(db.to_path_buf()).or_default();
-        if st.publication.as_ref().is_none_or(|p| !p.current(out)) {
+        if st.synced.as_ref().is_none_or(|p| !p.current(out)) {
             st.catalog = None;
-            st.publication = None;
+            st.synced = None;
             st.exported = None;
-            let mut publication = Publication::open(out, checkpoint)?;
+            let mut synced = SyncedPrefix::open(out, checkpoint)?;
             let mut catalog = Catalog::load(out, checkpoint)?;
             catalog.bind(requested.clone())?;
-            publication.establish(out)?;
-            st.publication = Some(publication);
+            synced.establish(out)?;
+            st.synced = Some(synced);
             st.catalog = Some(catalog);
         }
         st.catalog
@@ -147,10 +148,10 @@ impl Exporter {
         let done = match write_export(db, out, st, checkpoint) {
             Ok(done) => done,
             Err(e) => {
-                // Publication may have completed before a local cache failure.
-                // Rebuild both from the verified public prefix next time.
+                // The marker may have been written before a local cache failure.
+                // Rebuild both from the verified synced prefix next time.
                 st.catalog = None;
-                st.publication = None;
+                st.synced = None;
                 return Err(e);
             }
         };
@@ -255,7 +256,7 @@ fn write_export(
     .map_err(sql_err)?;
     conn.busy_timeout(Duration::from_secs(10))
         .map_err(sql_err)?;
-    // One read transaction: every table from the same snapshot, WAL
+    // One read transaction: every table from the same moment, WAL
     // included, without blocking the tool's writer.
     conn.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&conn).map_err(sql_err)?;
@@ -353,9 +354,9 @@ fn write_export(
     w.flush()?;
     drop(w);
     conn.execute_batch("COMMIT").map_err(sql_err)?;
-    st.publication
+    st.synced
         .as_mut()
-        .expect("verified publication")
+        .expect("verified synced prefix")
         .append(out, &mut staged)?;
     crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
     transaction.commit().map_err(sql_err)?;

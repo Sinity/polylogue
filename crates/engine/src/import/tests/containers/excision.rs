@@ -52,12 +52,12 @@ fn removing_a_member_removes_its_zip_and_keeps_the_other_member_across_rebuild()
     let (mut e, _lock) = engine(&w, 1024);
     assert!(e.converge().unwrap().errors.is_empty());
     let reader = e.reads.reader().unwrap();
-    assert!(reader.retained_input(&original_id).unwrap().is_none());
-    assert!(reader.retained_input(&selected).unwrap().is_none());
-    let retained = reader.retained_input(&sibling).unwrap().unwrap();
+    assert!(reader.input_progress(&original_id).unwrap().is_none());
+    assert!(reader.input_progress(&selected).unwrap().is_none());
+    let stored = reader.input_progress(&sibling).unwrap().unwrap();
     assert_eq!(
         reader
-            .stored_range(&sibling, retained.chain, 0, retained.length, &e.blobs)
+            .stored_range(&sibling, stored.chain, 0, stored.length, &e.blobs)
             .unwrap(),
         b"second member"
     );
@@ -109,10 +109,10 @@ fn nested_zips_are_all_removed_and_members_at_both_levels_stay() {
     let reader = e.reads.reader().unwrap();
     for body in [b"second member".as_slice(), b"outer sibling".as_slice()] {
         let id = blake3::hash(body).to_hex().to_string();
-        let retained = reader.retained_input(&id).unwrap().unwrap();
+        let stored = reader.input_progress(&id).unwrap().unwrap();
         assert_eq!(
             reader
-                .stored_range(&id, retained.chain, 0, retained.length, &e.blobs)
+                .stored_range(&id, stored.chain, 0, stored.length, &e.blobs)
                 .unwrap(),
             body
         );
@@ -179,10 +179,10 @@ fn actual_watched_copy_of_original_refuses_member_removal_before_any_mutation() 
     assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
     let reader = e.reads.reader().unwrap();
     let id = hash.to_hex().to_string();
-    let retained = reader.retained_input(&id).unwrap().unwrap();
+    let stored = reader.input_progress(&id).unwrap().unwrap();
     assert_eq!(
         reader
-            .stored_range(&id, retained.chain, 0, retained.length, &e.blobs)
+            .stored_range(&id, stored.chain, 0, stored.length, &e.blobs)
             .unwrap(),
         original
     );

@@ -76,7 +76,7 @@ fn turns_keep_one_source_view_and_continue_without_rediscovery() {
 }
 
 #[test]
-fn dropping_paused_capture_releases_source_view_and_publishes_nothing() {
+fn dropping_a_paused_capture_releases_its_source_read_and_commits_nothing() {
     let (_dir, db, out, source) = setup();
     let mut captures = Captures::default();
     assert!(
@@ -152,7 +152,7 @@ fn revalidation_withholds_an_earlier_output_until_its_bytes_are_verified() {
     assert_eq!(captures.paths().next(), Some(out.as_path()));
     let mut changed = fs::read(&out).unwrap();
     changed[0] = b'!';
-    changed.extend_from_slice(b"unpublished tail");
+    changed.extend_from_slice(b"uncommitted tail");
     fs::write(&out, &changed).unwrap();
     let mut turn = captures.turn(vec![(db, out.clone(), None)], 1).unwrap();
     assert!(turn.pending);

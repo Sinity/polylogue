@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 // Fast row-body compression; the format remains readable across compression levels.
 const LEVEL: i32 = 1;
 
-// Immutable for this derived-index generation. Canonical rows use pack_bytes
+// Fixed for one index generation. Archive rows use pack_bytes
 // below; only RowPacker may introduce dictionary frames.
 const ROW_DICTIONARY: &[u8] = include_bytes!("encoding/rows.dict");
 static ROW_ENCODER: LazyLock<zstd::dict::EncoderDictionary<'static>> =
@@ -39,6 +39,9 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
     String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 
+/// Packs JSON without the row dictionary, for test rows; the writer uses
+/// [`RowPacker`].
+#[cfg(any(test, feature = "fixture"))]
 pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }
@@ -180,13 +183,13 @@ impl RowPacker {
     ) -> Result<PreparedContent> {
         // Messages and documents hash in separate domains.
         let hash = {
-            let mut canonical = serde_json::to_value(value)?;
-            canonical.sort_all_objects();
+            let mut sorted = serde_json::to_value(value)?;
+            sorted.sort_all_objects();
             let mut hasher = blake3::Hasher::new();
             if let Some(domain) = domain {
                 hasher.update(domain);
             }
-            hasher.update(&serde_json::to_vec(&canonical)?);
+            hasher.update(&serde_json::to_vec(&sorted)?);
             *hasher.finalize().as_bytes()
         };
         Ok(PreparedContent {
@@ -264,9 +267,9 @@ fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
             .to_le_bytes(),
     );
     if e.session.is_none() {
-        let mut canonical = e.data.clone();
-        canonical.sort_all_objects();
-        h.update(&serde_json::to_vec(&canonical)?);
+        let mut sorted = e.data.clone();
+        sorted.sort_all_objects();
+        h.update(&serde_json::to_vec(&sorted)?);
     } else {
         h.update(&data);
     }

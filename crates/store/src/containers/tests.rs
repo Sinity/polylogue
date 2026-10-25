@@ -7,7 +7,7 @@ use polylogue_model::BlobHash;
 use std::sync::{Arc, Barrier};
 
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
-const MEMBER: &[u8] = b"synthetic independently retained member";
+const MEMBER: &[u8] = b"synthetic independently stored member";
 
 // Store checks how ZIPs and members are stored and linked; ZIP decoding is tested in Engine.
 fn stage(
@@ -153,7 +153,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
 }
 
 #[test]
-fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copies() {
+fn prepared_linked_writes_and_member_exclusion_serialize_without_hidden_copies() {
     for concurrent in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -181,7 +181,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
             continue;
         }
         let barrier = Arc::new(Barrier::new(3));
-        let admit = {
+        let writing = {
             let sender = writer.sender().unwrap();
             let store = Arc::clone(&store);
             let barrier = Arc::clone(&barrier);
@@ -200,7 +200,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
             })
         };
         barrier.wait();
-        let outcomes = admit.join().unwrap();
+        let outcomes = writing.join().unwrap();
         exclusion.join().unwrap().unwrap();
         assert!(
             outcomes.iter().all(Result::is_ok) || outcomes.iter().all(Result::is_err),
@@ -212,7 +212,7 @@ fn prepared_linked_admission_and_member_exclusion_serialize_without_hidden_copie
 }
 
 #[cfg(feature = "faults")]
-mod unfinished;
+mod pending;
 
 #[test]
 fn a_container_in_one_acquisition_can_be_a_real_member_in_another() {

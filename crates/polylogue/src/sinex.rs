@@ -103,7 +103,7 @@ pub fn start(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let empty = polylogue_store::row_batches::Snapshot::open(&archive.root)
+    let empty = polylogue_store::row_batches::BatchReader::open(&archive.root)
         .and_then(|snapshot| snapshot.batches(None, 1))
         .map_err(|e| std::io::Error::other(format!("reading the local archive: {e}")))?
         .is_empty();

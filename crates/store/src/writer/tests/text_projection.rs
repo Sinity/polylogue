@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::StatementStatus;
 
 #[test]
-fn current_blocks_reuse_retained_text_identities() {
+fn current_blocks_reuse_stored_text_identities() {
     let dir = tempfile::tempdir().unwrap();
     let mut db = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&db).unwrap();

@@ -2,19 +2,19 @@ use super::*;
 use crate::archive::{cache, open_write};
 
 #[test]
-fn both_database_handles_use_the_existing_canonical_file() {
+fn both_database_handles_lock_the_archive_file() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let guard = write(&index).unwrap();
+    let archive_conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let guard = hold(&index).unwrap();
     let file = File::open(archive.archive_db()).unwrap();
     assert!(matches!(
         file.try_lock_shared(),
         Err(TryLockError::WouldBlock)
     ));
     drop(guard);
-    let guard = write(&canonical).unwrap();
+    let guard = hold(&archive_conn).unwrap();
     assert!(matches!(
         file.try_lock_shared(),
         Err(TryLockError::WouldBlock)
@@ -24,35 +24,35 @@ fn both_database_handles_use_the_existing_canonical_file() {
 }
 
 #[test]
-fn failed_or_dropped_transactions_release_publication() {
+fn failed_or_dropped_transactions_release_the_write_lock() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
-    let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let archive_conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
     {
-        let tx = transaction(&canonical, rusqlite::TransactionBehavior::Deferred).unwrap();
+        let tx = transaction(&archive_conn, rusqlite::TransactionBehavior::Deferred).unwrap();
         assert!(
             tx.execute("INSERT INTO no_such_table VALUES (1)", [])
                 .is_err()
         );
     }
-    admit(&archive, || panic!("publication was not released")).unwrap();
+    wait_shared(&archive, || panic!("the write lock was not released")).unwrap();
 }
 
 #[test]
 fn in_memory_derivations_have_no_shared_archive_file() {
     let conn = Connection::open_in_memory().unwrap();
-    let _guard = write(&conn).unwrap();
+    let _guard = hold(&conn).unwrap();
     conn.execute("CREATE TABLE synthetic(value)", []).unwrap();
 }
 
 #[test]
-fn nested_publication_and_new_read_refuse_without_releasing_the_outer_guard() {
+fn a_nested_write_lock_and_a_new_read_refuse_without_releasing_the_outer_lock() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let outer = write(&index).unwrap();
-    assert!(write(&index).is_err());
-    assert!(admit(&archive, || panic!("must refuse before waiting")).is_err());
+    let outer = hold(&index).unwrap();
+    assert!(hold(&index).is_err());
+    assert!(wait_shared(&archive, || panic!("must refuse before waiting")).is_err());
     let probe = File::open(archive.archive_db()).unwrap();
     assert!(matches!(
         probe.try_lock_shared(),
@@ -63,13 +63,13 @@ fn nested_publication_and_new_read_refuse_without_releasing_the_outer_guard() {
 }
 
 #[test]
-fn publication_process_child() {
-    let Some(path) = std::env::var_os("POLYLOGUE_PUBLICATION_TEST_ARCHIVE") else {
+fn write_lock_process_child() {
+    let Some(path) = std::env::var_os("POLYLOGUE_WRITE_LOCK_TEST_ARCHIVE") else {
         return;
     };
     let conn = open_write(&std::path::PathBuf::from(path), cache::SETUP).unwrap();
-    let _publication = write(&conn).unwrap();
-    println!("publication-held");
+    let _lock = hold(&conn).unwrap();
+    println!("write-lock-held");
     use std::io::{Read, Write};
     std::io::stdout().flush().unwrap();
     let mut release = [0];
@@ -77,7 +77,7 @@ fn publication_process_child() {
 }
 
 #[test]
-fn publication_excludes_other_processes_and_releases_on_exit() {
+fn the_write_lock_excludes_other_processes_and_releases_on_exit() {
     use std::io::{BufRead, Read, Write};
     use std::process::{Command, Stdio};
     struct Child(std::process::Child);
@@ -93,10 +93,10 @@ fn publication_excludes_other_processes_and_releases_on_exit() {
         Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "publication::tests::publication_process_child",
+                "write_lock::tests::write_lock_process_child",
                 "--nocapture",
             ])
-            .env("POLYLOGUE_PUBLICATION_TEST_ARCHIVE", archive.archive_db())
+            .env("POLYLOGUE_WRITE_LOCK_TEST_ARCHIVE", archive.archive_db())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -105,12 +105,12 @@ fn publication_excludes_other_processes_and_releases_on_exit() {
     let mut output = std::io::BufReader::new(child.0.stdout.take().unwrap());
     let mut found = false;
     for line in output.by_ref().lines() {
-        if line.unwrap().contains("publication-held") {
+        if line.unwrap().contains("write-lock-held") {
             found = true;
             break;
         }
     }
-    assert!(found, "child did not acquire the actual publication guard");
+    assert!(found, "the child did not take the write lock");
     let probe = File::open(archive.archive_db()).unwrap();
     assert!(matches!(
         probe.try_lock_shared(),
@@ -148,9 +148,9 @@ fn aliases_share_file_identity_and_other_archives_can_read() {
     let alias = dir.path().join("alias");
     std::os::unix::fs::symlink(&archive.root, &alias).unwrap();
     let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    let _publication = write(&conn).unwrap();
+    let _lock = hold(&conn).unwrap();
     assert!(
-        admit(&Archive::at(&alias), || panic!(
+        wait_shared(&Archive::at(&alias), || panic!(
             "same-file read must refuse before waiting"
         ))
         .is_err()

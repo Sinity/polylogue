@@ -1,4 +1,4 @@
-//! A delegating test VFS pauses at the native WAL pin gap, without replacing SQL.
+//! A delegating test VFS pauses where SQLite starts a WAL read, without replacing SQL.
 #![allow(unsafe_code)]
 use rusqlite::ffi;
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ impl Registration {
             assert!(!base.is_null());
             BASE.store(base, Ordering::SeqCst);
             let mut vfs = Box::new(ptr::read(base));
-            vfs.zName = c"polylogue-snapshot-admission-test".as_ptr();
+            vfs.zName = c"polylogue-read-start-test".as_ptr();
             vfs.pNext = ptr::null_mut();
             vfs.xOpen = Some(open);
             assert_eq!(ffi::sqlite3_vfs_register(&mut *vfs, 1), ffi::SQLITE_OK);

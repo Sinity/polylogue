@@ -53,7 +53,7 @@ fn version_hash_ignores_nested_json_member_order() {
             .to_hex()
             .as_str(),
         "6522639c8fb221f38200c544778f220c0b2f739f9961f65cd06218cd2d93652e",
-        "the canonical fixture stays stable across JSON map features"
+        "the archive fixture stays stable across JSON map features"
     );
     assert_eq!(first, second, "member order does not change JSON values");
     assert_ne!(

@@ -12,7 +12,7 @@ pub struct InputKey {
     /// The origin that parses it (`claude-code`).
     pub format: String,
     /// How faithful the route is, for choosing between versions of a
-    /// message (architecture 5.5): 0 live file, 1 spool, 2 import.
+    /// message: 0 live file, 1 spool, 2 import.
     pub route_rank: u8,
 }
 
@@ -36,7 +36,7 @@ pub struct ImportMember {
     pub version: u8,
     pub acquisition: String,
     pub member: String,
-    /// Interpretation selected for this acquisition, separate from immutable Input metadata.
+    /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,
     /// Persisted by the Writer in observation_container, not ignorable JSON metadata.
@@ -60,7 +60,7 @@ pub struct ParseStep {
     pub(crate) output: Output,
     /// Each record restates whole conversations: a later record's version
     /// of a message replaces an earlier one in the same chain.
-    pub snapshot: bool,
+    pub restates: bool,
     pub accounting: Accounting,
     /// Where the step's bytes start in the chain. 0 means the chain was
     /// parsed from the start, so the step's counts replace earlier ones.
@@ -89,7 +89,7 @@ impl ParseStep {
         Self {
             order_from: None,
             reset: range.start == 0,
-            snapshot: false,
+            restates: false,
             output,
             accounting,
             start: range.start,

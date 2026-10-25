@@ -14,7 +14,7 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// Visit rows without retaining the complete answer. The callback may
+    /// Visit rows without holding the complete answer. The callback may
     /// stop on an output or validation error; no later row is then visited.
     /// A single decoded row and SQLite's ordering work remain separate costs.
     pub fn query_each<E>(

@@ -1,5 +1,6 @@
 //! Bytes hashed and compressed off the writer thread into a private file,
-//! waiting for the writer to give them a blob row and install them.
+//! waiting for the writer to give them a blob row and move them into the
+//! blob store.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
@@ -114,24 +115,24 @@ pub struct StoredInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UnfinishedState {
+pub enum PendingState {
     Writing,
     Missing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Unfinished {
+pub struct PendingBlob {
     pub input: String,
     pub blob: BlobHash,
     pub length: u64,
-    pub state: UnfinishedState,
+    pub state: PendingState,
 }
 
 /// What finishing blobs left `writing` by a stop found.
 #[derive(Debug, Default)]
 pub struct Finished {
     pub completed: u64,
-    pub unfinished: Vec<Unfinished>,
+    pub pending: Vec<PendingBlob>,
 }
 
 pub(crate) fn require_present(
@@ -181,7 +182,7 @@ fn check(
         })
         .optional()?;
     if let Some(state) = pending {
-        return Err(StoreError::InputUnfinished {
+        return Err(StoreError::InputPending {
             input: input.into(),
             reason: format!("its bytes are {state}"),
         });
@@ -189,7 +190,7 @@ fn check(
     Ok(())
 }
 
-pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<Unfinished>> {
+pub(crate) fn pending_blobs(conn: &Connection, schema: &str) -> Result<Vec<PendingBlob>> {
     let sql=format!("SELECT input,hash,size FROM (
         SELECT DISTINCT i.id AS input,b.hash,b.size FROM {schema}input i JOIN {schema}revision r ON r.input=i.id
         JOIN {schema}extent e ON e.input=r.input AND e.chain=r.chain JOIN {schema}blob b ON b.hash=e.blob WHERE b.state='writing')
@@ -200,15 +201,15 @@ pub(crate) fn unfinished(conn: &Connection, schema: &str) -> Result<Vec<Unfinish
     while let Some(row) = rows.next()? {
         let hash: Vec<u8> = row.get(1)?;
         let length = row.get::<_, i64>(2)?;
-        out.push(Unfinished {
+        out.push(PendingBlob {
             input: row.get(0)?,
             blob: BlobHash(
                 hash.try_into()
-                    .map_err(|_| StoreError::Invalid("invalid unfinished blob hash".into()))?,
+                    .map_err(|_| StoreError::Invalid("invalid pending blob hash".into()))?,
             ),
             length: u64::try_from(length)
-                .map_err(|_| StoreError::Invalid("negative unfinished source length".into()))?,
-            state: UnfinishedState::Writing,
+                .map_err(|_| StoreError::Invalid("negative pending blob length".into()))?,
+            state: PendingState::Writing,
         });
     }
     Ok(out)

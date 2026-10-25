@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-engine"
-description = "The convergence loop: collect, store, parse, derive, excise, publish"
+description = "The convergence loop: collect, store, parse, derive, excise"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -23,7 +23,7 @@ ureq.workspace = true
 uuid.workspace = true
 
 [features]
-# Test support: arm the store's fault points (laws 7, 45, 63).
+# Test support: arm the store's fault points.
 faults = ["polylogue-store/faults"]
 
 [dev-dependencies]

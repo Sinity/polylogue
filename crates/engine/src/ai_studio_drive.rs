@@ -1,4 +1,4 @@
-//! The AI Studio collector (architecture 5.1): reads the prompts AI Studio
+//! The AI Studio collector: reads the prompts AI Studio
 //! saves in the operator's Drive and writes them into the spool the
 //! `ai-studio` origin watches. It runs only when the setting
 //! `drive.ai-studio` is `on`, with the OAuth token the operator authorized

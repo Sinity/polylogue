@@ -52,8 +52,8 @@ pub(super) fn verify(root: &Path, roots: &[PathBuf]) -> serde_json::Value {
     let message = MessageId::parse(MESSAGE).unwrap();
     let kept = reader.attachment(&message, 0, 0).unwrap();
     assert_eq!(kept.state, AttachmentState::Available);
-    assert_eq!(kept.candidates.len(), 1);
-    let found = &kept.candidates[0];
+    assert_eq!(kept.matches.len(), 1);
+    let found = &kept.matches[0];
     assert_eq!(found.names, ["native λ🙂.dat"]);
     assert_eq!(found.blob, Some(BlobHash::of(KEPT)));
     assert_eq!(
@@ -68,7 +68,7 @@ pub(super) fn verify(root: &Path, roots: &[PathBuf]) -> serde_json::Value {
     );
     let removed = reader.attachment(&message, 1, 0).unwrap();
     assert_eq!(removed.state, AttachmentState::Unavailable);
-    assert!(removed.candidates.is_empty());
+    assert!(removed.matches.is_empty());
     serde_json::to_value(kept).unwrap()
 }
 

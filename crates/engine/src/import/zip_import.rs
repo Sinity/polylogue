@@ -113,20 +113,20 @@ impl Engine {
             .sender()?
             .store_group(group, Arc::clone(&self.blobs))?;
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
-            let admitted = match outcome {
+            let stored = match outcome {
                 Ok(stored) => stored,
                 Err(error) => {
                     report.pass.errors.push(error.to_string());
                     continue;
                 }
             };
-            if admitted.already_stored {
+            if stored.already_stored {
                 report.already_stored.push(at.clone());
             } else {
                 report.imported.push(at.clone());
-                report.pass.bytes_stored += admitted.length;
+                report.pass.bytes_stored += stored.length;
             }
-            if let Some(plan) = self.admitted_import_plan(&at, origin, input, &admitted, facts)? {
+            if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
                 self.execute(vec![plan], &mut report.pass)?;
             }
         }

@@ -1,4 +1,4 @@
-//! The one writer (architecture 5.2-5.6). It runs on its own thread, owns
+//! The one writer. It runs on its own thread, owns
 //! the only writing connections to `archive.db` and `index.db`, and writes
 //! batches from the parse pool in large transactions: first the bytes'
 //! rows in `archive.db` (inputs, revisions, extents, observations, inline
@@ -89,8 +89,8 @@ pub struct Writer {
     handle: Option<JoinHandle<()>>,
 }
 
-/// Serializes admission with shutdown. Once the stop message is queued,
-/// every retained sender refuses new work rather than acknowledging a
+/// Orders new work against shutdown. Once the stop message is queued,
+/// every remaining sender refuses new work rather than acknowledging a
 /// message that the receiver will never process.
 #[derive(Clone)]
 struct WriterQueue(Arc<Mutex<Option<SyncSender<Msg>>>>);
@@ -107,8 +107,8 @@ impl WriterQueue {
     }
 
     fn stop(&self) {
-        if let Ok(mut admission) = self.0.lock()
-            && let Some(sender) = admission.take()
+        if let Ok(mut accepting) = self.0.lock()
+            && let Some(sender) = accepting.take()
         {
             let _ = sender.send(Msg::Stop);
         }
@@ -165,21 +165,21 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs (architecture 2: "index.db
-    /// built unsynced"): every row in it can be recomputed, and syncing a
-    /// first build of tens of GB through a busy drive costs more than the
-    /// build. The first flush syncs it and clears the mark; an index still
-    /// marked when the archive is next opened is set aside and rebuilt.
+    /// An empty index is built without syncs: every row in it can be
+    /// recomputed, and syncing a first build of tens of GB through a busy
+    /// drive costs more than the build. The first flush syncs it and clears
+    /// the mark; an index still marked when the archive is next opened is
+    /// set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        let _publication = crate::publication::write(&index)?;
+        let _lock = crate::write_lock::hold(&index)?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
         if empty {
             // Make the rebuild marker durable before unsynchronized writes.
-            // Keep WAL throughout: a retained snapshot must not prevent the
+            // Keep WAL throughout: an open read transaction must not prevent the
             // first build from finishing or the writer from stopping.
             index.pragma_update(None, "synchronous", "full")?;
             index.execute(
@@ -281,7 +281,7 @@ impl Writer {
     }
 
     /// Derives the products of sessions changed since they were last
-    /// derived (architecture 5.6), after the batches already queued.
+    /// derived, after the batches already queued.
     pub fn derive(&self) -> Result<u64> {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
@@ -326,7 +326,7 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Waits until earlier batches are committed and their memory reservations
+    /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
@@ -428,7 +428,7 @@ impl Inner {
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
-        let mut unfinished = Vec::new();
+        let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
@@ -446,7 +446,7 @@ impl Inner {
                         false
                     }
                     Msg::FinishWriting(store, reply) => {
-                        unfinished.push((store, reply));
+                        finish_writing.push((store, reply));
                         false
                     }
                     Msg::Assets(staged, reply) => {
@@ -506,7 +506,7 @@ impl Inner {
                 }
             }
             // Later queue replies also observe release of the parsed batches'
-            // memory reservations, not only their committed database rows.
+            // memory charges, not only their committed database rows.
             drop(group);
             for (prepared, batch, reply) in single_files.drain(..) {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
@@ -514,7 +514,7 @@ impl Inner {
             for (group, store, reply) in file_groups.drain(..) {
                 let _ = reply.send(self.store_group(group, store));
             }
-            for (store, reply) in unfinished.drain(..) {
+            for (store, reply) in finish_writing.drain(..) {
                 let _ = reply.send(self.finish_writing(&store));
             }
             for (request, reply) in users.drain(..) {
@@ -587,7 +587,7 @@ impl Inner {
             return Ok(());
         }
         self.build_deferred()?;
-        let _publication = crate::publication::write(&self.index)?;
+        let _lock = crate::write_lock::hold(&self.index)?;
         let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
@@ -613,16 +613,16 @@ impl Inner {
         crate::text_rows::index_marked(&self.index)?;
         add(Stage::SearchIndex, started.elapsed());
         let started = std::time::Instant::now();
-        let publication = crate::publication::write(&self.index)?;
+        let lock = crate::write_lock::hold(&self.index)?;
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
             [],
         )?;
         add(Stage::TrigramIndex, started.elapsed());
-        drop(publication);
+        drop(lock);
         let started = std::time::Instant::now();
         for sql in std::mem::take(&mut self.deferred_indexes) {
-            let _publication = crate::publication::write(&self.index)?;
+            let _lock = crate::write_lock::hold(&self.index)?;
             self.index.execute(&sql, [])?;
         }
         add(Stage::SecondaryIndexes, started.elapsed());
@@ -667,7 +667,7 @@ impl Inner {
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
-        let publication = crate::publication::write(&self.archive)?;
+        let lock = crate::write_lock::hold(&self.archive)?;
         let embeddings = if self.location.embeddings_db().exists() {
             let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
             e.pragma_update(None, "synchronous", "full")?;
@@ -689,14 +689,22 @@ impl Inner {
             store,
             seq,
             counter,
+            new_files: Default::default(),
         };
-        let done = match crate::excise::apply(&txs, request) {
-            Ok(r) => r,
-            Err(e) => {
+        let applied = crate::excise::apply(&txs, request);
+        let new_files = txs.new_files.take();
+        drop(txs);
+        let done = match applied {
+            Ok(done) => done,
+            Err(error) => {
                 if let Some(e) = &embeddings {
                     let _ = e.execute_batch("ROLLBACK");
                 }
-                return Err(e);
+                drop(itx);
+                drop(atx);
+                // The error that stopped the excision is the one to report.
+                let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
+                return Err(error);
             }
         };
         if request.dry_run {
@@ -705,6 +713,7 @@ impl Inner {
             if let Some(e) = &embeddings {
                 e.execute_batch("ROLLBACK")?;
             }
+            crate::excise::delete_uncommitted_files(&self.archive, store, &new_files)?;
             return Ok(done);
         }
         let refused = crate::excise::Refused::load(&atx)?;
@@ -718,11 +727,16 @@ impl Inner {
             atx.commit()?;
             crate::fault::check("excision.after_archive_commit", &request.id)?;
             itx.commit()?;
-            drop(publication);
             crate::fault::check("excision.after_index_commit", &request.id)
-        })()
-        .and_then(|()| crate::blobs::delete_marked(&self.archive, store).map(drop));
+        })();
         if let Err(error) = committed {
+            // A file whose blob row did not commit is deleted; one whose row
+            // did stays, since the archive now refers to it.
+            let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
+            return Err(StoreError::ExcisionInterrupted(Box::new(error)));
+        }
+        drop(lock);
+        if let Err(error) = crate::blobs::delete_marked(&self.archive, store) {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
         self.refused = refused;
@@ -781,7 +795,7 @@ impl Inner {
         &mut self,
         request: &crate::user_writes::UserRequest,
     ) -> Result<crate::user_writes::UserOutcome> {
-        let tx = crate::publication::transaction(&self.archive, TransactionBehavior::Deferred)?;
+        let tx = crate::write_lock::transaction(&self.archive, TransactionBehavior::Deferred)?;
         let seq = bump_counter(&tx)?;
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
         if outcome.repeat {
@@ -805,7 +819,7 @@ impl Inner {
                 p.accounting.check()?;
             }
         }
-        let _publication = crate::publication::write(&self.archive)?;
+        let _lock = crate::write_lock::hold(&self.archive)?;
         let atx = self.archive.transaction()?;
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();

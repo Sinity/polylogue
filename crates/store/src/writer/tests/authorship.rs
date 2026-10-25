@@ -1,6 +1,6 @@
 use super::*;
 
-fn publish(origin: &str, messages: Vec<Message>) -> World {
+fn commit(origin: &str, messages: Vec<Message>) -> World {
     let w = world();
     let session = SessionId::parse(&format!("{origin}:s")).unwrap();
     let rows = messages
@@ -38,7 +38,7 @@ fn an_explicit_harness_marker_keeps_native_roles_and_harness_authorship_in_queri
                 message
             })
             .collect();
-        let w = publish(origin, messages);
+        let w = commit(origin, messages);
         let reads = ReadPool::open(&w.archive).unwrap();
         let reader = reads.reader().unwrap();
         let rows = reader
@@ -98,7 +98,7 @@ fn ordinary_role_defaults_do_not_use_model_names_or_other_prompt_kinds_as_harnes
             message
         })
         .collect();
-    let w = publish("openai-chat", messages);
+    let w = commit("openai-chat", messages);
     let reads = ReadPool::open(&w.archive).unwrap();
     let rows = reads
         .reader()

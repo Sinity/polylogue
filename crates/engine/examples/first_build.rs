@@ -1,4 +1,4 @@
-//! The first-build performance test (architecture 2, 9).
+//! The first-build performance test.
 //!
 //! ```text
 //! first_build --generate-mb 2000 --sizes <stat.tsv> --dir <scratch>
@@ -355,7 +355,7 @@ fn main() {
             "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
             // Seconds per stage; pool stages are thread-seconds.
-            "stages": polylogue_store::timing::snapshot()
+            "stages": polylogue_store::timing::stage_seconds()
                 .into_iter()
                 .map(|(s, secs)| (s.name().to_owned(), serde_json::json!(secs)))
                 .collect::<serde_json::Map<_, _>>(),

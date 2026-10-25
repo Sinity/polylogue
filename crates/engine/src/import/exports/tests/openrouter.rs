@@ -8,7 +8,7 @@ const ROOM: &str = r#"{"version":"example","messages":{
     "title":"Late header","characters":{"char":{"model":"example-model"}}}"#;
 
 #[test]
-fn keyed_room_replacements_choose_the_first_retained_message_and_rebuild_exactly() {
+fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, ROOM).unwrap();
@@ -54,16 +54,16 @@ fn keyed_room_replacements_choose_the_first_retained_message_and_rebuild_exactly
         assert_eq!(events[0].range, Some((0, ROOM.len() as u64)));
         assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 3);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
-        let snapshot = serde_json::to_value((&messages, &events)).unwrap();
+        let view = serde_json::to_value((&messages, &events)).unwrap();
         if let Some(old) = previous {
-            assert_eq!(snapshot, old);
+            assert_eq!(view, old);
         }
-        previous = Some(snapshot);
+        previous = Some(view);
     }
 }
 
 #[test]
-fn a_bad_room_suffix_refuses_before_any_header_or_message_is_published() {
+fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, format!("{ROOM} false")).unwrap();

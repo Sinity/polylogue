@@ -205,7 +205,7 @@ fn session_excision_preserves_input_owned_facts_and_refuses_shared_record_bytes(
 }
 
 #[test]
-fn input_event_identity_includes_the_retained_revision_chain() {
+fn input_event_identity_includes_the_stored_revision_chain() {
     let w = world();
     let observed = event((0, 100), "same recorded bytes");
     send(
@@ -220,7 +220,7 @@ fn input_event_identity_includes_the_retained_revision_chain() {
     assert_eq!(
         after.len(),
         2,
-        "equal offsets in different retained chains are different source occurrences"
+        "equal offsets in different stored chains are different source occurrences"
     );
     assert!(after.iter().any(|row| row["id"] == original[0]["id"]));
     assert_ne!(after[0]["id"], after[1]["id"]);

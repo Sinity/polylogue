@@ -262,7 +262,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
 
     // 4. Restore into an empty archive once Sinex has confirmed every batch.
     // Earlier, a restore holds a prefix; each attempt uses a new archive.
-    let id = polylogue_store::row_batches::Snapshot::open(&a)
+    let id = polylogue_store::row_batches::BatchReader::open(&a)
         .unwrap()
         .archive_id()
         .unwrap();

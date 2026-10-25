@@ -1,4 +1,4 @@
-//! Importing exports and other files by hand (architecture 5.1): a file, a
+//! Importing exports and other files by hand: a file, a
 //! directory of them, or a zip whose members are recognized one by one.
 //! An imported file's origin is decided by its content and, when several
 //! origins accept it, by the layout its path sits in.
@@ -21,7 +21,7 @@ impl Engine {
         let started = Instant::now();
         let mut report = ImportReport::default();
         let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
-        report.pass.unfinished_inputs = finished.unfinished;
+        report.pass.pending_inputs = finished.pending;
         if finished.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
         }
@@ -88,14 +88,14 @@ impl Engine {
             }
         }
         self.restore_failed_writes()?;
-        for pending in self.reads.reader()?.status()?.unfinished_inputs {
+        for pending in self.reads.reader()?.status()?.pending_inputs {
             if !report
                 .pass
-                .unfinished_inputs
+                .pending_inputs
                 .iter()
                 .any(|known| known.input == pending.input && known.blob == pending.blob)
             {
-                report.pass.unfinished_inputs.push(pending);
+                report.pass.pending_inputs.push(pending);
             }
         }
         self.refresh_import_assets(&mut report.pass)?;
@@ -129,7 +129,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Retains the complete acquisition once, then parses it without making
+    /// Stores the complete import once, then parses it without making
     /// further pieces. A retry can rebuild parser state from offset zero.
     fn import_plan(
         &mut self,
@@ -146,20 +146,20 @@ impl Engine {
         let id = captured.prepared.hash().to_string();
         let batch = self.import_batch(path, origin, captured.member, facts, id, size);
         let input = batch.input.clone();
-        let admitted = match self.writer.store_bytes(captured.prepared, batch) {
-            Ok(admitted) => admitted,
+        let stored = match self.writer.store_bytes(captured.prepared, batch) {
+            Ok(stored) => stored,
             Err(error) => {
                 report.pass.errors.push(error.to_string());
                 return Ok(None);
             }
         };
-        if admitted.already_stored {
+        if stored.already_stored {
             report.already_stored.push(path.to_path_buf());
         } else {
             report.imported.push(path.to_path_buf());
             report.pass.bytes_stored += size;
         }
-        self.admitted_import_plan(path, origin, input, &admitted, facts)
+        self.stored_import_plan(path, origin, input, &stored, facts)
     }
 
     fn import_batch(
@@ -193,26 +193,26 @@ impl Engine {
         }
     }
 
-    fn admitted_import_plan(
+    fn stored_import_plan(
         &self,
         path: &Path,
         origin: &'static OriginSpec,
         input: InputKey,
-        admitted: &polylogue_store::staging::StoredInput,
+        stored: &polylogue_store::staging::StoredInput,
         facts: Option<FileFacts>,
     ) -> Result<Option<Plan>, EngineError> {
-        let size = admitted.length;
+        let size = stored.length;
         if origin.support != Support::Parsed {
             return Ok(None);
         }
         let reader = self.reads.reader()?;
-        let retained = reader
-            .retained_input(&input.id)?
-            .ok_or_else(|| std::io::Error::other("admitted import has no retained revision"))?;
-        if (retained.parsed_upto == size || retained.waiting) && retained.parsed {
+        let progress = reader
+            .input_progress(&input.id)?
+            .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
+        if (progress.parsed_upto == size || progress.waiting) && progress.parsed {
             return Ok(None);
         }
-        let chain = reader.stored_chain(&input.id, admitted.chain, size)?;
+        let chain = reader.stored_chain(&input.id, stored.chain, size)?;
         let source = if matches!(
             (origin.open)(path),
             Some(polylogue_sources::Parse::Export(_))

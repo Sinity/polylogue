@@ -24,8 +24,8 @@ fn same_transaction_observations_replay_in_insertion_order_despite_nonmonotonic_
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let snapshot = crate::row_batches::Snapshot::open(&w.archive.root).unwrap();
-    let batches: Vec<String> = snapshot
+    let batch_reader = crate::row_batches::BatchReader::open(&w.archive.root).unwrap();
+    let batches: Vec<String> = batch_reader
         .batches(None, 100)
         .unwrap()
         .into_iter()

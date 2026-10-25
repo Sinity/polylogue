@@ -1,4 +1,4 @@
-//! Finding inputs at the origins' fixed locations (architecture 5.1, 5.5b).
+//! Finding inputs at the origins' fixed locations.
 //! Exactly the layout each tool writes: each origin's location patterns are
 //! walked under its root (the tool's own directory variable, or a default
 //! under home), and a recognizer runs before a new

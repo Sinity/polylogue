@@ -54,7 +54,7 @@ impl Inner {
         if group.is_empty() {
             return Vec::new();
         }
-        let write = match crate::publication::write(&self.archive) {
+        let write = match crate::write_lock::hold(&self.archive) {
             Ok(write) => write,
             Err(error) => return errors(&group, error),
         };
@@ -185,7 +185,7 @@ impl Inner {
             .zip(outcomes)
             .map(|(stored, error)| {
                 if let Some(reason) = error {
-                    Err(StoreError::InputUnfinished {
+                    Err(StoreError::InputPending {
                         input: stored.input,
                         reason,
                     })
@@ -270,7 +270,7 @@ impl Inner {
                 || (matches!(b.change, Change::Unchanged)
                     && match crate::staging::require_present(&tx, "", &b.input.id, Some(chain)) {
                         Ok(()) => true,
-                        Err(StoreError::InputUnfinished { .. }) => false,
+                        Err(StoreError::InputPending { .. }) => false,
                         Err(error) => return Err(error),
                     });
             stored.push(StoredInput {
@@ -356,9 +356,9 @@ impl Inner {
     /// there is whole); the others are reported, and the loop reads their
     /// inputs again.
     pub(super) fn finish_writing(&mut self, store: &hashed_blobs::Store) -> Result<Finished> {
-        let write = crate::publication::write(&self.archive)?;
+        let write = crate::write_lock::hold(&self.archive)?;
         let mut report = Finished::default();
-        let waiting = crate::staging::unfinished(&self.archive, "")?;
+        let waiting = crate::staging::pending_blobs(&self.archive, "")?;
         let mut missing = BTreeSet::new();
         let tx = self.archive.transaction()?;
         for item in &waiting {
@@ -379,10 +379,10 @@ impl Inner {
         if report.completed > 0 {
             self.report.transactions += 1;
         }
-        report.unfinished = crate::staging::unfinished(&self.archive, "")?;
-        for item in &mut report.unfinished {
+        report.pending = crate::staging::pending_blobs(&self.archive, "")?;
+        for item in &mut report.pending {
             if missing.contains(&item.blob) {
-                item.state = crate::staging::UnfinishedState::Missing;
+                item.state = crate::staging::PendingState::Missing;
             }
         }
         Ok(report)

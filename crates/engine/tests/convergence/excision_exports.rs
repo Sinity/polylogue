@@ -96,7 +96,7 @@ fn excising_a_session_from_a_shared_export_blanks_its_texts_and_notes() {
             fresh.count("SELECT count(*) AS n FROM a.note_target WHERE note_id = 'n-both'"),
             1
         );
-        // Rebuild from rewritten retained bytes after deleting the original export.
+        // Rebuild from rewritten stored bytes after deleting the original export.
         drop(e2);
         drop(_lock2);
         fs::remove_file(&file).unwrap();

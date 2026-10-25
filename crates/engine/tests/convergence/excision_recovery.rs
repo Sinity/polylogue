@@ -8,8 +8,8 @@ fn unreadable_delivered_brief_refuses_session_excision_before_commit() {
     let (mut engine, _lock) = w.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     let before = w.export("claude-code:victim");
-    let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
-    canonical.execute("INSERT INTO delivery(id,recipient_kind,sender,event,at,content_hash,bytes,body,refs_json,commit_seq)
+    let archive_conn = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+    archive_conn.execute("INSERT INTO delivery(id,recipient_kind,sender,event,at,content_hash,bytes,body,refs_json,commit_seq)
         VALUES('bad-brief','operator','cli','recall',1,?1,?2,x'010203','[\"claude-code:victim\"]',1)",
         rusqlite::params![&[0u8;32][..],brief.len() as i64]).unwrap();
     for dry_run in [true, false] {
@@ -38,7 +38,7 @@ fn unreadable_delivered_brief_refuses_session_excision_before_commit() {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    canonical
+    archive_conn
         .execute(
             "UPDATE delivery SET body=?1,content_hash=?2",
             rusqlite::params![body, hash],
@@ -81,11 +81,11 @@ fn malformed_excision_locations_refuse_collection_after_index_rebuild() {
                 })
                 .unwrap();
         }
-        let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
-        canonical
+        let archive_conn = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+        archive_conn
             .execute("UPDATE excision SET refused_json=?1", [malformed])
             .unwrap();
-        drop(canonical);
+        drop(archive_conn);
         delete_index(&w.root);
         let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
         assert!(
@@ -146,7 +146,7 @@ fn an_index_that_missed_a_committed_excision_is_rebuilt() {
             .file_name()
             .to_string_lossy()
             .starts_with("index.db.excision-")),
-        "obsolete derived indexes must not retain removed messages"
+        "obsolete derived indexes must not keep removed messages"
     );
 }
 

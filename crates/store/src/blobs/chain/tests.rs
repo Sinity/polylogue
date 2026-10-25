@@ -96,11 +96,11 @@ fn many_inline_pieces_stay_compressed_on_disk_and_clones_share_one_selected_view
     let chain = w.load(512 * 16384);
     let clone = chain.clone();
     assert!(Arc::ptr_eq(
-        chain.snapshot.as_ref().unwrap(),
-        clone.snapshot.as_ref().unwrap()
+        chain.extents.as_ref().unwrap(),
+        clone.extents.as_ref().unwrap()
     ));
-    let snapshot = chain.snapshot.as_ref().unwrap();
-    let conn = snapshot.connection();
+    let extents = chain.extents.as_ref().unwrap();
+    let conn = extents.connection();
     let (pieces, compressed): (i64, i64) = conn
         .query_row("SELECT count(*),sum(length(data)) FROM blob", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -117,7 +117,7 @@ fn many_inline_pieces_stay_compressed_on_disk_and_clones_share_one_selected_view
             .unwrap(),
         500u64.to_le_bytes()
     );
-    let weak = Arc::downgrade(snapshot);
+    let weak = Arc::downgrade(extents);
     let reader = clone.reader(Arc::clone(&w.store));
     drop(chain);
     drop(clone);
@@ -216,7 +216,7 @@ fn a_file_range_uses_one_verification_pass_without_decoding_its_prefix_twice() {
     let w = Fixture::new(2 << 20);
     let bytes: Vec<_> = (0..2 << 20).map(|n| (n % 251) as u8).collect();
     let hash = w.add(0, bytes.len() as u64, 0, &bytes);
-    let extent = snapshot::Extent {
+    let extent = extents::Extent {
         offset: 0,
         length: bytes.len() as u64,
         hash,
@@ -232,7 +232,7 @@ fn a_file_range_uses_one_verification_pass_without_decoding_its_prefix_twice() {
 }
 
 #[test]
-fn an_open_file_reader_needs_no_snapshot_lock() {
+fn an_open_file_reader_needs_no_extent_list_lock() {
     let w = Fixture::new((INLINE_LIMIT + 1) as u64);
     let bytes = vec![b'q'; INLINE_LIMIT + 1];
     w.add(0, bytes.len() as u64, 0, &bytes);
@@ -240,21 +240,21 @@ fn an_open_file_reader_needs_no_snapshot_lock() {
     let mut reader = chain.reader(Arc::clone(&w.store));
     let mut one = [0];
     reader.read_exact(&mut one).unwrap();
-    let _locked = chain.snapshot.as_ref().unwrap().connection();
+    let _locked = chain.extents.as_ref().unwrap().connection();
     let mut rest = Vec::new();
     reader.read_to_end(&mut rest).unwrap();
     assert_eq!(rest, bytes[1..]);
 }
 
 #[test]
-fn a_poisoned_snapshot_returns_a_typed_error() {
+fn a_poisoned_extent_list_returns_a_typed_error() {
     let w = Fixture::new(3);
     w.add(0, 3, 0, b"abc");
     let chain = w.load(3);
-    let snapshot = Arc::clone(chain.snapshot.as_ref().unwrap());
+    let extents = Arc::clone(chain.extents.as_ref().unwrap());
     assert!(
         std::thread::spawn(move || {
-            let _locked = snapshot.connection();
+            let _locked = extents.connection();
             panic!("synthetic poisoned lock");
         })
         .join()

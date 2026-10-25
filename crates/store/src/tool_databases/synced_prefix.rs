@@ -9,8 +9,9 @@ struct Completed {
     hash: String,
 }
 
-/// Only a synced prefix named by the adjacent checkpoint is public input.
-pub(super) struct Publication {
+/// The synced prefix: only bytes up to the length named by the adjacent
+/// checkpoint file are input; anything after it is an interrupted write.
+pub(super) struct SyncedPrefix {
     facts: Option<FileFacts>,
     marker_facts: Option<FileFacts>,
     hash: blake3::Hasher,
@@ -27,7 +28,7 @@ fn invalid(reason: &str) -> ExportError {
     std::io::Error::new(std::io::ErrorKind::InvalidData, reason).into()
 }
 
-impl Publication {
+impl SyncedPrefix {
     /// Validate before truncating: an altered committed prefix is never repaired
     /// by deleting bytes. An export without a marker is validated by the catalog loader.
     pub fn open(

@@ -3,7 +3,7 @@ use super::*;
 fn stats(source: &Imported) -> hashed_blobs::VerificationStats {
     match &source.reader {
         Decoder::Plain(reader) => reader.stats(),
-        Decoder::Chain(_) => panic!("plain-reader counter control"),
+        Decoder::Chain(_) => panic!("the plain reader is the counted case"),
     }
 }
 

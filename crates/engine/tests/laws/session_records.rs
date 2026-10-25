@@ -8,7 +8,7 @@ fn single_input_excision_clears_session_records_without_touching_another_input()
         "removed.jsonl",
         &user("gone", "removed", "Removed first prompt"),
     );
-    w.append("kept.jsonl", &user("kept", "kept", "Retained first prompt"));
+    w.append("kept.jsonl", &user("kept", "kept", "Stored first prompt"));
     let (mut engine, lock) = w.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     assert_eq!(w.count("SELECT count(*) AS n FROM session_record"), 2);
@@ -57,7 +57,7 @@ fn single_input_excision_clears_session_records_without_touching_another_input()
     assert!(engine.converge().unwrap().errors.is_empty());
     assert_eq!(records(), vec![kept.clone()]);
     assert!(w.texts("removed").is_empty());
-    assert_eq!(w.texts("kept"), ["Retained first prompt"]);
+    assert_eq!(w.texts("kept"), ["Stored first prompt"]);
     drop(engine);
     drop(lock);
     delete_index(&w.root);
@@ -65,5 +65,5 @@ fn single_input_excision_clears_session_records_without_touching_another_input()
     assert!(engine.converge().unwrap().errors.is_empty());
     assert_eq!(records(), vec![kept]);
     assert!(w.texts("removed").is_empty());
-    assert_eq!(w.texts("kept"), ["Retained first prompt"]);
+    assert_eq!(w.texts("kept"), ["Stored first prompt"]);
 }

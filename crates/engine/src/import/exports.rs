@@ -106,7 +106,7 @@ impl Engine {
         let mut scratch = ExportItems::new()?;
         let pool::Bytes::Stored(chain) = &plan.source else {
             return Err(
-                std::io::Error::other("exports must have a retained chain before parsing").into(),
+                std::io::Error::other("an export must be stored before it is parsed").into(),
             );
         };
         let mut reader = Counted::new(|| chain.reader(Arc::clone(&self.blobs)));
@@ -133,7 +133,7 @@ impl Engine {
         let mut next = next_record(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
-        let mut snapshot = false;
+        let mut restates = false;
         if let Some(step) = parser
             .begin(
                 plan.size,
@@ -141,7 +141,7 @@ impl Engine {
             )
             .map_err(std::io::Error::other)?
         {
-            snapshot = step.restates;
+            restates = step.restates;
             order_from = (step.output.messages.len() as u64).max(1);
             self.write_export_step(
                 plan,
@@ -150,7 +150,7 @@ impl Engine {
                 0,
                 true,
                 false,
-                snapshot,
+                restates,
                 pass,
             )?;
             first = false;
@@ -174,7 +174,7 @@ impl Engine {
                 order_from,
                 first,
                 false,
-                snapshot,
+                restates,
                 pass,
             )?;
             first = false;
@@ -188,7 +188,7 @@ impl Engine {
             order_from,
             first,
             true,
-            snapshot,
+            restates,
             pass,
         )?;
         plan.parse_pos = plan.size;
@@ -244,10 +244,10 @@ impl Engine {
         pass.bytes_read += bytes + tail.len() as u64;
         pass.bytes_stored += bytes;
         let r = self.reads.reader()?;
-        let retained = r
-            .retained_input(&plan.input.id)?
-            .ok_or_else(|| std::io::Error::other("export capture has no retained revision"))?;
-        let chain = r.stored_chain(&plan.input.id, retained.chain, retained.length)?;
+        let progress = r
+            .input_progress(&plan.input.id)?
+            .ok_or_else(|| std::io::Error::other("a stored export has no revision"))?;
+        let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
         plan.source = pool::Bytes::Stored(Arc::new(chain));
         plan.change = Change::Unchanged;
         plan.piece_pos = plan.size;
@@ -266,7 +266,7 @@ impl Engine {
         order_from: u64,
         reset: bool,
         done: bool,
-        snapshot: bool,
+        restates: bool,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
@@ -292,7 +292,7 @@ impl Engine {
             0..if done { plan.size } else { 0 },
             done,
         );
-        parse.snapshot = snapshot;
+        parse.restates = restates;
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.prepare();

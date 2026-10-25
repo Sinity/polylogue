@@ -230,7 +230,7 @@ impl WriterWorld {
             parse: vec![ParseStep {
                 order_from: None,
                 reset: start == 0,
-                snapshot: false,
+                restates: false,
                 output,
                 accounting,
                 start,

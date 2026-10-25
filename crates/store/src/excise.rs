@@ -1,5 +1,5 @@
 //! Excision: permanent removal from every file and derived product
-//! (architecture 5.6). The `excision` row keeps the
+//!. The `excision` row keeps the
 //! content from coming back by any route.
 //!
 //! - **Session:** its rows go from every `index.db` table, its texts from
@@ -55,6 +55,7 @@ use messages::SelectedMessages;
 use session_texts::SessionTexts;
 use sessions::SelectedSessions;
 use spans::Spans;
+pub(crate) use stored_bytes::delete_uncommitted_files;
 use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
@@ -159,7 +160,7 @@ pub struct Excised {
     /// before the excision returns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs_reparsed: Vec<String>,
-    /// Text scope: provider locations (`machine:path`) whose retained
+    /// Text scope: provider locations (`machine:path`) whose stored
     /// history held a match. Current presence and content are not checked.
     /// Polylogue never edits them; a later full read may collect the text
     /// again until the original file is scrubbed.
@@ -230,8 +231,8 @@ struct Span {
     end: i64,
 }
 
-/// The two transactions an excision runs in, with the blob store. Files of
-/// deleted blobs are recorded as local cleanup intent before commit.
+/// The two transactions an excision runs in, with the blob store. Blobs it no
+/// longer needs are marked `deleting`; their files go after the commit.
 pub struct Transactions<'a, 'b> {
     pub archive: &'a Transaction<'b>,
     pub index: &'a Transaction<'b>,
@@ -241,6 +242,9 @@ pub struct Transactions<'a, 'b> {
     pub seq: i64,
     /// `index.db`'s write counter for this transaction.
     pub counter: i64,
+    /// Blob files this excision wrote under rows it inserted; on a rollback
+    /// the writer deletes those whose rows did not commit.
+    pub new_files: std::cell::RefCell<Vec<BlobHash>>,
 }
 
 /// Runs an excision, marking blobs it no longer needs `deleting`. The writer
@@ -559,10 +563,10 @@ impl<'a> Plan<'a> {
             .iter()
             .filter_map(|hash| BlobHash::parse(hash).ok())
         {
-            hashes.blob_candidate(&hash.0)?;
+            hashes.blob_to_check(&hash.0)?;
         }
         if !req.dry_run {
-            hashes.visit_blob_candidates(|hash| {
+            hashes.visit_blobs_to_check(|hash| {
                 let used: bool = t.archive.query_row(
                     "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
                     [hash],

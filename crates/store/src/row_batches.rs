@@ -127,12 +127,12 @@ const REVISION_EXTENTS: &str = "SELECT e.* FROM extent e JOIN revision r
           WHERE p.input = r.input AND p.chain = r.chain AND p.number < r.number), 0)";
 
 /// One read transaction over `archive.db`, held for a whole Sinex pass.
-pub struct Snapshot {
+pub struct BatchReader {
     conn: Connection,
     blobs: hashed_blobs::Store,
 }
 
-impl Snapshot {
+impl BatchReader {
     pub fn open(root: &Path) -> Result<Self> {
         let conn = crate::archive::open_read(&root.join("archive.db"))?;
         // Ordering every batch of a large archive may spill past the cache.
@@ -196,7 +196,7 @@ impl Snapshot {
 
     /// Visits a batch's rows, parents before the rows that refer to them. A
     /// batch whose bytes are still being written returns
-    /// [`StoreError::InputUnfinished`]; a later pass sends it.
+    /// [`StoreError::InputPending`]; a later pass sends it.
     pub fn rows(
         &self,
         batch: &RowBatch,
@@ -354,15 +354,15 @@ impl Snapshot {
 
     /// Refuses until every blob the query names is completely written.
     fn require_present(&self, input: &str, blobs: &str, args: &[Sql]) -> Result<()> {
-        let unfinished: bool = self.conn.query_row(
+        let pending: bool = self.conn.query_row(
             &format!(
                 "SELECT EXISTS(SELECT 1 FROM blob WHERE hash IN ({blobs}) AND state <> 'present')"
             ),
             params_from_iter(args),
             |r| r.get(0),
         )?;
-        if unfinished {
-            return Err(unfinished_input(input));
+        if pending {
+            return Err(pending_input(input));
         }
         Ok(())
     }
@@ -377,7 +377,7 @@ impl Snapshot {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )?;
         if state != "present" {
-            return Err(unfinished_input(&hash.to_string()));
+            return Err(pending_input(&hash.to_string()));
         }
         if encoding != "plain" {
             return Err(invalid(&format!(
@@ -562,8 +562,8 @@ fn revision_key(key: &str) -> Result<(&str, i64)> {
         .ok_or_else(|| invalid("invalid revision batch key"))
 }
 
-fn unfinished_input(input: &str) -> StoreError {
-    StoreError::InputUnfinished {
+fn pending_input(input: &str) -> StoreError {
+    StoreError::InputPending {
         input: input.to_owned(),
         reason: "its bytes are still being written".into(),
     }

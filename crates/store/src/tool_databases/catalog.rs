@@ -2,7 +2,7 @@ use super::*;
 use rusqlite::{OptionalExtension, params};
 
 /// Disposable row comparison state. SQLite spills the index and transaction
-/// journal to disk; Rust retains one decoded row at a time.
+/// journal to disk; Rust holds one decoded row at a time.
 pub(super) struct Catalog {
     pub conn: Connection,
     pub schema: Option<u64>,
@@ -47,7 +47,7 @@ impl Catalog {
                         break;
                     }
                     if bytes.last() != Some(&b'\n') {
-                        return Err(invalid("unfinished SQLite export line"));
+                        return Err(invalid("incomplete SQLite export line"));
                     }
                     let value: Value =
                         serde_json::from_slice(&bytes).map_err(std::io::Error::from)?;
