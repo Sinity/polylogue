@@ -1,7 +1,8 @@
 //! A stand-in for `sinexd`'s ingress over a real NATS server. It records
 //! frames by name, answers `have` from that record and a resent frame from
 //! its record, reads material bytes and indirect frames from the spool as
-//! Sinex does, and can lose chosen frames or their acknowledgments.
+//! Sinex does, and can lose chosen frames or their acknowledgments, telling
+//! the test each time it does.
 use crate::{Config, Mode, Sinex};
 use async_nats::jetstream;
 use futures_util::StreamExt;
@@ -11,7 +12,7 @@ use sinex_transport::spool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use tokio::sync::Notify;
 
 const PRODUCER: &str = "polylogue";
 const SUBJECTS: &str = "stand-in";
@@ -36,6 +37,8 @@ pub(crate) struct Record {
     pub received: usize,
     /// The failure that hits the frame with this arrival number (from 1).
     pub failures: HashMap<usize, Failure>,
+    /// Woken each time a failure hits a frame.
+    pub failure_hit: Arc<Notify>,
 }
 
 impl Record {
@@ -69,7 +72,15 @@ impl StandIn {
             .unwrap();
         let mut ingress = client.subscribe(subjects.ingress(PRODUCER)).await.unwrap();
         let mut have = client.subscribe(subjects.have(PRODUCER)).await.unwrap();
-        client.flush().await.unwrap();
+        // A flush only writes the subscriptions out. The server handles one
+        // connection's messages in order, so once a message published after
+        // them comes back, it has registered them, and a producer on another
+        // connection cannot reach Sinex before Sinex listens.
+        let echo_subject = client.new_inbox();
+        let mut echo = client.subscribe(echo_subject.clone()).await.unwrap();
+        client.publish(echo_subject, "".into()).await.unwrap();
+        echo.next().await.unwrap();
+        drop(echo);
         let record = Arc::new(Mutex::new(Record::default()));
         let state = record.clone();
         let store = root.clone();
@@ -129,15 +140,18 @@ impl StandIn {
         }
     }
 
-    /// A new connection that gives up on an acknowledgment quickly.
     pub async fn connect(&self) -> Sinex {
-        let mut sinex = Sinex::connect(&self.config()).await.unwrap();
-        sinex.acknowledgment_wait = Duration::from_millis(300);
-        sinex
+        Sinex::connect(&self.config()).await.unwrap()
     }
 
     pub fn fail(&self, at: usize, failure: Failure) {
         self.record.lock().unwrap().failures.insert(at, failure);
+    }
+
+    /// Returns once a failure has hit a frame since the last return.
+    pub async fn failure_hit(&self) {
+        let hit = Arc::clone(&self.record.lock().unwrap().failure_hit);
+        hit.notified().await;
     }
 
     /// Whether any frame's spool directory is left.
@@ -155,6 +169,9 @@ fn receive(state: &Mutex<Record>, root: &Path, payload: &[u8]) -> Option<Acknowl
     let mut record = state.lock().unwrap();
     record.received += 1;
     let failure = record.failures.get(&record.received).copied();
+    if failure.is_some() {
+        record.failure_hit.notify_one();
+    }
     if failure == Some(Failure::Outage) {
         return None;
     }

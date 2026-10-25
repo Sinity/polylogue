@@ -323,7 +323,7 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
         done.send(server.shutdown()).unwrap();
     });
     stopped
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv()
         .expect("HTTP worker kept idle clients open")
         .unwrap();
     thread.join().unwrap();

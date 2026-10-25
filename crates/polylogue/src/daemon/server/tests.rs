@@ -22,7 +22,7 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
         done.send(server.shutdown()).unwrap();
     });
     stopped
-        .recv_timeout(Duration::from_secs(5))
+        .recv()
         .expect("socket readers did not stop")
         .unwrap();
     thread.join().unwrap();

@@ -19,7 +19,6 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
         ("XDG_CONFIG_HOME", config.as_path()),
     ];
     let _daemon = start_daemon(&env);
-    let deadline = Instant::now() + Duration::from_secs(15);
     let answer = loop {
         let out = cli(&env, &["--json", "measure", "usage"]);
         assert!(out.status.success(), "{out:?}");
@@ -27,7 +26,6 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
         if answer["data"]["recorded_usage"]["measured_completion_observations"] == 2 {
             break answer;
         }
-        assert!(Instant::now() < deadline, "{answer}");
         std::thread::sleep(Duration::from_millis(20));
     };
     let data = &answer["data"];

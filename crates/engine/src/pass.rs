@@ -721,14 +721,19 @@ impl Engine {
     }
 
     /// Runs passes until stopped: after any change under a watched
-    /// location, and at least once a minute.
+    /// location, and at least every `rescan_every`.
     pub fn run(
         &mut self,
         tx: Sender<LoopMsg>,
         rx: &Receiver<LoopMsg>,
-        status: &Arc<Mutex<Pass>>,
+        status: &Arc<Mutex<LoopStatus>>,
         ready: impl FnOnce(),
     ) -> Result<(), EngineError> {
+        let busy = |busy: bool| {
+            if let Ok(mut s) = status.lock() {
+                s.busy = busy;
+            }
+        };
         let mut watcher = watch::Roots::new(&self.config, tx.clone())?;
         drop(tx);
         ready();
@@ -736,31 +741,38 @@ impl Engine {
         let mut discovered_at = Instant::now();
         loop {
             watcher.refresh(&self.config)?;
-            discover |= discovered_at.elapsed() >= Duration::from_secs(60);
+            discover |= discovered_at.elapsed() >= self.config.rescan_every;
             if discover {
                 discovered_at = Instant::now();
             }
+            busy(true);
             let pending;
-            match self.converge_work(discover) {
+            let finished = match self.converge_work(discover) {
                 Ok(pass) => {
                     pending = pass.capture_pending;
-                    if let Ok(mut s) = status.lock() {
-                        *s = pass;
-                    }
+                    pass
                 }
                 Err(e) => {
                     pending = self.exporter.pending();
-                    if let Ok(mut s) = status.lock() {
-                        s.errors = vec![e.to_string()];
-                        s.capture_pending = pending;
-                    }
+                    let mut pass = status
+                        .lock()
+                        .map(|s| s.last_pass.clone())
+                        .unwrap_or_default();
+                    pass.errors = vec![e.to_string()];
+                    pass.capture_pending = pending;
+                    pass
                 }
+            };
+            if let Ok(mut s) = status.lock() {
+                s.last_pass = finished;
+                s.passes += 1;
+                s.busy = pending;
             }
             discover = false;
             let delay = if pending {
                 Duration::ZERO
             } else {
-                Duration::from_secs(60)
+                self.config.rescan_every
             };
             let mut msg = rx.recv_timeout(delay);
             let burst = Instant::now();
@@ -771,11 +783,17 @@ impl Engine {
                         return Ok(());
                     }
                     Ok(LoopMsg::Import { paths, reply }) => {
-                        let _ = reply.send(self.import(&paths).map_err(|e| e.to_string()));
+                        busy(true);
+                        let report = self.import(&paths).map_err(|e| e.to_string());
+                        busy(pending);
+                        let _ = reply.send(report);
                         discover = true;
                     }
                     Ok(LoopMsg::Excise { request, reply }) => {
-                        let _ = reply.send(self.excise(request));
+                        busy(true);
+                        let done = self.excise(request);
+                        busy(pending);
+                        let _ = reply.send(done);
                         discover = true;
                     }
                     Ok(LoopMsg::Changed) => discover = true,

@@ -25,6 +25,7 @@ tempfile.workspace = true
 
 [dev-dependencies]
 rusqlite.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true
 devkit = { workspace = true, features = ["pg", "nats"] }

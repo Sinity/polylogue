@@ -135,11 +135,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         ("XDG_CONFIG_HOME", config.as_path()),
     ];
     let daemon = start_daemon(&env);
-    wait_status(&env, |s| {
-        s["store"]["messages"].as_u64() == Some(7)
-            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
-            && s["last_pass"]["capture_pending"] == false
-    });
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
     let listed = cli(&env, &["--json", "origin:hermes"]);
     assert!(listed.status.success(), "{listed:?}");
     let listed = json(&listed);
@@ -251,11 +247,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
     std::fs::remove_file(&native).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _rebuilt = start_daemon(&env);
-    wait_status(&env, |s| {
-        s["store"]["messages"].as_u64() == Some(7)
-            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
-            && s["last_pass"]["capture_pending"] == false
-    });
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
     for (sid, expected, active) in states {
         let query = format!("messages where session:{sid} active:*");
         let out = cli(&env, &["--json", &query]);

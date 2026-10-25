@@ -139,7 +139,10 @@ impl axum::serve::Listener for OwnerListener {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
             };
-            if access::socket_owner(peer) == Some(self.uid) {
+            let Ok(server) = stream.local_addr() else {
+                continue;
+            };
+            if access::socket_owner(peer, server) == Some(self.uid) {
                 return (stream, peer);
             }
         }

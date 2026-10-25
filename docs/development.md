@@ -74,6 +74,12 @@ wait; other tests wait for an event (a reply, a file, a closed connection).
 nextest's slow timeout ends a hung test; under plain `cargo test` it would
 wait forever.
 
+A test that waits for the daemon to read a change waits until the change
+shows in `status` and `busy` is false. Readers see a pass's rows before the
+pass has derived titles and other products from them, so a count alone does
+not mark the end of a pass. `passes` counts finished passes, for a test that
+needs the next one.
+
 The Sinex rebuild test in `crates/sinex/tests/` runs a real `sinexd`, so it
 is ignored by default. It runs from a checkout of the Sinex revision this
 workspace pins, in Sinex's dev shell, which has PostgreSQL with TimescaleDB

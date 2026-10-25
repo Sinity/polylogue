@@ -232,11 +232,7 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     std::fs::remove_file(standard).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    let started = Instant::now();
-    wait_status(&env, |status| {
-        assert!(started.elapsed() < Duration::from_secs(10), "{status}");
-        status["store"]["messages"] == 1
-    });
+    wait_status(&env, |status| status["store"]["messages"] == 1);
     let rebuilt = cli(&env, &["--json", "read", "grok:metadata-prefix"]);
     assert!(rebuilt.status.success(), "{rebuilt:?}");
     assert_eq!(

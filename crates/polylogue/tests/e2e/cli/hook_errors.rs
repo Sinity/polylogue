@@ -22,7 +22,6 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
     ];
     let _daemon = start_daemon(&env);
     let id = polylogue_model::SessionId::parse("claude-code:hooks").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let ready = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive))
             .and_then(|pool| {
@@ -37,12 +36,10 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
         if ready {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "native hook summary was not ingested"
-        );
         std::thread::sleep(Duration::from_millis(20));
     }
+    // The pass that stored the summary has also derived from it.
+    wait_status(&env, |_| true);
     for format in ["terminal", "markdown", "html", "json"] {
         let out = cli(
             &env,

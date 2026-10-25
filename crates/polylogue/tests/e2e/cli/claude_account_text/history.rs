@@ -90,21 +90,9 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     std::fs::remove_file(&source).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let out = cli(&env, &["--json", "status"]);
-        assert!(out.status.success(), "{out:?}");
-        let status = json(&out);
-        if status["store"]["documents"] == 2 && status["store"]["search_pending"] == 0 {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the rebuild from stored bytes did not restore both documents: {status}; rows {:?}",
-            cli(&env, &["--json", "documents"])
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_status(&env, |status| {
+        status["store"]["documents"] == 2 && status["store"]["search_pending"] == 0
+    });
     let after = cli(&env, &["--json", "sql", sources_sql]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after), sources);

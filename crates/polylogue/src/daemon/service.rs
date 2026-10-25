@@ -3,7 +3,7 @@
 
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
-use polylogue_engine::{Config, Engine, LoopMsg, Pass};
+use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::Author;
 use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
@@ -27,7 +27,7 @@ pub struct Daemon {
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
-    status: Arc<Mutex<Pass>>,
+    status: Arc<Mutex<LoopStatus>>,
     started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
@@ -248,13 +248,17 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Ok(s) => s,
                 Err(e) => return error("store", e),
             };
-            let last_pass = d.status.lock().map(|p| p.clone()).unwrap_or_default();
+            // Read after the store counts: a loop seen idle now has finished
+            // the pass that wrote any row those counts include.
+            let loop_status = d.status.lock().map(|s| s.clone()).unwrap_or_default();
             ok(serde_json::json!({
                 "archive": d.archive.root,
                 "pid": std::process::id(),
                 "uptime_seconds": d.started.elapsed().as_secs(),
                 "store": store,
-                "last_pass": last_pass,
+                "busy": loop_status.busy,
+                "passes": loop_status.passes,
+                "last_pass": loop_status.last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
                 "mode": d.mode,
             }))
@@ -759,7 +763,11 @@ pub fn start(
     let reads = ReadPool::with_budget(&archive, paths.workers, per_reader * paths.workers as u64)
         .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
-    let status = Arc::new(Mutex::new(Pass::default()));
+    // The loop's first pass starts as soon as it runs.
+    let status = Arc::new(Mutex::new(LoopStatus {
+        busy: engine.is_some(),
+        ..LoopStatus::default()
+    }));
     let daemon = Arc::new(Daemon {
         archive,
         reads,

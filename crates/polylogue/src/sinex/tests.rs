@@ -25,9 +25,7 @@ fn stop(mut sending: Sending) -> std::io::Result<()> {
     let thread = std::thread::spawn(move || {
         done.send(sending.shutdown()).unwrap();
     });
-    let result = wait
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the Sinex thread did not join");
+    let result = wait.recv().expect("the Sinex thread did not join");
     thread.join().unwrap();
     result
 }
@@ -51,7 +49,7 @@ fn pending() -> (Sending, Receiver<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
 #[test]
 fn stopping_a_pending_pass_drops_it_without_recording_success() {
     let (sending, started, dropped, completed) = pending();
-    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    started.recv().unwrap();
     stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
     assert!(!completed.load(Ordering::SeqCst));
@@ -69,7 +67,7 @@ fn stopping_the_sinex_thread_wakes_its_periodic_wait() {
         sleep.await;
     })
     .unwrap();
-    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    wait.recv().unwrap();
     stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
 }
@@ -79,7 +77,7 @@ fn a_later_startup_error_drops_the_started_sinex_thread() {
     fn fail(dropped: &mut Option<Arc<AtomicBool>>) -> std::io::Result<()> {
         let (_sinex_thread, started, held, _) = pending();
         *dropped = Some(held);
-        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        started.recv().unwrap();
         Err(std::io::Error::other("synthetic later startup failure"))
     }
     let mut dropped = None;
@@ -142,7 +140,7 @@ fn a_thread_local_read_transaction_can_span_the_pending_pass() {
         drop(local);
     })
     .unwrap();
-    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    wait.recv().unwrap();
     stop(sending).unwrap();
     assert!(dropped.load(Ordering::SeqCst));
 }

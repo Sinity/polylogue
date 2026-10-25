@@ -113,7 +113,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         done.send(result).unwrap();
     });
     stopped
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv()
         .expect("shutdown waited for signal timer")
         .unwrap();
     thread.join().unwrap();

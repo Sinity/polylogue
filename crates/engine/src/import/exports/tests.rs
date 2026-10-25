@@ -211,17 +211,13 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
         let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
         db.execute_batch("BEGIN IMMEDIATE").unwrap();
         go_tx.send(()).unwrap();
-        item_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        item_rx.recv().unwrap();
         assert!(matches!(
             item_rx.recv_timeout(std::time::Duration::from_millis(100)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
         db.execute_batch("COMMIT").unwrap();
-        item_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
+        item_rx.recv().unwrap();
     });
 }
 
