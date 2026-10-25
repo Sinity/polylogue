@@ -16,7 +16,7 @@ pub(crate) struct Source<'a> {
     pub input_id: &'a str,
     pub chain: i64,
     /// Later records of the chain restate earlier ones.
-    pub snapshot: bool,
+    pub restates: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -85,7 +85,7 @@ pub(crate) fn write(
             .optional()?;
         let start = row.offset as i64;
         if earlier.is_some_and(|earlier| {
-            if source.snapshot {
+            if source.restates {
                 start < earlier
             } else {
                 start > earlier

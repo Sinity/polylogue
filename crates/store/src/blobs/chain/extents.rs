@@ -3,7 +3,7 @@ use rusqlite::{MAIN_DB, OptionalExtension, params};
 use std::sync::Mutex;
 
 #[derive(Debug)]
-pub(super) struct Snapshot {
+pub(super) struct ExtentList {
     conn: Mutex<Connection>,
 }
 
@@ -16,7 +16,7 @@ pub(super) struct Extent {
     pub inline: bool,
 }
 
-impl Snapshot {
+impl ExtentList {
     pub fn capture(
         archive: &Connection,
         schema: &str,
@@ -75,7 +75,7 @@ impl Snapshot {
         let conn = self
             .conn
             .lock()
-            .map_err(|_| invalid("stored snapshot lock poisoned"))?;
+            .map_err(|_| invalid("stored extents lock poisoned"))?;
         let extent = Self::extent(&conn, at)?;
         let inline = if extent.inline {
             Some(reader::inline(&conn, store, &extent)?)
@@ -147,7 +147,7 @@ fn capture_extent(
     }
     if encoding != "plain" || !matches!(place.as_str(), "inline" | "file") {
         return Err(invalid(
-            "retained chain requires plain inline or file blobs",
+            "a stored chain needs plain inline or file blobs",
         ));
     }
     let data_len: Option<i64> = row.get(8)?;

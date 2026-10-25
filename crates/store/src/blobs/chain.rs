@@ -1,19 +1,19 @@
-//! An immutable, disposable copy of one selected chain's extent catalog.
+//! A stored chain: an immutable, disposable copy of one chain's extent list.
 use super::{BlobHash, Result};
 use crate::StoreError;
 use rusqlite::Connection;
 use std::sync::Arc;
 
 mod reader;
-mod snapshot;
+mod extents;
 pub use reader::ChainReader;
 use reader::Cursor;
-use snapshot::Snapshot;
+use extents::ExtentList;
 
 #[derive(Debug, Clone, Default)]
 pub struct StoredChain {
     pub length: u64,
-    snapshot: Option<Arc<Snapshot>>,
+    extents: Option<Arc<ExtentList>>,
     single: Option<BlobHash>,
 }
 
@@ -38,12 +38,12 @@ impl StoredChain {
         length: u64,
     ) -> Result<Self> {
         if start > length || length > i64::MAX as u64 {
-            return Err(StoreError::Invalid("invalid retained range".into()));
+            return Err(StoreError::Invalid("invalid stored range".into()));
         }
-        let (snapshot, single) = Snapshot::capture(archive, schema, input, chain, start, length)?;
+        let (extents, single) = ExtentList::capture(archive, schema, input, chain, start, length)?;
         Ok(Self {
             length,
-            snapshot: Some(Arc::new(snapshot)),
+            extents: Some(Arc::new(extents)),
             single,
         })
     }
@@ -64,13 +64,13 @@ impl StoredChain {
         end: u64,
     ) -> Result<BlobHash> {
         if start > end || end > self.length {
-            return Err(StoreError::Invalid("invalid retained hash range".into()));
+            return Err(StoreError::Invalid("invalid stored hash range".into()));
         }
         let mut cursor = Cursor::forward_range(start, end);
         let mut hash = blake3::Hasher::new();
         let mut bytes = [0u8; 64 * 1024];
         loop {
-            let n = cursor.read(&mut bytes, self.snapshot.as_deref(), store)?;
+            let n = cursor.read(&mut bytes, self.extents.as_deref(), store)?;
             if n == 0 {
                 break;
             }
@@ -84,17 +84,17 @@ impl StoredChain {
         let end = end.min(self.length);
         let length = end
             .checked_sub(start)
-            .ok_or_else(|| StoreError::Invalid("invalid retained range".into()))?;
+            .ok_or_else(|| StoreError::Invalid("invalid stored range".into()))?;
         let length = usize::try_from(length)
-            .map_err(|_| StoreError::Invalid("retained range exceeds address space".into()))?;
+            .map_err(|_| StoreError::Invalid("stored range exceeds address space".into()))?;
         let mut out = Vec::new();
         out.try_reserve_exact(length)
-            .map_err(|e| StoreError::Invalid(format!("allocate retained range: {e}")))?;
+            .map_err(|e| StoreError::Invalid(format!("allocate stored range: {e}")))?;
         out.resize(length, 0);
         let mut cursor = Cursor::range(start, end);
         let mut at = 0;
         while at < out.len() {
-            let n = cursor.read(&mut out[at..], self.snapshot.as_deref(), store)?;
+            let n = cursor.read(&mut out[at..], self.extents.as_deref(), store)?;
             if n == 0 {
                 return Err(StoreError::Invalid("stored extent missing".into()));
             }

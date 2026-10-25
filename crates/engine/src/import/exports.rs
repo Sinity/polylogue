@@ -133,7 +133,7 @@ impl Engine {
         let mut next = next_record(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
-        let mut snapshot = false;
+        let mut restates = false;
         if let Some(step) = parser
             .begin(
                 plan.size,
@@ -141,7 +141,7 @@ impl Engine {
             )
             .map_err(std::io::Error::other)?
         {
-            snapshot = step.restates;
+            restates = step.restates;
             order_from = (step.output.messages.len() as u64).max(1);
             self.write_export_step(
                 plan,
@@ -150,7 +150,7 @@ impl Engine {
                 0,
                 true,
                 false,
-                snapshot,
+                restates,
                 pass,
             )?;
             first = false;
@@ -174,7 +174,7 @@ impl Engine {
                 order_from,
                 first,
                 false,
-                snapshot,
+                restates,
                 pass,
             )?;
             first = false;
@@ -188,7 +188,7 @@ impl Engine {
             order_from,
             first,
             true,
-            snapshot,
+            restates,
             pass,
         )?;
         plan.parse_pos = plan.size;
@@ -266,7 +266,7 @@ impl Engine {
         order_from: u64,
         reset: bool,
         done: bool,
-        snapshot: bool,
+        restates: bool,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut blobs = Vec::new();
@@ -292,7 +292,7 @@ impl Engine {
             0..if done { plan.size } else { 0 },
             done,
         );
-        parse.snapshot = snapshot;
+        parse.restates = restates;
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.prepare();

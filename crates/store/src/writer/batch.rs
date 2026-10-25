@@ -60,7 +60,7 @@ pub struct ParseStep {
     pub(crate) output: Output,
     /// Each record restates whole conversations: a later record's version
     /// of a message replaces an earlier one in the same chain.
-    pub snapshot: bool,
+    pub restates: bool,
     pub accounting: Accounting,
     /// Where the step's bytes start in the chain. 0 means the chain was
     /// parsed from the start, so the step's counts replace earlier ones.
@@ -89,7 +89,7 @@ impl ParseStep {
         Self {
             order_from: None,
             reset: range.start == 0,
-            snapshot: false,
+            restates: false,
             output,
             accounting,
             start: range.start,

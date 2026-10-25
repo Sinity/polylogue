@@ -1,5 +1,5 @@
 use super::*;
-use snapshot::Extent;
+use extents::Extent;
 use std::io::{Read, Seek};
 
 pub struct ChainReader {
@@ -22,7 +22,7 @@ impl ChainReader {
 impl Read for ChainReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         self.cursor
-            .read(out, self.chain.snapshot.as_deref(), &self.store)
+            .read(out, self.chain.extents.as_deref(), &self.store)
             .map_err(std::io::Error::other)
     }
 }
@@ -66,14 +66,14 @@ impl Cursor {
     pub fn read(
         &mut self,
         out: &mut [u8],
-        snapshot: Option<&Snapshot>,
+        extents: Option<&ExtentList>,
         store: &hashed_blobs::Store,
     ) -> Result<usize> {
         if out.is_empty() || self.position == self.end {
             return Ok(0);
         }
         if self.left == 0 {
-            let (extent, inline) = snapshot
+            let (extent, inline) = extents
                 .ok_or_else(|| StoreError::Invalid("stored extent missing".into()))?
                 .select(self.position, store)?;
             if !extent.inline && self.access == Access::Range {

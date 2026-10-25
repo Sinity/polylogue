@@ -398,7 +398,7 @@ fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
-                        p.snapshot = step.restates;
+                        p.restates = step.restates;
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
                         p.prepare();

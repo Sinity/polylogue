@@ -888,7 +888,7 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
     assert_eq!(forward.1[0]["derived_title"], "First question");
 }
 
-mod snapshots;
+mod restating;
 
 mod array_order;
 

@@ -1,6 +1,6 @@
 use super::*;
 
-fn snapshot(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
+fn restating(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
     let rows = texts
         .iter()
         .map(|(id, text)| MessageRow {
@@ -10,7 +10,7 @@ fn snapshot(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
         })
         .collect();
     let mut b = batch(input, 0, at, rows, &["s"]);
-    b.parse[0].snapshot = true;
+    b.parse[0].restates = true;
     b.parse[0].at_end = true;
     b
 }
@@ -38,7 +38,7 @@ fn active(w: &World) -> Vec<Json> {
 }
 
 #[test]
-fn repeated_active_leaf_uses_snapshot_order_in_both_replay_orders() {
+fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
     for reverse in [false, true] {
         let w = world();
         let mut seed = batch("a", 0, 0, vec![], &[]);
@@ -48,7 +48,7 @@ fn repeated_active_leaf_uses_snapshot_order_in_both_replay_orders() {
         w.writer.flush().unwrap();
         let mut observations = Vec::new();
         for (at, leaf) in [(0, "a"), (100, "b"), (200, "a")] {
-            let mut b = snapshot("a", at, &[("a", "A"), ("b", "B")]);
+            let mut b = restating("a", at, &[("a", "A"), ("b", "B")]);
             b.change = Change::Reparse { chain: 1 };
             b.length = 300;
             b.parse[0].output.events.push(polylogue_model::Event {
@@ -95,7 +95,7 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
                 observations.reverse();
             }
             for (input, leaf, at) in observations {
-                let mut b = snapshot(input, 0, &[("a", "A"), ("b", "B")]);
+                let mut b = restating(input, 0, &[("a", "A"), ("b", "B")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
                     session: Some(sid("s")),
                     kind: "active_leaf".into(),
@@ -133,7 +133,7 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
             w.writer.flush().unwrap();
             let mut observations = Vec::new();
             for (at, empty) in [(0, last_empty), (100, !last_empty), (200, last_empty)] {
-                let mut b = snapshot("a", at, &[("a", "A"), ("b", "B")]);
+                let mut b = restating("a", at, &[("a", "A"), ("b", "B")]);
                 b.change = Change::Reparse { chain: 1 };
                 b.length = 300;
                 b.parse[0].output.events.push(polylogue_model::Event {
@@ -184,7 +184,7 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
         Some(("active_path_empty", Some("a"))),
     ] {
         let w = world();
-        let mut b = snapshot("a", 0, &[("a", "A")]);
+        let mut b = restating("a", 0, &[("a", "A")]);
         if let Some((kind, after)) = invalid {
             b.parse[0].output.events.push(polylogue_model::Event {
                 session: Some(sid("s")),
@@ -206,7 +206,7 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
                 .clone()
         };
         assert!(activity().is_null());
-        let mut b = snapshot("a", 100, &[("a", "A")]);
+        let mut b = restating("a", 100, &[("a", "A")]);
         b.parse[0].output.events.push(polylogue_model::Event {
             session: Some(sid("s")),
             kind: "active_path_empty".into(),
@@ -246,7 +246,7 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
                 inputs.reverse();
             }
             for (input, empty, at) in inputs {
-                let mut b = snapshot(input, 0, &[("a", "A")]);
+                let mut b = restating(input, 0, &[("a", "A")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
                     session: Some(sid("s")),
                     kind: if empty {
@@ -283,19 +283,19 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
 }
 
 #[test]
-fn a_later_snapshot_replaces_the_earlier_version_and_keeps_absent_messages() {
+fn a_later_restating_record_replaces_the_earlier_version_and_keeps_absent_messages() {
     let w = world();
     w.writer
-        .send(snapshot("a", 0, &[("a", "old A"), ("b", "old B")]))
+        .send(restating("a", 0, &[("a", "old A"), ("b", "old B")]))
         .unwrap();
     w.writer
-        .send(snapshot("a", 100, &[("b", "new B")]))
+        .send(restating("a", 100, &[("b", "new B")]))
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(read(&w), ["old A", "new B"]);
     // A later observation may carry earlier content again.
     w.writer
-        .send(snapshot("a", 200, &[("b", "old B")]))
+        .send(restating("a", 200, &[("b", "old B")]))
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(read(&w), ["old A", "old B"]);
