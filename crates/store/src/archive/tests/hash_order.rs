@@ -91,10 +91,7 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     );
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     let after: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
-    assert_eq!(
-        after, before,
-        "authored values and excisions stay verbatim"
-    );
+    assert_eq!(after, before, "authored values and excisions stay verbatim");
     let matches = crate::excise::matching(
         &archive_conn,
         &["claude-code:blocked".into(), "claude-code:allowed".into()],
