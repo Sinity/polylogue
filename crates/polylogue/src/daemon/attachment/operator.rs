@@ -38,7 +38,7 @@ impl Operator {
             let environment = std::fs::read(process.join("environ"))?;
             if environment.split(|byte| *byte == 0).any(|entry| {
                 let name = entry.split(|byte| *byte == b'=').next().unwrap_or_default();
-                HARNESS.iter().any(|key| name == key.as_bytes())
+                polylogue_sources::origin::agent_env().any(|key| name == key.as_bytes())
             }) {
                 return Ok(false);
             }

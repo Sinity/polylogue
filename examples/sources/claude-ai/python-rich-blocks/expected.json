@@ -21,13 +21,13 @@
     "events": [
       {
         "data": {
-          "name": "Synthetic canonical blocks",
+          "name": "Synthetic rich blocks",
           "uuid": "native-rich-blocks"
         },
         "kind": "conversation_settings",
         "range": [
           3,
-          1773
+          1768
         ],
         "session": "claude-ai:native-rich-blocks"
       }
@@ -35,7 +35,7 @@
     "links": [],
     "messages": [
       {
-        "end": 1773,
+        "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:01Z",
           "blocks": [
@@ -65,7 +65,7 @@
         "offset": 3
       },
       {
-        "end": 1773,
+        "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:02Z",
           "blocks": [
@@ -94,7 +94,7 @@
         "offset": 3
       },
       {
-        "end": 1773,
+        "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:03Z",
           "blocks": [
@@ -123,7 +123,7 @@
         "offset": 3
       },
       {
-        "end": 1773,
+        "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:04Z",
           "blocks": [
@@ -145,7 +145,7 @@
         "kind": "main",
         "title": {
           "source": "generated",
-          "text": "Synthetic canonical blocks"
+          "text": "Synthetic rich blocks"
         }
       }
     ]

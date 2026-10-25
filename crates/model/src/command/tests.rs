@@ -70,7 +70,7 @@ fn runners_expose_the_command_they_run() {
         ["cargo test", "bd close"]
     );
     assert_eq!(progs("flock /tmp/l.lock cargo build"), ["cargo build"]);
-    // The normalized command keeps the runner, as the spec groups it.
+    // The normalized command keeps the runner.
     assert_eq!(n("nix develop --command cargo test"), "nix develop");
 }
 
