@@ -10,7 +10,7 @@
 //! replaces the older readings. Where the last send stopped is kept beside
 //! the index (`sinex-sent.json`): the index file and its write counter.
 use crate::parts::content_name;
-use crate::records::time;
+use crate::register::time;
 use crate::{Error, Result, Sinex};
 use polylogue_model::{AttachmentDirection, Block, MessageId, SessionId, Timestamp};
 use polylogue_store::{ReadPool, Reader, SqlValue};
@@ -91,7 +91,7 @@ fn send_chunks(sinex: &Sinex, events: Vec<ProducerEvent>) -> Result<()> {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     sinex.with(async |client| {
         let names: Vec<String> = chunks.iter().map(|(name, _)| name.clone()).collect();
-        let held = client.have(&names).await?;
+        let held = client.recorded(&names).await?;
         for (name, mut events) in chunks {
             if let Some(acknowledgment) = held.get(&name) {
                 crate::client::checked(acknowledgment.clone())?;
@@ -188,7 +188,7 @@ fn producer_event(
         event_type: event_type.into(),
         payload: serde_json::to_value(payload)?,
         location: Some(location),
-        ordinal: 0,
+        output_index: 0,
         parents: vec![],
         reading_order: 0,
         class: Class::Open,

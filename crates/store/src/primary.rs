@@ -1,11 +1,12 @@
-//! Primary mode: Sinex holds the archive. Each piece of an input's bytes
-//! goes to Sinex as one part of that input, with the [`InputRecord`] that
-//! places it; a step that found no new bytes, and every request a person or
-//! agent makes, goes as a record. The writer commits a register row only
+//! Primary mode: Sinex holds the archive. Each step of an input's appended
+//! bytes goes to Sinex as one part of that input, with the [`InputRows`]
+//! that place it; every other change to the register (a look that found no
+//! new bytes, a request a person or agent makes, an excision) goes as a
+//! register material. The writer commits a register row only
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
-use crate::input_record::InputRecord;
+use crate::input_rows::InputRows;
 use crate::user_writes::UserRequest;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
@@ -18,9 +19,9 @@ pub trait Sinex: Send + Sync {
     /// of its input and waits until Sinex acknowledged it. Returns the
     /// material Sinex registered.
     fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<String>;
-    /// Sends a record and the events it makes, and waits until Sinex
-    /// acknowledged them. Returns the material holding the record.
-    fn send_record(&self, record: &Record) -> Result<String>;
+    /// Sends a register change and the events it makes, and waits until
+    /// Sinex acknowledged them. Returns the register material holding it.
+    fn send_change(&self, change: &RegisterChange) -> Result<String>;
     /// Excises these materials, with everything read or derived from them,
     /// through Sinex's excision with Polylogue as the actor. Sinex refuses
     /// the whole request when it cannot remove one cleanly.
@@ -43,7 +44,7 @@ pub struct Part {
     pub previous: Option<String>,
     pub hash: BlobHash,
     pub length: u64,
-    pub record: InputRecord,
+    pub rows: InputRows,
 }
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its
@@ -55,30 +56,31 @@ pub struct InputName {
     pub host: String,
 }
 
-/// What Sinex keeps for the archive besides input bytes.
+/// A change to the register that is not input bytes, which Sinex keeps as
+/// a register material.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "record", rename_all = "snake_case")]
-pub enum Record {
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum RegisterChange {
     /// A look at an input that found no new bytes (it disappeared, came
     /// back, or an import of bytes already stored).
     Observation {
         input: InputName,
-        stored: Box<InputRecord>,
+        stored: Box<InputRows>,
     },
-    /// A request a person or agent made, with the note family it joined
-    /// when it adds or withdraws a note.
+    /// A request a person or agent made, with the first note of the note's
+    /// revisions when it adds or withdraws a note.
     Request {
         request: Box<UserRequest>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        root: Option<String>,
+        first_note: Option<String>,
     },
     /// An excision: what it removed, by identity, so a rebuild keeps
     /// refusing it.
-    Excision(ExcisionRecord),
+    Excision(ExcisionRows),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExcisionRecord {
+pub struct ExcisionRows {
     pub id: String,
     /// `session:<id>`, `document:<id>` or `input:<id>`.
     pub target: String,
@@ -89,7 +91,7 @@ pub struct ExcisionRecord {
     pub excised: Vec<(String, String)>,
     /// What stays of the removed inputs: their observations, the last of
     /// them `excised`.
-    pub observations: Vec<InputRecord>,
+    pub observations: Vec<InputRows>,
 }
 
 /// One thing Sinex holds from this archive.
@@ -101,26 +103,26 @@ pub enum Held {
         hash: BlobHash,
         length: u64,
         index: u32,
-        record: Box<InputRecord>,
+        rows: Box<InputRows>,
     },
-    Record {
+    Change {
         number: i64,
         material: String,
-        record: Record,
+        change: RegisterChange,
     },
 }
 
 impl Held {
     pub fn number(&self) -> i64 {
         match self {
-            Held::Part { number, .. } | Held::Record { number, .. } => *number,
+            Held::Part { number, .. } | Held::Change { number, .. } => *number,
         }
     }
 }
 
 /// The Sinex material holding each part, by where its bytes sit in their
-/// chain, and each record, by the observation, request or excision it
-/// holds. Only `sinex.db` has them.
+/// chain, and each register material, by the observation, request or
+/// excision it holds. Only `sinex.db` has them.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE material (
   input         TEXT NOT NULL,
@@ -130,12 +132,12 @@ CREATE TABLE material (
   id            TEXT NOT NULL UNIQUE,    -- the Sinex material
   PRIMARY KEY (input, chain, offset)
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE record (
+CREATE TABLE register_material (
   id            TEXT PRIMARY KEY,        -- the observation, request or excision ID
   input         TEXT,                    -- an observation's input
   material      TEXT NOT NULL UNIQUE     -- the Sinex material
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX record_input ON record(input) WHERE input IS NOT NULL;
+CREATE INDEX register_material_input ON register_material(input) WHERE input IS NOT NULL;
 ";
 
 /// Where a new part of `input`'s chain goes: its place and the material
@@ -161,35 +163,41 @@ pub(crate) fn next_part(
     })
 }
 
-/// Keeps which Sinex material holds `record`.
-pub(crate) fn record_material(conn: &Connection, record: &Record, material: &str) -> Result<()> {
-    let (id, input) = match record {
-        Record::Observation { stored, .. } => (
+/// Keeps which register material holds `change`.
+pub(crate) fn change_material(
+    conn: &Connection,
+    change: &RegisterChange,
+    material: &str,
+) -> Result<()> {
+    let (id, input) = match change {
+        RegisterChange::Observation { stored, .. } => (
             stored
                 .observation
                 .as_ref()
                 .map(|o| o.id.as_str())
                 .ok_or_else(|| {
-                    StoreError::Invalid("an observation record has no observation".into())
+                    StoreError::Invalid("an observation change has no observation".into())
                 })?,
             Some(stored.input.as_str()),
         ),
-        Record::Request { request, .. } => (request.id.as_str(), None),
-        Record::Excision(excision) => (excision.id.as_str(), None),
+        RegisterChange::Request { request, .. } => (request.id.as_str(), None),
+        RegisterChange::Excision(excision) => (excision.id.as_str(), None),
     };
-    conn.prepare_cached("INSERT OR REPLACE INTO record(id, input, material) VALUES (?1, ?2, ?3)")?
-        .execute(params![id, input, material])?;
+    conn.prepare_cached(
+        "INSERT OR REPLACE INTO register_material(id, input, material) VALUES (?1, ?2, ?3)",
+    )?
+    .execute(params![id, input, material])?;
     Ok(())
 }
 
 /// Keeps which Sinex material holds a part.
 pub(crate) fn part_material(
     conn: &Connection,
-    record: &InputRecord,
+    rows: &InputRows,
     part: u32,
     material: &str,
 ) -> Result<()> {
-    let extent = record
+    let extent = rows
         .extent
         .as_ref()
         .ok_or_else(|| StoreError::Invalid("a part needs an extent".into()))?;
@@ -197,7 +205,7 @@ pub(crate) fn part_material(
         "INSERT OR REPLACE INTO material(input, chain, offset, part, id) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?
     .execute(params![
-        record.input,
+        rows.input,
         extent.chain,
         extent.offset,
         i64::from(part),
@@ -208,7 +216,8 @@ pub(crate) fn part_material(
 
 /// Fills an empty register from everything Sinex holds for the archive, in
 /// the order it was sent: each part's rows with its blob present in Sinex's
-/// content store, each record's rows. `store` reads Sinex's content store.
+/// content store, each register change's rows. `store` reads Sinex's
+/// content store.
 pub(crate) fn load(
     conn: &mut Connection,
     sinex: &dyn Sinex,
@@ -236,7 +245,7 @@ pub(crate) fn load(
                     hash,
                     length,
                     index,
-                    record,
+                    rows,
                     ..
                 } => {
                     let stored_size = store.stored_size(&hashed_blobs::Hash(hash.0))?;
@@ -245,11 +254,11 @@ pub(crate) fn load(
                          VALUES (?1, ?2, ?3, 'file', 'plain', 'present')",
                     )?
                     .execute(params![&hash.0[..], length as i64, stored_size as i64])?;
-                    record.insert(&tx, seq)?;
-                    part_material(&tx, &record, index, &material)?;
-                    if let Some(extent) = &record.extent {
-                        let place = (record.input.clone(), extent.chain, extent.offset);
-                        let observation = record.observation.as_ref().map(|o| o.id.clone());
+                    rows.insert(&tx, seq)?;
+                    part_material(&tx, &rows, index, &material)?;
+                    if let Some(extent) = &rows.extent {
+                        let place = (rows.input.clone(), extent.chain, extent.offset);
+                        let observation = rows.observation.as_ref().map(|o| o.id.clone());
                         if let Some((earlier, blob)) =
                             placed.insert(place, (observation, extent.blob))
                         {
@@ -257,17 +266,17 @@ pub(crate) fn load(
                         }
                     }
                 }
-                Held::Record {
-                    material, record, ..
+                Held::Change {
+                    material, change, ..
                 } => {
-                    match &record {
-                        Record::Observation { stored, .. } => stored.insert(&tx, seq)?,
-                        Record::Request { request, .. } => {
+                    match &change {
+                        RegisterChange::Observation { stored, .. } => stored.insert(&tx, seq)?,
+                        RegisterChange::Request { request, .. } => {
                             crate::user_writes::apply(&tx, request, seq)?;
                         }
-                        Record::Excision(excision) => excision_again(&tx, excision, seq)?,
+                        RegisterChange::Excision(excision) => excision_again(&tx, excision, seq)?,
                     }
-                    record_material(&tx, &record, &material)?;
+                    change_material(&tx, &change, &material)?;
                 }
             }
             loaded += 1;
@@ -301,8 +310,8 @@ fn forget_uncommitted(
     Ok(())
 }
 
-/// The Sinex materials holding `inputs`: their parts and the records of
-/// looks at them.
+/// The Sinex materials holding `inputs`: their parts and the register
+/// materials of looks at them.
 pub(crate) fn materials_of_inputs(
     conn: &Connection,
     inputs: &std::collections::BTreeSet<String>,
@@ -311,7 +320,7 @@ pub(crate) fn materials_of_inputs(
     for input in inputs {
         for sql in [
             "SELECT id FROM material WHERE input = ?1 ORDER BY chain, offset",
-            "SELECT material FROM record WHERE input = ?1 ORDER BY id",
+            "SELECT material FROM register_material WHERE input = ?1 ORDER BY id",
         ] {
             out.extend(
                 conn.prepare_cached(sql)?
@@ -324,11 +333,11 @@ pub(crate) fn materials_of_inputs(
 }
 
 /// The Sinex materials holding the requests that wrote `notes`.
-pub(crate) fn materials_of_records(conn: &Connection, ids: &[String]) -> Result<Vec<String>> {
+pub(crate) fn materials_of_requests(conn: &Connection, ids: &[String]) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for id in ids {
         if let Some(material) = conn
-            .prepare_cached("SELECT material FROM record WHERE id = ?1")?
+            .prepare_cached("SELECT material FROM register_material WHERE id = ?1")?
             .query_row([id], |r| r.get::<_, String>(0))
             .optional()?
         {
@@ -338,28 +347,29 @@ pub(crate) fn materials_of_records(conn: &Connection, ids: &[String]) -> Result<
     Ok(out)
 }
 
-/// Forgets the records `ids` once Sinex excised them.
-pub(crate) fn forget_records(conn: &Connection, ids: &[String]) -> Result<()> {
+/// Forgets the register materials of requests `ids` once Sinex excised them.
+pub(crate) fn forget_requests(conn: &Connection, ids: &[String]) -> Result<()> {
     for id in ids {
-        conn.execute("DELETE FROM record WHERE id = ?1", [id])?;
+        conn.execute("DELETE FROM register_material WHERE id = ?1", [id])?;
     }
     Ok(())
 }
 
-/// Forgets the parts and records of `inputs` once Sinex excised them.
+/// Forgets the parts and register materials of `inputs` once Sinex excised
+/// them.
 pub(crate) fn forget_inputs(
     conn: &Connection,
     inputs: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
     for input in inputs {
         conn.execute("DELETE FROM material WHERE input = ?1", [input])?;
-        conn.execute("DELETE FROM record WHERE input = ?1", [input])?;
+        conn.execute("DELETE FROM register_material WHERE input = ?1", [input])?;
     }
     Ok(())
 }
 
-/// The excision record of a committed excision `id`.
-pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRecord> {
+/// The rows of a committed excision `id`, as Sinex keeps them.
+pub(crate) fn excision_rows(conn: &Connection, id: &str) -> Result<ExcisionRows> {
     let (target, reason, created_at) = conn.query_row(
         "SELECT target, reason, created_at FROM excision WHERE id = ?1",
         [id],
@@ -372,10 +382,10 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
     let mut observations = Vec::new();
     for (kind, input) in &excised {
         if kind == "input" {
-            observations.extend(crate::input_record::observations(conn, input)?);
+            observations.extend(crate::input_rows::observations(conn, input)?);
         }
     }
-    Ok(ExcisionRecord {
+    Ok(ExcisionRows {
         id: id.to_owned(),
         target,
         reason,
@@ -388,7 +398,7 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
 /// Puts an excision back while rebuilding: its rows, and the note targets
 /// naming what it removed (the notes it removed whole were excised in
 /// Sinex with their requests).
-fn excision_again(tx: &Connection, excision: &ExcisionRecord, seq: i64) -> Result<()> {
+fn excision_again(tx: &Connection, excision: &ExcisionRows, seq: i64) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO excision(id, target, reason, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",

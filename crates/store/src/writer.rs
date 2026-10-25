@@ -949,12 +949,12 @@ impl Inner {
             tx.rollback()?;
         } else {
             if let Some(sinex) = &self.sinex {
-                let record = crate::primary::Record::Request {
+                let change = crate::primary::RegisterChange::Request {
                     request: Box::new(request.clone()),
-                    root: crate::user_writes::first_note_of_request(&tx, request)?,
+                    first_note: crate::user_writes::first_note_of_request(&tx, request)?,
                 };
-                let material = sinex.send_record(&record)?;
-                crate::primary::record_material(&tx, &record, &material)?;
+                let material = sinex.send_change(&change)?;
+                crate::primary::change_material(&tx, &change, &material)?;
             }
             tx.commit()?;
         }
@@ -978,9 +978,9 @@ impl Inner {
         let seq = bump_counter(&atx)?;
         let mut chains = Vec::new();
         for b in batches.clone() {
-            let (chain, record) = write_bytes(&atx, b, seq)?;
-            if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
-                staging::send_to_sinex(sinex.as_ref(), &atx, record, None, b.new_blob.as_ref())?;
+            let (chain, rows) = write_bytes(&atx, b, seq)?;
+            if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
+                staging::send_to_sinex(sinex.as_ref(), &atx, rows, None, b.new_blob.as_ref())?;
             }
             chains.push(chain);
         }
@@ -1012,7 +1012,8 @@ impl Inner {
 }
 
 /// In primary mode, before an excision commits: Sinex excises the parts and
-/// records of the removed inputs and the requests of the removed notes, then
+/// register materials of the removed inputs and the requests of the removed
+/// notes, then
 /// keeps the excision itself, so a rebuild keeps refusing what it removed.
 fn excise_on_sinex(
     sinex: &dyn crate::primary::Sinex,
@@ -1022,16 +1023,18 @@ fn excise_on_sinex(
     done: &crate::excise::Excised,
     mut materials: Vec<String>,
 ) -> Result<()> {
-    materials.extend(crate::primary::materials_of_records(archive, &done.notes)?);
+    materials.extend(crate::primary::materials_of_requests(archive, &done.notes)?);
     if !materials.is_empty() {
         sinex.excise(&materials)?;
     }
     crate::primary::forget_inputs(archive, plan.inputs())?;
-    crate::primary::forget_records(archive, &done.notes)?;
-    let record =
-        crate::primary::Record::Excision(crate::primary::excision_record(archive, &request.id)?);
-    let material = sinex.send_record(&record)?;
-    crate::primary::record_material(archive, &record, &material)
+    crate::primary::forget_requests(archive, &done.notes)?;
+    let change = crate::primary::RegisterChange::Excision(crate::primary::excision_rows(
+        archive,
+        &request.id,
+    )?);
+    let material = sinex.send_change(&change)?;
+    crate::primary::change_material(archive, &change, &material)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

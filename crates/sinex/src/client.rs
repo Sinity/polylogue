@@ -1,15 +1,16 @@
 //! The producer protocol over NATS: frames to the ingress, their
-//! acknowledgments, `have` and the materials Sinex holds from this producer.
+//! acknowledgments, which frames Sinex recorded, and the materials Sinex holds from this producer.
 //! A material's bytes, and a frame too large for one message, are written to
-//! the frame's spool directory under Sinex's store root on this host; Sinex
+//! the frame's directory under Sinex's store root on this host; Sinex
 //! stores them before it records the frame.
 use crate::{Config, Error, Result};
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use sinex_protocol::{
-    Acknowledgment, Excise, ExciseReply, Have, HeldMaterial, Ingress, Materials, Subjects,
+    Acknowledgment, Excise, ExciseReply, Ingress, Materials, ProducerMaterial, RecordedQuery,
+    Subjects,
 };
-use sinex_transport::spool;
+use sinex_transport::frame_bytes;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -38,7 +39,7 @@ impl Client {
         let client = async_nats::connect(&config.nats)
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let subjects = Subjects::new(config.subjects.clone());
+        let subjects = Subjects::new(config.subject_root.clone());
         let acknowledgments = client
             .subscribe(subjects.ack(&config.producer))
             .await
@@ -59,16 +60,19 @@ impl Client {
     }
 
     /// What Sinex recorded under these frame names.
-    pub(crate) async fn have(&self, names: &[String]) -> Result<HashMap<String, Acknowledgment>> {
+    pub(crate) async fn recorded(
+        &self,
+        names: &[String],
+    ) -> Result<HashMap<String, Acknowledgment>> {
         let mut out = HashMap::new();
         for chunk in names.chunks(500) {
-            let request = Have {
+            let request = RecordedQuery {
                 frames: chunk.to_vec(),
             };
             let reply = self
                 .client
                 .request(
-                    self.subjects.have(&self.producer),
+                    self.subjects.recorded(&self.producer),
                     serde_json::to_vec(&request)?.into(),
                 )
                 .await
@@ -81,7 +85,7 @@ impl Client {
 
     /// One page of the materials Sinex holds from this producer, after the
     /// frame numbered `after`.
-    pub(crate) async fn materials(&self, after: i64) -> Result<Vec<HeldMaterial>> {
+    pub(crate) async fn materials(&self, after: i64) -> Result<Vec<ProducerMaterial>> {
         let reply = self
             .client
             .request(
@@ -128,16 +132,16 @@ impl Client {
         }
     }
 
-    /// Writes `bytes` (`length` long, named `blob`) to the spool directory of
+    /// Writes `bytes` (`length` long, named `blob`) to the directory of
     /// the frame `name`.
-    pub(crate) fn stage(
+    pub(crate) fn write_bytes(
         &self,
         name: &str,
         blob: &str,
         length: u64,
         bytes: impl Read,
     ) -> Result<()> {
-        spool::stage(&self.store_root, &self.producer, name, blob, length, bytes)
+        frame_bytes::write(&self.store_root, &self.producer, name, blob, length, bytes)
             .map_err(Error::Invalid)
     }
 
@@ -152,8 +156,8 @@ impl Client {
         let name = frame.frame().to_owned();
         let blob = format!("blake3:{}", blake3::hash(&body).to_hex());
         let length = body.len() as u64;
-        self.stage(&name, &blob, length, body.as_slice())?;
-        let indirect = serde_json::to_vec(&Ingress::Indirect {
+        self.write_bytes(&name, &blob, length, body.as_slice())?;
+        let indirect = serde_json::to_vec(&Ingress::LargeFrame {
             frame: name.clone(),
             blob,
             length,

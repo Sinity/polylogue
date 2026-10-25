@@ -280,13 +280,13 @@ impl Inner {
                 b.change = Change::Unchanged;
                 b.new_blob = None;
             }
-            let (chain, record) = write_bytes(&tx, b, seq)?;
+            let (chain, rows) = write_bytes(&tx, b, seq)?;
             let chain = chain
                 .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
-            if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
+            if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
                 let new_blob = b.new_blob.as_ref().map(|new_blob| new_blob.hash);
                 let file = new_blob.and_then(|hash| files.iter().find(|f| f.hash() == hash));
-                send_to_sinex(sinex.as_ref(), &tx, record, file, b.new_blob.as_ref())?;
+                send_to_sinex(sinex.as_ref(), &tx, rows, file, b.new_blob.as_ref())?;
             }
             crate::fault::check("import.rows", &b.input.id)?;
             let already_stored = again
@@ -408,27 +408,27 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
 }
 
 /// Sends what one step stored to Sinex, before its rows commit: its new
-/// bytes as a part of the input, or, when it found none, the record alone.
+/// bytes as a part of the input, or, when it found none, the rows alone.
 pub(super) fn send_to_sinex(
     sinex: &dyn crate::primary::Sinex,
     tx: &Connection,
-    record: &crate::input_record::InputRecord,
+    rows: &crate::input_rows::InputRows,
     file: Option<&PreparedBytes>,
     new_blob: Option<&NewBlob>,
 ) -> Result<()> {
-    let input = input_name(tx, record)?;
-    let Some(extent) = &record.extent else {
-        if record.observation.is_some() {
-            let record = crate::primary::Record::Observation {
+    let input = input_name(tx, rows)?;
+    let Some(extent) = &rows.extent else {
+        if rows.observation.is_some() {
+            let change = crate::primary::RegisterChange::Observation {
                 input,
-                stored: Box::new(record.clone()),
+                stored: Box::new(rows.clone()),
             };
-            let material = sinex.send_record(&record)?;
-            crate::primary::record_material(tx, &record, &material)?;
+            let material = sinex.send_change(&change)?;
+            crate::primary::change_material(tx, &change, &material)?;
         }
         return Ok(());
     };
-    let (index, previous) = crate::primary::next_part(tx, &record.input, extent.chain)?;
+    let (index, previous) = crate::primary::next_part(tx, &rows.input, extent.chain)?;
     let mut bytes: Box<dyn std::io::Read> =
         match (file.map(|f| &f.file), new_blob.map(|p| &p.stored)) {
             (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
@@ -452,19 +452,19 @@ pub(super) fn send_to_sinex(
             previous,
             hash: extent.blob,
             length: extent.length as u64,
-            record: record.clone(),
+            rows: rows.clone(),
         },
         &mut bytes,
     )?;
-    crate::primary::part_material(tx, record, index, &material)
+    crate::primary::part_material(tx, rows, index, &material)
 }
 
 /// The input's origin, its latest path and the host it was seen on.
 fn input_name(
     tx: &Connection,
-    record: &crate::input_record::InputRecord,
+    rows: &crate::input_rows::InputRows,
 ) -> Result<crate::primary::InputName> {
-    let (path, host) = match &record.observation {
+    let (path, host) = match &rows.observation {
         Some(o) => (o.path.clone(), o.host.clone()),
         None => tx
             .prepare_cached(
@@ -472,14 +472,14 @@ fn input_name(
                      ORDER BY first_seen DESC LIMIT 1), '')
                  FROM observation o WHERE o.input = ?1 ORDER BY o.rowid DESC LIMIT 1",
             )?
-            .query_row([&record.input], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([&rows.input], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?
             .ok_or_else(|| {
-                StoreError::Invalid(format!("input {} has no observation", record.input))
+                StoreError::Invalid(format!("input {} has no observation", rows.input))
             })?,
     };
     Ok(crate::primary::InputName {
-        origin: record.format.clone(),
+        origin: rows.format.clone(),
         path,
         host,
     })

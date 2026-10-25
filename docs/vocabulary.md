@@ -138,8 +138,9 @@ the same change.
 - **material**: Sinex's word for bytes it stores for an event.
 - **part**: in primary mode, one step of an input's appended bytes as a
   Sinex material, with the register rows that place it.
-- **record**: in primary mode, a small Sinex material holding a look at an
-  input that found no new bytes, a request, or an excision.
+- **register material**: in primary mode, a small Sinex material holding a
+  change to the register that is not input bytes: a look at an input that
+  found no new bytes, a request, or an excision.
 
 ## Queries and output
 

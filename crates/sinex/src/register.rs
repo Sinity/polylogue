@@ -1,31 +1,35 @@
-//! Records Polylogue writes as Sinex materials: a look at an input that found
-//! no new bytes (a part of that input's history, under its own name), and
-//! each request a person or agent makes and each excision (under Polylogue's
-//! requests on this host). The material's bytes are the record as JSON. A
-//! note, setting, kept result, delivery or excision also becomes its typed
-//! event, anchored at the record.
+//! Register materials: the changes to Polylogue's register that are not
+//! input bytes. A look at an input that found no new bytes is a material of
+//! that input; each request a person or agent makes, and each excision, is a
+//! material of Polylogue's requests on this host. The material's bytes are
+//! the change as JSON. A note, setting, kept result, delivery or excision
+//! also becomes its typed event, anchored at the material's start.
 use crate::client::Client;
-use crate::parts::{RECORDS, parser_version};
+use crate::parts::{REGISTER, parser_version};
 use crate::{Error, Result};
 use polylogue_model::Timestamp;
-use polylogue_store::primary::Record;
+use polylogue_store::primary::RegisterChange;
 use polylogue_store::user_writes::{UserRequest, UserWrite};
 use sinex_model::event_types::polylogue as event;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Ingress, MaterialFrame, ProducerEvent};
 
-/// Sends `record` and its event, and waits until Sinex acknowledged both.
-/// Returns the material holding the record.
-pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Result<String> {
-    let (name, input) = match record {
-        Record::Observation { input, stored } => (
+/// Sends `change` and its event, and waits until Sinex acknowledged both.
+/// Returns the register material holding it.
+pub(crate) async fn send(
+    client: &mut Client,
+    host: &str,
+    change: &RegisterChange,
+) -> Result<String> {
+    let (name, input) = match change {
+        RegisterChange::Observation { input, stored } => (
             format!(
                 "observation:{}",
                 stored
                     .observation
                     .as_ref()
                     .ok_or_else(|| Error::Invalid(
-                        "an observation record has no observation".into()
+                        "an observation change has no observation".into()
                     ))?
                     .id
             ),
@@ -35,13 +39,15 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                 host: input.host.clone(),
             },
         ),
-        Record::Request { request, .. } => (format!("request:{}", request.id), requests(host)),
-        Record::Excision(excision) => (format!("excision:{}", excision.id), requests(host)),
+        RegisterChange::Request { request, .. } => {
+            (format!("request:{}", request.id), requests(host))
+        }
+        RegisterChange::Excision(excision) => (format!("excision:{}", excision.id), requests(host)),
     };
-    let bytes = serde_json::to_vec(record)?;
+    let bytes = serde_json::to_vec(change)?;
     let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
     let length = bytes.len() as u64;
-    client.stage(&name, &blob, length, bytes.as_slice())?;
+    client.write_bytes(&name, &blob, length, bytes.as_slice())?;
     let material = client
         .send(Ingress::Material {
             frame: name.clone(),
@@ -50,24 +56,31 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                 input,
                 blob,
                 length,
-                parser: RECORDS.into(),
+                parser: REGISTER.into(),
                 parser_version: parser_version(),
                 part_index: 0,
                 previous_part: None,
-                manifest: serde_json::json!({ "media_type": "application/json" }),
+                manifest: sinex_model::Manifest {
+                    role: sinex_model::MaterialRole::Records,
+                    media_type: Some("application/json".into()),
+                    ..Default::default()
+                },
             }),
         })
         .await?
         .material
         .ok_or_else(|| Error::Invalid(format!("{name} registered no material")))?;
-    let event = match record {
-        Record::Request { request, root } => request_event(request, root.as_deref())?
+    let event = match change {
+        RegisterChange::Request {
+            request,
+            first_note,
+        } => request_event(request, first_note.as_deref())?
             .map(|(event_type, payload)| (event_type, payload, request.at.unix_ms())),
-        Record::Excision(excision) => Some((
+        RegisterChange::Excision(excision) => Some((
             "polylogue.excision",
             serde_json::to_value(event::Excision {
                 excision: excision.id.clone(),
-                scope: excision.target.clone(),
+                target: excision.target.clone(),
                 reason: excision.reason.clone(),
                 created_at: time(
                     Timestamp::from_unix_ms(excision.created_at)
@@ -76,7 +89,7 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
             })?,
             excision.created_at,
         )),
-        Record::Observation { .. } => None,
+        RegisterChange::Observation { .. } => None,
     };
     let Some((event_type, payload, reading_order)) = event else {
         return Ok(material.to_string());
@@ -91,7 +104,7 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                     material,
                     anchor: 0,
                 }),
-                ordinal: 0,
+                output_index: 0,
                 parents: vec![],
                 reading_order,
                 class: Class::Open,
@@ -102,7 +115,8 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
     Ok(material.to_string())
 }
 
-/// What Polylogue's own records are read from: its requests on this host.
+/// What Polylogue's requests and excisions are read from: its requests on
+/// this host.
 fn requests(host: &str) -> InputRef {
     InputRef {
         kind: "polylogue".into(),
@@ -119,11 +133,12 @@ pub(crate) fn time(at: Timestamp) -> Result<sinex_model::Timestamp> {
 /// The typed event a request makes, if it makes one.
 pub(crate) fn request_event(
     r: &UserRequest,
-    root: Option<&str>,
+    first_note: Option<&str>,
 ) -> Result<Option<(&'static str, serde_json::Value)>> {
     let at = time(r.at)?;
-    let root = || {
-        root.map(str::to_owned)
+    let first_note = || {
+        first_note
+            .map(str::to_owned)
             .ok_or_else(|| Error::Invalid(format!("note request {} has no family", r.id)))
     };
     Ok(Some(match &r.write {
@@ -131,7 +146,7 @@ pub(crate) fn request_event(
             "polylogue.note",
             serde_json::to_value(event::Note {
                 note: r.id.clone(),
-                root: root()?,
+                first_note: first_note()?,
                 kind: note.kind.as_str().to_owned(),
                 key: note.key.clone(),
                 value: note.value.clone(),
@@ -159,12 +174,12 @@ pub(crate) fn request_event(
             })?,
         ),
         UserWrite::Withdraw { author, reason, .. } => {
-            let root = root()?;
+            let first = first_note()?;
             (
                 "polylogue.note",
                 serde_json::to_value(event::Note {
                     note: r.id.clone(),
-                    root: r.id.clone(),
+                    first_note: r.id.clone(),
                     kind: "withdrawal".into(),
                     key: None,
                     value: reason.clone(),
@@ -175,7 +190,7 @@ pub(crate) fn request_event(
                     targets: vec![],
                     relations: vec![event::NoteRelation {
                         kind: "withdraws".into(),
-                        other: format!("note:{root}"),
+                        other: format!("note:{first}"),
                     }],
                 })?,
             )
@@ -228,7 +243,7 @@ pub(crate) fn request_event(
                 name: name.clone(),
                 query: query.clone(),
                 ran_at: at,
-                view: serde_json::from_str(read_at)?,
+                read_at: serde_json::from_str(read_at)?,
                 rows: serde_json::from_str(rows_json)?,
             })?,
         ),

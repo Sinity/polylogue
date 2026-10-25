@@ -2,16 +2,16 @@
 //! observations, numbered by the archive's write counter.
 
 use super::*;
-use crate::input_record::{Extent, InputRecord, ObservationRecord, Revision};
+use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
 
 /// Stores the bytes' rows and returns the revision chain the batch's
 /// records are in (`None` when there is none: a disappearance before any
-/// revision), with the register record it wrote, if any.
+/// revision), with the register rows it wrote, if any.
 pub(super) fn write_bytes(
     tx: &Transaction<'_>,
     b: &Batch,
     seq: i64,
-) -> Result<(Option<i64>, Option<InputRecord>)> {
+) -> Result<(Option<i64>, Option<InputRows>)> {
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
     for new_blob in &b.blobs {
@@ -31,18 +31,18 @@ pub(super) fn write_bytes(
         }
         return Ok((Some(chain), None));
     }
-    let (chain, record) = input_record(tx, b, seq)?;
+    let (chain, rows) = input_rows(tx, b, seq)?;
     if let Some(new_blob) = &b.new_blob {
         insert_blob(tx, new_blob)?;
     }
-    record.insert(tx, seq)?;
-    Ok((chain, Some(record)))
+    rows.insert(tx, seq)?;
+    Ok((chain, Some(rows)))
 }
 
 /// What one step of an input adds to the register, from the input's latest
 /// revision and the step's change.
 /// Returns it with the revision chain the step's records are in.
-fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRecord)> {
+fn input_rows(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRows)> {
     let latest: Option<(i64, i64, i64, String)> = tx
         .prepare_cached(
             "SELECT number, chain, length, produced FROM revision WHERE input = ?1
@@ -53,7 +53,7 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
         })
         .optional()?;
     let next = latest.as_ref().map_or(1, |l| l.0 + 1);
-    let mut record = InputRecord {
+    let mut rows = InputRows {
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,
@@ -68,16 +68,16 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
     };
     let (number, chain, offset) = match (&b.change, b.continues, latest) {
         (Change::Disappeared, _, latest) => {
-            record.observation = observation(tx, b, "deleted", None, seq)?;
-            return Ok((latest.map(|l| l.1), record));
+            rows.observation = observation(tx, b, "deleted", None, seq)?;
+            return Ok((latest.map(|l| l.1), rows));
         }
         (_, true, Some((number, chain, length, produced))) => {
-            record.revision = Some(revision(number, &produced, chain));
+            rows.revision = Some(revision(number, &produced, chain));
             (number, chain, length as u64)
         }
         (Change::Unchanged, _, Some((number, chain, _, _))) => (number, chain, b.length),
         (Change::Appended { from }, false, Some((_, chain, _, _))) => {
-            record.revision = Some(revision(next, "appended", chain));
+            rows.revision = Some(revision(next, "appended", chain));
             (next, chain, *from)
         }
         (change, _, _) => {
@@ -86,12 +86,12 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
                 (Change::First, _) => "first",
                 _ => "rewritten",
             };
-            record.revision = Some(revision(next, produced, next));
+            rows.revision = Some(revision(next, produced, next));
             (next, next, 0)
         }
     };
     if let Some(new_blob) = &b.new_blob {
-        record.extent = Some(Extent {
+        rows.extent = Some(Extent {
             chain,
             offset: offset as i64,
             length: new_blob.size as i64,
@@ -109,9 +109,9 @@ fn input_record(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64
             Change::Reparse { .. } => unreachable!(),
             Change::Disappeared => "deleted",
         };
-        record.observation = observation(tx, b, class, Some(number), seq)?;
+        rows.observation = observation(tx, b, class, Some(number), seq)?;
     }
-    Ok((Some(chain), record))
+    Ok((Some(chain), rows))
 }
 
 pub(super) fn insert_blob(tx: &Transaction<'_>, new_blob: &NewBlob) -> Result<()> {
@@ -177,7 +177,7 @@ pub(super) fn observation(
     class: &str,
     revision: Option<i64>,
     seq: i64,
-) -> Result<Option<ObservationRecord>> {
+) -> Result<Option<ObservationRow>> {
     let Some(o) = &b.observation else {
         return Ok(None);
     };
@@ -187,7 +187,7 @@ pub(super) fn observation(
         None => None,
     };
     let f = o.facts;
-    Ok(Some(ObservationRecord {
+    Ok(Some(ObservationRow {
         id: observation_id(tx, seq, &b.input.id)?,
         machine: o.machine.clone(),
         host: o.host.clone(),

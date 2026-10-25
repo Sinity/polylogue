@@ -41,28 +41,28 @@ impl Sinex for Recorder {
             hash: part.hash,
             length: part.length,
             index: part.index,
-            record: Box::new(part.record.clone()),
+            rows: Box::new(part.rows.clone()),
         });
         Ok(material)
     }
 
-    fn send_record(&self, record: &Record) -> Result<String> {
+    fn send_change(&self, change: &RegisterChange) -> Result<String> {
         if self.refuse {
             return Err(StoreError::Sinex("synthetic outage".into()));
         }
         let material = uuid::Uuid::now_v7().to_string();
         let number = self.next();
-        self.held.lock().unwrap().push(Held::Record {
+        self.held.lock().unwrap().push(Held::Change {
             number,
             material: material.clone(),
-            record: record.clone(),
+            change: change.clone(),
         });
         Ok(material)
     }
 
     fn excise(&self, materials: &[String]) -> Result<()> {
         self.held.lock().unwrap().retain(|held| match held {
-            Held::Part { material, .. } | Held::Record { material, .. } => {
+            Held::Part { material, .. } | Held::Change { material, .. } => {
                 !materials.contains(material)
             }
         });
@@ -192,8 +192,8 @@ fn every_register_row_is_sent_first_and_a_lost_copy_is_rebuilt_from_sinex() {
         let parts: Vec<(u32, &str)> = held
             .iter()
             .filter_map(|h| match h {
-                Held::Part { index, record, .. } => Some((*index, record.input.as_str())),
-                Held::Record { .. } => None,
+                Held::Part { index, rows, .. } => Some((*index, rows.input.as_str())),
+                Held::Change { .. } => None,
             })
             .collect();
         assert_eq!(parts, [(0, "synthetic-input"), (1, "synthetic-input")]);
@@ -279,8 +279,8 @@ fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuil
         );
         assert!(held.iter().any(|h| matches!(
             h,
-            Held::Record {
-                record: Record::Excision(_),
+            Held::Change {
+                change: RegisterChange::Excision(_),
                 ..
             }
         )));
@@ -329,22 +329,22 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
             hash: blob,
             length: bytes.len() as u64,
             index: 0,
-            record: Box::new(crate::input_record::InputRecord {
+            rows: Box::new(crate::input_rows::InputRows {
                 input: "synthetic-input".into(),
                 format: "claude-code".into(),
-                revision: Some(crate::input_record::Revision {
+                revision: Some(crate::input_rows::Revision {
                     number: 1,
                     produced: "first".into(),
                     chain: 1,
                     length: bytes.len() as i64,
                 }),
-                extent: Some(crate::input_record::Extent {
+                extent: Some(crate::input_rows::Extent {
                     chain: 1,
                     offset: 0,
                     length: bytes.len() as i64,
                     blob,
                 }),
-                observation: Some(crate::input_record::ObservationRecord {
+                observation: Some(crate::input_rows::ObservationRow {
                     id: id.into(),
                     machine: "synthetic-machine".into(),
                     host: "synthetic-host".into(),

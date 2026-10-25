@@ -29,7 +29,10 @@ impl polylogue_store::primary::Sinex for Empty {
     ) -> polylogue_store::Result<String> {
         Err(polylogue_store::StoreError::Sinex("synthetic".into()))
     }
-    fn send_record(&self, _: &polylogue_store::primary::Record) -> polylogue_store::Result<String> {
+    fn send_change(
+        &self,
+        _: &polylogue_store::primary::RegisterChange,
+    ) -> polylogue_store::Result<String> {
         Err(polylogue_store::StoreError::Sinex("synthetic".into()))
     }
     fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {

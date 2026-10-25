@@ -1,15 +1,15 @@
 //! The register rows one stored step of an input writes: its revision, the
 //! extent its new bytes fill and the observation that found them. The writer
-//! builds one [`InputRecord`] per step and inserts it; in primary mode Sinex
+//! builds one [`InputRows`] per step and inserts it; in primary mode Sinex
 //! keeps it with the bytes it describes (or alone, when the step found no new
-//! bytes), and a rebuild from Sinex inserts the same records again.
+//! bytes), and a rebuild from Sinex inserts the same rows again.
 use crate::Result;
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputRecord {
+pub struct InputRows {
     pub input: String,
     /// The origin that parses it (`claude-code`).
     pub format: String,
@@ -21,7 +21,7 @@ pub struct InputRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<Extent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observation: Option<ObservationRecord>,
+    pub observation: Option<ObservationRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ pub struct Extent {
 
 /// One look at a path that found something.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObservationRecord {
+pub struct ObservationRow {
     pub id: String,
     pub machine: String,
     pub host: String,
@@ -66,12 +66,12 @@ pub struct ObservationRecord {
     pub zip: Option<(String, i64)>,
 }
 
-impl InputRecord {
+impl InputRows {
     /// Inserts the rows at write counter `seq`. A revision or extent already
     /// present takes the recorded one: a later chunk grew the revision, or a
     /// write that stopped before its commit sent the bytes at that place
     /// again, longer. Everything else present is left as it is, so inserting
-    /// a record twice changes nothing.
+    /// the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
         tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
             .execute(params![self.input, self.format])?;
@@ -137,8 +137,8 @@ impl InputRecord {
     }
 }
 
-/// Every observation of `input`, as records, in the order they were made.
-pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRecord>> {
+/// Every observation of `input`, as input rows, in the order they were made.
+pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRows>> {
     let format: String =
         conn.query_row("SELECT format FROM input WHERE id = ?1", [input], |r| {
             r.get(0)
@@ -155,7 +155,7 @@ pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRe
     let rows = statement.query_map([input], |r| {
         let zip: Option<String> = r.get(16)?;
         let index: Option<i64> = r.get(17)?;
-        Ok(ObservationRecord {
+        Ok(ObservationRow {
             id: r.get(0)?,
             machine: r.get(1)?,
             host: r.get(2)?,
@@ -176,7 +176,7 @@ pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRe
         })
     })?;
     rows.map(|row| {
-        Ok(InputRecord {
+        Ok(InputRows {
             input: input.to_owned(),
             format: format.clone(),
             revision: None,

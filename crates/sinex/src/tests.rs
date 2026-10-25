@@ -1,11 +1,11 @@
-use crate::parts::{RECORDS, held};
-use crate::records::request_event;
+use crate::parts::{REGISTER, held};
+use crate::register::request_event;
 use polylogue_model::{Author, NewNote, NoteKind, Target, Timestamp};
-use polylogue_store::input_record::{Extent, InputRecord};
-use polylogue_store::primary::{Held, Record};
+use polylogue_store::input_rows::{Extent, InputRows};
+use polylogue_store::primary::{Held, RegisterChange};
 use polylogue_store::user_writes::{UserRequest, UserWrite};
 use sinex_model::{InputRef, MaterialId};
-use sinex_protocol::{HeldMaterial, MaterialFrame};
+use sinex_protocol::{MaterialFrame, ProducerMaterial};
 
 fn request(write: UserWrite) -> UserRequest {
     UserRequest {
@@ -16,8 +16,8 @@ fn request(write: UserWrite) -> UserRequest {
     }
 }
 
-fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> HeldMaterial {
-    HeldMaterial {
+fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> ProducerMaterial {
+    ProducerMaterial {
         number: 7,
         frame: "synthetic".into(),
         material: MaterialFrame {
@@ -33,7 +33,7 @@ fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> HeldMateri
             parser_version: 1,
             part_index: 2,
             previous_part: None,
-            manifest,
+            manifest: sinex_model::Manifest::from_json(manifest),
         },
     }
 }
@@ -54,7 +54,7 @@ fn a_note_request_becomes_a_note_event_in_its_family() {
     });
     let (kind, payload) = request_event(&note, Some("first")).unwrap().unwrap();
     assert_eq!(kind, "polylogue.note");
-    assert_eq!(payload["root"], "first");
+    assert_eq!(payload["first_note"], "first");
     assert_eq!(payload["relations"][0]["kind"], "revises");
     let event: sinex_model::event_types::polylogue::Note = serde_json::from_value(payload).unwrap();
     assert_eq!(event.note, note.id);
@@ -72,7 +72,7 @@ fn a_chat_action_request_makes_no_event() {
 
 #[test]
 fn a_held_part_carries_the_rows_that_place_it() {
-    let record = InputRecord {
+    let rows = InputRows {
         input: "input".into(),
         format: "claude-code".into(),
         revision: None,
@@ -89,14 +89,14 @@ fn a_held_part_carries_the_rows_that_place_it() {
     let Held::Part {
         number,
         index,
-        record: back,
+        rows: back,
         ..
     } = held(
         &store,
         material(
             "polylogue-claude-code",
             &blob,
-            serde_json::json!({ "polylogue": record }),
+            serde_json::json!({ "polylogue": rows }),
         ),
     )
     .unwrap()
@@ -104,36 +104,36 @@ fn a_held_part_carries_the_rows_that_place_it() {
         panic!("a part")
     };
     assert_eq!((number, index), (7, 2));
-    assert_eq!(*back, record);
+    assert_eq!(*back, rows);
 }
 
 #[test]
-fn a_held_record_is_read_from_the_content_store_and_checked() {
+fn a_held_register_material_is_read_from_the_content_store_and_checked() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
-    let record = Record::Request {
+    let change = RegisterChange::Request {
         request: Box::new(request(UserWrite::ChatClaim { by: "x".into() })),
-        root: None,
+        first_note: None,
     };
-    let bytes = serde_json::to_vec(&record).unwrap();
+    let bytes = serde_json::to_vec(&change).unwrap();
     let hash = store.put(bytes.as_slice(), 1).unwrap();
     let reader = hashed_blobs::Reader::new(dir.path(), vec![]);
     let held = held(
         &reader,
         material(
-            RECORDS,
+            REGISTER,
             &format!("blake3:{}", hash.hex()),
             serde_json::json!({}),
         ),
     )
     .unwrap();
-    let Held::Record {
+    let Held::Change {
         number,
-        record: back,
+        change: back,
         ..
     } = held
     else {
-        panic!("a record")
+        panic!("a register change")
     };
-    assert_eq!((number, back), (7, record));
+    assert_eq!((number, back), (7, change));
 }
