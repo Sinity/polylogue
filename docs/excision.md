@@ -48,7 +48,7 @@ before anything changes:
 - a ZIP whose bytes another kept input or a shown attachment also uses.
 
 Provider files are never edited. `on_disk` lists the locations whose stored
-history held a text match; scrub those files by hand, or a later full read
+history held a text match; clean those files by hand, or a later full read
 collects the text again.
 
 ## The order of the work

@@ -64,8 +64,8 @@ async fn echo_request_id(req: axum::extract::Request, next: Next) -> HttpRespons
     r
 }
 
-/// Routes the extension knows that this host does not serve: capture jobs
-/// (bulk backfill), mission control and assertions.
+/// Routes the extension calls that this host does not serve yet, such as
+/// mission control.
 async fn not_built() -> HttpResponse {
     (
         StatusCode::NOT_IMPLEMENTED,

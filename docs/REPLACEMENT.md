@@ -1,7 +1,7 @@
 # What replaced the Python tree
 
 The Rust rewrite replaced the Python Polylogue source tree at
-`b4b61c7eab8daf740bfdccb146e530906839726d`. It was published in PR 6181 as
+`b4b61c7eab8daf740bfdccb146e530906839726d`. It was merged in PR 6181 as
 `99972871d8ee48614a6206a10761e5b703c21f54`. The Python code is still in Git
 history; nothing below is kept as a compatibility path.
 

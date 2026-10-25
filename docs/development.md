@@ -1,261 +1,139 @@
 # Development checks
 
-Checks run on the development machine; there is no hosted CI. Run commands
-inside `nix develop`.
+Checks run on the development machine; there is no hosted CI. Every build and
+test runs as an AgentCTL job, which queues it with the rest of the machine's
+work and keeps its log.
 
-The shell uses Cargo's incremental builds directly. A persistent compiler
-cache daemon must have its own lifecycle owner before it is enabled: a daemon
-started inside a queued job keeps that job occupied after the command exits.
-
-| Check | Command | When | Typical time |
-| --- | --- | --- | --- |
-| Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing | seconds |
-| Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
-| Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit |
-| Changed packages | `cargo run -p xtask -- test --changed` | before pushing a focused change | depends on the change |
-| End-to-end scenarios | `cargo run -p xtask -- scenarios` | after daemon, CLI or MCP changes | about a minute warm |
-| Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
+| Check | Command | When |
+| --- | --- | --- |
+| Compile | `agentctl job start polylogue compile --workspace <worktree> -- -p <crate>` | while editing |
+| Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing |
+| Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing |
+| Full suite | `agentctl job start polylogue check --workspace <worktree>` | before merging a batch |
+| End-to-end scenarios | `agentctl job start polylogue scenarios --workspace <worktree>` | after daemon, CLI or MCP changes |
+| Package build | `agentctl job start polylogue package --workspace <worktree>` | after dependency or packaging changes |
+| Extension | `agentctl job start polylogue extension --workspace <worktree> -- ci`, then `-- test` | after extension changes |
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
-  clippy of every target, tests included, with warnings denied. It enables
-  `polylogue/sinex` so the daemon's Sinex code is compiled too. The pre-push
-  hook runs only its formatting and boundaries steps; clippy runs in the
-  AgentCTL job so it queues with the rest of the machine's work.
-- **Full suite:** formatting, boundaries, clippy and
-  `cargo nextest run --workspace --features
-  polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
-  (configuration in `.config/nextest.toml`). Ordinary tests and every gated fault
-  test share one test build. Each test runs in its own process, all binaries
-  in parallel; a test still running after two minutes is terminated and fails.
-  The fault tests cover failure and recovery, including a stop between an
-  excision's database commits and during a restore. Enabling
-  `faults` adds an initially empty in-memory registry; only a test's explicit
-  `polylogue_store::fault::arm` call activates a point in that process. The
-  preceding strict Clippy step still compiles every ordinary target without
-  fault features. Shipped builds do not enable fault injection.
+  Clippy over every target, tests included, with warnings denied. It enables
+  `polylogue/sinex`, so the Sinex code compiles too.
+- **Full suite:** the fast check, then `cargo nextest run --workspace
+  --features polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
+  (configuration in `.config/nextest.toml`). Each test runs in its own
+  process; one still running after two minutes fails.
+- **Fault tests:** the `faults` features add a fault registry that starts
+  empty; only a test's own `polylogue_store::fault::arm` call activates a
+  point, in that process. They stop work between an excision's database
+  commits, during a restore and at other write steps. Shipped builds never
+  enable them.
 - **End-to-end scenarios:** the `e2e` tests in `crates/polylogue/tests/e2e/`
   start the real `polylogue` binary as a daemon over a temporary archive and
   drive it through the CLI, and as the browser extension's native messaging
-  host. They also run as part of the full suite; `xtask scenarios` runs only
-  them.
-- **Package build:** builds the `polylogue` binary from a clean, locked
-  source. It does not run tests; the full suite covers them with incremental
-  builds.
+  host. The full suite runs them too.
+- **Package build:** `nix flake check`, the `polylogue` binary from a clean,
+  locked source, without tests.
 
-Test operations declare AgentCTL-owned tmpfs scratch. Devkit creates its test
-child inside that root; normal Drop removes the child, and the native owner
-removes retained files after cancellation or SIGKILL. Long Linux paths use a
-short held-directory `/proc` view, so Unix sockets fit without putting files
-outside the owner. Standalone runs fall back to a temporary child with Drop
-cleanup only. Durability tests retain their separate real-filesystem root.
-Tests write fsync'd archives; on the btrfs work disk those syncs dominated time.
+Test jobs get their own tmpfs scratch directory, removed when the job ends.
+Tests that check durability use a real filesystem. The pre-push hook
+(`.githooks/pre-push`, enable with `git config core.hooksPath .githooks`)
+checks formatting and crate boundaries, and skips pushes that change no Rust
+build inputs.
 
-Run throughput measurements with the declared `bench` operation, or
-`agentctl job start polylogue measure --workspace <worktree> -- <command>`
-for a performance driver. Both use the normal queue. The background bulk
-pool has a hard I/O bandwidth cap that can dominate disk-backed measurements;
-normal retains queue admission, memory controls and lower I/O priority without
-that cap. Record the actual pool and resource limits with timing results.
-Keep background package builds and integrated checks in their existing pool.
-
-Full-text indexing decodes one stored body at a time. First-build indexing
-streams marked rows; live indexing retains up to 2,000 pending IDs, then
-fetches their bodies individually. Transactions stop after 2,000 entries or
-16 MiB of decoded text, whichever comes first. One large text may exceed that
-byte limit; it is still decoded whole. These limits bound batches, not total
-process memory or the time needed to drain all pending work.
-
-The dev profile builds dependencies at `opt-level = 2` and workspace crates
-at `opt-level = 1`. Tests spend most of their CPU in SQLite, JSON and the
-credential masker. Measured on 926 tests at load average 25-70: suite CPU fell
-from about 780 s to about 190 s and test execution from 63-76 s to 13-24 s.
-An incremental test build after a one-line edit in `store` takes about 2 min
-under load.
-
-`xtask` is built on `devkit` from
-[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common).
-Every `xtask` run is recorded in the machine-wide history store
-(`$XDG_STATE_HOME/devkit/history.db`): its stages and times, each test's
-outcome with output for failures, and compiler warnings and errors.
-`cargo run -p xtask -- status` shows what failed in this checkout's last run;
-`history failures [RUN]`, `history diagnostics [RUN]` and `history runs` read
-more, each with `--json`. `test --changed` runs the tests of packages changed
-since the merge base with `origin/master` and of everything that depends on
-them.
+## Tests
 
 Tests are laid out as AGENTS.md says: unit tests in `name/tests.rs` beside
 their module, integration tests as one binary per area
 (`crates/<crate>/tests/<area>/main.rs`). The engine's are `convergence` (the
 loop over files a test writes), `laws` (properties every archive keeps, as
-property tests over generated archives and over the example archive) and
-`faults`.
+property tests over generated archives and the example archive) and `faults`.
 
-Tests that need realistic data use `polylogue-testkit`: `Morrow::build(Set::Main)`
-lays the Morrow example archive (`examples/morrow/`, facts in its
-`FACTS.md`) out where each tool writes, converges the engine over it and
-imports its exports. `view()` and `stored_bytes()` give what laws compare.
-The spec's query examples run against it in
-`crates/polylogue/src/daemon/query/tests/spec_examples.rs`; examples waiting on unbuilt
-features are listed there with the reason.
+Tests that need realistic data use `polylogue-testkit`:
+`Morrow::build(Set::Main)` lays out the Morrow example archive
+(`examples/morrow/`, facts in its `FACTS.md`) where each tool writes, runs the
+loop over it and imports its exports. `view()` and `stored_bytes()` give what
+laws compare. Query examples run against it in
+`crates/polylogue/src/daemon/query/tests/spec_examples.rs`.
 
-The Sinex rebuild test (`crates/sinex/tests/rebuild/main.rs`) runs a real `sinexd`,
-so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex
-checkout, then run it from Sinex's dev shell, which has PostgreSQL with
-TimescaleDB and `nats-server`:
+Tests do not assert on elapsed time. A test that checks a deadline makes the
+peer stay silent until the client gives up, so only the deadline can end the
+wait; other tests wait for an event (a reply, a file, a closed connection).
+nextest's slow timeout ends a hung test; under plain `cargo test` it would
+wait forever.
+
+The Sinex rebuild test in `crates/sinex/tests/` runs a real `sinexd`, so it
+is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex checkout,
+then run it from Sinex's dev shell, which has PostgreSQL with TimescaleDB and
+`nats-server`:
 `SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
 nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(an_archive_restored_from_sinex_gives_the_same_answers)'`.
 
-The pre-push hook is `.githooks/pre-push`; enable it with
-`git config core.hooksPath .githooks`. It checks formatting and crate
-boundaries, and skips pushes that change no Rust build inputs.
+## Build speed
 
-Keep source-only worktrees free of build outputs. After qualifying a candidate
-in a warm checkout, keep ownership of that checkout through the push and run
-`git push origin HEAD:refs/heads/<branch>` there, with `HEAD` at the exact
-qualified commit. This lets the preserved hook reuse its compiled tools and
-check the candidate it publishes. Release the checkout after the hook finishes;
-waiting for hosted review does not need the build slot.
-
-## AgentCTL operations
-
-AgentCTL snapshots an explicit `CARGO_TARGET_DIR` from the caller when queuing a job. Select an absolute target with exclusive writer ownership; omitting it keeps the existing Cargo default.
-
-```sh
-CARGO_TARGET_DIR=/realm/worktree/leased-build/target \
-  agentctl job start polylogue focused --workspace /realm/worktree/polylogue-edit -- -p polylogue-store
-```
-
-Long runs go through AgentCTL so they queue and keep their logs:
-
-```sh
-agentctl job start polylogue check --workspace <worktree>      # full suite
-agentctl job start polylogue scenarios --workspace <worktree>  # end-to-end tests
-agentctl job start polylogue package --workspace <worktree>    # nix flake check
-agentctl job start polylogue focused --workspace <worktree> -- -p polylogue-store
-agentctl job start polylogue bench --workspace <worktree> -- run
-```
-
-The benchmark runs its builds and measurements inside that job. It does not
-use a separate build-slot script or queue nested jobs. The real-data lock
-still prevents overlapping corpus benchmarks.
-
-Benchmark reports retain wall time, per-stage time (including pool thread-seconds),
-input bytes, child-reported physical I/O and final storage sizes separately.
-These counters do not measure the same work, and thread-seconds cannot be added
-to obtain wall time. Load is sampled throughout the outer command, including
-lock waits; reports show peaks, unknown readings and the largest sampling gap.
-Passing load checks screens measured contention, not timing reliability.
-The runner refuses ingestion errors, unreadable roots, missing required counters and an initial
-build with no message writes. Incremental measurements can report zero new
-messages. Missing child I/O or peak-memory readings remain unknown; a requested
-memory limit requires an available peak measurement. First-build wall time
-includes setup and writer shutdown, with setup and ingestion reported
-separately. I/O deltas exclude corpus generation; peak memory covers the whole
-child process. Logical bytes read and newly stored are reported separately from
-physical I/O. Older records used a narrower ingestion interval.
-
-`agentctl job start polylogue bench -- reads --repetitions 3` records native
-interactive measurements through the existing CLI end-to-end test owner.
-It generates one 16 MiB session and eight small sessions with the testkit's
-Claude Code builders, then checks exact session/search answers. A complete
-native reference read must contain every source message body once in order.
-Two-page windows at the first, middle and final positions must exactly match
-that reference, using real native continuation cursors. Repeated windows must
-retain the same rendered digest. The scenario is ignored
-by routine suites and has no elapsed-time pass/fail assertions.
-
-Build, corpus generation, archive ingestion/search readiness and daemon starts
-are recorded separately from request latency. The first request after each
-daemon restart and subsequent requests are reported with samples, median and
-p95; filesystem caches are not flushed, and each CLI call starts a new client
-process. Sequential session pages may reuse up to 64 private message-boundary
-masking checkpoints; restarts and eviction replay the source prefix with identical
-answers.
-Read results include page counts, source coverage and daemon current
-and peak RSS before and after each repeated window. The report explicitly
-marks these as bounded windows, not complete session traversals. Add
-`--full-walk` to keep the repeated whole-session traversal runnable with its
-answer checks and the existing test-runner timeout. A native client is killed
-after output begins, then verified status and read requests check recovery.
-This checks abandoned client output, not cancellation of work already done by
-the server. The normal benchmark load monitor and devkit history retain the
-result; synthetic input, archive and child processes use the existing test
-lifecycle. These measurements do not qualify the real archive's speed targets.
-
-The full-corpus estimate explicitly assumes linear time per input byte and is
-uncalibrated. Missing times or scale leave it unknown. `bench validate` compares
-that estimate with a supplied full-run result; matching input/candidate identity,
-full-run load and multi-size calibration remain unverified by that command.
-
-## Keeping checks fast
-
-Use the recorded stages to distinguish compilation, service setup and test
-execution. A cold build is not a warm-suite timing. If the suite slows down,
-inspect its slowest tests and CPU, memory and I/O waits; check for orphaned
-services and repeated fixture setup before increasing limits. Keep assertions
-and populations unchanged while diagnosing. Record the candidate, command,
-stage times and remaining failures in the owning Bead. Recheck after changes
-to the runner, fixtures or dependency profiles, and at integration batches.
-
-Keep the package and feature set stable during a connected edit, and narrow
-execution with `-E`. Changing the selected packages can change Cargo's unified
-dependency features and force another library build even when the library's own
-features appear unchanged. For connected Store/Engine work, reuse
+The dev profile builds dependencies at `opt-level = 2` and workspace crates
+at `opt-level = 1`, because tests spend most of their CPU in SQLite, JSON and
+the credential masker. Keep the package and feature set the same across a
+connected edit and narrow tests with `-E`: a different package set can change
+Cargo's unified features and rebuild libraries. For store and engine work,
 `focused -- -p polylogue-store -p polylogue-engine --features faults -E '<filter>'`
-instead of alternating package sets for each filter. Inspect recorded build
-time before attributing a slow focused run to its tests.
+reuses one build.
 
-Use `xtask test` for focused tests too: it provides the same temporary storage
-and records results as the full suite. Raw `cargo test` or `cargo nextest`
-inherits the caller's temporary directory; filesystem sync costs and long
-socket paths can then change the test behavior.
+AgentCTL takes `CARGO_TARGET_DIR` from the caller when it queues a job. Give
+each target directory one building job at a time.
 
-The `fast` operation uses the normal development queue for formatting,
-boundaries and strict Clippy. The `focused` operation requires a selection
-and uses the same queue. Full checks use the bulk
-queue, so they do not consume every slot for short development checks. A new target or dependency
-profile may still need compilation; the stage times show that separately.
+When the suite slows down, read the recorded stage times to separate
+compilation, setup and test execution, then the slowest tests and their CPU,
+memory and I/O waits. Keep assertions unchanged while diagnosing, and record
+the measurements in the owning Bead.
 
-## Merging
+## xtask
 
-Follow the forge's required review statuses when merging. There is no hosted
-test CI. Run the full suite on batches of merged work and fix what it finds
-in follow-up PRs.
+`xtask` is built on `devkit` from
+[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common).
+Every run is recorded in `$XDG_STATE_HOME/devkit/history.db`: its stages and
+times, each test's outcome with output for failures, and compiler
+diagnostics. `cargo run -p xtask -- status` shows what failed in this
+checkout's last run; `history failures [RUN]`, `history diagnostics [RUN]`
+and `history runs` show more, each with `--json`. `test --changed` runs the
+tests of packages changed since the merge base with `origin/master` and of
+everything that depends on them.
 
-The writer reuses prepared SQL for message-version and source writes. Its
-work test counts SQLite preparation callbacks while checking exact message and
-tool-result counts; it has no elapsed-time assertion. Writer connections keep
-the library's existing statement-cache limit. A first build releases its cached
-insert programs before the bulk search scan.
+## Benchmarks
 
-## Timing in tests
+`agentctl job start polylogue bench --workspace <worktree> -- run` measures a
+first build and incremental updates; `-- reads --repetitions 3` measures
+interactive reads. `agentctl job start polylogue measure --workspace
+<worktree> -- <command>` runs another performance driver. Both use the normal
+queue, which has no I/O bandwidth cap; record the pool and resource limits
+with the timings.
 
-Tests do not assert on elapsed time. A test that checks a deadline arranges
-for the peer to stay silent or keep trickling until the client gives up, so
-only the deadline can end the wait; other tests wait for an event (a reply, a
-child's acknowledgement file, a closed connection) with no deadline of their
-own. A hung test is ended by nextest's slow-timeout (`.config/nextest.toml`),
-so run the suite through `xtask check` or `cargo nextest run`; under plain
-`cargo test` a hung test waits forever.
+A first-build report gives wall time, time per stage (pool time in
+thread-seconds, which do not add up to wall time), input bytes, physical I/O,
+peak memory and final storage sizes. A reading the runner could not take stays
+unknown. The runner refuses a run with ingestion errors, unreadable roots or
+no message writes. Load is sampled throughout; reports show its peaks.
 
-### Selected compile feedback
+The read benchmark generates one 16 MiB session and eight small ones with the
+testkit's Claude Code builders. It checks that a complete read holds every
+message once in order, that two-page windows at the first, middle and last
+positions match it, and that repeated windows render the same bytes. It
+reports daemon start, the first request after each restart and later
+requests (samples, median, p95), page counts and daemon memory. `--full-walk`
+also reads every page of the large session. It has no elapsed-time
+assertions.
 
-Run `agentctl job start polylogue compile -- -p <crate>` for a compiler check
-in the normal development queue. Update `Cargo.lock` when adding a dependency
-before invoking this locked operation. Full tests and package qualification
-remain separate bulk jobs.
+The full-corpus estimate assumes time is linear in input bytes.
+`bench validate` compares that estimate with a full run's result.
 
-## Derived-row dictionary
+## Row dictionary
 
-`crates/store/src/encoding/rows.dict` is generated only from the typed neutral
-examples in `crates/store/examples/row_dictionary/samples.rs`. Check its
-reproducibility with the locked dependency versions:
+`crates/store/src/encoding/rows.dict` compresses index rows. It is generated
+only from the synthetic examples in
+`crates/store/examples/row_dictionary/samples.rs`. Check that it reproduces:
 
 ```sh
 agentctl job start polylogue exec --workspace <worktree> -- nix develop --command cargo run --locked --quiet -p polylogue-store --example row_dictionary -- --check crates/store/src/encoding/rows.dict
 ```
 
-To regenerate, omit `--check`. Review the examples and asset together, bump
-`INDEX_VERSION` and update the format digests in `schema/tests.rs`. A dictionary
-belongs to one disposable index generation; original inputs and canonical
-archive records never depend on it.
+To regenerate, omit `--check`, then raise `INDEX_VERSION` and update the
+format digests in `schema/tests.rs`. Archive records never depend on the
+dictionary.

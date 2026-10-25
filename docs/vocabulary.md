@@ -44,7 +44,8 @@ a plain name here before it gets code.
   row. Every record has a **byte range** in its chain.
 - **tool database**: a tool's own SQLite file. Polylogue copies its rows up
   to the **synced prefix** named by the tool's checkpoint.
-- **capture**: one conversation saved by the browser extension. The
+- **capture**: one conversation saved by the browser extension, appended to
+  the provider's **capture log**. The
   extension's **backfill** fetches older conversations as **jobs**; a worker
   holds a job by a **claim** that expires.
 - **diagnostic**: a note from a parser about a record it could not fully

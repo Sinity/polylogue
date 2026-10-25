@@ -7,14 +7,14 @@ fn no_task_from_prose() {
     // A Bead ID in a prompt, or read with `bd show`, claims
     // nothing; a successful claim holds until a successful close.
     let mut w = WriterWorld::new();
-    let mut a = prose("a", 1, 1_000, "please work on plnext-ony.7 next");
+    let mut a = prose("a", 1, 1_000, "please work on demo-ony.7 next");
     a.extend(bash(
         "a",
         2,
         2_000,
-        "bd show plnext-ony.7",
+        "bd show demo-ony.7",
         true,
-        "plnext-ony.7 · Work graph",
+        "demo-ony.7 · Work graph",
     ));
     w.write("a", a);
     w.write(
@@ -23,7 +23,7 @@ fn no_task_from_prose() {
             "b",
             1,
             1_000,
-            "bd --actor me update plnext-ony.7 --claim",
+            "bd --actor me update demo-ony.7 --claim",
             true,
             "✓ claimed",
         ),
@@ -34,7 +34,7 @@ fn no_task_from_prose() {
     );
     assert_eq!(
         w.live_task("b"),
-        json!({"live_task": "plnext-ony.7", "live_task_evidence": "claim_command"})
+        json!({"live_task": "demo-ony.7", "live_task_evidence": "claim_command"})
     );
     let attempts = w.rows(
         "SELECT s.id AS session, n.state FROM work_node n JOIN session s ON s.pk = n.session_pk
@@ -51,7 +51,7 @@ fn no_task_from_prose() {
             "b",
             2,
             5_000,
-            "bd close plnext-ony.7 --reason done",
+            "bd close demo-ony.7 --reason done",
             true,
             "✓ closed",
         ),
@@ -73,7 +73,7 @@ fn a_failed_claim_claims_nothing() {
             "s",
             1,
             1_000,
-            "bd update plnext-1 --status in_progress",
+            "bd update demo-1 --status in_progress",
             false,
             "error: not found",
         ),
@@ -87,7 +87,7 @@ fn a_failed_claim_claims_nothing() {
 #[test]
 fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
     let mut w = WriterWorld::new();
-    let mut m = bash("s", 1, 1_000, "bd update plnext-9 --claim", true, "");
+    let mut m = bash("s", 1, 1_000, "bd update demo-9 --claim", true, "");
     m.extend(bash(
         "s",
         2,
@@ -120,7 +120,7 @@ fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
         true,
         "https://github.com/Sinity/polylogue/pull/6300\n",
     ));
-    m.extend(bash("s", 6, 6_000, "bd close plnext-9", true, ""));
+    m.extend(bash("s", 6, 6_000, "bd close demo-9", true, ""));
     // After the close: a check that belongs to no attempt.
     m.extend(bash("s", 7, 7_000, "cargo clippy", true, ""));
     w.write("s", m);
@@ -171,11 +171,11 @@ fn a_bead_claimed_by_two_sessions_is_one_goal() {
     let mut w = WriterWorld::new();
     w.write(
         "a",
-        bash("a", 1, 1_000, "bd update plnext-5 --claim", true, ""),
+        bash("a", 1, 1_000, "bd update demo-5 --claim", true, ""),
     );
     w.write(
         "b",
-        bash("b", 1, 2_000, "bd update plnext-5 --claim", true, ""),
+        bash("b", 1, 2_000, "bd update demo-5 --claim", true, ""),
     );
     assert_eq!(
         w.rows(
@@ -183,7 +183,7 @@ fn a_bead_claimed_by_two_sessions_is_one_goal() {
              JOIN work_edge e ON e.to_pk = g.pk AND e.kind = 'pursues'
              WHERE g.kind = 'goal' GROUP BY g.pk"
         ),
-        vec![json!({"key": "bead:plnext-5", "attempts": 2})]
+        vec![json!({"key": "bead:demo-5", "attempts": 2})]
     );
 }
 
@@ -239,7 +239,7 @@ fn deriving_again_changes_nothing() {
     let mut w = WriterWorld::new();
     w.write(
         "s",
-        bash("s", 1, 1_000, "bd update plnext-1 --claim", true, ""),
+        bash("s", 1, 1_000, "bd update demo-1 --claim", true, ""),
     );
     let before = w.rows("SELECT key, kind, title, state FROM work_node ORDER BY key");
     assert_eq!(w.writer.derive().unwrap(), 0);
@@ -255,11 +255,11 @@ fn rows_an_excision_leaves_behind_are_swept() {
     let mut w = WriterWorld::new();
     w.write(
         "a",
-        bash("a", 1, 1_000, "bd update plnext-5 --claim", true, ""),
+        bash("a", 1, 1_000, "bd update demo-5 --claim", true, ""),
     );
     w.write(
         "b",
-        bash("b", 1, 2_000, "bd update plnext-5 --claim", true, ""),
+        bash("b", 1, 2_000, "bd update demo-5 --claim", true, ""),
     );
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     let excise = |s: &str| {
@@ -410,7 +410,7 @@ fn command_only_work_does_not_read_tool_result_bodies() {
         "s",
         4,
         4_000,
-        "bd update plnext-9 --claim",
+        "bd update demo-9 --claim",
         true,
         "claimed",
     ));
@@ -436,7 +436,7 @@ fn command_only_work_does_not_read_tool_result_bodies() {
     index
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
-    assert_eq!(w.live_task("s")["live_task"], "plnext-9");
+    assert_eq!(w.live_task("s")["live_task"], "demo-9");
     assert_eq!(
         w.rows("SELECT count(*) AS n FROM work_node WHERE kind='verification'"),
         vec![json!({"n":1})]
@@ -511,7 +511,7 @@ fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
 fn checks_with_unknown_outcomes() -> WriterWorld {
     use polylogue_model::{Block, ToolOutcome, UnknownReason};
     let mut w = WriterWorld::new();
-    let mut messages = bash("s", 1, 1_000, "bd update plnext-9 --claim", true, "claimed");
+    let mut messages = bash("s", 1, 1_000, "bd update demo-9 --claim", true, "claimed");
     for (n, outcome) in [
         (2, None),
         (3, Some(ToolOutcome::NoResult)),
