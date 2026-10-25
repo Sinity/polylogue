@@ -1,5 +1,5 @@
 //! The reader's pages, rendered on the server from the same requests the
-//! CLI sends (spec `surfaces/web.md`). Every page works without script;
+//! CLI sends. Every page works without script;
 //! `reader.js` adds keys (search focus, next and previous, expand, copy as
 //! CLI command). Archive text is escaped, so markup in a message stays
 //! text.
@@ -157,7 +157,7 @@ pub fn document(
     }
     let _ = write!(
         body,
-        "<details><summary>Retained source records</summary><pre>{}</pre></details>",
+        "<details><summary>Source records</summary><pre>{}</pre></details>",
         esc(&serde_json::to_string_pretty(sources).expect("JSON"))
     );
     layout(

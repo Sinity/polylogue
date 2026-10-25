@@ -1,8 +1,7 @@
-//! `@N`: row N of the last list printed in this terminal (spec
-//! `surfaces/cli.md`, Row numbers). Lists printed for a person number
-//! their rows; the row IDs are kept per terminal in the archive's runtime
-//! directory, and `@N` in a later command is replaced by the ID before the
-//! command runs. Output for programs (`--json`) is never remembered.
+//! `@N`: row N of the last list printed in this terminal. Lists printed
+//! for a person number their rows; the row IDs are kept per terminal in the
+//! archive's runtime directory, and `@N` in a later command is replaced by
+//! the ID before the command runs. Output for programs (`--json`) is never remembered.
 
 use crate::web::access;
 use std::fs;

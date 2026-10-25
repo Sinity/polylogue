@@ -1,4 +1,4 @@
-//! Context and briefings (architecture 7, 12). This module is the one
+//! Context and briefings. This module is the one
 //! scheduler for context Polylogue puts in front of a model: every brief,
 //! takeover and recall is prepared here, and the daemon records each one it
 //! hands out as a delivery with its exact text.

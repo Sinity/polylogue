@@ -357,7 +357,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
 }
 
 #[test]
-fn the_host_manifest_admits_only_the_named_extension() {
+fn the_host_manifest_allows_only_the_named_extension() {
     let m = native::manifest(std::path::Path::new("/bin/polylogue"), "abcdefghijklmnop");
     assert_eq!(m["name"], HOST_NAME);
     assert_eq!(m["type"], "stdio");
@@ -368,7 +368,7 @@ fn the_host_manifest_admits_only_the_named_extension() {
 }
 
 #[test]
-fn failed_capture_publication_cleans_up_its_temporary_file() {
+fn a_failed_capture_write_removes_its_temporary_file() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("capture.json");
     std::fs::create_dir(&target).unwrap();
@@ -427,12 +427,14 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
         "{{\"schema_version\":1,{}",
         &serde_json::to_string(&fields).unwrap()[1..]
     );
-    let published = exchange(&ctx, "POST", "/v1/browser-captures", streamed.as_bytes());
-    assert_eq!(published.status, 200);
+    let sent = exchange(&ctx, "POST", "/v1/browser-captures", streamed.as_bytes());
+    assert_eq!(sent.status, 200);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(crate::daemon::Response::Ok { data }) = ctx.ask(&crate::daemon::Request::Read {
-            session: polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+            target: crate::daemon::ReadTarget::Session(
+                polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+            ),
             view: "full".into(),
             format: "markdown".into(),
             logical: false,
@@ -477,8 +479,8 @@ fn reader_location_is_typed_unavailable_when_no_reader_is_running() {
 }
 
 #[test]
-fn receiver_preparation_and_asset_routes_are_not_native_host_capabilities() {
-    let w = test_daemon::start("retired-receiver-routes");
+fn capture_job_routes_are_not_served_by_the_host() {
+    let w = test_daemon::start("capture-job-routes");
     let ctx = ctx(&w);
     let payload = json!({
         "provider": "chatgpt",
@@ -513,6 +515,6 @@ fn receiver_preparation_and_asset_routes_are_not_native_host_capabilities() {
     assert!(std::fs::read_dir(&ctx.spool).unwrap().next().is_none());
 }
 
-mod snapshots;
+mod repeated_captures;
 
 mod notes;

@@ -1,4 +1,4 @@
-//! Rebuilding from Sinex (architecture 7.1): an archive converged in
+//! Rebuilding from Sinex: an archive converged in
 //! `standalone`, sent to Sinex, restored from Sinex into an empty archive and
 //! converged there with no provider files present gives the same answers.
 //! It runs a real `sinexd` over a throwaway PostgreSQL and NATS, so it needs
@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-#[path = "proof/assets.rs"]
 mod assets;
 
 const EXAMPLES: &str = concat!(
@@ -42,8 +41,8 @@ fn converge(root: &Path, home: &Path, blob_roots: Vec<PathBuf>, prepare: impl Fn
         workers: 2,
         reader_memory_bytes: 128 << 20,
         bytes_in_flight: 16 << 20,
-        machine: "proof-machine".into(),
-        host: "proof".into(),
+        machine: "rebuild-machine".into(),
+        host: "rebuild".into(),
         chunk: 64 << 20,
         blob_roots,
     };
@@ -181,7 +180,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     for t in ["read", "agent", "operator"] {
         fs::write(
             tokens.join(format!("{t}.token")),
-            format!("{t}-proof-token"),
+            format!("{t}-rebuild-token"),
         )
         .unwrap();
     }
@@ -192,7 +191,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
                 .args(["--database", &url])
                 .arg("--store")
                 .arg(&store)
-                .args(["--nats", nats.url(), "--subjects", "proof"])
+                .args(["--nats", nats.url(), "--subjects", "rebuild"])
                 .arg("--tokens")
                 .arg(&tokens)
                 .arg("--socket")
@@ -215,7 +214,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     let config = polylogue_sinex::Config {
         mode: Mode::Primary,
         nats: nats.url().into(),
-        subjects: "proof".into(),
+        subjects: "rebuild".into(),
         producer: "polylogue".into(),
         store: store.clone(),
         archive: None,

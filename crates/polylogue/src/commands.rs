@@ -377,7 +377,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "import",
-        help: "Retain files or export members and interpret recognized formats; unrecognized paths may also be imported or already stored",
+        help: "Store files, including the files in directories and export ZIPs, and parse those in a known format. The answer lists paths `imported`, `already_stored` and `unrecognized`; an unrecognized file is stored too",
         args: &[pos_opt("paths", Kind::List, "Files or directories")],
         action: Action::Request(requests::import),
         writes: true,
@@ -431,7 +431,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "attachment",
-        help: "Describe a message attachment and its retained export bytes",
+        help: "Describe a message attachment and the stored export files that match it",
         args: &[
             pos("message", Kind::Text, "The message ID"),
             pos("block", Kind::Integer, "Zero-based source block index"),
@@ -445,7 +445,7 @@ const WRITTEN: &[Command] = &[
                 ..opt(
                     "asset",
                     Kind::Text,
-                    "Select a retained input ID for exact retrieval",
+                    "The stored input to read the bytes from, when several match",
                 )
             },
             Arg {
@@ -466,7 +466,7 @@ const WRITTEN: &[Command] = &[
                 ..opt(
                     "out",
                     Kind::Text,
-                    "Install verified exact bytes at this file; requires --reveal",
+                    "Write the verified bytes to FILE; requires --reveal",
                 )
             },
         ],
@@ -718,7 +718,7 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Request(requests::changes),
+        action: Action::Local(crate::cli::changes::run),
         ..CLI
     },
     Command {
@@ -830,7 +830,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "install-agent",
-        help: "Register Polylogue with a browser: `chrome` writes the extension's native messaging host manifest, admitting only `--extension-id`",
+        help: "Register Polylogue with a browser: `chrome` writes the extension's native messaging host manifest, which allows only `--extension-id`",
         args: &[
             pos("harness", Kind::Text, "The browser"),
             opt(

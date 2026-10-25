@@ -1,4 +1,4 @@
-//! Signals (spec user-data.md, Signals): a saved watch with a delivery
+//! Signals: a saved watch with a delivery
 //! rule. A rule is a note of kind `signal` whose value is a JSON object:
 //!
 //! ```json
@@ -452,8 +452,8 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 }),
             }
         }
-        // No snapshot is needed for deliveries or the timer wait. Release the
-        // client slot before either can block.
+        // Deliveries and the timer wait need no read transaction. Release the
+        // reader slot before either can block.
         drop(reader);
         if let Ok(mut s) = d.signals.lock() {
             *s = summary(&usable, &unusable);

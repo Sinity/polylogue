@@ -4,7 +4,9 @@ use base64::Engine as _;
 fn page(d: &Daemon, session: &str, logical: bool, view: &str, cursor: Option<&str>) -> Response {
     handle(
         Request::Read {
-            session: polylogue_model::SessionId::parse(session).unwrap(),
+            target: crate::daemon::ReadTarget::Session(
+                polylogue_model::SessionId::parse(session).unwrap(),
+            ),
             logical,
             view: view.into(),
             format: "json".into(),
@@ -183,7 +185,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 changed = true;
             }
         }
-        assert!(changed, "control requires an actual continuation");
+        assert!(changed, "the test needs a real continuation");
         assert!(cursor.is_none(), "pagination did not finish");
         assert_eq!(text.matches("ALPHA_FIRST").count(), 1);
         assert_eq!(text.matches("ZETA_SECOND").count(), 1);
@@ -247,7 +249,7 @@ fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
     }
     assert!(
         world.daemon.read_checkpoints.test_counts().1 > 0,
-        "control must exercise actual cache hits"
+        "the test must hit the cache"
     );
     let token = next(page(&world.daemon, "claude-code:s1", false, "full", None));
     assert!(world.daemon.read_checkpoints.test_counts().0 > 0);

@@ -1,4 +1,6 @@
-//! Session continuation on one admitted Reader, with private replay checkpoints.
+//! Reading a session, document or event, in pages on one Reader. Masking
+//! state at page ends is cached (`checkpoints`) so a later page need not
+//! replay the messages before it.
 use super::{Response, error, ok, store_error};
 use base64::Engine as _;
 use polylogue_model::SessionId;
@@ -175,8 +177,8 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
-    // The captured admission epoch prevents a read that overlaps a mutation
-    // from restoring or publishing private state after that mutation clears it.
+    // The epoch taken when the read began stops a read that overlaps a write
+    // from restoring or saving cached state after that write clears it.
     let checkpoint = cache.get(&key, epoch, position.map_or(0, |at| at.message));
     let from = checkpoint
         .as_ref()
@@ -273,7 +275,8 @@ pub(super) fn run(
     ok(value)
 }
 
-/// Document pages retain only metadata, one decoded block and the output page.
+/// A document page holds only metadata, one decoded block and the output
+/// page in memory.
 pub(super) fn document(
     reader: &Reader<'_>,
     id: &polylogue_model::DocumentId,

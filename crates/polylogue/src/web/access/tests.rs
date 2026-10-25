@@ -59,10 +59,10 @@ fn the_archive_path_is_scrubbed() {
 }
 
 #[test]
-fn publish_writes_private_files() {
+fn access_files_are_private() {
     let dir = tempfile::tempdir().unwrap();
     let rt = dir.path().join("k");
-    publish(&rt, "tok", 1234).unwrap();
+    write_access_files(&rt, "tok", 1234).unwrap();
     assert_eq!(fs::read_to_string(rt.join("token")).unwrap(), "tok");
     assert_eq!(fs::read_to_string(rt.join("port")).unwrap(), "1234");
     let mode = fs::metadata(rt.join("token")).unwrap().permissions().mode() & 0o777;
@@ -70,7 +70,7 @@ fn publish_writes_private_files() {
 }
 
 #[test]
-fn republishing_restricts_existing_files_and_ignores_stale_temporary_paths() {
+fn rewriting_access_files_restricts_existing_files_and_ignores_stale_temporary_paths() {
     let dir = tempfile::tempdir().unwrap();
     let token = dir.path().join("token");
     let other = dir.path().join("other");
@@ -78,7 +78,7 @@ fn republishing_restricts_existing_files_and_ignores_stale_temporary_paths() {
     fs::set_permissions(&token, fs::Permissions::from_mode(0o644)).unwrap();
     fs::write(&other, "unchanged").unwrap();
     std::os::unix::fs::symlink(&other, dir.path().join("token.tmp")).unwrap();
-    publish(dir.path(), "new", 4321).unwrap();
+    write_access_files(dir.path(), "new", 4321).unwrap();
     assert_eq!(fs::read_to_string(token).unwrap(), "new");
     assert_eq!(fs::read_to_string(other).unwrap(), "unchanged");
     assert_eq!(
@@ -92,12 +92,12 @@ fn republishing_restricts_existing_files_and_ignores_stale_temporary_paths() {
 }
 
 #[test]
-fn reader_location_uses_the_published_port_and_requires_a_live_own_listener() {
+fn reader_location_uses_the_written_port_and_requires_a_live_own_listener() {
     let dir = tempfile::tempdir().unwrap();
     assert!(reader_url_in(dir.path()).is_err());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    publish(dir.path(), "synthetic-reader-token", port).unwrap();
+    write_access_files(dir.path(), "synthetic-reader-token", port).unwrap();
     assert_eq!(
         reader_url_in(dir.path()).unwrap(),
         format!("http://127.0.0.1:{port}/auth#synthetic-reader-token")

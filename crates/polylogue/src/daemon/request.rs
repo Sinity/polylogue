@@ -3,7 +3,7 @@
 //! ID so a resent write is a no-op.
 
 use crate::briefing::Ask;
-use polylogue_model::{Author, NewNote, SessionId};
+use polylogue_model::{Author, DocumentId, NewNote, SessionId};
 use polylogue_store::{DeliveryOutcome, NoteFilter};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -53,25 +53,14 @@ pub enum Request {
         #[serde(default)]
         fields: Vec<String>,
     },
+    /// Reads one session, document or event in a view and format.
+    /// `logical` (sessions only) includes inherited ancestry.
     Read {
-        session: SessionId,
+        target: ReadTarget,
         view: String,
         format: String,
+        #[serde(default)]
         logical: bool,
-        budget: Option<usize>,
-        cursor: Option<String>,
-    },
-    ReadDocument {
-        document: polylogue_model::DocumentId,
-        view: String,
-        format: String,
-        budget: Option<usize>,
-        cursor: Option<String>,
-    },
-    ReadEvent {
-        event: String,
-        view: String,
-        format: String,
         budget: Option<usize>,
         cursor: Option<String>,
     },
@@ -80,11 +69,7 @@ pub enum Request {
         paths: Vec<PathBuf>,
     },
     Export {
-        sessions: Vec<SessionId>,
-        #[serde(default)]
-        documents: Vec<polylogue_model::DocumentId>,
-        #[serde(default)]
-        events: Vec<String>,
+        targets: Vec<ReadTarget>,
         format: String,
     },
     AddNote {
@@ -180,7 +165,7 @@ pub enum Request {
 }
 
 impl Request {
-    /// Whether the request can run without admitting archive writes.
+    /// Whether the request can run without writing to the archive.
     /// Conditional delivery and setting writes are resolved from their values.
     pub(crate) fn read_only(&self) -> bool {
         match self {
@@ -189,8 +174,6 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
-            | Self::ReadDocument { .. }
-            | Self::ReadEvent { .. }
             | Self::Export { .. }
             | Self::Notes { .. }
             | Self::Resumable { .. }
@@ -213,6 +196,35 @@ impl Request {
     }
 }
 
+/// What `read` and `export` name: `document:ID`, `event:ID`, or a session
+/// ID (with or without `session:`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum ReadTarget {
+    Session(SessionId),
+    Document(DocumentId),
+    Event(String),
+}
+
+impl ReadTarget {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if let Some(id) = text.strip_prefix("event:") {
+            if id.is_empty() {
+                return Err("event reference requires an ID".into());
+            }
+            return Ok(Self::Event(id.to_owned()));
+        }
+        if let Some(id) = text.strip_prefix("document:") {
+            return DocumentId::parse(id)
+                .map(Self::Document)
+                .map_err(|e| e.to_string());
+        }
+        SessionId::parse(text.strip_prefix("session:").unwrap_or(text))
+            .map(Self::Session)
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn attachment_chunk() -> usize {
     64 * 1024
 }
@@ -231,7 +243,7 @@ pub enum Response {
         kind: String,
         message: String,
         /// Structured detail: for a query error, the position, the
-        /// candidates and a corrected query that runs as given.
+        /// possible words and a corrected query that runs as given.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<serde_json::Value>,
     },

@@ -254,5 +254,5 @@ refuses, and Sinex never deletes what it holds. An empty archive with
 confirmed, in one transaction, after checking each batch and blob against its
 content name and that positions 1 to the last are all present. The loop then
 builds `index.db` from the restored rows, reading blobs from Sinex's content
-store. The [rebuild test](../crates/sinex/tests/proof.rs) runs this against a
+store. The [rebuild test](../crates/sinex/tests/rebuild/main.rs) runs this against a
 real `sinexd`.

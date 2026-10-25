@@ -1,11 +1,13 @@
-//! Durable append-only capture snapshots. The lock names the stable location.
+//! Each conversation's captures, appended to one log file and synced. A
+//! lock file beside the log serializes writers.
 use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
+/// Appends one capture; `false` when the log already ends with it.
+pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("capture has no parent"))?;
@@ -34,7 +36,7 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         complete_tail(&mut file, 0, &[MAGIC, &encoded, bytes])?;
         return synced(&file, dir);
     } else if &prefix[..read] != MAGIC {
-        return Err(invalid("capture file is not a snapshot log"));
+        return Err(invalid("capture file is not a capture log"));
     }
     let length = file.metadata()?.len();
     let mut position = MAGIC.len() as u64;
@@ -53,7 +55,7 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         let end = position
             .checked_add(HEADER_LEN as u64)
             .and_then(|start| start.checked_add(header.length))
-            .ok_or_else(|| invalid("snapshot range overflow"))?;
+            .ok_or_else(|| invalid("capture range overflow"))?;
         if end > length {
             complete_tail(&mut file, position, &[&encoded, bytes])?;
             return synced(&file, dir);
@@ -62,7 +64,7 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
             let mut previous = vec![0; bytes.len()];
             file.read_exact(&mut previous)?;
             if previous != bytes {
-                return Err(invalid("snapshot digest differs from stored bytes"));
+                return Err(invalid("capture hash differs from the stored bytes"));
             }
             synced(&file, dir)?;
             return Ok(false);
@@ -82,7 +84,7 @@ fn complete_tail(file: &mut File, start: u64, parts: &[&[u8]]) -> io::Result<()>
         .metadata()?
         .len()
         .checked_sub(start)
-        .ok_or_else(|| invalid("snapshot tail starts beyond EOF"))?;
+        .ok_or_else(|| invalid("capture tail starts beyond the end of the file"))?;
     let expected: usize = parts.iter().map(|part| part.len()).sum();
     if length > expected as u64 {
         return Err(invalid("existing tail exceeds submitted frame"));

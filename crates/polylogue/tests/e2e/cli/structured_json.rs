@@ -111,7 +111,7 @@ fn structured_json_export_masks_credentials_and_preserves_the_import_shape() {
 }
 
 #[test]
-fn public_json_export_import_round_trip_preserves_structured_nonsecret_fields() {
+fn json_export_import_round_trip_keeps_structured_fields_that_are_not_secret() {
     use polylogue_model::export::Document;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");

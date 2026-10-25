@@ -93,14 +93,14 @@ pub fn notes(data: &Value) -> String {
 /// `continue`: the sessions worth resuming here, or one session's plan.
 pub fn resume(data: &Value) -> String {
     match data.as_array() {
-        Some(candidates) => resumable(candidates),
+        Some(sessions) => resumable(sessions),
         None => plan(data),
     }
 }
 
-fn resumable(candidates: &[Value]) -> String {
+fn resumable(sessions: &[Value]) -> String {
     let mut out = String::new();
-    for c in candidates {
+    for c in sessions {
         let open = &c["open"];
         let mut why = Vec::new();
         if open["unanswered_prompt"].as_bool() == Some(true) {

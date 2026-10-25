@@ -44,7 +44,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     let request = Request::Setting {
         request_id: None,
         key: "lifecycle-test".into(),
-        value: Some("retained".into()),
+        value: Some("written".into()),
         machine: false,
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
@@ -64,7 +64,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
             .setting("lifecycle-test", "")
             .unwrap()
             .as_deref(),
-        Some("retained")
+        Some("written")
     );
 }
 
@@ -108,14 +108,14 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
         serde_json::to_string(&Request::Status).unwrap()
     )
     .unwrap();
-    runtime.stop_admission();
+    runtime.stop_accepting();
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
 }
 
 #[test]
-fn listener_wait_stops_application_admission_before_joining_clients() {
+fn listener_wait_stops_accepting_requests_before_joining_clients() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::from_env();
     config.home = dir.path().to_owned();
@@ -139,7 +139,7 @@ fn listener_wait_stops_application_admission_before_joining_clients() {
     )
     .unwrap();
     server.stop.as_ref().unwrap().send(()).unwrap();
-    server.wait(|| runtime.stop_admission()).unwrap();
+    server.wait(|| runtime.stop_accepting()).unwrap();
     assert!(matches!(
         daemon.reads.reader(),
         Err(polylogue_store::StoreError::ReadPoolClosed)

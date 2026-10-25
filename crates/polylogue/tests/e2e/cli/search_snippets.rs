@@ -5,7 +5,7 @@ use serde_json::json;
 const PREFIX: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
 
 #[test]
-fn public_snippets_mask_a_whole_private_key_before_shortening_it() {
+fn snippets_mask_a_whole_private_key_before_shortening_it() {
     run(
         "wholeprobe",
         "claude-code:snippet-whole",
@@ -14,7 +14,7 @@ fn public_snippets_mask_a_whole_private_key_before_shortening_it() {
 }
 
 #[test]
-fn public_snippets_keep_hidden_earlier_source_context() {
+fn snippets_keep_hidden_earlier_source_context() {
     run(
         "prefixprobe",
         "claude-code:snippet-prefix",
@@ -23,7 +23,7 @@ fn public_snippets_keep_hidden_earlier_source_context() {
 }
 
 #[test]
-fn public_output_snippets_use_the_same_source_masking_order() {
+fn output_snippets_use_the_same_source_masking_order() {
     run(
         "outputprobe",
         "claude-code:snippet-output",

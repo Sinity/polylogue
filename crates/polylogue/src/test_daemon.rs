@@ -97,7 +97,7 @@ impl TestDaemon {
 
 impl Drop for TestDaemon {
     fn drop(&mut self) {
-        self.runtime.stop_admission();
+        self.runtime.stop_accepting();
         if let Err(error) = self.server.shutdown() {
             eprintln!("test daemon socket: {error}");
         }

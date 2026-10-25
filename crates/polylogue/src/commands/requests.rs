@@ -2,7 +2,7 @@
 
 use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
-use crate::daemon::Request;
+use crate::daemon::{ReadTarget, Request};
 use polylogue_model::{Author, NewNote, NoteKind, Target};
 use polylogue_store::NoteFilter;
 use serde_json::Value;
@@ -103,54 +103,24 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
-    if let Some(id) = v
-        .text("session")
-        .and_then(|s| s.strip_prefix("event:").map(str::to_owned))
-    {
-        if id.is_empty() {
-            return Err("event reference requires an ID".into());
-        }
-        if v.flag("logical") {
+    let target = ReadTarget::parse(&v.text("session").ok_or("`session` is required")?)?;
+    let logical = v.flag("logical");
+    match target {
+        ReadTarget::Event(_) if logical => {
             return Err("an event has no conversation ancestry".into());
         }
-        return Ok(Request::ReadEvent {
-            event: id,
-            view: v.text("view").unwrap_or_else(|| "full".into()),
-            format: v
-                .text("format")
-                .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-            budget: v
-                .integer("budget")
-                .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
-            cursor: v.text("cursor"),
-        });
-    }
-    if let Some(id) = v
-        .text("session")
-        .and_then(|text| text.strip_prefix("document:").map(str::to_owned))
-    {
-        if v.flag("logical") {
+        ReadTarget::Document(_) if logical => {
             return Err("documents have no conversation ancestry".into());
         }
-        return Ok(Request::ReadDocument {
-            document: polylogue_model::DocumentId::parse(&id).map_err(|e| e.to_string())?,
-            view: v.text("view").unwrap_or_else(|| "full".into()),
-            format: v
-                .text("format")
-                .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-            budget: v
-                .integer("budget")
-                .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
-            cursor: v.text("cursor"),
-        });
+        _ => {}
     }
     Ok(Request::Read {
-        session: v.session("session")?.ok_or("`session` is required")?,
+        target,
         view: v.text("view").unwrap_or_else(|| "full".into()),
         format: v
             .text("format")
             .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-        logical: v.flag("logical"),
+        logical,
         budget: v
             .integer("budget")
             .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
@@ -159,31 +129,16 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
 }
 
 pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
-    let mut sessions = Vec::new();
-    let mut documents = Vec::new();
-    let mut events = Vec::new();
-    for text in v.list("sessions") {
-        if let Some(id) = text.strip_prefix("event:") {
-            if id.is_empty() {
-                return Err("event reference requires an ID".into());
-            }
-            events.push(id.to_owned());
-        } else if let Some(id) = text.strip_prefix("document:") {
-            documents.push(polylogue_model::DocumentId::parse(id).map_err(|e| e.to_string())?);
-        } else {
-            sessions.push(
-                polylogue_model::SessionId::parse(text.strip_prefix("session:").unwrap_or(&text))
-                    .map_err(|e| e.to_string())?,
-            );
-        }
-    }
-    if sessions.is_empty() && documents.is_empty() && events.is_empty() {
+    let targets = v
+        .list("sessions")
+        .iter()
+        .map(|text| ReadTarget::parse(text))
+        .collect::<Result<Vec<_>, _>>()?;
+    if targets.is_empty() {
         return Err("name at least one session, document or event".into());
     }
     Ok(Request::Export {
-        sessions,
-        documents,
-        events,
+        targets,
         format: v.text("format").unwrap_or_else(|| "json".into()),
     })
 }
@@ -352,15 +307,6 @@ pub fn work(_: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(LIVE.into(), None, v))
-}
-
-pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
-    if v.text("cursor").is_some() || v.0.contains_key("fields") || v.0.contains_key("why") {
-        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
-    }
-    Ok(Request::Changes {
-        since: v.text("since"),
-    })
 }
 
 pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {

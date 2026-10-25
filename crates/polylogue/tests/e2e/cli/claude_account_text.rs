@@ -44,7 +44,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     assert_eq!(
         json(&documents)["count"],
         1,
-        "retained project text must be queryable without pretending it is a human prompt"
+        "project text must be queryable without pretending it is a human prompt"
     );
     let authored = cli(
         &env,
@@ -119,7 +119,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     );
     assert!(note.status.success(), "{note:?}");
     drop(daemon);
-    // Rebuild only this test archive from retained bytes after source removal.
+    // Rebuild this test archive from its stored bytes after the source file is gone.
     std::fs::remove_dir_all(&source).unwrap();
     polylogue_testkit::delete_index(&archive);
     let daemon = start_daemon(&env);

@@ -23,7 +23,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         (
             "2026-01-01T00:00:00Z",
             "First instruction",
-            json!([{"uuid":"d","content":"Exact older retained text λ🙂"}]),
+            json!([{"uuid":"d","content":"Exact older stored text λ🙂"}]),
         ),
         (
             "2026-01-02T00:00:00Z",
@@ -77,11 +77,11 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             .to_string()
             .contains("project_document")
     );
-    let basis_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
-    let basis = cli(&env, &["--json", "sql", basis_sql]);
-    assert!(basis.status.success(), "{basis:?}");
-    let basis = json(&basis);
-    assert_eq!(basis.as_array().unwrap().len(), 4);
+    let sources_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
+    let sources = cli(&env, &["--json", "sql", sources_sql]);
+    assert!(sources.status.success(), "{sources:?}");
+    let sources = json(&sources);
+    assert_eq!(sources.as_array().unwrap().len(), 4);
     let ids_sql = "SELECT id FROM a.input WHERE format='claude-ai' ORDER BY id";
     let ids = cli(&env, &["--json", "sql", ids_sql]);
     assert!(ids.status.success(), "{ids:?}");
@@ -100,14 +100,14 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         }
         assert!(
             Instant::now() < deadline,
-            "retained rebuild did not restore both documents: {status}; rows {:?}",
+            "the rebuild from stored bytes did not restore both documents: {status}; rows {:?}",
             cli(&env, &["--json", "documents"])
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    let after = cli(&env, &["--json", "sql", basis_sql]);
+    let after = cli(&env, &["--json", "sql", sources_sql]);
     assert!(after.status.success(), "{after:?}");
-    assert_eq!(json(&after), basis);
+    assert_eq!(json(&after), sources);
     let after = cli(&env, &["--json", "sql", ids_sql]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after), ids);

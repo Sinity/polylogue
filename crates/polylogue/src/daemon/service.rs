@@ -1,7 +1,7 @@
 //! Application operations and their shared archive state. Socket, HTTP and
 //! MCP adapters use the same typed requests; transport framing stays outside.
 
-use super::{Request, Response};
+use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, Pass};
 use polylogue_model::Author;
@@ -170,7 +170,8 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     }
 }
 
-pub(super) fn admit(d: &Daemon) -> Result<(), Response> {
+/// Refuses new requests once the daemon is stopping.
+pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
             "daemon_stopping",
@@ -180,10 +181,10 @@ pub(super) fn admit(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Prepare a complete finite feed through the same admission and read pool.
-/// The returned unnamed file owns delivery bytes, never a live Reader.
+/// Prepares a complete finite feed through the same checks and read pool.
+/// The returned unnamed file holds the bytes to send, never a live Reader.
 pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::File, Response> {
-    admit(d)?;
+    accepting(d)?;
     let reader = d.reads.reader().map_err(|e| store_error(&e))?;
     let file = tempfile::tempfile_in(&d.archive.root).map_err(|e| error("io", e))?;
     super::query::feed::prepare(&reader, since, now_ms(), file).map_err(|f| {
@@ -203,7 +204,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {
-    if let Err(response) = admit(d) {
+    if let Err(response) = accepting(d) {
         return response;
     }
     if matches!(d.mode, ModeState::Blocked { .. }) && !request.read_only() {
@@ -333,60 +334,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             Err(e) => error("sql", e),
         },
         Request::Read {
-            session,
+            target,
             view,
             format,
             logical,
             budget,
             cursor,
-        } => read::run(
-            &reader,
-            &session,
-            read::Options {
+        } => {
+            let options = read::Options {
                 view: &view,
                 format: &format,
                 logical,
                 budget,
                 cursor: cursor.as_deref(),
-            },
-            &d.read_checkpoints,
-            read_epoch,
-        ),
-
-        Request::ReadDocument {
-            document,
-            view,
-            format,
-            budget,
-            cursor,
-        } => read::document(
-            &reader,
-            &document,
-            read::Options {
-                view: &view,
-                format: &format,
-                logical: false,
-                budget,
-                cursor: cursor.as_deref(),
-            },
-        ),
-        Request::ReadEvent {
-            event,
-            view,
-            format,
-            budget,
-            cursor,
-        } => read::event(
-            &reader,
-            &event,
-            read::Options {
-                view: &view,
-                format: &format,
-                logical: false,
-                budget,
-                cursor: cursor.as_deref(),
-            },
-        ),
+            };
+            match &target {
+                ReadTarget::Session(session) => {
+                    read::run(&reader, session, options, &d.read_checkpoints, read_epoch)
+                }
+                ReadTarget::Document(document) => read::document(&reader, document, options),
+                ReadTarget::Event(event) => read::event(&reader, event, options),
+            }
+        }
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -404,12 +373,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
-        Request::Export {
-            sessions,
-            documents,
-            events,
-            format,
-        } => export(&reader, &sessions, &documents, &events, &format),
+        Request::Export { targets, format } => export(&reader, &targets, &format),
         Request::Embed {
             what,
             query,
@@ -591,15 +555,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 
 /// Whole sessions in the structured export format (`json`, read back by
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-fn export(
-    reader: &polylogue_store::Reader<'_>,
-    ids: &[polylogue_model::SessionId],
-    document_ids: &[polylogue_model::DocumentId],
-    event_ids: &[String],
-    format: &str,
-) -> Response {
+fn export(reader: &polylogue_store::Reader<'_>, targets: &[ReadTarget], format: &str) -> Response {
     let mut sessions = Vec::new();
-    for id in ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Session(id) => Some(id),
+        _ => None,
+    }) {
         match reader.session_export(id) {
             Ok(Some(s)) => sessions.push(s),
             Ok(None) => return error("not_found", format!("no session {id}")),
@@ -607,7 +568,10 @@ fn export(
         }
     }
     let mut documents = Vec::new();
-    for id in document_ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Document(id) => Some(id),
+        _ => None,
+    }) {
         match reader.document(id) {
             Ok(Some(doc)) => documents.push(doc),
             Ok(None) => return error("not_found", format!("no document {id}")),
@@ -615,7 +579,10 @@ fn export(
         }
     }
     let mut events = Vec::new();
-    for id in event_ids {
+    for id in targets.iter().filter_map(|t| match t {
+        ReadTarget::Event(id) => Some(id),
+        _ => None,
+    }) {
         match reader.event_export(id) {
             Ok(Some(event)) => events.push(event),
             Ok(None) => return error("not_found", format!("no event {id}")),
@@ -647,16 +614,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Wake pending read admissions before joining transports or workers.
-    /// Admitted readers and writes keep their existing completion semantics.
-    pub fn stop_admission(&self) {
+    /// Refuses new requests and wakes readers waiting for a reader slot,
+    /// before transports and workers are joined. Readers and writes already
+    /// running finish as usual.
+    pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
         self.daemon.read_checkpoints.clear();
         self.daemon.reads.close();
     }
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
-        self.stop_admission();
+        self.stop_accepting();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }

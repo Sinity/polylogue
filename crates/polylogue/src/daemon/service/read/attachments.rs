@@ -35,20 +35,20 @@ pub(super) fn labels(
                     resolution
                         .candidates
                         .first()
-                        .map(|candidate| candidate.names.join(", "))
+                        .map(|found| found.names.join(", "))
                         .filter(|name| !name.is_empty())
                 })
                 .or_else(|| attachment.source_id.clone())
                 .unwrap_or_else(|| "attachment".into());
             let state = match resolution.state {
                 AttachmentState::Available => {
-                    format!("{} retained bytes", resolution.candidates[0].size)
+                    format!("{} stored bytes", resolution.candidates[0].size)
                 }
                 AttachmentState::Ambiguous => format!(
-                    "{} retained candidates, explicit selection required",
+                    "{} stored files match, choose one with --asset",
                     resolution.candidates.len()
                 ),
-                AttachmentState::Unavailable => "no current retained candidate resolved".into(),
+                AttachmentState::Unavailable => "no stored file matches".into(),
                 AttachmentState::Unknown => "byte availability unknown".into(),
             };
             labels.push(AttachmentLabel {

@@ -1,4 +1,4 @@
-//! Polylogue on Sinex (architecture 7.1). In `standalone` mode, the default,
+//! Polylogue on Sinex. In `standalone` mode, the default,
 //! this crate is not used. In `primary` mode Sinex holds the archive: every
 //! row batch of `archive.db` and every input blob its rows cite, so an empty
 //! archive restores from Sinex and the loop rebuilds `index.db` from it.

@@ -76,7 +76,7 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
             "{page}"
         );
         assert!(page.contains("authorship unknown"), "{page}");
-        assert!(page.contains("Retained source records"));
+        assert!(page.contains("Source records"));
         assert!(page.contains("preferred"));
         assert!(page.contains("2026-05-02T00:00:00Z"));
         assert!(
@@ -107,8 +107,11 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
             "the supplied source path must be masked: {source_path}"
         );
         let Response::Ok { data } = handle(
-            Request::ReadDocument {
-                document: polylogue_model::DocumentId::parse(id).unwrap(),
+            Request::Read {
+                target: crate::daemon::ReadTarget::Document(
+                    polylogue_model::DocumentId::parse(id).unwrap(),
+                ),
+                logical: false,
                 view: "full".into(),
                 format: "json".into(),
                 budget: None,

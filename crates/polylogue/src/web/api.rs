@@ -1,4 +1,4 @@
-//! The reader's JSON API under `/api/v1/` (spec `surfaces/web.md`): the
+//! The reader's JSON API under `/api/v1/`: the
 //! same data as `--json`, one route per command the table offers over
 //! HTTP, at its words joined by `/` (`/api/v1/note/add`). A command that
 //! writes is a POST with a JSON object body; one that reads is a GET with

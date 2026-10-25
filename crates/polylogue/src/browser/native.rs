@@ -155,7 +155,7 @@ pub fn serve(ctx: Arc<Ctx>, input: &mut impl Read, out: &mut impl Write) -> io::
 }
 
 /// The command Chrome runs. It passes the calling extension's origin as the
-/// first argument; Chrome itself admits only the origins the host's
+/// first argument; Chrome itself allows only the origins the host's
 /// manifest lists.
 pub fn run() -> ExitCode {
     let ctx = match Ctx::for_user() {
@@ -176,7 +176,7 @@ pub fn run() -> ExitCode {
 }
 
 /// The host manifest Chrome reads from its `NativeMessagingHosts`
-/// directory: this binary, admitting only `extension_id`.
+/// directory: this binary, allowing only `extension_id`.
 pub fn manifest(binary: &std::path::Path, extension_id: &str) -> Value {
     json!({
         "name": super::HOST_NAME,

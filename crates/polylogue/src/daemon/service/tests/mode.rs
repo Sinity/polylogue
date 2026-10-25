@@ -24,7 +24,7 @@ fn primary(home: &ClaudeHome, restore: bool) -> ArchiveMode {
 
 fn seeded() -> ClaudeHome {
     let w = ClaudeHome::new();
-    w.append("s1.jsonl", &user("u1", "s1", "Retained question"));
+    w.append("s1.jsonl", &user("u1", "s1", "Stored question"));
     let (mut engine, _lock) = w.engine(64 << 20);
     assert!(engine.converge().unwrap().errors.is_empty());
     drop(engine);
@@ -122,7 +122,9 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
         blocked(&runtime, &w.dir.path().join("sinex.toml"));
         let shown = data(
             Request::Read {
-                session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                target: crate::daemon::ReadTarget::Session(
+                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                ),
                 view: "full".into(),
                 format: "json".into(),
                 logical: false,
@@ -131,7 +133,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
             },
             &runtime,
         );
-        assert_eq!(shown["display_title"], "Retained question");
+        assert_eq!(shown["display_title"], "Stored question");
         assert_eq!(shown["messages"].as_array().unwrap().len(), 1);
         assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
         assert_eq!(
@@ -154,7 +156,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
             Request::Context {
                 request_id: "read-context".into(),
                 ask: crate::briefing::Ask::Recall {
-                    text: "Retained".into(),
+                    text: "Stored".into(),
                     cwd: None,
                     for_session: None,
                 },
@@ -183,7 +185,7 @@ fn missing_config_is_standalone_and_nonempty_primary_is_readable_offline() {
     assert!(runtime.daemon.writes.is_some());
     assert!(runtime.sinex.is_some());
     assert_eq!(data(Request::Status, &runtime)["mode"]["state"], "primary");
-    assert_eq!(w.texts("s1"), ["Retained question"]);
+    assert_eq!(w.texts("s1"), ["Stored question"]);
 }
 
 #[test]
@@ -222,5 +224,5 @@ fn an_unreadable_local_archive_blocks_startup_instead_of_counting_as_empty() {
             .unwrap()
             .contains("reading the local archive")
     );
-    assert_eq!(w.texts("s1"), ["Retained question"]);
+    assert_eq!(w.texts("s1"), ["Stored question"]);
 }

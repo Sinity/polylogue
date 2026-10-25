@@ -16,8 +16,8 @@ pub(crate) fn check_cli() -> Result<(), String> {
 pub(super) struct Operator;
 
 impl Operator {
-    pub(super) fn admit(stream: &std::os::unix::net::UnixStream) -> Result<Self, String> {
-        let check = || -> std::io::Result<bool> {
+    pub(super) fn check(stream: &std::os::unix::net::UnixStream) -> Result<Self, String> {
+        let is_operator = || -> std::io::Result<bool> {
             let peer = rustix::net::sockopt::socket_peercred(stream)?;
             if peer.uid != rustix::process::geteuid() {
                 return Ok(false);
@@ -46,7 +46,7 @@ impl Operator {
             let confirmed = std::fs::metadata(process.join("exe"))?;
             Ok((confirmed.dev(), confirmed.ino()) == (executable.dev(), executable.ino()))
         };
-        match check() {
+        match is_operator() {
             Ok(true)=>Ok(Self),
             _=>Err("exact attachment bytes require a verified interactive CLI peer outside an agent harness".into()),
         }

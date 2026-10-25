@@ -1,4 +1,4 @@
-//! The Sinex backend in the daemon (architecture 7.1), built with the
+//! Primary mode in the daemon, built with the
 //! `sinex` feature. `$XDG_CONFIG_HOME/polylogue/sinex.toml` chooses the mode;
 //! without it the archive is standalone and nothing here runs.
 //!
@@ -31,7 +31,7 @@ impl Sending {
         F: FnOnce() -> Work + Send + 'static,
         Work: std::future::Future<Output = ()> + 'static,
     {
-        // Construct the pass on its own thread: its SQLite snapshot is
+        // Construct the pass on its own thread: its SQLite read transaction is
         // borrowed across awaits and is not Sync.
         let (stop, stopped) = oneshot::channel();
         let thread = std::thread::Builder::new()

@@ -176,7 +176,9 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         let api: serde_json::Value = serde_json::from_str(&body).unwrap();
         let Response::Ok { data } = handle(
             Request::Read {
-                session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                target: crate::daemon::ReadTarget::Session(
+                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                ),
                 view: "full".into(),
                 format: "json".into(),
                 logical: false,
@@ -322,7 +324,7 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
     });
     stopped
         .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("HTTP worker retained idle clients")
+        .expect("HTTP worker kept idle clients open")
         .unwrap();
     thread.join().unwrap();
     drop(world);
@@ -354,7 +356,7 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
         server.port, server.token
     )
     .unwrap();
-    runtime.stop_admission();
+    runtime.stop_accepting();
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
@@ -379,7 +381,7 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
     drop(file);
     r.w.wait_for(|status| {
         if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read { session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(), view: "full".into(), format: "json".into(), logical: false, budget: None, cursor: None }, &r.w.daemon);
+        let response = handle(Request::Read { target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), logical: false, budget: None, cursor: None }, &r.w.daemon);
         matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
     });
     rt().block_on(async {
@@ -435,8 +437,8 @@ fn binary_attachments_and_enqueue_use_the_daemon_action_owner() {
         assert_eq!(status, StatusCode::CREATED, "{raw}");
         let action: serde_json::Value = serde_json::from_str(&raw).unwrap();
         let ctx = crate::browser::Ctx::at(&r.w.daemon.config, &r.w.daemon.archive).unwrap();
-        let (_, retained) = crate::browser::actions::attachment(&ctx, action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap()).unwrap();
-        assert_eq!(retained, bytes);
+        let (_, stored) = crate::browser::actions::attachment(&ctx, action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored, bytes);
         let mut changed = body;
         changed["text"] = "Different draft".into();
         let (status, _, raw) = send(&r, enqueue(&changed)).await;
@@ -533,9 +535,9 @@ fn an_unobserved_enqueue_reply_reconciles_without_repeating_the_action() {
         assert_eq!(send(&r, request).await.0, StatusCode::OK);
     });
     let ctx = crate::browser::Ctx::at(&r.w.daemon.config, &r.w.daemon.archive).unwrap();
-    let retained = crate::browser::actions::list(&ctx);
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].text, "Neutral pending draft");
+    let pending = crate::browser::actions::list(&ctx);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].text, "Neutral pending draft");
 }
 
 #[test]

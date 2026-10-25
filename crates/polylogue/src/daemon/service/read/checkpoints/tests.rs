@@ -65,7 +65,7 @@ fn matching_private_checkpoints_are_bounded_and_content_bound() {
     cache.put(key, epoch, checkpoint(0));
     assert!(
         cache.state().entries.is_empty(),
-        "prior identity cannot republish"
+        "a cleared key cannot be stored again"
     );
 }
 
@@ -97,7 +97,7 @@ fn mutation_epochs_refuse_inflight_private_state_before_and_after_writes() {
 }
 
 #[test]
-fn a_new_index_generation_drops_private_state_without_accepting_old_publications() {
+fn a_new_index_generation_drops_cached_state_and_refuses_entries_from_the_old_one() {
     let cache = Cache::default();
     let key = key();
     let epoch = cache.epoch();
