@@ -23,14 +23,6 @@ stored_names!(SessionKind {
     Compaction => "compaction",
 });
 
-impl SessionKind {
-    /// Sessions another session started. A message copied into one of
-    /// these from its parent still belongs to the parent.
-    pub fn is_spawned(self) -> bool {
-        !matches!(self, SessionKind::Main)
-    }
-}
-
 /// Where a title came from, highest precedence first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -65,31 +65,6 @@ pub fn context(data: &Value) -> String {
     s(&data["prepared"]["text"])
 }
 
-pub fn notes(data: &Value) -> String {
-    let mut out = String::new();
-    for n in data.as_array().into_iter().flatten() {
-        let targets: Vec<String> = n["targets"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(s)
-            .collect();
-        let label = n["key"]
-            .as_str()
-            .map_or_else(|| s(&n["kind"]), str::to_owned);
-        let _ = writeln!(
-            out,
-            "{}  [{}] {}  ({}; {})",
-            s(&n["id"]),
-            label,
-            s(&n["value"]),
-            targets.join(", "),
-            s(&n["author"])
-        );
-    }
-    out
-}
-
 /// `continue`: the sessions worth resuming here, or one session's plan.
 pub fn resume(data: &Value) -> String {
     match data.as_array() {

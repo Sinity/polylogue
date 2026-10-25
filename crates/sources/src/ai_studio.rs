@@ -373,6 +373,7 @@ impl AiStudio {
                     self.state.pending_call = Some(call_id.clone());
                 }
                 blocks.push(Block::ToolCall {
+                    run_by_script: false,
                     call_id: Some(call_id),
                     tool: Some("code_execution".into()),
                     action: ToolAction::Code,
@@ -723,6 +724,8 @@ impl ExportParser for Listing {
         Ok(())
     }
 }
+
+pub mod drive;
 
 #[cfg(test)]
 mod tests;

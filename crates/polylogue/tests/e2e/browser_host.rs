@@ -192,7 +192,8 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let notes: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let notes = &answer["rows"];
     assert_eq!(notes.as_array().unwrap().len(), 1);
     assert_eq!(notes[0]["id"], note["request_id"]);
     assert_eq!(notes[0]["author"], "operator");

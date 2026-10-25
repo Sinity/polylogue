@@ -65,20 +65,6 @@ fn recall_finds_prose_then_tool_output_as_a_query_sees_them() {
         },
     )
     .unwrap();
-    // A copy of another session's message is not this session's own text:
-    // a query leaves it out, and so does recall.
-    f.message(
-        s,
-        MessageFacts {
-            id: "m3",
-            role: "user",
-            written_by: "human",
-            text: Some("an inherited quokka"),
-            inherited_from: Some("test:parent"),
-            ..MessageFacts::default()
-        },
-    )
-    .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let ask = Ask::Recall {

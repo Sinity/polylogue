@@ -1,6 +1,7 @@
 use super::*;
 use crate::user_writes::{UserRequest, UserWrite};
-use crate::{Delivery, DeliveryOutcome, Writer};
+use crate::{Delivery, Writer};
+use polylogue_model::DeliveryOutcome;
 
 fn note(writer: &Writer, id: &str, text: &str) {
     writer

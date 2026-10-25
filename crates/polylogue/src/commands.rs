@@ -183,7 +183,8 @@ impl Caller {
     /// The sender a prepared context is recorded under: MCP hands it to a
     /// model; the command line and the reader show it to a person.
     pub fn sender(&self) -> Option<String> {
-        (self.surface == Surface::Mcp).then(|| "mcp".to_owned())
+        (self.surface == Surface::Mcp)
+            .then(|| polylogue_model::DeliverySender::Mcp.as_str().to_owned())
     }
 }
 
@@ -278,10 +279,6 @@ pub const GROUPS: &[Group] = &[
     Group {
         name: "embed",
         help: "Embeddings: cost preview, build, status",
-    },
-    Group {
-        name: "sinex",
-        help: "The Sinex backend: status and the one-time move to primary",
     },
     Group {
         name: "hooks",
@@ -595,7 +592,7 @@ const WRITTEN: &[Command] = &[
             opt("limit", Kind::Integer, "At most this many notes"),
         ],
         action: Action::Request(requests::note_list),
-        print: print::notes,
+        print: print::query,
         mcp: true,
         http: true,
         ..CLI
@@ -790,18 +787,6 @@ const WRITTEN: &[Command] = &[
         name: "embed status",
         help: "Vectors per model, and the provider settings",
         action: Action::Request(requests::embed),
-        ..CLI
-    },
-    Command {
-        name: "sinex status",
-        help: "The Sinex backend's state (not built yet)",
-        cli: Cli::Hidden,
-        ..CLI
-    },
-    Command {
-        name: "sinex cutover",
-        help: "Make Sinex the primary store, once (not built yet)",
-        cli: Cli::Hidden,
         ..CLI
     },
     Command {

@@ -22,6 +22,7 @@ fn structured_message(reverse: bool) -> Message {
     );
     message.blocks.extend([
         Block::ToolCall {
+            run_by_script: false,
             call_id: Some("call".into()),
             tool: Some("synthetic".into()),
             action: polylogue_model::ToolAction::Other,

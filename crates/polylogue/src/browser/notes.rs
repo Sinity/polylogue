@@ -32,29 +32,26 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
     let source = &input.source;
     if uuid::Uuid::parse_str(&input.request_id).is_err()
         || input.body.trim().is_empty()
-        || input.body.chars().count() > 10_000
         || input.quote.trim().is_empty()
-        || input.quote.chars().count() > 2_000
         || source.conversation_id.is_empty()
         || source.message_id.is_empty()
-        || source.conversation_id.len() > 512
-        || source.message_id.len() > 512
-        || source.page_url.len() > 4096
         || source.selected_at.parse::<jiff::Timestamp>().is_err()
     {
-        return invalid(
-            "the note needs a draft ID, body, bounded selection and exact source identity",
-        );
+        return invalid("the note needs a draft ID, a body, a selection and its source");
     }
     let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
         return invalid("the source page URL is invalid");
     };
-    let Some(chat) = polylogue_sources::browser_capture::web_chat(&source.provider) else {
+    let Some(chat) = polylogue_sources::origin::by_extension_name(&source.provider)
+        .and_then(|origin| origin.web.as_ref())
+    else {
         return invalid("this provider has no selection-note target");
     };
     let parts: Vec<_> = url.path().split('/').filter(|s| !s.is_empty()).collect();
     if url.scheme_str() != Some("https")
-        || url.authority().map(|a| a.as_str()) != Some(chat.host)
+        || !url
+            .authority()
+            .is_some_and(|a| chat.hosts.contains(&a.as_str()))
         || parts.len() != 2
         || parts[0] != chat.path
         || parts[1] != source.conversation_id
@@ -74,7 +71,7 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
     // shared by multiple sessions must not silently choose one occurrence.
     let query = Request::Query {
         text: format!(
-            "messages where id:{} active:* inherited:* duplicate:* hidden:*",
+            "messages where id:{} active:* duplicate:* hidden:*",
             serde_json::to_string(&message.to_string()).expect("string")
         ),
         cursor: None,

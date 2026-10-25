@@ -46,6 +46,17 @@ pub struct Options {
     pub fields: Vec<String>,
     /// Kept results by ID (`result:<id>`): what their stored rows hold.
     pub kept: std::collections::BTreeMap<String, Kept>,
+    /// Web chats whose conversation page URLs name sessions.
+    pub chat_pages: Vec<ChatPage>,
+}
+
+/// A web chat's conversation pages, `https://<host>/<path>/<id>`, whose
+/// conversations are sessions of `origin`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatPage {
+    pub origin: String,
+    pub hosts: Vec<String>,
+    pub path: String,
 }
 
 /// A kept result's stored shape: the unit
@@ -735,33 +746,20 @@ fn relation_sql(template: &str, a: &Aliases, n: &Aliases, target: Unit, cond: &s
         .replace("{cond}", cond)
 }
 
-/// The session ID a provider conversation URL names.
-fn provider_url(url: &str) -> Option<String> {
+/// The session ID a web chat's conversation page URL names.
+fn provider_url(pages: &[ChatPage], url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.trim_start_matches("www.");
-    let segments: Vec<&str> = path
+    let page = pages.iter().find(|p| p.hosts.iter().any(|h| h == host))?;
+    let mut segments = path
         .split(['?', '#'])
         .next()
         .unwrap_or("")
         .split('/')
-        .filter(|s| !s.is_empty())
-        .collect();
-    let last = |after: &str| {
-        segments
-            .iter()
-            .position(|s| *s == after)
-            .and_then(|i| segments.get(i + 1))
-            .map(|s| (*s).to_owned())
-    };
-    match host {
-        "chatgpt.com" | "chat.openai.com" => last("c").map(|id| format!("chatgpt:{id}")),
-        "claude.ai" => last("chat").map(|id| format!("claude-ai:{id}")),
-        "gemini.google.com" => last("app").map(|id| format!("gemini-app:{id}")),
-        "aistudio.google.com" => last("prompts").map(|id| format!("ai-studio:{id}")),
-        "grok.com" => last("chat").map(|id| format!("grok:{id}")),
-        _ => None,
-    }
+        .filter(|s| !s.is_empty());
+    segments.find(|s| *s == page.path)?;
+    Some(format!("{}:{}", page.origin, segments.next()?))
 }
 
 fn parse_pr(v: &str) -> Option<(Option<String>, i64)> {

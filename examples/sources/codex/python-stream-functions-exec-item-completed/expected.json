@@ -67,6 +67,7 @@
                   }
                 ]
               },
+              "run_by_script": true,
               "tool": "exec_command",
               "type": "tool_call"
             },
@@ -176,6 +177,7 @@
                   }
                 ]
               },
+              "run_by_script": true,
               "tool": "exec_command",
               "type": "tool_call"
             },
@@ -240,6 +242,7 @@
                   }
                 ]
               },
+              "run_by_script": true,
               "tool": "exec_command",
               "type": "tool_call"
             },
@@ -282,6 +285,7 @@
                   }
                 ]
               },
+              "run_by_script": true,
               "tool": "exec_command",
               "type": "tool_call"
             },

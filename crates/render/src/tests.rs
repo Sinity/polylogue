@@ -48,6 +48,7 @@ pub(crate) fn conversation() -> Vec<Message> {
                     text: "Running them.".into(),
                 },
                 Block::ToolCall {
+                    run_by_script: false,
                     call_id: Some("c1".into()),
                     tool: Some("Bash".into()),
                     action: polylogue_model::ToolAction::Shell,

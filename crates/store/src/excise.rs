@@ -241,8 +241,6 @@ pub(crate) fn apply(
         record("document", id)?;
         index_rows::remove_document(t, *pk, &mut removed_texts, &mut blobs)?;
         let reference = format!("document:{id}");
-        t.archive
-            .execute("DELETE FROM variant WHERE target = ?1", [&reference])?;
         references.push(reference);
     }
     done.notes_removed = index_rows::remove_notes_about(t.archive, &references)?;

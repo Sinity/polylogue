@@ -252,7 +252,6 @@ fn rule_notes_are_read_or_refused_by_name() {
         valid_until: None,
         targets: vec![],
         relations: vec![],
-        source: None,
     };
     let r = rule(&note(
         r#"{"name":"waiting","query":"sessions where live:waiting","for":"20m","interrupt":true,"quiet_hours":[22,7],"rate_limit":{"count":1,"window":"1h"}}"#,

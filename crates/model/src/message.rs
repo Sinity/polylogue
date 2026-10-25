@@ -41,6 +41,34 @@ stored_names!(PromptKind {
     Model => "model",
 });
 
+/// Who wrote a message's text, from its role and prompt kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WrittenBy {
+    Human,
+    Model,
+    Harness,
+    Unknown,
+}
+
+stored_names!(WrittenBy {
+    Human => "human",
+    Model => "model",
+    Harness => "harness",
+    Unknown => "unknown",
+});
+
+impl WrittenBy {
+    pub fn of(role: Role, prompt_kind: Option<PromptKind>) -> Self {
+        match (role, prompt_kind) {
+            (_, Some(PromptKind::Harness)) | (Role::System, _) => Self::Harness,
+            (Role::Assistant, _) | (Role::User, Some(PromptKind::Model)) => Self::Model,
+            (Role::User, Some(_)) => Self::Human,
+            (Role::User, None) => Self::Unknown,
+        }
+    }
+}
+
 /// One message, stored once, in the session where it originated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {

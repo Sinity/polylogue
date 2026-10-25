@@ -2555,7 +2555,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
- "ureq",
  "uuid",
  "zip",
 ]
@@ -2624,6 +2623,7 @@ dependencies = [
 name = "polylogue-sources"
 version = "0.1.0"
 dependencies = [
+ "atomicwrites",
  "base64 0.22.1",
  "polylogue-model",
  "serde",
@@ -2631,6 +2631,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "ureq",
 ]
 
 [[package]]

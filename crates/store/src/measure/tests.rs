@@ -615,24 +615,18 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
     );
 }
 
-/// Format drift lists what parsers did not know, newest first, with items
-/// kept as counts by design after the rest.
+/// Format drift lists what parsers did not know, most frequent first, with
+/// items kept as counts by design after the rest.
 #[test]
-fn drift_lists_new_unknowns_first_and_design_counts_last() {
+fn drift_lists_frequent_unknowns_first_and_design_counts_last() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
-    f.unrecognized("claude-code", "field:message.effort", 3, T0, false)
+    f.unrecognized("claude-code", "field:message.effort", 3, false)
         .unwrap();
-    f.unrecognized("claude-code", "record:launched", 9, T0 + DAY, false)
+    f.unrecognized("claude-code", "record:launched", 9, false)
         .unwrap();
-    f.unrecognized(
-        "codex",
-        "record:event_msg/item_completed",
-        50,
-        T0 + 2 * DAY,
-        true,
-    )
-    .unwrap();
+    f.unrecognized("codex", "record:event_msg/item_completed", 50, true)
+        .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let got: Vec<_> = drift::drift(&r)

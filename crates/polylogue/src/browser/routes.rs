@@ -2,7 +2,7 @@
 //! native request is served in process by this router; nothing listens on
 //! a port.
 
-use super::actions::{self, ActionRequest, Refused, Update};
+use super::actions::{self, ActionRequest, Update};
 use super::{API_SCHEMA, Ctx, artifact_ref, new_id, now_iso, sha256_hex, write_durable};
 use crate::daemon::{Request, Response};
 use axum::Router;
@@ -38,10 +38,7 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
             post(inspect_capture).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/v1/archive-state", get(archive_state))
-        .route(
-            "/v1/notes/selection",
-            post(selection_note).layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
-        )
+        .route("/v1/notes/selection", post(selection_note))
         .route("/v1/capture-health", get(health_list).post(health_report))
         .route("/v1/browser-actions/capabilities", get(action_capabilities))
         .route(
@@ -57,6 +54,8 @@ pub fn router(ctx: Arc<Ctx>) -> Router {
         )
         .fallback(not_built)
         .layer(middleware::from_fn(echo_request_id))
+        // A capture or a note is as large as the conversation it holds.
+        .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(ctx)
 }
 
@@ -80,11 +79,6 @@ async fn not_built() -> HttpResponse {
         Json(json!({ "ok": false, "error": "not_built" })),
     )
         .into_response()
-}
-
-fn refused(r: &Refused) -> HttpResponse {
-    let status = StatusCode::from_u16(r.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, Json(json!({ "ok": false, "error": r.1 }))).into_response()
 }
 
 fn bad(status: StatusCode, error: &str) -> HttpResponse {
@@ -119,7 +113,7 @@ async fn reader_location(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
         return bad(StatusCode::SERVICE_UNAVAILABLE, "reader_unavailable");
     };
     // Ctx's receiver key identifies the same archive as the daemon's reader.
-    let dir = crate::web::access::runtime_dir(key);
+    let dir = crate::runtime_dir::runtime_dir(key);
     let location = blocking(move || crate::web::access::reader_url_in(&dir)).await;
     match location {
         Some(Ok(url)) => Json(json!({"ok":true,"url":url})).into_response(),
@@ -300,10 +294,7 @@ async fn health_report(State(ctx): State<Arc<Ctx>>, Json(mut report): Json<Value
     if let Some(o) = report.as_object_mut() {
         o.insert("received_at".into(), json!(now_iso()));
     }
-    let path = ctx
-        .actions
-        .join("capture-health")
-        .join(format!("{provider}.json"));
+    let path = ctx.health.join(format!("{provider}.json"));
     let bytes = serde_json::to_vec(&report).unwrap_or_default();
     match blocking(move || write_durable(&path, &bytes)).await {
         Some(Ok(())) => Json(json!({ "ok": true })).into_response(),
@@ -312,7 +303,7 @@ async fn health_report(State(ctx): State<Arc<Ctx>>, Json(mut report): Json<Value
 }
 
 async fn health_list(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
-    let dir = ctx.actions.join("capture-health");
+    let dir = ctx.health.clone();
     let reports: Vec<Value> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -325,12 +316,11 @@ async fn health_list(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
 async fn action_capabilities(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
     let c = Arc::clone(&ctx);
     let enabled = blocking(move || c.actions_enabled()).await.unwrap_or(false);
-    let providers: Vec<Value> = ["chatgpt", "claude"]
-        .iter()
+    let providers: Vec<Value> = actions::providers()
         .map(|p| {
             json!({
                 "provider": p,
-                "operations": ["conversation.create", "conversation.reply"],
+                "operations": actions::OPERATIONS,
                 "submit_policies": ["stage_only", "submit_once"],
             })
         })
@@ -355,44 +345,76 @@ struct ListQuery {
     claim_by: Option<String>,
 }
 
+/// Asks the daemon about chat actions, and answers as the extension expects:
+/// the daemon's data with `ok`, or a refusal's status and code.
+async fn ask_chat(ctx: Arc<Ctx>, request: Request) -> Result<Value, Box<HttpResponse>> {
+    match blocking(move || ctx.ask(&request)).await.flatten() {
+        Some(Response::Ok { mut data }) => {
+            if let Some(object) = data.as_object_mut() {
+                object.remove("created");
+                object.insert("ok".into(), json!(true));
+                object.insert("receiver".into(), json!(RECEIVER));
+            }
+            Ok(data)
+        }
+        Some(Response::Error { kind, detail, .. }) => {
+            let status = detail
+                .as_ref()
+                .and_then(|d| d["http_status"].as_u64())
+                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            Err(Box::new(bad(status, &kind)))
+        }
+        None => Err(Box::new(bad(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "daemon_required",
+        ))),
+    }
+}
+
 /// Lists actions, or with `claim_by` hands one queued action to that
 /// extension instance while chat actions are on.
 async fn actions_list(State(ctx): State<Arc<Ctx>>, Query(q): Query<ListQuery>) -> HttpResponse {
-    let c = Arc::clone(&ctx);
-    let answer = blocking(move || match q.claim_by.filter(|o| !o.is_empty()) {
-        None => Ok(json!({ "ok": true, "receiver": RECEIVER, "actions": actions::list(&c) })),
-        Some(owner) => {
-            let enabled = c.actions_enabled();
-            actions::claim(&c, &owner, enabled).map(|a| {
-                json!({ "ok": true, "receiver": RECEIVER, "enabled": enabled,
-                        "actions": a.into_iter().collect::<Vec<_>>() })
-            })
+    let request = match q.claim_by.filter(|o| !o.is_empty()) {
+        None => Request::ChatActions,
+        Some(by) => Request::ChatClaim { by },
+    };
+    match ask_chat(ctx, request).await {
+        Ok(mut v) => {
+            // A claim answers with the list of what it handed out: one
+            // action or none.
+            if let Some(action) = v.as_object_mut().and_then(|o| o.remove("action")) {
+                v["actions"] = json!(
+                    Some(action)
+                        .filter(|a| !a.is_null())
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                );
+                if v.get("enabled").is_none() {
+                    v["enabled"] = json!(true);
+                }
+            }
+            Json(v).into_response()
         }
-    })
-    .await;
-    match answer {
-        Some(Ok(v)) => Json(v).into_response(),
-        Some(Err(r)) => refused(&r),
-        None => bad(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        Err(r) => *r,
     }
 }
 
 async fn action_read(State(ctx): State<Arc<Ctx>>, UrlPath(id): UrlPath<String>) -> HttpResponse {
-    match actions::read(&ctx, &id) {
-        Ok(a) => Json(json!({ "ok": true, "action": a })).into_response(),
-        Err(r) => refused(&r),
+    match ask_chat(ctx, Request::ChatAction { id }).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => *r,
     }
 }
 
 async fn action_event(
     State(ctx): State<Arc<Ctx>>,
     UrlPath(id): UrlPath<String>,
-    Json(u): Json<Update>,
+    Json(update): Json<Update>,
 ) -> HttpResponse {
-    match blocking(move || actions::report(&ctx, &id, u)).await {
-        Some(Ok(a)) => Json(json!({ "ok": true, "action": a })).into_response(),
-        Some(Err(r)) => refused(&r),
-        None => bad(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    match ask_chat(ctx, Request::ChatReport { id, update }).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => *r,
     }
 }
 
@@ -415,12 +437,15 @@ async fn action_approval(
         "decline" => false,
         _ => return bad(StatusCode::BAD_REQUEST, "decision_is_approve_or_decline"),
     };
-    match blocking(move || actions::decide(&ctx, &id, approve, &d.extension_instance_id, d.detail))
-        .await
-    {
-        Some(Ok(a)) => Json(json!({ "ok": true, "action": a })).into_response(),
-        Some(Err(r)) => refused(&r),
-        None => bad(StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+    let request = Request::ChatDecide {
+        id,
+        approve,
+        by: d.extension_instance_id,
+        detail: d.detail,
+    };
+    match ask_chat(ctx, request).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => *r,
     }
 }
 
@@ -428,8 +453,17 @@ async fn attachment_read(
     State(ctx): State<Arc<Ctx>>,
     UrlPath((id, attachment)): UrlPath<(String, String)>,
 ) -> HttpResponse {
-    match actions::attachment(&ctx, &id, &attachment) {
-        Ok((mime, bytes)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
-        Err(r) => refused(&r),
-    }
+    use base64::Engine as _;
+    let v = match ask_chat(ctx, Request::ChatAttachment { id, attachment }).await {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(v["bytes"].as_str().unwrap_or(""))
+        .unwrap_or_default();
+    let media_type = v["media_type"]
+        .as_str()
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    ([(header::CONTENT_TYPE, media_type)], bytes).into_response()
 }

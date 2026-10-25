@@ -1,5 +1,5 @@
-//! The browser extension's side of Polylogue: the capture spool, the
-//! chat-action queue, and the routes the extension calls through its native messaging
+//! The browser extension's side of Polylogue: the capture spool, chat
+//! actions, and the routes the extension calls through its native messaging
 //! host, `polylogue browser-host`. Chrome starts the host only for the
 //! extension IDs its manifest names, so no token or pairing is needed. The
 //! host writes captures into the spool, which the daemon ingests like any
@@ -33,10 +33,9 @@ pub const HOST_NAME: &str = "com.polylogue.browser_capture";
 pub struct Ctx {
     /// `<state>/browser-capture`: one file per captured conversation.
     pub spool: PathBuf,
-    /// `<state>/browser-actions`: one file per action, `inputs/` for
-    /// attachment bytes, `capture-health/` for the latest report per
-    /// provider.
-    pub actions: PathBuf,
+    /// `<state>/browser-capture-health`: the latest capture-health report
+    /// per provider.
+    pub health: PathBuf,
     /// Stable per archive, so the extension can tell its receiver apart.
     pub receiver_id: String,
     /// The daemon's socket.
@@ -48,16 +47,15 @@ impl Ctx {
     /// daemon's loop sees it (`config`), for the archive at `archive`.
     pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {
         let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
-        let actions = config.state_dir().join("browser-actions");
+        let health = config.state_dir().join("browser-capture-health");
         fs::create_dir_all(&spool)?;
-        fs::create_dir_all(actions.join("inputs"))?;
-        fs::create_dir_all(actions.join("capture-health"))?;
+        fs::create_dir_all(&health)?;
         Ok(Self {
             spool,
-            actions,
+            health,
             receiver_id: format!(
                 "polylogue:{}",
-                crate::web::access::archive_key(&archive.root)
+                crate::runtime_dir::archive_key(&archive.root)
             ),
             socket: archive.socket(),
         })
@@ -100,12 +98,6 @@ impl Ctx {
 
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
-}
-
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 pub fn now_iso() -> String {

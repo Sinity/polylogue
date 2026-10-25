@@ -39,6 +39,7 @@ impl From<QueryError> for Failure {
 }
 
 pub(crate) mod feed;
+pub(crate) mod notes;
 mod page;
 use page::Cursor;
 
@@ -139,7 +140,23 @@ fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Op
         saved: saved_queries(reader)?,
         kept: kept_results(reader)?,
         fields: ask.fields.to_vec(),
+        chat_pages: chat_pages(),
     })
+}
+
+/// Every origin's web chat pages, for pasted conversation URLs.
+fn chat_pages() -> Vec<polylogue_query::ChatPage> {
+    polylogue_sources::origin::ORIGINS
+        .iter()
+        .filter_map(|o| {
+            let web = o.web.as_ref()?;
+            Some(polylogue_query::ChatPage {
+                origin: o.name.to_owned(),
+                hosts: web.hosts.iter().map(|h| (*h).to_owned()).collect(),
+                path: web.path.to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// Runs a query in full for keeping: its rows, and, when it has one

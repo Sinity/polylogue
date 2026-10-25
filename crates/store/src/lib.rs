@@ -10,6 +10,7 @@
 pub mod archive;
 pub mod assets;
 pub mod blobs;
+pub mod chat_actions;
 mod containers;
 pub mod context;
 pub mod derive;
@@ -45,9 +46,8 @@ pub mod writer;
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
-pub use notes::NoteFilter;
-pub use read::{KnownInput, ReadPool, Reader, SqlValue, Status, StoredImport};
-pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
+pub use read::{BehindChain, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status};
+pub use user_writes::{Delivery, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
     Writer, WriterSender,
@@ -103,6 +103,8 @@ pub enum StoreError {
         "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
     )]
     ExcisionInsideZip { input: String, file: String },
+    #[error("chat action refused: {0}")]
+    ChatAction(&'static str),
     #[error("{0}")]
     Invalid(String),
 }

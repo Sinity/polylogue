@@ -31,6 +31,10 @@ pub enum Block {
         /// The file the call reads or edits, when it names one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// A command a script call ran, recorded without a call of its own:
+        /// the script's call is then not counted beside its commands.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        run_by_script: bool,
     },
     /// A tool's result. It lives in the message that carried it and points
     /// at its call by `call_id`; the call may be in an earlier message.
@@ -151,6 +155,35 @@ pub enum ToolOutcome {
     Unknown {
         reason: UnknownReason,
     },
+}
+
+/// A tool call's outcome as stored and queried: `pending` is a call with
+/// no result while the harness reports it running, decided when read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallOutcome {
+    Ok,
+    Error,
+    Pending,
+    Unknown,
+}
+
+stored_names!(CallOutcome {
+    Ok => "ok",
+    Error => "error",
+    Pending => "pending",
+    Unknown => "unknown",
+});
+
+impl ToolOutcome {
+    /// The stored outcome; never `pending`, which only a read decides.
+    pub fn stored(&self) -> CallOutcome {
+        match self {
+            ToolOutcome::Ok => CallOutcome::Ok,
+            ToolOutcome::Error { .. } => CallOutcome::Error,
+            ToolOutcome::NoResult | ToolOutcome::Unknown { .. } => CallOutcome::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

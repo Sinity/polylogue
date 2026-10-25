@@ -123,30 +123,17 @@ impl Piece {
 /// no index row refers to it; [`delete_marked`] removes the file after the
 /// caller's transaction commits.
 pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<bool> {
-    refuse_delta_base(archive, hash)?;
     Ok(archive.execute(
         "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state IN ('present', 'writing')
-         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)
+         AND NOT EXISTS (SELECT 1 FROM chat_action_attachment WHERE blob = ?1)",
         [&hash.0[..]],
     )? > 0)
 }
 
-/// Refuses when `hash` is the base another blob is stored as a delta of.
-pub(crate) fn refuse_delta_base(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<()> {
-    let delta_base: bool = archive.query_row(
-        "SELECT EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
-        [&hash.0[..]],
-        |r| r.get(0),
-    )?;
-    if delta_base {
-        return Err(crate::StoreError::ExcisionBlobReferenced(*hash));
-    }
-    Ok(())
-}
-
 /// Brings every blob row a stop or a failed install left behind to a final
 /// state, and returns how many became `present`. A `writing` row that an
-/// extent or a delta refers to becomes `present` when its file is under its
+/// extent refers to becomes `present` when its file is under its
 /// content name (installation is a rename, so a file there is whole);
 /// without the file it stays `writing`, is reported, and the loop reads its
 /// input again. A `writing` row nothing in the archive refers to is an
@@ -158,8 +145,7 @@ pub(crate) fn settle(archive: &rusqlite::Connection, store: &hashed_blobs::Store
     let tx = archive.unchecked_transaction()?;
     tx.execute(
         "UPDATE blob SET state = 'deleting' WHERE state = 'writing'
-         AND NOT EXISTS (SELECT 1 FROM extent WHERE extent.blob = blob.hash)
-         AND NOT EXISTS (SELECT 1 FROM blob AS delta WHERE delta.base = blob.hash)",
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE extent.blob = blob.hash)",
         [],
     )?;
     let waiting: Vec<Vec<u8>> = tx
@@ -203,7 +189,7 @@ pub(crate) fn delete_marked(
     for (hash, place) in &marked {
         let referenced: bool = archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM extent WHERE blob = ?1)
-                 OR EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
+                 OR EXISTS(SELECT 1 FROM chat_action_attachment WHERE blob = ?1)",
             [hash],
             |r| r.get(0),
         )?;

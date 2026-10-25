@@ -1,6 +1,21 @@
 use super::*;
 use crate::daemon::{Request, Response, server, service};
 
+/// Every note, as the `notes` query lists them.
+fn notes(ctx: &Ctx) -> Vec<Value> {
+    let Some(Response::Ok { data }) = ctx.ask(&Request::Query {
+        text: "notes".into(),
+        cursor: None,
+        page_size: None,
+        why: false,
+        session: None,
+        fields: vec![],
+    }) else {
+        panic!("notes unavailable")
+    };
+    data["rows"].as_array().unwrap().clone()
+}
+
 fn selection() -> Value {
     json!({
         "request_id":"019c6e27-e55b-73d1-87d8-4e01f1f75043",
@@ -67,25 +82,17 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     assert_eq!(retry.status, 200, "{}", retry.json());
     assert_eq!(retry.json()["note"]["id"], input["request_id"]);
     assert_eq!(retry.json()["note"]["repeat"], true);
-    let Some(Response::Ok { data }) = ctx.ask(&Request::Notes {
-        filter: Default::default(),
-    }) else {
-        panic!("notes unavailable")
-    };
-    assert_eq!(data.as_array().unwrap().len(), 1);
+    let data = notes(&ctx);
+    assert_eq!(data.len(), 1);
     assert_eq!(data[0]["author"], "operator");
     assert_eq!(
-        data[0]["targets"],
-        json!(["message:chatgpt:t1", "session:chatgpt:selection-session"])
+        data[0]["target"],
+        "message:chatgpt:t1 session:chatgpt:selection-session"
     );
     let value: Value = serde_json::from_str(data[0]["value"].as_str().unwrap()).unwrap();
     assert_eq!(value["body"], input["body"]);
     assert_eq!(value["quote"], input["quote"]);
     assert_eq!(value["source"], input["source"]);
-    assert!(
-        data[0].get("source").is_none(),
-        "the note is not an inferred inline marker"
-    );
     let mut changed = input;
     changed["body"] = "An edit needs a new note ID".into();
     let conflict = exchange(
@@ -126,12 +133,8 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
             400
         );
     }
-    let Some(Response::Ok { data }) = ctx.ask(&Request::Notes {
-        filter: Default::default(),
-    }) else {
-        panic!("notes unavailable")
-    };
-    assert!(data.as_array().unwrap().is_empty());
+    let data = notes(&ctx);
+    assert!(data.is_empty());
 }
 
 #[test]
@@ -158,10 +161,6 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
         selection().to_string().as_bytes(),
     );
     assert_eq!(refused.status, 409, "{}", refused.json());
-    let Some(Response::Ok { data }) = ctx.ask(&Request::Notes {
-        filter: Default::default(),
-    }) else {
-        panic!("notes unavailable")
-    };
-    assert!(data.as_array().unwrap().is_empty());
+    let data = notes(&ctx);
+    assert!(data.is_empty());
 }

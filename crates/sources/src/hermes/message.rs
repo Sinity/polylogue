@@ -315,6 +315,7 @@ fn tool_call(call: &Json) -> Block {
         .map(str::to_owned);
     let path = text(&input, "path");
     Block::ToolCall {
+        run_by_script: false,
         call_id: native(call, "id").or_else(|| native(call, "call_id")),
         tool,
         action,

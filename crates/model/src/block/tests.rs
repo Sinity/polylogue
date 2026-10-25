@@ -39,6 +39,7 @@ fn a_tool_call_stored_without_an_action_reads_as_other() {
 fn text_covers_prose_and_thinking_only() {
     assert_eq!(Block::Text { text: "a".into() }.text(), Some("a"));
     let call = Block::ToolCall {
+        run_by_script: false,
         call_id: None,
         tool: None,
         action: ToolAction::Other,

@@ -85,9 +85,6 @@ fn receive(
                 output.flush()?;
                 return Ok(false);
             }
-            Response::Accepted { .. } => {
-                return Err(invalid("the change feed cannot accept a write"));
-            }
         };
         let line: Line = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
         let complete = match line {

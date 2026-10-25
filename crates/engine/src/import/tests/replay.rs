@@ -43,7 +43,14 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     assert_eq!(quiet.inputs_changed, 0);
     let pool = ReadPool::open(&e.archive).unwrap();
     let r = pool.reader().unwrap();
-    assert_eq!(r.stored_imports().unwrap().len(), 2);
+    assert_eq!(
+        r.query(
+            "SELECT count(DISTINCT input) AS n FROM a.revision WHERE produced='imported'",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        2
+    );
     assert!(
         r.known_watched_inputs(&e.config.machine)
             .unwrap()
@@ -91,7 +98,14 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
     let r = pool.reader().unwrap();
     let watched = r.known_watched_inputs(&e.config.machine).unwrap();
     assert_eq!(watched.len(), 1);
-    assert_ne!(watched[0].input_id, r.stored_imports().unwrap()[0].id);
+    let imported = r
+        .query(
+            "SELECT DISTINCT input FROM a.revision WHERE produced='imported'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_ne!(watched[0].input_id, imported[0]["input"]);
 }
 
 #[test]

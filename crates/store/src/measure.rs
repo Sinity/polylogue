@@ -120,8 +120,8 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, scope: &Scope) -> Result<u64>
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.root = hn.root
                              AND later.commit_seq > hn.commit_seq)
-             AND NOT EXISTS (SELECT 1 FROM a.note w JOIN a.note_target wt ON wt.note_id = w.id
-                             WHERE w.kind = 'withdrawal' AND wt.ref = 'note:' || hn.root))"
+             AND NOT EXISTS (SELECT 1 FROM a.note_relation w
+                             WHERE w.kind = 'withdraws' AND w.other = 'note:' || hn.root))"
     );
     let n: i64 = reader
         .conn()?

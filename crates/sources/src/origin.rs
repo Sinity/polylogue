@@ -102,6 +102,62 @@ pub struct OriginSpec {
     /// Environment variables the tool sets in the commands its agent runs.
     /// Any of them in a process's environment means an agent started it.
     pub agent_env: &'static [&'static str],
+    /// The web chat whose conversation pages hold this origin's sessions.
+    pub web: Option<WebChat>,
+    /// How files beside this origin's export name the assets its messages
+    /// attach.
+    pub assets: Option<ExportAssets>,
+    /// What fetches this origin's files into its spool.
+    pub collector: Option<Collector>,
+}
+
+/// Fetches an origin's files into its spool, each pass while its setting
+/// is `on`. The files it writes change a watched location, so the loop
+/// collects them like any other.
+pub struct Collector {
+    pub setting: &'static str,
+    /// Writes what is new into the spool (second argument); the state
+    /// directory (first) holds the credentials the operator gave it.
+    pub sync: fn(&Path, &Path) -> Result<(), String>,
+}
+
+/// An export's asset files: the member files that hold attachment bytes,
+/// named by the provider's asset ID, and the sidecars that describe them.
+pub struct ExportAssets {
+    /// The asset ID a member file holds, from its path in the export.
+    pub member_id: fn(&str) -> Option<&str>,
+    /// The kind of sidecar a member is, from its path in the export.
+    pub sidecar_kind: fn(&str) -> Option<&str>,
+    /// Reads a sidecar, one asset's metadata at a time.
+    pub metadata: ReadSidecar,
+}
+
+/// Reads one sidecar member, handing each asset's metadata to the callback.
+pub type ReadSidecar = fn(
+    &str,
+    &mut dyn std::io::Read,
+    &mut dyn FnMut(AssetMetadata) -> Result<(), String>,
+) -> Result<(), crate::export::ScanError>;
+
+/// What a sidecar says about one asset.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AssetMetadata {
+    pub source_id: String,
+    pub name: Option<String>,
+    pub media_type: Option<String>,
+    pub size: Option<u64>,
+}
+
+/// A web chat: the page that shows one conversation is
+/// `https://<host>/<path>/<conversation id>`.
+pub struct WebChat {
+    /// The names the browser extension gives this provider.
+    pub extension_names: &'static [&'static str],
+    /// The hosts that serve conversation pages, the current one first.
+    pub hosts: &'static [&'static str],
+    pub path: &'static str,
+    /// Whether the extension can draft and submit turns on its pages.
+    pub actions: bool,
 }
 
 impl OriginSpec {
@@ -157,6 +213,9 @@ macro_rules! declared {
             bare_uuid_ids: false,
             quota: None,
             agent_env: &[],
+            web: None,
+            assets: None,
+            collector: None,
         }
     };
 }
@@ -175,6 +234,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: true,
         quota: Some(crate::claude_code::QUOTA_LIMITS),
         agent_env: &["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "claude-code-side",
@@ -189,6 +251,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "claude-code-history",
@@ -203,6 +268,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "codex",
@@ -217,6 +285,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: true,
         quota: Some(&[]),
         agent_env: &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "codex-database",
@@ -231,6 +302,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "gemini-cli",
@@ -245,6 +319,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &["GEMINI_CLI"],
+        web: None,
+        assets: None,
+        collector: None,
     },
     declared!("antigravity", Live, [".gemini/antigravity/**"]),
     OriginSpec {
@@ -260,6 +337,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "grok-cli",
@@ -274,6 +354,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "polylogue-repo-lookup",
@@ -288,6 +371,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
@@ -302,6 +388,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
@@ -316,6 +405,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "export-file",
@@ -330,6 +422,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
@@ -344,6 +439,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "chatgpt",
@@ -358,6 +456,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: Some(WebChat {
+            extension_names: &["chatgpt"],
+            hosts: &["chatgpt.com", "chat.openai.com"],
+            path: "c",
+            actions: true,
+        }),
+        assets: Some(crate::chatgpt::assets::RULES),
+        collector: None,
     },
     OriginSpec {
         name: "claude-ai",
@@ -372,6 +478,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: Some(WebChat {
+            extension_names: &["claude-ai", "claude"],
+            hosts: &["claude.ai"],
+            path: "chat",
+            actions: false,
+        }),
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "claude-design",
@@ -386,6 +500,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
@@ -400,6 +517,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: Some(WebChat {
+            extension_names: &[],
+            hosts: &["aistudio.google.com"],
+            path: "prompts",
+            actions: false,
+        }),
+        assets: None,
+        collector: Some(crate::ai_studio::drive::COLLECTOR),
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
@@ -414,6 +539,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: Some(WebChat {
+            extension_names: &["gemini"],
+            hosts: &["gemini.google.com"],
+            path: "app",
+            actions: false,
+        }),
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: "grok",
@@ -428,6 +561,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: Some(WebChat {
+            extension_names: &["grok"],
+            hosts: &["grok.com"],
+            path: "c",
+            actions: false,
+        }),
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
@@ -442,6 +583,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
@@ -456,6 +600,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
     // Last of the imports: its shapes are the most generic, so a specific
     // origin that recognizes the same file is tried first.
@@ -472,6 +619,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         bare_uuid_ids: false,
         quota: None,
         agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
     },
 ];
 
@@ -486,6 +636,20 @@ pub fn agent_env() -> impl Iterator<Item = &'static str> {
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
     ORIGINS.iter().find(|o| o.name == name)
+}
+
+/// Every origin's export asset rules.
+pub fn export_assets() -> impl Iterator<Item = &'static ExportAssets> {
+    ORIGINS.iter().filter_map(|o| o.assets.as_ref())
+}
+
+/// The origin whose web chat the browser extension calls `name`.
+pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
+    ORIGINS.iter().find(|o| {
+        o.web
+            .as_ref()
+            .is_some_and(|w| w.extension_names.contains(&name))
+    })
 }
 
 /// The export file name of a database found at a [`Capture::LogicalExport`]

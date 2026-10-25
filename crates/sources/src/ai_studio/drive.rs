@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The setting that turns the collector on.
 pub const SETTING: &str = "drive.ai-studio";
 const FOLDER: &str = "Google AI Studio";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -49,7 +50,7 @@ impl Default for Endpoints {
     }
 }
 
-pub struct Collector {
+pub struct Drive {
     pub endpoints: Endpoints,
     pub token_path: PathBuf,
     pub spool: PathBuf,
@@ -77,7 +78,7 @@ struct Revision {
     modified: String,
 }
 
-impl Collector {
+impl Drive {
     pub fn sync(&self) -> Result<SyncReport, DriveError> {
         let token = self.access_token()?;
         let agent = ureq::Agent::new_with_defaults();
@@ -146,10 +147,7 @@ impl Collector {
         std::fs::create_dir_all(&self.spool)?;
         let listing = serde_json::to_vec_pretty(&serde_json::json!({ "files": files }))
             .expect("JSON value serializes");
-        write_if_changed(
-            &self.spool.join(polylogue_sources::ai_studio::LISTING),
-            &listing,
-        )?;
+        write_if_changed(&self.spool.join(super::LISTING), &listing)?;
 
         let mut state = self.load_state();
         let mut report = SyncReport {
@@ -244,6 +242,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
         .map_err(std::io::Error::from)?;
     Ok(())
 }
+
+/// The origin's collector: Google's Drive, the token the operator
+/// authorized in `state_dir`, and the origin's spool.
+pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
+    setting: SETTING,
+    sync: |state_dir, spool| {
+        Drive {
+            endpoints: Endpoints::default(),
+            token_path: state_dir.join("token.json"),
+            spool: spool.to_path_buf(),
+        }
+        .sync()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    },
+};
 
 #[cfg(test)]
 mod tests;

@@ -87,51 +87,10 @@ static TURN_FIELDS: Fields = Fields::new(&[
     ),
 ]);
 
-/// A web chat the extension captures from: the page that shows one
-/// conversation is `https://<host>/<path>/<conversation id>`.
-pub struct WebChat {
-    /// The `session.provider` name the extension sends.
-    pub provider: &'static str,
-    pub host: &'static str,
-    pub path: &'static str,
-}
-
-pub const WEB_CHATS: &[WebChat] = &[
-    WebChat {
-        provider: "chatgpt",
-        host: "chatgpt.com",
-        path: "c",
-    },
-    WebChat {
-        provider: "claude-ai",
-        host: "claude.ai",
-        path: "chat",
-    },
-    WebChat {
-        provider: "grok",
-        host: "grok.com",
-        path: "c",
-    },
-    WebChat {
-        provider: "gemini",
-        host: "gemini.google.com",
-        path: "app",
-    },
-];
-
-pub fn web_chat(provider: &str) -> Option<&'static WebChat> {
-    WEB_CHATS.iter().find(|chat| chat.provider == provider)
-}
-
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.
 pub fn origin_of(provider: &str) -> &str {
-    match provider {
-        "chatgpt" => crate::chatgpt::ORIGIN,
-        "claude-ai" | "claude" => crate::claude_ai::ORIGIN,
-        "gemini" => crate::gemini_app::ORIGIN,
-        other => other,
-    }
+    crate::origin::by_extension_name(provider).map_or(provider, |o| o.name)
 }
 
 /// The session a capture of `provider_session_id` from `provider` lands in.

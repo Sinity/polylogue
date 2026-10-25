@@ -1,5 +1,6 @@
 //! Derive export associations from stored observations and sidecars.
 use super::*;
+use polylogue_sources::origin::export_assets;
 use polylogue_store::assets::AssetRow;
 use polylogue_store::export_items::ExportItems;
 
@@ -12,12 +13,13 @@ impl Engine {
         let (members, through) = self.reads.reader()?.unindexed_import_members()?;
         let mut staged = ExportItems::new()?;
         for source in members {
-            let source_id =
-                polylogue_sources::chatgpt::assets::member_id(&source.membership.member)
-                    .map(str::to_owned);
-            let sidecar =
-                polylogue_sources::chatgpt::assets::sidecar_kind(&source.membership.member)
-                    .map(str::to_owned);
+            let member = &source.membership.member;
+            let source_id = export_assets()
+                .find_map(|rules| (rules.member_id)(member))
+                .map(str::to_owned);
+            let sidecar = export_assets()
+                .find_map(|rules| (rules.sidecar_kind)(member))
+                .map(str::to_owned);
             stage(
                 &mut staged,
                 &AssetRow::Member {
@@ -57,10 +59,14 @@ impl Engine {
             )?;
             staged.begin_scan()?;
             let mut ordinal = 0;
-            let result = polylogue_sources::chatgpt::assets::metadata(
+            let Some(rules) = export_assets().find(|rules| (rules.sidecar_kind)(&member).is_some())
+            else {
+                continue;
+            };
+            let result = (rules.metadata)(
                 &member,
-                chain.reader(Arc::clone(&self.blobs)),
-                |metadata| {
+                &mut chain.reader(Arc::clone(&self.blobs)),
+                &mut |metadata| {
                     stage(
                         &mut staged,
                         &AssetRow::Metadata {

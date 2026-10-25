@@ -38,6 +38,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
                 message.role = Role::Assistant;
                 message.prompt_kind = None;
                 message.blocks.push(Block::ToolCall {
+                    run_by_script: false,
                     call_id: Some(format!("call-{}", n / 3)),
                     tool: Some("Bash".into()),
                     action: polylogue_model::ToolAction::Shell,

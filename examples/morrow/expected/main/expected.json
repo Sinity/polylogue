@@ -72,23 +72,6 @@
         "Shorter, and mention chrono."
       ]
     ],
-    "14 messages where written_by:human inherited:* \"chrono\"": [
-      [
-        "#2",
-        "let's use chrono, not time",
-        false
-      ],
-      [
-        "#4",
-        "let's use chrono, not time",
-        true
-      ],
-      [
-        "#8",
-        "Shorter, and mention chrono.",
-        false
-      ]
-    ],
     "15 tool_calls where outcome:error": [
       [
         "#2",

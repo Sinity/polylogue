@@ -15,8 +15,8 @@ use crate::archive::{Archive, bump_counter, open_write};
 use crate::blobs::{Change, FileFacts, Piece, Stored};
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
-    Role, Session, SessionId, Timestamp, ToolAction, ToolOutcome,
+    Accounting, BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, Role,
+    Session, SessionId, Timestamp, ToolAction, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
@@ -62,6 +62,11 @@ enum Msg {
     Assets(
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
+    ),
+    /// Bytes no input holds (a chat action's attachment), as one blob.
+    StoreBlob(
+        Box<(crate::Piece, Option<crate::staging::PreparedBytes>)>,
+        SyncSender<Result<BlobHash>>,
     ),
     Stop,
     Batch(Box<Batch>),
@@ -128,29 +133,20 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "session_started",
     "session_cwd",
     "session_repo",
-    "session_collection",
     "session_live",
-    "session_live_checkout",
     "message_prose",
-    "message_unseen",
     "message_branch",
-    "message_copy",
-    "message_response",
-    "message_native",
-    "block_secret",
     "tool_call_tool",
     "tool_call_action",
     "tool_call_failed",
     "tool_call_path",
     "tool_call_repo_command",
-    "message_disagreement_input",
     "link_child",
     "event_after",
     "event_kind",
     "commit_link_hash",
     "pr_link_number",
     "work_node_session",
-    "marker_message",
     "removed_session_changed",
 ];
 
@@ -302,6 +298,23 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
+    /// `file` is the private file [`crate::Archive::prepare_piece`] wrote
+    /// for a piece too large to keep inline.
+    pub fn store_blob(
+        &self,
+        piece: crate::Piece,
+        file: Option<crate::staging::PreparedBytes>,
+    ) -> Result<BlobHash> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::StoreBlob(Box::new((piece, file)), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Completes blobs a stop left `writing` ([`Inner::finish_writing`]).
     pub fn finish_writing(
         &self,
@@ -381,6 +394,19 @@ impl WriterSender {
         user_via(&self.0, request)
     }
 
+    /// As [`Writer::store_blob`].
+    pub fn store_blob(
+        &self,
+        piece: crate::Piece,
+        file: Option<crate::staging::PreparedBytes>,
+    ) -> Result<BlobHash> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::StoreBlob(Box::new((piece, file)), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
@@ -431,6 +457,7 @@ impl Inner {
         let mut file_groups = Vec::new();
         let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
+        let mut blobs = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
             let mut group = Vec::new();
@@ -452,6 +479,10 @@ impl Inner {
                     }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
+                        false
+                    }
+                    Msg::StoreBlob(blob, reply) => {
+                        blobs.push((blob, reply));
                         false
                     }
                     Msg::Stop => {
@@ -517,6 +548,10 @@ impl Inner {
             }
             for (store, reply) in finish_writing.drain(..) {
                 let _ = reply.send(self.finish_writing(&store));
+            }
+            for (blob, reply) in blobs.drain(..) {
+                let (piece, file) = *blob;
+                let _ = reply.send(self.store_blob(piece, file));
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
@@ -824,6 +859,49 @@ impl Inner {
     }
 
     /// One user request in its own `archive.db` transaction.
+    /// A blob row, then its file, then `present`: a stop between them
+    /// leaves a `writing` row nothing refers to, which opening the archive
+    /// settles.
+    fn store_blob(
+        &mut self,
+        piece: crate::Piece,
+        file: Option<crate::staging::PreparedBytes>,
+    ) -> Result<BlobHash> {
+        let _write = crate::write_lock::hold(&self.archive)?;
+        let Some(file) = file else {
+            let tx = self.archive.transaction()?;
+            bytes::insert_blob(&tx, &piece)?;
+            tx.commit()?;
+            return Ok(piece.hash);
+        };
+        if file.owner != self.location.root || file.hash() != piece.hash {
+            return Err(StoreError::Invalid(
+                "a blob's file is a private file of this archive with its bytes".into(),
+            ));
+        }
+        self.archive.execute(
+            "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
+             VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
+            params![&piece.hash.0[..], piece.size as i64],
+        )?;
+        let present: bool = self.archive.query_row(
+            "SELECT state = 'present' FROM blob WHERE hash = ?1",
+            [&piece.hash.0[..]],
+            |r| r.get(0),
+        )?;
+        if !present {
+            let store = std::sync::Arc::clone(&file.store);
+            file.prepared.install_checked::<StoreError>(|| Ok(()))?;
+            let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(piece.hash.0))?)
+                .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
+            self.archive.execute(
+                "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
+                params![&piece.hash.0[..], size],
+            )?;
+        }
+        Ok(piece.hash)
+    }
+
     fn write_user(
         &mut self,
         request: &crate::user_writes::UserRequest,

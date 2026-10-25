@@ -33,10 +33,7 @@ pub fn routes() -> Router<Arc<Web>> {
                         move |State(web): State<Arc<Web>>, Json(value): Json<Value>| async move {
                             json_body(web, build, value).await
                         },
-                    )
-                    .layer(axum::extract::DefaultBodyLimit::max(
-                        crate::browser::actions::BODY_LIMIT,
-                    )),
+                    ),
                 );
                 continue;
             }
@@ -47,10 +44,7 @@ pub fn routes() -> Router<Arc<Web>> {
                         move |State(web): State<Arc<Web>>, body: axum::body::Bytes| async move {
                             browser_answer(&web, ask(&web, build(body.to_vec())).await)
                         },
-                    )
-                    .layer(axum::extract::DefaultBodyLimit::max(
-                        crate::browser::actions::BODY_LIMIT,
-                    )),
+                    ),
                 );
                 continue;
             }
@@ -84,7 +78,8 @@ pub fn routes() -> Router<Arc<Web>> {
             )
         };
     }
-    router
+    // An attachment or a request is as large as what it carries.
+    router.layer(axum::extract::DefaultBodyLimit::disable())
 }
 
 async fn json_body(

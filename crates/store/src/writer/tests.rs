@@ -1,6 +1,8 @@
 use super::*;
 use crate::ReadPool;
-use polylogue_model::{Disposition, Json, LinkKind, MessageId, SessionKind, TitleSource, Usage};
+use polylogue_model::{
+    Disposition, Json, LinkKind, MessageId, PromptKind, SessionKind, TitleSource, Usage,
+};
 
 mod input_events;
 
@@ -198,6 +200,7 @@ fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
     let w = world();
     let mut open = text_message("r", "first", Role::Assistant, "open", None);
     open.blocks.push(Block::ToolCall {
+        run_by_script: false,
         call_id: Some("t1".into()),
         tool: Some("Bash".into()),
         action: polylogue_model::ToolAction::Shell,
@@ -224,6 +227,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         let w = world();
         let mut call = text_message("c", "s", Role::Assistant, "", Some("tool_use"));
         call.blocks = vec![Block::ToolCall {
+            run_by_script: false,
             call_id: Some("t1".into()),
             tool: Some("Bash".into()),
             action: polylogue_model::ToolAction::Shell,
@@ -711,6 +715,7 @@ fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
 fn call_message(id: &str, call: &str) -> Message {
     let mut m = text_message(id, "s", Role::Assistant, "", None);
     m.blocks = vec![Block::ToolCall {
+        run_by_script: false,
         call_id: Some(call.into()),
         tool: Some("Bash".into()),
         action: polylogue_model::ToolAction::Shell,

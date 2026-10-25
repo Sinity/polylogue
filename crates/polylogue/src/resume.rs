@@ -76,7 +76,9 @@ pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
     limit: u64,
+    now: polylogue_model::Timestamp,
 ) -> Result<Vec<ResumableSession>, StoreError> {
+    use crate::daemon::query::notes;
     use polylogue_model::{NoteKind, Target};
     let dirs = crate::briefing::scope_dirs(cwd);
     let mut out = Vec::new();
@@ -84,13 +86,13 @@ pub fn resumable(
     for s in reader.sessions_under(&dirs, None, limit.saturating_mul(10).max(50))? {
         let id = s.id.to_string();
         let open = reader.open_items(&id)?.unwrap_or_default();
-        let follow_ups: Vec<String> = reader
-            .notes(&polylogue_store::NoteFilter {
-                targets: vec![Target::Session(s.id.clone())],
-                kinds: vec![NoteKind::Handoff, NoteKind::Blocker],
-                agents: Some(false),
-                ..polylogue_store::NoteFilter::default()
-            })?
+        let conditions = format!(
+            "{} (kind:{} OR kind:{}) agent:false",
+            notes::about(&[Target::Session(s.id.clone())]),
+            NoteKind::Handoff.as_str(),
+            NoteKind::Blocker.as_str(),
+        );
+        let follow_ups: Vec<String> = notes::list(reader, &conditions, now)?
             .into_iter()
             .map(|n| format!("{}: {}", n.kind.as_str(), n.value.unwrap_or_default()))
             .collect();

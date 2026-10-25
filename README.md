@@ -53,7 +53,7 @@ it.
 
 | Command | What it does |
 |---|---|
-| `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, runs, deliveries, processes, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, deliveries, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
 | `status` | What the archive holds and what the daemon is doing. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
@@ -76,7 +76,6 @@ it.
 | `hooks install\|uninstall`, `hook EVENT` | Claude Code hooks: live state and the session-start brief. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
 | `completions SHELL` | Shell completions for bash, elvish, fish, PowerShell or zsh. |
-| `sinex status\|cutover` | Not built yet, so hidden from help: the Sinex mode's state and the move to it. |
 
 The browser action commands exist only over HTTP: JSON enqueue at
 `/api/v1/browser-actions` and binary upload at

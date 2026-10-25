@@ -4,7 +4,6 @@ use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
 use crate::daemon::{ReadTarget, Request};
 use polylogue_model::{Author, NewNote, NoteKind, Target};
-use polylogue_store::NoteFilter;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -197,7 +196,9 @@ pub fn note_withdraw(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
+/// `note list`: a `notes` query over the given targets and kinds.
 pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
+    use crate::daemon::query::notes;
     let mut t = targets(&v.list("targets"))?;
     if v.0.contains_key("cwd") {
         let dir = cwd(v, caller)?;
@@ -208,21 +209,33 @@ pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
             t.push(Target::Repo(name.to_owned()));
         }
     }
-    Ok(Request::Notes {
-        filter: NoteFilter {
-            targets: t,
-            kinds: v
-                .list("kind")
-                .iter()
-                .map(|k| note_kind(k))
-                .collect::<Result<_, _>>()?,
-            agents: v.flag("agents").then_some(true),
-            history: v.flag("history"),
-            withdrawn: v.flag("withdrawn"),
-            after_seq: None,
-            limit: v.integer("limit"),
-        },
-    })
+    let mut conditions = Vec::new();
+    if !t.is_empty() {
+        conditions.push(notes::about(&t));
+    }
+    let kinds = v
+        .list("kind")
+        .iter()
+        .map(|k| note_kind(k).map(|k| format!("kind:{}", k.as_str())))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !kinds.is_empty() {
+        conditions.push(format!("({})", kinds.join(" OR ")));
+    }
+    if v.flag("agents") {
+        conditions.push("agent:true".into());
+    }
+    if v.flag("history") {
+        conditions.push("current:*".into());
+    }
+    if v.flag("withdrawn") {
+        conditions.push("withdrawn:*".into());
+    }
+    let text = if conditions.is_empty() {
+        "notes".to_owned()
+    } else {
+        format!("notes where {}", conditions.join(" "))
+    };
+    Ok(query_request(text, v.integer("limit"), v))
 }
 
 pub fn brief(_: &Command, v: &Values, caller: &Caller) -> Built {
@@ -354,10 +367,10 @@ pub fn embed(c: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn browser_action(value: Value) -> Built {
     serde_json::from_value(value)
-        .map(|action| Request::BrowserEnqueue { action })
+        .map(|action| Request::ChatEnqueue { action })
         .map_err(|error| format!("invalid browser action: {error}"))
 }
 
 pub fn browser_attachment(bytes: Vec<u8>) -> Request {
-    Request::BrowserUpload { bytes }
+    Request::ChatUpload { bytes }
 }

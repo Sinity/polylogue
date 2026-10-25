@@ -40,9 +40,7 @@ pub enum Unit {
     Notes,
     Links,
     Turns,
-    Runs,
     Deliveries,
-    Processes,
     Work,
     Changes,
 }

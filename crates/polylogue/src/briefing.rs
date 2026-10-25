@@ -16,9 +16,11 @@
 //! There is no size cap. A brief stays short by what it selects, and what
 //! it leaves out is listed with the command that shows it.
 
+use crate::daemon::query::notes;
+use polylogue_model::DeliveryEvent;
 use polylogue_model::{Note, NoteKind, SessionId, Target, Timestamp};
 use polylogue_store::search;
-use polylogue_store::{LeftOut, NoteFilter, Reader, StoreError};
+use polylogue_store::{LeftOut, Reader, StoreError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -188,7 +190,7 @@ pub fn prepare(
             session,
             source,
         } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, now),
-        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id),
+        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, now),
         Ask::Recall { text, cwd, .. } => recall(reader, text, cwd.as_deref(), delivery_id, now),
     }
 }
@@ -199,31 +201,33 @@ fn operator_notes(
     after_seq: Option<i64>,
     now: Timestamp,
 ) -> Result<Vec<Note>, StoreError> {
-    let notes = reader.notes(&NoteFilter {
-        targets,
-        kinds: [
-            NoteKind::Lesson,
-            NoteKind::Handoff,
-            NoteKind::Decision,
-            NoteKind::Blocker,
-            NoteKind::Goal,
-        ]
-        .into(),
-        agents: Some(false),
-        after_seq,
-        ..NoteFilter::default()
-    })?;
+    let kinds = [
+        NoteKind::Lesson,
+        NoteKind::Handoff,
+        NoteKind::Decision,
+        NoteKind::Blocker,
+        NoteKind::Goal,
+    ]
+    .map(|k| format!("kind:{}", k.as_str()))
+    .join(" OR ");
+    let mut conditions = format!("{} ({kinds}) agent:false", notes::about(&targets));
+    if let Some(after) = after_seq {
+        conditions.push_str(&format!(" write_counter:>{after}"));
+    }
+    let notes = notes::list(reader, &conditions, now)?;
     Ok(notes.into_iter().filter(|n| !n.expired_at(now)).collect())
 }
 
-fn agent_note_count(reader: &Reader<'_>, targets: Vec<Target>) -> Result<usize, StoreError> {
-    Ok(reader
-        .notes(&NoteFilter {
-            targets,
-            agents: Some(true),
-            ..NoteFilter::default()
-        })?
-        .len())
+fn agent_note_count(
+    reader: &Reader<'_>,
+    targets: &[Target],
+    now: Timestamp,
+) -> Result<u64, StoreError> {
+    notes::count(
+        reader,
+        &format!("{} agent:true", notes::about(targets)),
+        now,
+    )
 }
 
 fn day(t: Option<Timestamp>) -> String {
@@ -369,7 +373,7 @@ fn session_start(
             cwd.display()
         );
     }
-    let agent_notes = agent_note_count(reader, targets)?;
+    let agent_notes = agent_note_count(reader, &targets, now)?;
     if agent_notes > 0 {
         left_out.push(LeftOut {
             what: format!("{agent_notes} agent-written notes"),
@@ -388,10 +392,11 @@ fn session_start(
     }
     Ok(Prepared {
         event: match source {
-            StartSource::Startup | StartSource::Clear => "session_start",
-            StartSource::Resume => "resume",
-            StartSource::Compact => "compaction",
-        },
+            StartSource::Startup | StartSource::Clear => DeliveryEvent::SessionStart,
+            StartSource::Resume => DeliveryEvent::Resume,
+            StartSource::Compact => DeliveryEvent::Compaction,
+        }
+        .as_str(),
         text,
         refs,
         left_out,
@@ -404,6 +409,7 @@ fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,
     delivery_id: &str,
+    now: Timestamp,
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {
@@ -428,11 +434,14 @@ fn takeover(
                 .join("\n")
         })
     });
-    let notes = reader.notes(&NoteFilter {
-        targets: vec![Target::Session(session.clone())],
-        agents: Some(false),
-        ..NoteFilter::default()
-    })?;
+    let notes = notes::list(
+        reader,
+        &format!(
+            "{} agent:false",
+            notes::about(&[Target::Session(session.clone())])
+        ),
+        now,
+    )?;
     let open_items = reader.open_items(&id)?.unwrap_or_default();
 
     let mut text = String::new();
@@ -494,7 +503,7 @@ fn takeover(
         "\nThe full session: `polylogue read {id}`; its tool calls: `polylogue read {id} --view actions`."
     );
     Ok(Prepared {
-        event: "takeover",
+        event: DeliveryEvent::Takeover.as_str(),
         text,
         refs,
         left_out,
@@ -641,10 +650,7 @@ fn recall(
         }
         // Notes on the session: the operator's as they are, agents'
         // fenced and labelled as an agent's note, never as instructions.
-        let notes = reader.notes(&NoteFilter {
-            targets: vec![Target::Session(id.clone())],
-            ..NoteFilter::default()
-        })?;
+        let notes = notes::list(reader, &notes::about(&[Target::Session(id.clone())]), now)?;
         for n in notes {
             let body = n.value.as_deref().unwrap_or("").trim();
             if n.author.is_agent() {
@@ -686,7 +692,7 @@ fn recall(
         });
     }
     Ok(Prepared {
-        event: "recall",
+        event: DeliveryEvent::Recall.as_str(),
         text: out,
         refs,
         left_out,

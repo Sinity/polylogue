@@ -17,13 +17,16 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let archive_conn = open_archive_writer(&archive).unwrap();
-    let seen = BlobHash::of(b"synthetic previously seen text");
     let stored = BlobHash::of(b"synthetic stored embedded text");
     let removed = BlobHash::of(b"synthetic removed text");
     let removed_blob = BlobHash::of(b"synthetic removed attachment");
     archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
-    archive_conn.execute("INSERT INTO note_target(note_id,ref,seen_hash,anchor_input,anchor_chain,anchor_start,anchor_end) VALUES ('authored','message:claude-code:stable',?1,'original-input',7,11,29)", [&seen.0[..]]).unwrap();
-    archive_conn.execute("INSERT INTO variant(id,target,seen_hash,kind,coverage,body,author,machine,created_at) VALUES ('variant','message:claude-code:stable',?1,'summary','whole','exact transformed text','operator','synthetic',2)", [&seen.0[..]]).unwrap();
+    archive_conn
+        .execute(
+            "INSERT INTO note_target(note_id,ref) VALUES ('authored','message:claude-code:stable')",
+            [],
+        )
+        .unwrap();
     archive_conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',3,2)", []).unwrap();
     for (kind, value) in [
         ("session", "claude-code:blocked".to_owned()),
@@ -62,7 +65,6 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     let queries = [
         "SELECT * FROM note ORDER BY id",
         "SELECT * FROM note_target ORDER BY note_id,ref",
-        "SELECT * FROM variant ORDER BY id",
         "SELECT * FROM excision ORDER BY id",
         "SELECT * FROM excised ORDER BY kind, value",
     ];
@@ -89,10 +91,7 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     );
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     let after: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
-    assert_eq!(
-        after, before,
-        "authored values, seen hashes, anchors and excisions stay verbatim"
-    );
+    assert_eq!(after, before, "authored values and excisions stay verbatim");
     let matches = crate::excise::matching(
         &archive_conn,
         &["claude-code:blocked".into(), "claude-code:allowed".into()],

@@ -177,6 +177,7 @@ fn masking_context_continues_from_a_tool_label_into_its_body() {
         Role::Assistant,
         None,
         vec![Block::ToolCall {
+            run_by_script: false,
             call_id: None,
             tool: Some("-----BEGIN PRIVATE KEY-----".into()),
             action: ToolAction::Shell,

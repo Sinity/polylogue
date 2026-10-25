@@ -14,7 +14,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// A different version rebuilds the index into a new file. Raise it when the
 /// index schema, the row encoding, or what any parser produces from the same
 /// bytes changes.
-pub const INDEX_VERSION: u32 = 40;
+pub const INDEX_VERSION: u32 = 41;
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {

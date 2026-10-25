@@ -8,26 +8,21 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Drift {
     pub format: String,
-    /// `record:<type>`, `field:<json path>`, `user:<tag>`, `invalid_utf8`,
-    /// `time_unparsed` or `undecodable`.
+    /// `record:<type>`, `field:<json path>` or `undecodable:<reason>`.
     pub what: String,
     pub count: u64,
     pub inputs: u64,
-    /// When it was first and last seen, by record time.
-    pub first_at: Option<i64>,
-    pub last_at: Option<i64>,
     /// Kept only as a count by design: known, not drift.
     pub by_design: bool,
 }
 
-/// Every unrecognized item, newest first; items kept as counts by design
-/// come after the rest.
+/// Every unrecognized item, most frequent first; items kept as counts by
+/// design come after the rest.
 pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
     let mut stmt = reader.conn()?.prepare(
-        "SELECT format, what, sum(count), count(DISTINCT input_pk), min(first_at), max(last_at),
-                max(counted_only)
+        "SELECT format, what, sum(count), count(DISTINCT input_pk), max(counted_only)
          FROM unrecognized GROUP BY format, what
-         ORDER BY max(counted_only), min(first_at) DESC NULLS LAST, format, what",
+         ORDER BY max(counted_only), sum(count) DESC, format, what",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(Drift {
@@ -35,9 +30,7 @@ pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
             what: r.get(1)?,
             count: r.get::<_, i64>(2)? as u64,
             inputs: r.get::<_, i64>(3)? as u64,
-            first_at: r.get(4)?,
-            last_at: r.get(5)?,
-            by_design: r.get::<_, i64>(6)? == 1,
+            by_design: r.get::<_, i64>(4)? == 1,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
