@@ -103,6 +103,10 @@ checkout builds every test binary; a new checkout's target starts as a
 reflink copy of the master baseline's warm target, so that build compiles
 only what differs from master.
 
+The dev shell links with mold (`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`):
+on a cold test build the workspace's test binaries spent 169 s linking with
+the default linker and 37 s with mold. The Nix package build keeps the default.
+
 Every operation that runs Cargo holds a place under the host's `cargo` cap:
 at most three Cargo builds run at once across the normal and bulk queues,
 each with an 8 GiB `MemoryHigh`. A job that waits for a place logs it, and
