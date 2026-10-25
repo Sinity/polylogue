@@ -58,8 +58,15 @@ impl Sinex {
         manifest: serde_json::Value,
     ) -> Result<MaterialId> {
         let blob = content_name(hash);
-        spool::stage(&self.store_root, &self.producer, &name, &blob, length, bytes)
-            .map_err(Error::Invalid)?;
+        spool::stage(
+            &self.store_root,
+            &self.producer,
+            &name,
+            &blob,
+            length,
+            bytes,
+        )
+        .map_err(Error::Invalid)?;
         let frame = Ingress::Material {
             frame: name.clone(),
             material: Box::new(MaterialFrame {

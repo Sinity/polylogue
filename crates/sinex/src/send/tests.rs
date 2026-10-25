@@ -50,10 +50,18 @@ async fn a_pass_sends_what_sinex_lacks_and_a_second_pass_sends_nothing() {
     assert!(sent.blobs > 0 && sent.rows > 0, "{sent:?}");
     assert_no_gap(&stand_in, &archive, batches);
     assert!(stand_in.spool_is_empty());
-    assert_eq!(sinex.send_missing(&world.root).await.unwrap(), Sent::default());
+    assert_eq!(
+        sinex.send_missing(&world.root).await.unwrap(),
+        Sent::default()
+    );
     let received = stand_in.record.lock().unwrap().received;
     assert_eq!(
-        stand_in.connect().await.send_missing(&world.root).await.unwrap(),
+        stand_in
+            .connect()
+            .await
+            .send_missing(&world.root)
+            .await
+            .unwrap(),
         Sent::default(),
         "a new connection asks Sinex instead of sending again"
     );
@@ -68,7 +76,12 @@ async fn an_outage_or_a_lost_acknowledgment_mid_pass_leaves_no_gap() {
     let batches = batch_reader.batches(None, usize::MAX).unwrap().len() as u64;
 
     let clean = StandIn::start().await;
-    clean.connect().await.send_missing(&world.root).await.unwrap();
+    clean
+        .connect()
+        .await
+        .send_missing(&world.root)
+        .await
+        .unwrap();
 
     let stand_in = StandIn::start().await;
     // A blob, a batch's rows material and its event lost on the way, and
