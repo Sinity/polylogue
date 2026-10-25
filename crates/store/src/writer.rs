@@ -165,10 +165,11 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs: every row in it can be recomputed, and syncing a
-    /// first build of tens of GB through a busy drive costs more than the
-    /// build. The first flush syncs it and clears the mark; an index still
-    /// marked when the archive is next opened is set aside and rebuilt.
+    /// An empty index is built without syncs: every row in it can be
+    /// recomputed, and syncing a first build of tens of GB through a busy
+    /// drive costs more than the build. The first flush syncs it and clears
+    /// the mark; an index still marked when the archive is next opened is
+    /// set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
         let _lock = crate::write_lock::hold(&index)?;
