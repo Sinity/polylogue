@@ -311,3 +311,81 @@ fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuil
         .unwrap();
     assert_eq!(excised, 1, "the rebuilt copy still refuses the input");
 }
+
+#[test]
+fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let store = dir.path().join("sinex-store");
+    let sinex = Recorder::new(&store, false);
+    let part = |id: &str, bytes: &[u8]| {
+        let hash = sinex.store.put(bytes, 1).unwrap();
+        let blob = polylogue_model::BlobHash(hash.0);
+        let mut b = observed("/p/s.jsonl", Change::First, bytes.len() as u64);
+        b.observation.as_mut().unwrap().seen_at_ms = 5;
+        Held::Part {
+            number: sinex.next(),
+            material: uuid::Uuid::now_v7().to_string(),
+            hash: blob,
+            length: bytes.len() as u64,
+            index: 0,
+            record: Box::new(crate::input_record::InputRecord {
+                input: "synthetic-input".into(),
+                format: "claude-code".into(),
+                revision: Some(crate::input_record::Revision {
+                    number: 1,
+                    produced: "first".into(),
+                    chain: 1,
+                    length: bytes.len() as i64,
+                }),
+                extent: Some(crate::input_record::Extent {
+                    chain: 1,
+                    offset: 0,
+                    length: bytes.len() as i64,
+                    blob,
+                }),
+                observation: Some(crate::input_record::ObservationRecord {
+                    id: id.into(),
+                    machine: "synthetic-machine".into(),
+                    host: "synthetic-host".into(),
+                    path: "/p/s.jsonl".into(),
+                    class: "first".into(),
+                    revision: Some(1),
+                    length: Some(bytes.len() as i64),
+                    device: None,
+                    inode: None,
+                    size: None,
+                    mtime_ns: None,
+                    ctime_ns: None,
+                    polylogue_version: "synthetic".into(),
+                    seen_at: b.observation.unwrap().seen_at_ms,
+                    details_json: None,
+                    excision: None,
+                    container: None,
+                }),
+            }),
+        }
+    };
+    let stopped = part("stopped", b"{\"a\":1}\n");
+    sinex.held.lock().unwrap().push(stopped);
+    let committed = part("committed", b"{\"a\":1}\n{\"b\":2}\n");
+    sinex.held.lock().unwrap().push(committed);
+    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let observations: Vec<String> = conn
+        .prepare("SELECT id FROM observation")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(observations, ["committed"]);
+    let (blobs, length): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM blob), (SELECT length FROM extent)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((blobs, length), (1, 16));
+}
