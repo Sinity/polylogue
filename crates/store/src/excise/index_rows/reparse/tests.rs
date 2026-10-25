@@ -50,6 +50,7 @@ fn text_reparse_freezes_all_input_routes_in_pk_order_before_deletion() {
             store: &store,
             seq: 1,
             counter: 1,
+            new_files: Default::default(),
         };
         let hashes = RemovalHashes::new(&it).unwrap();
         let inputs =

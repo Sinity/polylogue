@@ -56,6 +56,7 @@ use session_texts::SessionTexts;
 use sessions::SelectedSessions;
 use spans::Spans;
 use stored_bytes::*;
+pub(crate) use stored_bytes::delete_uncommitted_files;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
 /// What to remove.
@@ -230,8 +231,8 @@ struct Span {
     end: i64,
 }
 
-/// The two transactions an excision runs in, with the blob store. Files of
-/// deleted blobs are recorded as local cleanup intent before commit.
+/// The two transactions an excision runs in, with the blob store. Blobs it no
+/// longer needs are marked `deleting`; their files go after the commit.
 pub struct Transactions<'a, 'b> {
     pub archive: &'a Transaction<'b>,
     pub index: &'a Transaction<'b>,
@@ -241,6 +242,9 @@ pub struct Transactions<'a, 'b> {
     pub seq: i64,
     /// `index.db`'s write counter for this transaction.
     pub counter: i64,
+    /// Blob files this excision wrote under rows it inserted; on a rollback
+    /// the writer deletes those whose rows did not commit.
+    pub new_files: std::cell::RefCell<Vec<BlobHash>>,
 }
 
 /// Runs an excision, marking blobs it no longer needs `deleting`. The writer

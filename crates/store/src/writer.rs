@@ -688,14 +688,22 @@ impl Inner {
             store,
             seq,
             counter,
+            new_files: Default::default(),
         };
-        let done = match crate::excise::apply(&txs, request) {
-            Ok(r) => r,
-            Err(e) => {
+        let applied = crate::excise::apply(&txs, request);
+        let new_files = txs.new_files.take();
+        drop(txs);
+        let done = match applied {
+            Ok(done) => done,
+            Err(error) => {
                 if let Some(e) = &embeddings {
                     let _ = e.execute_batch("ROLLBACK");
                 }
-                return Err(e);
+                drop(itx);
+                drop(atx);
+                // The error that stopped the excision is the one to report.
+                let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
+                return Err(error);
             }
         };
         if request.dry_run {
@@ -704,6 +712,7 @@ impl Inner {
             if let Some(e) = &embeddings {
                 e.execute_batch("ROLLBACK")?;
             }
+            crate::excise::delete_uncommitted_files(&self.archive, store, &new_files)?;
             return Ok(done);
         }
         let refused = crate::excise::Refused::load(&atx)?;
@@ -717,11 +726,16 @@ impl Inner {
             atx.commit()?;
             crate::fault::check("excision.after_archive_commit", &request.id)?;
             itx.commit()?;
-            drop(lock);
             crate::fault::check("excision.after_index_commit", &request.id)
-        })()
-        .and_then(|()| crate::blobs::delete_marked(&self.archive, store).map(drop));
+        })();
         if let Err(error) = committed {
+            // A file whose blob row did not commit is deleted; one whose row
+            // did stays, since the archive now refers to it.
+            let _ = crate::excise::delete_uncommitted_files(&self.archive, store, &new_files);
+            return Err(StoreError::ExcisionInterrupted(Box::new(error)));
+        }
+        drop(lock);
+        if let Err(error) = crate::blobs::delete_marked(&self.archive, store) {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
         self.refused = refused;

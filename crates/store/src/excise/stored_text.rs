@@ -134,14 +134,14 @@ impl StoredText {
                             buffer.extend_from_slice(&remaining[..take]);
                             remaining = &remaining[take..];
                             if buffer.len() == WRITE_CHUNK {
-                                install_piece(t, req, &e, &mut offset, &buffer)?;
+                                write_extent_piece(t, req, &e, &mut offset, &buffer)?;
                                 buffer.clear();
                             }
                         }
                         Ok(())
                     })?;
                 if !buffer.is_empty() {
-                    install_piece(t, req, &e, &mut offset, &buffer)?;
+                    write_extent_piece(t, req, &e, &mut offset, &buffer)?;
                 }
                 Ok(())
             })?;
@@ -155,9 +155,8 @@ impl StoredText {
     }
 }
 
-/// The piece's file is installed before its rows are written; a later
-/// failure rolls back the rows and leaves that file unreferenced.
-fn install_piece(
+/// Writes one piece of a rewritten extent and the extent that places it.
+fn write_extent_piece(
     t: &Transactions<'_, '_>,
     req: &ExciseRequest,
     e: &Extent,
@@ -165,8 +164,7 @@ fn install_piece(
     bytes: &[u8],
 ) -> Result<()> {
     crate::fault::check("excision_text.before_piece", &req.id)?;
-    let piece = Piece::prepare(t.store, bytes)?;
-    record_piece(t, &piece)?;
+    let piece = super::stored_bytes::write_piece(t, std::io::Cursor::new(bytes))?;
     t.archive.execute(
         "INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES (?1,?2,?3,?4,?5,0)",
         params![

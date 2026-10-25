@@ -126,7 +126,6 @@ fn record_replacement(
         return Ok(None);
     }
     crate::blobs::refuse_delta_base(t.archive, old)?;
-    record_piece(t, &piece)?;
     t.archive.execute(
         "UPDATE extent SET blob = ?2 WHERE blob = ?1",
         params![&old.0[..], &piece.hash.0[..]],
@@ -276,16 +275,92 @@ pub(super) fn blank_document(
     texts.missing()
 }
 
-pub(super) fn record_piece(t: &Transactions<'_, '_>, piece: &Piece) -> Result<()> {
-    let (place, size, data) = match &piece.stored {
-        Stored::Inline(z) => ("inline", z.len() as i64, Some(z.as_slice())),
-        Stored::File { stored_size } => ("file", *stored_size as i64, None),
-    };
-    t.archive.execute(
-        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
-        VALUES (?1, ?2, ?3, ?4, 'plain', 'present', ?5)",
-        params![&piece.hash.0[..], piece.size as i64, size, place, data],
+/// Writes a replacement blob in the writer's order: its row as `writing`,
+/// then the file, then the row `present`. A file-sized blob whose row this
+/// call inserted is listed in [`Transactions::new_files`], so a rollback can
+/// delete the file that no committed row names.
+pub(super) fn write_piece(
+    t: &Transactions<'_, '_>,
+    mut bytes: impl std::io::Read + std::io::Seek,
+) -> Result<Piece> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut hasher = blake3::Hasher::new();
+    let size = std::io::copy(&mut bytes, &mut hasher)?;
+    let hash = BlobHash(*hasher.finalize().as_bytes());
+    bytes.seek(SeekFrom::Start(0))?;
+    if size < crate::blobs::INLINE_LIMIT as u64 {
+        let mut plain = Vec::with_capacity(size as usize);
+        bytes.read_to_end(&mut plain)?;
+        let compressed = zstd::bulk::compress(&plain, crate::blobs::LEVEL)?;
+        t.archive.execute(
+            "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
+            VALUES (?1, ?2, ?3, 'inline', 'plain', 'present', ?4)",
+            params![&hash.0[..], size as i64, compressed.len() as i64, compressed],
+        )?;
+        return Ok(Piece {
+            hash,
+            size,
+            stored: Stored::Inline(compressed),
+        });
+    }
+    let inserted = t.archive.execute(
+        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
+        VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
+        params![&hash.0[..], size as i64],
+    )? > 0;
+    if inserted {
+        t.new_files.borrow_mut().push(hash);
+    }
+    let present: bool = t.archive.query_row(
+        "SELECT state = 'present' FROM blob WHERE hash = ?1",
+        [&hash.0[..]],
+        |r| r.get(0),
     )?;
+    if !present {
+        let written = t.store.put(&mut bytes, crate::blobs::LEVEL)?;
+        if written.0 != hash.0 {
+            return Err(StoreError::Invalid(
+                "replacement bytes changed while they were written".into(),
+            ));
+        }
+        crate::fault::check("excision.after_piece_file", &hash.to_string())?;
+        t.archive.execute(
+            "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
+            params![&hash.0[..], t.store.stored_size(&written)? as i64],
+        )?;
+    }
+    let stored_size = t.archive.query_row(
+        "SELECT stored_size FROM blob WHERE hash = ?1",
+        [&hash.0[..]],
+        |r| r.get::<_, i64>(0),
+    )? as u64;
+    Ok(Piece {
+        hash,
+        size,
+        stored: Stored::File { stored_size },
+    })
+}
+
+/// After a rolled-back excision, deletes the files it wrote whose blob rows
+/// did not commit. The caller holds the write lock.
+pub(crate) fn delete_uncommitted_files(
+    archive: &rusqlite::Connection,
+    store: &hashed_blobs::Store,
+    hashes: &[BlobHash],
+) -> Result<()> {
+    for hash in hashes {
+        let committed: bool = archive.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blob WHERE hash = ?1)",
+            [&hash.0[..]],
+            |r| r.get(0),
+        )?;
+        if !committed {
+            match store.delete(&hashed_blobs::Hash(hash.0)) {
+                Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     Ok(())
 }
 

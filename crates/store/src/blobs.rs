@@ -99,51 +99,9 @@ pub struct Piece {
 }
 
 impl Piece {
-    /// Store an unknown-length stream without holding all of it in memory.
-    pub(crate) fn prepare_reader(
-        store: &hashed_blobs::Store,
-        mut reader: impl std::io::Read,
-    ) -> Result<Self> {
-        use std::io::Read;
-        let mut prefix = Vec::new();
-        reader
-            .by_ref()
-            .take(INLINE_LIMIT as u64)
-            .read_to_end(&mut prefix)?;
-        if prefix.len() < INLINE_LIMIT {
-            return Self::prepare(store, &prefix);
-        }
-        struct Count<R> {
-            reader: R,
-            bytes: u64,
-        }
-        impl<R: Read> Read for Count<R> {
-            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-                let n = self.reader.read(out)?;
-                self.bytes = self
-                    .bytes
-                    .checked_add(n as u64)
-                    .ok_or_else(|| std::io::Error::other("blob length overflow"))?;
-                Ok(n)
-            }
-        }
-        let mut reader = Count {
-            reader: prefix.as_slice().chain(reader),
-            bytes: 0,
-        };
-        let hash = store.put(&mut reader, LEVEL)?;
-        Ok(Self {
-            hash: BlobHash(hash.0),
-            size: reader.bytes,
-            stored: Stored::File {
-                stored_size: store.stored_size(&hash)?,
-            },
-        })
-    }
-
-    /// Hashes `bytes`; compresses small ones for an inline row and writes
-    /// large ones to the blob store, durable before this returns, so any row
-    /// the writer adds later refers to bytes that exist.
+    /// Test rows: hashes `bytes`, compresses small ones for an inline row
+    /// and writes large ones straight to the blob store.
+    #[cfg(test)]
     pub(crate) fn prepare(store: &hashed_blobs::Store, bytes: &[u8]) -> Result<Self> {
         let hash = BlobHash::of(bytes);
         let size = bytes.len() as u64;

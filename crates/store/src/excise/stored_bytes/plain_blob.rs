@@ -73,7 +73,7 @@ impl PlainBlob {
             Ok(())
         })?;
         self.0.seek(SeekFrom::Start(0))?;
-        let piece = Piece::prepare_reader(t.store, self.0)?;
+        let piece = write_piece(t, &mut self.0)?;
         record_replacement(t, hash, piece)
     }
 }

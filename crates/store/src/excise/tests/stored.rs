@@ -462,3 +462,54 @@ fn a_later_text_replacement_piece_failure_rolls_back_rows_and_retries() {
         3
     );
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_rollback_after_a_piece_file_is_written_leaves_no_unreferenced_file() {
+    fn blob_files(root: &std::path::Path) -> std::collections::BTreeSet<std::path::PathBuf> {
+        let mut files = std::collections::BTreeSet::new();
+        let mut dirs = vec![root.join("blobs")];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    files.insert(path);
+                }
+            }
+        }
+        files
+    }
+    let w = World::new();
+    let mut original = vec![b'x'; 2 * 1024 * 1024 + 32];
+    original[..6].copy_from_slice(b"secret");
+    w.seed("large", 1, &[&original]);
+    let before = blob_files(&w.archive.root);
+    let writer = crate::Writer::start(&w.archive).unwrap();
+    let request = ExciseRequest {
+        id: "file-rollback".into(),
+        scope: Scope::Text("secret".into()),
+        reason: None,
+        dry_run: false,
+    };
+    crate::fault::clear();
+    crate::fault::arm(
+        "excision.after_piece_file",
+        "",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let error = writer.excise(request.clone(), w.store.clone()).unwrap_err();
+    assert!(error.to_string().contains("injected fault"));
+    crate::fault::clear();
+    assert_eq!(w.bytes("large", 1), original);
+    assert_eq!(blob_files(&w.archive.root), before);
+    writer.excise(request, w.store.clone()).unwrap();
+    original[..6].fill(b' ');
+    assert_eq!(w.bytes("large", 1), original);
+}
