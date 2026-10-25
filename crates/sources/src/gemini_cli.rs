@@ -11,7 +11,7 @@ use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction,
     Usage,
@@ -126,10 +126,10 @@ impl ExportParser for GeminiCli {
         }
         Ok(Some(crate::parse::Step {
             output,
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
     fn item(
@@ -162,17 +162,17 @@ impl ExportParser for GeminiCli {
                     range: None,
                     data: m.get("content").cloned().unwrap_or(Json::Null),
                 });
-                sink.records.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &RecordOutcome::Used);
                 return Ok(());
             }
             other => {
                 sink.records
-                    .record(other, &Disposition::unknown(format!("type {other}")));
+                    .record(other, &RecordOutcome::skipped(format!("type {other}")));
                 return Ok(());
             }
         };
         let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
-            sink.records.record(&kind, &Disposition::refused("no id"));
+            sink.records.record(&kind, &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
         let message = Message {
@@ -196,7 +196,7 @@ impl ExportParser for GeminiCli {
             end: offset + 1,
             message,
         });
-        sink.records.record(&kind, &Disposition::Materialized);
+        sink.records.record(&kind, &RecordOutcome::Used);
         Ok(())
     }
 }
@@ -206,12 +206,12 @@ impl GeminiCli {
         if !doc.is_object() {
             return sink
                 .records
-                .record("session", &Disposition::refused("not an object"));
+                .record("session", &RecordOutcome::unreadable("not an object"));
         }
         let Some(sid) = str_of(doc, "sessionId").and_then(|s| session_id(ORIGIN, s)) else {
             return sink
                 .records
-                .record("session", &Disposition::refused("no sessionId"));
+                .record("session", &RecordOutcome::unreadable("no sessionId"));
         };
         let kind = match str_of(doc, "kind") {
             Some("subagent") => SessionKind::Subagent,
@@ -234,7 +234,7 @@ impl GeminiCli {
             session.offer_cwd(dir);
         }
         sink.out.sessions.push(session);
-        sink.records.record("session", &Disposition::Materialized);
+        sink.records.record("session", &RecordOutcome::Used);
         if let Some(hash) = str_of(doc, "projectHash") {
             sink.out.events.push(Event {
                 session: Some(sid.clone()),

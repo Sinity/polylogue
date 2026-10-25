@@ -77,7 +77,7 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
         );
         assert!(page.contains("authorship unknown"), "{page}");
         assert!(page.contains("Source records"));
-        assert!(page.contains("preferred"));
+        assert!(page.contains("shown"));
         assert!(page.contains("2026-05-02T00:00:00Z"));
         assert!(
             !page.contains(&secret),
@@ -111,7 +111,7 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
                 target: crate::daemon::ReadTarget::Document(
                     polylogue_model::DocumentId::parse(id).unwrap(),
                 ),
-                logical: false,
+                with_parents: false,
                 view: "full".into(),
                 format: "json".into(),
                 budget: None,

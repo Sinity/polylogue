@@ -1,11 +1,11 @@
 use super::*;
 use polylogue_model::{Event, Output, Session, SessionId, SessionKind};
 use polylogue_store::ReadPool;
-use polylogue_store::fixture::writer::WriterWorld;
+use polylogue_store::fixture::writer::WriterArchive;
 
 #[test]
 fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let sid = SessionId::parse("hermes:conversation").unwrap();
     let data = json!({"approved":false,"exit_code":null,"paths":[" λ.rs "],"nested":{"count":0}});
     let event = |session| Event {

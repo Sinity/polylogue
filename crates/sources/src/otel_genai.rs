@@ -13,7 +13,7 @@ use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse, Step};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolAction,
     ToolOutcome, Usage,
@@ -92,14 +92,14 @@ impl ExportParser for OtelGenAi {
         }
         let mut records = Records::default();
         for _ in 0..self.refused_lines {
-            records.record("line", &Disposition::refused("malformed JSON line"));
+            records.record("line", &RecordOutcome::unreadable("malformed JSON line"));
         }
         Ok(Some(Step {
             output: Default::default(),
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
     fn item(
@@ -117,7 +117,7 @@ impl ExportParser for OtelGenAi {
             .and_then(Json::as_str);
         if op.is_none() && !span.attrs.keys().any(|k| k.starts_with("gen_ai.")) {
             sink.records
-                .record("span", &Disposition::unknown("not a GenAI span"));
+                .record("span", &RecordOutcome::skipped("not a GenAI span"));
             return Ok(());
         }
         let conversation = span
@@ -127,11 +127,11 @@ impl ExportParser for OtelGenAi {
             .unwrap_or(span.trace);
         let Some(sid) = session_id(ORIGIN, conversation) else {
             sink.records
-                .record("span", &Disposition::refused("unusable conversation ID"));
+                .record("span", &RecordOutcome::unreadable("unusable conversation ID"));
             return Ok(());
         };
         if owners
-            .claim(&format!("session\0{conversation}"), &sid)?
+            .record_first_session(&format!("session\0{conversation}"), &sid)?
             .is_none()
         {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
@@ -153,7 +153,7 @@ impl ExportParser for OtelGenAi {
             _ => model_span(&span, conversation, &sid, owners, sink)?,
         }
         sink.records
-            .record(op.unwrap_or("gen_ai"), &Disposition::Materialized);
+            .record(op.unwrap_or("gen_ai"), &RecordOutcome::Used);
         Ok(())
     }
 }
@@ -232,7 +232,7 @@ fn model_span(
     let n = inputs.len();
     for (place, m) in inputs.iter().chain(outputs.iter()).enumerate() {
         if owners
-            .claim(&format!("message\0{conversation}#{place}"), sid)?
+            .record_first_session(&format!("message\0{conversation}#{place}"), sid)?
             .is_some()
         {
             continue;

@@ -161,13 +161,13 @@ fn one_operation_makes_one_request_on_every_surface() {
         "dialogue",
         "--budget",
         "100",
-        "--logical",
+        "--with-parents",
     ])
     .unwrap();
     let mcp = Values::from_json(
         read,
         Surface::Mcp,
-        json!({"session": "claude-code:s1", "view": "dialogue", "budget": 100, "logical": true})
+        json!({"session": "claude-code:s1", "view": "dialogue", "budget": 100, "with_parents": true})
             .as_object()
             .unwrap()
             .clone(),
@@ -180,7 +180,7 @@ fn one_operation_makes_one_request_on_every_surface() {
             ("session".into(), "claude-code:s1".into()),
             ("view".into(), "dialogue".into()),
             ("budget".into(), "100".into()),
-            ("logical".into(), "true".into()),
+            ("with_parents".into(), "true".into()),
         ],
     )
     .unwrap();

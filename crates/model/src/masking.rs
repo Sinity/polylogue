@@ -189,7 +189,7 @@ impl MessageMasker {
     }
 
     /// Returns original bytes only for recognizing duplicate projections in the
-    /// same block. No text or masking carry is stored in a public cursor.
+    /// same block. No text or masking state is stored in a public cursor.
     fn fragment(&mut self, text: &mut String) -> String {
         let original = std::mem::take(text);
         let mut bytes = Vec::new();

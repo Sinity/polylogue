@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
-    let w = world();
+    let w = test_archive();
     let make = |input, start, id, text| {
         batch(
             input,
@@ -15,7 +15,7 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
     w.writer.send(make("input", 0, "first", "first")).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let mut bad = make("input", 100, "middle", "middle");
-    bad.parse[0].accounting.framed = 0;
+    bad.parse[0].counts.records = 0;
     w.writer.send(bad).unwrap();
     w.writer.send(make("input", 200, "last", "last")).unwrap();
     w.writer

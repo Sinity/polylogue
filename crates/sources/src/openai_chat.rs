@@ -11,7 +11,7 @@ use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
     TitleSource, ToolAction, ToolOutcome, Usage,
@@ -105,10 +105,10 @@ impl ExportParser for OpenAiChat {
         self.start_session(&doc, &mut Sink::new(&mut output, &mut records));
         Ok(Some(crate::parse::Step {
             output,
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
     fn item(
@@ -129,7 +129,7 @@ impl ExportParser for OpenAiChat {
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
             sink.records
-                .record(&kind, &Disposition::refused("unusable message ID"));
+                .record(&kind, &RecordOutcome::unreadable("unusable message ID"));
             return Ok(());
         };
         let role = match kind.as_str() {
@@ -141,7 +141,7 @@ impl ExportParser for OpenAiChat {
             other => {
                 sink.records.record(
                     &kind,
-                    &Disposition::refused(format!("unknown role {other}")),
+                    &RecordOutcome::unreadable(format!("unknown role {other}")),
                 );
                 return Ok(());
             }
@@ -149,7 +149,7 @@ impl ExportParser for OpenAiChat {
         let blocks = blocks(m, role);
         if blocks.is_empty() {
             sink.records
-                .record(&kind, &Disposition::unknown("a message with no content"));
+                .record(&kind, &RecordOutcome::skipped("a message with no content"));
             return Ok(());
         }
         let harness = matches!(kind.as_str(), "tool" | "function");
@@ -180,7 +180,7 @@ impl ExportParser for OpenAiChat {
             end: offset + 1,
             message,
         });
-        sink.records.record(&kind, &Disposition::Materialized);
+        sink.records.record(&kind, &RecordOutcome::Used);
         Ok(())
     }
 }
@@ -194,13 +194,13 @@ impl OpenAiChat {
                 None => {
                     return sink
                         .records
-                        .record("chat", &Disposition::refused("no messages array"));
+                        .record("chat", &RecordOutcome::unreadable("no messages array"));
                 }
             },
             _ => {
                 return sink
                     .records
-                    .record("chat", &Disposition::refused("not an array or object"));
+                    .record("chat", &RecordOutcome::unreadable("not an array or object"));
             }
         };
         if let Some(h) = header {
@@ -213,14 +213,14 @@ impl OpenAiChat {
         let Some(sid) = session_id(ORIGIN, &native) else {
             return sink
                 .records
-                .record("chat", &Disposition::refused("unusable session name"));
+                .record("chat", &RecordOutcome::unreadable("unusable session name"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(title) = header.and_then(|h| str_of(h, "title")) {
             session.offer_title(title, TitleSource::Generated);
         }
         sink.out.sessions.push(session);
-        sink.records.record("chat", &Disposition::Materialized);
+        sink.records.record("chat", &RecordOutcome::Used);
         self.state.session = Some(sid);
         self.state.model = header.and_then(|h| string_of(h, "model"));
     }

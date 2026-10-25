@@ -8,7 +8,7 @@
 //! has no such marker and that runs commands has an unknown outcome, never
 //! a success.
 
-use crate::parse::InlineBlob;
+use crate::parse::ExtractedBlob;
 use base64::Engine;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
@@ -24,7 +24,7 @@ fn ty(item: &Json) -> &str {
 }
 
 /// The blocks of a message item's `content`.
-pub fn message_blocks(content: &Json, blobs: &mut Vec<InlineBlob>) -> Vec<Block> {
+pub fn message_blocks(content: &Json, blobs: &mut Vec<ExtractedBlob>) -> Vec<Block> {
     match content {
         Json::String(text) => vec![Block::Text { text: text.clone() }],
         Json::Array(items) => items.iter().map(|i| content_block(i, blobs)).collect(),
@@ -32,7 +32,7 @@ pub fn message_blocks(content: &Json, blobs: &mut Vec<InlineBlob>) -> Vec<Block>
     }
 }
 
-fn content_block(item: &Json, blobs: &mut Vec<InlineBlob>) -> Block {
+fn content_block(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Block {
     match ty(item) {
         "input_text" | "output_text" | "text" | "Text" => Block::Text {
             text: str_field(item, "text").unwrap_or_default().to_owned(),
@@ -53,7 +53,7 @@ fn content_block(item: &Json, blobs: &mut Vec<InlineBlob>) -> Block {
 
 /// An image item: a `data:` URL becomes a blob; any other URL is kept as a
 /// reference.
-fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<InlineBlob>) -> Attachment {
+fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<ExtractedBlob>) -> Attachment {
     let url = str_field(item, "image_url").or_else(|| str_field(item, "url"));
     let mut attachment = Attachment {
         direction,
@@ -65,7 +65,7 @@ fn image(item: &Json, direction: AttachmentDirection, blobs: &mut Vec<InlineBlob
             attachment.media_type = Some(media_type);
             attachment.size = Some(bytes.len() as u64);
             attachment.blob = Some(hash);
-            blobs.push(InlineBlob {
+            blobs.push(ExtractedBlob {
                 hash,
                 size: bytes.len() as u64,
                 bytes,
@@ -376,7 +376,7 @@ fn is_failure_line(first: &str) -> bool {
 
 /// The text of a tool output, which is a string, a list of content items
 /// (text and images) or a JSON value.
-pub fn output_parts(output: &Json, blobs: &mut Vec<InlineBlob>) -> (String, Vec<Attachment>) {
+pub fn output_parts(output: &Json, blobs: &mut Vec<ExtractedBlob>) -> (String, Vec<Attachment>) {
     match output {
         Json::String(s) => (s.clone(), Vec::new()),
         Json::Array(items) => {
@@ -452,7 +452,7 @@ fn duration_ms(v: &Json) -> Option<u64> {
 /// The tool call and result a thread item records, for a command the
 /// harness ran with no call item of its own (code-mode scripts run
 /// commands this way; the Python version recovered them the same way).
-pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Block>> {
+pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec<Block>> {
     let id = str_field(item, "id")?.to_owned();
     let (tool, input, command, path, output) = match ty(item) {
         "CommandExecution" => {

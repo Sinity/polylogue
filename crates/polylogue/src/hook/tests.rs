@@ -2,10 +2,10 @@ use super::settings::merge_hooks;
 use super::*;
 
 #[test]
-fn carriers_get_one_line_per_event() {
+fn hook_spool_files_get_one_line_per_event() {
     let dir = tempfile::tempdir().unwrap();
-    append_carrier(dir.path(), "Stop", &json!({"session_id": "a"})).unwrap();
-    append_carrier(dir.path(), "SessionEnd", &json!({"session_id": "a"})).unwrap();
+    append_to_spool(dir.path(), "Stop", &json!({"session_id": "a"})).unwrap();
+    append_to_spool(dir.path(), "SessionEnd", &json!({"session_id": "a"})).unwrap();
     let file = dir
         .path()
         .join(format!("{}.ndjson", std::os::unix::process::parent_id()));

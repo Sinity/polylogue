@@ -1,12 +1,12 @@
 {
-  "accounting": {
-    "framed": 3,
-    "materialized": {
+  "counts": {
+    "records": 3,
+    "used": {
       "response_item/message": 2,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

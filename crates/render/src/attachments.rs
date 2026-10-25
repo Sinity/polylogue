@@ -16,7 +16,7 @@ pub struct AttachmentLabel {
 }
 
 pub(crate) struct Annotation {
-    pub piece: usize,
+    pub block: usize,
     pub from: usize,
     pub until: usize,
     pub reference: AttachmentRef,
@@ -32,7 +32,7 @@ pub(crate) fn apply(
     for label in labels {
         by_block.entry(label.block).or_default().push(label);
     }
-    let mut piece = 0;
+    let mut shown = 0;
     let prompt = crate::is_prompt(message);
     for (index, block) in message.blocks.iter_mut().enumerate() {
         if !view.keeps_block(prompt, block) {
@@ -69,7 +69,7 @@ pub(crate) fn apply(
                 _ => continue,
             };
             annotations.push(Annotation {
-                piece,
+                block: shown,
                 from,
                 until: from + text.chars().count(),
                 reference: AttachmentRef {
@@ -79,7 +79,7 @@ pub(crate) fn apply(
                 },
             });
         }
-        piece += 1;
+        shown += 1;
     }
     annotations
 }

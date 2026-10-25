@@ -9,8 +9,8 @@ use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
-use crate::parse::{InlineBlob, MessageRow, Output, Parse, Step};
-use crate::{Disposition, Records};
+use crate::parse::{ExtractedBlob, MessageRow, Output, Parse, Step};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
     Session, SessionKind, TitleSource, Usage,
@@ -147,10 +147,10 @@ impl ExportParser for OpenRouter {
         }
         Ok(Some(Step {
             output,
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
 
@@ -175,9 +175,9 @@ impl ExportParser for OpenRouter {
                     end: offset + 1,
                     message,
                 });
-                sink.records.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &RecordOutcome::Used);
             }
-            Err(disposition) => sink.records.record(&kind, &disposition),
+            Err(outcome) => sink.records.record(&kind, &outcome),
         }
         Ok(())
     }
@@ -189,12 +189,12 @@ impl OpenRouter {
         let Some(first_id) = first.and_then(|m| str_of(m, "id")) else {
             return sink
                 .records
-                .record("room", &Disposition::unknown("a room with no messages"));
+                .record("room", &RecordOutcome::skipped("a room with no messages"));
         };
         let Some(sid) = session_id(ORIGIN, first_id) else {
             return sink
                 .records
-                .record("room", &Disposition::refused("unusable message ID"));
+                .record("room", &RecordOutcome::unreadable("unusable message ID"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(title) = str_of(doc, "title") {
@@ -205,7 +205,7 @@ impl OpenRouter {
         }
         self.session = Some(sid.clone());
         sink.out.sessions.push(session);
-        sink.records.record("room", &Disposition::Materialized);
+        sink.records.record("room", &RecordOutcome::Used);
 
         self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
         sink.out.events.push(Event {
@@ -292,21 +292,21 @@ fn message(
     m: &Json,
     characters: &Json,
     sink: &mut Sink<'_>,
-) -> Result<Message, Disposition> {
+) -> Result<Message, RecordOutcome> {
     let role = match str_of(m, "type") {
         Some("user") => Role::User,
         Some("assistant") => Role::Assistant,
         Some("system") => Role::System,
-        Some(other) => return Err(Disposition::refused(format!("unknown type {other}"))),
-        None => return Err(Disposition::refused("no type")),
+        Some(other) => return Err(RecordOutcome::unreadable(format!("unknown type {other}"))),
+        None => return Err(RecordOutcome::unreadable("no type")),
     };
     let id = str_of(m, "id")
         .and_then(|id| message_id(ORIGIN, id))
-        .ok_or_else(|| Disposition::refused("no usable id"))?;
+        .ok_or_else(|| RecordOutcome::unreadable("no usable id"))?;
     match str_of(m, "contentType") {
         None | Some("text") => {}
         Some(other) => {
-            return Err(Disposition::unknown(format!(
+            return Err(RecordOutcome::skipped(format!(
                 "content type {other} is not read yet"
             )));
         }
@@ -353,7 +353,7 @@ fn message(
             let hash = BlobHash::of(&bytes);
             attachment.size = Some(bytes.len() as u64);
             attachment.blob = Some(hash);
-            sink.out.blobs.push(InlineBlob {
+            sink.out.blobs.push(ExtractedBlob {
                 hash,
                 size: bytes.len() as u64,
                 bytes,
@@ -377,7 +377,7 @@ fn message(
         }));
     }
     if blocks.is_empty() {
-        return Err(Disposition::unknown("a message with no content"));
+        return Err(RecordOutcome::skipped("a message with no content"));
     }
 
     let meta = m.get("metadata");

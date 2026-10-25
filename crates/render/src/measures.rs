@@ -153,7 +153,7 @@ pub fn quota(o: &Value) -> String {
             out.push_str(&format!(
                 " · credits {} (as of {})",
                 c["balance"].as_str().unwrap_or("?"),
-                time(&c["observed_at"])
+                time(&c["measured_at"])
             ));
         }
         out.push('\n');

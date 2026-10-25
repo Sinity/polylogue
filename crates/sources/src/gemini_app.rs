@@ -9,7 +9,7 @@
 //! Takeout repeats; a cell with no conversation link is a session of its
 //! own. Responses are HTML in the export and are kept as text.
 
-use crate::Disposition;
+use crate::RecordOutcome;
 use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse};
@@ -76,7 +76,7 @@ impl ExportParser for GeminiApp {
         let cell = String::from_utf8_lossy(bytes);
         let Some(e) = entry(&cell) else {
             sink.records
-                .record("activity", &Disposition::refused("no content cell"));
+                .record("activity", &RecordOutcome::unreadable("no content cell"));
             return Ok(());
         };
         let stamp =
@@ -88,10 +88,10 @@ impl ExportParser for GeminiApp {
             .unwrap_or_else(|| format!("entry-{stamp}"));
         let Some(sid) = session_id(ORIGIN, &native) else {
             sink.records
-                .record(&e.verb, &Disposition::refused("unusable conversation ID"));
+                .record(&e.verb, &RecordOutcome::unreadable("unusable conversation ID"));
             return Ok(());
         };
-        if state.claim(&native, &sid)?.is_none() {
+        if state.record_first_session(&native, &sid)?.is_none() {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = e.at {
                 s.offer_start(at);
@@ -109,7 +109,7 @@ impl ExportParser for GeminiApp {
                     "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
                 }),
             });
-            sink.records.record(&e.verb, &Disposition::Materialized);
+            sink.records.record(&e.verb, &RecordOutcome::Used);
             return Ok(());
         }
         let (Some(user_id), Some(reply_id)) = (
@@ -117,7 +117,7 @@ impl ExportParser for GeminiApp {
             message_id(ORIGIN, &format!("{native}#{stamp}-response")),
         ) else {
             sink.records
-                .record(&e.verb, &Disposition::refused("unusable message ID"));
+                .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
             return Ok(());
         };
         let mut prompt_blocks = vec![Block::Text { text: e.prompt }];
@@ -162,7 +162,7 @@ impl ExportParser for GeminiApp {
             });
         }
         state.set_last_message(&sid, &reply_id)?;
-        sink.records.record("Prompted", &Disposition::Materialized);
+        sink.records.record("Prompted", &RecordOutcome::Used);
         Ok(())
     }
 }

@@ -10,11 +10,11 @@ fn restating(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
         })
         .collect();
     let mut b = batch(input, 0, at, rows, &["s"]);
-    b.parse[0].restates = true;
+    b.parse[0].repeats_whole_conversations = true;
     b.parse[0].at_end = true;
     b
 }
-fn read(w: &World) -> Vec<String> {
+fn read(w: &TestArchive) -> Vec<String> {
     let pool = ReadPool::open(&w.archive).unwrap();
     pool.reader()
         .unwrap()
@@ -29,7 +29,7 @@ fn read(w: &World) -> Vec<String> {
         .collect()
 }
 
-fn active(w: &World) -> Vec<Json> {
+fn active(w: &TestArchive) -> Vec<Json> {
     let pool = ReadPool::open(&w.archive).unwrap();
     pool.reader()
         .unwrap()
@@ -40,7 +40,7 @@ fn active(w: &World) -> Vec<Json> {
 #[test]
 fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
     for reverse in [false, true] {
-        let w = world();
+        let w = test_archive();
         let mut seed = batch("a", 0, 0, vec![], &[]);
         seed.length = 300;
         seed.parse.clear();
@@ -89,7 +89,7 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
     for timed in [false, true] {
         let mut forward = None;
         for reverse in [false, true] {
-            let w = world();
+            let w = test_archive();
             let mut observations = [("a", "a", 200), ("z", "b", 100)];
             if reverse {
                 observations.reverse();
@@ -125,7 +125,7 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
 fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
     for last_empty in [false, true] {
         for reverse in [false, true] {
-            let w = world();
+            let w = test_archive();
             let mut seed = batch("a", 0, 0, vec![], &[]);
             seed.length = 300;
             seed.parse.clear();
@@ -183,7 +183,7 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
         Some(("active_leaf", None)),
         Some(("active_path_empty", Some("a"))),
     ] {
-        let w = world();
+        let w = test_archive();
         let mut b = restating("a", 0, &[("a", "A")]);
         if let Some((kind, after)) = invalid {
             b.parse[0].output.events.push(polylogue_model::Event {
@@ -240,7 +240,7 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
     for timed in [false, true] {
         let mut forward = None;
         for reverse in [false, true] {
-            let w = world();
+            let w = test_archive();
             let mut inputs = [("empty", true, 200), ("leaf", false, 100)];
             if reverse {
                 inputs.reverse();
@@ -284,7 +284,7 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
 
 #[test]
 fn a_later_restating_record_replaces_the_earlier_version_and_keeps_absent_messages() {
-    let w = world();
+    let w = test_archive();
     w.writer
         .send(restating("a", 0, &[("a", "old A"), ("b", "old B")]))
         .unwrap();

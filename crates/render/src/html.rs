@@ -1,6 +1,6 @@
 //! HTML content shared by exported documents and the web reader.
 
-use super::{Rendered, View, outcome_label, pieces};
+use super::{Rendered, View, outcome_label, rendered_blocks};
 use polylogue_model::{Block, Message};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -118,8 +118,8 @@ fn message(
     results: &HashMap<String, Outcome<'_>>,
     paired: &mut std::collections::HashSet<String>,
 ) -> String {
-    let ps = pieces(m, view);
-    // Call IDs of this message's blocks, in the order `pieces` keeps them.
+    let ps = rendered_blocks(m, view);
+    // Call IDs of this message's blocks, in the order `rendered blocks` keeps them.
     let call_ids: Vec<Option<&String>> = m
         .blocks
         .iter()

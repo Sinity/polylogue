@@ -1,13 +1,13 @@
 {
-  "accounting": {
-    "framed": 5,
-    "materialized": {
+  "counts": {
+    "records": 5,
+    "used": {
       "response_item/function_call": 2,
       "response_item/function_call_output": 2,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

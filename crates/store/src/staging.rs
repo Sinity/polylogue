@@ -6,8 +6,8 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
-/// One pool batch and the private files its pieces were written to. Inline
-/// pieces stay in the batch.
+/// One pool batch and the private files its new blobs were written to. Inline
+/// new blobs stay in the batch.
 pub struct PreparedBatch {
     pub batch: crate::Batch,
     pub files: Vec<PreparedBytes>,
@@ -54,14 +54,14 @@ impl PreparedBytes {
 
 impl crate::Archive {
     /// An input's bytes: small ones inline in standalone mode, the rest in a
-    /// private file. In primary mode every piece is a file, sent to Sinex.
-    pub fn prepare_piece(&self, bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+    /// private file. In primary mode every new blob is a file, sent to Sinex.
+    pub fn prepare_blob(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         if bytes.len() < crate::blobs::INLINE_LIMIT && !self.is_primary() {
             return inline(bytes);
         }
         let prepared = self.prepare_bytes(bytes)?;
         Ok((
-            crate::Piece {
+            crate::NewBlob {
                 hash: prepared.hash(),
                 size: prepared.len(),
                 stored: crate::blobs::Stored::File { stored_size: 0 },
@@ -74,11 +74,11 @@ impl crate::Archive {
     /// inside a record (a base64 image), or a file uploaded for a chat
     /// action. A parse makes them again, so in primary mode they stay in
     /// the register inline and are not sent to Sinex.
-    pub fn prepare_decoded(&self, bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+    pub fn prepare_decoded(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         if self.is_primary() {
             return inline(bytes);
         }
-        self.prepare_piece(bytes)
+        self.prepare_blob(bytes)
     }
 
     /// Prepares bytes that can be read only once (a ZIP member), after
@@ -139,9 +139,9 @@ impl crate::Archive {
     }
 }
 
-fn inline(bytes: &[u8]) -> Result<(crate::Piece, Option<PreparedBytes>)> {
+fn inline(bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
     Ok((
-        crate::Piece {
+        crate::NewBlob {
             hash: BlobHash::of(bytes),
             size: bytes.len() as u64,
             stored: crate::blobs::Stored::Inline(zstd::bulk::compress(bytes, crate::blobs::LEVEL)?),

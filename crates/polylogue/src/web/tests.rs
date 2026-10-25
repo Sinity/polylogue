@@ -164,7 +164,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         );
         assert!(!page.contains("<script>alert"));
         assert!(
-            page.contains("data-cli=\"polylogue read claude-code:s1 --logical --view full\""),
+            page.contains("data-cli=\"polylogue read claude-code:s1 --with-parents --view full\""),
             "{page}"
         );
         // The same read through the API is the socket's answer.
@@ -181,7 +181,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 ),
                 view: "full".into(),
                 format: "json".into(),
-                logical: false,
+                with_parents: false,
                 budget: None,
                 cursor: None,
             },
@@ -310,9 +310,9 @@ fn every_http_command_is_served_and_nothing_else() {
 #[test]
 fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
     use std::io::Write;
-    let world = test_daemon::start("HTTP lifecycle fixture");
-    let weak = Arc::downgrade(&world.daemon);
-    let mut server = start_on(Arc::clone(&world.daemon), 0).unwrap();
+    let daemon = test_daemon::start("HTTP lifecycle fixture");
+    let weak = Arc::downgrade(&daemon.daemon);
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
     let _idle = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let mut partial = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     partial
@@ -327,7 +327,7 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
         .expect("HTTP worker kept idle clients open")
         .unwrap();
     thread.join().unwrap();
-    drop(world);
+    drop(daemon);
     assert!(weak.upgrade().is_none());
 }
 
@@ -381,7 +381,7 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
     drop(file);
     r.w.wait_for(|status| {
         if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read { target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), logical: false, budget: None, cursor: None }, &r.w.daemon);
+        let response = handle(Request::Read { target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
         matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
     });
     rt().block_on(async {
@@ -610,14 +610,14 @@ fn cost_uses_public_accounting_and_session_scope() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("Logical ancestry complete."), "{html}");
+        assert!(html.contains("Every parent session is here."), "{html}");
         assert!(!html.contains("Links unavailable"), "{html}");
         assert!(html.contains("Session cost and usage"));
     });
 }
 
 #[test]
-fn session_lineage_links_are_scoped_and_missing_parent_stays_incomplete() {
+fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
     let r = reader();
     for (child, parent) in [
         ("child", "s1"),
@@ -659,7 +659,7 @@ fn session_lineage_links_are_scoped_and_missing_parent_stays_incomplete() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("Incomplete logical ancestry"), "{html}");
+        assert!(html.contains("Some parent sessions are missing"), "{html}");
         assert!(html.contains("missing_parent"), "{html}");
         assert!(html.contains("href=\"/s/claude-code%3Amissing\""), "{html}");
     });

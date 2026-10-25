@@ -5,7 +5,7 @@
 
 use crate::document::{str_of, string_of};
 use crate::parse::{DocumentParser, Output, Parse};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{Json, RepoLookup};
 use std::path::Path;
 
@@ -30,12 +30,12 @@ impl DocumentParser for Lookup {
         let v: Json = match serde_json::from_slice(bytes) {
             Ok(v) => v,
             Err(e) => {
-                records.record("repo_lookup", &Disposition::refused(e.to_string()));
+                records.record("repo_lookup", &RecordOutcome::unreadable(e.to_string()));
                 return;
             }
         };
         let Some(path) = string_of(&v, "path") else {
-            records.record("repo_lookup", &Disposition::refused("no path"));
+            records.record("repo_lookup", &RecordOutcome::unreadable("no path"));
             return;
         };
         // `read_at` says when the lookup was taken; the row needs only what
@@ -45,7 +45,7 @@ impl DocumentParser for Lookup {
             remote: str_of(&v, "remote").map(str::to_owned),
             root_commit: str_of(&v, "root_commit").map(str::to_owned),
         });
-        records.record("repo_lookup", &Disposition::Materialized);
+        records.record("repo_lookup", &RecordOutcome::Used);
     }
 }
 

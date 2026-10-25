@@ -6,11 +6,11 @@
 //! (a `plan` event from the transcript).
 
 use super::{ROOT, session_id};
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, Parse, Parser};
 use crate::time;
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, Timestamp, TitleSource};
 use std::path::Path;
 
@@ -144,9 +144,9 @@ struct SideFile {
 }
 
 /// One event on `session` citing the whole file.
-fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) -> Disposition {
+fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) -> RecordOutcome {
     let Some(session) = session_id(session) else {
-        return Disposition::refused("session ID in the path is empty");
+        return RecordOutcome::unreadable("session ID in the path is empty");
     };
     out.events.push(Event {
         session: Some(session),
@@ -156,17 +156,17 @@ fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) ->
         range: Some((0, len as u64)),
         data,
     });
-    Disposition::Materialized
+    RecordOutcome::Used
 }
 
-fn json(bytes: &[u8]) -> Result<Json, Disposition> {
-    serde_json::from_slice(bytes).map_err(|e| Disposition::refused(format!("malformed JSON: {e}")))
+fn json(bytes: &[u8]) -> Result<Json, RecordOutcome> {
+    serde_json::from_slice(bytes).map_err(|e| RecordOutcome::unreadable(format!("malformed JSON: {e}")))
 }
 
 impl DocumentParser for SideFile {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
         let len = bytes.len();
-        let (kind, disposition) = match &self.side {
+        let (kind, outcome) = match &self.side {
             Side::Todos { session, agent } => (
                 "todos",
                 match json(bytes) {
@@ -205,7 +205,7 @@ impl DocumentParser for SideFile {
             Side::JobState => ("job_state", job_state(bytes, len, out)),
             Side::JobTimeline => (
                 "job_timeline",
-                Disposition::unknown(
+                RecordOutcome::skipped(
                     "a job's state changes; its state.json names the session, the bytes stay stored",
                 ),
             ),
@@ -231,24 +231,24 @@ impl DocumentParser for SideFile {
             }
             Side::Plan => (
                 "plan",
-                Disposition::unknown(
+                RecordOutcome::skipped(
                     "a plan names no session; sessions name their plan by slug (plan event)",
                 ),
             ),
             Side::Memory => (
                 "memory",
-                Disposition::unknown(
+                RecordOutcome::skipped(
                     "project memory belongs to the project directory, not a session",
                 ),
             ),
         };
-        records.record(kind, &disposition);
+        records.record(kind, &outcome);
     }
 }
 
 /// A background job: the session it ran as, how it was named, where it
 /// ran and which session it resumed.
-fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> Disposition {
+fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
     let v = match json(bytes) {
         Ok(v) => v,
         Err(d) => return d,
@@ -259,11 +259,11 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> Disposition {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
     else {
-        return Disposition::refused("job state without a sessionId");
+        return RecordOutcome::unreadable("job state without a sessionId");
     };
     let sid = sid.as_str();
     let Some(id) = session_id(sid) else {
-        return Disposition::refused("session ID is not valid");
+        return RecordOutcome::unreadable("session ID is not valid");
     };
     let mut s = Session::new(id.clone(), SessionKind::Main);
     s.mode = Some("bg".to_owned());
@@ -333,7 +333,7 @@ fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
 struct History;
 
 impl Parser for History {
-    type Carry = ();
+    type ParserState = ();
 
     fn kind(&self, _value: &Json) -> String {
         "prompt".to_owned()
@@ -346,18 +346,18 @@ impl Parser for History {
         v: &Json,
         out: &mut Output,
         _records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let Some(sid) = v
             .get("sessionId")
             .and_then(Json::as_str)
             .filter(|s| !s.is_empty())
         else {
-            return Disposition::unknown(
+            return RecordOutcome::skipped(
                 "written before the tool recorded session IDs; project and time stay in the stored bytes",
             );
         };
         let Some(session) = session_id(sid) else {
-            return Disposition::refused("session ID is not valid");
+            return RecordOutcome::unreadable("session ID is not valid");
         };
         out.events.push(Event {
             session: Some(session),
@@ -370,7 +370,7 @@ impl Parser for History {
             range: Some(super::range(record)),
             data: v.clone(),
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     fn flush(&self, _carry: &mut (), _out: &mut Output) {}

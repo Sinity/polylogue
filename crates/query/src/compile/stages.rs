@@ -8,7 +8,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         key: &SortKey,
         desc: bool,
-        scope: &Scope,
+        scope: &RowContext,
         at: usize,
     ) -> Result<Vec<String>, QueryError> {
         let identity: Vec<String> = units::spec(scope.unit)
@@ -41,8 +41,8 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// Follows the field owner before its name is flattened into an alias.
-    pub(super) fn field_reference(field: &str, scope: &Scope) -> Option<ColumnReference> {
+    /// Finds the unit a field belongs to before its name becomes an alias.
+    pub(super) fn field_reference(field: &str, scope: &RowContext) -> Option<ColumnReference> {
         let lower = field.to_ascii_lowercase();
         if lower == "session" && fields::has_session(scope.unit) {
             return Some(ColumnReference::Session);
@@ -52,7 +52,7 @@ impl<'a> Compiler<'a> {
         {
             return match rel.via {
                 Via::Same | Via::Session(_) => {
-                    Self::field_reference(rest, &Scope::plain(rel.target))
+                    Self::field_reference(rest, &RowContext::plain(rel.target))
                 }
                 Via::Exists { .. } => None,
             };
@@ -71,7 +71,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn expr(
         &mut self,
         field: &str,
-        scope: &Scope,
+        scope: &RowContext,
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
         let lower = field.to_ascii_lowercase();
@@ -87,11 +87,11 @@ impl<'a> Compiler<'a> {
             && let Some(rel) = units::spec(scope.unit).relation(prefix)
         {
             let sub = match rel.via {
-                Via::Same => Scope {
+                Via::Same => RowContext {
                     unit: rel.target,
                     a: a.clone(),
                 },
-                Via::Session(alias) => Scope {
+                Via::Session(alias) => RowContext {
                     unit: Unit::Sessions,
                     a: Aliases {
                         s: a.expand(alias),
@@ -105,7 +105,7 @@ impl<'a> Compiler<'a> {
                     let n = self.fresh();
                     let (e, k) = self.expr(
                         rest,
-                        &Scope {
+                        &RowContext {
                             unit: rel.target,
                             a: n.clone(),
                         },
@@ -146,7 +146,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn group_key(
         &mut self,
         key: &GroupKey,
-        scope: &Scope,
+        scope: &RowContext,
         at: usize,
     ) -> Result<(String, String, ColKind), QueryError> {
         let (expr, kind) = self.expr(&key.field, scope, at)?;
@@ -181,7 +181,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn agg(
         &mut self,
         f: &AggFn,
-        scope: &Scope,
+        scope: &RowContext,
         at: usize,
     ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
         let col = f.column();
@@ -304,12 +304,12 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    pub(super) fn attach(&mut self, child: &Child, parent: &Scope) -> Result<Attach, QueryError> {
+    pub(super) fn attach(&mut self, child: &Child, parent: &RowContext) -> Result<Attach, QueryError> {
         let saved = std::mem::take(&mut self.params);
         let saved_ctes = std::mem::take(&mut self.ctes);
         let saved_shown = std::mem::take(&mut self.shown);
         let saved_rank = self.rank.take();
-        let sc = Scope::plain(child.unit);
+        let sc = RowContext::plain(child.unit);
         let conds: Vec<Cond> = child
             .windows
             .iter()

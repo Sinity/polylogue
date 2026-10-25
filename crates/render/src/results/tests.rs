@@ -13,7 +13,7 @@ fn answer() -> Value {
         "count": 3,
         "next": "abc",
         "notes": ["a note"],
-        "degraded": [],
+        "incomplete": [],
     })
 }
 
@@ -51,7 +51,7 @@ fn terminal_bolds_matches_and_explains_empty_results() {
     assert!(t.contains("\x1b[1mchrono\x1b[0m"));
     let empty = json!({
         "outcome": "empty", "columns": [], "rows": [], "count": 0, "next": null,
-        "notes": [], "degraded": [],
+        "notes": [], "incomplete": [],
         "why": [{"clause": "repo:other", "matches": 0, "of": 5}]
     });
     let mut out = vec![];

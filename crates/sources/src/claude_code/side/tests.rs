@@ -67,7 +67,7 @@ fn paths_name_their_side_file() {
 
 fn doc(path: &str, bytes: &[u8]) -> Output {
     let step = run_document(&SideFile { side: side(path) }, bytes).unwrap();
-    assert_eq!(step.accounting.framed, 1);
+    assert_eq!(step.counts.records, 1);
     step.output
 }
 
@@ -147,7 +147,7 @@ fn tool_results_and_file_snapshots_cite_their_bytes() {
 fn plans_and_memory_are_kept_with_a_reason() {
     let step = run_document(&SideFile { side: Side::Plan }, b"# plan").unwrap();
     assert!(step.output.events.is_empty());
-    assert_eq!(step.accounting.framed, 1);
+    assert_eq!(step.counts.records, 1);
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn malformed_json_is_refused_not_dropped() {
         b"{not json",
     )
     .unwrap();
-    assert_eq!(step.accounting.framed, 1);
+    assert_eq!(step.counts.records, 1);
     assert!(step.output.events.is_empty());
 }
 
@@ -169,7 +169,7 @@ fn malformed_json_is_refused_not_dropped() {
 fn history_lines_with_a_session_become_events() {
     let bytes = b"{\"display\":\"a\",\"timestamp\":1760892079968,\"project\":\"/p\"}\n{\"display\":\"b\",\"timestamp\":1760892079969,\"project\":\"/p\",\"sessionId\":\"s1\"}\n";
     let step = run(&History, &mut (), bytes, 0).unwrap();
-    assert_eq!(step.accounting.framed, 2);
+    assert_eq!(step.counts.records, 2);
     assert_eq!(step.output.events.len(), 1);
     assert_eq!(step.output.events[0].kind, "prompt_history");
     assert!(step.output.events[0].at.is_some());

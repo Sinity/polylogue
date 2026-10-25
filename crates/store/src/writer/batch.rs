@@ -11,9 +11,9 @@ pub struct InputKey {
     pub id: String,
     /// The origin that parses it (`claude-code`).
     pub format: String,
-    /// How faithful the route is, for choosing between versions of a
+    /// How faithful the arrival is, for choosing between versions of a
     /// message: 0 live file, 1 spool, 2 import.
-    pub route_rank: u8,
+    pub arrival_rank: u8,
 }
 
 /// One look at a file that found something.
@@ -28,24 +28,24 @@ pub struct Observation {
     pub import: Option<ImportMember>,
 }
 
-/// Engine-authored membership of one acquisition. It does not assert that
-/// every expected export member was present or successfully acquired.
+/// Engine-authored membership of one import. It does not assert that
+/// every expected export member was present or stored.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportMember {
     pub version: u8,
-    pub acquisition: String,
+    pub import_id: String,
     pub member: String,
     /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,
-    /// Persisted by the Writer in observation_container, not ignorable JSON metadata.
+    /// Persisted by the Writer in observation_zip, not ignorable JSON metadata.
     #[serde(skip)]
-    pub container: Option<ImportContainer>,
+    pub zip: Option<InZip>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportContainer {
+pub struct InZip {
     pub input: String,
     pub member_index: u64,
 }
@@ -53,15 +53,15 @@ pub struct ImportContainer {
 /// One parse step's rows and where they sit in the input's chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseStep {
-    /// Logical message positions for array records, separate from raw spans.
+    /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
     /// Each record restates whole conversations: a later record's version
     /// of a message replaces an earlier one in the same chain.
-    pub restates: bool,
-    pub accounting: Accounting,
+    pub repeats_whole_conversations: bool,
+    pub counts: RecordCounts,
     /// Where the step's bytes start in the chain. 0 means the chain was
     /// parsed from the start, so the step's counts replace earlier ones.
     pub start: u64,
@@ -79,19 +79,19 @@ pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
     /// An unprepared parse over this byte range. A range beginning at zero
-    /// replaces accounting; logical exports may set `reset` independently.
+    /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(
         output: Output,
-        accounting: Accounting,
+        counts: RecordCounts,
         range: std::ops::Range<u64>,
         at_end: bool,
     ) -> Self {
         Self {
             order_from: None,
             reset: range.start == 0,
-            restates: false,
+            repeats_whole_conversations: false,
             output,
-            accounting,
+            counts,
             start: range.start,
             parsed_upto: range.end,
             at_end,
@@ -100,7 +100,7 @@ impl ParseStep {
     }
 }
 
-/// What the writer stores for one input in one step. `piece` holds the new
+/// What the writer stores for one input in one step. `new blob` holds the new
 /// bytes (already durable when they are a file); `parse` holds the rows
 /// parsed from them, if the origin is parsed.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,10 +113,10 @@ pub struct Batch {
     /// This batch extends the revision the previous batch of this input
     /// started, instead of starting a new one.
     pub continues: bool,
-    pub piece: Option<Piece>,
-    /// Bytes records carried inline (base64 images), prepared like pieces;
+    pub new_blob: Option<NewBlob>,
+    /// Bytes records carried inline (base64 images), prepared like new blobs;
     /// blocks name them by hash.
-    pub blobs: Vec<Piece>,
+    pub blobs: Vec<NewBlob>,
     /// The chain's stored length after this batch.
     pub length: u64,
     pub parse: Vec<ParseStep>,

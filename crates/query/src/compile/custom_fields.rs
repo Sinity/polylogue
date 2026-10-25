@@ -14,7 +14,7 @@ pub(crate) struct Call<'q, 's> {
     pub unit: Unit,
     pub name: &'static str,
     pub op: FieldOp<'q>,
-    pub scope: &'s Scope,
+    pub scope: &'s RowContext,
     pub span: Span,
     /// The condition is at the top level of the query.
     pub top: bool,
@@ -89,7 +89,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         });
     }
     if !c.opts.embeddings {
-        c.degraded
+        c.incomplete
             .push("semantic search is not enabled; rows are ordered by time and unranked".into());
         return Ok("1".into());
     }
@@ -465,7 +465,7 @@ pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Str
     ))
 }
 
-pub(crate) fn lineage(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let (e, p) = c.id_params(&x.value()?);
     Ok(format!(
         "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT id FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
@@ -482,7 +482,7 @@ pub(crate) fn session_tool_call(
     c: &mut Compiler<'_>,
     x: &Call<'_, '_>,
 ) -> Result<String, QueryError> {
-    let inner = Scope {
+    let inner = RowContext {
         unit: Unit::ToolCalls,
         a: Aliases {
             t: "tq".into(),

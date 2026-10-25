@@ -1,7 +1,7 @@
 {
-  "accounting": {
-    "framed": 15,
-    "materialized": {
+  "counts": {
+    "records": 15,
+    "used": {
       "event_msg/item_completed": 1,
       "event_msg/task_complete": 1,
       "event_msg/task_started": 1,
@@ -13,8 +13,8 @@
       "session_meta": 1,
       "turn_context": 1
     },
-    "refused": {},
-    "unknown": {
+    "unreadable": {},
+    "skipped": {
       "event_msg/agent_message: mirrors a response item, which is stored": 1
     },
     "unread_fields": {}
@@ -89,11 +89,11 @@
       {
         "at": "2026-03-01T10:00:09Z",
         "data": {
-          "completion_observed": null,
+          "measured_completion": null,
           "input_including_cache": 5000,
           "model": "gpt-6.1-sol",
-          "observation": "b415c383eeb67002c0bce67b9ff2d267a52abd4f7267a5dbb5a1e0e2621ab800",
-          "observed_at": null,
+          "report_id": "b415c383eeb67002c0bce67b9ff2d267a52abd4f7267a5dbb5a1e0e2621ab800",
+          "measured_at": null,
           "output_including_reasoning": 80,
           "response": null,
           "usage": {
@@ -104,7 +104,7 @@
             "reasoning": 40
           }
         },
-        "kind": "usage_observation",
+        "kind": "usage_report",
         "range": [
           1853,
           2193
@@ -114,8 +114,8 @@
       {
         "at": "2026-03-01T10:00:09Z",
         "data": {
-          "observation": "514524aab8c68e71f46c4e8f7397192545fed67294291020645972980b363375",
-          "observed_at": null,
+          "report_id": "514524aab8c68e71f46c4e8f7397192545fed67294291020645972980b363375",
+          "measured_at": null,
           "reading": {
             "windows": [
               {
@@ -127,7 +127,7 @@
             ]
           }
         },
-        "kind": "quota_observation",
+        "kind": "quota_report",
         "range": [
           1853,
           2193
@@ -165,11 +165,11 @@
       {
         "at": "2026-03-01T10:00:14Z",
         "data": {
-          "completion_observed": null,
+          "measured_completion": null,
           "input_including_cache": 5200,
           "model": "gpt-6.1-sol",
-          "observation": "7fb4309c88521a5bdb3401c8aa9070ca4714c284ed256c2ccc1d636d948317ce",
-          "observed_at": null,
+          "report_id": "7fb4309c88521a5bdb3401c8aa9070ca4714c284ed256c2ccc1d636d948317ce",
+          "measured_at": null,
           "output_including_reasoning": 12,
           "response": null,
           "usage": {
@@ -180,7 +180,7 @@
             "reasoning": 0
           }
         },
-        "kind": "usage_observation",
+        "kind": "usage_report",
         "range": [
           3433,
           3773

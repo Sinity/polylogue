@@ -5,7 +5,7 @@
 //!   reads it (the query language, rendering, the daemon). Rows go straight
 //!   into the tables, the way the writer leaves them, so a test states the
 //!   facts it needs without a parser or an input file.
-//! - [`writer::WriterWorld`]: the real writer over a temporary archive, for
+//! - [`writer::WriterArchive`]: the real writer over a temporary archive, for
 //!   tests of what the writer and the derive step make of parsed records.
 //! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
@@ -313,7 +313,7 @@ impl Fixture {
         counted_only: bool,
     ) -> Result<()> {
         self.index.execute(
-            "INSERT INTO unrecognized(input_pk, chain, format, what, count, counted_only)
+            "INSERT INTO unused(input_pk, chain, format, what, count, counted_only)
              VALUES (?1, 1, ?2, ?3, ?4, ?5)",
             params![self.input_pk, format, what, count, i64::from(counted_only)],
         )?;
@@ -377,7 +377,7 @@ impl Fixture {
     /// A kept result, as the writer stores one.
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
         self.notes.execute(
-            "INSERT INTO kept_result(id, query, ran_at, view, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
+            "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],
         )?;
         Ok(())
@@ -393,7 +393,7 @@ impl Fixture {
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
         self.notes.execute(
-            "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, commit_seq)
+            "INSERT INTO note(id, first_note, kind, key, value, author, machine, created_at, commit_seq)
              VALUES (?1, ?1, ?2, ?3, ?4, 'operator', 'test', ?5, ?5)",
             params![id, kind, key, value, self.commit_seq],
         )?;
@@ -414,7 +414,7 @@ impl Fixture {
     ) -> Result<()> {
         self.commit_seq += 1;
         self.notes.execute(
-            "INSERT INTO excision(id, scope, created_at, commit_seq) VALUES (?1, ?2, ?3, ?3)",
+            "INSERT INTO excision(id, target, created_at, commit_seq) VALUES (?1, ?2, ?3, ?3)",
             params![id, scope, self.commit_seq],
         )?;
         for (kind, values) in [("session", sessions), ("message", messages)] {

@@ -54,7 +54,7 @@ cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
-description = "Compile selected packages without waiting behind bulk qualification"
+description = "Compile selected packages without waiting behind the full suite"
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
 pool = "normal"

@@ -246,7 +246,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
                 &[
                     "--json",
                     "sql",
-                    "SELECT SUM(unrecognized_n) AS n FROM parse_state",
+                    "SELECT SUM(skipped) AS n FROM parse_state",
                 ],
             );
             assert!(out.status.success(), "{out:?}");

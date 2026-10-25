@@ -63,7 +63,7 @@ pub struct ObservationRecord {
     pub excision: Option<String>,
     /// The export ZIP it was read from, and its index there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub container: Option<(String, i64)>,
+    pub zip: Option<(String, i64)>,
 }
 
 impl InputRecord {
@@ -128,11 +128,11 @@ impl InputRecord {
                 o.details_json,
                 o.excision,
             ])?;
-            if let Some((container, index)) = &o.container {
+            if let Some((zip, index)) = &o.zip {
                 tx.prepare_cached(
-                    "INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3)",
+                    "INSERT OR IGNORE INTO observation_zip VALUES (?1, ?2, ?3)",
                 )?
-                .execute(params![o.id, container, index])?;
+                .execute(params![o.id, zip, index])?;
             }
         }
         Ok(())
@@ -150,12 +150,12 @@ pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRe
                  ORDER BY m.first_seen LIMIT 1), ''),
              o.path, o.class, o.revision, o.length, o.device, o.inode, o.size, o.mtime_ns,
              o.ctime_ns, o.polylogue_version, o.seen_at, o.details_json, o.excision,
-             c.container_input, c.member_index
-         FROM observation o LEFT JOIN observation_container c ON c.observation_id = o.id
+             c.zip_input, c.member_index
+         FROM observation o LEFT JOIN observation_zip c ON c.observation_id = o.id
          WHERE o.input = ?1 ORDER BY o.rowid",
     )?;
     let rows = statement.query_map([input], |r| {
-        let container: Option<String> = r.get(16)?;
+        let zip: Option<String> = r.get(16)?;
         let index: Option<i64> = r.get(17)?;
         Ok(ObservationRecord {
             id: r.get(0)?,
@@ -174,7 +174,7 @@ pub(crate) fn observations(conn: &Connection, input: &str) -> Result<Vec<InputRe
             seen_at: r.get(13)?,
             details_json: r.get(14)?,
             excision: r.get(15)?,
-            container: container.zip(index),
+            zip: zip.zip(index),
         })
     })?;
     rows.map(|row| {

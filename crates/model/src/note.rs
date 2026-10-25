@@ -1,6 +1,6 @@
 //! Notes and assertions: everything people and agents add to the archive.
 //! One store with revisions and relations. A revision is
-//! a new note in the same family (`root`); the current revision of a
+//! a new note in the same family (`first_note`); the current revision of a
 //! family is its newest note that is not withdrawn.
 
 use crate::{IdError, MessageId, SessionId, Timestamp};
@@ -294,8 +294,8 @@ pub struct NewNote {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     pub id: String,
-    /// The first note of its revision family.
-    pub root: String,
+    /// The first note of its revisions; its own ID for a first note.
+    pub first_note: String,
     pub kind: NoteKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,

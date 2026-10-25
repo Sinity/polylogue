@@ -17,15 +17,15 @@ pub fn morrow_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/morrow")
 }
 
-/// Which of the example's sets a world holds (`FACTS.md`).
+/// Which of the example's sets an archive holds (`FACTS.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Set {
     /// Sessions #1–#8: Claude Code, Codex with its state database, the
     /// hook spool, and the ChatGPT and claude.ai exports.
     Main,
-    /// The Claude-Code-only home: #1–#4 and the lineage set L1–L8.
+    /// The Claude-Code-only home: #1–#4 and the parents set L1–L8.
     ClaudeCodeOnly,
-    /// The live set V1–V3 with its hook carriers.
+    /// The live set V1–V3 with its hook spool files.
     Live,
     /// The main set plus the annotation session.
     Annotation,
@@ -62,7 +62,7 @@ pub struct Morrow {
 }
 
 impl Morrow {
-    /// The set's files laid out in a fresh home; nothing converged yet.
+    /// The set's files laid out in a fresh home; nothing run yet.
     pub fn lay_out(set: Set) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let home = dir.path().join("home");
@@ -85,14 +85,14 @@ impl Morrow {
         }
     }
 
-    /// The set converged, with its exports imported.
+    /// The set run, with its exports imported.
     pub fn build(set: Set) -> Self {
-        let world = Self::lay_out(set);
-        world.converge();
-        world
+        let morrow = Self::lay_out(set);
+        morrow.run_pass();
+        morrow
     }
 
-    /// Settings that read only this world's home.
+    /// Settings that read only this archive's home.
     pub fn config(&self) -> Config {
         Config {
             home: self.home.clone(),
@@ -120,9 +120,9 @@ impl Morrow {
     }
 
     /// One pass of the loop, then the set's exports imported.
-    pub fn converge(&self) -> (Pass, Option<ImportReport>) {
+    pub fn run_pass(&self) -> (Pass, Option<ImportReport>) {
         let (mut engine, _lock) = self.engine();
-        let pass = engine.converge().expect("converge");
+        let pass = engine.run_pass().expect("a pass");
         let report = self.import_exports(&mut engine);
         (pass, report)
     }
@@ -182,12 +182,12 @@ impl Morrow {
             .map_err(|e| e.to_string())
     }
 
-    /// A provider file of this world, by its path under the home.
+    /// A source file of this archive, by its path under the home.
     pub fn file(&self, rel: &str) -> PathBuf {
         self.home.join(rel)
     }
 
-    /// Every provider file collection reads in this world, in path order.
+    /// Every source file collection reads in this archive, in path order.
     pub fn provider_files(&self) -> Vec<PathBuf> {
         let mut out = Vec::new();
         files_under(&self.home, &mut out).expect("list the home");

@@ -80,7 +80,7 @@ pub fn classify(last: Option<FileFacts>, now: Option<FileFacts>) -> Change {
     }
 }
 
-/// How a piece's bytes are stored.
+/// How a new blob's bytes are stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stored {
     /// zstd-compressed bytes for the `blob` row in `archive.db`.
@@ -92,13 +92,13 @@ pub enum Stored {
 /// Bytes of one revision step (an append, or a whole new content), hashed
 /// and stored or compressed off the writer thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Piece {
+pub struct NewBlob {
     pub hash: BlobHash,
     pub size: u64,
     pub stored: Stored,
 }
 
-impl Piece {
+impl NewBlob {
     /// Test rows: hashes `bytes`, compresses small ones for an inline row
     /// and writes large ones straight to the blob store.
     #[cfg(test)]

@@ -1,5 +1,5 @@
-//! ATIF step text and actions. Recorded source roles are descriptors; they do
-//! not establish model authorship or delivery to a model.
+//! ATIF step text and actions, as document blocks. A step's role is kept as
+//! written; it does not say a model wrote the text or read it.
 use polylogue_model::{Attachment, AttachmentDirection, Block, Json, ToolOutcome, UnknownReason};
 
 pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {

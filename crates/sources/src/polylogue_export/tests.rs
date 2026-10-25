@@ -62,7 +62,7 @@ fn recognizes_only_its_own_format() {
 fn steps(bytes: &[u8]) -> Vec<Step> {
     struct NoOwners;
     impl ExportState for NoOwners {
-        fn claim(&mut self, _: &str, _: &SessionId) -> Result<Option<SessionId>, String> {
+        fn record_first_session(&mut self, _: &str, _: &SessionId) -> Result<Option<SessionId>, String> {
             panic!("Polylogue export must preserve its authored message ownership")
         }
         fn last_message(
@@ -130,7 +130,7 @@ fn reads_back_the_same_ids_with_exact_export_session_spans() {
         Some((start as u64, end as u64))
     );
     assert_eq!(step.output.events[0].data, doc.sessions[0].events[0].data);
-    assert_eq!(step.accounting.framed, 1);
+    assert_eq!(step.counts.records, 1);
 }
 
 #[test]
@@ -148,11 +148,11 @@ fn refuses_newer_headers_and_late_invalid_sessions_without_emitting_a_prefix() {
                 .iter()
                 .all(|s| s.output.sessions.is_empty() && s.output.messages.is_empty())
         );
-        assert_eq!(steps.iter().map(|s| s.accounting.framed).sum::<u64>(), 1);
+        assert_eq!(steps.iter().map(|s| s.counts.records).sum::<u64>(), 1);
         assert_eq!(
             steps
                 .iter()
-                .map(|s| s.accounting.refused.values().sum::<u64>())
+                .map(|s| s.counts.unreadable.values().sum::<u64>())
                 .sum::<u64>(),
             1
         );
@@ -200,7 +200,7 @@ fn typed_export_collections_refuse_null_instead_of_becoming_empty_arrays() {
                 .iter()
                 .all(|s| s.output.documents.is_empty() && s.output.sessions.is_empty())
         );
-        assert!(steps.iter().any(|s| !s.accounting.refused.is_empty()));
+        assert!(steps.iter().any(|s| !s.counts.unreadable.is_empty()));
     }
 }
 
@@ -253,7 +253,7 @@ fn version3_events_rebind_only_to_the_local_export_record_and_keep_sender_claims
             .iter()
             .all(|s| s.output.events.is_empty() && s.output.sessions.is_empty())
     );
-    assert!(refused.iter().any(|s| !s.accounting.refused.is_empty()));
+    assert!(refused.iter().any(|s| !s.counts.unreadable.is_empty()));
 }
 
 #[test]

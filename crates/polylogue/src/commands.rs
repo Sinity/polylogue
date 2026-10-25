@@ -415,7 +415,7 @@ const WRITTEN: &[Command] = &[
             ),
             CURSOR,
             opt(
-                "logical",
+                "with_parents",
                 Kind::Bool,
                 "Include messages inherited from a parent session",
             ),
@@ -440,7 +440,7 @@ const WRITTEN: &[Command] = &[
             Arg {
                 cli_only: true,
                 ..opt(
-                    "asset",
+                    "input",
                     Kind::Text,
                     "The stored input to read the bytes from, when several match",
                 )
@@ -521,7 +521,7 @@ const WRITTEN: &[Command] = &[
             opt(
                 "revises",
                 Kind::Text,
-                "Replace an earlier note: the new one joins its revision family",
+                "Replace an earlier note: the new one joins its revisions",
             ),
             opt(
                 "agent",
@@ -655,7 +655,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "recall",
-        help: "Search past work for something relevant now: matching messages grouped by session, notes on them, and a receipt of how it searched",
+        help: "Search past work for something relevant now: matching messages grouped by session, notes on them, and a summary of how it searched",
         args: &[
             pos_opt(
                 "query",

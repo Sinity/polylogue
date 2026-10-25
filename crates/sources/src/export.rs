@@ -1,4 +1,5 @@
-//! Export records and conversation scan_state, with Serde framing for JSON arrays.
+//! Export records and conversation scan state, with a Serde reader that splits
+//! JSON arrays into records.
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
@@ -295,8 +296,8 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
     }
 }
 
-/// Frames original records, then parses each in staged order. The default
-/// scanner reads JSON array elements; other origins supply their own framing.
+/// Splits an export into records, then parses each in staged order. The
+/// default scanner reads JSON array elements; other origins split their own.
 pub trait ExportParser: Send {
     fn scan(
         &mut self,
@@ -310,7 +311,7 @@ pub trait ExportParser: Send {
     }
     /// File-level output after validation and ordering, before its items. `first`
     /// is the selected first record after any keyed replacements. A step with
-    /// `restates` set makes every later item restate whole records; the owning
+    /// `repeats_whole_conversations` set makes every later item repeat whole records; the owning
     /// session's facts precede message-only items, whose ranges stay unchanged.
     fn begin(
         &mut self,
@@ -335,7 +336,7 @@ pub trait ExportParser: Send {
 /// None; an existing key returns its first owner. Previous-message links are
 /// stored separately so chronological records can interleave conversations.
 pub trait ExportState {
-    fn claim(
+    fn record_first_session(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
@@ -377,10 +378,10 @@ pub fn parse_item(
     }
     Ok(crate::parse::Step {
         output,
-        accounting: records.finish().map_err(|e| e.to_string())?,
+        counts: records.finish().map_err(|e| e.to_string())?,
         start: range.start,
         consumed: range.end,
-        restates: false,
+        repeats_whole_conversations: false,
     })
 }
 
@@ -388,14 +389,14 @@ pub fn refused(error: String, length: u64) -> crate::parse::Step {
     let mut records = crate::Records::default();
     records.record(
         "export",
-        &polylogue_model::Disposition::refused(format!("malformed JSON: {error}")),
+        &polylogue_model::RecordOutcome::unreadable(format!("malformed JSON: {error}")),
     );
     crate::parse::Step {
         output: Default::default(),
-        accounting: records.finish().expect("refusal accounted"),
+        counts: records.finish().expect("refusal counted"),
         start: 0,
         consumed: length,
-        restates: false,
+        repeats_whole_conversations: false,
     }
 }
 

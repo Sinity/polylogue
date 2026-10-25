@@ -17,11 +17,11 @@ use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
 mod behind_index;
-mod lineage;
+mod parents;
 pub use behind_index::{BehindChain, ImportedAs};
 mod rows;
 
-pub use lineage::{Lineage, LineageIssue, MessageSelection};
+pub use parents::{Parents, ParentIssue, MessageSelection};
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
@@ -99,7 +99,7 @@ pub struct KnownInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainProgress {
     pub chain: i64,
-    pub route_rank: u8,
+    pub arrival_rank: u8,
     pub waiting: bool,
     pub length: u64,
     pub parsed_upto: u64,
@@ -123,7 +123,7 @@ pub struct Status {
     /// Input chains by parse status (`done`, `parsing`, `waiting` for growth).
     pub parse_states: BTreeMap<String, u64>,
     /// The most frequent record kinds and fields parsers did not read.
-    pub unrecognized: Vec<(String, u64)>,
+    pub unused: Vec<(String, u64)>,
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
@@ -480,13 +480,13 @@ impl Reader<'_> {
             .flatten())
     }
 
-    /// The session's messages in order, the preferred version of each. With
-    /// `logical`, messages it inherited come first: a fork's parent prefix up
+    /// The session's messages in order, the shown version of each. With
+    /// `with_parents`, its parent sessions' messages come first: a fork's parent prefix up
     /// to the branch point, and messages its file copied from another
     /// session, which are stored once, in the session they came from.
-    pub fn messages(&self, id: &SessionId, logical: bool) -> Result<Vec<Message>> {
+    pub fn messages(&self, id: &SessionId, with_parents: bool) -> Result<Vec<Message>> {
         let mut out = Vec::new();
-        self.visit_messages(id, logical, |message| {
+        self.visit_messages(id, with_parents, |message| {
             out.push(message);
             std::ops::ControlFlow::Continue(())
         })?;
@@ -494,31 +494,32 @@ impl Reader<'_> {
     }
 
     /// Visit messages in reading order, decoding only the current message's
-    /// bodies. Breaking stops before later bodies are loaded. Logical reads
+    /// bodies. Breaking stops before later bodies are loaded. With parents reads
     /// keep inherited message identifiers for ordering and deduplication.
     pub fn visit_messages(
         &self,
         id: &SessionId,
-        logical: bool,
+        with_parents: bool,
         mut visit: impl FnMut(Message) -> std::ops::ControlFlow<()>,
     ) -> Result<()> {
-        let selected = self.select_messages(id, logical)?;
+        let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
         selected.visit(&mut visit)
     }
 
     /// Fingerprint stored message facts without decompressing bodies. A strict
-    /// caller cannot mistake incomplete ancestry for a complete selection.
+    /// caller cannot mistake incomplete parents for a complete selection.
     #[cfg(test)]
-    pub fn message_fingerprint(&self, id: &SessionId, logical: bool) -> Result<String> {
-        let selected = self.select_messages(id, logical)?;
+    pub fn message_fingerprint(&self, id: &SessionId, with_parents: bool) -> Result<String> {
+        let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
         selected.fingerprint()
     }
 
-    /// Complete logical message keys, each once. Logical totals must refuse
-    /// missing ancestry rather than report the available subset as complete.
-    pub fn logical_message_keys(&self, id: &SessionId) -> Result<Vec<i64>> {
+    /// The keys of the messages a session shows with its parents, each once.
+    /// Totals with parents refuse a missing parent rather than count what is
+    /// stored as complete.
+    pub fn message_keys_with_parents(&self, id: &SessionId) -> Result<Vec<i64>> {
         let selected = self.select_messages(id, true)?;
         selected.require_complete()?;
         selected.keys()
@@ -679,13 +680,13 @@ impl Reader<'_> {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
         }
-        let mut unrecognized = Vec::new();
+        let mut unused = Vec::new();
         let mut stmt = c.prepare_cached(
-            "SELECT what, SUM(count) AS n FROM unrecognized GROUP BY what ORDER BY n DESC LIMIT 20",
+            "SELECT what, SUM(count) AS n FROM unused GROUP BY what ORDER BY n DESC LIMIT 20",
         )?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (w, n) = row?;
-            unrecognized.push((w, n as u64));
+            unused.push((w, n as u64));
         }
         Ok(Status {
             pending_inputs: crate::staging::pending_blobs(c, "a.")?,
@@ -699,7 +700,7 @@ impl Reader<'_> {
             revisions: count("SELECT COUNT(*) FROM a.revision")?,
             stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob WHERE state='present'")?,
             parse_states,
-            unrecognized,
+            unused,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,
         })
     }
@@ -781,7 +782,7 @@ impl Reader<'_> {
         self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
     }
 
-    /// A current full hash may span several stored pieces. Compute
+    /// A current full hash may span several stored new blobs. Compute
     /// it once for an explicitly requested exact delivery, streaming the bytes.
     pub fn attachment_hash(
         &self,
@@ -943,7 +944,7 @@ impl Reader<'_> {
         let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
             return Ok(None);
         };
-        let route_rank = match produced.as_str() {
+        let arrival_rank = match produced.as_str() {
             "imported" => 2,
             "first" | "appended" | "rewritten" => 0,
             _ => {
@@ -954,7 +955,7 @@ impl Reader<'_> {
         };
         Ok(Some(ChainProgress {
             chain,
-            route_rank,
+            arrival_rank,
             waiting,
             length: length as u64,
             parsed_upto: parsed_upto as u64,

@@ -40,7 +40,7 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
         }
         let (mut engine, _lock) = engine(&w, 1024);
         let errors = if rebuild {
-            engine.converge().unwrap().errors
+            engine.run_pass().unwrap().errors
         } else {
             engine
                 .import(std::slice::from_ref(&directory))
@@ -65,7 +65,7 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
             resolution.source.blob, None,
             "source Attachment must remain unchanged"
         );
-        let hash=reader.query("SELECT hex(ms.version_hash) AS hash FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.preferred=1 WHERE m.id='chatgpt:asset-message'",&[]).unwrap();
+        let hash=reader.query("SELECT hex(ms.version_hash) AS hash FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 WHERE m.id='chatgpt:asset-message'",&[]).unwrap();
         if let Some(previous) = &previous {
             assert_eq!(previous, &hash);
         } else {
@@ -75,7 +75,7 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
 }
 
 #[test]
-fn identical_conversations_in_conflicting_acquisitions_do_not_pick_an_asset() {
+fn identical_conversations_in_conflicting_imports_do_not_pick_an_asset() {
     let w = ClaudeHome::new();
     let (mut engine, _lock) = engine(&w, 1024);
     for (directory, bytes) in [("one", b"first".as_slice()), ("two", b"second".as_slice())] {
@@ -142,7 +142,7 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 2);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 3);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.observation_container"),
+        w.count("SELECT count(*) AS n FROM a.observation_zip"),
         2
     );
 }
@@ -188,7 +188,7 @@ fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
         } else {
             assert!(
                 asset.names.is_empty(),
-                "a filename role from another acquisition must not be borrowed"
+                "a filename role from another import must not be borrowed"
             );
         }
     }
@@ -215,7 +215,7 @@ fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
         engine
             .excise(ExciseRequest {
                 id: "remove-asset".into(),
-                scope: ExciseScope::Input(input),
+                target: ExciseTarget::Input(input),
                 reason: None,
                 dry_run: false,
             })
@@ -234,7 +234,7 @@ fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
     }
     polylogue_testkit::delete_index(&w.root);
     let (mut engine, _lock) = engine(&w, 1024);
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     for reimport in [false, true] {
         if reimport {

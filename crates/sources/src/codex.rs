@@ -21,11 +21,11 @@ mod index;
 mod items;
 mod usage;
 
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use items::{Completed, str_field};
 use polylogue_model::{
     Block, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
@@ -180,7 +180,7 @@ struct Call {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Carry {
+pub struct ParserState {
     session: Option<Session>,
     /// The thread a subagent's copied history came from, and the envelope
     /// ordinal where the subagent's own records begin.
@@ -213,7 +213,7 @@ pub struct Carry {
     #[serde(skip)]
     current: Option<(u64, u64)>,
     #[serde(skip)]
-    copied_observation: Option<SessionId>,
+    copied_session: Option<SessionId>,
     /// The previous record, when it was a stored user prompt: an item or a
     /// `user_message` event. Codex can write one prompt both ways in
     /// adjacent records; the second of the pair is the same prompt.
@@ -287,25 +287,25 @@ impl Rollout {
         });
     }
 
-    fn own(&self, carry: &mut Carry) -> Option<SessionId> {
-        if carry.session.is_none() {
+    fn own(&self, parser_state: &mut ParserState) -> Option<SessionId> {
+        if parser_state.session.is_none() {
             let id = session_id(self.thread.as_deref()?)?;
-            carry.session = Some(Session::new(id, SessionKind::Main));
+            parser_state.session = Some(Session::new(id, SessionKind::Main));
         }
-        carry.session.as_ref().map(|s| s.id.clone())
+        parser_state.session.as_ref().map(|s| s.id.clone())
     }
 
-    fn session_meta(&self, carry: &mut Carry, p: &Json, out: &mut Output) -> Disposition {
+    fn session_meta(&self, parser_state: &mut ParserState, p: &Json, out: &mut Output) -> RecordOutcome {
         let Some(thread) = str_field(p, "id").or(self.thread.as_deref()) else {
-            return Disposition::refused("session_meta without a thread ID");
+            return RecordOutcome::unreadable("session_meta without a thread ID");
         };
         let Some(id) = session_id(thread) else {
-            return Disposition::refused("thread ID is empty");
+            return RecordOutcome::unreadable("thread ID is empty");
         };
-        if carry.session.as_ref().is_some_and(|s| s.id != id) {
+        if parser_state.session.as_ref().is_some_and(|s| s.id != id) {
             // A resumed rollout names the thread it came from; this file's
             // thread was already set by an earlier header.
-            return self.event(carry, p, "session_meta", None, out);
+            return self.event(parser_state, p, "session_meta", None, out);
         }
         let subagent = str_field(p, "thread_source") == Some("subagent")
             || p.get("source").and_then(|s| s.get("subagent")).is_some();
@@ -314,7 +314,7 @@ impl Rollout {
         } else {
             SessionKind::Main
         };
-        let s = carry
+        let s = parser_state
             .session
             .get_or_insert_with(|| Session::new(id.clone(), kind));
         if let Some(at) = p.get("timestamp").and_then(time::rfc3339) {
@@ -344,7 +344,7 @@ impl Rollout {
         let forked = str_field(p, "forked_from_id");
         if let Some(parent_id) = parent.and_then(session_id) {
             link(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Spawn,
                 parent_id,
@@ -356,7 +356,7 @@ impl Rollout {
         }
         if let Some(fork_id) = forked.filter(|f| Some(*f) != parent).and_then(session_id) {
             link(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Fork,
                 fork_id,
@@ -370,23 +370,23 @@ impl Rollout {
             .get("subagent_history_start_ordinal")
             .and_then(Json::as_u64)
         {
-            carry.copied_until = Some(start);
-            carry.copied_from = forked.or(parent).map(str::to_owned);
-            if let Some(parent) = carry.copied_from.as_deref().and_then(session_id) {
+            parser_state.copied_until = Some(start);
+            parser_state.copied_from = forked.or(parent).map(str::to_owned);
+            if let Some(parent) = parser_state.copied_from.as_deref().and_then(session_id) {
                 Self::unknown_boundaries(parent, out);
             }
         }
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
-    fn older_header(&self, carry: &mut Carry, v: &Json) -> Disposition {
+    fn older_header(&self, parser_state: &mut ParserState, v: &Json) -> RecordOutcome {
         let Some(id) = str_field(v, "id")
             .or(self.thread.as_deref())
             .and_then(session_id)
         else {
-            return Disposition::refused("header without a thread ID");
+            return RecordOutcome::unreadable("header without a thread ID");
         };
-        let s = carry
+        let s = parser_state
             .session
             .get_or_insert_with(|| Session::new(id, SessionKind::Main));
         if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
@@ -395,95 +395,95 @@ impl Rollout {
         if let Some(branch) = v.get("git").and_then(|g| str_field(g, "branch")) {
             s.git_branch = Some(branch.to_owned());
         }
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     fn event(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         data: &Json,
         kind: &str,
         at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
-    ) -> Disposition {
-        let Some(session) = self.own(carry) else {
-            return Disposition::refused("no thread ID in the file name or its header");
+    ) -> RecordOutcome {
+        let Some(session) = self.own(parser_state) else {
+            return RecordOutcome::unreadable("no thread ID in the file name or its header");
         };
         out.events.push(Event {
             session: Some(session),
             kind: kind.to_owned(),
             at,
-            after: carry.last.clone(),
-            range: carry.current,
+            after: parser_state.last.clone(),
+            range: parser_state.current,
             data: data.clone(),
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
-    fn observation(
+    fn unanchored_event(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         data: &Json,
         kind: &str,
         at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
-    ) -> Disposition {
-        let disposition = self.event(carry, data, kind, at, out);
-        if disposition == Disposition::Materialized {
+    ) -> RecordOutcome {
+        let outcome = self.event(parser_state, data, kind, at, out);
+        if outcome == RecordOutcome::Used {
             let event = out.events.last_mut().expect("new event");
             event.after = None;
-            if let Some(parent) = &carry.copied_observation {
+            if let Some(parent) = &parser_state.copied_session {
                 event.session = Some(parent.clone());
             }
         }
-        disposition
+        outcome
     }
 
     /// Whether a record belongs to history a subagent copied from its
     /// parent.
-    fn copied(carry: &Carry, ordinal: Option<u64>) -> bool {
-        matches!((carry.copied_until, ordinal), (Some(until), Some(o)) if o > 1 && o < until)
+    fn copied(parser_state: &ParserState, ordinal: Option<u64>) -> bool {
+        matches!((parser_state.copied_until, ordinal), (Some(until), Some(o)) if o > 1 && o < until)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn response_item(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         item: &Json,
         at: Option<polylogue_model::Timestamp>,
         ordinal: Option<u64>,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let ty = str_field(item, "type").unwrap_or("?");
         records.fields(&format!("response_item/{ty}"), item, fields::for_item(ty));
-        let copied = Self::copied(carry, ordinal);
+        let copied = Self::copied(parser_state, ordinal);
         let session = if copied {
             // Stored once, in the parent; only items with an ID can be
             // recognized there.
-            let (Some(parent), Some(_)) = (carry.copied_from.clone(), str_field(item, "id")) else {
-                return Disposition::unknown("copied from the parent thread, which stores it");
+            let (Some(parent), Some(_)) = (parser_state.copied_from.clone(), str_field(item, "id")) else {
+                return RecordOutcome::skipped("copied from the parent thread, which stores it");
             };
             match session_id(&parent) {
                 Some(s) => s,
-                None => return Disposition::refused("parent thread ID is empty"),
+                None => return RecordOutcome::unreadable("parent thread ID is empty"),
             }
         } else {
-            match self.own(carry) {
+            match self.own(parser_state) {
                 Some(s) => s,
-                None => return Disposition::refused("no thread ID in the file name or its header"),
+                None => return RecordOutcome::unreadable("no thread ID in the file name or its header"),
             }
         };
         let native = str_field(item, "id")
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}@{}", session.native(), record.offset));
         let Some(id) = message_id(&native) else {
-            return Disposition::refused("item ID is empty");
+            return RecordOutcome::unreadable("item ID is empty");
         };
-        let Some((role, prompt_kind, blocks)) = self.item_blocks(carry, &session, ty, item, out)
+        let Some((role, prompt_kind, blocks)) = self.item_blocks(parser_state, &session, ty, item, out)
         else {
-            return Disposition::unknown("item with no content");
+            return RecordOutcome::skipped("item with no content");
         };
         let message = Message {
             id: id.clone(),
@@ -492,7 +492,7 @@ impl Rollout {
             role,
             at,
             model: (role == Role::Assistant)
-                .then(|| carry.model.clone())
+                .then(|| parser_state.model.clone())
                 .flatten(),
             prompt_kind,
             blocks,
@@ -503,7 +503,7 @@ impl Rollout {
             production: Production {
                 response_boundary_unknown: (role == Role::Assistant).then_some(true),
                 effort: (role == Role::Assistant && !copied)
-                    .then(|| carry.effort.clone())
+                    .then(|| parser_state.effort.clone())
                     .flatten(),
                 ..Production::default()
             },
@@ -514,20 +514,20 @@ impl Rollout {
             message,
         };
         if copied {
-            carry.branch_point = Some(id);
+            parser_state.branch_point = Some(id);
             out.messages.push(row);
-            return Disposition::Materialized;
+            return RecordOutcome::Used;
         }
-        carry.last = Some(id);
+        parser_state.last = Some(id);
         out.messages.push(row);
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     /// An item's role, prompt kind and blocks; `None` for an item with
     /// nothing in it.
     fn item_blocks(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         session: &SessionId,
         ty: &str,
         item: &Json,
@@ -577,7 +577,7 @@ impl Rollout {
                 };
                 let id = call_id();
                 if let Some(id) = &id {
-                    carry.calls.insert(
+                    parser_state.calls.insert(
                         id.clone(),
                         Call {
                             tool: tool.clone(),
@@ -604,7 +604,7 @@ impl Rollout {
                     .or_else(|| item.get("tools"))
                     .unwrap_or(&Json::Null);
                 let (text, attachments) = items::output_parts(raw, &mut out.blobs);
-                let (outcome, duration) = self.answer(carry, session, id.as_deref(), &text, out);
+                let (outcome, duration) = self.answer(parser_state, session, id.as_deref(), &text, out);
                 let block = Block::ToolResult {
                     call_id: id,
                     outcome,
@@ -660,14 +660,14 @@ impl Rollout {
     /// and links an agent a `spawn_agent` call started.
     fn answer(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         session: &SessionId,
         call_id: Option<&str>,
         text: &str,
         out: &mut Output,
     ) -> (ToolOutcome, Option<u64>) {
         let call = call_id
-            .and_then(|id| carry.calls.get(id))
+            .and_then(|id| parser_state.calls.get(id))
             .cloned()
             .unwrap_or_default();
         let tool = if call.tool.is_empty() {
@@ -682,7 +682,7 @@ impl Rollout {
             duration = done.duration_ms;
         }
         if let (Some(handle), Some(id)) = (running, call_id) {
-            carry.running.insert(handle.key(), id.to_owned());
+            parser_state.running.insert(handle.key(), id.to_owned());
         }
         // A later read of a running command reports how it ended.
         if let Some(handle) = &call.continues
@@ -692,7 +692,7 @@ impl Rollout {
                     reason: polylogue_model::UnknownReason::RunningInBackground
                 }
             )
-            && let Some(original) = carry.running.remove(handle)
+            && let Some(original) = parser_state.running.remove(handle)
         {
             out.background.push(BackgroundUpdate {
                 session: session.clone(),
@@ -710,7 +710,7 @@ impl Rollout {
                 .and_then(session_id)
         {
             link(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Spawn,
                 session.clone(),
@@ -721,7 +721,7 @@ impl Rollout {
             );
         }
         if let Some(id) = call_id
-            && let Some(c) = carry.calls.get_mut(id)
+            && let Some(c) = parser_state.calls.get_mut(id)
         {
             c.answered = true;
         }
@@ -731,29 +731,29 @@ impl Rollout {
     /// A thread item the harness recorded when it finished.
     fn item_completed(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         p: &Json,
         at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let item = p.get("item").unwrap_or(&Json::Null);
         let ty = str_field(item, "type").unwrap_or("?");
         match ty {
             "AgentMessage" | "UserMessage" | "Reasoning" => {
-                Disposition::unknown("mirrors the response item, which is stored")
+                RecordOutcome::skipped("mirrors the response item, which is stored")
             }
             "ContextCompaction" => {
-                Disposition::unknown("mirrors the compacted record, which is stored")
+                RecordOutcome::skipped("mirrors the compacted record, which is stored")
             }
             "CommandExecution" | "FileChange" | "McpToolCall" | "WebSearch" | "ImageView" => {
-                let Some(session) = self.own(carry) else {
-                    return Disposition::refused("no thread ID in the file name or its header");
+                let Some(session) = self.own(parser_state) else {
+                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
                 };
                 let id = str_field(item, "id").unwrap_or("");
-                if let Some(call) = carry.calls.get_mut(id) {
+                if let Some(call) = parser_state.calls.get_mut(id) {
                     let Some(done) = items::completed(item) else {
-                        return Disposition::unknown("call item without a status");
+                        return RecordOutcome::skipped("call item without a status");
                     };
                     if call.answered {
                         out.background.push(BackgroundUpdate {
@@ -766,14 +766,14 @@ impl Rollout {
                     } else {
                         call.completed = Some(done);
                     }
-                    return Disposition::Materialized;
+                    return RecordOutcome::Used;
                 }
                 // A command a code-mode script ran: no call item of its own.
                 let Some(blocks) = items::recovered_call(item, &mut out.blobs) else {
-                    return Disposition::unknown("tool item without an ID");
+                    return RecordOutcome::skipped("tool item without an ID");
                 };
                 let Some(mid) = message_id(id) else {
-                    return Disposition::refused("item ID is empty");
+                    return RecordOutcome::unreadable("item ID is empty");
                 };
                 let duration = items::completed(item).and_then(|c| c.duration_ms);
                 out.messages.push(MessageRow {
@@ -795,17 +795,17 @@ impl Rollout {
                         production: Production::default(),
                     },
                 });
-                carry.last = Some(mid);
-                Disposition::Materialized
+                parser_state.last = Some(mid);
+                RecordOutcome::Used
             }
             "SubAgentActivity" => {
                 if let (Some(parent), Some(child)) = (
-                    self.own(carry),
+                    self.own(parser_state),
                     str_field(item, "agent_thread_id").and_then(session_id),
                 ) {
                     let call = str_field(item, "id").map(str::to_owned);
                     link(
-                        carry,
+                        parser_state,
                         out,
                         LinkKind::Spawn,
                         parent,
@@ -815,81 +815,81 @@ impl Rollout {
                         "SubAgentActivity",
                     );
                 }
-                self.event(carry, p, "subagent_activity", at, out)
+                self.event(parser_state, p, "subagent_activity", at, out)
             }
             other => {
                 let kind = format!("item_{}", snake(other));
-                self.event(carry, p, &kind, at, out)
+                self.event(parser_state, p, &kind, at, out)
             }
         }
     }
 
     fn event_msg(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         p: &Json,
         at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let sub = str_field(p, "type").unwrap_or("?");
         match sub {
             "token_count" => {
                 // Keep the native observation as reported, including malformed,
                 // rate-only and context-size reports. Its time is emission time.
-                self.observation(carry, p, "token_count", at, out);
-                let Some(session) = self.own(carry) else {
-                    return Disposition::refused("no thread ID in the file name or its header");
+                self.unanchored_event(parser_state, p, "token_count", at, out);
+                let Some(session) = self.own(parser_state) else {
+                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
                 };
-                let session = carry.copied_observation.clone().unwrap_or(session);
-                let observation = usage::identity(&(session, at, p));
+                let session = parser_state.copied_session.clone().unwrap_or(session);
+                let report_id = usage::identity(&(session, at, p));
                 if let Some(info) = p.get("info").filter(|info| !info.is_null())
                     && let Some(reading) =
-                        carry
+                        parser_state
                             .usage
-                            .read(info, observation, carry.model.clone(), carry.tier.clone())
+                            .read(info, report_id, parser_state.model.clone(), parser_state.tier.clone())
                 {
-                    self.observation(
-                        carry,
+                    self.unanchored_event(
+                        parser_state,
                         &serde_json::to_value(reading).expect("usage reading"),
-                        polylogue_model::observations::USAGE_OBSERVATION,
+                        polylogue_model::reports::USAGE_REPORT,
                         at,
                         out,
                     );
                 }
                 if let Some(reading) = p.get("rate_limits").and_then(quota) {
                     let identity = usage::identity(&reading);
-                    if carry.limits.as_ref() != Some(&identity) {
-                        carry.limits = Some(identity.clone());
-                        let reading = polylogue_model::QuotaObservation {
-                            observation: identity,
+                    if parser_state.limits.as_ref() != Some(&identity) {
+                        parser_state.limits = Some(identity.clone());
+                        let reading = polylogue_model::QuotaReport {
+                            report_id: identity,
                             reading,
-                            observed_at: None,
+                            measured_at: None,
                         };
-                        self.observation(
-                            carry,
+                        self.unanchored_event(
+                            parser_state,
                             &serde_json::to_value(reading).expect("quota reading"),
-                            polylogue_model::observations::QUOTA_OBSERVATION,
+                            polylogue_model::reports::QUOTA_REPORT,
                             at,
                             out,
                         );
                     }
                 }
-                Disposition::Materialized
+                RecordOutcome::Used
             }
-            "item_completed" => self.item_completed(carry, record, p, at, out),
+            "item_completed" => self.item_completed(parser_state, record, p, at, out),
             "agent_message"
             | "agent_reasoning"
             | "agent_reasoning_raw_content"
             | "agent_reasoning_section_break" => {
-                Disposition::unknown("mirrors a response item, which is stored")
+                RecordOutcome::skipped("mirrors a response item, which is stored")
             }
             "exec_command_end" | "patch_apply_end" | "mcp_tool_call_end" => {
                 // Older rollouts: how a call ended, before item_completed.
                 let id = str_field(p, "call_id").unwrap_or("");
-                if let (Some(call), Some(done)) = (carry.calls.get_mut(id), items::completed(p)) {
+                if let (Some(call), Some(done)) = (parser_state.calls.get_mut(id), items::completed(p)) {
                     if call.answered
-                        && let Some(session) = carry.session.as_ref().map(|s| s.id.clone())
+                        && let Some(session) = parser_state.session.as_ref().map(|s| s.id.clone())
                     {
                         out.background.push(BackgroundUpdate {
                             session,
@@ -902,30 +902,30 @@ impl Rollout {
                         call.completed = Some(done);
                     }
                 }
-                self.event(carry, p, sub, at, out)
+                self.event(parser_state, p, sub, at, out)
             }
             "task_complete" | "turn_aborted" => {
                 // Calls do not outlive their turn; commands still running do.
-                carry.calls.clear();
-                self.event(carry, p, sub, at, out)
+                parser_state.calls.clear();
+                self.event(parser_state, p, sub, at, out)
             }
             "thread_settings" => {
                 if let Some(tier) = p
                     .get("thread_settings")
                     .and_then(|s| str_field(s, "service_tier"))
                 {
-                    carry.tier = Some(tier.to_owned());
+                    parser_state.tier = Some(tier.to_owned());
                 }
-                self.event(carry, p, sub, at, out)
+                self.event(parser_state, p, sub, at, out)
             }
             "thread_name_updated" => {
-                if let (Some(name), Some(s)) = (str_field(p, "thread_name"), carry.session.as_mut())
+                if let (Some(name), Some(s)) = (str_field(p, "thread_name"), parser_state.session.as_mut())
                 {
                     s.offer_title(name, TitleSource::Generated);
                 }
-                self.event(carry, p, sub, at, out)
+                self.event(parser_state, p, sub, at, out)
             }
-            _ => self.event(carry, p, sub, at, out),
+            _ => self.event(parser_state, p, sub, at, out),
         }
     }
 }
@@ -973,7 +973,7 @@ fn snake(name: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn link(
-    carry: &mut Carry,
+    parser_state: &mut ParserState,
     out: &mut Output,
     kind: LinkKind,
     parent: SessionId,
@@ -989,7 +989,7 @@ fn link(
         "{kind:?} {parent} {child} {}",
         call_id.as_deref().unwrap_or("")
     );
-    if carry.links.insert(key) {
+    if parser_state.links.insert(key) {
         out.links.push(Link {
             kind,
             parent,
@@ -1002,7 +1002,7 @@ fn link(
 }
 
 impl Parser for Rollout {
-    type Carry = Carry;
+    type ParserState = ParserState;
 
     fn kind(&self, v: &Json) -> String {
         let rec = unwrap(v);
@@ -1020,40 +1020,40 @@ impl Parser for Rollout {
 
     fn parse_record(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         if !v.is_object() {
-            return Disposition::refused("record is not a JSON object");
+            return RecordOutcome::unreadable("record is not a JSON object");
         }
         let rec = unwrap(v);
         let p = rec.payload;
-        carry.current = Some((record.offset, record.offset + record.bytes.len() as u64));
+        parser_state.current = Some((record.offset, record.offset + record.bytes.len() as u64));
         if record.offset == 0 {
-            carry.usage.start(0, false);
+            parser_state.usage.start(0, false);
         }
-        carry.copied_observation = Self::copied(carry, rec.ordinal)
-            .then(|| carry.copied_from.as_deref().and_then(session_id))
+        parser_state.copied_session = Self::copied(parser_state, rec.ordinal)
+            .then(|| parser_state.copied_from.as_deref().and_then(session_id))
             .flatten();
         let token_observation =
             rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
-        if Self::copied(carry, rec.ordinal) && token_observation && carry.copied_from.is_none() {
+        if Self::copied(parser_state, rec.ordinal) && token_observation && parser_state.copied_from.is_none() {
             if let Some(info) = p.get("info").filter(|info| !info.is_null()) {
                 // Advance the observed counters without charging an unknown
                 // original owner as usage of the child.
-                carry.usage.read(info, usage::identity(p), None, None);
+                parser_state.usage.read(info, usage::identity(p), None, None);
             }
-            return self.observation(carry, p, "copied_token_count", rec.at, out);
+            return self.unanchored_event(parser_state, p, "copied_token_count", rec.at, out);
         }
-        if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" && !token_observation {
-            return Disposition::unknown("copied from the parent thread, which stores it");
+        if Self::copied(parser_state, rec.ordinal) && rec.ty != "response_item" && !token_observation {
+            return RecordOutcome::skipped("copied from the parent thread, which stores it");
         }
-        let prev = carry.prompt.take();
+        let prev = parser_state.prompt.take();
         if rec.ty == "response_item" && str_field(p, "type") == Some("token_count") {
-            return self.observation(carry, p, "token_count_item", rec.at, out);
+            return self.unanchored_event(parser_state, p, "token_count_item", rec.at, out);
         }
         let same = |text: &str, from_event: bool| {
             prev.as_ref()
@@ -1063,13 +1063,13 @@ impl Parser for Rollout {
             && let Some(text) = user_text(p)
         {
             if same(&text, true) {
-                return Disposition::unknown(
+                return RecordOutcome::skipped(
                     "same prompt as the user_message event before it, which is stored",
                 );
             }
-            let d = self.response_item(carry, record, p, rec.at, rec.ordinal, out, records);
-            if d == Disposition::Materialized {
-                carry.prompt = Some(Prompt {
+            let d = self.response_item(parser_state, record, p, rec.at, rec.ordinal, out, records);
+            if d == RecordOutcome::Used {
+                parser_state.prompt = Some(Prompt {
                     text,
                     from_event: false,
                 });
@@ -1079,7 +1079,7 @@ impl Parser for Rollout {
         if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
             let text = str_field(p, "message").unwrap_or_default().to_owned();
             if same(&text, false) {
-                return Disposition::unknown(
+                return RecordOutcome::skipped(
                     "same prompt as the user message item before it, which is stored",
                 );
             }
@@ -1098,9 +1098,9 @@ impl Parser for Rollout {
             if let Some(id) = str_field(p, "client_id") {
                 item["id"] = Json::String(id.to_owned());
             }
-            let d = self.response_item(carry, record, &item, rec.at, rec.ordinal, out, records);
-            if d == Disposition::Materialized {
-                carry.prompt = Some(Prompt {
+            let d = self.response_item(parser_state, record, &item, rec.at, rec.ordinal, out, records);
+            if d == RecordOutcome::Used {
+                parser_state.prompt = Some(Prompt {
                     text,
                     from_event: true,
                 });
@@ -1108,22 +1108,22 @@ impl Parser for Rollout {
             return d;
         }
         match rec.ty {
-            "session_meta" => self.session_meta(carry, p, out),
-            "older_header" => self.older_header(carry, p),
-            "state" => Disposition::unknown("turn-state marker of 2025 rollouts; holds no content"),
+            "session_meta" => self.session_meta(parser_state, p, out),
+            "older_header" => self.older_header(parser_state, p),
+            "state" => RecordOutcome::skipped("turn-state marker of 2025 rollouts; holds no content"),
             "response_item" => {
-                self.response_item(carry, record, p, rec.at, rec.ordinal, out, records)
+                self.response_item(parser_state, record, p, rec.at, rec.ordinal, out, records)
             }
-            "event_msg" => self.event_msg(carry, record, p, rec.at, out),
+            "event_msg" => self.event_msg(parser_state, record, p, rec.at, out),
             "turn_context" => {
                 if let Some(model) = str_field(p, "model") {
-                    carry.model = Some(model.to_owned());
+                    parser_state.model = Some(model.to_owned());
                 }
-                carry.effort = str_field(p, "effort").map(str::to_owned);
+                parser_state.effort = str_field(p, "effort").map(str::to_owned);
                 if let Some(tier) = str_field(p, "service_tier") {
-                    carry.tier = Some(tier.to_owned());
+                    parser_state.tier = Some(tier.to_owned());
                 }
-                if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), carry.session.as_mut()) {
+                if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), parser_state.session.as_mut()) {
                     s.offer_cwd(cwd);
                 }
                 // Settings repeat every turn; only a change is stored.
@@ -1133,48 +1133,48 @@ impl Parser for Rollout {
                     m.remove("root_turn_id");
                 }
                 let d = digest(&settings);
-                if carry.settings == Some(d) {
-                    return Disposition::Materialized;
+                if parser_state.settings == Some(d) {
+                    return RecordOutcome::Used;
                 }
-                carry.settings = Some(d);
-                self.event(carry, p, "turn_context", rec.at, out)
+                parser_state.settings = Some(d);
+                self.event(parser_state, p, "turn_context", rec.at, out)
             }
-            "token_usage_record" => self.observation(carry, p, "token_usage_record", rec.at, out),
+            "token_usage_record" => self.unanchored_event(parser_state, p, "token_usage_record", rec.at, out),
             "compacted" => {
                 // A fork starts from its parent's history: the last
                 // identified item is where it branched. Keep that history
                 // as native evidence, without creating authored messages.
-                if carry.last.is_none()
+                if parser_state.last.is_none()
                     && let Some(history) = p.get("replacement_history").and_then(Json::as_array)
                     && let Some(at) = history.iter().rev().find_map(|i| str_field(i, "id"))
                 {
-                    carry.branch_point = message_id(at);
+                    parser_state.branch_point = message_id(at);
                 }
-                self.event(carry, p, "compaction", rec.at, out)
+                self.event(parser_state, p, "compaction", rec.at, out)
             }
             "world_state" | "inter_agent_communication_metadata" => {
-                self.event(carry, p, rec.ty, rec.at, out)
+                self.event(parser_state, p, rec.ty, rec.at, out)
             }
-            _ => Disposition::unknown("unrecognized record type"),
+            _ => RecordOutcome::skipped("unrecognized record type"),
         }
     }
 
-    fn flush(&self, carry: &mut Carry, out: &mut Output) {
-        if !carry.scope_recorded
-            && let Some(session) = self.own(carry)
+    fn flush(&self, parser_state: &mut ParserState, out: &mut Output) {
+        if !parser_state.scope_recorded
+            && let Some(session) = self.own(parser_state)
         {
             Self::unknown_boundaries(session, out);
-            carry.scope_recorded = true;
+            parser_state.scope_recorded = true;
         }
         // The branch point is known once the copied history has been read.
-        if let (Some(at), Some(s)) = (&carry.branch_point, &carry.session) {
+        if let (Some(at), Some(s)) = (&parser_state.branch_point, &parser_state.session) {
             for l in &mut out.links {
                 if l.child == s.id && l.at.is_none() && l.kind != LinkKind::Copy {
                     l.at = Some(at.clone());
                 }
             }
         }
-        out.sessions = carry.session.iter().cloned().collect();
+        out.sessions = parser_state.session.iter().cloned().collect();
     }
 }
 

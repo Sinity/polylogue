@@ -1,13 +1,13 @@
 {
-  "accounting": {
-    "framed": 3,
-    "materialized": {
+  "counts": {
+    "records": 3,
+    "used": {
       "gemini": 1,
       "session": 1,
       "user": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

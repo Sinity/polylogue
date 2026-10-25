@@ -10,7 +10,7 @@ const SESSION: &str = "chatgpt:asset-session";
 const SECRET: &[u8] =
     b"-----BEGIN PRIVATE KEY-----\nsynthetic-private-file-value\n-----END PRIVATE KEY-----\n\0\xff";
 
-struct World {
+struct TestArchive {
     _daemon: Daemon,
     _dir: tempfile::TempDir,
     home: std::path::PathBuf,
@@ -21,7 +21,7 @@ fn conversation() -> Vec<u8> {
     serde_json::to_vec(&json!([{"id":"asset-session","title":"Synthetic export attachment","mapping":{"node":{"id":"node","parent":null,"children":[],"message":{"id":"asset-message","author":{"role":"user"},"create_time":1700000000,"content":{"content_type":"multimodal_text","parts":[{"content_type":"image_asset_pointer","asset_pointer":"file-service://file-Native"}]},"metadata":{}}}},"current_node":"node"}])).unwrap()
 }
 
-impl World {
+impl TestArchive {
     fn env(&self) -> [(&str, &Path); 3] {
         [
             ("POLYLOGUE_HOME", &self.home),
@@ -100,8 +100,8 @@ impl World {
 #[test]
 fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
     for zip in [false, true] {
-        let world = World::new(zip);
-        let descriptor = world.descriptor();
+        let fixture = TestArchive::new(zip);
+        let descriptor = fixture.descriptor();
         assert_eq!(descriptor["state"], "available");
         assert_eq!(descriptor["matches"][0]["size"], SECRET.len());
         assert_eq!(
@@ -114,11 +114,11 @@ fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
                 .to_string()
                 .contains("synthetic-private-file-value")
         );
-        let read = cli(&world.env(), &["--json", "read", SESSION]);
+        let read = cli(&fixture.env(), &["--json", "read", SESSION]);
         assert!(read.status.success(), "{read:?}");
         assert!(json(&read)["messages"][0]["blocks"][0]["blob"].is_null());
         let shown = cli(
-            &world.env(),
+            &fixture.env(),
             &["--json", "read", SESSION, "--format", "markdown"],
         );
         assert!(shown.status.success(), "{shown:?}");
@@ -133,8 +133,8 @@ fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
 
 #[test]
 fn exact_attachment_output_requires_observed_terminal_and_no_harness() {
-    let world = World::new(true);
-    let target = world._dir.path().join("exact.bin");
+    let fixture = TestArchive::new(true);
+    let target = fixture._dir.path().join("exact.bin");
     std::fs::write(&target, b"existing output stays until complete").unwrap();
     let args = [
         "--json",
@@ -147,19 +147,19 @@ fn exact_attachment_output_requires_observed_terminal_and_no_harness() {
         "--length",
         "7",
     ];
-    let no_terminal = cli(&world.env(), &args);
+    let no_terminal = cli(&fixture.env(), &args);
     assert!(!no_terminal.status.success());
     assert_eq!(
         std::fs::read(&target).unwrap(),
         b"existing output stays until complete"
     );
-    let harness = terminal::cli(&world.env(), &args, true);
+    let harness = terminal::cli(&fixture.env(), &args, true);
     assert!(!harness.0.success(), "{harness:?}");
     assert_eq!(
         std::fs::read(&target).unwrap(),
         b"existing output stays until complete"
     );
-    let operator = terminal::cli(&world.env(), &args, false);
+    let operator = terminal::cli(&fixture.env(), &args, false);
     assert!(operator.0.success(), "{operator:?}");
     assert_eq!(std::fs::read(&target).unwrap(), SECRET);
     assert!(!String::from_utf8_lossy(&operator.1).contains("synthetic-private-file-value"));
@@ -168,8 +168,8 @@ fn exact_attachment_output_requires_observed_terminal_and_no_harness() {
 #[test]
 fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
     let bytes = vec![b'Q'; 64 * 1024];
-    let world = World::with_bytes(false, &bytes);
-    let directory = world._dir.path().join("output");
+    let fixture = TestArchive::with_bytes(false, &bytes);
+    let directory = fixture._dir.path().join("output");
     std::fs::create_dir(&directory).unwrap();
     let destination = directory.join("exact.bin");
     std::fs::write(&destination, b"existing complete output").unwrap();
@@ -185,7 +185,7 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
         "1",
     ];
     let operator = std::thread::scope(|scope| {
-        let operator = scope.spawn(|| terminal::cli(&world.env(), &args, false));
+        let operator = scope.spawn(|| terminal::cli(&fixture.env(), &args, false));
         loop {
             let partial = std::fs::read_dir(&directory)
                 .unwrap()
@@ -201,7 +201,7 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        let conflicting = world._dir.path().join("conflicting-export");
+        let conflicting = fixture._dir.path().join("conflicting-export");
         std::fs::create_dir(&conflicting).unwrap();
         std::fs::write(conflicting.join("conversations.json"), conversation()).unwrap();
         std::fs::write(
@@ -210,7 +210,7 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
         )
         .unwrap();
         let imported = cli(
-            &world.env(),
+            &fixture.env(),
             &["--json", "import", conflicting.to_str().unwrap()],
         );
         assert!(imported.status.success(), "{imported:?}");
@@ -235,9 +235,9 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
 
 #[test]
 fn an_arbitrary_socket_reveal_flag_does_not_grant_exact_byte_output() {
-    let world = World::new(false);
+    let fixture = TestArchive::new(false);
     let mut socket =
-        std::os::unix::net::UnixStream::connect(world.archive.join("daemon.sock")).unwrap();
+        std::os::unix::net::UnixStream::connect(fixture.archive.join("daemon.sock")).unwrap();
     serde_json::to_writer(
         &mut socket,
         &json!({"op":"attachment","message":MESSAGE,"block":0,"reveal":true,"length":1}),
@@ -254,9 +254,9 @@ fn an_arbitrary_socket_reveal_flag_does_not_grant_exact_byte_output() {
 #[test]
 fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     let label = "label λ🙂字 ".repeat(120);
-    let world = World::with_label(false, SECRET, &label);
+    let fixture = TestArchive::with_label(false, SECRET, &label);
     let whole = cli(
-        &world.env(),
+        &fixture.env(),
         &["--json", "read", SESSION, "--budget", "100000"],
     );
     assert!(whole.status.success(), "{whole:?}");
@@ -270,7 +270,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
         if let Some(cursor) = &next {
             args.extend(["--cursor", cursor]);
         }
-        let output = cli(&world.env(), &args);
+        let output = cli(&fixture.env(), &args);
         assert!(output.status.success(), "{output:?}");
         let page = json(&output);
         let shown = page["text"].as_str().unwrap();
@@ -298,20 +298,20 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     }
     assert!(described);
     assert_eq!(text, whole["text"].as_str().unwrap());
-    let conflict = world._dir.path().join("later-export");
+    let conflict = fixture._dir.path().join("later-export");
     std::fs::create_dir(&conflict).unwrap();
     std::fs::write(conflict.join("conversations.json"), conversation()).unwrap();
     std::fs::write(conflict.join("file-Native.dat"), b"a changed stored file").unwrap();
     assert!(
         cli(
-            &world.env(),
+            &fixture.env(),
             &["--json", "import", conflict.to_str().unwrap()]
         )
         .status
         .success()
     );
     let refused = cli(
-        &world.env(),
+        &fixture.env(),
         &[
             "--json",
             "read",
@@ -328,11 +328,11 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
 
 #[test]
 fn an_available_empty_attachment_installs_an_empty_verified_file() {
-    let world = World::with_bytes(false, b"");
-    assert_eq!(world.descriptor()["state"], "available");
-    let destination = world._dir.path().join("empty.bin");
+    let fixture = TestArchive::with_bytes(false, b"");
+    assert_eq!(fixture.descriptor()["state"], "available");
+    let destination = fixture._dir.path().join("empty.bin");
     let result = terminal::cli(
-        &world.env(),
+        &fixture.env(),
         &[
             "--json",
             "attachment",
@@ -352,8 +352,8 @@ mod promoted;
 
 #[test]
 fn original_container_name_is_not_a_member_attachment_identity() {
-    let world = World::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
-    let descriptor = world.descriptor();
+    let fixture = TestArchive::with_source_name(true, SECRET, "actual member.png", "file-Native.dat");
+    let descriptor = fixture.descriptor();
     assert_eq!(descriptor["matches"].as_array().unwrap().len(), 1);
     assert_eq!(
         descriptor["matches"][0]["blob"],
@@ -363,31 +363,31 @@ fn original_container_name_is_not_a_member_attachment_identity() {
 
 #[test]
 fn excision_inside_a_zip_is_refused_in_the_cli_json_and_changes_nothing() {
-    let world = World::new(true);
+    let fixture = TestArchive::new(true);
     let pool =
-        polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&world.archive)).unwrap();
+        polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&fixture.archive)).unwrap();
     let original = pool
         .reader()
         .unwrap()
         .query(
-            "SELECT DISTINCT container_input FROM a.observation_container",
+            "SELECT DISTINCT zip_input FROM a.observation_zip",
             &[],
         )
-        .unwrap()[0]["container_input"]
+        .unwrap()[0]["zip_input"]
         .as_str()
         .unwrap()
         .to_owned();
     let state = || {
         let reader = pool.reader().unwrap();
-        let read = cli(&world.env(), &["--json", "read", SESSION]);
+        let read = cli(&fixture.env(), &["--json", "read", SESSION]);
         assert!(read.status.success(), "{read:?}");
         (
             json(&read),
-            world.descriptor(),
+            fixture.descriptor(),
             [
                 "a.input",
                 "a.extent",
-                "a.observation_container",
+                "a.observation_zip",
                 "a.excision",
             ]
             .map(|table| {
@@ -409,7 +409,7 @@ fn excision_inside_a_zip_is_refused_in_the_cli_json_and_changes_nothing() {
             if confirm {
                 args.push("--yes");
             }
-            let refused = cli(&world.env(), &args);
+            let refused = cli(&fixture.env(), &args);
             assert!(!refused.status.success(), "{refused:?}");
             let error = &json(&refused)["error"];
             assert_eq!(error["kind"], "unsupported_excision", "{error}");

@@ -229,7 +229,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         }
     }
     let params = values(&program.params);
-    let view = view(reader)?;
+    let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
         let sessions = if m.everything {
             None
@@ -242,7 +242,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             "outcome": "measure",
             "measure": m.what,
             "data": data,
-            "view": view,
+            "read_at": read_at,
         }));
     }
     let count = reader.query(&program.count_sql(), &params)?;
@@ -277,8 +277,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     for row in &mut rows {
         present(&program, row)?;
     }
-    let outcome = if !program.degraded.is_empty() {
-        "degraded"
+    let outcome = if !program.incomplete.is_empty() {
+        "incomplete"
     } else if count == 0 {
         "empty"
     } else {
@@ -294,13 +294,13 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "next": next,
         "ranked": program.ranked,
         "notes": program.notes,
-        "degraded": program.degraded,
+        "incomplete": program.incomplete,
         "resolved": {
             "now": polylogue_model::Timestamp::from_unix_ms(program.now),
             "zone": program.zone,
             "day_start_minutes": program.day_start_minutes,
         },
-        "view": view,
+        "read_at": read_at,
     });
     if ask.why && count == 0 {
         out["why"] = why(reader, &program, &params)?;
@@ -308,8 +308,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     Ok(out)
 }
 
-/// One pinned view, with independent counters scoped to the current index.
-fn view(reader: &Reader<'_>) -> Result<Value, Failure> {
+/// What one read transaction read: the index generation and the
+/// counters, scoped to the current index.
+fn read_at(reader: &Reader<'_>) -> Result<Value, Failure> {
     let position = reader.change_position()?;
     Ok(
         json!({ "generation": position.generation, "index": position.index, "archive": position.archive, "cursor": position.to_string() }),

@@ -23,7 +23,7 @@ CREATE TABLE blob (
   data          BLOB                     -- zstd bytes, when place = 'inline'
 ) STRICT;
 
--- One logical file: one location's history, or one imported file.
+-- One file as Polylogue tracks it: one location's history, or one imported file.
 CREATE TABLE input (
   id            TEXT PRIMARY KEY,        -- hex BLAKE3 for an imported file that cannot change;
                                          -- UUIDv7 for a location that can grow or change
@@ -43,8 +43,7 @@ CREATE TABLE revision (
   chain         INTEGER NOT NULL,        -- the revision that started this revision chain (itself for first,
                                          --   imported and rewritten revisions)
   length        INTEGER NOT NULL,        -- of the revision's full bytes
-  commit_seq    INTEGER NOT NULL,        -- local order: the write counter at the insert; orders the
-                                         --   row batches sent to Sinex in `primary` mode
+  commit_seq    INTEGER NOT NULL,        -- the write counter at the insert
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_commit_seq ON revision(commit_seq);
@@ -112,7 +111,7 @@ CREATE TABLE client_request (
 CREATE TABLE note (
   id            TEXT PRIMARY KEY,        -- the writing request's ID (UUIDv7, chosen by the client), with '.<n>' for
                                          --   its n-th further row
-  root          TEXT NOT NULL,           -- first note of its revision family; = id for a first note
+  first_note    TEXT NOT NULL,           -- the first note of its revisions; = id for a first note
   kind          TEXT NOT NULL,           -- tag | note | title | decision | claim | lesson | blocker | question
                                          -- | finding | judgment | outcome | hidden | withdrawal | saved_query
                                          -- | forecast | goal | problem | correction
@@ -125,10 +124,10 @@ CREATE TABLE note (
   machine       TEXT NOT NULL,           -- where it was written
   created_at    INTEGER NOT NULL,        -- the writer's clock: display and the evidence cutoff only, never orders revisions
   valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings
-  commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
+  commit_seq    INTEGER NOT NULL         -- the write counter of the transaction that wrote it
 ) STRICT;
 CREATE INDEX note_commit_seq ON note(commit_seq);              -- the change feed
-CREATE INDEX note_root ON note(root);
+CREATE INDEX note_first_note ON note(first_note);
 CREATE INDEX note_kind ON note(kind, key, value);        -- tag:, outcome:, hidden, query:<name>
 
 -- What a note is about (one or more references).
@@ -155,8 +154,7 @@ CREATE TABLE kept_result (
   name          TEXT,                    -- optional label
   query         TEXT NOT NULL,
   ran_at        INTEGER NOT NULL,
-  view          TEXT NOT NULL,           -- the view it read (index generation, index counter, archive
-                                         --   counter, embeddings high-water id) and up_to_date, as JSON
+  read_at       TEXT NOT NULL,           -- what its read transaction read (the query's resolved time), as JSON
   rows_json     TEXT NOT NULL            -- row references (notes pinned to a revision), the displayed values,
                                          -- and the match rows of each match
 ) STRICT;
@@ -165,10 +163,10 @@ CREATE TABLE kept_result (
 -- names what it removed, never the content.
 CREATE TABLE excision (
   id            TEXT PRIMARY KEY,        -- the request's ID
-  scope         TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'document:<id>', 'text:<blake3>'
+  target        TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'document:<id>', 'text:<blake3>'
   reason        TEXT,
   created_at    INTEGER NOT NULL,
-  commit_seq    INTEGER NOT NULL         -- local order; never copied in a union
+  commit_seq    INTEGER NOT NULL         -- the write counter of the transaction that wrote it
 ) STRICT;
 CREATE INDEX excision_commit_seq ON excision(commit_seq);
 
@@ -179,19 +177,18 @@ CREATE INDEX excision_commit_seq ON excision(commit_seq);
 -- scope in code: per machine (embeddings, signal.interrupts_per_hour)
 -- or archive-wide under machine '*' (subscription.*, which belongs to a provider
 -- account; day.logical_start and day.zone, one setting for the operator).
--- A machine reads its own rows for per-machine keys and '*' rows for the rest; the current value is its row with the largest (set_at, id), the
--- value in force at time T the largest (set_at, id) with set_at <= T (both independent of union
--- arrival order), and a key with no
--- row has the default.
+-- A machine reads its own rows for per-machine keys and '*' rows for the
+-- rest; the current value is its row with the largest (set_at, id), the value
+-- in force at time T the largest (set_at, id) with set_at <= T, and a key with
+-- no row has the default.
 CREATE TABLE setting (
-  id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the writer: globally unique, so a union is plain
-  machine       TEXT NOT NULL,           -- the machine it applies to (as note.machine), or '*' for an archive-wide key;
-                                         --   a union keeps every machine's rows
+  id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the writer
+  machine       TEXT NOT NULL,           -- the machine it applies to (as note.machine), or '*' for an archive-wide key
   key           TEXT NOT NULL,
   value         TEXT NOT NULL,
   author        TEXT NOT NULL,           -- 'operator' or the agent session that set it
   set_at        INTEGER NOT NULL,        -- the writer's clock, shown by `polylogue setting`
-  commit_seq    INTEGER NOT NULL         -- local order: orders row batches only, never a key
+  commit_seq    INTEGER NOT NULL         -- the write counter at the insert; never a key
 ) STRICT;
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 CREATE INDEX setting_commit_seq ON setting(commit_seq);
@@ -288,10 +285,9 @@ CREATE TABLE chat_action_event (
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
 
 -- Which export ZIP a member observation was read from, and where in it.
--- The row travels in the member observation's row batch.
-CREATE TABLE observation_container (
+CREATE TABLE observation_zip (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
-    container_input TEXT NOT NULL REFERENCES input(id),
+    zip_input TEXT NOT NULL REFERENCES input(id),
     member_index INTEGER NOT NULL CHECK(member_index>=0)
 ) STRICT;
-CREATE INDEX observation_container_input ON observation_container(container_input);
+CREATE INDEX observation_zip_input ON observation_zip(zip_input);

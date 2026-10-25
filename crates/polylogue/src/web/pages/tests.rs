@@ -19,11 +19,11 @@ fn partial_cost_and_unknown_denominators_match_cli_accounting() {
 }
 
 #[test]
-fn incomplete_lineage_keeps_issues_evidence_and_session_navigation() {
+fn incomplete_parents_keep_issues_evidence_and_session_navigation() {
     let status = json!({"complete": false, "issues": [{"kind": "missing_anchor", "parent": "codex:p", "child": "codex:c", "anchor": "<unknown>"}]});
     let links = json!({"columns": [{"name":"parent"}, {"name":"child"}, {"name":"evidence"}, {"name":"pending"}, {"name":"branch_point"}], "rows": [{"parent":"codex:p", "child":"codex:c", "evidence":"native.<field>", "pending":true, "branch_point":null}], "next":"more"});
-    let page = lineage(&status, &links);
-    assert!(page.contains("Incomplete logical ancestry"));
+    let page = parents(&status, &links);
+    assert!(page.contains("Some parent sessions are missing"));
     assert!(page.contains("missing_anchor"));
     assert!(page.contains("href=\"/s/codex%3Ap\""), "{page}");
     assert!(page.contains("href=\"/s/codex%3Ac\""), "{page}");

@@ -113,16 +113,16 @@ fn an_output_failure_never_returns_a_deliverable_file() {
 #[test]
 fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idempotently() {
     use polylogue_model::{Output, Session, SessionKind};
-    use polylogue_store::fixture::writer::{WriterWorld, sid};
-    let mut world = WriterWorld::new();
-    let reads = polylogue_store::ReadPool::open(&world.archive).unwrap();
+    use polylogue_store::fixture::writer::{WriterArchive, sid};
+    let mut fixture = WriterArchive::new();
+    let reads = polylogue_store::ReadPool::open(&fixture.archive).unwrap();
     let initial = reads
         .reader()
         .unwrap()
         .change_position()
         .unwrap()
         .to_string();
-    world.write_output(
+    fixture.write_output(
         "group",
         "claude-code",
         "/synthetic",
@@ -195,7 +195,7 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
     let mut db = rusqlite::Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = db.transaction().unwrap();
     for id in ["a", "b"] {
-        tx.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES (?1,?1,'note','synthetic','operator','test',0,1)",[id]).unwrap();
+        tx.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES (?1,?1,'note','synthetic','operator','test',0,1)",[id]).unwrap();
     }
     tx.execute(
         "INSERT INTO meta VALUES ('write_counter','1') ON CONFLICT(key) DO UPDATE SET value='1'",

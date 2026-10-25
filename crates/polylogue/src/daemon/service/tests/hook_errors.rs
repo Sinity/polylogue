@@ -3,8 +3,8 @@ use serde_json::json;
 
 #[test]
 fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
-    let world = test_daemon::start("human prompt");
-    let source = world.home.join(".claude/projects/-p/s1.jsonl");
+    let daemon = test_daemon::start("human prompt");
+    let source = daemon.home.join(".claude/projects/-p/s1.jsonl");
     let summary = json!({"type":"system", "subtype":"stop_hook_summary", "uuid":"hook1",
         "sessionId":"s1", "parentUuid":"u1", "hookErrors":["  synthetic hook failed λ\n"],
         "hookAdditionalContext":[], "preventedContinuation":true, "stopReason":"check blocked"});
@@ -13,8 +13,8 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
     original.push(b'\n');
     std::fs::write(&source, &original).unwrap();
     let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
-    world.wait_for(|_| {
-        world
+    daemon.wait_for(|_| {
+        daemon
             .daemon
             .reads
             .reader()
@@ -24,12 +24,12 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
             .iter()
             .any(|event| event.data == summary)
     });
-    let Response::Ok { data: typed } = read(&world.daemon, "full", "json", None, None) else {
+    let Response::Ok { data: typed } = read(&daemon.daemon, "full", "json", None, None) else {
         panic!("ordinary read failed")
     };
     assert_eq!(typed["messages"].as_array().unwrap().len(), 2);
     assert_eq!(typed["messages"][1]["prompt_kind"], "harness");
-    let archive = Archive::at(&world.daemon.archive.root);
+    let archive = Archive::at(&daemon.daemon.archive.root);
     let mcp: serde_json::Value = serde_json::from_str(
         &crate::mcp::call(
             &archive,
@@ -76,7 +76,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
     assert!(joined.contains("synthetic hook failed λ"));
     assert_eq!(std::fs::read(source).unwrap(), original);
     assert!(
-        world
+        daemon
             .daemon
             .reads
             .reader()

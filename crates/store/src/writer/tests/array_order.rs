@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_parse_from_the_first_byte_restates_event_positions() {
-    let w = world();
+    let w = test_archive();
     let row = MessageRow {
         offset: 100,
         end: 200,

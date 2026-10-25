@@ -34,7 +34,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
     })
     .unwrap();
     fx.derive().unwrap();
-    let w = World { _dir: dir, fx };
+    let w = TestArchive { _dir: dir, fx };
     let rows = q(&w, "sessions")["rows"].as_array().unwrap().clone();
     let row = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap();
     assert_eq!(row("claude-code:derived")["title"], "First human question");

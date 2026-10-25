@@ -9,7 +9,7 @@ use polylogue_model::BlobHash;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Inner {
-    /// Stores one acquisition's bytes: a batch with an observation and no
+    /// Stores one import's bytes: a batch with an observation and no
     /// parsed rows.
     pub(super) fn store_bytes(
         &mut self,
@@ -17,7 +17,7 @@ impl Inner {
         mut batch: Batch,
     ) -> Result<StoredInput> {
         if file.owner != self.location.root
-            || batch.piece.is_some()
+            || batch.new_blob.is_some()
             || !batch.blobs.is_empty()
             || !batch.parse.is_empty()
             || batch.observation.is_none()
@@ -27,7 +27,7 @@ impl Inner {
                     .into(),
             ));
         }
-        batch.piece = Some(Piece {
+        batch.new_blob = Some(NewBlob {
             hash: file.hash(),
             size: file.len(),
             stored: Stored::File { stored_size: 0 },
@@ -44,7 +44,7 @@ impl Inner {
         .expect("one result")
     }
 
-    /// Stores a group of batches whose pieces include private files, then
+    /// Stores a group of batches whose new blobs include private files, then
     /// writes their parsed rows. A refused group is tried again batch by
     /// batch, so one bad batch costs only itself.
     pub(super) fn store_group(
@@ -77,7 +77,7 @@ impl Inner {
                 if group.len() > 1
                     && !group
                         .iter()
-                        .any(|item| crate::containers::coordinate(&item.batch).is_some())
+                        .any(|item| crate::zip_members::zip_of(&item.batch).is_some())
                 {
                     return group
                         .into_iter()
@@ -143,10 +143,10 @@ impl Inner {
             .iter()
             .map(|item| {
                 item.batch
-                    .piece
+                    .new_blob
                     .iter()
                     .chain(&item.batch.blobs)
-                    .find_map(|piece| failed.get(&piece.hash).cloned())
+                    .find_map(|new_blob| failed.get(&new_blob.hash).cloned())
             })
             .collect();
         let finished: Result<()> = (|| {
@@ -185,7 +185,7 @@ impl Inner {
                     chain: stored.chain,
                 };
                 item.batch.continues = false;
-                item.batch.piece = None;
+                item.batch.new_blob = None;
                 item.batch.observation = None;
                 item.batch.blobs.clear();
                 parsed.push(Box::new(item.batch));
@@ -230,10 +230,10 @@ impl Inner {
             .map(|item| item.batch.input.id.as_str())
             .collect();
         for item in group.iter() {
-            if let Some(container) = crate::containers::coordinate(&item.batch)
-                && !staged.contains(container.input.as_str())
+            if let Some(zip) = crate::zip_members::zip_of(&item.batch)
+                && !staged.contains(zip.input.as_str())
             {
-                crate::containers::require_original(&self.archive, &container.input)?;
+                crate::zip_members::require_original(&self.archive, &zip.input)?;
             }
         }
         let tx = self.archive.transaction()?;
@@ -263,13 +263,13 @@ impl Inner {
                 )
                 .optional()?;
             let again = !seen.insert(b.input.id.clone());
-            if b.input.route_rank == 2 && b.piece.is_some() && (known.is_some() || again) {
-                let piece = b.piece.as_ref().expect("checked piece");
+            if b.input.arrival_rank == 2 && b.new_blob.is_some() && (known.is_some() || again) {
+                let new_blob = b.new_blob.as_ref().expect("checked new_blob");
                 let same: bool = tx.query_row(
                     "SELECT count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4
                      FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)
                      AND ?2 = ?3",
-                    params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &piece.hash.0[..]],
+                    params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]],
                     |r| r.get(0),
                 )?;
                 if !same {
@@ -278,15 +278,15 @@ impl Inner {
                     ));
                 }
                 b.change = Change::Unchanged;
-                b.piece = None;
+                b.new_blob = None;
             }
             let (chain, record) = write_bytes(&tx, b, seq)?;
             let chain = chain
                 .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
             if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
-                let piece = b.piece.as_ref().map(|piece| piece.hash);
-                let file = piece.and_then(|hash| files.iter().find(|f| f.hash() == hash));
-                send_to_sinex(sinex.as_ref(), &tx, record, file, b.piece.as_ref())?;
+                let new_blob = b.new_blob.as_ref().map(|new_blob| new_blob.hash);
+                let file = new_blob.and_then(|hash| files.iter().find(|f| f.hash() == hash));
+                send_to_sinex(sinex.as_ref(), &tx, record, file, b.new_blob.as_ref())?;
             }
             crate::fault::check("import.rows", &b.input.id)?;
             let already_stored = again
@@ -322,15 +322,15 @@ impl Inner {
             &b.input.id,
             b.observation.as_ref().and_then(|o| o.import.as_ref()),
         )?;
-        for piece in b.piece.iter().chain(&b.blobs) {
-            if matches!(piece.stored, Stored::File { .. })
+        for new_blob in b.new_blob.iter().chain(&b.blobs) {
+            if matches!(new_blob.stored, Stored::File { .. })
                 && !item
                     .files
                     .iter()
-                    .any(|file| file.hash() == piece.hash && file.len() == piece.size)
+                    .any(|file| file.hash() == new_blob.hash && file.len() == new_blob.size)
             {
                 return Err(StoreError::Invalid(
-                    "a file piece has no private file".into(),
+                    "a file new_blob has no private file".into(),
                 ));
             }
         }
@@ -341,19 +341,19 @@ impl Inner {
                 ));
             }
             if !b
-                .piece
+                .new_blob
                 .iter()
                 .chain(&b.blobs)
-                .any(|piece| piece.hash == file.hash() && piece.size == file.len())
+                .any(|new_blob| new_blob.hash == file.hash() && new_blob.size == file.len())
             {
                 return Err(StoreError::Invalid(
-                    "a private file belongs to no piece of its batch".into(),
+                    "a private file belongs to no new_blob of its batch".into(),
                 ));
             }
         }
-        if b.input.route_rank == 2
-            && let Some(piece) = &b.piece
-            && (b.input.id != piece.hash.to_string() || piece.size != b.length || b.continues)
+        if b.input.arrival_rank == 2
+            && let Some(new_blob) = &b.new_blob
+            && (b.input.id != new_blob.hash.to_string() || new_blob.size != b.length || b.continues)
         {
             return Err(StoreError::Invalid(
                 "an import must be named by its complete bytes".into(),
@@ -362,8 +362,8 @@ impl Inner {
         if self.excisions
             && let Some(observation) = &b.observation
         {
-            for piece in b.piece.iter().chain(&b.blobs) {
-                if crate::excise::raw_import(&self.archive, &b.input.id, &piece.hash, observation)?
+            for new_blob in b.new_blob.iter().chain(&b.blobs) {
+                if crate::excise::raw_import(&self.archive, &b.input.id, &new_blob.hash, observation)?
                 {
                     return Err(StoreError::InputRefused {
                         input: b.input.id.clone(),
@@ -410,7 +410,7 @@ pub(super) fn send_to_sinex(
     tx: &Connection,
     record: &crate::input_record::InputRecord,
     file: Option<&PreparedBytes>,
-    piece: Option<&Piece>,
+    new_blob: Option<&NewBlob>,
 ) -> Result<()> {
     let input = input_name(tx, record)?;
     let Some(extent) = &record.extent else {
@@ -425,13 +425,13 @@ pub(super) fn send_to_sinex(
         return Ok(());
     };
     let (index, previous) = crate::primary::next_part(tx, &record.input, extent.chain)?;
-    let mut bytes: Box<dyn std::io::Read> = match (file.map(|f| &f.file), piece.map(|p| &p.stored))
+    let mut bytes: Box<dyn std::io::Read> = match (file.map(|f| &f.file), new_blob.map(|p| &p.stored))
     {
         (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
         (_, Some(Stored::Inline(data))) => Box::new(std::io::Cursor::new(zstd::bulk::decompress(
             data,
             usize::try_from(extent.length)
-                .map_err(|_| StoreError::Invalid("piece exceeds memory".into()))?,
+                .map_err(|_| StoreError::Invalid("a new blob exceeds memory".into()))?,
         )?)),
         _ => {
             return Err(StoreError::Invalid(

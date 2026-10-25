@@ -3,7 +3,7 @@ use polylogue_testkit::ClaudeHome;
 use serde_json::json;
 
 #[test]
-fn whole_documents_cite_the_retained_bytes_and_preserve_reading_order_on_rebuild() {
+fn whole_documents_cite_the_stored_bytes_and_preserve_reading_order_on_rebuild() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("design_chats/example.json");
     let bytes = br#"{
@@ -22,7 +22,7 @@ fn whole_documents_cite_the_retained_bytes_and_preserve_reading_order_on_rebuild
         }
         let (mut e, _lock) = engine(&w, 16);
         let errors = if rebuild {
-            e.converge().unwrap().errors
+            e.run_pass().unwrap().errors
         } else {
             e.import(std::slice::from_ref(&path)).unwrap().pass.errors
         };

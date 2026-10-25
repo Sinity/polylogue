@@ -34,14 +34,14 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         w.append("new.jsonl", &user("one", "new", "new stored body"));
         let (mut engine, _lock) = w.engine(256);
         fault::arm(point, "", Action::Fail, 0, 64);
-        let failed = engine.converge().unwrap();
+        let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty());
         assert!(w.texts("new").is_empty());
         fault::clear();
-        let retry = engine.converge().unwrap();
+        let retry = engine.run_pass().unwrap();
         assert!(retry.errors.is_empty(), "{retry:?}");
         assert_eq!(w.texts("new"), ["new stored body"]);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
         assert_eq!(w.texts("new"), ["new stored body"]);
         exactly_stored(&w, "new.jsonl");
     }
@@ -54,7 +54,7 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
         let w = ClaudeHome::new();
         w.append("target.jsonl", &user("old", "target", "old body"));
         let (mut engine, _lock) = w.engine(256);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
         let pool = w.reads();
         let r = pool.reader().unwrap();
         let known = r
@@ -83,12 +83,12 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
         }
         w.append("unrelated.jsonl", &user("other", "other", "other stored"));
         fault::arm("write.input", &known.input_id, Action::Fail, 0, 64);
-        let failed = engine.converge().unwrap();
+        let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty());
         assert_eq!(w.texts("target"), ["old body"]);
         assert_eq!(w.texts("other"), ["other stored"]);
         fault::clear();
-        let retry = engine.converge().unwrap();
+        let retry = engine.run_pass().unwrap();
         assert!(retry.errors.is_empty(), "rewrite={rewrite}: {retry:?}");
         let texts = w.texts("target");
         for n in 0..12 {
@@ -110,12 +110,12 @@ fn a_growing_rewrite_after_restart_checks_the_stored_prefix_before_appending() {
     w.append("rewrite.jsonl", &user("same", "target", "before"));
     {
         let (mut engine, _lock) = w.engine(256);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
     }
     let body = "complete replacement ".repeat(50);
     fs::write(w.file("rewrite.jsonl"), user("same", "target", &body)).unwrap();
     let (mut engine, _lock) = w.engine(256);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert_eq!(w.texts("target"), [body]);
     exactly_stored(&w, "rewrite.jsonl");
     assert_eq!(

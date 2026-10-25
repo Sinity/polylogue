@@ -56,7 +56,7 @@ fn role_free_formats_mask_before_hidden_block_projection_and_page_splitting() {
         2,
         Some(Position {
             message: 99,
-            piece: 0,
+            block: 0,
             character: 0,
         }),
         String::new(),

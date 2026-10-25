@@ -30,7 +30,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
     items.sort_by(|a, b| a.1.cmp(&b.1));
     let mut owners = polylogue_sources::export::MemoryState::default();
     let mut output = polylogue_sources::Output::default();
-    let mut accounting = polylogue_model::Accounting::default();
+    let mut counts = polylogue_model::RecordCounts::default();
     let first = items.first().map(|(_, _, bytes)| bytes.as_slice());
     let mut steps: Vec<_> = export
         .begin(bytes.len() as u64, first)?
@@ -45,7 +45,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
         )?);
     }
     for mut step in steps {
-        accounting.merge(&step.accounting);
+        counts.merge(&step.counts);
         macro_rules! append { ($($field:ident),*) => { $(output.$field.append(&mut step.output.$field);)* } }
         append!(
             sessions,
@@ -60,10 +60,10 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
     }
     Ok(Step {
         output,
-        accounting,
+        counts,
         consumed: bytes.len() as u64,
         start: 0,
-        restates: false,
+        repeats_whole_conversations: false,
     })
 }
 

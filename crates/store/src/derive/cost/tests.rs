@@ -201,7 +201,7 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
 #[test]
 fn writer_uses_catalog_derivation_and_keeps_provider_reported_cost_separate() {
     use crate::fixture::writer::*;
-    let mut w = WriterWorld::new();
+    let mut w = WriterArchive::new();
     let mut messages = prose("a", 1, 1000, "hello");
     messages[0].model = Some("gpt-5".into());
     messages[0].usage = Usage {

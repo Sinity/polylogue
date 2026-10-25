@@ -8,7 +8,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Drift {
     pub format: String,
-    /// `record:<type>`, `field:<json path>` or `undecodable:<reason>`.
+    /// `skipped:<kind>: <reason>`, `unreadable:<kind>: <reason>` or
+    /// `field:<kind>.<json path>`.
     pub what: String,
     pub count: u64,
     pub inputs: u64,
@@ -16,12 +17,12 @@ pub struct Drift {
     pub by_design: bool,
 }
 
-/// Every unrecognized item, most frequent first; items kept as counts by
+/// Everything parsers did not use, most frequent first; items kept as counts by
 /// design come after the rest.
 pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
     let mut stmt = reader.conn()?.prepare(
         "SELECT format, what, sum(count), count(DISTINCT input_pk), max(counted_only)
-         FROM unrecognized GROUP BY format, what
+         FROM unused GROUP BY format, what
          ORDER BY max(counted_only), sum(count) DESC, format, what",
     )?;
     let rows = stmt.query_map([], |r| {

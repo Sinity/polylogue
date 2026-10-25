@@ -14,15 +14,15 @@ fn document_parser_requires_the_whole_input() {
         parser.step(None, b"{}", 12),
         Err(ParseError::NotWhole(12))
     ));
-    let (step, carry) = parser.step(None, b"{}", 0).unwrap();
+    let (step, parser_state) = parser.step(None, b"{}", 0).unwrap();
     assert_eq!(step.consumed, 2);
-    assert_eq!(carry, Json::Null);
+    assert_eq!(parser_state, Json::Null);
 }
 
 struct ClassifiedLines;
 
 impl Parser for ClassifiedLines {
-    type Carry = Vec<(u64, String)>;
+    type ParserState = Vec<(u64, String)>;
 
     fn kind(&self, value: &Json) -> String {
         value["kind"].as_str().unwrap_or("?").into()
@@ -30,29 +30,29 @@ impl Parser for ClassifiedLines {
 
     fn parse_record(
         &self,
-        carry: &mut Self::Carry,
+        parser_state: &mut Self::ParserState,
         record: Record<'_>,
         value: &Json,
         _: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let kind = self.kind(value);
-        carry.push((record.offset, kind.clone()));
+        parser_state.push((record.offset, kind.clone()));
         static FIELDS: crate::fields::Fields =
             crate::fields::Fields::new(&[("kind", crate::fields::Rule::Read)]);
         records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
-            "message" => Disposition::Materialized,
-            "metadata" => Disposition::unknown("not parsed"),
-            _ => Disposition::refused("not a supported record"),
+            "message" => RecordOutcome::Used,
+            "metadata" => RecordOutcome::skipped("not parsed"),
+            _ => RecordOutcome::unreadable("not a supported record"),
         }
     }
 
-    fn flush(&self, _: &mut Self::Carry, _: &mut Output) {}
+    fn flush(&self, _: &mut Self::ParserState, _: &mut Output) {}
 }
 
 #[test]
-fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
+fn append_boundaries_keep_outcomes_fields_offsets_and_parser_state() {
     let bytes = concat!(
         "\r\n",
         r#"{"kind":"message","extra":1}"#,
@@ -67,29 +67,29 @@ fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
     .as_bytes();
     let mut whole_carry = Vec::new();
     let whole = run(&ClassifiedLines, &mut whole_carry, bytes, 17).unwrap();
-    assert_eq!(whole.accounting.framed, 4);
-    assert_eq!(whole.accounting.materialized["message"], 1);
-    assert_eq!(whole.accounting.unknown["metadata: not parsed"], 1);
-    assert_eq!(whole.accounting.refused.values().sum::<u64>(), 2);
-    assert_eq!(whole.accounting.unread_fields["message.extra"], 1);
+    assert_eq!(whole.counts.records, 4);
+    assert_eq!(whole.counts.used["message"], 1);
+    assert_eq!(whole.counts.skipped["metadata: not parsed"], 1);
+    assert_eq!(whole.counts.unreadable.values().sum::<u64>(), 2);
+    assert_eq!(whole.counts.unread_fields["message.extra"], 1);
     assert!(whole.consumed < bytes.len() as u64);
     for split in 0..=bytes.len() {
-        let mut carry = Vec::new();
-        let first = run(&ClassifiedLines, &mut carry, &bytes[..split], 17).unwrap();
+        let mut parser_state = Vec::new();
+        let first = run(&ClassifiedLines, &mut parser_state, &bytes[..split], 17).unwrap();
         // The caller keeps a partial trailing record, not just bytes after
         // its most recent read boundary.
         let start = first.consumed as usize;
         let second = run(
             &ClassifiedLines,
-            &mut carry,
+            &mut parser_state,
             &bytes[start..],
             17 + first.consumed,
         )
         .unwrap();
-        let mut counts = first.accounting;
-        counts.merge(&second.accounting);
-        assert_eq!(counts, whole.accounting, "split {split}");
-        assert_eq!(carry, whole_carry, "split {split}");
+        let mut counts = first.counts;
+        counts.merge(&second.counts);
+        assert_eq!(counts, whole.counts, "split {split}");
+        assert_eq!(parser_state, whole_carry, "split {split}");
         assert_eq!(
             first.consumed + second.consumed,
             whole.consumed,
@@ -109,7 +109,7 @@ fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].consumed, bytes.len() as u64);
-    assert!(steps[0].restates);
+    assert!(steps[0].repeats_whole_conversations);
     let end = bytes.len();
     bytes.extend(&Header::of(body).encode()[..10]);
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
@@ -134,7 +134,7 @@ impl DocumentParser for DocumentEvent {
             range: None,
             data: serde_json::json!({"kept":true}),
         });
-        records.record("metadata", &Disposition::Materialized);
+        records.record("metadata", &RecordOutcome::Used);
     }
 }
 

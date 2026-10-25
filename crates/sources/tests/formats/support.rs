@@ -21,7 +21,7 @@ pub fn parse(origin: &str, path: &str, input: &[u8]) -> Value {
         input.len() as u64,
         "parser consumed the whole input"
     );
-    serde_json::json!({"output": step.output, "accounting": step.accounting})
+    serde_json::json!({"output": step.output, "counts": step.counts})
 }
 
 /// Joins JSON records into JSONL bytes.

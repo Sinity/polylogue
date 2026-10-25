@@ -18,11 +18,11 @@ mod blocks;
 mod fields;
 pub mod side;
 
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     ApiError, Attribution, Block, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId,
     NativeId, Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
@@ -152,7 +152,7 @@ pub struct ClaudeCode {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Carry {
+pub struct ParserState {
     /// Session facts gathered so far, by native ID. A file touches a few
     /// sessions: its own, the ones it copies from, its sidechain.
     sessions: BTreeMap<String, Session>,
@@ -181,7 +181,7 @@ pub struct Carry {
 /// How many record aliases a parser keeps.
 const ALIASES: usize = 4096;
 
-impl Carry {
+impl ParserState {
     fn alias(&mut self, uuid: &str, target: Option<MessageId>) {
         if self.aliases.len() == ALIASES {
             self.aliases.pop_front();
@@ -228,13 +228,13 @@ fn message_id(native: &str) -> Option<MessageId> {
 }
 
 /// The session a record belongs to and its kind.
-struct Route {
+struct RecordSession {
     native: String,
     kind: SessionKind,
 }
 
 impl ClaudeCode {
-    fn route(&self, v: &Json) -> Route {
+    fn record_session(&self, v: &Json) -> RecordSession {
         match &self.file {
             File::Subagent { stem } => {
                 let native = str_field(v, "agentId")
@@ -247,21 +247,21 @@ impl ClaudeCode {
                 } else {
                     SessionKind::Subagent
                 };
-                Route { native, kind }
+                RecordSession { native, kind }
             }
-            File::Journal { session, .. } => Route {
+            File::Journal { session, .. } => RecordSession {
                 native: session.clone(),
                 kind: SessionKind::Main,
             },
             File::Main { stem } => {
                 let base = str_field(v, "sessionId").unwrap_or(stem).to_owned();
                 if v.get("isSidechain").and_then(Json::as_bool) == Some(true) {
-                    Route {
+                    RecordSession {
                         native: format!("{base}/sidechain"),
                         kind: SessionKind::Sidechain,
                     }
                 } else {
-                    Route {
+                    RecordSession {
                         native: base,
                         kind: SessionKind::Main,
                     }
@@ -276,36 +276,36 @@ impl ClaudeCode {
     /// own.
     fn session<'c>(
         &self,
-        carry: &'c mut Carry,
+        parser_state: &'c mut ParserState,
         v: &Json,
         out: &mut Output,
     ) -> Option<&'c mut Session> {
-        let route = self.route(v);
-        let id = session_id(&route.native)?;
+        let record_session = self.record_session(v);
+        let id = session_id(&record_session.native)?;
         let parent = str_field(v, "sessionId").and_then(session_id);
-        match (&self.file, route.kind) {
-            (File::Main { stem }, SessionKind::Main) if route.native != *stem => {
+        match (&self.file, record_session.kind) {
+            (File::Main { stem }, SessionKind::Main) if record_session.native != *stem => {
                 if let Some(child) = session_id(stem) {
-                    link(carry, out, LinkKind::Copy, id.clone(), child, "sessionId");
+                    link(parser_state, out, LinkKind::Copy, id.clone(), child, "sessionId");
                 }
             }
             (_, SessionKind::Sidechain)
             | (File::Subagent { .. }, SessionKind::Subagent | SessionKind::Compaction) => {
                 if let Some(parent) = parent.filter(|p| *p != id) {
-                    let evidence = match route.kind {
+                    let evidence = match record_session.kind {
                         SessionKind::Sidechain => "isSidechain",
                         SessionKind::Compaction => "agentId acompact",
                         _ => "agentId",
                     };
-                    link(carry, out, LinkKind::Spawn, parent, id.clone(), evidence);
+                    link(parser_state, out, LinkKind::Spawn, parent, id.clone(), evidence);
                 }
             }
             _ => {}
         }
-        let s = carry
+        let s = parser_state
             .sessions
-            .entry(route.native)
-            .or_insert_with(|| Session::new(id, route.kind));
+            .entry(record_session.native)
+            .or_insert_with(|| Session::new(id, record_session.kind));
         if let Some(cwd) = str_field(v, "cwd") {
             s.offer_cwd(cwd);
         }
@@ -325,7 +325,7 @@ impl ClaudeCode {
     }
 
     /// The file's own session, for records that name none.
-    fn own_session(&self, carry: &mut Carry) -> Option<SessionId> {
+    fn own_session(&self, parser_state: &mut ParserState) -> Option<SessionId> {
         let stem = self.file.stem();
         let kind = match self.file {
             File::Main { .. } | File::Journal { .. } => SessionKind::Main,
@@ -333,7 +333,7 @@ impl ClaudeCode {
             File::Subagent { .. } => SessionKind::Subagent,
         };
         let id = session_id(stem)?;
-        carry
+        parser_state
             .sessions
             .entry(stem.to_owned())
             .or_insert_with(|| Session::new(id.clone(), kind));
@@ -344,21 +344,21 @@ impl ClaudeCode {
     /// session writes (`slug`, as `plans/<slug>.md`) and the agent team it
     /// belongs to (`teamName`). Each is sent as an event when it first
     /// appears or changes, so readers find it from the session.
-    fn names(&self, carry: &mut Carry, record: Record<'_>, v: &Json, out: &mut Output) {
+    fn names(&self, parser_state: &mut ParserState, record: Record<'_>, v: &Json, out: &mut Output) {
         if let Some(slug) = str_field(v, "slug") {
             let data = serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") });
-            self.name_event(carry, record, v, out, "plan", slug, data);
+            self.name_event(parser_state, record, v, out, "plan", slug, data);
         }
         if let Some(team) = str_field(v, "teamName") {
             let data = serde_json::json!({ "team": team });
-            self.name_event(carry, record, v, out, "team", team, data);
+            self.name_event(parser_state, record, v, out, "team", team, data);
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn name_event(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
@@ -373,16 +373,16 @@ impl ClaudeCode {
             return;
         };
         let key = format!("{kind}\u{0}{stem}");
-        if carry.names.get(&key).map(String::as_str) == Some(name) {
+        if parser_state.names.get(&key).map(String::as_str) == Some(name) {
             return;
         }
-        carry.names.insert(key, name.to_owned());
+        parser_state.names.insert(key, name.to_owned());
         if let Some(session) = session_id(stem) {
             out.events.push(Event {
                 session: Some(session),
                 kind: kind.to_owned(),
                 at: v.get("timestamp").and_then(time::rfc3339),
-                after: carry.last.clone(),
+                after: parser_state.last.clone(),
                 range: Some(range(record)),
                 data,
             });
@@ -391,63 +391,63 @@ impl ClaudeCode {
 
     fn event(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         kind: &str,
         out: &mut Output,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let session = match v.get("sessionId").or(v.get("agentId")) {
-            Some(_) => self.session(carry, v, out).map(|s| s.id.clone()),
-            None => self.own_session(carry),
+            Some(_) => self.session(parser_state, v, out).map(|s| s.id.clone()),
+            None => self.own_session(parser_state),
         };
         let Some(session) = session else {
-            return Disposition::refused("session ID is empty");
+            return RecordOutcome::unreadable("session ID is empty");
         };
         out.events.push(Event {
             session: Some(session),
             kind: kind.to_owned(),
             at: v.get("timestamp").and_then(time::rfc3339),
-            after: carry.last.clone(),
+            after: parser_state.last.clone(),
             range: Some(range(record)),
             data: v.clone(),
         });
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     fn hook_summary(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         summary: (Vec<Block>, Option<&'static str>),
         out: &mut Output,
-    ) -> Disposition {
-        let disposition = self.event(carry, record, v, "stop_hook_summary", out);
-        if disposition != Disposition::Materialized {
-            return disposition;
+    ) -> RecordOutcome {
+        let outcome = self.event(parser_state, record, v, "stop_hook_summary", out);
+        if outcome != RecordOutcome::Used {
+            return outcome;
         }
         let (blocks, invalid) = summary;
         if !blocks.is_empty() {
-            let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
-                return Disposition::refused("session ID is empty");
+            let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
+                return RecordOutcome::unreadable("session ID is empty");
             };
             let native = str_field(v, "uuid")
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
             let Some(id) = message_id(&native) else {
-                return Disposition::refused("message ID is empty");
+                return RecordOutcome::unreadable("message ID is empty");
             };
             // The summary records supplied feedback, including when the
             // hook prevented continuation. It is not a delivery receipt.
-            close(carry, out);
+            close(parser_state, out);
             out.messages.push(MessageRow {
                 offset: record.offset,
                 end: range(record).1,
                 message: Message {
                     id: id.clone(),
                     session,
-                    parent: carry.parent(v),
+                    parent: parser_state.parent(v),
                     role: Role::System,
                     at: v.get("timestamp").and_then(time::rfc3339),
                     model: None,
@@ -460,33 +460,33 @@ impl ClaudeCode {
                     production: Production::default(),
                 },
             });
-            carry.last = Some(id);
+            parser_state.last = Some(id);
         }
         match invalid {
-            Some(reason) => Disposition::refused(reason),
-            None => disposition,
+            Some(reason) => RecordOutcome::unreadable(reason),
+            None => outcome,
         }
     }
 
     fn message(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         role: Role,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let kind = self.kind(v);
         records.fields(&kind, v, &fields::MESSAGE_FIELDS);
-        let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
-            return Disposition::refused("session ID is empty");
+        let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
+            return RecordOutcome::unreadable("session ID is empty");
         };
         let native = str_field(v, "uuid")
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
         let Some(id) = message_id(&native) else {
-            return Disposition::refused("message ID is empty");
+            return RecordOutcome::unreadable("message ID is empty");
         };
         let msg = v.get("message").unwrap_or(&Json::Null);
         let content = msg.get("content").unwrap_or(&Json::Null);
@@ -509,7 +509,7 @@ impl ClaudeCode {
             && parent != session
         {
             link_at(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Fork,
                 parent,
@@ -538,7 +538,7 @@ impl ClaudeCode {
                     .map(str::to_owned)
             });
             link_at(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Spawn,
                 session.clone(),
@@ -555,22 +555,22 @@ impl ClaudeCode {
                 .unwrap_or(&native)
                 .to_owned();
             let same = |r: &Response| r.key == key && r.message.session == session;
-            if !carry.open.as_ref().is_some_and(same) {
-                let reopened = carry
+            if !parser_state.open.as_ref().is_some_and(same) {
+                let reopened = parser_state
                     .recent
                     .iter()
                     .position(same)
-                    .and_then(|i| carry.recent.remove(i));
-                close(carry, out);
-                carry.open = reopened;
+                    .and_then(|i| parser_state.recent.remove(i));
+                close(parser_state, out);
+                parser_state.open = reopened;
             }
-            match &mut carry.open {
+            match &mut parser_state.open {
                 Some(open) => {
                     let target = Some(open.message.id.clone());
                     if native != open.message.id.native().as_str() {
-                        carry.alias(&native, target);
+                        parser_state.alias(&native, target);
                     }
-                    let Some(open) = &mut carry.open else {
+                    let Some(open) = &mut parser_state.open else {
                         unreachable!("the open response was just matched")
                     };
                     open.end = open.end.max(end);
@@ -586,14 +586,14 @@ impl ClaudeCode {
                     m.production.merge(production);
                 }
                 None => {
-                    carry.open = Some(Response {
+                    parser_state.open = Some(Response {
                         key,
                         offset: record.offset,
                         end,
                         message: Message {
                             id: id.clone(),
                             session,
-                            parent: carry.parent(v),
+                            parent: parser_state.parent(v),
                             role,
                             at: v.get("timestamp").and_then(time::rfc3339),
                             model,
@@ -606,18 +606,18 @@ impl ClaudeCode {
                             production,
                         },
                     });
-                    carry.last = Some(id);
+                    parser_state.last = Some(id);
                 }
             }
         } else {
             if harness {
                 // Runtime notices keep their own record identity.
-                close(carry, out);
+                close(parser_state, out);
             }
             let message = Message {
                 id: id.clone(),
                 session,
-                parent: carry.parent(v),
+                parent: parser_state.parent(v),
                 role,
                 at: v.get("timestamp").and_then(time::rfc3339),
                 model,
@@ -638,9 +638,9 @@ impl ClaudeCode {
                 end,
                 message,
             });
-            carry.last = Some(id);
+            parser_state.last = Some(id);
         }
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 
     /// A Workflow journal record: an agent the run started, what it
@@ -648,26 +648,26 @@ impl ClaudeCode {
     /// session that ran the workflow and named by its label.
     fn journal(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         ty: &str,
         out: &mut Output,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         let kind = match ty {
             "started" => "workflow_agent_started",
             "result" => "workflow_agent_result",
             "launched" => "workflow_launched",
-            _ => return Disposition::unknown("unrecognized journal record"),
+            _ => return RecordOutcome::skipped("unrecognized journal record"),
         };
-        let Some(parent) = self.own_session(carry) else {
-            return Disposition::refused("session ID is empty");
+        let Some(parent) = self.own_session(parser_state) else {
+            return RecordOutcome::unreadable("session ID is empty");
         };
         if let Some(agent) = str_field(v, "agentId").map(|a| format!("agent-{a}"))
             && let Some(child) = session_id(&agent)
         {
             link(
-                carry,
+                parser_state,
                 out,
                 LinkKind::Spawn,
                 parent,
@@ -675,14 +675,14 @@ impl ClaudeCode {
                 "workflow journal",
             );
             if let Some(label) = str_field(v, "label") {
-                carry
+                parser_state
                     .sessions
                     .entry(agent)
                     .or_insert_with(|| Session::new(child, SessionKind::Subagent))
                     .offer_title(label, TitleSource::AgentName);
             }
         }
-        self.event(carry, record, v, kind, out)
+        self.event(parser_state, record, v, kind, out)
     }
 
     /// Who wrote a user record. A subagent transcript's root record (no
@@ -704,34 +704,34 @@ impl ClaudeCode {
         }
     }
 
-    fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {
+    fn title(&self, parser_state: &mut ParserState, v: &Json, field: &str, source: TitleSource) -> RecordOutcome {
         let Some(text) = str_field(v, field) else {
-            return Disposition::unknown(format!("no {field}"));
+            return RecordOutcome::skipped(format!("no {field}"));
         };
-        let Some(id) = self.own_session(carry) else {
-            return Disposition::refused("session ID is empty");
+        let Some(id) = self.own_session(parser_state) else {
+            return RecordOutcome::unreadable("session ID is empty");
         };
-        if let Some(s) = carry.sessions.get_mut(id.native().as_str()) {
+        if let Some(s) = parser_state.sessions.get_mut(id.native().as_str()) {
             s.offer_title(text, source);
         }
-        Disposition::Materialized
+        RecordOutcome::Used
     }
 }
 
 fn link(
-    carry: &mut Carry,
+    parser_state: &mut ParserState,
     out: &mut Output,
     kind: LinkKind,
     parent: SessionId,
     child: SessionId,
     evidence: &str,
 ) {
-    link_at(carry, out, kind, parent, child, None, None, evidence);
+    link_at(parser_state, out, kind, parent, child, None, None, evidence);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn link_at(
-    carry: &mut Carry,
+    parser_state: &mut ParserState,
     out: &mut Output,
     kind: LinkKind,
     parent: SessionId,
@@ -742,7 +742,7 @@ fn link_at(
 ) {
     // A later record may add the branch point; the writer merges them.
     let key = format!("{kind:?} {parent} {child} {}", at.is_some());
-    if carry.links.insert(key) {
+    if parser_state.links.insert(key) {
         out.links.push(Link {
             kind,
             parent,
@@ -755,16 +755,16 @@ fn link_at(
 }
 
 /// Moves the open response to the output and keeps it reopenable.
-fn close(carry: &mut Carry, out: &mut Output) {
-    if let Some(open) = carry.open.take() {
+fn close(parser_state: &mut ParserState, out: &mut Output) {
+    if let Some(open) = parser_state.open.take() {
         out.messages.push(MessageRow {
             offset: open.offset,
             end: open.end,
             message: open.message.clone(),
         });
-        carry.recent.push_back(open);
-        while carry.recent.len() > REOPEN_WINDOW {
-            carry.recent.pop_front();
+        parser_state.recent.push_back(open);
+        while parser_state.recent.len() > REOPEN_WINDOW {
+            parser_state.recent.pop_front();
         }
     }
 }
@@ -964,7 +964,7 @@ fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, O
 }
 
 impl Parser for ClaudeCode {
-    type Carry = Carry;
+    type ParserState = ParserState;
 
     fn kind(&self, v: &Json) -> String {
         let ty = str_field(v, "type").unwrap_or("?");
@@ -981,20 +981,20 @@ impl Parser for ClaudeCode {
 
     fn parse_record(
         &self,
-        carry: &mut Carry,
+        parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         if !v.is_object() {
-            return Disposition::refused("record is not a JSON object");
+            return RecordOutcome::unreadable("record is not a JSON object");
         }
         let Some(ty) = str_field(v, "type") else {
-            return Disposition::unknown("no type field");
+            return RecordOutcome::skipped("no type field");
         };
         if let File::Journal { .. } = self.file {
-            return self.journal(carry, record, v, ty, out);
+            return self.journal(parser_state, record, v, ty, out);
         }
         let hook = (ty == "system" && str_field(v, "subtype") == Some("stop_hook_summary"))
             .then(|| hook_text(v));
@@ -1007,32 +1007,32 @@ impl Parser for ClaudeCode {
             // through `logicalParentUuid`.
             let target = str_field(v, "logicalParentUuid")
                 .or_else(|| str_field(v, "parentUuid"))
-                .and_then(|p| carry.resolve(p));
-            carry.alias(uuid, target);
+                .and_then(|p| parser_state.resolve(p));
+            parser_state.alias(uuid, target);
         }
-        self.names(carry, record, v, out);
+        self.names(parser_state, record, v, out);
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
-                self.event(carry, record, v, "compaction_summary", out)
+                self.event(parser_state, record, v, "compaction_summary", out)
             }
-            "user" => self.message(carry, record, v, Role::User, out, records),
-            "assistant" => self.message(carry, record, v, Role::Assistant, out, records),
+            "user" => self.message(parser_state, record, v, Role::User, out, records),
+            "assistant" => self.message(parser_state, record, v, Role::Assistant, out, records),
             "system" => match str_field(v, "subtype") {
                 Some("stop_hook_summary") => self.hook_summary(
-                    carry,
+                    parser_state,
                     record,
                     v,
                     hook.expect("recognized stop-hook summary"),
                     out,
                 ),
-                Some("compact_boundary") => self.event(carry, record, v, "compaction", out),
+                Some("compact_boundary") => self.event(parser_state, record, v, "compaction", out),
                 Some("microcompact_boundary") => {
-                    self.event(carry, record, v, "microcompaction", out)
+                    self.event(parser_state, record, v, "microcompaction", out)
                 }
-                Some(sub) => self.event(carry, record, v, &sub.replace('-', "_"), out),
-                None => Disposition::unknown("system record without a subtype"),
+                Some(sub) => self.event(parser_state, record, v, &sub.replace('-', "_"), out),
+                None => RecordOutcome::skipped("system record without a subtype"),
             },
-            "attachment" => self.event(carry, record, v, "attachment", out),
+            "attachment" => self.event(parser_state, record, v, "attachment", out),
             "pr-link"
             | "permission-mode"
             | "last-prompt"
@@ -1041,25 +1041,25 @@ impl Parser for ClaudeCode {
             | "worktree-state"
             | "artifact-comment-monitor"
             | "artifact-autoreact-ledger" => {
-                self.event(carry, record, v, &ty.replace('-', "_"), out)
+                self.event(parser_state, record, v, &ty.replace('-', "_"), out)
             }
             "file-history-snapshot" | "file-history-delta" => {
-                self.event(carry, record, v, "file_history", out)
+                self.event(parser_state, record, v, "file_history", out)
             }
-            "cost-state" => self.event(carry, record, v, "tool_cost", out),
+            "cost-state" => self.event(parser_state, record, v, "tool_cost", out),
             // The request the harness sent the model, rebuilt exactly: the
             // system prompt and tools (`shape`) and each message as sent
             // (`blob`) are keyed by hash, and the request lists them.
-            "api-request" => self.event(carry, record, v, "api_request", out),
-            "api-request-shape" => self.event(carry, record, v, "api_request_shape", out),
-            "api-request-blob" => self.event(carry, record, v, "api_request_blob", out),
-            "started" => self.event(carry, record, v, "subagent_started", out),
-            "result" => self.event(carry, record, v, "subagent_result", out),
+            "api-request" => self.event(parser_state, record, v, "api_request", out),
+            "api-request-shape" => self.event(parser_state, record, v, "api_request_shape", out),
+            "api-request-blob" => self.event(parser_state, record, v, "api_request_blob", out),
+            "started" => self.event(parser_state, record, v, "subagent_started", out),
+            "result" => self.event(parser_state, record, v, "subagent_result", out),
             "queue-operation" => {
                 if let Some((task_id, outcome, call_id, output_file)) = background_update(v)
                     && let Some(session) = match v.get("sessionId") {
-                        Some(_) => self.session(carry, v, out).map(|s| s.id.clone()),
-                        None => self.own_session(carry),
+                        Some(_) => self.session(parser_state, v, out).map(|s| s.id.clone()),
+                        None => self.own_session(parser_state),
                     }
                 {
                     out.background.push(BackgroundUpdate {
@@ -1070,56 +1070,56 @@ impl Parser for ClaudeCode {
                         output_file,
                     });
                 }
-                self.event(carry, record, v, "queue", out)
+                self.event(parser_state, record, v, "queue", out)
             }
             "relocated" => {
                 if let Some(dir) = str_field(v, "relocatedCwd")
-                    && let Some(id) = self.own_session(carry)
-                    && let Some(s) = carry.sessions.get_mut(id.native().as_str())
+                    && let Some(id) = self.own_session(parser_state)
+                    && let Some(s) = parser_state.sessions.get_mut(id.native().as_str())
                 {
                     s.offer_cwd(dir);
                 }
-                self.event(carry, record, v, "relocated", out)
+                self.event(parser_state, record, v, "relocated", out)
             }
             "agent-name" => {
-                let d = self.title(carry, v, "agentName", TitleSource::AgentName);
-                if d != Disposition::Materialized {
+                let d = self.title(parser_state, v, "agentName", TitleSource::AgentName);
+                if d != RecordOutcome::Used {
                     return d;
                 }
-                self.event(carry, record, v, "agent_name", out)
+                self.event(parser_state, record, v, "agent_name", out)
             }
-            "custom-title" => self.title(carry, v, "customTitle", TitleSource::Custom),
-            "ai-title" => self.title(carry, v, "aiTitle", TitleSource::Generated),
-            "summary" => self.title(carry, v, "summary", TitleSource::Summary),
+            "custom-title" => self.title(parser_state, v, "customTitle", TitleSource::Custom),
+            "ai-title" => self.title(parser_state, v, "aiTitle", TitleSource::Generated),
+            "summary" => self.title(parser_state, v, "summary", TitleSource::Summary),
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
-                    self.own_session(carry),
+                    self.own_session(parser_state),
                     str_field(v, "continuedInSessionId").and_then(session_id),
                 ) else {
-                    return Disposition::unknown("continued-in without a target");
+                    return RecordOutcome::skipped("continued-in without a target");
                 };
                 link(
-                    carry,
+                    parser_state,
                     out,
                     LinkKind::Continuation,
                     parent,
                     child,
                     "continuedInSessionId",
                 );
-                Disposition::Materialized
+                RecordOutcome::Used
             }
             "fork-context-ref" => {
-                let child = self.session(carry, v, out).map(|s| s.id.clone());
+                let child = self.session(parser_state, v, out).map(|s| s.id.clone());
                 let (Some(parent), Some(child)) =
                     (str_field(v, "parentSessionId").and_then(session_id), child)
                 else {
-                    return Disposition::unknown("fork-context-ref without a parent");
+                    return RecordOutcome::skipped("fork-context-ref without a parent");
                 };
                 // Evidence for the subagent link, with its branch point:
                 // never a second parent.
                 let at = str_field(v, "parentLastUuid").and_then(message_id);
                 link_at(
-                    carry,
+                    parser_state,
                     out,
                     LinkKind::Spawn,
                     parent,
@@ -1128,21 +1128,21 @@ impl Parser for ClaudeCode {
                     None,
                     "fork-context-ref",
                 );
-                self.event(carry, record, v, "fork_context", out)
+                self.event(parser_state, record, v, "fork_context", out)
             }
             "progress" => {
                 let data = v.get("data").unwrap_or(&Json::Null);
                 match str_field(data, "type") {
                     Some("agent_progress") => {
-                        let parent = self.session(carry, v, out).map(|s| s.id.clone());
+                        let parent = self.session(parser_state, v, out).map(|s| s.id.clone());
                         let child = str_field(data, "agentId")
                             .and_then(|a| session_id(&format!("agent-{a}")));
                         let (Some(parent), Some(child)) = (parent, child) else {
-                            return Disposition::unknown("agent progress without an agent ID");
+                            return RecordOutcome::skipped("agent progress without an agent ID");
                         };
                         let call = str_field(v, "parentToolUseID").map(str::to_owned);
                         link_at(
-                            carry,
+                            parser_state,
                             out,
                             LinkKind::Spawn,
                             parent,
@@ -1151,25 +1151,25 @@ impl Parser for ClaudeCode {
                             call,
                             "agent_progress",
                         );
-                        Disposition::Materialized
+                        RecordOutcome::Used
                     }
-                    Some("hook_progress") => self.event(carry, record, v, "hook_run", out),
+                    Some("hook_progress") => self.event(parser_state, record, v, "hook_run", out),
                     Some(_) => {
-                        Disposition::unknown("progress tick; the tool's own result supersedes it")
+                        RecordOutcome::skipped("progress tick; the tool's own result supersedes it")
                     }
-                    None => Disposition::unknown("progress without data"),
+                    None => RecordOutcome::skipped("progress without data"),
                 }
             }
-            "mode" => Disposition::unknown("always \"normal\" in observed data"),
-            "atis-latch" => Disposition::unknown("always empty in observed data"),
-            "agent-color" => Disposition::unknown("terminal colour only; names no agent"),
-            "init" => Disposition::unknown("empty start marker"),
-            _ => Disposition::unknown("unrecognized record type"),
+            "mode" => RecordOutcome::skipped("always \"normal\" in observed data"),
+            "atis-latch" => RecordOutcome::skipped("always empty in observed data"),
+            "agent-color" => RecordOutcome::skipped("terminal colour only; names no agent"),
+            "init" => RecordOutcome::skipped("empty start marker"),
+            _ => RecordOutcome::skipped("unrecognized record type"),
         }
     }
 
-    fn flush(&self, carry: &mut Carry, out: &mut Output) {
-        if let Some(open) = &carry.open {
+    fn flush(&self, parser_state: &mut ParserState, out: &mut Output) {
+        if let Some(open) = &parser_state.open {
             out.messages.push(MessageRow {
                 offset: open.offset,
                 end: open.end,
@@ -1187,7 +1187,7 @@ impl Parser for ClaudeCode {
         }
         kept.sort_by_key(|row| row.offset);
         out.messages = kept;
-        out.sessions = carry.sessions.values().cloned().collect();
+        out.sessions = parser_state.sessions.values().cloned().collect();
     }
 }
 

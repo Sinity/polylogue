@@ -1,50 +1,50 @@
-//! The parser seam. A parser maps one record to rows, carrying a small
-//! state between records; [`run`] does everything around it: framing,
-//! JSON decoding, accounting and the count check.
+//! The parser interface. A parser maps one record to rows, keeping a small
+//! state between records; [`run`] does everything around it: splitting into records,
+//! JSON decoding, record counts and their check.
 
 use crate::Records;
-use crate::frame::{self, Record};
+use crate::lines::{self, Record};
 use polylogue_model::Json;
-use polylogue_model::{Accounting, CountMismatch, Disposition};
-pub use polylogue_model::{BackgroundUpdate, DocumentRow, InlineBlob, MessageRow, Output};
+use polylogue_model::{RecordCounts, CountMismatch, RecordOutcome};
+pub use polylogue_model::{BackgroundUpdate, DocumentRow, ExtractedBlob, MessageRow, Output};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Parser {
-    /// The carry: state a parser keeps between records and between
+    /// The parser state: state a parser keeps between records and between
     /// appends of one input (open tool calls, the current message), so an
     /// append is parsed without reading the file again. Small by design (at
     /// most a few hundred KB on the real archive).
-    type Carry: Default + Clone + Serialize + DeserializeOwned;
+    type ParserState: Default + Clone + Serialize + DeserializeOwned;
 
-    /// The kind name accounting uses for a record (`user`, `progress`).
+    /// The kind name the record counts use for a record (`user`, `progress`).
     fn kind(&self, value: &Json) -> String;
 
     fn parse_record(
         &self,
-        carry: &mut Self::Carry,
+        parser_state: &mut Self::ParserState,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
         records: &mut Records,
-    ) -> Disposition;
+    ) -> RecordOutcome;
 
     /// Called when no complete record remains. Sends anything still open
     /// (a message whose continuation may arrive later) as an upsert, and
-    /// keeps it open in the carry.
-    fn flush(&self, carry: &mut Self::Carry, out: &mut Output);
+    /// keeps it open in the parser state.
+    fn flush(&self, parser_state: &mut Self::ParserState, out: &mut Output);
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Step {
     pub output: Output,
-    pub accounting: Accounting,
+    pub counts: RecordCounts,
     /// Bytes of the input the step covered; the next step starts there.
     pub consumed: u64,
     /// Start of this step within the supplied range. Normal parses start at 0.
     pub start: u64,
-    /// Each record restates whole conversations, so a later record's
+    /// Each record repeats whole conversations, so a later record's
     /// version of a message replaces an earlier one in the same chain.
-    pub restates: bool,
+    pub repeats_whole_conversations: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,48 +58,48 @@ pub enum ParseError {
     #[error(transparent)]
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
-    Carry(serde_json::Error),
+    ParserState(serde_json::Error),
 }
 
 /// Parses the complete records in `bytes`, which start at `base` in the
-/// input, continuing from `carry`.
+/// input, continuing from `parser_state`.
 pub fn run<P: Parser>(
     parser: &P,
-    carry: &mut P::Carry,
+    parser_state: &mut P::ParserState,
     bytes: &[u8],
     base: u64,
 ) -> Result<Step, ParseError> {
-    let (records, consumed) = frame::lines(bytes, base);
+    let (records, consumed) = lines::lines(bytes, base);
     let mut output = Output::default();
     let mut sink = Records::lines(records.len() as u64);
     for record in records {
         match serde_json::from_slice::<Json>(record.bytes) {
             Ok(value) => {
                 let kind = parser.kind(&value);
-                let disposition =
-                    parser.parse_record(carry, record, &value, &mut output, &mut sink);
-                sink.record(&kind, &disposition);
+                let outcome =
+                    parser.parse_record(parser_state, record, &value, &mut output, &mut sink);
+                sink.record(&kind, &outcome);
             }
-            Err(e) => sink.record("?", &Disposition::refused(format!("malformed JSON: {e}"))),
+            Err(e) => sink.record("?", &RecordOutcome::unreadable(format!("malformed JSON: {e}"))),
         }
     }
-    parser.flush(carry, &mut output);
-    let accounting = sink.finish()?;
+    parser.flush(parser_state, &mut output);
+    let counts = sink.finish()?;
     Ok(Step {
         output,
-        accounting,
+        counts,
         consumed: consumed as u64,
         start: 0,
-        restates: false,
+        repeats_whole_conversations: false,
     })
 }
 
-/// A parser with its carry stored as JSON, so the engine can drive any
-/// origin without knowing its carry type.
+/// A parser with its parser state stored as JSON, so the engine can drive any
+/// origin without knowing its parser state type.
 pub trait StepParser: Send {
     fn step(
         &self,
-        carry: Option<&Json>,
+        parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
     ) -> Result<(Step, Json), ParseError>;
@@ -108,30 +108,30 @@ pub trait StepParser: Send {
 impl<P: Parser + Send> StepParser for P {
     fn step(
         &self,
-        carry: Option<&Json>,
+        parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
     ) -> Result<(Step, Json), ParseError> {
-        let mut state = match carry {
-            Some(c) => P::Carry::deserialize(c).map_err(ParseError::Carry)?,
-            None => P::Carry::default(),
+        let mut state = match parser_state {
+            Some(c) => P::ParserState::deserialize(c).map_err(ParseError::ParserState)?,
+            None => P::ParserState::default(),
         };
         let step = run(self, &mut state, bytes, base)?;
-        let carry = serde_json::to_value(&state).map_err(ParseError::Carry)?;
-        Ok((step, carry))
+        let parser_state = serde_json::to_value(&state).map_err(ParseError::ParserState)?;
+        Ok((step, parser_state))
     }
 }
 
 /// A parser for an input read whole: an export, or a
 /// capture file the extension rewrites in place. Records are the
 /// document's own items (one conversation, one span); the parser frames
-/// them and submits each disposition to the shared accounting sink.
+/// them and records each outcome in the shared record counts.
 pub trait DocumentParser {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records);
 }
 
 /// Parses a complete document. Each step covers the whole input, so there
-/// is no carry: a changed document is parsed again from its first byte.
+/// is no parser state: a changed document is parsed again from its first byte.
 pub fn run_document<D: DocumentParser + ?Sized>(
     parser: &D,
     bytes: &[u8],
@@ -139,7 +139,7 @@ pub fn run_document<D: DocumentParser + ?Sized>(
     let mut output = Output::default();
     let mut sink = Records::default();
     parser.document(bytes, &mut output, &mut sink);
-    // Document parsers emit messages in logical order, not at byte offsets.
+    // Document parsers emit messages in reading order, not at byte offsets.
     for row in &mut output.messages {
         row.offset = 0;
         row.end = bytes.len() as u64;
@@ -151,18 +151,18 @@ pub fn run_document<D: DocumentParser + ?Sized>(
     for event in &mut output.events {
         event.range.get_or_insert((0, bytes.len() as u64));
     }
-    let accounting = sink.finish()?;
+    let counts = sink.finish()?;
     Ok(Step {
         output,
-        accounting,
+        counts,
         consumed: bytes.len() as u64,
         start: 0,
-        restates: false,
+        repeats_whole_conversations: false,
     })
 }
 
 /// The parser an origin opens for one input. Which variant it is decides
-/// how the input's bytes divide into records, so the framing and the
+/// how the input's bytes divide into records, so the split and the
 /// parser cannot disagree.
 pub enum Parse {
     /// One record per line; appends are parsed from where the last step
@@ -188,24 +188,24 @@ impl Parse {
     }
 
     /// One step over `bytes`, which start at `base` in the input. A
-    /// document is given whole, from its first byte, and has no carry.
+    /// document is given whole, from its first byte, and has no parser state.
     pub fn step(
         &self,
-        carry: Option<&Json>,
+        parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
     ) -> Result<(Step, Json), ParseError> {
         match self {
             Parse::Export(_) => Err(ParseError::Export),
-            Parse::Lines(p) => p.step(carry, bytes, base),
+            Parse::Lines(p) => p.step(parser_state, bytes, base),
             Parse::CaptureLog(_) => {
-                let (mut steps, carry) = self.steps(carry, bytes, base)?;
+                let (mut steps, parser_state) = self.steps(parser_state, bytes, base)?;
                 if steps.len() != 1 {
                     return Err(ParseError::CaptureLog(
                         "use steps for a range holding several captures".into(),
                     ));
                 }
-                Ok((steps.remove(0), carry))
+                Ok((steps.remove(0), parser_state))
             }
             Parse::Document(d) => {
                 if base != 0 {
@@ -220,15 +220,15 @@ impl Parse {
     /// writer step, so reading them together keeps every intermediate version.
     pub fn steps(
         &self,
-        carry: Option<&Json>,
+        parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
             Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
             _ => self
-                .step(carry, bytes, base)
-                .map(|(step, carry)| (vec![step], carry)),
+                .step(parser_state, bytes, base)
+                .map(|(step, parser_state)| (vec![step], parser_state)),
         }
     }
 }
@@ -303,16 +303,16 @@ fn mark_whole_capture(step: &mut Step, start: u64, end: u64) {
     for event in &mut step.output.events {
         event.range = Some((start, end));
     }
-    step.restates = true;
+    step.repeats_whole_conversations = true;
 }
 
 fn empty_steps() -> Result<Vec<Step>, ParseError> {
     Ok(vec![Step {
         output: Output::default(),
-        accounting: Accounting::default(),
+        counts: RecordCounts::default(),
         consumed: 0,
         start: 0,
-        restates: false,
+        repeats_whole_conversations: false,
     }])
 }
 

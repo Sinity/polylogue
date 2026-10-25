@@ -1,14 +1,14 @@
 {
-  "accounting": {
-    "framed": 8,
-    "materialized": {
+  "counts": {
+    "records": 8,
+    "used": {
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "response_item/message": 2,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {
+    "unreadable": {},
+    "skipped": {
       "realtime_item: unrecognized record type": 2,
       "unknown_context: unrecognized record type": 1
     },

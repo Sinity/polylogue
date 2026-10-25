@@ -30,7 +30,7 @@ pub const API_SCHEMA: &str = "polylogue-browser-capture/v1";
 pub const HOST_NAME: &str = "com.polylogue.browser_capture";
 
 /// Where the extension's files live and how to reach the daemon.
-pub struct Ctx {
+pub struct BrowserHost {
     /// `<state>/browser-capture`: one file per captured conversation.
     pub spool: PathBuf,
     /// `<state>/browser-capture-health`: the latest capture-health report
@@ -42,7 +42,7 @@ pub struct Ctx {
     pub socket: PathBuf,
 }
 
-impl Ctx {
+impl BrowserHost {
     /// The extension's files in Polylogue's state directory as the
     /// daemon's loop sees it (`config`), for the archive at `archive`.
     pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {

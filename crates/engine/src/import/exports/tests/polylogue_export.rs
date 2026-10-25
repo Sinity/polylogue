@@ -64,7 +64,7 @@ fn exported_sessions_keep_ids_fields_links_and_exact_spans_after_source_deletion
         }
         let (mut engine, _lock) = engine(&w, 8);
         if rebuilt {
-            let pass = engine.converge().unwrap();
+            let pass = engine.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         } else {
             let report = engine.import(std::slice::from_ref(&path)).unwrap();
@@ -105,7 +105,7 @@ fn exported_sessions_keep_ids_fields_links_and_exact_spans_after_source_deletion
             assert_eq!(view, expected);
         }
         before = Some(view);
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 2);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
     }
 }
 
@@ -129,6 +129,6 @@ fn invalid_export_session_or_suffix_does_not_commit_the_valid_prefix() {
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM session"), 0);
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 1);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
     }
 }

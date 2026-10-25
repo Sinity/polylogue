@@ -5,12 +5,12 @@
 use crate::writer::{Batch, InputKey, Observation, ParseStep};
 use crate::{Archive, ReadPool, Writer};
 use polylogue_model::{
-    Accounting, Block, Disposition, ErrorReason, Json, Message, MessageId, MessageRow, Output,
+    RecordCounts, Block, RecordOutcome, ErrorReason, Json, Message, MessageId, MessageRow, Output,
     PromptKind, Role, Session, SessionId, SessionKind, Timestamp, ToolAction, ToolOutcome, Usage,
 };
 
 /// An archive in a temporary directory with its writer running.
-pub struct WriterWorld {
+pub struct WriterArchive {
     _dir: tempfile::TempDir,
     pub archive: Archive,
     _lock: crate::ArchiveLock,
@@ -22,7 +22,7 @@ pub struct WriterWorld {
     pub lookups: Vec<polylogue_model::RepoLookup>,
 }
 
-impl Default for WriterWorld {
+impl Default for WriterArchive {
     fn default() -> Self {
         Self::new()
     }
@@ -125,7 +125,7 @@ pub fn prose(session: &str, n: u32, at: i64, text: &str) -> Vec<Message> {
     )]
 }
 
-impl WriterWorld {
+impl WriterArchive {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let (archive, lock) =
@@ -147,13 +147,13 @@ impl WriterWorld {
         self.write_session(Session::new(sid(session), SessionKind::Main), messages);
     }
 
-    /// As [`WriterWorld::write`], with the session's own facts.
+    /// As [`WriterArchive::write`], with the session's own facts.
     pub fn write_session(&mut self, s: Session, messages: Vec<Message>) {
         let input = format!("input-{}", s.id.native().as_str());
         self.write_from(&input, s, messages);
     }
 
-    /// As [`WriterWorld::write_session`], from the named input.
+    /// As [`WriterArchive::write_session`], from the named input.
     pub fn write_from(&mut self, input: &str, s: Session, messages: Vec<Message>) {
         let path = format!("/p/{}", s.id.native().as_str());
         let start = self.offset;
@@ -197,18 +197,18 @@ impl WriterWorld {
     ) {
         let start = self.offset;
         self.offset += records + 1;
-        let mut accounting = Accounting {
-            framed: records,
-            ..Accounting::default()
+        let mut counts = RecordCounts {
+            records: records,
+            ..RecordCounts::default()
         };
         for _ in 0..records {
-            accounting.add("record", &Disposition::Materialized);
+            counts.add("record", &RecordOutcome::Used);
         }
         let batch = Batch {
             input: InputKey {
                 id: input.to_owned(),
                 format: format.into(),
-                route_rank: 0,
+                arrival_rank: 0,
             },
             change: if start == 0 {
                 crate::Change::First
@@ -224,16 +224,16 @@ impl WriterWorld {
                 import: None,
             }),
             continues: false,
-            piece: None,
+            new_blob: None,
             blobs: vec![],
             length: self.offset,
             release: Default::default(),
             parse: vec![ParseStep {
                 order_from: None,
                 reset: start == 0,
-                restates: false,
+                repeats_whole_conversations: false,
                 output,
-                accounting,
+                counts,
                 start,
                 parsed_upto: self.offset,
                 at_end: true,

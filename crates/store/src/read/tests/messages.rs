@@ -121,8 +121,8 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
     let pool = fixture.reads().unwrap();
     let id = SessionId::parse("claude-code:child").unwrap();
     let reader = pool.reader().unwrap();
-    let physical = reader.message_fingerprint(&id, false).unwrap();
-    let logical = reader.message_fingerprint(&id, true).unwrap();
+    let own = reader.message_fingerprint(&id, false).unwrap();
+    let with_parents = reader.message_fingerprint(&id, true).unwrap();
     let mut messages = Vec::new();
     reader
         .visit_messages(&id, true, |m| {
@@ -145,13 +145,13 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
         )
         .unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.message_fingerprint(&id, false).unwrap(), physical);
-    assert_eq!(reader.message_fingerprint(&id, true).unwrap(), logical);
+    assert_eq!(reader.message_fingerprint(&id, false).unwrap(), own);
+    assert_eq!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
     drop(reader);
     crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute("UPDATE link SET branch_point='claude-code:p2'", [])
         .unwrap();
     let reader = pool.reader().unwrap();
-    assert_ne!(reader.message_fingerprint(&id, true).unwrap(), logical);
+    assert_ne!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
 }

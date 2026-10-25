@@ -20,7 +20,7 @@ mod watch;
 
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
-pub use polylogue_store::excise::{ExciseRequest, Excised, Scope as ExciseScope};
+pub use polylogue_store::excise::{ExciseRequest, Excised, ExciseTarget};
 use polylogue_store::tool_databases::Captures;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
@@ -60,7 +60,7 @@ pub struct Config {
     pub tool_dirs: BTreeMap<String, PathBuf>,
     /// Parse workers; defaults to the number of cores.
     pub workers: usize,
-    /// Combined SQLite page-cache target for client and convergence readers.
+    /// Combined SQLite page-cache target for client and loop readers.
     /// Mapped reader pages are disabled. This is not a total RSS limit.
     pub reader_memory_bytes: u64,
     /// Bytes in the parse pool at once. The pool takes new work
@@ -175,7 +175,7 @@ impl Config {
 pub struct Pass {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
-    /// Input visits, summed across turns by synchronous convergence.
+    /// Input visits, summed across turns by run_pass.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
     /// Bytes read from input files (new bytes plus any parsed again).
@@ -377,7 +377,7 @@ impl Engine {
                     parsed_upto: k.parsed_upto,
                     parsed: k.parsed,
                     waiting: k.waiting,
-                    carry: None,
+                    parser_state: None,
                     tail: None,
                     chain: k.chain,
                     failed: None,

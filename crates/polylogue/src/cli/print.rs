@@ -43,8 +43,8 @@ pub fn query(data: &Value) -> String {
 
 /// A session in a view, or one budgeted page with the cursor of the next.
 pub fn read(data: &Value) -> String {
-    let notice = if data["lineage"]["complete"] == false && !data["content"].is_string() {
-        "Incomplete session ancestry; --json describes the missing links.\n"
+    let notice = if data["parents"]["complete"] == false && !data["content"].is_string() {
+        "Parents incomplete; --json describes the missing links.\n"
     } else {
         ""
     };
@@ -122,8 +122,8 @@ fn plan(data: &Value) -> String {
         }
     };
     let mut out = String::new();
-    if !data["native"].is_null() {
-        let _ = writeln!(out, "native resume:      {}", line(&data["native"]));
+    if !data["harness_command"].is_null() {
+        let _ = writeln!(out, "harness command:    {}", line(&data["harness_command"]));
     }
     let _ = writeln!(
         out,

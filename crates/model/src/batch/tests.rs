@@ -2,35 +2,35 @@ use super::*;
 
 #[test]
 fn counts_must_add_up() {
-    let mut a = Accounting {
-        framed: 3,
-        ..Accounting::default()
+    let mut a = RecordCounts {
+        records: 3,
+        ..RecordCounts::default()
     };
-    a.add("user", &Disposition::Materialized);
-    a.add("progress", &Disposition::unknown("tick"));
+    a.add("user", &RecordOutcome::Used);
+    a.add("progress", &RecordOutcome::skipped("tick"));
     assert_eq!(
         a.check(),
         Err(CountMismatch {
-            framed: 3,
-            accounted: 2
+            records: 3,
+            counted: 2
         })
     );
-    a.add("?", &Disposition::refused("malformed JSON"));
+    a.add("?", &RecordOutcome::unreadable("malformed JSON"));
     assert_eq!(a.check(), Ok(()));
 }
 
 #[test]
 fn merge_adds_every_map() {
-    let mut a = Accounting {
-        framed: 1,
-        ..Accounting::default()
+    let mut a = RecordCounts {
+        records: 1,
+        ..RecordCounts::default()
     };
-    a.add("user", &Disposition::Materialized);
+    a.add("user", &RecordOutcome::Used);
     let mut b = a.clone();
     b.unread("user", "x");
     a.merge(&b);
-    assert_eq!(a.framed, 2);
-    assert_eq!(a.materialized["user"], 2);
+    assert_eq!(a.records, 2);
+    assert_eq!(a.used["user"], 2);
     assert_eq!(a.unread_fields["user.x"], 1);
 }
 

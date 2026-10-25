@@ -71,7 +71,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             let stored = d
                 .archive
                 .prepare_decoded(&bytes)
-                .and_then(|(piece, file)| writes.store_blob(piece, file));
+                .and_then(|(new_blob, file)| writes.store_blob(new_blob, file));
             match stored {
                 Ok(hash) => ok(serde_json::json!({
                     "ok": true,

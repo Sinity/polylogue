@@ -227,14 +227,14 @@ pub fn session(
         "<p><a href=\"/cost?q={}\">Session cost and usage</a></p>",
         encode_id(&scope)
     );
-    body.push_str(&lineage(&data["lineage"], links));
+    body.push_str(&parents(&data["parents"], links));
     let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
     let mut body = body.into_bytes();
     html::fragment(&items, view, &mut body).expect("writing UTF-8 HTML to a Vec cannot fail");
     body.extend_from_slice(b"</article>");
     let body = String::from_utf8(body).expect("HTML is rendered from UTF-8 strings");
     let cli = format!(
-        "polylogue read {} --logical --view {view_name}",
+        "polylogue read {} --with-parents --view {view_name}",
         shell_quote(&id)
     );
     layout(&title, "", &cli, &body)
@@ -266,12 +266,12 @@ pub fn cost(scope: &str, data: &Value) -> String {
     )
 }
 
-fn lineage(status: &Value, links: &Value) -> String {
-    let mut body = String::from("<section aria-label=\"Session lineage\"><h2>Session lineage</h2>");
+fn parents(status: &Value, links: &Value) -> String {
+    let mut body = String::from("<section aria-label=\"Parent sessions\"><h2>Parent sessions</h2>");
     match status["complete"].as_bool() {
-        Some(true) => body.push_str("<p>Logical ancestry complete.</p>"),
-        Some(false) => body.push_str("<p role=\"status\">Incomplete logical ancestry. Only available proven history is shown.</p>"),
-        None => body.push_str("<p>Logical ancestry status unknown.</p>"),
+        Some(true) => body.push_str("<p>Every parent session is here.</p>"),
+        Some(false) => body.push_str("<p role=\"status\">Some parent sessions are missing; only the messages stored are shown.</p>"),
+        None => body.push_str("<p>Whether every parent session is here is unknown.</p>"),
     }
     if let Some(issues) = status["issues"].as_array().filter(|v| !v.is_empty()) {
         body.push_str("<ul>");
@@ -287,7 +287,7 @@ fn lineage(status: &Value, links: &Value) -> String {
             esc(error)
         );
     } else {
-        body.push_str("<div class=\"lineage-table\"><table class=\"results\"><caption>Recorded session relationships</caption><thead><tr>");
+        body.push_str("<div class=\"parents-table\"><table class=\"results\"><caption>Recorded session relationships</caption><thead><tr>");
         let columns = [
             "parent",
             "child",

@@ -1,4 +1,5 @@
-//! Change cursors name an index file, not just its reusable write counter.
+//! The index generation: a fresh ID for each index build, so a change feed
+//! position from an earlier build is recognized as one.
 use crate::{Result, archive::cache};
 use rusqlite::{Connection, OptionalExtension};
 

@@ -239,17 +239,17 @@ fn optional_wrapper_frames_only_the_root_or_named_message_array() {
         }
     }
     // AI Studio's object-only selection does not opt into bare-array records.
-    let mut framed = 0;
+    let mut records = 0;
     let (_, stats) = scan_nested(
         b"[{},{}]".as_slice(),
         &["chunkedPrompt", "chunks"],
         |_, _| {
-            framed += 1;
+            records += 1;
             Ok(())
         },
     )
     .unwrap();
-    assert_eq!(framed, 0);
+    assert_eq!(records, 0);
     assert_eq!(stats.elements, 0);
 }
 

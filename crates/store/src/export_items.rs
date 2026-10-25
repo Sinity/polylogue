@@ -1,4 +1,4 @@
-//! Private, operation-scoped external ordering and ownership for export items.
+//! Export items sorted in a temporary database, private to one import.
 use crate::{Result, StoreError};
 use polylogue_model::{MessageId, SessionId};
 use rusqlite::{Connection, OptionalExtension, params};

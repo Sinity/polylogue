@@ -64,7 +64,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
             .import_plan(&path, origin, captured, None, &mut report)
             .unwrap()
             .unwrap();
-        assert_eq!(plan.piece_pos, original.len() as u64);
+        assert_eq!(plan.stored_upto, original.len() as u64);
     }
     let (mut engine, _lock) = engine(&w, 64);
     let retry = engine.import(std::slice::from_ref(&path)).unwrap();
@@ -94,7 +94,7 @@ fn capture_failure_leaves_no_catalog_input() {
     struct Failed;
     impl std::io::Read for Failed {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("synthetic interrupted acquisition"))
+            Err(std::io::Error::other("synthetic interrupted import"))
         }
     }
     let w = polylogue_testkit::ClaudeHome::new();
@@ -191,7 +191,7 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
 }
 
 #[test]
-fn acquisition_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
+fn import_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
     struct Generated {
         left: u64,
         max_request: usize,
@@ -237,10 +237,10 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
     }
     std::fs::remove_file(&path).unwrap();
     let (mut engine, _lock) = engine(&w, 64);
-    let report = engine.converge().unwrap();
+    let report = engine.run_pass().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(w.texts("s1"), ["stored, source gone"]);
-    assert_eq!(w.count("SELECT route_rank AS n FROM message"), 2);
+    assert_eq!(w.count("SELECT arrival_rank AS n FROM message"), 2);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);
 }
@@ -255,7 +255,7 @@ fn replayed_import_does_not_replace_the_native_winner() {
     std::fs::write(&path, &original).unwrap();
     {
         let (mut engine, _lock) = engine(&w, 64);
-        engine.converge().unwrap();
+        engine.run_pass().unwrap();
         let captured =
             Captured::stream(&engine.archive, std::fs::File::open(&path).unwrap()).unwrap();
         let origin = recognize_import(&path, &captured.head).unwrap();
@@ -265,10 +265,10 @@ fn replayed_import_does_not_replace_the_native_winner() {
     }
     std::fs::remove_file(&path).unwrap();
     let (mut engine, _lock) = engine(&w, 64);
-    let report = engine.converge().unwrap();
+    let report = engine.run_pass().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(w.texts("s1"), ["native winner"]);
-    assert_eq!(w.count("SELECT route_rank AS n FROM message"), 0);
+    assert_eq!(w.count("SELECT arrival_rank AS n FROM message"), 0);
 }
 
 mod documents;
@@ -311,4 +311,4 @@ mod replay;
 mod assets;
 mod stored_bytes;
 
-mod containers;
+mod zip_members;

@@ -1,5 +1,5 @@
 //! What a parse step hands the writer: rows, the bytes they carried inline,
-//! and the accounting that proves every record was dealt with. One type for
+//! and the record counts that show every record was dealt with. One type for
 //! the parser and the writer, so neither restates the other.
 
 use crate::{BlobHash, Document, Event, Link, Message, Session, SessionId, ToolOutcome};
@@ -27,7 +27,7 @@ pub struct Output {
     pub background: Vec<BackgroundUpdate>,
     /// Bytes the input carried inline (base64 images), for the blob store.
     /// Blocks refer to them by hash.
-    pub blobs: Vec<InlineBlob>,
+    pub blobs: Vec<ExtractedBlob>,
     /// Repository lookups (a `polylogue-repo-lookup` input holds one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repo_lookups: Vec<RepoLookup>,
@@ -46,14 +46,14 @@ pub struct RepoLookup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InlineBlob {
+pub struct ExtractedBlob {
     pub hash: BlobHash,
     pub size: u64,
     #[serde(skip)]
     pub bytes: Vec<u8>,
 }
 
-/// A document as one input holds it, with the acquired record's byte range.
+/// A document as one input holds it, with the record's byte range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentRow {
     pub offset: u64,
@@ -89,7 +89,7 @@ pub struct BackgroundUpdate {
 }
 
 /// Where a message sits in its session. A session reads in this order:
-/// inherited messages first (through its lineage link), then its own by key.
+/// its parents' messages first (through its links), then its own by key.
 /// The key is the input and byte offset of the record that opened the
 /// message, so a response that closes after a later user message still
 /// sorts where it opened. `input` is the store's small key for the input,
@@ -100,63 +100,67 @@ pub struct OrderKey {
     pub offset: u64,
 }
 
-/// How one framed record ended. Every record ends in exactly one.
+/// How one record ended. Every record ends in exactly one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Disposition {
+pub enum RecordOutcome {
     /// The record became rows: messages, events, links, session facts.
-    Materialized,
-    /// Understood well enough to name, not turned into rows. The reason is
+    Used,
+    /// Understood, and set aside rather than turned into rows. The reason is
     /// shown with the count, so a reader knows what was set aside and why.
-    Unknown { reason: String },
-    /// Not a readable record: malformed JSON, a value of the wrong shape.
-    /// The bytes stay stored.
-    Refused { reason: String },
+    Skipped { reason: String },
+    /// Not a record the parser can read: malformed JSON, a value of the
+    /// wrong shape. The bytes stay stored.
+    Unreadable { reason: String },
 }
 
-impl Disposition {
-    pub fn unknown(reason: impl Into<String>) -> Self {
-        Self::Unknown {
+impl RecordOutcome {
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        Self::Skipped {
             reason: reason.into(),
         }
     }
 
-    pub fn refused(reason: impl Into<String>) -> Self {
-        Self::Refused {
+    pub fn unreadable(reason: impl Into<String>) -> Self {
+        Self::Unreadable {
             reason: reason.into(),
         }
     }
 }
 
-/// Counts per record kind and disposition for one parse step. The counts
-/// must add up to the records framed; the writer refuses a step whose
-/// counts do not.
+/// How the records of one parse step ended, by record kind. The counts
+/// add up to the records read; the writer refuses a step whose counts do
+/// not.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Accounting {
-    pub framed: u64,
-    pub materialized: BTreeMap<String, u64>,
+pub struct RecordCounts {
+    pub records: u64,
+    pub used: BTreeMap<String, u64>,
     /// Keyed by `record kind: reason`.
-    pub unknown: BTreeMap<String, u64>,
-    pub refused: BTreeMap<String, u64>,
+    pub skipped: BTreeMap<String, u64>,
+    pub unreadable: BTreeMap<String, u64>,
     /// Wire fields neither read nor excluded, by `record kind.path`. Not a
     /// failure: it shows where a parser falls behind its format.
     pub unread_fields: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
-#[error("{framed} records framed but {accounted} accounted for")]
+#[error("{records} records read but {counted} counted")]
 pub struct CountMismatch {
-    pub framed: u64,
-    pub accounted: u64,
+    pub records: u64,
+    pub counted: u64,
 }
 
-impl Accounting {
-    pub fn add(&mut self, kind: &str, disposition: &Disposition) {
+impl RecordCounts {
+    pub fn add(&mut self, kind: &str, outcome: &RecordOutcome) {
         let bump = |m: &mut BTreeMap<_, u64>, k| *m.entry(k).or_default() += 1;
-        match disposition {
-            Disposition::Materialized => bump(&mut self.materialized, kind.to_owned()),
-            Disposition::Unknown { reason } => bump(&mut self.unknown, format!("{kind}: {reason}")),
-            Disposition::Refused { reason } => bump(&mut self.refused, format!("{kind}: {reason}")),
+        match outcome {
+            RecordOutcome::Used => bump(&mut self.used, kind.to_owned()),
+            RecordOutcome::Skipped { reason } => {
+                bump(&mut self.skipped, format!("{kind}: {reason}"))
+            }
+            RecordOutcome::Unreadable { reason } => {
+                bump(&mut self.unreadable, format!("{kind}: {reason}"))
+            }
         }
     }
 
@@ -167,34 +171,34 @@ impl Accounting {
             .or_default() += 1;
     }
 
-    pub fn accounted(&self) -> u64 {
-        self.materialized.values().sum::<u64>()
-            + self.unknown.values().sum::<u64>()
-            + self.refused.values().sum::<u64>()
+    pub fn counted(&self) -> u64 {
+        self.used.values().sum::<u64>()
+            + self.skipped.values().sum::<u64>()
+            + self.unreadable.values().sum::<u64>()
     }
 
     pub fn check(&self) -> Result<(), CountMismatch> {
-        let accounted = self.accounted();
-        if accounted == self.framed {
+        let counted = self.counted();
+        if counted == self.records {
             Ok(())
         } else {
             Err(CountMismatch {
-                framed: self.framed,
-                accounted,
+                records: self.records,
+                counted,
             })
         }
     }
 
-    pub fn merge(&mut self, other: &Accounting) {
-        self.framed += other.framed;
+    pub fn merge(&mut self, other: &RecordCounts) {
+        self.records += other.records;
         let add = |into: &mut BTreeMap<String, u64>, from: &BTreeMap<String, u64>| {
             for (k, v) in from {
                 *into.entry(k.clone()).or_default() += v;
             }
         };
-        add(&mut self.materialized, &other.materialized);
-        add(&mut self.unknown, &other.unknown);
-        add(&mut self.refused, &other.refused);
+        add(&mut self.used, &other.used);
+        add(&mut self.skipped, &other.skipped);
+        add(&mut self.unreadable, &other.unreadable);
         add(&mut self.unread_fields, &other.unread_fields);
     }
 }

@@ -6,7 +6,7 @@ fn background_only_groups_use_the_exclusion_lookup() {
     crate::schema::create_archive(&archive_conn).unwrap();
     archive_conn
         .execute(
-            "INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('remove',?1,1,1)",
+            "INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('remove',?1,1,1)",
             [format!("session:{}", sid("removed"))],
         )
         .unwrap();

@@ -57,8 +57,8 @@ build inputs.
 
 Tests are laid out as AGENTS.md says: unit tests in `name/tests.rs` beside
 their module, integration tests as one binary per area
-(`crates/<crate>/tests/<area>/main.rs`). The engine's are `convergence` (the
-loop over files a test writes), `laws` (properties every archive keeps, as
+(`crates/<crate>/tests/<area>/main.rs`). The engine's are `passes` (the
+loop over files a test writes), `properties` (properties every archive keeps, as
 property tests over generated archives and the example archive) and `faults`.
 
 Tests that need realistic data use `polylogue-testkit`:

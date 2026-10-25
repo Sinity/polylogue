@@ -19,7 +19,7 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
-    read_checkpoints: read::checkpoints::Cache,
+    page_ends: read::page_ends::Cache,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
@@ -46,8 +46,8 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
-        StoreError::IncompleteLineage(issue) => Response::Error {
-            kind: "incomplete_lineage".into(),
+        StoreError::IncompleteParents(issue) => Response::Error {
+            kind: "incomplete_parents".into(),
             message: e.to_string(),
             detail: Some(serde_json::json!({"issue": issue})),
         },
@@ -111,7 +111,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Ok(writes) => writes,
             Err(response) => return response,
         };
-        let _invalidation = d.read_checkpoints.mutation();
+        let _invalidation = d.page_ends.mutation();
         match writes.user(UserRequest::now(request_id, write)) {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
@@ -129,7 +129,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
         Ok(writes) => writes,
         Err(response) => return response,
     };
-    let _invalidation = d.read_checkpoints.mutation();
+    let _invalidation = d.page_ends.mutation();
     match writes.user(UserRequest::now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
@@ -197,7 +197,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
-    let read_epoch = d.read_checkpoints.epoch();
+    let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
@@ -310,20 +310,20 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             target,
             view,
             format,
-            logical,
+            with_parents,
             budget,
             cursor,
         } => {
             let options = read::Options {
                 view: &view,
                 format: &format,
-                logical,
+                with_parents,
                 budget,
                 cursor: cursor.as_deref(),
             };
             match &target {
                 ReadTarget::Session(session) => {
-                    read::run(&reader, session, options, &d.read_checkpoints, read_epoch)
+                    read::run(&reader, session, options, &d.page_ends, read_epoch)
                 }
                 ReadTarget::Document(document) => read::document(&reader, document, options),
                 ReadTarget::Event(event) => read::event(&reader, event, options),
@@ -338,12 +338,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 .map(|tx| tx.send(LoopMsg::Import { paths, reply }).is_ok())
                 .unwrap_or(false);
             if !sent {
-                return error("internal", "the convergence loop has stopped");
+                return error("internal", "the loop has stopped");
             }
             match wait.recv() {
                 Ok(Ok(report)) => ok(report),
                 Ok(Err(e)) => error("import", e),
-                Err(_) => error("internal", "the convergence loop has stopped"),
+                Err(_) => error("internal", "the loop has stopped"),
             }
         }
         Request::Export { targets, format } => export(&reader, &targets, &format),
@@ -360,17 +360,17 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             dry_run,
         } => {
             drop(reader);
-            let scope = match polylogue_engine::ExciseScope::parse(&target) {
-                Ok(s) => s,
+            let target = match polylogue_engine::ExciseTarget::parse(&target) {
+                Ok(target) => target,
                 Err(e) => return error("bad_request", e),
             };
             let request = polylogue_engine::ExciseRequest {
                 id: request_id,
-                scope,
+                target,
                 reason,
                 dry_run,
             };
-            let _invalidation = d.read_checkpoints.mutation();
+            let _invalidation = d.page_ends.mutation();
             let (reply, wait) = sync_channel(1);
             let sent = d
                 .loop_tx
@@ -378,7 +378,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 .map(|tx| tx.send(LoopMsg::Excise { request, reply }).is_ok())
                 .unwrap_or(false);
             if !sent {
-                return error("internal", "the convergence loop has stopped");
+                return error("internal", "the loop has stopped");
             }
             match wait.recv() {
                 Ok(Ok(done)) => ok(done),
@@ -388,7 +388,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     | StoreError::ExcisionInsideZip { .. }),
                 ))) => store_error(&e),
                 Ok(Err(e)) => error("excise", e),
-                Err(_) => error("internal", "the convergence loop has stopped"),
+                Err(_) => error("internal", "the loop has stopped"),
             }
         }
         Request::Keep {
@@ -419,7 +419,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 }
             };
             drop(reader);
-            let view = serde_json::json!({ "now": kept["now"] }).to_string();
+            let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
             write(
                 d,
                 request_id,
@@ -427,7 +427,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     name,
                     query: text,
                     rows_json: kept.to_string(),
-                    view,
+                    read_at,
                 },
             )
         }
@@ -583,7 +583,7 @@ impl Runtime {
     /// running finish as usual.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
-        self.daemon.read_checkpoints.clear();
+        self.daemon.page_ends.clear();
         self.daemon.reads.close();
     }
 
@@ -609,12 +609,12 @@ impl Runtime {
                 }
                 Err(_) => {
                     failure.get_or_insert_with(|| {
-                        std::io::Error::other("convergence worker panicked")
+                        std::io::Error::other("loop thread panicked")
                     });
                 }
             }
         }
-        self.daemon.read_checkpoints.clear();
+        self.daemon.page_ends.clear();
         self.daemon.reads.close();
         self.lock.take();
         failure.map_or(Ok(()), Err)
@@ -769,7 +769,7 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         archive,
         reads,
-        read_checkpoints: read::checkpoints::Cache::default(),
+        page_ends: read::page_ends::Cache::default(),
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -804,7 +804,7 @@ pub fn start(
             })?,
     );
     wait.recv()
-        .map_err(|_| std::io::Error::other("convergence worker exited during startup"))?
+        .map_err(|_| std::io::Error::other("loop thread exited during startup"))?
         .map_err(std::io::Error::other)?;
     let (stop, stopped) = channel();
     runtime.signals_stop = Some(stop);

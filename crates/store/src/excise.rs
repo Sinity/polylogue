@@ -21,14 +21,14 @@ pub(crate) use refused::{RefusedIds, any_excision, matching, raw_import};
 
 /// What to remove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "scope", content = "value", rename_all = "snake_case")]
-pub enum Scope {
+#[serde(tag = "target", content = "value", rename_all = "snake_case")]
+pub enum ExciseTarget {
     Session(SessionId),
     Document(polylogue_model::DocumentId),
     Input(String),
 }
 
-impl Scope {
+impl ExciseTarget {
     /// `session:<id>`, `document:<id>`, `input:<id>`, or a bare session ID.
     pub fn parse(target: &str) -> std::result::Result<Self, String> {
         let (kind, value) = target.split_once(':').unwrap_or(("", target));
@@ -65,7 +65,7 @@ impl Scope {
 pub struct ExciseRequest {
     /// The client request ID; the excision row's ID.
     pub id: String,
-    pub scope: Scope,
+    pub target: ExciseTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Count what would go without changing anything.
@@ -141,13 +141,13 @@ pub(crate) fn plan(
 ) -> Result<Plan> {
     let recorded: Option<String> = archive
         .query_row(
-            "SELECT scope FROM excision WHERE id = ?1",
+            "SELECT target FROM excision WHERE id = ?1",
             [&request.id],
             |r| r.get(0),
         )
         .optional()?;
     match recorded {
-        Some(scope) if scope == request.scope.label() => {
+        Some(target) if target == request.target.label() => {
             return Ok(Plan {
                 recorded: true,
                 ..Plan::default()
@@ -162,8 +162,8 @@ pub(crate) fn plan(
         None => {}
     }
     let mut plan = Plan::default();
-    match &request.scope {
-        Scope::Session(id) => {
+    match &request.target {
+        ExciseTarget::Session(id) => {
             let id = id.to_string();
             let pk = index_rows::session_pk(index, &id)?
                 .ok_or_else(|| StoreError::NotFound(format!("session {id}")))?;
@@ -171,7 +171,7 @@ pub(crate) fn plan(
             plan.inputs
                 .extend(index_rows::inputs_of_session(index, pk)?);
         }
-        Scope::Document(id) => {
+        ExciseTarget::Document(id) => {
             let id = id.to_string();
             let pk = index
                 .query_row("SELECT pk FROM document WHERE id = ?1", [&id], |r| r.get(0))
@@ -181,7 +181,7 @@ pub(crate) fn plan(
             plan.inputs
                 .extend(index_rows::inputs_of_document(index, pk)?);
         }
-        Scope::Input(input) => {
+        ExciseTarget::Input(input) => {
             let known: bool = archive.query_row(
                 "SELECT EXISTS(SELECT 1 FROM input WHERE id = ?1)",
                 [input],
@@ -197,7 +197,7 @@ pub(crate) fn plan(
             }
         }
     }
-    let input_named = matches!(request.scope, Scope::Input(_));
+    let input_named = matches!(request.target, ExciseTarget::Input(_));
     index_rows::refuse_shared(archive, index, &plan, input_named)?;
     Ok(plan)
 }
@@ -216,11 +216,11 @@ pub(crate) fn apply(
         ..Excised::default()
     };
     t.archive.execute(
-        "INSERT INTO excision(id, scope, reason, created_at, commit_seq)
+        "INSERT INTO excision(id, target, reason, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             request.id,
-            request.scope.label(),
+            request.target.label(),
             request.reason,
             now_ms(),
             t.seq

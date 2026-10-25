@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_engine::{Config, Engine, ExciseRequest, ExciseScope};
+use polylogue_engine::{Config, Engine, ExciseRequest, ExciseTarget};
 use polylogue_model::SessionId;
 use polylogue_store::Archive;
 use polylogue_testkit::{ClaudeHome, claude_user};
@@ -28,7 +28,7 @@ fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
             let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
             let config: Config = w.config(64 << 20);
             let mut e = Engine::new(config, archive).unwrap();
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             assert!(local.contains(&victim_hash));
             assert!(local.contains(&kept_hash));
             let subject = if point == "excision.after_index_commit" {
@@ -40,7 +40,7 @@ fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
             assert!(
                 e.excise(ExciseRequest {
                     id: "interrupted-files".into(),
-                    scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+                    target: ExciseTarget::Session(SessionId::parse("claude-code:victim").unwrap()),
                     reason: None,
                     dry_run: false,
                 })
@@ -57,7 +57,7 @@ fn reopening_deletes_only_the_local_files_a_committed_excision_marked() {
         assert!(!local.contains(&victim_hash));
         for _ in 0..2 {
             let (mut e, _lock) = w.engine(64 << 20);
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             assert!(
                 !local.contains(&victim_hash),
                 "restart left an uncatalogued removed file in the primary store"

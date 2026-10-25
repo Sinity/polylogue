@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ExciseRequest, ExciseScope};
+use crate::{ExciseRequest, ExciseTarget};
 
 fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
     w.reads()
@@ -48,12 +48,12 @@ fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
         polylogue_testkit::delete_index(&w.root);
         {
             let (mut e, _lock) = engine(&w, chunk);
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             assert_eq!(events(&w), first);
             let removed = e
                 .excise(ExciseRequest {
                     id: "remove-observer-input".into(),
-                    scope: ExciseScope::Input(first[0]["input"].as_str().unwrap().into()),
+                    target: ExciseTarget::Input(first[0]["input"].as_str().unwrap().into()),
                     reason: None,
                     dry_run: false,
                 })
@@ -69,7 +69,7 @@ fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
         }
         polylogue_testkit::delete_index(&w.root);
         let (mut e, _lock) = engine(&w, chunk);
-        assert!(e.converge().unwrap().errors.is_empty());
+        assert!(e.run_pass().unwrap().errors.is_empty());
         assert!(events(&w).is_empty());
     }
 }

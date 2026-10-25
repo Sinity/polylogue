@@ -1,7 +1,7 @@
 //! Tool-call measures: outcomes kept apart, which call follows which, and
 //! the commands whose latest run in a repository failed.
 
-use super::Scope;
+use super::Selection;
 use crate::{Reader, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,8 +21,8 @@ pub struct Outcomes {
     pub unknown: u64,
 }
 
-pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
-    let (cond, params) = scope.condition();
+pub fn outcomes(reader: &Reader<'_>, selection: &Selection) -> Result<Outcomes> {
+    let (cond, params) = selection.condition();
     Ok(reader.conn()?.query_row(
         &format!(
             "SELECT sum(t.outcome = 'ok'), sum(t.outcome = 'error'),
@@ -84,8 +84,8 @@ pub struct Process {
 /// transcript order (message order key, then block position): two calls
 /// with the same time keep their transcript order and nothing is inferred
 /// from timestamps. Calls are named by action and command or tool.
-pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process> {
-    let (cond, params) = scope.condition();
+pub fn process(reader: &Reader<'_>, selection: &Selection, top: usize) -> Result<Process> {
+    let (cond, params) = selection.condition();
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT s.id, t.action, coalesce(t.command_norm, t.tool), t.outcome, t.at
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
@@ -157,7 +157,7 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
         sessions,
         calls,
         calls_without_time: untimed,
-        outcomes: outcomes(reader, scope)?,
+        outcomes: outcomes(reader, selection)?,
         transitions,
         common_sequences,
         failure_examples: examples,
@@ -186,9 +186,9 @@ pub struct FailingCommand {
     pub last_ok_at: Option<i64>,
 }
 
-/// Every repository's unresolved commands in the scope, most recent first.
-pub fn failing_commands(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<FailingCommand>> {
-    let (cond, params) = scope.condition();
+/// Every repository's unresolved commands in the selection, most recent first.
+pub fn failing_commands(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<FailingCommand>> {
+    let (cond, params) = selection.condition();
     let sql = format!(
         "WITH runs AS (
            SELECT coalesce(s.repo_root, 'cwd:' || s.cwd) AS repository, s.repo AS repo,

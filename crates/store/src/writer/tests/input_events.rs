@@ -43,12 +43,12 @@ fn rows(archive: &Archive) -> Vec<Json> {
 #[test]
 fn input_event_occurrences_survive_preparation_replay_restart_and_input_separation() {
     for prepared in [false, true] {
-        let World {
+        let TestArchive {
             archive,
             writer,
             _dir,
             _lock,
-        } = world();
+        } = test_archive();
         let observed = event((0, 100), "same observation");
         send(
             &writer,
@@ -115,7 +115,7 @@ fn input_event_occurrences_survive_preparation_replay_restart_and_input_separati
 #[test]
 fn input_events_require_record_coordinates_and_cannot_claim_after_message_association() {
     for shape in ["after", "missing_range", "empty_range", "missing_input"] {
-        let w = world();
+        let w = test_archive();
         let mut invalid = event((0, 100), "private observation");
         match shape {
             "after" => invalid.after = Some(MessageId::parse("hermes:m").unwrap()),
@@ -145,11 +145,11 @@ fn input_events_require_record_coordinates_and_cannot_claim_after_message_associ
 
 #[test]
 fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
-    use crate::blobs::Piece;
-    use crate::excise::{ExciseRequest, Scope};
+    use crate::blobs::NewBlob;
+    use crate::excise::{ExciseRequest, ExciseTarget};
     use std::sync::Arc;
     for shared_record in [false, true] {
-        let w = world();
+        let w = test_archive();
         let store =
             Arc::new(hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap());
         let first = b"{\"native\":\"bound observation\"}\n";
@@ -170,7 +170,7 @@ fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
         let unrelated = event(unrelated_range, "independent");
         let mut b = batch("shared-observer", 0, 0, vec![], &["conversation"]);
         b.length = raw.len() as u64;
-        b.piece = Some(Piece::prepare(&store, &raw).unwrap());
+        b.new_blob = Some(NewBlob::prepare(&store, &raw).unwrap());
         b.parse[0].parsed_upto = b.length;
         b.parse[0].output.events = vec![bound, unrelated];
         send(&w.writer, b);
@@ -178,7 +178,7 @@ fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
         let result = w.writer.excise(
             ExciseRequest {
                 id: "remove-conversation".into(),
-                scope: Scope::Session(sid("conversation")),
+                target: ExciseTarget::Session(sid("conversation")),
                 reason: None,
                 dry_run: false,
             },
@@ -196,7 +196,7 @@ fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
 
 #[test]
 fn input_event_identity_includes_the_stored_revision_chain() {
-    let w = world();
+    let w = test_archive();
     let observed = event((0, 100), "same recorded bytes");
     send(
         &w.writer,

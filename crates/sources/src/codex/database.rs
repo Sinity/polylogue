@@ -1,4 +1,4 @@
-//! Codex's SQLite databases, read from their logical exports (the engine
+//! Codex's SQLite databases, read from their row dumps (the engine
 //! writes `<archive>/exports/codex-database/<db>.jsonl`).
 //! Lines are a schema line, row lines `{t, k, r, h}` and gone lines
 //! `{t, k, gone}`.
@@ -9,11 +9,11 @@
 //! rollouts, which are parsed; they stay in the stored export.
 
 use super::{items::str_field, session_id};
-use crate::frame::Record;
+use crate::lines::Record;
 use crate::origin::Root;
 use crate::parse::{Output, Parse, Parser};
 use crate::time;
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -72,7 +72,7 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
 }
 
 impl Parser for Database {
-    type Carry = NoState;
+    type ParserState = NoState;
 
     fn kind(&self, v: &Json) -> String {
         if v.get("schema").is_some() {
@@ -93,15 +93,15 @@ impl Parser for Database {
         v: &Json,
         out: &mut Output,
         _: &mut Records,
-    ) -> Disposition {
+    ) -> RecordOutcome {
         if v.get("schema").is_some() {
-            return Disposition::Materialized;
+            return RecordOutcome::Used;
         }
         let Some(table) = str_field(v, "t") else {
-            return Disposition::refused("export line without a table");
+            return RecordOutcome::unreadable("export line without a table");
         };
         if v.get("gone").is_some() {
-            return Disposition::unknown(
+            return RecordOutcome::skipped(
                 "row deleted in the tool; the export keeps its last value",
             );
         }
@@ -109,7 +109,7 @@ impl Parser for Database {
         match table {
             "threads" => {
                 let Some(id) = row_session(row, "id") else {
-                    return Disposition::refused("thread row without an ID");
+                    return RecordOutcome::unreadable("thread row without an ID");
                 };
                 let kind = if str_field(row, "thread_source") == Some("subagent")
                     || str_field(row, "source").is_some_and(|s| s.contains("\"subagent\""))
@@ -145,14 +145,14 @@ impl Parser for Database {
                     s.offer_start(at);
                 }
                 out.sessions.push(s);
-                Disposition::Materialized
+                RecordOutcome::Used
             }
             "thread_spawn_edges" => {
                 let (Some(parent), Some(child)) = (
                     row_session(row, "parent_thread_id"),
                     row_session(row, "child_thread_id"),
                 ) else {
-                    return Disposition::refused("spawn edge without both threads");
+                    return RecordOutcome::unreadable("spawn edge without both threads");
                 };
                 out.links.push(Link {
                     kind: LinkKind::Spawn,
@@ -162,11 +162,11 @@ impl Parser for Database {
                     call_id: None,
                     evidence: "thread_spawn_edges".into(),
                 });
-                Disposition::Materialized
+                RecordOutcome::Used
             }
             "thread_goals" | "stage1_outputs" => {
                 let Some(session) = row_session(row, "thread_id") else {
-                    return Disposition::refused("row without a thread ID");
+                    return RecordOutcome::unreadable("row without a thread ID");
                 };
                 let (kind, at) = if table == "thread_goals" {
                     (
@@ -187,15 +187,15 @@ impl Parser for Database {
                     range: Some((record.offset, record.offset + record.bytes.len() as u64)),
                     data: row.clone(),
                 });
-                Disposition::Materialized
+                RecordOutcome::Used
             }
             "thread_items"
             | "thread_turns"
             | "thread_realtime_items"
-            | "thread_history_projection_state" => Disposition::unknown(
+            | "thread_history_projection_state" => RecordOutcome::skipped(
                 "derived from the rollout, which is parsed; kept in the stored export",
             ),
-            _ => Disposition::unknown("kept in the stored export; not indexed"),
+            _ => RecordOutcome::skipped("kept in the stored export; not indexed"),
         }
     }
 

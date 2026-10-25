@@ -1,14 +1,14 @@
 {
-  "accounting": {
-    "framed": 6,
-    "materialized": {
+  "counts": {
+    "records": 6,
+    "used": {
       "event_msg/user_message": 2,
       "response_item/message": 1,
       "response_item/reasoning": 1,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {
+    "unreadable": {},
+    "skipped": {
       "response_item/message: same prompt as the user_message event before it, which is stored": 1
     },
     "unread_fields": {}

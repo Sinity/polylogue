@@ -53,9 +53,9 @@ fn projected_pages(
 ) -> Vec<Page> {
     let mut result = Vec::new();
     let mut position = None;
-    let mut checkpoint = None;
+    let mut page_end = None;
     loop {
-        let mut pager = match (position, checkpoint.take()) {
+        let mut pager = match (position, page_end.take()) {
             (Some(at), Some(saved)) if cached => Pager::resume(View::Full, budget, at, saved),
             _ => Pager::new(View::Full, budget, position),
         };
@@ -75,7 +75,7 @@ fn projected_pages(
                 ]
             })
             .unwrap();
-        checkpoint = pager.checkpoint();
+        page_end = pager.page_end();
         let page = pager.finish().unwrap();
         position = page.next;
         result.push(page);

@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn exact_attachment_socket_refuses_once_the_daemon_stops_accepting() {
-    let world = test_daemon::start("synthetic stopped reads");
-    world
+    let daemon = test_daemon::start("synthetic stopped reads");
+    daemon
         .daemon
         .stopping
         .store(true, std::sync::atomic::Ordering::Release);
@@ -14,12 +14,12 @@ fn exact_attachment_socket_refuses_once_the_daemon_stops_accepting() {
             message: polylogue_model::MessageId::parse("claude-code:synthetic").unwrap(),
             block: 0,
             attachment: 0,
-            asset: None,
+            input: None,
             reveal: true,
             length: 1,
             cursor: None,
         },
-        &world.daemon,
+        &daemon.daemon,
     );
     assert!(matches!(response,Response::Error { kind,.. } if kind=="daemon_stopping"));
 }

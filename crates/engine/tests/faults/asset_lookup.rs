@@ -41,7 +41,7 @@ fn a_rebuilt_index_has_the_asset_lookup_before_any_message() {
     {
         let (mut engine, _lock) = w.engine(64 << 20);
         fault::arm("assets.install", "", Action::Fail, 0, 1);
-        assert!(engine.converge().is_err());
+        assert!(engine.run_pass().is_err());
         fault::clear();
     }
     assert_eq!(
@@ -50,7 +50,7 @@ fn a_rebuilt_index_has_the_asset_lookup_before_any_message() {
         "a message was parsed before its asset lookup was written"
     );
     let (mut engine, _lock) = w.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     assert_eq!(count("SELECT count(*) FROM message"), 1);
     assert_eq!(count("SELECT count(*) FROM import_asset_metadata"), 1);
 }

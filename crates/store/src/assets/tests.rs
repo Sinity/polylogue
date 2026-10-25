@@ -1,4 +1,4 @@
-//! Range delivery reads the current chain, including bytes in several pieces.
+//! Range delivery reads the current chain, including bytes in several new blobs.
 use super::*;
 use crate::{Archive, Batch, Change, InputKey, ReadPool, Writer};
 use polylogue_model::BlobHash;
@@ -11,12 +11,12 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     let input = InputKey {
         id: "synthetic-segmented-asset".into(),
         format: "export-file".into(),
-        route_rank: 0,
+        arrival_rank: 0,
     };
     let original = "prefix λ🙂 suffix".as_bytes();
     let split = 8; // Inside the UTF-8 sequence; this API delivers bytes.
     for (start, end, continues) in [(0, split, false), (split, original.len(), true)] {
-        let (piece, file) = archive.prepare_piece(&original[start..end]).unwrap();
+        let (new_blob, file) = archive.prepare_blob(&original[start..end]).unwrap();
         assert!(file.is_none());
         writer
             .send(Batch {
@@ -24,7 +24,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
                 change: Change::First,
                 observation: None,
                 continues,
-                piece: Some(piece),
+                new_blob: Some(new_blob),
                 blobs: vec![],
                 length: end as u64,
                 parse: vec![],
@@ -72,7 +72,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         asset
     };
     let replacement = b"replacement body";
-    let (piece, file) = archive.prepare_piece(replacement).unwrap();
+    let (new_blob, file) = archive.prepare_blob(replacement).unwrap();
     assert!(file.is_none());
     writer
         .send(Batch {
@@ -80,7 +80,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
             change: Change::Rewritten,
             observation: None,
             continues: false,
-            piece: Some(piece),
+            new_blob: Some(new_blob),
             blobs: vec![],
             length: replacement.len() as u64,
             parse: vec![],

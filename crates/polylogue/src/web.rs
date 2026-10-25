@@ -332,7 +332,7 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     }
 }
 
-/// Cost uses the query owner's accounting and scope validation.
+/// Cost uses the cost measure and its session selection, as the CLI does.
 async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
     let scope = if p.q.trim().is_empty() {
         "sessions"
@@ -395,7 +395,7 @@ async fn session(
         target: crate::daemon::ReadTarget::Session(session_id),
         view: view_name.clone(),
         format: "json".into(),
-        logical: true,
+        with_parents: true,
         budget: None,
         cursor: None,
     };
@@ -481,7 +481,7 @@ async fn document(
         &web,
         Request::Read {
             target: crate::daemon::ReadTarget::Document(id),
-            logical: false,
+            with_parents: false,
             view: view_name.clone(),
             format: "json".into(),
             budget: None,

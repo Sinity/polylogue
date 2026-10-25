@@ -17,7 +17,7 @@
 
 pub mod assets;
 
-use crate::Disposition;
+use crate::RecordOutcome;
 use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Parse};
@@ -143,7 +143,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
-/// routes produce the same IDs and unite.
+/// arrivals produce the same IDs and unite.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut crate::export::MemoryState) {
     conversation_with_owners(conv, sink, owners).expect("in-memory message ownership");
 }
@@ -155,31 +155,31 @@ fn conversation_with_owners(
 ) -> Result<(), String> {
     let Some(obj) = conv.as_object() else {
         sink.records
-            .record("conversation", &Disposition::refused("not an object"));
+            .record("conversation", &RecordOutcome::unreadable("not an object"));
         return Ok(());
     };
     if obj.is_empty() {
         sink.records.record(
             "conversation",
-            &Disposition::unknown("empty object in the export"),
+            &RecordOutcome::skipped("empty object in the export"),
         );
         return Ok(());
     }
     let Some(native) = str_of(conv, "conversation_id").or_else(|| str_of(conv, "id")) else {
         sink.records
-            .record("conversation", &Disposition::refused("no conversation ID"));
+            .record("conversation", &RecordOutcome::unreadable("no conversation ID"));
         return Ok(());
     };
     let Some(sid) = session_id(ORIGIN, native) else {
         sink.records.record(
             "conversation",
-            &Disposition::refused("unusable conversation ID"),
+            &RecordOutcome::unreadable("unusable conversation ID"),
         );
         return Ok(());
     };
     let Some(mapping) = conv.get("mapping").and_then(Json::as_object) else {
         sink.records
-            .record("conversation", &Disposition::refused("no mapping"));
+            .record("conversation", &RecordOutcome::unreadable("no mapping"));
         return Ok(());
     };
 
@@ -192,7 +192,7 @@ fn conversation_with_owners(
     }
     sink.out.sessions.push(session);
     sink.records
-        .record("conversation", &Disposition::Materialized);
+        .record("conversation", &RecordOutcome::Used);
 
     // The conversation's own settings (custom GPT, archive and star state,
     // memory scope) are kept whole as one event.
@@ -234,7 +234,7 @@ fn conversation_with_owners(
                     .and_then(Json::as_f64)
                     .unwrap_or(f64::MIN);
                 rows.push((time, index, m));
-                sink.records.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &RecordOutcome::Used);
             }
             Err(d) => sink.records.record(&kind, &d),
         }
@@ -256,7 +256,7 @@ fn conversation_with_owners(
     let mut branch: Option<(polylogue_model::SessionId, Message)> = None;
     for (_, _, message) in rows {
         let native = message.id.native().as_str().to_owned();
-        match owners.claim(&native, &sid)? {
+        match owners.record_first_session(&native, &sid)? {
             Some(owner) if owner != sid => {
                 branch = Some((owner, message));
             }
@@ -417,17 +417,17 @@ fn message(
     msg: &Json,
     tree: &Tree<'_>,
     default_model: Option<&str>,
-) -> Result<Message, Disposition> {
+) -> Result<Message, RecordOutcome> {
     let content = msg
         .get("content")
         .filter(|c| c.is_object())
-        .ok_or_else(|| Disposition::refused("no content object"))?;
+        .ok_or_else(|| RecordOutcome::unreadable("no content object"))?;
     let role_name = msg
         .pointer("/author/role")
         .and_then(Json::as_str)
-        .ok_or_else(|| Disposition::refused("no author role"))?;
+        .ok_or_else(|| RecordOutcome::unreadable("no author role"))?;
     let native = str_of(msg, "id").unwrap_or(node_id);
-    let id = message_id(ORIGIN, native).ok_or_else(|| Disposition::refused("unusable ID"))?;
+    let id = message_id(ORIGIN, native).ok_or_else(|| RecordOutcome::unreadable("unusable ID"))?;
     let meta = msg.get("metadata").unwrap_or(&Json::Null);
     let recipient = str_of(msg, "recipient").filter(|r| *r != "all");
 
@@ -452,7 +452,7 @@ fn message(
         // Tool output is written by the harness in the conversation's
         // name, as in Claude Code: a user-side message of harness text.
         "tool" => (Role::User, Some(PromptKind::Harness)),
-        other => return Err(Disposition::unknown(format!("author role {other}"))),
+        other => return Err(RecordOutcome::skipped(format!("author role {other}"))),
     };
     let direction = if role == Role::Assistant || role_name == "tool" {
         AttachmentDirection::Output

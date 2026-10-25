@@ -21,7 +21,7 @@ fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly()
         }
         let (mut e, _lock) = engine(&w, 16);
         let errors = if rebuild {
-            e.converge().unwrap().errors
+            e.run_pass().unwrap().errors
         } else {
             e.import(std::slice::from_ref(&path)).unwrap().pass.errors
         };
@@ -52,7 +52,7 @@ fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly()
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, json!({"char":{"model":"example-model"}}));
         assert_eq!(events[0].range, Some((0, ROOM.len() as u64)));
-        assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 3);
+        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 3);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let view = serde_json::to_value((&messages, &events)).unwrap();
         if let Some(old) = previous {
@@ -72,5 +72,5 @@ fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
     assert!(report.pass.errors.is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM session"), 0);
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 1);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
 }

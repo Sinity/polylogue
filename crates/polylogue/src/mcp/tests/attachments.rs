@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn mcp_attachment_descriptors_are_masked_and_cannot_request_reveal() {
-    let world = test_daemon::start("synthetic transport fixture");
-    let message = test_daemon::assets::seed(&world);
-    let archive = Archive::at(&world.daemon.archive.root);
+    let daemon = test_daemon::start("synthetic transport fixture");
+    let message = test_daemon::assets::seed(&daemon);
+    let archive = Archive::at(&daemon.daemon.archive.root);
     let response = call(
         &archive,
         "attachment",

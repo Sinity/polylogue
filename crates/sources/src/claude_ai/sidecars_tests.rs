@@ -111,8 +111,8 @@ fn empty_text_is_a_version_but_absent_null_and_binary_references_are_not_invente
         == [Block::Text {
             text: String::new()
         }]));
-    assert!(!step.accounting.unknown.is_empty());
-    assert!(!step.accounting.unread_fields.is_empty());
+    assert!(!step.counts.skipped.is_empty());
+    assert!(!step.counts.unread_fields.is_empty());
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn project_arrays_frame_one_document_and_resolve_metadata_that_follows_them() {
     let Some(Parse::Export(mut parser)) = open(Path::new("projects/late.json")) else {
         panic!("not an export parser")
     };
-    let mut framed = 0;
+    let mut records = 0;
     let mut largest = 0;
     let stats = parser
         .scan(
@@ -153,13 +153,13 @@ fn project_arrays_frame_one_document_and_resolve_metadata_that_follows_them() {
             &mut std::io::Cursor::new(&bytes),
             &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 assert_eq!(&bytes[range.start as usize..range.end as usize], raw);
-                framed += 1;
+                records += 1;
                 largest = largest.max(raw.len());
                 Ok(())
             },
         )
         .unwrap();
-    assert_eq!(framed, 257);
+    assert_eq!(records, 257);
     assert!(stats.peak_element_bytes <= largest * 2 + 2);
     assert!(stats.peak_element_bytes < bytes.len() / 32);
 }
@@ -172,7 +172,7 @@ fn explicit_null_collections_keep_sibling_text_and_parse_diagnostics() {
     ] {
         let mut parser=open(Path::new(path)).unwrap();let step=parse_bound(&mut parser,"input",raw);
         assert_eq!(step.output.documents.len(),1);assert_eq!(step.output.documents[0].document.blocks,[Block::Text{text:text.into()}]);
-        assert!(!step.accounting.unknown.is_empty());
+        assert!(!step.counts.skipped.is_empty());
         assert_eq!(&raw[step.output.documents[0].offset as usize..step.output.documents[0].end as usize],serde_json::to_string(text).unwrap().as_bytes());
     }
 }

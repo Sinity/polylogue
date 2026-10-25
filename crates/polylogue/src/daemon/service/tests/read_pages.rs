@@ -1,13 +1,13 @@
 use super::*;
 use base64::Engine as _;
 
-fn page(d: &Daemon, session: &str, logical: bool, view: &str, cursor: Option<&str>) -> Response {
+fn page(d: &Daemon, session: &str, with_parents: bool, view: &str, cursor: Option<&str>) -> Response {
     handle(
         Request::Read {
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse(session).unwrap(),
             ),
-            logical,
+            with_parents,
             view: view.into(),
             format: "json".into(),
             budget: Some(2),
@@ -34,9 +34,9 @@ fn read_pages_refuse_malformed_cross_view_and_out_of_range_positions() {
             "{malformed}"
         );
     }
-    for (logical, view) in [(true, "full"), (false, "dialogue")] {
+    for (with_parents, view) in [(true, "full"), (false, "dialogue")] {
         assert!(
-            matches!(page(&w.daemon, "claude-code:s1", logical, view, Some(&token)), Response::Error { kind, .. } if kind == "bad_request")
+            matches!(page(&w.daemon, "claude-code:s1", with_parents, view, Some(&token)), Response::Error { kind, .. } if kind == "bad_request")
         );
     }
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -105,8 +105,8 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
 
 #[test]
 fn read_pages_refuse_positions_from_the_previous_rendering_version() {
-    let world = test_daemon::start("synthetic text with enough bytes to paginate");
-    let token = next(page(&world.daemon, "claude-code:s1", false, "full", None));
+    let daemon = test_daemon::start("synthetic text with enough bytes to paginate");
+    let token = next(page(&daemon.daemon, "claude-code:s1", false, "full", None));
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(token)
         .unwrap();
@@ -116,7 +116,7 @@ fn read_pages_refuse_positions_from_the_previous_rendering_version() {
     let old = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&cursor).unwrap());
     assert!(
-        matches!(page(&world.daemon, "claude-code:s1", false, "full", Some(&old)), Response::Error { kind, .. } if kind == "bad_request")
+        matches!(page(&daemon.daemon, "claude-code:s1", false, "full", Some(&old)), Response::Error { kind, .. } if kind == "bad_request")
     );
 }
 
@@ -153,7 +153,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
     conn.execute("UPDATE message SET seq=0", []).unwrap();
     let pool = fixture.reads().unwrap();
     let id = polylogue_model::SessionId::parse("claude-code:ties").unwrap();
-    for logical in [false, true] {
+    for with_parents in [false, true] {
         let mut cursor = None;
         let mut text = String::new();
         let mut changed = false;
@@ -164,11 +164,11 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 super::super::read::Options {
                     view: "full",
                     format: "json",
-                    logical,
+                    with_parents,
                     budget: Some(2),
                     cursor: cursor.as_deref(),
                 },
-                &super::super::read::checkpoints::Cache::default(),
+                &super::super::read::page_ends::Cache::default(),
                 0,
             );
             let Response::Ok { data } = response else {
@@ -180,7 +180,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 break;
             }
             if !changed {
-                let order = if logical { "ASC" } else { "DESC" };
+                let order = if with_parents { "ASC" } else { "DESC" };
                 conn.execute_batch(&format!("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,order_input_id,seq,record_position,id {order})")).unwrap();
                 changed = true;
             }
@@ -197,8 +197,8 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
 }
 
 #[test]
-fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
-    let world = test_daemon::start("temporary synthetic prompt");
+fn cached_session_pages_equal_replay_across_views_parents_and_split_pem() {
+    let daemon = test_daemon::start("temporary synthetic prompt");
     let lines = [
         "λ🙂 prefix -----BEGIN VENDOR PRIVATE KEY-----private-one-----END VEND",
         "OR PRIVATE KEY----- visible tail λ🙂",
@@ -208,26 +208,26 @@ fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
     .enumerate()
     .map(|(n, text)| polylogue_testkit::claude_user(&format!("u{n}"), "s1", text))
     .collect::<String>();
-    std::fs::write(world.home.join(".claude/projects/-p/s1.jsonl"), lines).unwrap();
-    world.wait_for(|data| data["store"]["messages"] == 3 && data["store"]["search_pending"] == 0);
-    for logical in [false, true] {
+    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), lines).unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 3 && data["store"]["search_pending"] == 0);
+    for with_parents in [false, true] {
         for view in ["full", "dialogue", "prompts", "actions"] {
-            world.daemon.read_checkpoints.clear();
+            daemon.daemon.page_ends.clear();
             let mut cursor: Option<String> = None;
             let mut joined = String::new();
             for _ in 0..500 {
                 let cached = page(
-                    &world.daemon,
+                    &daemon.daemon,
                     "claude-code:s1",
-                    logical,
+                    with_parents,
                     view,
                     cursor.as_deref(),
                 );
-                world.daemon.read_checkpoints.clear();
+                daemon.daemon.page_ends.clear();
                 let replayed = page(
-                    &world.daemon,
+                    &daemon.daemon,
                     "claude-code:s1",
-                    logical,
+                    with_parents,
                     view,
                     cursor.as_deref(),
                 );
@@ -248,18 +248,18 @@ fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
         }
     }
     assert!(
-        world.daemon.read_checkpoints.test_counts().1 > 0,
+        daemon.daemon.page_ends.test_counts().1 > 0,
         "the test must hit the cache"
     );
-    let token = next(page(&world.daemon, "claude-code:s1", false, "full", None));
-    assert!(world.daemon.read_checkpoints.test_counts().0 > 0);
-    world.set("day_start", "06:00");
+    let token = next(page(&daemon.daemon, "claude-code:s1", false, "full", None));
+    assert!(daemon.daemon.page_ends.test_counts().0 > 0);
+    daemon.set("day_start", "06:00");
     assert_eq!(
-        world.daemon.read_checkpoints.test_counts().0,
+        daemon.daemon.page_ends.test_counts().0,
         0,
-        "service writes clear private carry"
+        "service writes clear private masking state"
     );
-    // A forged position must fail without populating a new checkpoint.
+    // A forged position must fail without populating a new page_end.
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(token)
         .unwrap();
@@ -268,22 +268,22 @@ fn cached_session_pages_equal_replay_across_views_lineage_and_split_pem() {
     let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&token).unwrap());
     assert!(
-        matches!(page(&world.daemon, "claude-code:s1", false, "full", Some(&forged)), Response::Error { kind, .. } if kind == "bad_request")
+        matches!(page(&daemon.daemon, "claude-code:s1", false, "full", Some(&forged)), Response::Error { kind, .. } if kind == "bad_request")
     );
-    assert_eq!(world.daemon.read_checkpoints.test_counts().0, 0);
-    let _ = page(&world.daemon, "claude-code:s1", false, "full", None);
-    assert!(world.daemon.read_checkpoints.test_counts().0 > 0);
+    assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
+    let _ = page(&daemon.daemon, "claude-code:s1", false, "full", None);
+    assert!(daemon.daemon.page_ends.test_counts().0 > 0);
     let excised = handle(
         Request::Excise {
-            request_id: "private-checkpoint-excision".into(),
+            request_id: "private-page_end-excision".into(),
             target: "session:claude-code:s1".into(),
             reason: None,
             dry_run: false,
         },
-        &world.daemon,
+        &daemon.daemon,
     );
     assert!(matches!(excised, Response::Ok { .. }), "{excised:?}");
-    assert_eq!(world.daemon.read_checkpoints.test_counts().0, 0);
+    assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
 }
 
 #[test]
@@ -341,9 +341,9 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
     conn.execute("UPDATE link SET branch_point='claude-code:parent-0'", [])
         .unwrap();
     let pool = fixture.reads().unwrap();
-    let cache = super::super::read::checkpoints::Cache::default();
+    let cache = super::super::read::page_ends::Cache::default();
     let id = polylogue_model::SessionId::parse("claude-code:child").unwrap();
-    for logical in [false, true] {
+    for with_parents in [false, true] {
         let mut cursor: Option<String> = None;
         let mut joined = String::new();
         for _ in 0..500 {
@@ -354,7 +354,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
                     super::super::read::Options {
                         view: "full",
                         format: "json",
-                        logical,
+                        with_parents,
                         budget: Some(2),
                         cursor,
                     },
@@ -379,7 +379,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
         }
         assert!(cursor.is_none());
         assert!(joined.contains("visible λ🙂"));
-        if logical {
+        if with_parents {
             assert!(!joined.contains("hidden"));
         } else {
             assert!(joined.contains("OR PRIVATE KEY"));

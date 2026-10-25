@@ -38,7 +38,7 @@ fn every_spec_example_parses() {
         "messages where written_by:human | group by session.origin | count",
         "messages where active:false",
         "parent:claude-code:7f3a2c10-0002-4000-8000-000000000002",
-        "lineage:codex:01a20000-0005-7000-8000-000000000005",
+        "connected:codex:01a20000-0005-7000-8000-000000000005",
         "since:2026-10-05",
         "started between 2026-10-02 and 2026-10-03",
         "has:compaction",
@@ -212,7 +212,7 @@ fn nesting_past_the_stack_bound_is_refused_by_name() {
 
 #[test]
 fn a_bare_where_after_session_conditions_is_refused_not_searched() {
-    // It used to search the word "where" and answer wrongly (tuu.7).
+    // It used to search the word "where" and answer wrongly.
     let QueryError::Syntax {
         position,
         suggestion,

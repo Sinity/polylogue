@@ -8,8 +8,8 @@ use polylogue_store::{Change, FileFacts, InputKey, Observation};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// What the loop knows about one input between passes. Parser state
-/// (`carry`) is `None` until the input is next parsed after a restart.
+/// What the loop knows about one input between passes. Its parser state
+/// (`parser_state`) is `None` until the input is next parsed after a restart.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,
@@ -20,7 +20,7 @@ pub(crate) struct InputState {
     pub(crate) parsed: bool,
     /// A successful parse reached source EOF with an incomplete last record.
     pub(crate) waiting: bool,
-    pub(crate) carry: Option<Json>,
+    pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     /// The revision chain whose bytes are stored, when known from the
     /// archive; `None` once this run stored a new chain.
@@ -46,10 +46,10 @@ pub(crate) struct Plan {
     pub(crate) observation: Option<Observation>,
     pub(crate) facts: Option<FileFacts>,
     pub(crate) size: u64,
-    pub(crate) piece_pos: u64,
+    pub(crate) stored_upto: u64,
     pub(crate) parse_pos: u64,
-    pub(crate) piece_started: bool,
-    pub(crate) carry: Option<Json>,
+    pub(crate) storing_started: bool,
+    pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
@@ -89,10 +89,10 @@ impl Plan {
             observation: None,
             facts,
             size,
-            piece_pos: size,
+            stored_upto: size,
             parse_pos,
-            piece_started: false,
-            carry: None,
+            storing_started: false,
+            parser_state: None,
             tail: None,
             chunk,
             priority: Priority::Bulk,
@@ -106,20 +106,20 @@ impl Plan {
     pub(crate) fn finished(&self) -> bool {
         self.failed
             || (self.observation.is_none()
-                && self.piece_pos >= self.size
+                && self.stored_upto >= self.size
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
     pub(crate) fn next_job(&mut self) -> Job {
         let start = self.parse_pos;
         let end = self.size.min(start + self.span);
-        let piece_from = (end > self.piece_pos).then_some(self.piece_pos);
-        let (change, observation, continues, length) = match piece_from {
+        let store_from = (end > self.stored_upto).then_some(self.stored_upto);
+        let (change, observation, continues, length) = match store_from {
             None if self.size == 0 && self.observation.is_some() => {
                 // An empty file still commits its revision and file facts.
                 (self.change.clone(), self.observation.take(), false, end)
             }
-            Some(_) if !self.piece_started => {
+            Some(_) if !self.storing_started => {
                 (self.change.clone(), self.observation.take(), false, end)
             }
             Some(_) => (self.change.clone(), None, true, end),
@@ -130,7 +130,7 @@ impl Plan {
                 },
                 None,
                 false,
-                self.piece_pos,
+                self.stored_upto,
             ),
         };
         Job {
@@ -141,11 +141,11 @@ impl Plan {
             observation,
             continues,
             start,
-            piece_from,
+            store_from,
             end,
             at_end: end == self.size,
             length,
-            carry: self.carry.take(),
+            parser_state: self.parser_state.take(),
             priority: self.priority,
             source: self.source.clone(),
         }
@@ -154,15 +154,15 @@ impl Plan {
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
         if d.error.is_some() {
             self.failed = true;
-            self.carry = d.carry;
+            self.parser_state = d.parser_state;
             return;
         }
-        if d.end > self.piece_pos {
-            self.piece_pos = d.end;
-            self.piece_started = true;
+        if d.end > self.stored_upto {
+            self.stored_upto = d.end;
+            self.storing_started = true;
         }
         self.tail = Some(d.tail);
-        self.carry = d.carry;
+        self.parser_state = d.parser_state;
         if !parsed {
             self.parse_pos = d.end;
         } else if d.parsed_upto > d.start {

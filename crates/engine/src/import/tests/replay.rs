@@ -32,12 +32,12 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     std::fs::remove_file(&path).unwrap();
     delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 64);
-    let first = e.converge().unwrap();
+    let first = e.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
     assert_eq!(message_sources(&w), before);
     assert_eq!(w.texts("s").len(), 2);
     assert!(e.inputs.is_empty());
-    let quiet = e.converge().unwrap();
+    let quiet = e.run_pass().unwrap();
     assert!(quiet.errors.is_empty());
     assert_eq!(quiet.bytes_read, 0);
     assert_eq!(quiet.inputs_changed, 0);
@@ -75,7 +75,7 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
     );
     let path = w.home.join(".claude/projects/-proj/live.jsonl");
     let (mut e, lock) = engine(&w, 64);
-    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(e.run_pass().unwrap().errors.is_empty());
     assert!(
         e.import(std::slice::from_ref(&path))
             .unwrap()
@@ -91,7 +91,7 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
     )
     .unwrap();
     let (mut e, _lock) = engine(&w, 64);
-    let pass = e.converge().unwrap();
+    let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(w.texts("s"), ["changed native text with new bytes"]);
     let pool = ReadPool::open(&e.archive).unwrap();
@@ -151,7 +151,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
         prior[..],
         "recognition must not change register rows already written"
     );
-    // A later opaque acquisition must not discard the captured parser path.
+    // A later opaque import must not discard the captured parser path.
     e.import(std::slice::from_ref(&unknown)).unwrap();
     drop(e);
     drop(lock);
@@ -159,7 +159,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     std::fs::remove_file(standard).unwrap();
     delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 1024);
-    let report = e.converge().unwrap();
+    let report = e.run_pass().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(
         w.count("SELECT count(*) AS n FROM session WHERE id='grok:recognized-later'"),
@@ -179,7 +179,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
 }
 
 #[test]
-fn explicit_kept_only_acquisitions_replay_without_errors() {
+fn explicit_kept_only_imports_replay_without_errors() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("opaque.dat");
     std::fs::write(&path, b"synthetic unparsed binary\0\xff").unwrap();
@@ -195,7 +195,7 @@ fn explicit_kept_only_acquisitions_replay_without_errors() {
     std::fs::remove_file(path).unwrap();
     delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 1024);
-    let pass = e.converge().unwrap();
+    let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty());
 }
 
@@ -216,10 +216,10 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
     let mut captured = Captured::stream(&e.archive, std::fs::File::open(&path).unwrap()).unwrap();
     captured.member = Some(polylogue_store::ImportMember {
         version: 1,
-        acquisition: "competing".into(),
+        import_id: "competing".into(),
         member: "conversations.json".into(),
         format: None,
-        container: None,
+        zip: None,
     });
     let mut report = ImportReport::default();
     e.import_captured(

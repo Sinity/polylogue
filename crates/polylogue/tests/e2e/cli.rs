@@ -391,10 +391,10 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
     std::io::Write::write_all(child.stdin.as_mut().unwrap(), br#"{"session_id": "s1"}"#).unwrap();
     assert!(child.wait().unwrap().success());
     let spool = home.join(".local/state/polylogue/hooks");
-    let carriers: Vec<_> = std::fs::read_dir(&spool)
+    let spool_files: Vec<_> = std::fs::read_dir(&spool)
         .unwrap_or_else(|e| panic!("{}: {e}", spool.display()))
         .collect();
-    assert_eq!(carriers.len(), 1);
+    assert_eq!(spool_files.len(), 1);
     assert!(!elsewhere.exists(), "the tools' own state is not touched");
 }
 
@@ -410,9 +410,9 @@ mod hook_errors;
 
 mod grok_export;
 
-mod codex_observations;
+mod codex_reports;
 
-mod lineage;
+mod parents;
 
 mod hermes_state;
 

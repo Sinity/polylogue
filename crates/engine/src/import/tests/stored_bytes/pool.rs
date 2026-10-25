@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn refused_watched_bytes_install_no_file() {
     for image in [false, true] {
-        let world = ClaudeHome::new();
-        let path = world.file("pool-stored.jsonl");
+        let home = ClaudeHome::new();
+        let path = home.file("pool-stored.jsonl");
         let decoded = vec![b'A'; polylogue_store::blobs::INLINE_LIMIT + 1024];
         let bytes = if image {
             let encoded = "QUFB".repeat(decoded.len() / 3 + 1);
@@ -17,19 +17,19 @@ fn refused_watched_bytes_install_no_file() {
         };
         std::fs::write(&path, &bytes).unwrap();
         let raw = hashed_blobs::Hash::of(bytes.as_bytes());
-        let (mut engine, _lock) = engine(&world, 1 << 20);
+        let (mut engine, _lock) = engine(&home, 1 << 20);
         let input = engine.location_id(&path);
-        let conn = rusqlite::Connection::open(world.root.join("archive.db")).unwrap();
+        let conn = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
         conn.execute_batch(&format!("CREATE TRIGGER reject_pool BEFORE INSERT ON input WHEN NEW.id='{input}' BEGIN SELECT RAISE(ABORT,'synthetic pool first write rejection'); END;")).unwrap();
-        let pass = engine.converge().unwrap();
+        let pass = engine.run_pass().unwrap();
         assert!(!pass.errors.is_empty());
         assert!(
             !engine.blobs.contains(&raw),
             "rejected pool bytes have no archive row"
         );
-        assert_eq!(world.count("SELECT count(*) AS n FROM a.blob"), 0);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.blob"), 0);
         conn.execute_batch("DROP TRIGGER reject_pool").unwrap();
-        let pass = engine.converge().unwrap();
+        let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     }
 }
@@ -65,9 +65,9 @@ fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]
 
 #[test]
 fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider_file() {
-    let world = ClaudeHome::new();
+    let home = ClaudeHome::new();
     let (encoded, decoded) = image_payload('A');
-    let path = world.file("decoded-stored.jsonl");
+    let path = home.file("decoded-stored.jsonl");
     std::fs::write(
         &path,
         image_record(
@@ -80,29 +80,29 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
     .unwrap();
     let hash = polylogue_model::BlobHash::of(&decoded);
     {
-        let (mut engine, _lock) = engine(&world, 1 << 20);
-        let index = rusqlite::Connection::open(world.root.join("index.db")).unwrap();
+        let (mut engine, _lock) = engine(&home, 1 << 20);
+        let index = rusqlite::Connection::open(home.root.join("index.db")).unwrap();
         index.execute_batch("CREATE TRIGGER reject_decoded_message BEFORE INSERT ON message BEGIN SELECT RAISE(ABORT,'synthetic derived write refusal'); END;").unwrap();
-        let pass = engine.converge().unwrap();
+        let pass = engine.run_pass().unwrap();
         assert!(!pass.errors.is_empty());
-        assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);
+        assert_eq!(home.count("SELECT count(*) AS n FROM message"), 0);
         assert_blob(&engine, hash, &decoded);
     }
     std::fs::remove_file(path).unwrap();
-    polylogue_testkit::delete_index(&world.root);
-    let (mut engine, _lock) = engine(&world, 1 << 20);
-    let pass = engine.converge().unwrap();
+    polylogue_testkit::delete_index(&home.root);
+    let (mut engine, _lock) = engine(&home, 1 << 20);
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(world.count("SELECT count(*) AS n FROM message"), 1);
+    assert_eq!(home.count("SELECT count(*) AS n FROM message"), 1);
     assert_blob(&engine, hash, &decoded);
 }
 
 #[test]
 fn input_excision_without_an_index_keeps_bytes_another_input_decodes() {
-    let world = ClaudeHome::new();
+    let home = ClaudeHome::new();
     let (encoded, decoded) = image_payload('A');
-    let first = world.file("first-image.jsonl");
-    let second = world.file("second-image.jsonl");
+    let first = home.file("first-image.jsonl");
+    let second = home.file("second-image.jsonl");
     std::fs::write(
         &first,
         image_record(
@@ -126,27 +126,27 @@ fn input_excision_without_an_index_keeps_bytes_another_input_decodes() {
     let input;
     let hash = polylogue_model::BlobHash::of(&decoded);
     {
-        let (mut engine, _lock) = engine(&world, 1 << 20);
-        let pass = engine.converge().unwrap();
+        let (mut engine, _lock) = engine(&home, 1 << 20);
+        let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         input = engine.location_id(&first);
     }
     std::fs::remove_file(first).unwrap();
     std::fs::remove_file(second).unwrap();
-    polylogue_testkit::delete_index(&world.root);
-    let (mut engine, _lock) = engine(&world, 1 << 20);
+    polylogue_testkit::delete_index(&home.root);
+    let (mut engine, _lock) = engine(&home, 1 << 20);
     engine
         .excise(ExciseRequest {
             id: "remove-first-decoded-owner".into(),
-            scope: ExciseScope::Input(input),
+            target: ExciseTarget::Input(input),
             reason: None,
             dry_run: false,
         })
         .unwrap();
     assert_blob(&engine, hash, &decoded);
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(world.count("SELECT count(*) AS n FROM message"), 1);
+    assert_eq!(home.count("SELECT count(*) AS n FROM message"), 1);
     assert_blob(&engine, hash, &decoded);
 }
 
@@ -155,10 +155,10 @@ fn input_excision_without_an_index_keeps_bytes_another_input_decodes() {
 fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
     use polylogue_store::fault::{self, Action};
     for edited in [false, true] {
-        let world = ClaudeHome::new();
+        let home = ClaudeHome::new();
         let (encoded, decoded) = image_payload('A');
         let (next_encoded, _) = image_payload('B');
-        let path = world.file("pending-pool.jsonl");
+        let path = home.file("pending-pool.jsonl");
         let original = image_record(
             "pending-image",
             "pending-image",
@@ -170,12 +170,12 @@ fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
         let image = hashed_blobs::Hash::of(&decoded);
         let input;
         {
-            let (mut engine, _lock) = engine(&world, 1 << 20);
+            let (mut engine, _lock) = engine(&home, 1 << 20);
             input = engine.location_id(&path);
             fault::arm("import.install", &input, Action::Fail, 0, 1);
-            assert!(!engine.converge().unwrap().errors.is_empty());
+            assert!(!engine.run_pass().unwrap().errors.is_empty());
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
+                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
                 1
             );
             assert!(!engine.blobs.contains(&raw));
@@ -192,22 +192,22 @@ fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
             )
             .unwrap();
         }
-        let (mut engine, _lock) = engine(&world, 1 << 20);
+        let (mut engine, _lock) = engine(&home, 1 << 20);
         for _ in 0..2 {
-            let pass = engine.converge().unwrap();
+            let pass = engine.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{edited}: {:?}", pass.errors);
         }
         assert_eq!(engine.blobs.contains(&raw), !edited);
         assert!(engine.blobs.contains(&image));
         if edited {
-            assert_eq!(world.count("SELECT count(*) AS n FROM a.revision"), 2);
+            assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 2);
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
+                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
                 1
             );
         } else {
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
+                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
                 0
             );
             assert_blob(&engine, polylogue_model::BlobHash(image.0), &decoded);

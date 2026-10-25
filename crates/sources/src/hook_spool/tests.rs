@@ -23,7 +23,7 @@ fn each_line_is_an_event_on_the_harness_session() {
                "payload": {"tool_name": "Bash", "tool_input": {"command": "ls"}}}),
         json!({"event_type": "Stop", "provider": "codex", "payload": {}}),
     ]);
-    let step = run(&HookSpool, &mut Carry::default(), &input, 0).unwrap();
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
     let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, ["hook_session_start", "hook_pre_tool_use"]);
     let pre = &step.output.events[1];
@@ -37,8 +37,8 @@ fn each_line_is_an_event_on_the_harness_session() {
         &input[first_len..first_len + second_len]
     });
     assert_eq!(step.output.sessions[0].cwd, ["/repo"]);
-    assert_eq!(step.accounting.unknown["Stop: event names no session"], 1);
-    assert_eq!(step.accounting.framed, 3);
+    assert_eq!(step.counts.skipped["Stop: event names no session"], 1);
+    assert_eq!(step.counts.records, 3);
 }
 
 #[test]
@@ -75,16 +75,16 @@ fn the_hook_commands_carrier_lines_are_read() {
         Path::new("/s/polylogue/hooks/4242.ndjson"),
         &input[..40]
     ));
-    let mut carry = Carry::default();
-    let step = run(&HookSpool, &mut carry, &input, 0).unwrap();
+    let mut parser_state = ParserState::default();
+    let step = run(&HookSpool, &mut parser_state, &input, 0).unwrap();
     let e = &step.output.events[0];
     assert_eq!(e.kind, "hook_pre_tool_use");
     assert_eq!(e.session.as_ref().unwrap().to_string(), "claude-code:s9");
     assert_eq!(e.at.unwrap().unix_ms(), 1_792_400_000_123);
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
     assert!(LOCATIONS.contains(&"polylogue/hooks/*.ndjson"));
 }

@@ -14,7 +14,7 @@ fn at(day: i64, hour: i64) -> Option<i64> {
     Some(OCT1 + (day - 1) * DAY + (hour - 12) * 3_600_000)
 }
 
-struct World {
+struct TestArchive {
     _dir: tempfile::TempDir,
     fx: Fixture,
 }
@@ -39,7 +39,7 @@ fn msg<'a>(
 
 /// #1–#8 as the example's FACTS table has them, reduced to what the
 /// queries below read.
-fn morrow() -> World {
+fn morrow() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
     let cc = |n: u8| format!("claude-code:7f3a2c10-000{n}-4000-8000-00000000000{n}");
@@ -366,7 +366,7 @@ fn morrow() -> World {
         "message:m2p0",
     )
     .unwrap();
-    World { _dir: dir, fx }
+    TestArchive { _dir: dir, fx }
 }
 
 fn ask(text: &str) -> Ask<'_> {
@@ -384,13 +384,13 @@ fn ask(text: &str) -> Ask<'_> {
     }
 }
 
-fn run_q(w: &World, a: Ask<'_>) -> Result<Value, Failure> {
+fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
     let pool = w.fx.reads().unwrap();
     let r = pool.reader().unwrap();
     run(&r, a)
 }
 
-fn q(w: &World, text: &str) -> Value {
+fn q(w: &TestArchive, text: &str) -> Value {
     run_q(w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
 }
 
@@ -619,7 +619,7 @@ fn matches_return_the_rows_that_matched() {
     );
     assert_eq!(v["shape"], "summary");
     assert_eq!(v["rows"][0]["count"], 1);
-    // exists: one row per owner and matching child.
+    // exists: one row per parent row and matching child.
     let v = q(
         &w,
         "sessions where exists tool_call(action:shell AND outcome:error) | matches",
@@ -721,7 +721,7 @@ fn turns_list_their_prompts_and_whether_their_answer_was_corrected() {
 #[test]
 fn kept_results_read_back_as_they_were_kept() {
     let mut w = morrow();
-    let kept_of = |w: &World, text: &str| {
+    let kept_of = |w: &TestArchive, text: &str| {
         let pool = w.fx.reads().unwrap();
         let r = pool.reader().unwrap();
         keep(&r, ask(text)).unwrap()
@@ -756,7 +756,7 @@ fn kept_results_read_back_as_they_were_kept() {
 }
 
 #[test]
-fn links_and_lineage() {
+fn links_and_parents() {
     let w = morrow();
     // 24: parent drops the subagent default.
     assert_eq!(
@@ -768,7 +768,7 @@ fn links_and_lineage() {
     );
     // 25.
     assert_eq!(
-        ids(&q(&w, "lineage:codex:01a20000-0005-7000-8000-000000000005")),
+        ids(&q(&w, "connected:codex:01a20000-0005-7000-8000-000000000005")),
         ["#6", "#5"]
     );
     // 36.
@@ -855,7 +855,7 @@ fn an_empty_result_explains_itself() {
     assert_eq!(v["why"][0]["of"], 7);
     // 33: semantic search is not enabled.
     let v = q(&w, "near:\"ambiguous date formats\"");
-    assert_eq!(v["outcome"], "degraded");
+    assert_eq!(v["outcome"], "incomplete");
     assert_eq!(v["count"], 7);
 }
 
@@ -951,7 +951,7 @@ fn a_session_query_scopes_a_row_query() {
 
 /// A session that claims a Bead, fails then passes its tests, commits and
 /// closes the Bead; derived into the work graph.
-fn worked() -> World {
+fn worked() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
     let s = fx
@@ -988,7 +988,7 @@ fn worked() -> World {
         .unwrap();
     }
     fx.derive().unwrap();
-    World { _dir: dir, fx }
+    TestArchive { _dir: dir, fx }
 }
 
 #[test]
@@ -1027,15 +1027,15 @@ mod morrow_examples;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {
-    let mut world = morrow();
-    world
+    let mut fixture = morrow();
+    fixture
         .fx
         .kept_result("broken", "sessions", "not JSON")
         .unwrap();
-    let failure = run_q(&world, ask("sessions")).unwrap_err();
+    let failure = run_q(&fixture, ask("sessions")).unwrap_err();
     assert_eq!(failure.kind, "store");
     assert!(failure.message.contains("malformed JSON"));
-    let pool = world.fx.reads().unwrap();
+    let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
     let failure = keep(&reader, ask("sessions")).unwrap_err();
     assert_eq!(failure.kind, "store");
@@ -1156,7 +1156,7 @@ fn work_queries_distinguish_unknown_check_totals_from_failures() {
         .unwrap();
     }
     fx.derive().unwrap();
-    let w = World { _dir: dir, fx };
+    let w = TestArchive { _dir: dir, fx };
     let fields = ["checks_passed", "checks_failed", "checks_unknown"].map(str::to_owned);
     let totals = run_q(
         &w,

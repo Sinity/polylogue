@@ -79,15 +79,15 @@ fn a_first_read_cannot_see_states_separated_by_two_commits() {
 
 #[test]
 fn started_reads_do_not_hold_the_write_lock() {
-    use crate::fixture::writer::{WriterWorld, prose};
-    let mut world = WriterWorld::new();
-    world.write("synthetic", prose("synthetic", 1, 1, "before"));
-    world.writer.flush().unwrap();
-    let pool = ReadPool::open(&world.archive).unwrap();
+    use crate::fixture::writer::{WriterArchive, prose};
+    let mut fixture = WriterArchive::new();
+    fixture.write("synthetic", prose("synthetic", 1, 1, "before"));
+    fixture.writer.flush().unwrap();
+    let pool = ReadPool::open(&fixture.archive).unwrap();
     let reader = pool.reader().unwrap();
     let before = reader.change_position().unwrap();
-    world.write("synthetic", prose("synthetic", 2, 2, "after"));
-    world.writer.flush().unwrap();
+    fixture.write("synthetic", prose("synthetic", 2, 2, "after"));
+    fixture.writer.flush().unwrap();
     let after = pool.reader().unwrap().change_position().unwrap();
     assert!(after.archive > before.archive);
     assert!(after.index > before.index);

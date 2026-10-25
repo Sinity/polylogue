@@ -159,7 +159,7 @@ fn repeated_records_measure_lookup_work_separately_from_pipeline_time() {
         assert_eq!(unaccounted(std::hint::black_box(&value), &fields), expected);
     }
     eprintln!(
-        "field accounting component: {count} records; reference={old:?}, compiled={:?}; reference declaration comparisons={comparisons}; one declaration lookup initialization",
+        "field counts component: {count} records; reference={old:?}, compiled={:?}; reference declaration comparisons={comparisons}; one declaration lookup initialization",
         start.elapsed()
     );
     assert!(comparisons > count * fields.rules.len());

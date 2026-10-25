@@ -12,10 +12,10 @@
 //! upsert, so that changes nothing.
 
 use crate::archive::{Archive, bump_counter, open_write};
-use crate::blobs::{Change, FileFacts, Piece, Stored};
+use crate::blobs::{Change, FileFacts, NewBlob, Stored};
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Accounting, BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, Role,
+    RecordCounts, BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, Role,
     Session, SessionId, Timestamp, ToolAction, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -36,7 +36,7 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, pack_event, unpack_block};
 pub use batch::{
-    Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Batch, InZip, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,
 };
 pub(crate) use bytes::observation_id;
 use bytes::*;
@@ -65,7 +65,7 @@ enum Msg {
     ),
     /// Bytes no input holds (a chat action's attachment), as one blob.
     StoreBlob(
-        Box<(crate::Piece, Option<crate::staging::PreparedBytes>)>,
+        Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
     Stop,
@@ -299,7 +299,7 @@ impl Writer {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
 
-    /// Stores one acquisition's bytes ([`Inner::store_bytes`]). The batch
+    /// Stores one import's bytes ([`Inner::store_bytes`]). The batch
     /// carries the observation, never parsed rows.
     pub fn store_bytes(
         &self,
@@ -317,17 +317,17 @@ impl Writer {
 
     /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
     /// `file` is the private file [`crate::Archive::prepare_decoded`] wrote
-    /// for a piece too large to keep inline.
+    /// for a new blob too large to keep inline.
     pub fn store_blob(
         &self,
-        piece: crate::Piece,
+        new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::StoreBlob(Box::new((piece, file)), reply))
+            .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -414,12 +414,12 @@ impl WriterSender {
     /// As [`Writer::store_blob`].
     pub fn store_blob(
         &self,
-        piece: crate::Piece,
+        new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
         let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::StoreBlob(Box::new((piece, file)), reply))
+            .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -569,8 +569,8 @@ impl Inner {
                 let _ = reply.send(self.finish_writing(&store));
             }
             for (blob, reply) in blobs.drain(..) {
-                let (piece, file) = *blob;
-                let _ = reply.send(self.store_blob(piece, file));
+                let (new_blob, file) = *blob;
+                let _ = reply.send(self.store_blob(new_blob, file));
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
@@ -895,17 +895,17 @@ impl Inner {
     /// settles.
     fn store_blob(
         &mut self,
-        piece: crate::Piece,
+        new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
         let _write = crate::write_lock::hold(&self.archive)?;
         let Some(file) = file else {
             let tx = self.archive.transaction()?;
-            bytes::insert_blob(&tx, &piece)?;
+            bytes::insert_blob(&tx, &new_blob)?;
             tx.commit()?;
-            return Ok(piece.hash);
+            return Ok(new_blob.hash);
         };
-        if file.owner != self.location.root || file.hash() != piece.hash {
+        if file.owner != self.location.root || file.hash() != new_blob.hash {
             return Err(StoreError::Invalid(
                 "a blob's file is a private file of this archive with its bytes".into(),
             ));
@@ -913,11 +913,11 @@ impl Inner {
         self.archive.execute(
             "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
              VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
-            params![&piece.hash.0[..], piece.size as i64],
+            params![&new_blob.hash.0[..], new_blob.size as i64],
         )?;
         let present: bool = self.archive.query_row(
             "SELECT state = 'present' FROM blob WHERE hash = ?1",
-            [&piece.hash.0[..]],
+            [&new_blob.hash.0[..]],
             |r| r.get(0),
         )?;
         if !present {
@@ -927,14 +927,14 @@ impl Inner {
                 ));
             };
             prepared.install_checked::<StoreError>(|| Ok(()))?;
-            let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(piece.hash.0))?)
+            let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(new_blob.hash.0))?)
                 .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
             self.archive.execute(
                 "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
-                params![&piece.hash.0[..], size],
+                params![&new_blob.hash.0[..], size],
             )?;
         }
-        Ok(piece.hash)
+        Ok(new_blob.hash)
     }
 
     fn write_user(
@@ -951,7 +951,7 @@ impl Inner {
             if let Some(sinex) = &self.sinex {
                 let record = crate::primary::Record::Request {
                     request: Box::new(request.clone()),
-                    root: crate::user_writes::note_root(&tx, request)?,
+                    root: crate::user_writes::first_note_of_request(&tx, request)?,
                 };
                 let material = sinex.send_record(&record)?;
                 crate::primary::record_material(&tx, &record, &material)?;
@@ -963,14 +963,14 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if crate::containers::coordinate(b).is_some() {
+            if crate::zip_members::zip_of(b).is_some() {
                 return Err(StoreError::Invalid(
                     "a ZIP member is stored with its ZIP's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;
             for p in &b.parse {
-                p.accounting.check()?;
+                p.counts.check()?;
             }
         }
         let _lock = crate::write_lock::hold(&self.archive)?;
@@ -980,7 +980,7 @@ impl Inner {
         for b in batches.clone() {
             let (chain, record) = write_bytes(&atx, b, seq)?;
             if let (Some(sinex), Some(record)) = (&self.sinex, &record) {
-                staging::send_to_sinex(sinex.as_ref(), &atx, record, None, b.piece.as_ref())?;
+                staging::send_to_sinex(sinex.as_ref(), &atx, record, None, b.new_blob.as_ref())?;
             }
             chains.push(chain);
         }
@@ -1038,7 +1038,7 @@ fn excise_on_sinex(
 fn input_bytes(b: &Batch) -> u64 {
     match (b.parse.first(), b.parse.last()) {
         (Some(first), Some(last)) => last.parsed_upto.saturating_sub(first.start),
-        _ => b.piece.as_ref().map_or(0, |p| p.size),
+        _ => b.new_blob.as_ref().map_or(0, |p| p.size),
     }
 }
 

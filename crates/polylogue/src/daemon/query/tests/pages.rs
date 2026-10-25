@@ -20,7 +20,7 @@ fn writes_between_pages_neither_refuse_nor_repeat_rows() {
         );
     }
     let (mut engine, _lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let first = page(&home, None).unwrap();
     assert_eq!(first["count"], 3);
     assert_eq!(first["rows"][0]["id"], "claude-code:a");
@@ -29,7 +29,7 @@ fn writes_between_pages_neither_refuse_nor_repeat_rows() {
     // One session sorts before the cursor, one after it.
     home.append("aa.jsonl", &claude_user("aa1", "aa", "new earlier prompt"));
     home.append("d.jsonl", &claude_user("d1", "d", "new later prompt"));
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let second = page(&home, Some(cursor)).unwrap();
     assert_eq!(second["count"], 5);
     let ids: Vec<&str> = second["rows"]
@@ -131,7 +131,7 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             );
         }
         let (mut engine, lock) = home.engine(64 << 20);
-        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(engine.run_pass().unwrap().errors.is_empty());
         let first = page(&home, None).unwrap();
         let cursor = first["next"].as_str().unwrap();
         if rebuild {
@@ -139,7 +139,7 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             drop(lock);
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
-            assert!(reopened.converge().unwrap().errors.is_empty());
+            assert!(reopened.run_pass().unwrap().errors.is_empty());
             assert_eq!(
                 page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
                 "claude-code:c"
@@ -150,7 +150,7 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
                 claude_user("b1", "b", "after exact rewrite"),
             )
             .unwrap();
-            assert!(engine.converge().unwrap().errors.is_empty());
+            assert!(engine.run_pass().unwrap().errors.is_empty());
             assert_eq!(
                 page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
                 "claude-code:c"
@@ -203,7 +203,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     let (_dir, mut fixture) = derived_fixture();
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
     let page_cursor = first["next"].as_str().unwrap();
-    let change_cursor = first["view"]["cursor"].as_str().unwrap();
+    let change_cursor = first["read_at"]["cursor"].as_str().unwrap();
     assert!(fixture.derive().unwrap() > 0);
     assert_eq!(
         fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1).unwrap()["rows"][0]
@@ -227,7 +227,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     );
     let current = fixture_query(&fixture, "sessions | sort by id", None, 100).unwrap();
     assert_eq!(current["rows"][0]["title"], "derived a");
-    let settled = changes["view"].clone();
+    let settled = changes["read_at"].clone();
     assert_eq!(fixture.derive().unwrap(), 0);
     let after = fixture_query(
         &fixture,
@@ -240,7 +240,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     )
     .unwrap();
     assert_eq!(after["count"], 0);
-    assert_eq!(after["view"], settled);
+    assert_eq!(after["read_at"], settled);
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         &fixture,
         &format!(
             "changes where after:{}",
-            first["view"]["cursor"].as_str().unwrap()
+            first["read_at"]["cursor"].as_str().unwrap()
         ),
         None,
         100,
@@ -270,11 +270,11 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         changes["count"], 0,
         "index availability did not edit session records"
     );
-    assert!(changes["view"]["index"].as_i64().unwrap() > first["view"]["index"].as_i64().unwrap());
+    assert!(changes["read_at"]["index"].as_i64().unwrap() > first["read_at"]["index"].as_i64().unwrap());
     assert_eq!(fixture.commit_search().unwrap(), 0);
     assert_eq!(
-        fixture_query(&fixture, "sessions", None, 100).unwrap()["view"],
-        changes["view"]
+        fixture_query(&fixture, "sessions", None, 100).unwrap()["read_at"],
+        changes["read_at"]
     );
 }
 
@@ -418,7 +418,7 @@ fn blocks_of_one_message_page_in_position_order() {
         )
         .unwrap();
     }
-    let w = World { _dir: dir, fx };
+    let w = TestArchive { _dir: dir, fx };
     let mut positions = Vec::new();
     let mut cursor: Option<String> = None;
     loop {

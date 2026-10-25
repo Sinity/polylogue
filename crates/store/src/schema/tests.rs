@@ -48,8 +48,8 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            41,
-            "44d3b0ec662f984dee8c6db703f125cb7658e93138397cea32b05f7ef2b1fc22".to_owned(),
+            42,
+            "c6b7dd232c37df7287ed426b22ad2ba51916bddc1822d1a172fc6e08fdac779f".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"

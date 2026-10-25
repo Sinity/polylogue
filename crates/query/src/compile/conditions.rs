@@ -24,7 +24,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn cond(
         &mut self,
         c: &Cond,
-        scope: &Scope,
+        scope: &RowContext,
         top: bool,
     ) -> Result<String, QueryError> {
         Ok(match &c.kind {
@@ -88,7 +88,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn text(
         &mut self,
         words: &[(String, bool, Span)],
-        scope: &Scope,
+        scope: &RowContext,
         index: Index,
         top: bool,
     ) -> Result<String, QueryError> {
@@ -156,7 +156,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn reference_word(
         &mut self,
         word: &str,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
@@ -194,7 +194,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn url(
         &mut self,
         url: &str,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let id = provider_url(&self.opts.chat_pages, url).ok_or_else(|| QueryError::Invalid {
@@ -208,7 +208,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn session_ref(
         &mut self,
         id: &str,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
@@ -220,7 +220,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// The alias of the session a row of this unit belongs to.
-    pub(super) fn session_alias(&self, scope: &Scope, span: Span) -> Result<String, QueryError> {
+    pub(super) fn session_alias(&self, scope: &RowContext, span: Span) -> Result<String, QueryError> {
         if scope.unit == Unit::Sessions || fields::has_session(scope.unit) {
             Ok(scope.a.s.clone())
         } else {
@@ -238,7 +238,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn under_parent(
         &mut self,
         parent: Unit,
-        child: &Scope,
+        child: &RowContext,
         key: &str,
         session: Result<String, QueryError>,
     ) -> Result<String, QueryError> {
@@ -261,7 +261,7 @@ impl<'a> Compiler<'a> {
     /// sessions `sessions` selects.
     pub(super) fn session_link(
         &mut self,
-        scope: &Scope,
+        scope: &RowContext,
         sessions: &str,
     ) -> Result<String, QueryError> {
         let Some(t) = units::spec(scope.unit).session_scope else {
@@ -284,7 +284,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         field: &str,
         op: FieldOp<'_>,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
         top: bool,
     ) -> Result<String, QueryError> {
@@ -342,7 +342,7 @@ impl<'a> Compiler<'a> {
                 unit,
                 name: def.name,
                 op,
-                scope: &Scope { unit, a },
+                scope: &RowContext { unit, a },
                 span,
                 top,
             };
@@ -425,7 +425,7 @@ impl<'a> Compiler<'a> {
         rest: &str,
         target: Unit,
         op: FieldOp<'_>,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let sub = Span {
@@ -441,14 +441,14 @@ impl<'a> Compiler<'a> {
             })?;
         match rel.via {
             Via::Same => {
-                let sc = Scope {
+                let sc = RowContext {
                     unit: target,
                     a: a.clone(),
                 };
                 self.field_cond(rest, op, &sc, sub, false)
             }
             Via::Session(alias) => {
-                let sc = Scope {
+                let sc = RowContext {
                     unit: Unit::Sessions,
                     a: Aliases {
                         s: a.expand(alias),
@@ -459,7 +459,7 @@ impl<'a> Compiler<'a> {
             }
             Via::Exists { cond: template, .. } => {
                 let n = self.fresh();
-                let inner = Scope {
+                let inner = RowContext {
                     unit: target,
                     a: n.clone(),
                 };

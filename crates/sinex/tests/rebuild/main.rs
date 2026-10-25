@@ -119,7 +119,7 @@ fn converge_on_sinex(world: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &C
     let mut settings = world.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 }
 
@@ -266,7 +266,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         let excised = engine
             .excise(polylogue_engine::ExciseRequest {
                 id: "0199d8a0-0000-7000-8000-00000000e001".into(),
-                scope: polylogue_engine::ExciseScope::Session(polylogue_testkit::session(1)),
+                target: polylogue_engine::ExciseTarget::Session(polylogue_testkit::session(1)),
                 reason: None,
                 dry_run: false,
             })

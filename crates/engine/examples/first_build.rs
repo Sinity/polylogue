@@ -305,7 +305,7 @@ fn main() {
     let mut engine = Engine::new(config, archive.clone()).unwrap();
     let setup_seconds = started.elapsed().as_secs_f64();
     let ingest_started = Instant::now();
-    let pass = engine.converge().unwrap();
+    let pass = engine.run_pass().unwrap();
     drop(engine);
     let ingest_seconds = ingest_started.elapsed().as_secs_f64();
     let secs = started.elapsed().as_secs_f64();

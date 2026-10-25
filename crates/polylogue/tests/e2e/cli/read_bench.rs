@@ -296,7 +296,7 @@ fn check_cancelled_client(env: &[(&str, &Path)], daemon: &Daemon, expected: &[St
 
 #[test]
 #[ignore = "opt-in measurement: xtask bench reads"]
-fn native_read_benchmark() {
+fn read_benchmark() {
     let report =
         std::env::var_os("POLYLOGUE_READ_BENCH_REPORT").expect("run through xtask bench reads");
     let repetitions: usize = std::env::var("POLYLOGUE_READ_BENCH_REPETITIONS")
@@ -306,11 +306,11 @@ fn native_read_benchmark() {
     assert!(repetitions > 0);
     let full_walk = std::env::var("POLYLOGUE_READ_BENCH_FULL_WALK").as_deref() == Ok("1");
     let setup = Instant::now();
-    let world = polylogue_testkit::ClaudeHome::new();
-    let config = world.dir.path().join("config");
+    let home = polylogue_testkit::ClaudeHome::new();
+    let config = home.dir.path().join("config");
     let env = [
-        ("POLYLOGUE_HOME", world.home.as_path()),
-        ("POLYLOGUE_ARCHIVE", world.root.as_path()),
+        ("POLYLOGUE_HOME", home.home.as_path()),
+        ("POLYLOGUE_ARCHIVE", home.root.as_path()),
         ("XDG_CONFIG_HOME", config.as_path()),
     ];
     let expected: Vec<_> = (0..MAIN_MESSAGES).map(body).collect();
@@ -349,7 +349,7 @@ fn native_read_benchmark() {
         identity.update(&[0]);
         identity.update(lines.as_bytes());
         input_bytes += lines.len();
-        world.append(&name, &lines);
+        home.append(&name, &lines);
     }
     let population_seconds = setup.elapsed().as_secs_f64();
     let began = Instant::now();
@@ -470,7 +470,7 @@ fn native_read_benchmark() {
         "native read bench: cleaning synthetic population at {:.3}s",
         setup.elapsed().as_secs_f64()
     );
-    drop(world);
+    drop(home);
     eprintln!(
         "native read bench: finished at {:.3}s",
         setup.elapsed().as_secs_f64()

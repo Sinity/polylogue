@@ -385,7 +385,7 @@ pub static UNITS: &[UnitSpec] = &[
         defaults: &[
             d(
                 Expr::Fn(main_sessions),
-                &["kind", "parent", "root", "depth", "lineage", "link"],
+                &["kind", "parent", "root", "depth", "connected", "link"],
                 true,
             ),
             d(Expr::Template("{s}.stub = 0"), &["source"], false),
@@ -685,7 +685,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("value", T("{r}.value"), Text),
             ("author", T("{r}.author"), Text),
             ("created_at", T("{r}.created_at"), Time),
-            ("root", T("{r}.root"), Text),
+            ("first_note", T("{r}.first_note"), Text),
             (
                 "target",
                 T(
@@ -710,7 +710,7 @@ pub static UNITS: &[UnitSpec] = &[
             d(Expr::Template("{r}.kind <> 'withdrawal'"), &["kind"], false),
             d(
                 Expr::Fn(current_note),
-                &["current", "root", "withdrawn"],
+                &["current", "first_note", "withdrawn"],
                 false,
             ),
             d(Expr::Fn(not_withdrawn), &["withdrawn"], false),
@@ -876,11 +876,11 @@ pub static UNITS: &[UnitSpec] = &[
         from: Expr::Template(
             "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
                MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \
-               cs.live_changed AS live_changed, NULL AS note_kind, NULL AS scope, NULL AS sessions, NULL AS messages FROM session cs \
+               cs.live_changed AS live_changed, NULL AS note_kind, NULL AS target, NULL AS sessions, NULL AS messages FROM session cs \
              UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL, NULL, NULL \
                FROM removed_session rs \
              UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind, NULL, NULL, NULL FROM a.note cn \
-             UNION ALL SELECT 'excision', ce.id, NULL, ce.commit_seq, NULL, NULL, NULL, ce.scope, \
+             UNION ALL SELECT 'excision', ce.id, NULL, ce.commit_seq, NULL, NULL, NULL, ce.target, \
                (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'session'), \
                (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'message') \
                FROM a.excision ce) {r}",
@@ -893,7 +893,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("seq", T("{r}.seq"), Number),
             ("live_changed", T("{r}.live_changed"), Number),
             ("note_kind", T("{r}.note_kind"), Text),
-            ("scope", T("{r}.scope"), Text),
+            ("target", T("{r}.target"), Text),
             ("sessions", T("{r}.sessions"), Ids),
             ("messages", T("{r}.messages"), Ids),
         ],

@@ -62,8 +62,8 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
             return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
         }
         crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() || v.text("asset").is_some() {
-        return Err("--out and --asset require --reveal".into());
+    } else if v.text("out").is_some() || v.text("input").is_some() {
+        return Err("--out and --input require --reveal".into());
     }
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))
@@ -77,7 +77,7 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
         .map_err(|e| e.to_string())?,
         block: index("block", 0)?,
         attachment: index("attachment", 0)?,
-        asset: v.text("asset"),
+        input: v.text("input"),
         reveal,
         length: index("length", 65536)?,
         cursor: None,
@@ -103,13 +103,13 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
     let target = ReadTarget::parse(&v.text("session").ok_or("`session` is required")?)?;
-    let logical = v.flag("logical");
+    let with_parents = v.flag("with_parents");
     match target {
-        ReadTarget::Event(_) if logical => {
-            return Err("an event has no conversation ancestry".into());
+        ReadTarget::Event(_) if with_parents => {
+            return Err("an event has no conversation parents".into());
         }
-        ReadTarget::Document(_) if logical => {
-            return Err("documents have no conversation ancestry".into());
+        ReadTarget::Document(_) if with_parents => {
+            return Err("documents have no conversation parents".into());
         }
         _ => {}
     }
@@ -119,7 +119,7 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
         format: v
             .text("format")
             .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-        logical,
+        with_parents,
         budget: v
             .integer("budget")
             .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),

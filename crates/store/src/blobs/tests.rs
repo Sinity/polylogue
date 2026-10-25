@@ -34,10 +34,10 @@ fn classifies_every_kind_of_change() {
 fn small_pieces_are_inline_and_large_ones_files() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
-    let small = Piece::prepare(&store, b"hello").unwrap();
+    let small = NewBlob::prepare(&store, b"hello").unwrap();
     assert!(matches!(small.stored, Stored::Inline(_)));
     let big = vec![7u8; INLINE_LIMIT + 1];
-    let large = Piece::prepare(&store, &big).unwrap();
+    let large = NewBlob::prepare(&store, &big).unwrap();
     assert!(matches!(large.stored, Stored::File { .. }));
     assert!(store.contains(&hashed_blobs::Hash(large.hash.0)));
 }

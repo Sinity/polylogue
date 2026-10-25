@@ -145,7 +145,7 @@ impl Reader<'_> {
     pub fn asset_source(&self, input: &str) -> Result<Option<AssetSource>> {
         asset_source(self.conn()?, "a.", input)
     }
-    /// Only unseen acquisition metadata is decoded. Content and observations
+    /// Only unseen import metadata is decoded. Content and observations
     /// remain separate: equal bytes can have several physical memberships.
     pub fn unindexed_import_members(&self) -> Result<(Vec<ObservedMember>, Option<i64>)> {
         let conn = self.conn()?;
@@ -165,13 +165,13 @@ impl Reader<'_> {
         // A ZIP is the source of its members, not one of the attachments among them.
         let mut originals =
             std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.acquisition') FROM a.observation o
-            JOIN a.observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
+        let mut roots=conn.prepare("SELECT DISTINCT c.zip_input,json_extract(o.details_json,'$.import.import_id') FROM a.observation o
+            JOIN a.observation_zip c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
         for row in roots.query_map([after, through], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
-            let (input, acquisition) = row?;
-            originals.entry(input).or_default().insert(acquisition);
+            let (input, import_id) = row?;
+            originals.entry(input).or_default().insert(import_id);
         }
         let mut stmt = conn.prepare(
             "SELECT o.id,o.input,o.details_json FROM a.observation o
@@ -191,12 +191,12 @@ impl Reader<'_> {
                 let membership: ImportMember = serde_json::from_value(member.clone())?;
                 if originals
                     .get(&input)
-                    .is_some_and(|acquisitions| acquisitions.contains(&membership.acquisition))
+                    .is_some_and(|imports| imports.contains(&membership.import_id))
                 {
                     continue;
                 }
                 if membership.version != 1
-                    || membership.acquisition.is_empty()
+                    || membership.import_id.is_empty()
                     || membership.member.is_empty()
                 {
                     return Err(StoreError::Invalid(
@@ -259,7 +259,7 @@ pub(crate) fn install(
                     "INSERT OR IGNORE INTO import_member VALUES (?1,?2,?3,?4,?5,?6)",
                     params![
                         source.observation,
-                        source.membership.acquisition,
+                        source.membership.import_id,
                         source.input,
                         source.membership.member,
                         source_id,

@@ -1,6 +1,6 @@
 //! Keeping excised content out: a batch that names an excised session or
 //! message is written without it, so excised content never comes back by
-//! any route.
+//! any arrival.
 
 use super::*;
 

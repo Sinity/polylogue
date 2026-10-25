@@ -15,8 +15,8 @@ use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
-use crate::parse::{InlineBlob, MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::parse::{ExtractedBlob, MessageRow, Output, Parse};
+use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Event, Json, Link, LinkKind,
@@ -208,7 +208,7 @@ impl ExportParser for AiStudio {
         let sink = Sink::new(&mut out, &mut records);
         if !doc.is_object() {
             sink.records
-                .record("prompt", &Disposition::refused("not an object"));
+                .record("prompt", &RecordOutcome::unreadable("not an object"));
         } else {
             let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
             sink.records.fields("prompt", &doc, &DOCUMENT_FIELDS);
@@ -217,7 +217,7 @@ impl ExportParser for AiStudio {
                 session.offer_title(title, TitleSource::FileName);
             }
             sink.out.sessions.push(session);
-            sink.records.record("prompt", &Disposition::Materialized);
+            sink.records.record("prompt", &RecordOutcome::Used);
             let settings = doc.get("runSettings").cloned().unwrap_or(Json::Null);
             self.state.model = str_of(&settings, "model")
                 .map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
@@ -242,10 +242,10 @@ impl ExportParser for AiStudio {
         }
         Ok(Some(crate::parse::Step {
             output: out,
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
 
@@ -294,7 +294,7 @@ impl ExportParser for AiStudio {
                     end: offset + 1,
                     message,
                 });
-                sink.records.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &RecordOutcome::Used);
             }
             Err(d) => {
                 self.state.pending_call = None;
@@ -333,7 +333,7 @@ impl AiStudio {
         position: usize,
         chunk: &Json,
         sink: &mut Sink<'_>,
-    ) -> Result<Message, Disposition> {
+    ) -> Result<Message, RecordOutcome> {
         let native_role = chunk_role(chunk);
         if native_role != Some("model") {
             self.state.pending_call = None;
@@ -342,14 +342,14 @@ impl AiStudio {
         let role = match native_role {
             Some("user") => Role::User,
             Some("model") => Role::Assistant,
-            Some(other) => return Err(Disposition::refused(format!("unknown role {other}"))),
-            None => return Err(Disposition::refused("no role")),
+            Some(other) => return Err(RecordOutcome::unreadable(format!("unknown role {other}"))),
+            None => return Err(RecordOutcome::unreadable("no role")),
         };
         let native = match str_of(chunk, "id") {
             Some(id) => format!("{}#{id}", self.native),
             None => format!("{}#{position}", self.native),
         };
-        let id = message_id(ORIGIN, &native).ok_or_else(|| Disposition::refused("unusable id"))?;
+        let id = message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
         let thought = chunk.get("isThought").and_then(Json::as_bool) == Some(true);
 
         let mut blocks = text_blocks(chunk, thought);
@@ -429,7 +429,7 @@ impl AiStudio {
             });
         }
         if blocks.is_empty() {
-            return Err(Disposition::unknown("empty chunk"));
+            return Err(RecordOutcome::skipped("empty chunk"));
         }
 
         let mut message = plain(id, sid.clone(), role, blocks);
@@ -556,7 +556,7 @@ fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
         let hash = BlobHash::of(&bytes);
         a.size = Some(bytes.len() as u64);
         a.blob = Some(hash);
-        sink.out.blobs.push(InlineBlob {
+        sink.out.blobs.push(ExtractedBlob {
             hash,
             size: bytes.len() as u64,
             bytes,
@@ -617,7 +617,7 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
                 let hash = BlobHash::of(&bytes);
                 a.size = Some(bytes.len() as u64);
                 a.blob = Some(hash);
-                sink.out.blobs.push(InlineBlob {
+                sink.out.blobs.push(ExtractedBlob {
                     hash,
                     size: bytes.len() as u64,
                     bytes,
@@ -690,13 +690,13 @@ impl ExportParser for Listing {
             return Ok(None);
         }
         let mut records = Records::default();
-        records.record("listing", &Disposition::refused("no files array"));
+        records.record("listing", &RecordOutcome::unreadable("no files array"));
         Ok(Some(crate::parse::Step {
             output: Output::default(),
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
     fn item(
@@ -709,7 +709,7 @@ impl ExportParser for Listing {
         let f = &f;
         sink.records.fields("file", f, &LISTING_FIELDS);
         let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
-            sink.records.record("file", &Disposition::refused("no id"));
+            sink.records.record("file", &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
         let mut session = Session::new(sid, SessionKind::Main);
@@ -720,7 +720,7 @@ impl ExportParser for Listing {
             session.offer_start(at);
         }
         sink.out.sessions.push(session);
-        sink.records.record("file", &Disposition::Materialized);
+        sink.records.record("file", &RecordOutcome::Used);
         Ok(())
     }
 }

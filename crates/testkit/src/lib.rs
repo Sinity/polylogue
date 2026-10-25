@@ -1,4 +1,4 @@
-//! Test worlds built from real files through the real import path, so every
+//! Test archives built from real files through the real import path, so every
 //! test reads an archive the parsers and the writer built, never one
 //! written row by row.
 //!

@@ -15,7 +15,7 @@ content refuses with `unsupported_excision` before anything changes.
   every `index.db` table, its texts in search and `embeddings.db` when no
   other row holds them, and the notes about it.
 - **`document:<id>`:** every input the document came from, when those inputs
-  hold nothing but this document, with its rows, variants and notes.
+  hold nothing but this document, with its rows and notes.
 - **`input:<id>`:** the input, with the sessions and documents it holds, when
   none of them also comes from another input.
 

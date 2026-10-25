@@ -24,7 +24,7 @@ fn read_failure_preserves_successful_prefix_bytes_and_counts() {
     }
     let scanned = scan_reader(&parser(), BreakAfterPrefix(false));
     assert_eq!(scanned.counts.bytes, UNKNOWN.len() as u64);
-    assert_eq!(scanned.counts.accounting.framed, 1);
+    assert_eq!(scanned.counts.counts.records, 1);
     assert!(matches!(
         scanned.outcome,
         Outcome::Failed {
@@ -59,7 +59,7 @@ impl Read for InterruptedOnce {
 }
 
 #[test]
-fn unconsumed_tail_is_incomplete_not_an_extra_unknown_record() {
+fn unconsumed_tail_is_incomplete_not_an_extra_skipped_record() {
     let mut bytes = UNKNOWN.to_vec();
     bytes.extend_from_slice(b"{\"type\":");
     let scanned = scan_reader(&parser(), std::io::Cursor::new(bytes));
@@ -69,8 +69,8 @@ fn unconsumed_tail_is_incomplete_not_an_extra_unknown_record() {
             reason: "unconsumed_tail"
         }
     ));
-    assert_eq!(scanned.counts.accounting.framed, 1);
-    assert_eq!(scanned.counts.accounting.unknown.values().sum::<u64>(), 1);
+    assert_eq!(scanned.counts.counts.records, 1);
+    assert_eq!(scanned.counts.counts.skipped.values().sum::<u64>(), 1);
     assert_eq!(scanned.remaining, 8);
 }
 
@@ -128,7 +128,7 @@ impl polylogue_sources::DocumentParser for Document {
             end: 0,
             document,
         });
-        records.record("document", &polylogue_sources::Disposition::Materialized);
+        records.record("document", &polylogue_sources::RecordOutcome::Used);
     }
 }
 
@@ -145,7 +145,7 @@ fn whole_documents_are_not_parsed_at_short_read_boundaries() {
         Bytewise(std::io::Cursor::new(b"{}")),
     );
     assert!(matches!(scanned.outcome, Outcome::Complete));
-    assert_eq!(scanned.counts.accounting.framed, 1);
+    assert_eq!(scanned.counts.counts.records, 1);
     assert_eq!(scanned.counts.bytes, 2);
     assert_eq!(scanned.counts.documents, 1);
     assert_eq!(scanned.counts.messages, 0);
@@ -165,13 +165,13 @@ fn coalesced_captures_use_end_offsets_not_a_sum_of_ends() {
         std::io::Cursor::new(&bytes),
     );
     assert!(matches!(scanned.outcome, Outcome::Complete));
-    assert_eq!(scanned.counts.accounting.framed, 2);
+    assert_eq!(scanned.counts.counts.records, 2);
     assert_eq!(scanned.counts.documents, 2);
     assert_eq!(scanned.counts.bytes, bytes.len() as u64);
 }
 
 #[test]
-fn parser_failures_are_not_unknown_dispositions_or_source_diagnostics() {
+fn parser_failures_are_not_skipped_records_or_source_diagnostics() {
     let parser = (polylogue_sources::origin::by_name("chatgpt").unwrap().open)(Path::new(
         "conversations.json",
     ))
@@ -187,7 +187,7 @@ fn parser_failures_are_not_unknown_dispositions_or_source_diagnostics() {
         }
     ));
     assert_eq!(scanned.counts.bytes, 19);
-    assert_eq!(scanned.counts.accounting.framed, 0);
+    assert_eq!(scanned.counts.counts.records, 0);
     let diagnostic = Failure::parse(ParseError::CaptureLog("PRIVATE_BODY_MARKER".into()));
     assert!(
         !serde_json::to_string(&diagnostic)

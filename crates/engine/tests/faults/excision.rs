@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_engine::{ExciseRequest, ExciseScope};
+use polylogue_engine::{ExciseRequest, ExciseTarget};
 use polylogue_model::SessionId;
 use polylogue_store::StoreError;
 use polylogue_testkit::{ClaudeHome, claude_user};
@@ -24,13 +24,13 @@ fn a_stop_between_commits_stops_the_writer_and_reopening_finishes() {
         let expected;
         {
             let (mut e, _lock) = w.engine(64 << 20);
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             expected = w.export("claude-code:kept");
             fault::arm(point, "interrupted", Action::Fail, 0, 1);
             let error = e
                 .excise(ExciseRequest {
                     id: "interrupted".into(),
-                    scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+                    target: ExciseTarget::Session(SessionId::parse("claude-code:victim").unwrap()),
                     reason: None,
                     dry_run: false,
                 })
@@ -52,7 +52,7 @@ fn a_stop_between_commits_stops_the_writer_and_reopening_finishes() {
             );
             let later = e.excise(ExciseRequest {
                 id: "must-not-run".into(),
-                scope: ExciseScope::Session(SessionId::parse("claude-code:kept").unwrap()),
+                target: ExciseTarget::Session(SessionId::parse("claude-code:kept").unwrap()),
                 reason: None,
                 dry_run: false,
             });
@@ -60,7 +60,7 @@ fn a_stop_between_commits_stops_the_writer_and_reopening_finishes() {
         }
         fault::clear();
         let (mut e, _lock) = w.engine(64 << 20);
-        assert!(e.converge().unwrap().errors.is_empty());
+        assert!(e.run_pass().unwrap().errors.is_empty());
         assert_eq!(w.export("claude-code:kept"), expected);
         // Before the archive's commit nothing was excised; after it the
         // reopened archive rebuilds an index that missed the excision.
@@ -106,7 +106,7 @@ fn vectors_of_excised_texts_go_first_and_others_stay() {
         let unrelated = vec![9; 32];
         {
             let (mut e, _lock) = w.engine(64 << 20);
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             {
                 let pool = w.reads();
                 let reader = pool.reader().unwrap();
@@ -145,7 +145,7 @@ fn vectors_of_excised_texts_go_first_and_others_stay() {
             assert!(
                 e.excise(ExciseRequest {
                     id: "vector-interrupted".into(),
-                    scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+                    target: ExciseTarget::Session(SessionId::parse("claude-code:victim").unwrap()),
                     reason: None,
                     dry_run: false,
                 })
@@ -169,7 +169,7 @@ fn vectors_of_excised_texts_go_first_and_others_stay() {
         fault::clear();
         for _ in 0..2 {
             let (mut e, _lock) = w.engine(64 << 20);
-            assert!(e.converge().unwrap().errors.is_empty());
+            assert!(e.run_pass().unwrap().errors.is_empty());
             let pool = w.reads();
             let reader = pool.reader().unwrap();
             let vectors = reader.vectors().unwrap();

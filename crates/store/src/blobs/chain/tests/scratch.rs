@@ -84,7 +84,7 @@ fn child(dir: &Path) {
     )
     .unwrap();
     conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,8388608,1)", []).unwrap();
-    // Unique incompressible inline pieces force the actual extents beyond its cache.
+    // Unique incompressible inline new blobs force the actual extents beyond its cache.
     for n in 0u64..512 {
         let bytes = (0u64..512)
             .flat_map(|i| {

@@ -18,7 +18,7 @@ pub mod codex;
 pub mod document;
 pub mod export;
 pub mod fields;
-pub mod frame;
+pub mod lines;
 pub mod gemini_app;
 pub mod gemini_cli;
 pub mod grok;
@@ -35,11 +35,11 @@ mod records;
 pub mod repo_lookup;
 pub mod time;
 
-pub use frame::Record;
-pub use origin::{Capture, ORIGINS, OriginSpec, Root, Route, Support};
+pub use lines::Record;
+pub use origin::{Capture, ORIGINS, OriginSpec, Root, Arrival, Support};
 pub use parse::{
-    BackgroundUpdate, DocumentParser, InlineBlob, MessageRow, Output, Parse, ParseError, Parser,
+    BackgroundUpdate, DocumentParser, ExtractedBlob, MessageRow, Output, Parse, ParseError, Parser,
     Step, StepParser, run, run_document,
 };
-pub use polylogue_model::{Accounting, Disposition};
+pub use polylogue_model::{RecordCounts, RecordOutcome};
 pub use records::Records;

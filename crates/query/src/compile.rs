@@ -88,7 +88,7 @@ pub enum Shape {
     /// One summary row of aggregates.
     Summary,
     /// One row per match of an `exists` or `seq` (`| matches`): the grain
-    /// is the (owner, matching row) pair or the matched step tuple.
+    /// is the (parent row, matching row) pair or the matched step tuple.
     Matches,
 }
 
@@ -185,8 +185,8 @@ pub struct Program {
     pub change_generations: Vec<String>,
     pub attach: Vec<Attach>,
     pub notes: Vec<String>,
-    /// Parts that could not run; the outcome is then `degraded`.
-    pub degraded: Vec<String>,
+    /// Parts that could not run; the outcome is then `incomplete`.
+    pub incomplete: Vec<String>,
     /// `--why`: each top-level condition counted alone, and `why_of`, the
     /// rows the defaults alone keep.
     pub why: Vec<WhyClause>,
@@ -390,12 +390,12 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
 /// The unit a query's rows currently are, and the aliases they are read
 /// through.
 #[derive(Debug, Clone)]
-pub(crate) struct Scope {
+pub(crate) struct RowContext {
     unit: Unit,
     a: Aliases,
 }
 
-impl Scope {
+impl RowContext {
     fn plain(unit: Unit) -> Self {
         Self {
             unit,
@@ -420,7 +420,7 @@ pub(crate) struct Compiler<'a> {
     params: Vec<Param>,
     ctes: Vec<String>,
     notes: Vec<String>,
-    degraded: Vec<String>,
+    incomplete: Vec<String>,
     text_terms: Vec<String>,
     id_checks: Vec<IdCheck>,
     change_generations: Vec<String>,
@@ -442,7 +442,7 @@ impl<'a> Compiler<'a> {
             params: vec![],
             ctes: vec![],
             notes: vec![],
-            degraded: vec![],
+            incomplete: vec![],
             text_terms: vec![],
             id_checks: vec![],
             change_generations: vec![],

@@ -1,5 +1,5 @@
 //! Reading a session, document or event, in pages on one Reader. Masking
-//! state at page ends is cached (`checkpoints`) so a later page need not
+//! state at page ends is cached (`page_ends`) so a later page need not
 //! replay the messages before it.
 use super::{Response, error, ok, store_error};
 use base64::Engine as _;
@@ -12,12 +12,12 @@ use std::ops::ControlFlow;
 const CURSOR_VERSION: u8 = 3;
 
 mod attachments;
-pub(crate) mod checkpoints;
+pub(crate) mod page_ends;
 
 pub(super) struct Options<'a> {
     pub view: &'a str,
     pub format: &'a str,
-    pub logical: bool,
+    pub with_parents: bool,
     pub budget: Option<usize>,
     pub cursor: Option<&'a str>,
 }
@@ -36,7 +36,7 @@ pub(super) fn run(
     reader: &Reader<'_>,
     id: &SessionId,
     options: Options<'_>,
-    cache: &checkpoints::Cache,
+    cache: &page_ends::Cache,
     epoch: u64,
 ) -> Response {
     let Some(view) = polylogue_render::View::parse(options.view) else {
@@ -51,15 +51,15 @@ pub(super) fn run(
         Ok(title) => title,
         Err(e) => return store_error(&e),
     };
-    let selected = match reader.select_messages(id, options.logical) {
+    let selected = match reader.select_messages(id, options.with_parents) {
         Ok(selected) => selected,
         Err(e) => return store_error(&e),
     };
     let notices: Vec<String> = selected
-        .lineage()
+        .parents()
         .issues
         .iter()
-        .map(|issue| format!("Incomplete session ancestry: {issue}"))
+        .map(|issue| format!("Parents incomplete: {issue}"))
         .collect();
     let Some(budget) = options.budget else {
         if options.cursor.is_some() {
@@ -106,9 +106,9 @@ pub(super) fn run(
                 if !descriptors.is_empty() {
                     value["attachments"] = serde_json::json!(descriptors);
                 }
-                if options.logical {
-                    value["lineage"] =
-                        serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+                if options.with_parents {
+                    value["parents"] =
+                        serde_json::to_value(selected.parents()).expect("parents are serializable");
                 }
                 ok(value)
             }
@@ -122,7 +122,7 @@ pub(super) fn run(
     };
     // Tokens contain hashes and numeric positions, never private source text or
     // the masking state reconstructed by replay below.
-    let binding = digest(&serde_json::json!([id, options.logical, options.view]));
+    let binding = digest(&serde_json::json!([id, options.with_parents, options.view]));
     let facts = match selected.fingerprint() {
         Ok(facts) => facts,
         Err(e) => return store_error(&e),
@@ -150,7 +150,7 @@ pub(super) fn run(
         if cursor.binding != binding {
             return error(
                 "bad_request",
-                "the read cursor belongs to a different session, logical mode or view",
+                "the read cursor belongs to a different session, with_parents mode or view",
             );
         }
         if cursor.content != content || cursor.generation != generation {
@@ -161,7 +161,7 @@ pub(super) fn run(
         }
         Some(Position {
             message: cursor.position[0],
-            piece: cursor.position[1],
+            block: cursor.position[1],
             character: cursor.position[2],
         })
     } else {
@@ -171,7 +171,7 @@ pub(super) fn run(
         Ok(index) => index,
         Err(error) => return store_error(&error),
     };
-    let key = checkpoints::Key {
+    let key = page_ends::Key {
         binding: binding.clone(),
         content: content.clone(),
         generation: generation.clone(),
@@ -179,12 +179,12 @@ pub(super) fn run(
     };
     // The epoch taken when the read began stops a read that overlaps a write
     // from restoring or saving cached state after that write clears it.
-    let checkpoint = cache.get(&key, epoch, position.map_or(0, |at| at.message));
-    let from = checkpoint
+    let page_end = cache.get(&key, epoch, position.map_or(0, |at| at.message));
+    let from = page_end
         .as_ref()
-        .map_or(0, |checkpoint| checkpoint.message());
-    let mut pager = match (position, checkpoint) {
-        (Some(at), Some(checkpoint)) => Pager::resume(view, budget, at, checkpoint),
+        .map_or(0, |page_end| page_end.message());
+    let mut pager = match (position, page_end) {
+        (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),
     };
     let mut failure = None;
@@ -234,13 +234,13 @@ pub(super) fn run(
     if let Some(e) = failure {
         return error("bad_request", e);
     }
-    let checkpoint = pager.checkpoint();
+    let page_end = pager.page_end();
     let page = match pager.finish() {
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
     };
-    if let Some(checkpoint) = checkpoint {
-        cache.put(key, epoch, checkpoint);
+    if let Some(page_end) = page_end {
+        cache.put(key, epoch, page_end);
     }
     let mut descriptors = Vec::new();
     for reference in &page.attachments {
@@ -255,7 +255,7 @@ pub(super) fn run(
                 binding,
                 content,
                 generation,
-                position: [position.message, position.piece, position.character],
+                position: [position.message, position.block, position.character],
             };
             match serde_json::to_vec(&cursor) {
                 Ok(bytes) => Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)),
@@ -268,9 +268,9 @@ pub(super) fn run(
     if !descriptors.is_empty() {
         value["attachments"] = serde_json::json!(descriptors);
     }
-    if options.logical {
-        value["lineage"] =
-            serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+    if options.with_parents {
+        value["parents"] =
+            serde_json::to_value(selected.parents()).expect("parents are serializable");
     }
     ok(value)
 }
@@ -391,7 +391,7 @@ fn content_position(
     }
     Ok(Some(Position {
         message: cursor.position[0],
-        piece: cursor.position[1],
+        block: cursor.position[1],
         character: cursor.position[2],
     }))
 }
@@ -408,7 +408,7 @@ fn content_next(
                 binding,
                 content,
                 generation,
-                position: [p.message, p.piece, p.character],
+                position: [p.message, p.block, p.character],
             })
             .expect("cursor is serializable"),
         )

@@ -1,4 +1,4 @@
-//! Read-only row iteration with one pinned view and one decoded row at a time.
+//! Read-only row iteration inside one read transaction, one decoded row at a time.
 use super::{Reader, SqlValue};
 use crate::{Result, StoreError};
 

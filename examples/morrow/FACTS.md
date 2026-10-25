@@ -1,7 +1,7 @@
 # The example archive: "Morrow"
 
 A small, fully synthetic archive that every example in the spec runs
-against. It describes a week of work (Oct 01–07, plus the lineage and live
+against. It describes a week of work (Oct 01–07, plus the parents and live
 sets on Oct 08–09) on a fictional Rust library,
 `morrow` (parsing human-written dates), using Claude Code, Codex, ChatGPT and
 claude.ai. The raw provider files live beside this file
@@ -57,8 +57,8 @@ number here from the raw files.
   files touched `src/parse.rs` (2 edits), `src/lib.rs` (1); branch `main`;
   last commit `4e1d2c9`; no unresolved failure (the clippy error has a later
   success). Its second prompt (14:42) pastes #2's short ID `7f3a2c10-0002`;
-  a short ID makes no `mention` link, but from slice 2 the hook spool
-  records the briefing it caused ("Hook spool (slice 2)" below).
+  a short ID makes no `mention` link, but the hook spool records the
+  briefing it caused ("Hook spool" below).
 - **#5** (Codex) reviews the parser, finds that `"next friday"` on a Friday
   returns today. Tool calls: `exec_command` (action shell, each run as the one child of a
   code-mode `exec` wrapper) ×3, all `ok`;
@@ -98,7 +98,7 @@ record (the failing `cargo test`: 3m 43s).
 
 ## When #4's live file was collected
 
-For the evidence-cutoff examples and law 24 (the laws (Beads labelled `laws`)), tests feed #4's file
+For the evidence-cutoff examples, tests feed #4's file
 to the daemon in three stages, as a live session grows:
 
 | Collected at (local, Oct 03) | The file then ends with | Becomes |
@@ -159,13 +159,11 @@ A note's time is when it was written, never its target message's time
 (`spec/model.md`, time). `check_facts.py` carries these times and checks
 that each note is written after its target.
 
-## Lineage set (the Claude-Code-only home)
+## Parents set (the Claude-Code-only home)
 
 `build.py` also writes a second home, `claude-code-only/`, holding the
-Claude Code sessions #1–#4 unchanged plus the harder lineage cases below
-(`spec/model.md`). Slice 1's expected outputs are recorded against
-this home; the slice-1 lineage laws (the laws (Beads labelled `laws`): laws 4 and 11
-(copies and late parents), 29–34 and 99) run on it, and law 25 from slice 6. None of
+Claude Code sessions #1–#4 unchanged plus the harder parent cases below
+(`spec/model.md`): copies, late parents, continuations and forks. None of
 these sessions are in the main archive, so the main totals above are
 unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 
@@ -199,7 +197,7 @@ Links (kind, `how`, evidence):
 | L5 | L6, L7 | subagent | fresh | `folder` | `toolu_1501`, `toolu_1502` |
 | `claude-code:7f3a2c10-0199-…` | L8 | continuation | resume (pending: parent not in the archive) | `copied-sessionId` | — |
 
-From slice 2 the main archive also has one `reference` link, #2 → #4,
+The main archive also has one `reference` link, #2 → #4,
 `how: briefing`, from the delivery row below.
 
 Things the examples rely on:
@@ -214,13 +212,13 @@ Things the examples rely on:
 - **Two folders.** L1 is one session, equal to what the longer file alone
   gives.
 - **Known cost of the whole Claude-Code-only home:** **$7.87** (exact
-  7.8715): #1–#4 5.8626 plus the lineage set 2.0089.
+  7.8715): #1–#4 5.8626 plus the parents set 2.0089.
 
 
 ## Live set (hook and process spools)
 
-`build.py` also writes a third home, `live/`, for the live-state laws
-(the laws (Beads labelled `laws`), 85–89, 102 and 103): hook spool files with process identities and
+`build.py` also writes a third home, `live/`, for the live-state tests:
+hook spool files with process identities and
 job variables, a process spool, and minimal transcripts for three sessions.
 None are in the main archive. Clock: 2026-10-09 15:00 local. Boot ID
 `7b1e0000-0000-4000-8000-00000000b007`; every session works in
@@ -236,9 +234,9 @@ The running-now block at 15:00 lists V1 (under "waiting on you") and V2,
 with the line `⚠ 2 agents in /home/op/morrow`. `check_facts.py` re-derives
 these states at 15:00 and at 13:30.
 
-## Hook spool (slice 2)
+## Hook spool
 
-From slice 2 the main archive includes one hook spool file,
+The main archive includes one hook spool file,
 `hooks/carriers/claude-code/2026-10-03/4291-619650.ndjson`, named by the
 hook process that wrote it (PID 4291, start 619650), so each file has one
 writer; its lines carry the harness's identity (PID 4104, start 612000, boot
@@ -259,7 +257,7 @@ delayed MCP and ping reports are not part of this fixture.
 So `deliveries where outcome:delivered refs:claude-code:7f3a2c10-0002`
 returns this one row, and #4 gains the `reference` link from #2 (Links,
 above). The line's `content_blake3` is a placeholder, not a real hash.
-Slice 1's Claude-Code-only home has no hook spool. `check_facts.py`
+The Claude-Code-only home has no hook spool. `check_facts.py`
 verifies the delivery and the pasted prompt.
 
 ## Turns of #2 (joint #22)
@@ -274,11 +272,11 @@ latest message time in the turn.
 | `…0002:c2000000-0000-4000-8000-000000000013` | 10:56:21 | 11:07:32 | "let's use chrono, not time" |
 | `…0002:c2000000-0000-4000-8000-000000000017` | 11:11:16 | 11:15:00 | the last prompt and answer |
 
-## Annotation set (slice 7)
+## Annotation set
 
 One agent's rubric pass over the Morrow sessions, in its own home
-(`annotation/`) so the main archive's totals do not change; laws 118 and
-119 and the story and judging boards load "Morrow plus the annotation set"
+(`annotation/`) so the main archive's totals do not change; the annotation
+tests and the story and judging boards load "Morrow plus the annotation set"
 (`spec/user-data.md`, checked claims and annotation passes).
 
 **The rubric** `note:0199f400-0000-7000-8000-000000000400`, revision 1,

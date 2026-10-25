@@ -1,7 +1,7 @@
 {
-  "accounting": {
-    "framed": 7,
-    "materialized": {
+  "counts": {
+    "records": 7,
+    "used": {
       "code": 1,
       "conversation": 1,
       "execution_output": 1,
@@ -9,8 +9,8 @@
       "text": 2,
       "thoughts": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

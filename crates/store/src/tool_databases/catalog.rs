@@ -74,7 +74,7 @@ impl Catalog {
                 Ok(())
             }
             _ => Err(invalid(
-                "logical export source binding differs or is missing",
+                "row dump source binding differs or is missing",
             )),
         }
     }

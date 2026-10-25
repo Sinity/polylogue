@@ -127,12 +127,12 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
 
 #[test]
 fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
-    let world = crate::test_daemon::start("synthetic feed source");
+    let daemon = crate::test_daemon::start("synthetic feed source");
     let (_, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
     let request = super::request(&values).unwrap();
     assert!(matches!(request, Request::Changes { since: None }));
     let mut output = Vec::new();
-    assert!(send(&world.daemon.archive, &request, &mut output).unwrap());
+    assert!(send(&daemon.daemon.archive, &request, &mut output).unwrap());
     let entries: Vec<Value> = output
         .split(|b| *b == b'\n')
         .filter(|s| !s.is_empty())
@@ -151,7 +151,7 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
         since: Some(checkpoint),
     };
     let mut again = Vec::new();
-    assert!(send(&world.daemon.archive, &request, &mut again).unwrap());
+    assert!(send(&daemon.daemon.archive, &request, &mut again).unwrap());
     let end = completed(&again);
     assert_eq!(end.len(), 1);
     assert_eq!(end[0]["count"], 0);
@@ -220,7 +220,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         );
     }
     let (mut engine, lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let (old, checkpoint) =
         apply_if_complete(&prepared(&home, None), &BTreeSet::new(), None).unwrap();
     assert_eq!(
@@ -234,7 +234,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
     drop(lock);
     polylogue_testkit::delete_index(&home.root);
     let (mut engine, _lock) = home.engine(64 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let output = prepared(&home, Some(&checkpoint));
     let positions: Vec<_> = output
         .iter()
@@ -260,9 +260,9 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 #[test]
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     use std::io::Read;
-    let world = crate::test_daemon::start("synthetic finite delivery");
-    let mut file = crate::daemon::service::change_feed(&world.daemon, None).unwrap();
-    drop(world);
+    let daemon = crate::test_daemon::start("synthetic finite delivery");
+    let mut file = crate::daemon::service::change_feed(&daemon.daemon, None).unwrap();
+    drop(daemon);
     let mut wire = Vec::new();
     file.read_to_end(&mut wire).unwrap();
     let mut output = Vec::new();

@@ -1,13 +1,13 @@
 {
-  "accounting": {
-    "framed": 3,
-    "materialized": {
+  "counts": {
+    "records": 3,
+    "used": {
       "assistant": 1,
       "fork-context-ref": 1,
       "user": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

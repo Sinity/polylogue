@@ -14,7 +14,7 @@ is kept for reference; the rewrite uses its own archive.
 - `crates/sources`: one declaration and one parser per origin on the shared
   framework (`origin.rs`, `parse.rs`, `document.rs`).
 - `crates/store`: every SQLite connection and write; the blob store.
-- `crates/engine`: the convergence loop and the parse pool.
+- `crates/engine`: the loop and the parse pool.
 - `crates/query`: the query language and its compiler to SQL.
 - `crates/render`: one block stream in four formats.
 - `crates/polylogue`: application operations (`daemon/service.rs`), socket
@@ -63,7 +63,8 @@ Optimize for fast integration. See `docs/development.md`.
 - A name says what the thing is in ordinary words: types, functions, local
   variables, SQL, JSON keys, CLI help, errors, comments, tests and docs.
   [docs/vocabulary.md](docs/vocabulary.md) lists each concept's one name and
-  the words not used; add a new concept there before naming it in code.
+  the words not used. Before naming something, look for it there: use the
+  listed word, or add the new one in the same PR.
 - Comments state constraints and reasons, briefly. No status, history, Bead
   IDs or spec section numbers in code; Git and Beads hold those.
 - A module is `name.rs`, its child modules in `name/`; no `mod.rs`.

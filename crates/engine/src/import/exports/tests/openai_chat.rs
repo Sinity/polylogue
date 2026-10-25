@@ -28,7 +28,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
             }
             let (mut e, _lock) = engine(&w, 8);
             if rebuild {
-                assert!(e.converge().unwrap().errors.is_empty());
+                assert!(e.run_pass().unwrap().errors.is_empty());
             } else {
                 let report = e.import(std::slice::from_ref(&path)).unwrap();
                 assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
@@ -65,7 +65,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                     serde_json::from_slice(&bytes.as_bytes()[start..end]).unwrap();
                 assert!(raw.get("role").is_some());
             }
-            assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 5);
+            assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 5);
             assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
             let view = serde_json::to_value(&shown).unwrap();
             if let Some(old) = previous {
@@ -89,5 +89,5 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
     let report = e.import(&[path]).unwrap();
     assert!(report.pass.errors.is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 1);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
 }

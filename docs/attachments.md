@@ -31,7 +31,7 @@ agent harness:
 polylogue attachment chatgpt:MESSAGE-ID 0 --reveal --out attachment.bin
 ```
 
-For an `ambiguous` attachment, add `--asset INPUT-ID` from `matches`.
+For an `ambiguous` attachment, add `--input INPUT-ID` from `matches`.
 `--length BYTES` sets how many bytes each read takes (default 65536). The
 bytes go to a private temporary file, which replaces FILE only once every
 range, the length and the BLAKE3 hash agree. If the stored bytes change
@@ -54,7 +54,7 @@ Matching by filename alone, and other providers, are not built.
 
 A ZIP import stores the ZIP exactly as given as one input and each file in it
 as its own input. Each file's observation records its ZIP and position in
-`observation_container`. Identical bytes are stored once with every
+`observation_zip`. Identical bytes are stored once with every
 observation kept. The files are decoded, hashed and compressed to private
 scratch files before the writer stores the whole ZIP in one turn; parsing
 then reads the stored files. A corrupt, encrypted or unreadable file refuses

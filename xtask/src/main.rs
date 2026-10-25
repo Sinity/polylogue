@@ -64,7 +64,7 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
             &["polylogue-model"]
         }
         "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
-        // Test worlds: built through the engine, read through the store.
+        // Test archives: built through the engine, read through the store.
         "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         // The Sinex client sends and restores row batches through the store; its
         // rebuild test drives the engine.
@@ -116,8 +116,8 @@ fn boundaries(metadata: &Value) -> Result<(), String> {
             let dependency = dependency["name"]
                 .as_str()
                 .ok_or("dependency name missing")?;
-            // Tests may build worlds with the testkit and open SQLite to
-            // break an archive on purpose (law 22); product code may not.
+            // Tests may build archives with the testkit and open SQLite to
+            // break an archive on purpose; product code may not.
             if test_only && matches!(dependency, "polylogue-testkit" | "rusqlite") {
                 continue;
             }

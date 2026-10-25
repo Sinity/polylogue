@@ -37,7 +37,7 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
         for edited in [false, true] {
             final_bytes = dialogue(edited);
             fs::write(&path, &final_bytes).unwrap();
-            let pass = e.converge().unwrap();
+            let pass = e.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
             let r = e.reads.reader().unwrap();
             let sid = polylogue_model::SessionId::parse("gemini-cli:native-session").unwrap();
@@ -85,7 +85,7 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
         .unwrap();
     polylogue_testkit::delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 8);
-    let pass = e.converge().unwrap();
+    let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     let after = e
         .reads
@@ -98,6 +98,6 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
         serde_json::to_value(after).unwrap(),
         serde_json::to_value(before).unwrap()
     );
-    assert_eq!(w.count("SELECT SUM(framed) AS n FROM parse_state"), 6);
+    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 6);
     assert!(!final_bytes.is_empty());
 }

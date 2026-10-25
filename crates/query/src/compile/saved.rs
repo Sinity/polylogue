@@ -11,7 +11,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn saved_cond(
         &mut self,
         name: &str,
-        scope: &Scope,
+        scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
         let opts = self.opts;

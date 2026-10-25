@@ -4,7 +4,7 @@ use crate::document::Sink;
 use crate::export::{self, ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{Output, Parse, Step};
-use crate::{Disposition, Records};
+use crate::{RecordOutcome, Records};
 use polylogue_model::{
     Block, Document, DocumentId, DocumentPurpose, DocumentRow, Json, NativeId, Origin, Timestamp,
 };
@@ -263,7 +263,7 @@ impl Sidecars {
                     bad.then(|| "unreadable document time; original value kept".into()),
                 )
             }
-            _ => return Err("unknown sidecar framing field".into()),
+            _ => return Err("unknown sidecar field".into()),
         };
         let mut doc = document(
             format!("~input:{}:at:{parent}:{suffix}", component(input)),
@@ -430,15 +430,15 @@ impl ExportParser for Sidecars {
                 metadata.kind,
                 &metadata
                     .diagnostic
-                    .map_or(Disposition::Materialized, Disposition::unknown),
+                    .map_or(RecordOutcome::Used, RecordOutcome::skipped),
             );
         }
         Ok(Some(Step {
             output: Output::default(),
-            accounting: records.finish().map_err(|e| e.to_string())?,
+            counts: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            restates: false,
+            repeats_whole_conversations: false,
         }))
     }
     fn item(
@@ -458,7 +458,7 @@ impl ExportParser for Sidecars {
         let Some(mut doc) = item.document.take() else {
             sink.records.record(
                 item.kind,
-                &Disposition::unknown(
+                &RecordOutcome::skipped(
                     item.diagnostic
                         .as_deref()
                         .unwrap_or("unrecognized sidecar record"),
@@ -475,7 +475,7 @@ impl ExportParser for Sidecars {
         let Some(text) = text else {
             sink.records.record(
                 item.kind,
-                &Disposition::unknown(if item.kind == "project_document" {
+                &RecordOutcome::skipped(if item.kind == "project_document" {
                     "no supplied text; unresolved/binary reference remains in the input"
                 } else {
                     "expected text; original value remains in the input"
@@ -494,7 +494,7 @@ impl ExportParser for Sidecars {
             &item
                 .diagnostic
                 .as_deref()
-                .map_or(Disposition::Materialized, Disposition::unknown),
+                .map_or(RecordOutcome::Used, RecordOutcome::skipped),
         );
         Ok(())
     }

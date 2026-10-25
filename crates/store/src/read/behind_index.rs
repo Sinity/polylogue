@@ -75,7 +75,7 @@ impl Reader<'_> {
                         parsed_upto: r.get::<_, i64>(7)? as u64,
                         parsed: r.get(8)?,
                         waiting: r.get(9)?,
-                        route_rank: if imported { 2 } else { 0 },
+                        arrival_rank: if imported { 2 } else { 0 },
                     },
                 })
             })?

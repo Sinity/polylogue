@@ -66,11 +66,11 @@ fn a_turn_with_a_tool_call_and_its_result() {
         .unwrap();
     assert_eq!(notice.after.as_ref().unwrap().native().as_str(), "g1");
     assert!(
-        step.accounting.unread_fields.is_empty(),
+        step.counts.unread_fields.is_empty(),
         "{:?}",
-        step.accounting.unread_fields
+        step.counts.unread_fields
     );
-    assert_eq!(step.accounting.framed, 4);
+    assert_eq!(step.counts.records, 4);
 }
 
 #[test]

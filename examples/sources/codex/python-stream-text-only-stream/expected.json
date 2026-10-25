@@ -1,13 +1,13 @@
 {
-  "accounting": {
-    "framed": 4,
-    "materialized": {
+  "counts": {
+    "records": 4,
+    "used": {
       "response_item/message": 2,
       "response_item/token_count": 1,
       "session_meta": 1
     },
-    "refused": {},
-    "unknown": {},
+    "unreadable": {},
+    "skipped": {},
     "unread_fields": {}
   },
   "output": {

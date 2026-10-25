@@ -10,7 +10,7 @@
 //! until `response_end`. `cancel` or end of input stops it; a failure is
 //! an `error` frame.
 
-use super::{API_SCHEMA, Ctx};
+use super::{API_SCHEMA, BrowserHost};
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request};
 use base64::Engine as _;
@@ -51,7 +51,7 @@ fn fail(out: &mut impl Write, code: &str) -> io::Result<()> {
 }
 
 /// Serves one exchange from `input` to `out`.
-pub fn serve(ctx: Arc<Ctx>, input: &mut impl Read, out: &mut impl Write) -> io::Result<()> {
+pub fn serve(host: Arc<BrowserHost>, input: &mut impl Read, out: &mut impl Write) -> io::Result<()> {
     let Some(request) = read_frame(input)? else {
         return Ok(());
     };
@@ -101,12 +101,12 @@ pub fn serve(ctx: Arc<Ctx>, input: &mut impl Read, out: &mut impl Write) -> io::
     let Ok(http) = http.body(Body::from(body)) else {
         return fail(out, "native_request_invalid");
     };
-    let receiver_id = ctx.receiver_id.clone();
+    let receiver_id = host.receiver_id.clone();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let (status, headers, bytes) = rt.block_on(async move {
-        let r = super::routes::router(ctx)
+        let r = super::routes::router(host)
             .oneshot(http)
             .await
             .unwrap_or_else(|e| match e {});
@@ -158,7 +158,7 @@ pub fn serve(ctx: Arc<Ctx>, input: &mut impl Read, out: &mut impl Write) -> io::
 /// first argument; Chrome itself allows only the origins the host's
 /// manifest lists.
 pub fn run() -> ExitCode {
-    let ctx = match Ctx::for_user() {
+    let host = match BrowserHost::for_user() {
         Ok(c) => Arc::new(c),
         Err(e) => {
             let _ = fail(&mut io::stdout().lock(), "host_storage_unavailable");
@@ -166,7 +166,7 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match serve(ctx, &mut io::stdin().lock(), &mut io::stdout().lock()) {
+    match serve(host, &mut io::stdin().lock(), &mut io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("polylogue browser-host: {e}");

@@ -20,14 +20,14 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     let stored = BlobHash::of(b"synthetic stored embedded text");
     let removed = BlobHash::of(b"synthetic removed text");
     let removed_blob = BlobHash::of(b"synthetic removed attachment");
-    archive_conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
+    archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('authored','authored','note','exact authored value','operator','synthetic',1,1)", []).unwrap();
     archive_conn
         .execute(
             "INSERT INTO note_target(note_id,ref) VALUES ('authored','message:claude-code:stable')",
             [],
         )
         .unwrap();
-    archive_conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',3,2)", []).unwrap();
+    archive_conn.execute("INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('session-removal','session:claude-code:blocked',3,2)", []).unwrap();
     for (kind, value) in [
         ("session", "claude-code:blocked".to_owned()),
         ("message", "claude-code:blocked-message".to_owned()),
@@ -46,7 +46,7 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     }
     archive_conn
         .execute(
-            "INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('text-removal',?1,4,3)",
+            "INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('text-removal',?1,4,3)",
             [format!("text:{removed}")],
         )
         .unwrap();

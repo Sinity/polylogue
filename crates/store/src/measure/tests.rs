@@ -1,4 +1,4 @@
-use super::{Scope, drift, quota, survival, tool_calls, usage};
+use super::{Selection, drift, quota, survival, tool_calls, usage};
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use polylogue_model::{QuotaLimit, QuotaReading, QuotaWindow, Usage};
 use serde_json::json;
@@ -118,7 +118,7 @@ fn usage_counts_each_response_once() {
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let u = usage(&r, &Scope::default()).unwrap();
+    let u = usage(&r, &Selection::default()).unwrap();
     assert_eq!(u.messages, Some(2));
     assert_eq!(u.tokens.input.tokens, 11);
     assert_eq!(u.tokens.cached_input.tokens, 102);
@@ -132,9 +132,9 @@ fn usage_counts_each_response_once() {
         .map(|pk| {
             usage(
                 &r,
-                &Scope {
+                &Selection {
                     sessions: Some(vec![pk]),
-                    ..Scope::default()
+                    ..Selection::default()
                 },
             )
             .unwrap()
@@ -147,7 +147,7 @@ fn usage_counts_each_response_once() {
 }
 
 /// An unpriced model's cost is unknown, never 0, and totals say how
-/// many messages are unpriced; a partly priced scope is partial; credits are
+/// many messages are unpriced; a partly priced selection is partial; credits are
 /// never added to USD.
 #[test]
 fn unpriced_models_stay_unknown_and_credits_stay_apart() {
@@ -196,9 +196,9 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
 
-    let only = |pk| Scope {
+    let only = |pk| Selection {
         sessions: Some(vec![pk]),
-        ..Scope::default()
+        ..Selection::default()
     };
     let u = usage(&r, &only(unpriced)).unwrap();
     assert_eq!(
@@ -213,7 +213,7 @@ fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     assert_eq!(m.api_cost.known_usd, Some(15.0));
     assert_eq!(m.api_cost.unpriced_messages, 1);
 
-    let all = usage(&r, &Scope::default()).unwrap();
+    let all = usage(&r, &Selection::default()).unwrap();
     assert_eq!(all.api_cost.known_usd, Some(30.0));
     assert_eq!(all.api_cost.unpriced_messages, 2);
 
@@ -255,7 +255,7 @@ fn hiding_never_changes_a_usage_figure() {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         (
-            usage(&r, &Scope::default()).unwrap(),
+            usage(&r, &Selection::default()).unwrap(),
             quota::quota(&r, now, KNOWN).unwrap(),
         )
     };
@@ -396,19 +396,19 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let p = tool_calls::process(&r, &Scope::default(), 10).unwrap();
+    let p = tool_calls::process(&r, &Selection::default(), 10).unwrap();
     assert_eq!((p.sessions, p.calls), (1, 3));
     assert_eq!(p.outcomes.error, 1);
     assert_eq!(p.outcomes.ok, 2);
     assert_eq!(p.failure_examples.len(), 1);
     assert_eq!(p.common_sequences.len(), 1);
-    let s = survival::first_failure(&r, &Scope::default(), false).unwrap();
+    let s = survival::first_failure(&r, &Selection::default(), false).unwrap();
     assert_eq!((s.sessions, s.events), (1, 1));
 }
 
-/// Tokens at two grains: a fork's logical figures include what it shows
-/// from its parent; its physical figures hold only its own responses, so
-/// physical figures over sessions still add up to the archive's.
+/// Tokens at two grains: a fork's figures with parents include what it shows
+/// from its parent; its own figures hold only its own responses, so
+/// own figures over sessions still add up to the archive's.
 #[test]
 fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     let dir = tempfile::tempdir().unwrap();
@@ -450,27 +450,27 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let all = super::sessions(&r, &Scope::default()).unwrap();
+    let all = super::sessions(&r, &Selection::default()).unwrap();
     let get = |id: &str| all.iter().find(|s| s.session == id).unwrap();
     let (p, c) = (get("claude-code:p"), get("claude-code:c"));
     assert_eq!(
-        (p.physical.messages, p.logical.messages),
+        (p.own.messages, p.with_parents.messages),
         (Some(2), Some(2)),
         "a session with no parent shows only its own"
     );
     assert_eq!(
-        (c.physical.messages, c.logical.messages),
+        (c.own.messages, c.with_parents.messages),
         (Some(1), Some(3))
     );
-    assert_eq!(c.physical.tokens.input.tokens, 40);
-    assert_eq!(c.logical.tokens.input.tokens, 70);
-    let physical: u64 = all.iter().map(|s| s.physical.tokens.input.tokens).sum();
+    assert_eq!(c.own.tokens.input.tokens, 40);
+    assert_eq!(c.with_parents.tokens.input.tokens, 70);
+    let own: u64 = all.iter().map(|s| s.own.tokens.input.tokens).sum();
     assert_eq!(
-        physical,
-        usage(&r, &Scope::default()).unwrap().tokens.input.tokens
+        own,
+        usage(&r, &Selection::default()).unwrap().tokens.input.tokens
     );
     // Priced under the current catalog, at both grains.
-    assert!(c.logical.api_cost.known_usd.unwrap() > c.physical.api_cost.known_usd.unwrap());
+    assert!(c.with_parents.api_cost.known_usd.unwrap() > c.own.api_cost.known_usd.unwrap());
 }
 
 fn shell(f: &mut Fixture, s: i64, m: i64, cmd: &str, outcome: &str, at: i64) {
@@ -527,7 +527,7 @@ fn failing_holds_commands_whose_latest_run_failed() {
     shell(&mut f, b1, mb1, "cargo test", "error", T0 + 5);
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let got: Vec<_> = tool_calls::failing_commands(&r, &Scope::default())
+    let got: Vec<_> = tool_calls::failing_commands(&r, &Selection::default())
         .unwrap()
         .into_iter()
         .map(|u| (u.repository, u.command, u.failures_since_ok, u.session))
@@ -608,7 +608,7 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
     f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let s = survival::unanswered_end(&r, &Scope::default(), now).unwrap();
+    let s = survival::unanswered_end(&r, &Selection::default(), now).unwrap();
     assert_eq!(
         (s.sessions, s.events, s.censored, s.unmeasured),
         (3, 1, 2, 1)
@@ -623,9 +623,9 @@ fn drift_lists_frequent_unknowns_first_and_design_counts_last() {
     let mut f = Fixture::new(dir.path()).unwrap();
     f.unrecognized("claude-code", "field:message.effort", 3, false)
         .unwrap();
-    f.unrecognized("claude-code", "record:launched", 9, false)
+    f.unrecognized("claude-code", "skipped:launched", 9, false)
         .unwrap();
-    f.unrecognized("codex", "record:event_msg/item_completed", 50, true)
+    f.unrecognized("codex", "skipped:event_msg/item_completed", 50, true)
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
@@ -637,26 +637,26 @@ fn drift_lists_frequent_unknowns_first_and_design_counts_last() {
     assert_eq!(
         got,
         [
-            ("record:launched".into(), 9, false),
+            ("skipped:launched".into(), 9, false),
             ("field:message.effort".into(), 3, false),
-            ("record:event_msg/item_completed".into(), 50, true),
+            ("skipped:event_msg/item_completed".into(), 50, true),
         ]
     );
 }
 
 /// Survival reads per-session facts, which carry no message times, so a
-/// time-bounded scope is refused rather than silently ignored.
+/// time-bounded selection is refused rather than silently ignored.
 #[test]
 fn survival_refuses_a_time_bounded_scope() {
     let dir = tempfile::tempdir().unwrap();
     let f = Fixture::new(dir.path()).unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let scope = Scope {
+    let selection = Selection {
         since: Some(T0),
-        ..Scope::default()
+        ..Selection::default()
     };
-    assert!(survival::first_failure(&r, &scope, false).is_err());
+    assert!(survival::first_failure(&r, &selection, false).is_err());
 }
 
-mod observations;
+mod reports;

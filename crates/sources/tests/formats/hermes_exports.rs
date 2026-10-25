@@ -47,7 +47,7 @@ fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
         assert!(
-            parsed["accounting"]["unknown"]
+            parsed["counts"]["skipped"]
                 .as_object()
                 .unwrap()
                 .keys()
@@ -102,7 +102,7 @@ fn hermes_verification_requires_the_native_schema_and_never_opens_marker_paths()
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
         assert!(
-            !parsed["accounting"]["unknown"]
+            !parsed["counts"]["skipped"]
                 .as_object()
                 .unwrap()
                 .is_empty()
