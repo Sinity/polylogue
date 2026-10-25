@@ -100,14 +100,14 @@ pub(super) fn parse(
             .get(field)
             .is_some_and(|value| !value.is_null() && !value.is_string())
         {
-            diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"interpretation":"expected text; original value retained"})));
+            diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"reason":"expected text; original value kept"})));
         }
     }
     if row
         .get("timestamp")
         .is_some_and(|value| !value.is_null() && crate::time::epoch_seconds(value).is_none())
     {
-        diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"timestamp","interpretation":"declared epoch seconds are unreadable or out of range; time remains unknown"})));
+        diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"timestamp","reason":"declared epoch seconds are unreadable or out of range; time remains unknown"})));
     }
     let tool = row.get("role").and_then(Json::as_str) == Some("tool");
     let content = text(row, "content");
@@ -139,11 +139,11 @@ pub(super) fn parse(
                 .as_str()
                 .and_then(|text| serde_json::from_str::<Json>(text).ok());
             if decoded.as_ref().is_none_or(|value| !value.is_array()) {
-                diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"interpretation":"structured item array unreadable; original value retained"})));
+                diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"reason":"structured item array unreadable; original value kept"})));
             }
             evidence.insert(
                 field.into(),
-                serde_json::json!({"retained":true,"json_decoded":decoded.is_some()}),
+                serde_json::json!({"kept":true,"json_decoded":decoded.is_some()}),
             );
         }
     }
@@ -168,7 +168,7 @@ pub(super) fn parse(
                         }
                     }
                 } else {
-                    diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"codex_message_items","interpretation":"unrecognized native item type; original value retained"})));
+                    diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"codex_message_items","reason":"unrecognized native item type; original value kept"})));
                 }
             }
         }
@@ -230,13 +230,13 @@ pub(super) fn parse(
             } else {
                 diagnostics.push((
                     "hermes_message_diagnostic".into(),
-                    serde_json::json!({"interpretation":"tool_calls is not an array"}),
+                    serde_json::json!({"reason":"tool_calls is not an array"}),
                 ));
             }
         } else if row.get("tool_calls").is_some_and(|value| !value.is_null()) {
             diagnostics.push((
                 "hermes_message_diagnostic".into(),
-                serde_json::json!({"interpretation":"tool_calls JSON is unreadable"}),
+                serde_json::json!({"reason":"tool_calls JSON is unreadable"}),
             ));
         }
         for block in native_calls {
@@ -252,7 +252,7 @@ pub(super) fn parse(
         if let Some(reason) = diagnostic {
             diagnostics.push((
                 "hermes_tool_status".into(),
-                serde_json::json!({"interpretation":reason}),
+                serde_json::json!({"reason":reason}),
             ));
         }
     }

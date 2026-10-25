@@ -3,9 +3,8 @@
 //! […]}`, optionally with `id`, `model` and `title`), as many tools and
 //! scripts save them. One file is one session.
 //!
-//! Messages carry no IDs, so each keeps its identity by its place
-//! (architecture 5.5). The session is the object's `id` when it has one,
-//! else the file name.
+//! Messages carry no IDs, so each keeps its identity by its place. The
+//! session is the object's `id` when it has one, else the file name.
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
@@ -305,10 +304,10 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
         .and_then(Json::as_array)
         .cloned()
         .unwrap_or_default();
-    let legacy = m
+    let older = m
         .get("function_call")
         .map(|f| serde_json::json!({"function": f}));
-    for call in calls.iter().chain(legacy.iter()) {
+    for call in calls.iter().chain(older.iter()) {
         let function = call.get("function").cloned().unwrap_or(Json::Null);
         let input = function
             .get("arguments")

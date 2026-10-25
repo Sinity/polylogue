@@ -229,7 +229,7 @@ fn message(
     model: Option<&str>,
 ) -> Result<Message, Disposition> {
     // A message the export wrote without a uuid keeps its identity by its
-    // place in the conversation (architecture 5.5): the same place is the
+    // place in the conversation: the same place is the
     // same message, and changed text there is a new version of it.
     let native = match str_of(m, "uuid") {
         Some(u) => u.to_owned(),

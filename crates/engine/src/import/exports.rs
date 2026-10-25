@@ -142,7 +142,7 @@ impl Engine {
             )
             .map_err(std::io::Error::other)?
         {
-            snapshot = step.snapshot;
+            snapshot = step.restates;
             order_from = (step.output.messages.len() as u64).max(1);
             self.write_export_step(
                 plan,

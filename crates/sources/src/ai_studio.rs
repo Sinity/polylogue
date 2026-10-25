@@ -7,7 +7,7 @@
 //!
 //! A prompt is one session. Chunks are its messages in order; they carry no
 //! IDs unless AI Studio wrote one, so a chunk keeps its identity by its
-//! place (architecture 5.5), and an edited chunk becomes a new version of
+//! place, and an edited chunk becomes a new version of
 //! the same message. `parts` split a model chunk into thoughts and answer
 //! text; joined, they equal the chunk's `text`.
 
@@ -382,8 +382,8 @@ impl AiStudio {
                 });
             }
             if let Some(result) = item.get("codeExecutionResult") {
-                // A result consumes the preceding candidate group. Zero or
-                // several unanswered calls do not establish a unique owner.
+                // A result answers the preceding unanswered call. Zero or
+                // several unanswered calls leave its call unknown.
                 let call_id = self.state.pending_call.take();
                 self.state.ambiguous_calls = false;
                 let outcome = match str_of(result, "outcome") {

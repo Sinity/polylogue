@@ -1,4 +1,4 @@
-//! Optional count evidence from the predecessor's nullable-usage and
+//! Optional count evidence from the Python version's nullable-usage and
 //! optional-numeric cases, using the supported Google number fields.
 
 use crate::support::{messages, parse};

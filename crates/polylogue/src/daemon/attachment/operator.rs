@@ -1,19 +1,8 @@
 use std::io::IsTerminal;
 use std::os::unix::fs::MetadataExt;
 
-const HARNESS: &[&str] = &[
-    "CLAUDECODE",
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_THREAD_ID",
-    "CODEX_SESSION_ID",
-    "GEMINI_CLI",
-    "AGENTCTL_JOB_ID",
-    "AGENTCTL_RUN_ID",
-    "POLYLOGUE_JOB_ID",
-];
-
 pub(crate) fn check_cli() -> Result<(), String> {
-    if !std::io::stdout().is_terminal() || HARNESS.iter().any(|key| std::env::var_os(key).is_some())
+    if !std::io::stdout().is_terminal() || polylogue_sources::origin::agent_env().any(|key| std::env::var_os(key).is_some())
     {
         return Err(
             "exact attachment output requires terminal stdout outside an agent harness".into(),

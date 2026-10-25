@@ -35,12 +35,12 @@ fn hermes_atof_reports_are_input_owned_observations_without_conversations() {
 }
 
 #[test]
-fn hermes_atof_future_versions_and_bad_scope_phases_are_retained_as_unsupported() {
+fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
     for mut value in [
         json!({"atof_version":"9","kind":"mark","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"future"}),
         json!({"atof_version":"0.1","kind":"scope","scope_category":"future","category":"tool","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"terminal"}),
     ] {
-        value["data"] = json!({"text":"literal retained evidence"});
+        value["data"] = json!({"text":"literal kept evidence"});
         let raw = crate::support::jsonl(&[value]);
         let parsed = parse("hermes", "synthetic.atof.jsonl", &raw);
         assert!(sessions(&parsed).is_empty());
@@ -116,7 +116,7 @@ fn hermes_verification_requires_the_native_schema_and_never_opens_marker_paths()
 }
 
 #[test]
-fn hermes_verification_retained_history_keeps_row_occurrences_under_their_observed_schema() {
+fn hermes_verification_history_keeps_row_occurrences_under_their_observed_schema() {
     let first = json!({"t":"verification_events","k":[1],"r":{"id":1,"created_at":"2026-01-02T03:04:05Z","session_id":"default","status":"passed","exit_code":0}});
     let state = |at: &str, paths: &str| json!({"t":"verification_state","k":["default","/neutral"],"r":{"session_id":"default","root":"/neutral","last_event_id":1,"last_edit_at":at,"changed_paths_json":paths}});
     let states = [

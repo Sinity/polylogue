@@ -1,4 +1,4 @@
-//! A named message map: stream its values and retain surrounding metadata.
+//! A named message map: stream its values and keep surrounding metadata.
 use super::*;
 use polylogue_model::Json;
 use serde::de::{Error as _, MapAccess};

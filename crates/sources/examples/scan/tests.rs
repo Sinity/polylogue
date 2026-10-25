@@ -153,7 +153,7 @@ fn whole_documents_are_not_parsed_at_short_read_boundaries() {
 }
 
 #[test]
-fn coalesced_snapshots_use_end_offsets_not_a_sum_of_ends() {
+fn coalesced_captures_use_end_offsets_not_a_sum_of_ends() {
     use polylogue_model::capture_log::{Header, MAGIC};
     let mut bytes = MAGIC.to_vec();
     for _ in 0..2 {
@@ -161,7 +161,7 @@ fn coalesced_snapshots_use_end_offsets_not_a_sum_of_ends() {
         bytes.extend(b"{}");
     }
     let scanned = scan_reader(
-        &Parse::Snapshots(Box::new(Document)),
+        &Parse::CaptureLog(Box::new(Document)),
         std::io::Cursor::new(&bytes),
     );
     assert!(matches!(scanned.outcome, Outcome::Complete));
@@ -182,13 +182,13 @@ fn parser_failures_are_not_unknown_dispositions_or_source_diagnostics() {
         Outcome::Failed {
             stage: "parse",
             error: Failure::Parse {
-                kind: "retained_export_reader_required"
+                kind: "export_reader_required"
             }
         }
     ));
     assert_eq!(scanned.counts.bytes, 19);
     assert_eq!(scanned.counts.accounting.framed, 0);
-    let diagnostic = Failure::parse(ParseError::Snapshot("PRIVATE_BODY_MARKER".into()));
+    let diagnostic = Failure::parse(ParseError::CaptureLog("PRIVATE_BODY_MARKER".into()));
     assert!(
         !serde_json::to_string(&diagnostic)
             .unwrap()

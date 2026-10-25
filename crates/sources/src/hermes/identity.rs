@@ -38,7 +38,7 @@ pub(super) fn hash(value: &Json) -> String {
     BlobHash::of(value.to_string().as_bytes()).to_string()
 }
 
-// Reserve category and occurrence delimiters without changing native bytes.
+// Escape the category and occurrence delimiters without changing native bytes.
 pub(super) fn component(value: &str) -> String {
     value
         .replace('%', "%25")

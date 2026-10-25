@@ -1,4 +1,4 @@
-//! Grok account exports. One retained conversation is decoded at a time;
+//! Grok account exports. One stored conversation is decoded at a time;
 //! response order stays as supplied, independently of derived identity hashing.
 
 mod identity;
@@ -192,7 +192,7 @@ impl Export {
                     "response",
                     &Disposition::refused("Grok response is not an object"),
                 );
-                warnings.push("a response is not an object; original bytes remain retained".into());
+                warnings.push("a response is not an object; original bytes stay in the stored input".into());
                 continue;
             };
             let role = match fields
@@ -211,7 +211,7 @@ impl Export {
                         ),
                     );
                     warnings.push(
-                        "unrecognized response sender; original bytes remain retained".into(),
+                        "unrecognized response sender; original bytes stay in the stored input".into(),
                     );
                     continue;
                 }
@@ -221,7 +221,7 @@ impl Export {
                     "response",
                     &Disposition::refused("Grok message is not a supplied string"),
                 );
-                warnings.push("missing, null or structured message is not interpreted as text; original bytes remain retained".into());
+                warnings.push("missing, null or structured message is not read as text; original bytes stay in the stored input".into());
                 continue;
             };
             let native_message = match identity::native(fields, "id", "responseId") {
@@ -231,7 +231,7 @@ impl Export {
                     let n = occurrences.entry(hash.clone()).or_default();
                     let id = format!("{native}:~{}-{n}", &hash[..12]);
                     if *n > 0 {
-                        warnings.push("equal ID-less responses retain distinct occurrence IDs; physical correspondence is ambiguous".into());
+                        warnings.push("equal ID-less responses keep distinct occurrence IDs; physical correspondence is ambiguous".into());
                     }
                     *n += 1;
                     id

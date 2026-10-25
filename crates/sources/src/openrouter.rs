@@ -246,7 +246,7 @@ impl OpenRouter {
 // Match (optional integer milliseconds, optional message ID, object key).
 // The final key resolves equal message headers independently of Cargo features.
 fn message_order(raw: &serde_json::value::RawValue, key: &str) -> Vec<u8> {
-    // Borrow unrelated fields, including the body. A map retains last-value
+    // Borrow unrelated fields, including the body. A map keeps last-value
     // semantics for duplicate header fields, like the full message decoder.
     let fields: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
         serde_json::from_str(raw.get()).unwrap_or_default();

@@ -7,8 +7,8 @@
 //! duplicates, has one ordered outcome. Failed/incomplete inputs exit nonzero;
 //! accounted unknown/refused records remain separate parser dispositions.
 //!
-//! Lines and snapshot logs use 64 MiB read steps and ordinary parser carry.
-//! Documents use the parser's whole-input contract. Retained exports require
+//! Lines and capture logs use 64 MiB read steps and ordinary parser carry.
+//! Documents use the parser's whole-input contract. Exports require
 //! their item reader and are refused here. A trailing unconsumed suffix is
 //! incomplete input, not an invented unknown record. Counts include rows
 //! produced by completed steps, including upserts, not unique stored rows.
@@ -73,13 +73,13 @@ impl Failure {
         }
     }
     fn parse(error: ParseError) -> Self {
-        // Snapshot/carry diagnostics may contain source values. Keep the
+        // Capture-log and carry diagnostics may contain source values. Keep the
         // error category, not the diagnostic text, in this counts-only tool.
         Self::Parse {
             kind: match error {
                 ParseError::NotWhole(_) => "not_whole",
-                ParseError::Export => "retained_export_reader_required",
-                ParseError::Snapshot(_) => "snapshot",
+                ParseError::Export => "export_reader_required",
+                ParseError::CaptureLog(_) => "capture_log",
                 ParseError::Counts(_) => "counts",
                 ParseError::Carry(_) => "carry",
             },

@@ -108,7 +108,7 @@ impl Link {
     }
 
     /// Fills the parts this statement of the link lacks from another
-    /// statement of the same link (architecture 5.5a): a subagent's own file
+    /// statement of the same link: a subagent's own file
     /// names its parent, the parent's progress record names the tool call.
     pub fn merge(&mut self, other: &Link) {
         debug_assert_eq!(self.key(), other.key());

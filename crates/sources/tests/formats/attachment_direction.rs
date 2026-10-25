@@ -1,5 +1,5 @@
 //! An attachment's direction comes from the role of the message holding
-//! it, in every origin and every attachment shape (the Python predecessor's
+//! it, in every origin and every attachment shape (the Python version's
 //! `test_attachment_direction.py`).
 
 use crate::support::{message, parse};

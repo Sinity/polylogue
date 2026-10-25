@@ -1,4 +1,4 @@
-//! Stream selected object fields, array elements or map values while retaining
+//! Stream selected object fields, array elements or map values while keeping
 //! only named metadata. Selected text never enters the metadata object.
 use super::*;
 use polylogue_model::Json;

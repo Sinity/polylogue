@@ -264,7 +264,7 @@ fn unwrap(v: &Json) -> Rec<'_> {
         Some(t) if BARE_ITEMS.contains(&t) => "response_item",
         Some(_) => "?",
         None if v.get("record_type").is_some() => "state",
-        None if v.get("id").is_some() => "legacy_header",
+        None if v.get("id").is_some() => "older_header",
         None => "?",
     };
     Rec {
@@ -379,7 +379,7 @@ impl Rollout {
         Disposition::Materialized
     }
 
-    fn legacy_header(&self, carry: &mut Carry, v: &Json) -> Disposition {
+    fn older_header(&self, carry: &mut Carry, v: &Json) -> Disposition {
         let Some(id) = str_field(v, "id")
             .or(self.thread.as_deref())
             .and_then(session_id)
@@ -833,7 +833,7 @@ impl Rollout {
         let sub = str_field(p, "type").unwrap_or("?");
         match sub {
             "token_count" => {
-                // Keep the native observation authoritative, including malformed,
+                // Keep the native observation as reported, including malformed,
                 // rate-only and context-size reports. Its time is emission time.
                 self.observation(carry, p, "token_count", at, out);
                 let Some(session) = self.own(carry) else {
@@ -1107,7 +1107,7 @@ impl Parser for Rollout {
         }
         match rec.ty {
             "session_meta" => self.session_meta(carry, p, out),
-            "legacy_header" => self.legacy_header(carry, p),
+            "older_header" => self.older_header(carry, p),
             "state" => Disposition::unknown("turn-state marker of 2025 rollouts; holds no content"),
             "response_item" => {
                 self.response_item(carry, record, p, rec.at, rec.ordinal, out, records)

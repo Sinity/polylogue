@@ -16,7 +16,7 @@
       "id": "assistant-1",
       "timestamp": "2026-08-01T10:00:02.000Z",
       "type": "gemini",
-      "content": "The production route parsed this witness.",
+      "content": "The production route parsed this example.",
       "model": "gemini-matrix"
     }
   ]

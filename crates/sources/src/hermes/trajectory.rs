@@ -152,18 +152,18 @@ impl ExportParser for Trajectory {
             let diagnostic = if object.fields.get("schema_version").and_then(Json::as_str)
                 != Some("ATIF-v1.7")
             {
-                Some("unsupported ATIF version; original trajectory retained")
+                Some("unsupported ATIF version; original trajectory kept")
             } else if !object.fields.get("steps").is_some_and(Json::is_array)
                 || !object.fields.get("agent").is_some_and(Json::is_object)
             {
-                Some("ATIF requires agent and steps; original trajectory retained")
+                Some("ATIF requires agent and steps; original trajectory kept")
             } else if object.parent.is_some() && native.is_none() {
                 Some(
-                    "embedded ATIF trajectory has no native trajectory_id; original trajectory retained",
+                    "embedded ATIF trajectory has no native trajectory_id; original trajectory kept",
                 )
             } else if !unique {
                 Some(
-                    "duplicate embedded ATIF trajectory_id; original trajectory retained without guessed reference binding",
+                    "duplicate embedded ATIF trajectory_id; original trajectory kept without a guessed reference",
                 )
             } else {
                 None
@@ -206,7 +206,7 @@ impl ExportParser for Trajectory {
                 records.record(
                     "atif_trajectory",
                     &Disposition::unknown(
-                        facts.diagnostic.unwrap_or("uninterpreted ATIF trajectory"),
+                        facts.diagnostic.unwrap_or("unreadable ATIF trajectory"),
                     ),
                 );
             }
@@ -238,7 +238,7 @@ impl ExportParser for Trajectory {
         if !facts.valid {
             sink.records.record(
                 "atif_step",
-                &Disposition::unknown(facts.diagnostic.unwrap_or("uninterpreted ATIF trajectory")),
+                &Disposition::unknown(facts.diagnostic.unwrap_or("unreadable ATIF trajectory")),
             );
             return Ok(());
         }
@@ -246,7 +246,7 @@ impl ExportParser for Trajectory {
         if !value.is_object() {
             sink.records.record(
                 "atif_step",
-                &Disposition::unknown("ATIF step is not an object; original value retained"),
+                &Disposition::unknown("ATIF step is not an object; original value kept"),
             );
             return Ok(());
         }
@@ -372,13 +372,13 @@ impl ExportParser for Trajectory {
                 at: None,
                 after: None,
                 range: None,
-                data: serde_json::json!({"interpretation":limits}),
+                data: serde_json::json!({"reason":limits}),
             });
         }
         let disposition = if limits.is_empty() {
             Disposition::Materialized
         } else {
-            Disposition::unknown("ATIF step has retained interpretation limits")
+            Disposition::unknown("ATIF step has parts kept unread")
         };
         sink.records.record("atif_step", &disposition);
         Ok(())

@@ -1,7 +1,7 @@
 use super::*;
 use std::time::Instant;
 
-// The original scanner is the semantic control, including literal path spelling.
+// The original scanner is the reference, including literal path spelling.
 fn reference(value: &Json, rules: &[(&str, Rule)], checks: &mut usize) -> Vec<String> {
     fn deeper(path: &str, rules: &[(&str, Rule)], checks: &mut usize) -> bool {
         rules.iter().any(|(p, _)| {

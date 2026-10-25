@@ -1,13 +1,13 @@
 //! The browser extension's capture spool: one framed append log per conversation
 //! (`$XDG_STATE_HOME/polylogue/browser-capture/<provider>/*.json`). Each distinct
-//! envelope is interpreted once. An unframed envelope is read as one snapshot.
+//! capture is parsed once. An unframed file is read as one capture.
 //!
 //! A capture carries the provider's own conversation JSON
 //! (`raw_provider_payload`) where the provider page exposes it. That JSON
 //! is read by the provider's export parser, so a captured conversation and
-//! the same conversation in an export get the same IDs and unite
-//! (architecture 5.5). Where there is no provider JSON, the extension's own
-//! normalized turns are read instead, under the provider's origin.
+//! the same conversation in an export get the same IDs and unite. Where
+//! there is no provider JSON, the extension's own normalized turns are read
+//! instead, under the provider's origin.
 //! Attachment bytes the extension inlined are stored and linked to their
 //! attachment.
 
@@ -45,7 +45,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 pub fn open(path: &Path) -> Option<Parse> {
     path.extension()
         .is_some_and(|e| e == "json")
-        .then(|| Parse::Snapshots(Box::new(Capture)))
+        .then(|| Parse::CaptureLog(Box::new(Capture)))
 }
 
 static CAPTURE_FIELDS: Fields = Fields::new(&[
@@ -86,6 +86,42 @@ static TURN_FIELDS: Fields = Fields::new(&[
         Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
     ),
 ]);
+
+/// A web chat the extension captures from: the page that shows one
+/// conversation is `https://<host>/<path>/<conversation id>`.
+pub struct WebChat {
+    /// The `session.provider` name the extension sends.
+    pub provider: &'static str,
+    pub host: &'static str,
+    pub path: &'static str,
+}
+
+pub const WEB_CHATS: &[WebChat] = &[
+    WebChat {
+        provider: "chatgpt",
+        host: "chatgpt.com",
+        path: "c",
+    },
+    WebChat {
+        provider: "claude-ai",
+        host: "claude.ai",
+        path: "chat",
+    },
+    WebChat {
+        provider: "grok",
+        host: "grok.com",
+        path: "c",
+    },
+    WebChat {
+        provider: "gemini",
+        host: "gemini.google.com",
+        path: "app",
+    },
+];
+
+pub fn web_chat(provider: &str) -> Option<&'static WebChat> {
+    WEB_CHATS.iter().find(|chat| chat.provider == provider)
+}
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.
@@ -245,7 +281,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             }
         };
         // A turn the page shows without an ID keeps its identity by its
-        // place in the conversation (architecture 5.5).
+        // place in the conversation.
         let turn_native = string_of(turn, "provider_turn_id").unwrap_or_else(|| {
             let place = turn
                 .get("ordinal")

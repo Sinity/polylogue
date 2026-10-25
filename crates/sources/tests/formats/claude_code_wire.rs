@@ -1,4 +1,4 @@
-//! Claude Code wire fields the Python predecessor's tests pinned
+//! Claude Code wire fields the Python version's tests pinned
 //! (`test_claude_code_unread_wire_fields.py`), restated against this
 //! parser's model: each fact lands where the model keeps it, and an absent
 //! field invents nothing.
@@ -51,8 +51,8 @@ fn stop_reason_lands_on_the_assistant_message_and_is_not_invented() {
 
 #[test]
 fn an_unfamiliar_stop_reason_is_kept_as_written() {
-    // The predecessor nulled values outside a closed column; here the
-    // string is the fact and readers interpret it.
+    // The Python version nulled values outside a closed column; here the
+    // string is the fact and readers decide what it means.
     let p = run(&[record(
         "assistant",
         "a1",

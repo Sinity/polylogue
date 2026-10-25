@@ -1115,8 +1115,8 @@ impl Parser for ClaudeCode {
                 else {
                     return Disposition::unknown("fork-context-ref without a parent");
                 };
-                // Evidence for the subagent link, with its branch point
-                // (spec sources/claude-code.md): never a second parent.
+                // Evidence for the subagent link, with its branch point:
+                // never a second parent.
                 let at = str_field(v, "parentLastUuid").and_then(message_id);
                 link_at(
                     carry,

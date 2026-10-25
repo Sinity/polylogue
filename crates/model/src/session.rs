@@ -125,7 +125,7 @@ impl Session {
     }
 
     /// Merges facts another input (or a later step of the same input) holds
-    /// about this session (architecture 5.5a). Idempotent: merging the same
+    /// about this session. Idempotent: merging the same
     /// facts twice changes nothing, because a parser resends a session's
     /// facts in full after every step. The kind first recorded stays; the
     /// title goes by precedence; working directories keep their order;

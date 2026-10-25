@@ -875,7 +875,7 @@ impl Engine {
             Change::Appended { .. } => {
                 let resumable = st.carry.is_some()
                     || st.parsed_upto == 0
-                    || (st.origin.open)(path).is_some_and(|p| p.is_snapshots());
+                    || (st.origin.open)(path).is_some_and(|p| p.is_capture_log());
                 if resumable && !never_parsed {
                     (st.stored, st.parsed_upto, st.carry.take(), Priority::Live)
                 } else {
@@ -931,7 +931,7 @@ impl Engine {
                 matches!(
                     (st.origin.open)(path),
                     Some(
-                        polylogue_sources::Parse::Lines(_) | polylogue_sources::Parse::Snapshots(_)
+                        polylogue_sources::Parse::Lines(_) | polylogue_sources::Parse::CaptureLog(_)
                     )
                 )
             })
@@ -963,7 +963,7 @@ impl Engine {
                 // Independent snapshots can resume at their record boundary.
                 // Line parsers need the prefix to reconstruct their carry.
                 let start = if state.parsed
-                    && (origin.open)(&path).is_some_and(|parser| parser.is_snapshots())
+                    && (origin.open)(&path).is_some_and(|parser| parser.is_capture_log())
                 {
                     state.parsed_upto
                 } else {
@@ -1061,7 +1061,7 @@ impl Engine {
             facts,
             size: stored,
             piece_pos: stored,
-            parse_pos: if st.parsed && (origin.open)(path).is_some_and(|p| p.is_snapshots()) {
+            parse_pos: if st.parsed && (origin.open)(path).is_some_and(|p| p.is_capture_log()) {
                 st.parsed_upto
             } else {
                 0

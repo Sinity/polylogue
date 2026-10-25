@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic command-line controls for an already built scan example."""
+"""Synthetic command-line tests for an already built scan example."""
 import json
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 binary = str(Path(sys.argv[1]).resolve())
-with tempfile.TemporaryDirectory(prefix="scan-controls-") as temporary:
+with tempfile.TemporaryDirectory(prefix="scan-tests-") as temporary:
     root = Path(temporary)
     valid = root / "synthetic.jsonl"
     marker = "PRIVATE_BODY_MARKER"
@@ -67,4 +67,4 @@ with tempfile.TemporaryDirectory(prefix="scan-controls-") as temporary:
     report = json.loads(result.stdout)
     assert report["files"] == 1 and report["records"] == report["unknown"] == 1
     assert report["failed_inputs"] == report["incomplete_inputs"] == 0
-print("scanner CLI controls passed")
+print("scanner CLI tests passed")

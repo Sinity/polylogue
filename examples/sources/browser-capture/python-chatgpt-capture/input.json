@@ -12,7 +12,7 @@
     "browser_profile": "fixture-profile",
     "adapter_name": "chatgpt-native-v1",
     "adapter_version": "1",
-    "capture_mode": "snapshot"
+    "capture_mode": "full"
   },
   "session": {
     "provider": "chatgpt",

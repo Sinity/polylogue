@@ -122,7 +122,7 @@ impl<P: Parser + Send> StepParser for P {
     }
 }
 
-/// A parser for an input read whole (architecture 5.3): an export, or a
+/// A parser for an input read whole: an export, or a
 /// capture file the extension rewrites in place. Records are the
 /// document's own items (one conversation, one span); the parser frames
 /// them and submits each disposition to the shared accounting sink.

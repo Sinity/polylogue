@@ -23,7 +23,7 @@ pub fn scan_nested_unique(
 }
 
 /// Accepts either a bare record array or the named array in a wrapper object.
-/// A bare array returns `[]` as metadata; a wrapper retains its other fields.
+/// A bare array returns `[]` as metadata; a wrapper keeps its other fields.
 pub fn scan_array_or_nested(
     reader: impl Read,
     path: &[&str],

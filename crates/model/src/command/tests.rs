@@ -25,7 +25,7 @@ fn prefixes_do_not_change_the_key() {
     };
     assert_eq!(s.len(), 1, "a redirection is not a stage separator");
     assert_eq!(n("git -C /repo status"), "git status");
-    assert_eq!(n("bd --actor me update plnext-1 --claim"), "bd update");
+    assert_eq!(n("bd --actor me update proj-1 --claim"), "bd update");
 }
 
 #[test]
@@ -87,9 +87,9 @@ fn redirections_are_not_arguments() {
 
 #[test]
 fn stages_expose_operands() {
-    let Line::Stages(s) = parse("bd --actor x update plnext-ony.7 --status in_progress") else {
+    let Line::Stages(s) = parse("bd --actor x update proj-abc.7 --status in_progress") else {
         panic!()
     };
     assert_eq!(s[0].subcommand(), Some("update"));
-    assert_eq!(s[0].operands(), ["plnext-ony.7", "--status", "in_progress"]);
+    assert_eq!(s[0].operands(), ["proj-abc.7", "--status", "in_progress"]);
 }

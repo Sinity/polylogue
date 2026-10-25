@@ -1,5 +1,5 @@
 //! Notes and assertions: everything people and agents add to the archive.
-//! One store with revisions and relations (architecture 7). A revision is
+//! One store with revisions and relations. A revision is
 //! a new note in the same family (`root`); the current revision of a
 //! family is its newest note that is not withdrawn.
 
@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for Target {
 
 /// Who wrote a note. Agent notes are shown with their author and are
 /// pulled on request only: nothing injects them into context
-/// automatically (architecture 12).
+/// automatically.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Author {
     Operator,
@@ -199,7 +199,7 @@ pub enum NoteKind {
     Forecast,
     SavedQuery,
     Ping,
-    /// A watch with a delivery rule (spec user-data.md, Signals).
+    /// A watch with a delivery rule.
     Signal,
 }
 

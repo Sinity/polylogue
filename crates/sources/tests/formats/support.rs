@@ -1,5 +1,5 @@
 //! Shared helpers for tests that drive one origin's parser on bytes written
-//! inline: the knowledge ported from the Python predecessor's tests.
+//! inline: the knowledge ported from the Python version's tests.
 
 #[path = "../../src/export/fixture.rs"]
 pub mod array_fixture;

@@ -1,4 +1,4 @@
-//! Idless execution results need a preceding unanswered call witness.
+//! Execution results without IDs need a preceding unanswered call.
 
 use crate::support::{blocks, parse};
 use serde_json::{Value, json};
@@ -152,7 +152,7 @@ fn consecutive_model_chunks_keep_the_actual_preceding_call_identity() {
 }
 
 #[test]
-fn user_or_unreadable_chunks_end_the_preceding_execution_witness() {
+fn user_or_unreadable_chunks_end_the_preceding_unanswered_call() {
     let native = result("unowned after boundary");
     for boundary in [
         json!({"id": "boundary", "role": "user", "text": "new prompt"}),

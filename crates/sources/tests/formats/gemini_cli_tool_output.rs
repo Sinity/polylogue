@@ -1,5 +1,5 @@
 //! Inline tool-output knowledge from `test_gemini_cli_tool_output_losses.py`.
-//! Retained-file sidecar joins belong to acquisition, outside this parser.
+//! Stored-file sidecar joins belong to import, outside this parser.
 
 use crate::support::{blocks, message, parse};
 use serde_json::{Value, json};
@@ -43,7 +43,7 @@ fn result(parsed: &Value) -> &Value {
     assert_eq!(
         results.len(),
         1,
-        "one carrier retains the tool's renderings"
+        "one carrier keeps the tool's renderings"
     );
     results[0]
 }
@@ -93,7 +93,7 @@ fn gemini_cli_marker_text_and_longer_ui_do_not_replace_native_streams() {
 
 #[test]
 fn gemini_cli_display_length_and_presence_do_not_establish_model_visible_output() {
-    let output = "<tool_output_masked>retained head and tail excerpts</tool_output_masked>";
+    let output = "<tool_output_masked>kept head and tail excerpts</tool_output_masked>";
     for display in ["two words".into(), "雪".repeat(400)] {
         let wire = call(
             Some(json!({"output": output})),

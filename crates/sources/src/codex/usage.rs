@@ -89,7 +89,7 @@ impl Observer {
         let last = last_value.and_then(Counters::read);
         let previous = self.observed;
         // An orphan still advances the observed baseline. Missing/malformed
-        // state invalidates it instead of retaining a stale associated one.
+        // state invalidates it instead of keeping a stale associated one.
         self.observed = total;
         if let Some(total) = total
             && [previous, self.consumed]

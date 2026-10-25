@@ -1,4 +1,4 @@
-//! ChatGPT export knowledge from the Python predecessor's
+//! ChatGPT export knowledge from the Python version's
 //! `test_parsers_chatgpt.py`, restated against this parser's model.
 
 use crate::support::{blocks, events, message, messages, parse};

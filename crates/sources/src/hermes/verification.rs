@@ -51,10 +51,10 @@ impl ExportParser for Verification {
         let (kind, time) = if deletion {
             ("hermes_verification_row_deleted", None)
         } else if value.get("schema").is_some_and(Json::is_object) {
-            // This is acquisition metadata, not a provider-ledger interpretation.
+            // This is metadata about how the rows were read, not a provider record.
             ("hermes_verification_export", None)
         } else if self.version.as_ref().and_then(Json::as_str) != Some("1") {
-            sink.records.record(table,&Disposition::unknown("unsupported or absent Hermes verification schema version; original rows retained"));
+            sink.records.record(table,&Disposition::unknown("unsupported or absent Hermes verification schema version; original rows kept"));
             return Ok(());
         } else {
             match table {
@@ -89,7 +89,7 @@ impl ExportParser for Verification {
         {
             sink.out.events.push(Event {
                 session: None, kind: "hermes_import_diagnostic".into(), at: None, after: None, range: None,
-                data: serde_json::json!({"field":field,"interpretation":"verification RFC3339 time unreadable; time remains unknown"}),
+                data: serde_json::json!({"field":field,"reason":"verification RFC3339 time unreadable; time remains unknown"}),
             });
         }
         // Preserve status, exit code and changed_paths_json as supplied. Missing

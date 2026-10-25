@@ -59,8 +59,8 @@ fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
     });
     static FIELDS: Fields = Fields::new(&[
         ("read", Rule::Read),
-        ("kept", Rule::Kept("retained as event data")),
-        ("excluded", Rule::Excluded("not interpreted")),
+        ("kept", Rule::Kept("kept as event data")),
+        ("excluded", Rule::Excluded("not parsed")),
         ("items[].known", Rule::Read),
     ]);
     records.fields("event", &value, &FIELDS);

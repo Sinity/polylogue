@@ -1,4 +1,4 @@
-//! Native compaction and turn-context cases from the predecessor's
+//! Native compaction and turn-context cases from the Python version's
 //! `test_codex_compaction_and_turn_context.py`, through the public parser.
 
 use crate::support::{events, jsonl, messages, parse};
@@ -42,7 +42,7 @@ fn compaction_keeps_large_native_history_without_creating_messages() {
         "replacement_history_items": "native unknown count",
         "after": "native metadata", "range": null,
         "window_id": "window-2", "window_number": 2, "previous_window_id": "window-1",
-        "latest_token_usage_record": null, "retained_context": {"future_field": false}
+        "latest_token_usage_record": null, "unknown_context": {"future_field": false}
     });
     let records = [
         meta(json!({})),
@@ -79,7 +79,7 @@ fn compaction_keeps_large_native_history_without_creating_messages() {
 #[test]
 fn compaction_preserves_supplied_unknown_history_shapes() {
     let payloads = [
-        json!({"message": "legacy summary"}),
+        json!({"message": "older summary"}),
         json!({"replacement_history": null}),
         json!({"replacement_history": false}),
         json!({"replacement_history": "future representation"}),
@@ -100,7 +100,7 @@ fn compaction_preserves_supplied_unknown_history_shapes() {
 fn compaction_keeps_parent_history_and_the_existing_fork_anchor() {
     let payload = json!({"replacement_history": [
         {"id": "parent-message", "type": "message", "role": "user", "content": []},
-        {"type": "future_context", "retained_context": null}]});
+        {"type": "future_context", "unknown_context": null}]});
     let parsed = run(&[
         meta(json!({"forked_from_id": "parent-session"})),
         record("compacted", payload.clone()),
@@ -120,7 +120,7 @@ fn compaction_keeps_parent_history_and_the_existing_fork_anchor() {
 }
 
 #[test]
-fn changed_turn_context_keeps_snapshots_and_returns_to_prior_settings() {
+fn changed_turn_context_keeps_each_context_and_returns_to_prior_settings() {
     let first = json!({"turn_id": "t1", "user_instructions": "first", "workspace_roots": []});
     let second = json!({"turn_id": "t2", "user_instructions": null, "workspace_roots": []});
     let third = json!({"turn_id": "t3", "root_turn_id": "root", "user_instructions": "first", "workspace_roots": []});

@@ -84,7 +84,7 @@ fn refused_and_empty_messages_keep_raw_ordinals_without_breaking_parent_links() 
         "p",
         json!([
             {"role":"user","content":"question"},
-            {"role":"future_role","content":"uninterpreted"},
+            {"role":"future_role","content":"unread"},
             {"role":"assistant","content":""},
             {"role":"assistant","content":"answer"}
         ]),
@@ -111,12 +111,12 @@ fn refused_and_empty_messages_keep_raw_ordinals_without_breaking_parent_links() 
 }
 
 #[test]
-fn invalid_wrappers_refuse_the_input_without_publishing_child_messages() {
+fn invalid_wrappers_refuse_the_input_without_emitting_child_messages() {
     for (file, doc, reason) in [
         ("p", json!({"messages":false}), "no messages array"),
         (
             "",
-            json!({"id":"","messages":[{"role":"user","content":"not published"}]}),
+            json!({"id":"","messages":[{"role":"user","content":"not emitted"}]}),
             "unusable session name",
         ),
         ("p", json!(true), "not an array or object"),
