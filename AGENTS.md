@@ -34,17 +34,24 @@ is kept for reference; the rewrite uses its own archive.
 Optimize for fast integration. See `docs/development.md`.
 
 - Every cargo build or test runs as an AgentCTL job, which queues it against
-  the rest of the machine's work: `agentctl job start polylogue check
-  --workspace <worktree>`, or `focused -- -p <crate> <filter>` for focused tests.
+  the rest of the machine's work: `agentctl job start polylogue <operation>
+  --workspace <worktree>`. `compile -- -p <crate>` checks that code builds,
+  `focused -- -p <crate> [-E <filterset>] [<name>]` runs selected tests,
+  `fmt` formats, and `check` runs formatting, boundaries, clippy and every
+  test. All test runs share one build of the whole workspace, so `focused`
+  and `check` reuse each other's artifacts.
+- Start a job, then wait for it in the background with `agentctl job wait
+  <id>` and keep working. A failed wait prints the failing tests and the
+  `xtask history` pointer.
+- Before treating a failure as yours, read the newest `polylogue:baseline`
+  job (`agentctl job list --project polylogue`): the host runs `check` on
+  each new master head.
 - The pre-push hook checks formatting and crate boundaries only (seconds).
-  There is no hosted test CI. Open a PR when ready and follow the forge's
-  current review and status requirements.
-- Run the full suite (AgentCTL operation `check`) on batches of merged work,
-  not before every merge. Fix what it finds afterwards.
-- Give each writable Cargo target directory one active build owner. Coordinate
-  sequential warm-cache reuse; concurrent worktrees use separate targets.
-- Merge small PRs often. Rebase before pushing; do not keep long-lived
-  branches.
+  There is no hosted test CI.
+- Land a few large, coherent PRs. Rebase onto `origin/master` before
+  pushing; `check` must pass on the rebased head before merging. Merge with
+  `gh pr merge --auto --squash --match-head-commit <sha>`; auto-merge waits
+  for the `stacked-review-threads` status.
 - Report what you ran and what you did not. A merge is not evidence of testing.
 - Keep the loop fast: compare build, setup and test times separately. When a
   run slows down, inspect its slow tests, resource waits and cleanup before

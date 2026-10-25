@@ -19,6 +19,12 @@ const FORMATTED: &[&str] = &[
     "xtask",
 ];
 
+/// The one feature set every test build uses, with the whole workspace
+/// selected, so `test`, `scenarios` and `check` build the same artifacts and
+/// each reuses what the others built. Package selection narrows which tests
+/// run, never what is built.
+const TEST_FEATURES: &str = "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults";
+
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
 enum Cli {
@@ -35,7 +41,8 @@ enum Cli {
         /// what depends on them.
         #[arg(long)]
         changed: bool,
-        /// Further `cargo nextest run` arguments: packages, filters, names.
+        /// Further `cargo nextest run` arguments: `-p` packages and `-E`
+        /// filtersets (both select which tests run), names and runner flags.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -176,6 +183,87 @@ fn nextest(args: Vec<String>) -> Nextest {
     }
 }
 
+/// `cargo nextest run` arguments for the shared test build that run the
+/// tests `args` select. `-p` packages and `-E` filtersets become one
+/// filterset, intersected with `required` (a changed-package selection, or
+/// the scenarios' own). Feature flags are refused: there is one feature set.
+fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<String>, String> {
+    let mut packages = Vec::new();
+    let mut filtersets = Vec::new();
+    let mut rest = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = |flag: &str| {
+            args.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match arg.as_str() {
+            "-p" | "--package" => packages.push(value(arg)?),
+            "-E" | "--filterset" | "--filter-expr" => filtersets.push(value(arg)?),
+            "--workspace" | "--all" => {}
+            "-F" | "--features" | "--all-features" | "--no-default-features" => {
+                return Err(format!(
+                    "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
+                ));
+            }
+            _ => {
+                if let Some(package) = arg.strip_prefix("--package=").or(arg.strip_prefix("-p")) {
+                    packages.push(package.to_owned());
+                } else if let Some(filterset) = arg
+                    .strip_prefix("--filterset=")
+                    .or(arg.strip_prefix("--filter-expr="))
+                    .or(arg.strip_prefix("-E"))
+                {
+                    filtersets.push(filterset.to_owned());
+                } else if arg.starts_with("--features=") || arg.starts_with("-F") {
+                    return Err(format!(
+                        "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
+                    ));
+                } else {
+                    rest.push(arg.clone());
+                }
+            }
+        }
+    }
+    let either = |sets: Vec<String>| {
+        sets.into_iter()
+            .map(|set| format!("({set})"))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let terms: Vec<String> = [
+        required,
+        (!packages.is_empty()).then(|| {
+            either(
+                packages
+                    .into_iter()
+                    .map(|package| format!("package(={package})"))
+                    .collect(),
+            )
+        }),
+        (!filtersets.is_empty()).then(|| either(filtersets)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut arguments = ["--locked", "--workspace", "--features", TEST_FEATURES]
+        .map(String::from)
+        .to_vec();
+    if !terms.is_empty() {
+        arguments.push("-E".to_owned());
+        arguments.push(
+            terms
+                .iter()
+                .map(|term| format!("({term})"))
+                .collect::<Vec<_>>()
+                .join(" & "),
+        );
+    }
+    arguments.extend(rest);
+    Ok(arguments)
+}
+
 fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::Result) -> ExitCode {
     let mut run = Run::start("polylogue", command, args);
     let _ = steps(&mut run);
@@ -193,36 +281,17 @@ fn main() -> ExitCode {
             fmt_check(run)?;
             boundaries_step(run)?;
             clippy(run)?;
-            run.nextest(
-                "test",
-                &nextest(
-                    [
-                        "--locked",
-                        "--workspace",
-                        "--features",
-                        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults",
-                    ]
-                    .map(String::from)
-                    .to_vec(),
-                ),
-            )
+            let arguments = test_arguments(&[], None).expect("the full selection is valid");
+            run.nextest("test", &nextest(arguments))
         }),
         Cli::Scenarios => run("scenarios", &[], |run| {
-            run.nextest(
-                "test",
-                &nextest(
-                    ["--locked", "-p", "polylogue", "-E", "kind(test)"]
-                        .map(String::from)
-                        .to_vec(),
-                ),
-            )
+            let arguments = test_arguments(&[], Some("package(=polylogue) & kind(test)".into()))
+                .expect("the scenario selection is valid");
+            run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { changed, args } => {
-            let mut nextest_args = vec!["--locked".to_owned()];
-            if !args.iter().any(|a| a == "-p" || a.starts_with("--package")) {
-                nextest_args.push("--workspace".to_owned());
-            }
+            let mut required = None;
             if changed {
                 let root = Path::new(".");
                 match devkit::select::changed(root, "origin/master") {
@@ -230,20 +299,22 @@ fn main() -> ExitCode {
                         eprintln!("no package changed since the merge base; nothing to test");
                         return ExitCode::SUCCESS;
                     }
-                    Ok(selection) => {
-                        if let Some(filter) = selection.filterset() {
-                            nextest_args.extend(["-E".to_owned(), filter]);
-                        }
-                    }
+                    Ok(selection) => required = selection.filterset(),
                     Err(error) => {
                         eprintln!("{error}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
-            nextest_args.extend(args.iter().cloned());
+            let arguments = match test_arguments(&args, required) {
+                Ok(arguments) => arguments,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(2);
+                }
+            };
             run("test", &args, |run| {
-                run.nextest("test", &nextest(nextest_args))
+                run.nextest("test", &nextest(arguments))
             })
         }
         Cli::Bench(command) => bench::execute(command),

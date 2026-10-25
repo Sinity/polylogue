@@ -30,3 +30,77 @@ fn forbidden_internal_dependency_is_rejected() {
         "forbidden dependency: polylogue-query -> polylogue-store"
     );
 }
+
+fn arguments(args: &[&str], required: Option<&str>) -> Result<Vec<String>, String> {
+    test_arguments(
+        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+        required.map(str::to_owned),
+    )
+}
+
+#[test]
+fn every_test_selection_builds_the_whole_workspace_with_one_feature_set() {
+    let build = ["--locked", "--workspace", "--features", TEST_FEATURES];
+    assert_eq!(arguments(&[], None).unwrap(), build);
+    assert_eq!(
+        arguments(
+            &[
+                "-p",
+                "polylogue-store",
+                "--package=polylogue-engine",
+                "rows"
+            ],
+            None
+        )
+        .unwrap(),
+        [
+            &build[..],
+            &[
+                "-E",
+                "((package(=polylogue-store)) | (package(=polylogue-engine)))",
+                "rows"
+            ]
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn packages_filtersets_and_a_required_selection_intersect() {
+    let selected = arguments(
+        &[
+            "-p",
+            "polylogue-store",
+            "-E",
+            "test(a)",
+            "-Etest(b)",
+            "--no-capture",
+        ],
+        Some("rdeps(=polylogue-model)"),
+    )
+    .unwrap();
+    assert_eq!(
+        selected[4..],
+        [
+            "-E",
+            "(rdeps(=polylogue-model)) & ((package(=polylogue-store))) & ((test(a)) | (test(b)))",
+            "--no-capture"
+        ]
+    );
+}
+
+#[test]
+fn feature_flags_are_refused_rather_than_building_a_second_feature_set() {
+    for flag in [
+        &["--features", "faults"][..],
+        &["-Ffaults"],
+        &["--all-features"],
+    ] {
+        assert!(arguments(flag, None).unwrap_err().contains(TEST_FEATURES));
+    }
+    assert!(
+        arguments(&["-p"], None)
+            .unwrap_err()
+            .contains("needs a value")
+    );
+}
