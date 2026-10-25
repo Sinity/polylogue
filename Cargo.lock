@@ -2608,7 +2608,6 @@ dependencies = [
  "polylogue-query",
  "polylogue-store",
  "polylogue-testkit",
- "rusqlite",
  "serde",
  "serde_json",
  "sinex-model",
