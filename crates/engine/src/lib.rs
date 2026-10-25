@@ -62,7 +62,7 @@ pub struct Config {
     /// Combined SQLite page-cache target for client and convergence readers.
     /// Mapped reader pages are disabled. This is not a total RSS limit.
     pub reader_memory_bytes: u64,
-    /// Bytes admitted into the parse pool at once. The pool takes new work
+    /// Bytes in the parse pool at once. The pool takes new work
     /// only while the bytes in flight stay under this.
     pub bytes_in_flight: u64,
     /// `/etc/machine-id`: paths from two machines never collide.
@@ -78,7 +78,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// One reader slot is reserved for convergence; client reads have `workers`
+    /// One reader slot is kept for the loop; client reads have `workers`
     /// slots. All slots share one page-cache target, split again between index,
     /// archive and optional embeddings by the store. Integer division leaves unused bytes.
     pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
@@ -291,7 +291,7 @@ impl Plan {
         let piece_from = (end > self.piece_pos).then_some(self.piece_pos);
         let (change, observation, continues, length) = match piece_from {
             None if self.size == 0 && self.observation.is_some() => {
-                // An empty acquisition still publishes its revision and file facts.
+                // An empty file still commits its revision and file facts.
                 (self.change.clone(), self.observation.take(), false, end)
             }
             Some(_) if !self.piece_started => {
@@ -847,12 +847,12 @@ impl Engine {
             *from = st.stored;
             if st.tail.is_none() && *from > 0 {
                 let reader = self.reads.reader()?;
-                let retained = reader.input_progress(&st.input_id)?.ok_or_else(|| {
-                    polylogue_store::StoreError::Invalid("append has no retained prefix".into())
+                let progress = reader.input_progress(&st.input_id)?.ok_or_else(|| {
+                    polylogue_store::StoreError::Invalid("append has no stored prefix".into())
                 })?;
                 st.tail = Some(reader.stored_range(
                     &st.input_id,
-                    retained.chain,
+                    progress.chain,
                     from.saturating_sub(read::TAIL as u64),
                     *from,
                     &self.blobs,
@@ -941,7 +941,7 @@ impl Engine {
         for (path, id, origin) in inputs {
             let chains = self.reads.reader()?.chain_progress(&id)?;
             // A first parse can commit bytes but fail before InputState learns
-            // its chain. Classify history from canonical revisions instead.
+            // its chain. Classify history from the archive's revisions instead.
             let current = chains.last().map(|(chain, _)| *chain);
             for (chain, state) in chains {
                 let failure = FailedChain {
@@ -961,7 +961,7 @@ impl Engine {
                 {
                     continue;
                 }
-                // Independent snapshots can resume at their record boundary.
+                // Capture logs can resume at their record boundary.
                 // Line parsers need the prefix to reconstruct their carry.
                 let start = if state.parsed
                     && (origin.open)(&path).is_some_and(|parser| parser.is_capture_log())
@@ -970,12 +970,12 @@ impl Engine {
                 } else {
                     0
                 };
-                let retained = match self.reads.reader()?.stored_chain(&id, chain, state.length) {
-                    Ok(retained) => retained,
+                let stored = match self.reads.reader()?.stored_chain(&id, chain, state.length) {
+                    Ok(stored) => stored,
                     Err(polylogue_store::StoreError::InputPending { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 };
-                let source = pool::Bytes::Stored(Arc::new(retained));
+                let source = pool::Bytes::Stored(Arc::new(stored));
                 let plan = Plan {
                     path: path.clone(),
                     origin,
@@ -1031,7 +1031,7 @@ impl Engine {
             .reader()?
             .input_progress(&input_id)?
             .ok_or_else(|| {
-                polylogue_store::StoreError::Invalid("retained revision disappeared".into())
+                polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
             .route_rank;
         let source = match bytes.single_file_blob() {

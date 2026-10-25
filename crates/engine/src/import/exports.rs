@@ -106,7 +106,7 @@ impl Engine {
         let mut scratch = ExportItems::new()?;
         let pool::Bytes::Stored(chain) = &plan.source else {
             return Err(
-                std::io::Error::other("exports must have a retained chain before parsing").into(),
+                std::io::Error::other("an export must be stored before it is parsed").into(),
             );
         };
         let mut reader = Counted::new(|| chain.reader(Arc::clone(&self.blobs)));
@@ -244,10 +244,10 @@ impl Engine {
         pass.bytes_read += bytes + tail.len() as u64;
         pass.bytes_stored += bytes;
         let r = self.reads.reader()?;
-        let retained = r
+        let progress = r
             .input_progress(&plan.input.id)?
-            .ok_or_else(|| std::io::Error::other("export capture has no retained revision"))?;
-        let chain = r.stored_chain(&plan.input.id, retained.chain, retained.length)?;
+            .ok_or_else(|| std::io::Error::other("a stored export has no revision"))?;
+        let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
         plan.source = pool::Bytes::Stored(Arc::new(chain));
         plan.change = Change::Unchanged;
         plan.piece_pos = plan.size;
