@@ -205,9 +205,7 @@ impl ExportParser for Trajectory {
             } else {
                 records.record(
                     "atif_trajectory",
-                    &Disposition::unknown(
-                        facts.diagnostic.unwrap_or("unreadable ATIF trajectory"),
-                    ),
+                    &Disposition::unknown(facts.diagnostic.unwrap_or("unreadable ATIF trajectory")),
                 );
             }
         }

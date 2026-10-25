@@ -100,7 +100,10 @@ pub(super) fn parse(
             .get(field)
             .is_some_and(|value| !value.is_null() && !value.is_string())
         {
-            diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"reason":"expected text; original value kept"})));
+            diagnostics.push((
+                "hermes_message_diagnostic".into(),
+                serde_json::json!({"field":field,"reason":"expected text; original value kept"}),
+            ));
         }
     }
     if row

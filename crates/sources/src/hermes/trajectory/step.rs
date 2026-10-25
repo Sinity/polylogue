@@ -167,8 +167,7 @@ fn result_content(
             (Some(text), images)
         }
         Some(value) if !value.is_null() => {
-            limits
-                .push("result content is neither text nor content parts; original value kept");
+            limits.push("result content is neither text nor content parts; original value kept");
             (None, vec![])
         }
         _ => (None, vec![]),

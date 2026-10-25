@@ -346,7 +346,9 @@ impl ExportParser for Database {
             Ok(())
         })?;
         if self.profile.is_none() {
-            self.refusal.get_or_insert("Hermes logical export names no native profile; original rows stay unbound".into());
+            self.refusal.get_or_insert(
+                "Hermes logical export names no native profile; original rows stay unbound".into(),
+            );
         }
         self.settle();
         reader

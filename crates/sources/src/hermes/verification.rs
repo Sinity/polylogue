@@ -54,7 +54,12 @@ impl ExportParser for Verification {
             // This is metadata about how the rows were read, not a provider record.
             ("hermes_verification_export", None)
         } else if self.version.as_ref().and_then(Json::as_str) != Some("1") {
-            sink.records.record(table,&Disposition::unknown("unsupported or absent Hermes verification schema version; original rows kept"));
+            sink.records.record(
+                table,
+                &Disposition::unknown(
+                    "unsupported or absent Hermes verification schema version; original rows kept",
+                ),
+            );
             return Ok(());
         } else {
             match table {

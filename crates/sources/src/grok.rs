@@ -192,7 +192,9 @@ impl Export {
                     "response",
                     &Disposition::refused("Grok response is not an object"),
                 );
-                warnings.push("a response is not an object; original bytes stay in the stored input".into());
+                warnings.push(
+                    "a response is not an object; original bytes stay in the stored input".into(),
+                );
                 continue;
             };
             let role = match fields
@@ -211,7 +213,8 @@ impl Export {
                         ),
                     );
                     warnings.push(
-                        "unrecognized response sender; original bytes stay in the stored input".into(),
+                        "unrecognized response sender; original bytes stay in the stored input"
+                            .into(),
                     );
                     continue;
                 }

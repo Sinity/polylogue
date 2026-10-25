@@ -2,7 +2,8 @@ use std::io::IsTerminal;
 use std::os::unix::fs::MetadataExt;
 
 pub(crate) fn check_cli() -> Result<(), String> {
-    if !std::io::stdout().is_terminal() || polylogue_sources::origin::agent_env().any(|key| std::env::var_os(key).is_some())
+    if !std::io::stdout().is_terminal()
+        || polylogue_sources::origin::agent_env().any(|key| std::env::var_os(key).is_some())
     {
         return Err(
             "exact attachment output requires terminal stdout outside an agent harness".into(),

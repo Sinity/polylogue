@@ -153,7 +153,8 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 let bytes = (self.scan_state.borrow().position - before) as usize;
                 {
                     let mut scan_state = self.scan_state.borrow_mut();
-                    scan_state.stats.peak_element_bytes = scan_state.stats.peak_element_bytes.max(bytes);
+                    scan_state.stats.peak_element_bytes =
+                        scan_state.stats.peak_element_bytes.max(bytes);
                 }
                 fields.insert(key, value);
             } else {

@@ -272,9 +272,7 @@ fn capture_steps(
             break;
         };
         if !header.verifies(&bytes[position..end]) {
-            return Err(ParseError::CaptureLog(
-                "capture digest mismatch".into(),
-            ));
+            return Err(ParseError::CaptureLog("capture digest mismatch".into()));
         }
         let mut step = run_document(parser, &bytes[position..end])?;
         mark_whole_capture(&mut step, base + position as u64, base + end as u64);

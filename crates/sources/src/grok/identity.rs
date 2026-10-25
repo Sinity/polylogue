@@ -121,5 +121,9 @@ pub(super) fn conversation(metadata: &Json, responses: &[Json], wrapper: &Json) 
     let mut extra = wrapper.as_object().cloned().unwrap_or_default();
     extra.remove("conversation");
     extra.remove("responses");
-    digest(&serde_json::json!([identity_form(metadata), responses, extra]))
+    digest(&serde_json::json!([
+        identity_form(metadata),
+        responses,
+        extra
+    ]))
 }

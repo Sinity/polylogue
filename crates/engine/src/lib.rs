@@ -931,7 +931,8 @@ impl Engine {
                 matches!(
                     (st.origin.open)(path),
                     Some(
-                        polylogue_sources::Parse::Lines(_) | polylogue_sources::Parse::CaptureLog(_)
+                        polylogue_sources::Parse::Lines(_)
+                            | polylogue_sources::Parse::CaptureLog(_)
                     )
                 )
             })
