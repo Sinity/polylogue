@@ -2,11 +2,11 @@
 //! preceding line has been validated and written, then stdout is flushed.
 use super::{Archive, Request, Response, fail, when_ready};
 use crate::commands::{Command, Values};
-use std::process::ExitCode;
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
+use std::process::ExitCode;
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

@@ -14,7 +14,7 @@ async fn setup(
     let config = Config {
         mode: Mode::Primary,
         nats: nats.url().into(),
-        subjects: "byte-proof".into(),
+        subjects: "byte-test".into(),
         producer: "polylogue".into(),
         store: root.to_path_buf(),
         archive: None,

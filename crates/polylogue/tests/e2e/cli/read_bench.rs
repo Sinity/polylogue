@@ -115,7 +115,7 @@ fn walk(env: &[(&str, &Path)], expected: &[String]) -> (Value, String) {
     let mut text = String::new();
     let mut samples = Vec::new();
     let budget = PAGE_BUDGET.to_string();
-    // A finite output guard belongs to this fixed population, not input admission.
+    // A page limit from this fixed population, so a broken cursor cannot loop.
     let max_pages = expected.iter().map(String::len).sum::<usize>() / PAGE_BUDGET + MAIN_MESSAGES;
     for _ in 0..max_pages {
         let mut args = vec!["--json", "read", LARGE, "--budget", &budget];
@@ -267,7 +267,7 @@ fn cancelled_client(env: &[(&str, &Path)]) {
     assert_eq!(first[0], b'{');
     assert!(
         child.0.try_wait().unwrap().is_none(),
-        "cancellation control produced no pending output"
+        "the cancelled read produced no pending output"
     );
     child.0.kill().unwrap();
     assert!(!child.0.wait().unwrap().success());

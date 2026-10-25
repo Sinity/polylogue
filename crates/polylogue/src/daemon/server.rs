@@ -77,10 +77,10 @@ pub fn serve() -> std::io::Result<()> {
             None
         }
     };
-    server.wait(|| runtime.stop_admission())
+    server.wait(|| runtime.stop_accepting())
 }
 
-/// Owns socket admission and every accepted client thread.
+/// Owns the socket listener and every accepted client thread.
 pub struct Server {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<std::io::Result<()>>>,
@@ -169,8 +169,8 @@ fn listen(
         for _ in 0..32 {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let control = match stream.try_clone() {
-                        Ok(control) => control,
+                    let to_close = match stream.try_clone() {
+                        Ok(to_close) => to_close,
                         Err(error) => {
                             failure = Some(error);
                             break;
@@ -181,7 +181,7 @@ fn listen(
                         .name("polylogue-client".into())
                         .spawn(move || serve_client(stream, &daemon))
                     {
-                        Ok(thread) => clients.push((control, thread)),
+                        Ok(thread) => clients.push((to_close, thread)),
                         Err(error) => {
                             failure = Some(error);
                             break;

@@ -1,4 +1,4 @@
-//! The daemon's loopback HTTP port (spec `surfaces/web.md`): the web reader
+//! The daemon's loopback HTTP port: the web reader
 //! and its JSON API, for the browser only. Every route answers through the
 //! same `Request` as the Unix socket, so a page and a command cannot drift
 //! apart. Other programs use the socket; the extension uses its native
@@ -29,7 +29,7 @@ pub struct Web {
     pub port: u16,
 }
 
-/// Owns the HTTP runtime. Dropping it aborts unfinished network input and
+/// Owns the HTTP runtime. Dropping it aborts network input in progress and
 /// joins blocking application handlers before the application itself stops.
 pub struct Server {
     pub port: u16,
@@ -107,7 +107,7 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
         directory,
         token,
     };
-    access::publish(&server.directory, &server.token, port)?;
+    access::write_access_files(&server.directory, &server.token, port)?;
     server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
         runtime.block_on(async move {
             tokio::select! {

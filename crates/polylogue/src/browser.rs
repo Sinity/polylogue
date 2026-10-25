@@ -1,6 +1,5 @@
-//! The browser extension's side of Polylogue (spec
-//! `surfaces/extension-and-clients.md`): the capture spool, the chat-action
-//! queue, and the routes the extension calls through its native messaging
+//! The browser extension's side of Polylogue: the capture spool, the
+//! chat-action queue, and the routes the extension calls through its native messaging
 //! host, `polylogue browser-host`. Chrome starts the host only for the
 //! extension IDs its manifest names, so no token or pairing is needed. The
 //! host writes captures into the spool, which the daemon ingests like any
@@ -136,8 +135,8 @@ pub fn safe_token(s: &str) -> String {
 }
 
 /// Where a provider conversation's capture lives, relative to the spool:
-/// one append log per conversation. Its ordered envelopes retain every
-/// distinct observation, including captures acknowledged before convergence.
+/// one append log per conversation. It keeps every distinct capture in
+/// order, including captures acknowledged before the loop parsed them.
 pub fn artifact_ref(provider: &str, provider_session_id: &str) -> String {
     let hash = blake3::hash(format!("{provider}:{provider_session_id}").as_bytes());
     format!(

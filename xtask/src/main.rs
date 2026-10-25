@@ -48,7 +48,7 @@ enum Cli {
     Shared(devkit::cli::Command),
 }
 
-/// Internal dependencies each workspace package may use (architecture 3).
+/// Internal dependencies each workspace package may use.
 /// Only the store may depend on rusqlite.
 fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
     Some(match package {
@@ -60,7 +60,7 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
         // Test worlds: built through the engine, read through the store.
         "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         // The Sinex client sends and restores row batches through the store; its
-        // rebuild proof drives the engine.
+        // rebuild test drives the engine.
         "polylogue-sinex" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         "polylogue" => &[
             "polylogue-model",

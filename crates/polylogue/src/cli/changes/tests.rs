@@ -31,7 +31,7 @@ fn completed(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
-fn every_stopped_prefix_retains_the_previous_checkpoint_and_retry_delivers_all_peers() {
+fn every_stopped_prefix_keeps_the_previous_position_and_retry_delivers_every_line() {
     let lines = example();
     for prefix in 0..lines.len() {
         let mut output = Vec::new();
@@ -126,7 +126,7 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
 }
 
 #[test]
-fn actual_command_builder_socket_and_cli_consumer_deliver_one_finite_batch() {
+fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
     let world = crate::test_daemon::start("synthetic feed source");
     let (_, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
     let request = super::request(&values).unwrap();
@@ -158,7 +158,7 @@ fn actual_command_builder_socket_and_cli_consumer_deliver_one_finite_batch() {
 }
 
 #[test]
-fn baseline_receiver_stages_current_reference_replacement_until_complete_after_actual_rebuild() {
+fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     use std::collections::BTreeSet;
     use std::io::Read;
@@ -258,7 +258,7 @@ fn baseline_receiver_stages_current_reference_replacement_until_complete_after_a
 }
 
 #[test]
-fn prepared_delivery_survives_daemon_close_without_retaining_its_read_snapshot() {
+fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     use std::io::Read;
     let world = crate::test_daemon::start("synthetic finite delivery");
     let mut file = crate::daemon::service::change_feed(&world.daemon, None).unwrap();
@@ -286,7 +286,7 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
     let mut output = FlushFails(Vec::new());
     assert!(receive(&input[..], &mut output, Some("g:1:1")).is_err());
     // Bytes may have escaped. Failure does not prove the receiver rejected
-    // them; replay retains the same IDs and the prior completed position.
+    // them; replay sends the same IDs and the previous completed position.
     let mut replay = Vec::new();
     assert!(receive(&input[..], &mut replay, Some("g:1:1")).unwrap());
     assert_eq!(replay, output.0);

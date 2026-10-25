@@ -53,12 +53,12 @@ pub(super) fn verify(root: &Path, roots: &[PathBuf]) -> serde_json::Value {
     let kept = reader.attachment(&message, 0, 0).unwrap();
     assert_eq!(kept.state, AttachmentState::Available);
     assert_eq!(kept.candidates.len(), 1);
-    let candidate = &kept.candidates[0];
-    assert_eq!(candidate.names, ["native λ🙂.dat"]);
-    assert_eq!(candidate.blob, Some(BlobHash::of(KEPT)));
+    let found = &kept.candidates[0];
+    assert_eq!(found.names, ["native λ🙂.dat"]);
+    assert_eq!(found.blob, Some(BlobHash::of(KEPT)));
     assert_eq!(
         reader
-            .attachment_range(candidate, roots, 0..candidate.size)
+            .attachment_range(found, roots, 0..found.size)
             .unwrap(),
         KEPT
     );

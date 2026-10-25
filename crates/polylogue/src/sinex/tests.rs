@@ -131,7 +131,7 @@ fn a_sinex_thread_panic_is_reported_when_joined() {
 }
 
 #[test]
-fn a_thread_local_snapshot_can_span_the_pending_pass() {
+fn a_thread_local_read_transaction_can_span_the_pending_pass() {
     let (started, wait) = sync_channel(1);
     let dropped = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);

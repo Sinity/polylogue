@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn exact_attachment_socket_honors_daemon_read_admission_stop() {
-    let world = test_daemon::start("synthetic read admission");
+fn exact_attachment_socket_refuses_once_the_daemon_stops_accepting() {
+    let world = test_daemon::start("synthetic stopped reads");
     world
         .daemon
         .stopping

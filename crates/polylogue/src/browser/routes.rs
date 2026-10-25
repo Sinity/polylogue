@@ -64,8 +64,8 @@ async fn echo_request_id(req: axum::extract::Request, next: Next) -> HttpRespons
     r
 }
 
-/// What the old receiver had and this host does not: capture jobs (bulk
-/// backfill), mission control, assertion candidates.
+/// Routes the extension knows that this host does not serve: capture jobs
+/// (bulk backfill), mission control and assertions.
 async fn not_built() -> HttpResponse {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -197,7 +197,7 @@ async fn capture(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -
         .and_then(|v| v.to_str().ok())
         .map_or_else(new_id, str::to_owned);
     let bytes = body.clone();
-    let written = blocking(move || super::captures::publish(&path, &bytes)).await;
+    let written = blocking(move || super::captures::append(&path, &bytes)).await;
     let new = match written {
         Some(Ok(w)) => w,
         _ => return bad(StatusCode::INTERNAL_SERVER_ERROR, "write_failed"),

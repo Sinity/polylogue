@@ -10,7 +10,9 @@ fn read(
 ) -> Response {
     handle(
         Request::Read {
-            target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),
+            target: crate::daemon::ReadTarget::Session(
+                polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+            ),
             view: view.into(),
             format: format.into(),
             logical: false,
@@ -112,7 +114,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
-        "runtime retained its writer lock"
+        "runtime still holds its writer lock"
     );
 }
 
@@ -229,13 +231,13 @@ fn standalone_start_does_not_read_the_sinex_configuration() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("1 passed"),
-        "child did not execute its control: {stdout}"
+        "child did not run its test: {stdout}"
     );
     assert!(!dir.path().join("sinex-store").exists());
 }
 
 #[test]
-fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers_finish() {
+fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_readers_finish() {
     let dir = tempfile::tempdir().unwrap();
     let mut runtime = start(
         &dir.path().join("archive"),
@@ -257,7 +259,7 @@ fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers
         }));
     }
     entered.wait();
-    runtime.stop_admission();
+    runtime.stop_accepting();
     for request in requests {
         assert!(
             matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "daemon_stopping")

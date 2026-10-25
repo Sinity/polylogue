@@ -52,7 +52,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
     assert_eq!(saved.status, 200, "{}", saved.json());
     assert_eq!(saved.json()["note"]["id"], input["request_id"]);
     assert_eq!(saved.json()["note"]["repeat"], false);
-    runtime.stop_admission();
+    runtime.stop_accepting();
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
     drop(runtime);
@@ -95,7 +95,7 @@ fn selected_passage_notes_survive_restart_and_identical_native_retries() {
         changed.to_string().as_bytes(),
     );
     assert_eq!(conflict.status, 409, "{}", conflict.json());
-    runtime.stop_admission();
+    runtime.stop_accepting();
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
 }

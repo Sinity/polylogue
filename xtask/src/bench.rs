@@ -1,4 +1,4 @@
-//! `xtask bench`: the first build measured on a frozen, representative
+//! `xtask bench`: the first build measured on a fixed, representative
 //! sample of the operator's corpus instead of the whole of it.
 //!
 //! `bench sample` draws the sample (devkit's stratified draw: by origin and
@@ -10,7 +10,8 @@
 //! uncalibrated linear input-byte estimate. `--incremental` appends the rest
 //! of every session file and measures the incremental pass. `bench validate`
 //! compares that assumption with a supplied full run; it does not establish
-//! calibration across sizes or check candidate/input identity.
+//! calibration across sizes or check that both runs used the same build
+//! and input.
 //!
 //! `--target largest` does the same over the largest Claude Code session and
 //! the largest Codex database, which a sample of a few GB cannot hold; it
@@ -18,7 +19,7 @@
 //! nothing.
 mod reads;
 
-use devkit::bench::{self, Candidate, LoadMonitor, Manifest};
+use devkit::bench::{self, Candidate as SampleFile, LoadMonitor, Manifest};
 use devkit::history::Store;
 use serde_json::{Value, json};
 use std::{
@@ -117,7 +118,8 @@ pub enum Bench {
         full_walk: bool,
     },
     /// Compare the latest linear estimate with a supplied full-run result.
-    /// Candidate/input matching and multi-size calibration remain unchecked.
+    /// Whether both runs used the same build and input, and calibration
+    /// across sizes, are not checked.
     Validate { result: PathBuf },
     /// Recorded runs and comparisons (devkit's shared commands).
     #[command(flatten)]
@@ -195,7 +197,7 @@ fn year(meta: &fs::Metadata) -> String {
 
 /// Every file the first build reads, with its stratum, in the layout the
 /// engine expects under a home directory (`.claude/…`, `.codex/…`).
-pub fn candidates() -> Vec<Candidate> {
+pub fn input_files() -> Vec<SampleFile> {
     let mut out = Vec::new();
     let claude = claude_dir();
     let mut files = Vec::new();
@@ -228,7 +230,7 @@ pub fn candidates() -> Vec<Candidate> {
         } else {
             ("claude/side".to_owned(), false)
         };
-        out.push(Candidate {
+        out.push(SampleFile {
             rel: Path::new(".claude").join(rel),
             path,
             stratum,
@@ -259,7 +261,7 @@ pub fn candidates() -> Vec<Candidate> {
             // them as inputs.
             continue;
         };
-        out.push(Candidate {
+        out.push(SampleFile {
             rel: Path::new(".codex").join(rel),
             path,
             grows: stratum.starts_with("codex/rollout"),
@@ -273,7 +275,7 @@ pub fn candidates() -> Vec<Candidate> {
 /// The largest file of each of these stratum families.
 const LARGEST: &[&str] = &["claude/main", "codex/database"];
 
-fn largest(all: &[Candidate]) -> Vec<Candidate> {
+fn largest(all: &[SampleFile]) -> Vec<SampleFile> {
     LARGEST
         .iter()
         .filter_map(|family| {
@@ -286,7 +288,7 @@ fn largest(all: &[Candidate]) -> Vec<Candidate> {
 }
 
 fn sample(target: Target, bytes: u64, seed: u64, cut: f64) -> Result<(), String> {
-    let all = candidates();
+    let all = input_files();
     let chosen = match target {
         Target::Sample => bench::select(&all, bytes, seed),
         Target::Largest => largest(&all),
@@ -341,7 +343,7 @@ fn first_build(
     out: &Path,
     messages_required: bool,
 ) -> Result<Value, String> {
-    // AgentCTL admits the outer benchmark job; the lock excludes other
+    // AgentCTL queues the outer benchmark job; the lock excludes other
     // benchmarks over real data without queueing nested work.
     let output = Command::new("flock")
         .arg("-o")
@@ -580,7 +582,7 @@ fn validation_report(estimate: &Value, actual: &Value) -> Result<Value, String> 
         "relative_error": (real > 0.0).then(|| (estimated - real) / real),
         "scale": estimate["scale"], "assumptions": estimate["assumptions"],
         "actual_input_mb": actual["input_mb"], "calibrated": false,
-        "candidate_match": "not_verified", "input_match": "not_verified",
+        "build_match": "not_verified", "input_match": "not_verified",
         "full_run_load": actual.get("load"),
         "limitation": "One supplied result does not establish multi-size calibration or matching work."
     }))

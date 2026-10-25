@@ -1,5 +1,5 @@
-//! Exact retained attachment bytes cross only the observed interactive CLI
-//! socket boundary. Ordinary application calls return masked descriptors.
+//! An attachment's stored bytes go only to the interactive CLI, checked on
+//! the socket. Ordinary application calls return masked descriptors.
 use super::service::{Daemon, error, store_error};
 use super::{Request, Response};
 use base64::Engine as _;
@@ -36,10 +36,10 @@ pub(super) fn socket(
     request: Request,
     d: &Daemon,
 ) -> Response {
-    if let Err(response) = super::service::admit(d) {
+    if let Err(response) = super::service::accepting(d) {
         return response;
     }
-    match operator::Operator::admit(stream) {
+    match operator::Operator::check(stream) {
         Ok(operator) => reveal(request, d, operator),
         Err(e) => error("operator_required", e),
     }
@@ -96,58 +96,54 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     let chosen = asset
         .as_deref()
         .or_else(|| decoded.as_ref().map(|cursor| cursor.asset.as_str()));
-    let candidate = match chosen {
+    let found = match chosen {
         Some(input) => resolution
             .candidates
             .iter()
-            .find(|candidate| candidate.input == input),
+            .find(|found| found.input == input),
         None if resolution.candidates.len() == 1 => resolution.candidates.first(),
         None => None,
     };
-    let Some(candidate) = candidate else {
+    let Some(found) = found else {
         return error(
             "attachment_unavailable",
-            "select an available retained asset from the attachment descriptor",
+            "select one of the stored files the attachment descriptor lists",
         );
     };
     if decoded
         .as_ref()
-        .is_some_and(|cursor| cursor.asset != candidate.input)
+        .is_some_and(|cursor| cursor.asset != found.input)
     {
         return error("bad_request", "the cursor selects another asset");
     }
     let offset = decoded.as_ref().map_or(0, |cursor| cursor.offset);
-    let blob = match decoded
-        .as_ref()
-        .map(|cursor| cursor.blob)
-        .or(candidate.blob)
-    {
+    let blob = match decoded.as_ref().map(|cursor| cursor.blob).or(found.blob) {
         Some(hash) => hash,
-        None => match reader.attachment_hash(candidate, &d.config.blob_roots) {
+        None => match reader.attachment_hash(found, &d.config.blob_roots) {
             Ok(hash) => hash,
             Err(error) => return store_error(&error),
         },
     };
-    if candidate.blob.is_some_and(|known| known != blob) {
+    if found.blob.is_some_and(|known| known != blob) {
         return error("stale_cursor", "the selected attachment hash changed");
     }
-    if offset > candidate.size || offset == candidate.size && offset != 0 {
+    if offset > found.size || offset == found.size && offset != 0 {
         return error(
             "bad_request",
-            "attachment cursor is outside the retained bytes",
+            "attachment cursor is outside the stored bytes",
         );
     }
-    let end = offset.saturating_add(length as u64).min(candidate.size);
-    let bytes = match reader.attachment_range(candidate, &d.config.blob_roots, offset..end) {
+    let end = offset.saturating_add(length as u64).min(found.size);
+    let bytes = match reader.attachment_range(found, &d.config.blob_roots, offset..end) {
         Ok(bytes) => bytes,
         Err(e) => return store_error(&e),
     };
-    let next = if end < candidate.size {
+    let next = if end < found.size {
         match serde_json::to_vec(&Cursor {
             version: 1,
             binding: resolution.binding.clone(),
             generation,
-            asset: candidate.input.clone(),
+            asset: found.input.clone(),
             offset: end,
             blob,
         }) {
@@ -173,14 +169,14 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     };
     let page = BytePage {
         descriptor,
-        asset: candidate.input.clone(),
+        asset: found.input.clone(),
         blob,
-        size: candidate.size,
+        size: found.size,
         offset,
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         next,
     };
-    // This typed byte payload is encoded after operator admission. Its descriptor
+    // This byte payload is encoded only after the operator check. Its descriptor
     // is masked separately; encoded bytes must never enter the text masker.
     match serde_json::to_value(page) {
         Ok(data) => Response::Ok { data },

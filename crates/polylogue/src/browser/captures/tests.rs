@@ -12,7 +12,7 @@ fn retries_complete_partial_headers_and_bodies_without_changing_accepted_prefix(
     let path = dir.path().join("capture.json");
     let a = br#"{"observed":"accepted-a"}"#;
     let b = br#"{"observed":"pending-b"}"#;
-    publish(&path, a).unwrap();
+    append(&path, a).unwrap();
     let accepted = fs::read(&path).unwrap();
     let pending = frame(b);
     let mut expected = accepted.clone();
@@ -29,11 +29,11 @@ fn retries_complete_partial_headers_and_bodies_without_changing_accepted_prefix(
         let mut interrupted = accepted.clone();
         interrupted.extend(&pending[..cut]);
         fs::write(&path, &interrupted).unwrap();
-        assert!(publish(&path, b).unwrap(), "cut {cut}");
+        assert!(append(&path, b).unwrap(), "cut {cut}");
         let completed = fs::read(&path).unwrap();
         assert!(completed.starts_with(&interrupted), "cut {cut}");
         assert_eq!(completed, expected, "cut {cut}");
-        assert!(!publish(&path, b).unwrap());
+        assert!(!append(&path, b).unwrap());
         assert_eq!(fs::read(&path).unwrap(), expected);
     }
 }
@@ -47,9 +47,9 @@ fn initial_magic_prefix_can_complete_without_discarding_any_bytes() {
     expected.extend(frame(a));
     for cut in 1..MAGIC.len() {
         fs::write(&path, &MAGIC[..cut]).unwrap();
-        assert!(publish(&path, a).unwrap());
+        assert!(append(&path, a).unwrap());
         assert_eq!(fs::read(&path).unwrap(), expected);
-        assert!(!publish(&path, a).unwrap());
+        assert!(!append(&path, a).unwrap());
     }
 }
 
@@ -59,7 +59,7 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
     let path = dir.path().join("capture.json");
     let a = br#"{"observed":"a"}"#;
     let b = br#"{"observed":"b"}"#;
-    publish(&path, a).unwrap();
+    append(&path, a).unwrap();
     let accepted = fs::read(&path).unwrap();
     let pending = frame(a);
     for tail in [
@@ -83,7 +83,7 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
         },
     ] {
         fs::write(&path, &tail).unwrap();
-        assert!(publish(&path, b).is_err());
+        assert!(append(&path, b).is_err());
         assert_eq!(fs::read(&path).unwrap(), tail);
     }
     let mut corrupt = accepted.clone();
@@ -91,7 +91,7 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
     header.length += 1;
     corrupt[MAGIC.len()..MAGIC.len() + HEADER_LEN].copy_from_slice(&header.encode());
     fs::write(&path, &corrupt).unwrap();
-    assert!(publish(&path, a).is_err());
+    assert!(append(&path, a).is_err());
     assert_eq!(fs::read(&path).unwrap(), corrupt);
 }
 
@@ -99,7 +99,7 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
 fn a_late_body_mismatch_refuses_before_writing_any_missing_suffix() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("capture.json");
-    publish(&path, br#"{"observed":"accepted"}"#).unwrap();
+    append(&path, br#"{"observed":"accepted"}"#).unwrap();
     let accepted = fs::read(&path).unwrap();
     let body = format!("{{\"observed\":\"{}\"}}", "x".repeat(20_000));
     let pending = frame(body.as_bytes());
@@ -108,10 +108,10 @@ fn a_late_body_mismatch_refuses_before_writing_any_missing_suffix() {
     let mut mismatched = interrupted.clone();
     mismatched[accepted.len() + HEADER_LEN + 8_500] = b'y';
     fs::write(&path, &mismatched).unwrap();
-    assert!(publish(&path, body.as_bytes()).is_err());
+    assert!(append(&path, body.as_bytes()).is_err());
     assert_eq!(fs::read(&path).unwrap(), mismatched);
     fs::write(&path, &interrupted).unwrap();
-    assert!(publish(&path, body.as_bytes()).unwrap());
+    assert!(append(&path, body.as_bytes()).unwrap());
     let mut expected = accepted;
     expected.extend(pending);
     assert_eq!(fs::read(&path).unwrap(), expected);

@@ -71,7 +71,7 @@ fn ours(hook: &Value) -> bool {
             .is_some_and(|event| EVENTS.contains(&event))
 }
 
-/// Merge Polylogue's commands while retaining other hooks and entry metadata.
+/// Merge Polylogue's commands, keeping other hooks and entry metadata.
 /// Refuse invalid containers instead of replacing their contents.
 pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Value> {
     validate(&settings)?;
@@ -92,7 +92,7 @@ pub(super) fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Valu
                 let hooks = entry["hooks"].as_array_mut().expect("validated hook array");
                 let before = hooks.len();
                 hooks.retain(|hook| !ours(hook));
-                // Preserve pre-existing empty entries; only remove entries
+                // Keep entries that were already empty; only remove entries
                 // made empty by removing our commands.
                 before == hooks.len() || !hooks.is_empty()
             });

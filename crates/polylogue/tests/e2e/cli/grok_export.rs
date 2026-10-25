@@ -133,7 +133,7 @@ fn grok_account_import_reads_exact_turns_without_filename_or_export_order_identi
 }
 
 #[test]
-fn grok_native_ids_blank_content_and_unknown_interpretations_are_visible() {
+fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -200,7 +200,7 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     ];
     let _daemon = start_daemon(&env);
     let conversations = json!([{"conversation":{"id":"metadata-prefix"}, "responses":[
-        {"responseId":"prefix-turn", "sender":"human", "message":"synthetic prefix control"}
+        {"responseId":"prefix-turn", "sender":"human", "message":"synthetic prefix turn"}
     ]}]);
     let bytes = format!(
         "{{\"account_metadata\":\"{}\",\"conversations\":{conversations}}}",
@@ -225,7 +225,7 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     assert!(read.status.success(), "{read:?}");
     assert_eq!(
         json(&read)["messages"][0]["blocks"][0]["text"],
-        "synthetic prefix control"
+        "synthetic prefix turn"
     );
     drop(_daemon);
     std::fs::remove_file(renamed).unwrap();
@@ -241,6 +241,6 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     assert!(rebuilt.status.success(), "{rebuilt:?}");
     assert_eq!(
         json(&rebuilt)["messages"][0]["blocks"][0]["text"],
-        "synthetic prefix control"
+        "synthetic prefix turn"
     );
 }

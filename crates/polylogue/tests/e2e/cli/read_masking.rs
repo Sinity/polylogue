@@ -3,7 +3,7 @@ use polylogue_model::export::Document;
 use serde_json::json;
 
 #[test]
-fn public_read_and_export_mask_source_fragments_before_views_and_html_pairing() {
+fn read_and_export_mask_source_fragments_before_views_and_html_pairing() {
     run(&[
         "claude-code:masking",
         "claude-code:hidden",
@@ -12,12 +12,12 @@ fn public_read_and_export_mask_source_fragments_before_views_and_html_pairing() 
 }
 
 #[test]
-fn public_tool_aliases_reuse_masked_source_text_without_replaying_it() {
+fn tool_aliases_reuse_masked_source_text_without_replaying_it() {
     run(&["claude-code:aliases"]);
 }
 
 #[test]
-fn public_views_mask_hidden_source_fragments_before_removing_them() {
+fn views_mask_hidden_source_fragments_before_removing_them() {
     run(&["claude-code:hidden"]);
 }
 
@@ -130,7 +130,7 @@ fn assert_masked(output: &Output, context: &str) {
 }
 
 #[test]
-fn public_derived_titles_mask_source_context_before_taking_the_first_line() {
+fn derived_titles_mask_source_context_before_taking_the_first_line() {
     const SECRET: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-AAAAAAAA";
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");

@@ -1,4 +1,5 @@
-//! Actual export custody and the observed operator-only exact byte path.
+//! Export attachments: what the descriptor says about stored files, and the
+//! byte path that only the operator's terminal may use.
 use super::*;
 use serde_json::{Value, json};
 
@@ -97,7 +98,7 @@ impl World {
 }
 
 #[test]
-fn public_directory_and_zip_imports_describe_retained_bytes_without_exposing_them() {
+fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
     for zip in [false, true] {
         let world = World::new(zip);
         let descriptor = world.descriptor();
@@ -123,10 +124,7 @@ fn public_directory_and_zip_imports_describe_retained_bytes_without_exposing_the
         assert!(shown.status.success(), "{shown:?}");
         let shown = json(&shown);
         assert!(
-            shown["content"]
-                .as_str()
-                .unwrap()
-                .contains("retained bytes"),
+            shown["content"].as_str().unwrap().contains("stored bytes"),
             "{shown}"
         );
         assert!(!shown.to_string().contains("synthetic-private-file-value"));
@@ -213,7 +211,7 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
         std::fs::write(conflicting.join("conversations.json"), conversation()).unwrap();
         std::fs::write(
             conflicting.join("file-Native.dat"),
-            b"different retained candidate",
+            b"a different stored file",
         )
         .unwrap();
         let imported = cli(
@@ -259,7 +257,7 @@ fn an_arbitrary_socket_reveal_flag_does_not_grant_exact_byte_output() {
 }
 
 #[test]
-fn public_unicode_attachment_pages_bind_visible_descriptors_and_changed_candidates() {
+fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     let label = "label λ🙂字 ".repeat(120);
     let world = World::with_label(false, SECRET, &label);
     let whole = cli(
@@ -308,11 +306,7 @@ fn public_unicode_attachment_pages_bind_visible_descriptors_and_changed_candidat
     let conflict = world._dir.path().join("later-export");
     std::fs::create_dir(&conflict).unwrap();
     std::fs::write(conflict.join("conversations.json"), conversation()).unwrap();
-    std::fs::write(
-        conflict.join("file-Native.dat"),
-        b"changed retained candidate",
-    )
-    .unwrap();
+    std::fs::write(conflict.join("file-Native.dat"), b"a changed stored file").unwrap();
     assert!(
         cli(
             &world.env(),
@@ -362,7 +356,7 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
 mod promoted;
 
 #[test]
-fn retained_zip_container_removal_preserves_members_then_member_removal_succeeds() {
+fn removing_a_zip_keeps_its_members_then_removing_a_member_succeeds() {
     let world = World::new(true);
     let before = cli(&world.env(), &["--json", "read", SESSION]);
     assert!(before.status.success(), "{before:?}");
@@ -418,7 +412,7 @@ fn original_container_name_is_not_a_member_attachment_identity() {
 }
 
 #[test]
-fn retained_zip_member_removal_retires_original_and_marks_attachment_unavailable() {
+fn removing_a_zip_member_removes_the_original_zip_and_marks_the_attachment_unavailable() {
     let world = World::new(true);
     let original = {
         let pool =

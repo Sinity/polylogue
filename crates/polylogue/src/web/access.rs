@@ -1,4 +1,4 @@
-//! Who may talk to the HTTP port (spec `surfaces/web.md`, Access). Loopback
+//! Who may talk to the HTTP port. Loopback
 //! alone does not stop a web page in the operator's browser from reaching
 //! the port, so every request is checked:
 //!
@@ -61,7 +61,7 @@ pub fn new_token() -> io::Result<String> {
 /// Writes the token and port files (mode 0600) for clients that open the
 /// reader. A new daemon writes a new token, so pages from a previous run
 /// must authenticate again.
-pub fn publish(dir: &Path, token: &str, port: u16) -> io::Result<()> {
+pub fn write_access_files(dir: &Path, token: &str, port: u16) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     write_private(&dir.join("token"), token)?;
@@ -76,7 +76,7 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
         .map_err(Into::into)
 }
 
-/// The running reader's authenticated entry point, as published by that
+/// The running reader's authenticated entry point, as written by that
 /// archive's daemon. Verify the listener before disclosing its token.
 pub fn reader_url(root: &Path) -> io::Result<String> {
     let dir = runtime_dir(&archive_key(root));

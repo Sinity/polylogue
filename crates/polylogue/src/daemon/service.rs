@@ -170,7 +170,8 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     }
 }
 
-pub(super) fn admit(d: &Daemon) -> Result<(), Response> {
+/// Refuses new requests once the daemon is stopping.
+pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
             "daemon_stopping",
@@ -180,10 +181,10 @@ pub(super) fn admit(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Prepare a complete finite feed through the same admission and read pool.
-/// The returned unnamed file owns delivery bytes, never a live Reader.
+/// Prepares a complete finite feed through the same checks and read pool.
+/// The returned unnamed file holds the bytes to send, never a live Reader.
 pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::File, Response> {
-    admit(d)?;
+    accepting(d)?;
     let reader = d.reads.reader().map_err(|e| store_error(&e))?;
     let file = tempfile::tempfile_in(&d.archive.root).map_err(|e| error("io", e))?;
     super::query::feed::prepare(&reader, since, now_ms(), file).map_err(|f| {
@@ -203,7 +204,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {
-    if let Err(response) = admit(d) {
+    if let Err(response) = accepting(d) {
         return response;
     }
     if matches!(d.mode, ModeState::Blocked { .. }) && !request.read_only() {
@@ -554,11 +555,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 
 /// Whole sessions in the structured export format (`json`, read back by
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-fn export(
-    reader: &polylogue_store::Reader<'_>,
-    targets: &[ReadTarget],
-    format: &str,
-) -> Response {
+fn export(reader: &polylogue_store::Reader<'_>, targets: &[ReadTarget], format: &str) -> Response {
     let mut sessions = Vec::new();
     for id in targets.iter().filter_map(|t| match t {
         ReadTarget::Session(id) => Some(id),
@@ -617,16 +614,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    /// Wake pending read admissions before joining transports or workers.
-    /// Admitted readers and writes keep their existing completion semantics.
-    pub fn stop_admission(&self) {
+    /// Refuses new requests and wakes readers waiting for a reader slot,
+    /// before transports and workers are joined. Readers and writes already
+    /// running finish as usual.
+    pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
         self.daemon.read_checkpoints.clear();
         self.daemon.reads.close();
     }
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
-        self.stop_admission();
+        self.stop_accepting();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }

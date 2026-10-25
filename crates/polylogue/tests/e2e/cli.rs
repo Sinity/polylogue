@@ -331,7 +331,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
 }
 
 #[test]
-fn ai_studio_import_and_drive_title_read_identically_after_a_retained_rebuild() {
+fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored_bytes() {
     let w = polylogue_testkit::ClaudeHome::new();
     let config = w.dir.path().join("config");
     let dir = w.config(8).spool_dir("ai-studio");
@@ -377,7 +377,12 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_retained_rebuild() 
     std::fs::remove_file(listing).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let daemon = start_daemon(&env);
-    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
+    // The title comes from the Drive listing, a separate input: wait for a
+    // whole pass, not only for the messages.
+    wait_status(&env, |s| {
+        s["store"]["messages"].as_u64() == Some(3)
+            && s["last_pass"]["seconds"].as_f64().is_some_and(|n| n > 0.0)
+    });
     let after = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
     assert!(
         after.status.success(),

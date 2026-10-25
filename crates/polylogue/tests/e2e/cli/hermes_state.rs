@@ -12,7 +12,7 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_a
         INSERT INTO sessions VALUES('parent','cli','supplied-model',NULL,'compression',0,'Native parent');
         INSERT INTO sessions VALUES('child','cli','supplied-model','parent',NULL,1,'Native child');
         CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,reasoning_content TEXT,tool_calls TEXT,tool_call_id TEXT,timestamp REAL,active INTEGER,compacted INTEGER);
-        INSERT INTO messages VALUES(1,'parent','user','retained ancestor Ω',NULL,NULL,NULL,0,0,1);").unwrap();
+        INSERT INTO messages VALUES(1,'parent','user','stored ancestor Ω',NULL,NULL,NULL,0,0,1);").unwrap();
     let calls = json!([{"id":"native-call","function":{"name":"terminal","arguments":"{\"command\":\"printf synthetic\",\"custom\":7}"}}]).to_string();
     db.execute("INSERT INTO messages VALUES(2,'child','assistant','native reply λ🙂','native reasoning',?1,NULL,1,1,0)", [&calls]).unwrap();
     let result = json!({"output":"exact native output","exit_code":7,"custom":{"supplied":false}});
@@ -95,7 +95,7 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_a
     let parent = json(&parent);
     assert_eq!(
         parent["messages"][0]["blocks"][0]["text"],
-        "retained ancestor Ω"
+        "stored ancestor Ω"
     );
     assert_eq!(
         parent["messages"][0]["id"],
@@ -144,7 +144,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
     assert!(listed.status.success(), "{listed:?}");
     let listed = json(&listed);
     let mut states = Vec::new();
-    for (title, retained, active) in [
+    for (title, stored, active) in [
         ("All inactive", 2, 0),
         ("Mixed activity", 3, 1),
         ("Unknown activity", 2, 2),
@@ -159,7 +159,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
             .unwrap();
         let read = cli(&env, &["--json", "read", sid]);
         assert!(read.status.success(), "{read:?}");
-        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), retained);
+        assert_eq!(json(&read)["messages"].as_array().unwrap().len(), stored);
         let query = format!("messages where session.title:\"{title}\"");
         let visible = cli(&env, &["--json", &query]);
         assert!(visible.status.success(), "{visible:?}");
@@ -171,7 +171,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         let all = format!("messages where session:{sid} active:*");
         let all = cli(&env, &["--json", &all]);
         assert!(all.status.success(), "{all:?}");
-        assert_eq!(json(&all)["count"], retained);
+        assert_eq!(json(&all)["count"], stored);
         let markers = cli(
             &env,
             &[

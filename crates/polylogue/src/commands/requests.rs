@@ -106,7 +106,9 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
     let target = ReadTarget::parse(&v.text("session").ok_or("`session` is required")?)?;
     let logical = v.flag("logical");
     match target {
-        ReadTarget::Event(_) if logical => return Err("an event has no conversation ancestry".into()),
+        ReadTarget::Event(_) if logical => {
+            return Err("an event has no conversation ancestry".into());
+        }
         ReadTarget::Document(_) if logical => {
             return Err("documents have no conversation ancestry".into());
         }

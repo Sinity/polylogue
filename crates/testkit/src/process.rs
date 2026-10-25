@@ -1,4 +1,4 @@
-//! Direct daemon children in tests. Callers retain their kill-and-wait guard.
+//! Direct daemon children in tests. Callers keep their kill-and-wait guard.
 
 use std::io;
 use std::process::{Child, Command};
@@ -50,7 +50,7 @@ impl ProcessExit {
     }
 
     /// Wait for the whole process, including its other threads, to exit.
-    /// The test runner retains responsibility for the hung-test deadline.
+    /// The test runner owns the deadline for a hung test.
     #[allow(unsafe_code)]
     pub fn wait(self) -> io::Result<()> {
         use std::os::fd::AsRawFd;

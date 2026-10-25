@@ -1,4 +1,4 @@
-//! Resuming a session (architecture 7). Two ways are
+//! Resuming a session. Two ways are
 //! kept apart:
 //!
 //! - **native resume**: the harness's own command reopens the session with
@@ -62,7 +62,7 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 
 /// A session worth resuming and why.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Candidate {
+pub struct ResumableSession {
     pub session: polylogue_store::NearbySession,
     pub open: OpenItems,
     /// Operator notes on it that ask for follow-up (handoffs, blockers).
@@ -76,7 +76,7 @@ pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
     limit: u64,
-) -> Result<Vec<Candidate>, StoreError> {
+) -> Result<Vec<ResumableSession>, StoreError> {
     use polylogue_model::{NoteKind, Target};
     let dirs = crate::briefing::scope_dirs(cwd);
     let mut out = Vec::new();
@@ -98,7 +98,7 @@ pub fn resumable(
             continue;
         }
         let native = native_resume(&s.id, s.cwd.as_deref());
-        out.push(Candidate {
+        out.push(ResumableSession {
             session: s,
             open,
             follow_ups,

@@ -100,7 +100,7 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
             assert_eq!(imported["rows"][0]["source"], "polylogue-export");
             assert_ne!(
                 imported["rows"][0]["id"], row["id"],
-                "sender identity is a retained claim, not local provider custody"
+                "an imported sender ID is what the export says, not this machine's provider ID"
             );
             assert!(imported["rows"][0]["session"].is_null());
         }
@@ -238,7 +238,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
         let db = rusqlite::Connection::open(&native).unwrap();
         db.execute_batch("BEGIN;
             UPDATE meta SET value='2' WHERE key='schema_version';
-            INSERT INTO verification_events VALUES(2,'2026-01-02T03:04:06Z','default','/neutral','/neutral','printf future','printf future','test','workspace','future',23,'uninterpreted future evidence');
+            INSERT INTO verification_events VALUES(2,'2026-01-02T03:04:06Z','default','/neutral','/neutral','printf future','printf future','test','workspace','future',23,'unread future data');
             COMMIT;").unwrap();
         drop(db);
         let daemon = start_daemon(&env);
@@ -306,7 +306,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
 }
 
 #[test]
-fn hermes_atif_public_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
+fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();

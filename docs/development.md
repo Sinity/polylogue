@@ -98,7 +98,7 @@ The spec's query examples run against it in
 `crates/polylogue/src/daemon/query/tests/spec_examples.rs`; examples waiting on unbuilt
 features are listed there with the reason.
 
-The Sinex rebuild test (`crates/sinex/tests/proof.rs`) runs a real `sinexd`,
+The Sinex rebuild test (`crates/sinex/tests/rebuild/main.rs`) runs a real `sinexd`,
 so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex
 checkout, then run it from Sinex's dev shell, which has PostgreSQL with
 TimescaleDB and `nats-server`:

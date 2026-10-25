@@ -17,7 +17,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     std::fs::create_dir_all(&config.home).unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let ctx = Arc::new(Ctx::at(&config, &archive).unwrap());
-    let first = capture("rapid", "first retained version");
+    let first = capture("rapid", "first earlier version");
     let second = capture("rapid", "second current version");
     let ack = exchange(&ctx, "POST", "/v1/browser-captures", &first);
     assert_eq!(ack.status, 200);
@@ -75,7 +75,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let reader = pool.reader().unwrap();
     assert_eq!(
         text(&reader.messages(&sid, false).unwrap()),
-        ["first retained version"]
+        ["first earlier version"]
     );
 }
 
