@@ -12,3 +12,9 @@ fail-fast = false
 [[profile.default.overrides]]
 filter = "package(polylogue-engine) and binary(laws)"
 slow-timeout = { period = "60s", terminate-after = 6 }
+
+# The Sinex rebuild test runs a real sinexd and converges the example archive
+# four times: twice from provider files, twice from Sinex.
+[[profile.default.overrides]]
+filter = "package(polylogue-sinex) and binary(rebuild)"
+slow-timeout = { period = "60s", terminate-after = 10 }
