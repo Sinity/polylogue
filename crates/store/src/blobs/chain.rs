@@ -4,11 +4,11 @@ use crate::StoreError;
 use rusqlite::Connection;
 use std::sync::Arc;
 
-mod reader;
 mod extents;
+mod reader;
+use extents::ExtentList;
 pub use reader::ChainReader;
 use reader::Cursor;
-use extents::ExtentList;
 
 #[derive(Debug, Clone, Default)]
 pub struct StoredChain {

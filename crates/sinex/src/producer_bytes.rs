@@ -6,7 +6,9 @@
 //! material.
 use crate::{Error, Result, Sinex, checked};
 use sinex_model::{Class, InputRef, MaterialId};
-use sinex_protocol::producer_bytes::{Bytes, Material, Publication as SpoolRequest, Role, encode_frame};
+use sinex_protocol::producer_bytes::{
+    Bytes, Material, Publication as SpoolRequest, Role, encode_frame,
+};
 use sinex_protocol::{Acknowledgment, Ingress, MaterialFrame};
 use sinex_transport::spool::{self, Frozen as Spooled};
 use std::io::Read;

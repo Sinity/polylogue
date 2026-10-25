@@ -224,7 +224,8 @@ fn input_excision_owns_text_shared_only_by_its_removed_sessions() {
             } else {
                 " ".repeat(shared.len())
             };
-            let archive_conn = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+            let archive_conn =
+                rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
             let hash: Vec<u8> = archive_conn
                 .query_row(
                     "SELECT content_hash FROM delivery WHERE id='shared-summary'",

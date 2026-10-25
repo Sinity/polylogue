@@ -146,9 +146,7 @@ fn capture_extent(
         return Err(invalid("invalid stored extent bounds"));
     }
     if encoding != "plain" || !matches!(place.as_str(), "inline" | "file") {
-        return Err(invalid(
-            "a stored chain needs plain inline or file blobs",
-        ));
+        return Err(invalid("a stored chain needs plain inline or file blobs"));
     }
     let data_len: Option<i64> = row.get(8)?;
     if place == "inline" && data_len.is_none_or(|n| n < 0) {

@@ -313,9 +313,7 @@ fn text_excision_refuses_opaque_assets_without_changing_their_stored_bytes() {
             polylogue_store::assets::AttachmentState::Available
         );
         let asset = &resolution.matches[0];
-        let bytes = reader
-            .attachment_range(asset, &[], 0..asset.size)
-            .unwrap();
+        let bytes = reader.attachment_range(asset, &[], 0..asset.size).unwrap();
         assert_eq!(bytes, original.as_bytes());
         assert_eq!(
             asset.blob,

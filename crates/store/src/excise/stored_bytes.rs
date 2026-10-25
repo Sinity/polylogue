@@ -295,7 +295,12 @@ pub(super) fn write_piece(
         t.archive.execute(
             "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
             VALUES (?1, ?2, ?3, 'inline', 'plain', 'present', ?4)",
-            params![&hash.0[..], size as i64, compressed.len() as i64, compressed],
+            params![
+                &hash.0[..],
+                size as i64,
+                compressed.len() as i64,
+                compressed
+            ],
         )?;
         return Ok(Piece {
             hash,

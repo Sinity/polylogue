@@ -61,9 +61,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
             &original[2..13]
         );
         assert_eq!(
-            reader
-                .attachment_range(&asset, &[], 0..asset.size)
-                .unwrap(),
+            reader.attachment_range(&asset, &[], 0..asset.size).unwrap(),
             original
         );
         assert!(
@@ -92,9 +90,5 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     assert!(writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert!(reader.attachment_hash(&asset, &[]).is_err());
-    assert!(
-        reader
-            .attachment_range(&asset, &[], 0..asset.size)
-            .is_err()
-    );
+    assert!(reader.attachment_range(&asset, &[], 0..asset.size).is_err());
 }

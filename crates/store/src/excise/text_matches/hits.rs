@@ -1,4 +1,4 @@
-use super::{HitGroup, Error, TextMatches};
+use super::{Error, HitGroup, TextMatches};
 use crate::{Result, StoreError};
 use std::collections::{BTreeMap, BTreeSet};
 

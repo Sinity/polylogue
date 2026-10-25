@@ -25,7 +25,6 @@ mod live;
 pub mod measure;
 pub mod notes;
 mod ordered_blocks;
-mod write_lock;
 pub mod read;
 mod repo_lookup;
 pub mod row_batches;
@@ -40,13 +39,14 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_writes;
 pub mod vectors;
+mod write_lock;
 pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, NearbySession, OpenItems, Prompt};
 pub use notes::NoteFilter;
-pub use read::{KnownInput, ReadPool, Reader, StoredImport, SqlValue, Status};
+pub use read::{KnownInput, ReadPool, Reader, SqlValue, Status, StoredImport};
 pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
     Batch, ImportContainer, ImportMember, InFlight, InputKey, Observation, ParseStep, WriteReport,

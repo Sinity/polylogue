@@ -55,8 +55,8 @@ use messages::SelectedMessages;
 use session_texts::SessionTexts;
 use sessions::SelectedSessions;
 use spans::Spans;
-use stored_bytes::*;
 pub(crate) use stored_bytes::delete_uncommitted_files;
+use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
 /// What to remove.

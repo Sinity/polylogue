@@ -3,7 +3,8 @@ use polylogue_engine::{ExciseRequest, ExciseScope};
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]
-fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_restart_or_excision() {
+fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_restart_or_excision()
+{
     for excision in [false, true] {
         fault::clear();
         let w = ClaudeHome::new();

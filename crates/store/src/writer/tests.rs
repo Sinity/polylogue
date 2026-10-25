@@ -561,7 +561,10 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let known = pool.reader().unwrap().known_inputs("m").unwrap();
     assert_eq!(known[0].stored, 16);
     assert_eq!(known[0].parsed_upto, 5);
-    assert!(!known[0].waiting, "the end-of-file check covered only twelve bytes");
+    assert!(
+        !known[0].waiting,
+        "the end-of-file check covered only twelve bytes"
+    );
 }
 
 #[test]

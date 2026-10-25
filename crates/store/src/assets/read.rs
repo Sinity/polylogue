@@ -126,20 +126,17 @@ impl Reader<'_> {
                     let Some(current) = known[&input].as_ref() else {
                         continue;
                     };
-                    let asset =
-                        matches
-                            .entry(input.clone())
-                            .or_insert_with(|| AssetMatch {
-                                input,
-                                chain: current.chain,
-                                blob: current.blob,
-                                source_version: current.version.clone(),
-                                size: current.length,
-                                members: Vec::new(),
-                                names: Vec::new(),
-                                media_types: Vec::new(),
-                                declared_sizes: Vec::new(),
-                            });
+                    let asset = matches.entry(input.clone()).or_insert_with(|| AssetMatch {
+                        input,
+                        chain: current.chain,
+                        blob: current.blob,
+                        source_version: current.version.clone(),
+                        size: current.length,
+                        members: Vec::new(),
+                        names: Vec::new(),
+                        media_types: Vec::new(),
+                        declared_sizes: Vec::new(),
+                    });
                     asset.members.push(member);
                     let mut meta=conn.prepare_cached("SELECT x.name,x.media_type,x.size,m.input,s.source_version FROM import_member m
                         JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar

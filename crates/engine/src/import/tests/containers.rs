@@ -160,12 +160,8 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
     for (name, bytes) in [
         (
             "conversation.jsonl",
-            polylogue_testkit::claude_user(
-                "user",
-                "zip-session",
-                "synthetic stored conversation",
-            )
-            .into_bytes(),
+            polylogue_testkit::claude_user("user", "zip-session", "synthetic stored conversation")
+                .into_bytes(),
         ),
         (
             "memories.json",
@@ -229,11 +225,7 @@ fn session_and_document_removal_remove_the_zip_while_an_unrelated_input_still_go
     assert!(e.import(&[unrelated]).unwrap().pass.errors.is_empty());
     e.excise(ExciseRequest {
         id: "unrelated-removal".into(),
-        scope: ExciseScope::Input(
-            blake3::hash(b"unrelated stored bytes")
-                .to_hex()
-                .to_string(),
-        ),
+        scope: ExciseScope::Input(blake3::hash(b"unrelated stored bytes").to_hex().to_string()),
         reason: None,
         dry_run: false,
     })

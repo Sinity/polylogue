@@ -274,10 +274,8 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
-            matches!(
-                self.state.get(),
-                ReadState::Deferred | ReadState::Ready
-            ) && conn.execute_batch("COMMIT").is_ok()
+            matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
+                && conn.execute_batch("COMMIT").is_ok()
         });
         let mut state = self
             .pool

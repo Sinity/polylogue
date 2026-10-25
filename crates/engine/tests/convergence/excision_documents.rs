@@ -55,7 +55,9 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
             .query_row("SELECT DISTINCT blob FROM extent", [], |row| row.get(0))
             .unwrap();
         // Inject malformed stored metadata only in this synthetic archive.
-        archive_conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        archive_conn
+            .execute_batch("PRAGMA foreign_keys=OFF")
+            .unwrap();
         archive_conn
             .execute("UPDATE extent SET blob=x'01'", [])
             .unwrap();
@@ -68,7 +70,9 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
         archive_conn
             .execute("UPDATE extent SET blob=?1", [hash])
             .unwrap();
-        archive_conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        archive_conn
+            .execute_batch("PRAGMA foreign_keys=ON")
+            .unwrap();
         assert!(
             failed
                 .unwrap_err()

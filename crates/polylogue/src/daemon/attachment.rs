@@ -97,10 +97,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         .as_deref()
         .or_else(|| decoded.as_ref().map(|cursor| cursor.asset.as_str()));
     let found = match chosen {
-        Some(input) => resolution
-            .matches
-            .iter()
-            .find(|found| found.input == input),
+        Some(input) => resolution.matches.iter().find(|found| found.input == input),
         None if resolution.matches.len() == 1 => resolution.matches.first(),
         None => None,
     };

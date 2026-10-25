@@ -629,10 +629,7 @@ impl Engine {
 
     fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
-        let pending_inputs = self
-            .writer
-            .finish_writing(Arc::clone(&self.blobs))?
-            .pending;
+        let pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
         self.load()?;
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
