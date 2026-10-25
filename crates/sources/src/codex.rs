@@ -479,7 +479,9 @@ impl Rollout {
             match self.own(parser_state) {
                 Some(s) => s,
                 None => {
-                    return RecordOutcome::unreadable("no thread ID in the file name or its header");
+                    return RecordOutcome::unreadable(
+                        "no thread ID in the file name or its header",
+                    );
                 }
             }
         };
