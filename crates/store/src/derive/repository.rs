@@ -1,6 +1,6 @@
-//! The repository a session belongs to (spec sources/README.md, the
-//! repo-lookup record): the lookup whose directory is the longest at or
-//! above its working directory, compared by whole path components. Its
+//! The repository a session belongs to, from the repo-lookup records: the
+//! lookup whose directory is the longest at or above its working directory,
+//! compared by whole path components. Its
 //! `repo_root` comes from that lookup; its `repo` too, unless a record of
 //! its own named the repository (`record_repo`).
 

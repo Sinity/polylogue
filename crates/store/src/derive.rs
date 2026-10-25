@@ -1,5 +1,5 @@
-//! Derived rows (architecture 5.6): every interpretation of the stored
-//! records, one declared derivation each. A derivation names the
+//! Derived rows: everything computed from the parsed rows, one declared
+//! derivation each. A derivation names the
 //! derivations it reads, a version, and the rows it owns for a session; the
 //! derive step recomputes a session's rows whenever the session changed
 //! since they were made or the derivation's version moved, in dependency
@@ -19,6 +19,7 @@ mod active_path;
 mod cost;
 mod repository;
 mod session;
+mod session_survival;
 mod title;
 mod tool_calls;
 mod work;
@@ -72,6 +73,7 @@ const ALL: &[Derivation] = &[
     title::DERIVATION,
     work::DERIVATION,
     cost::DERIVATION,
+    session_survival::DERIVATION,
 ];
 
 /// Runs every derivation over the sessions it has not derived at their
@@ -206,9 +208,9 @@ fn run_one(
         let counter = crate::archive::bump_counter(&tx)?;
         for (pk, changed) in &todo {
             (d.run)(&tx, *pk, catalog)?;
-            // Derived publication changes the visible session, not its raw
-            // inputs. Forward already-current cache markers so it does not dirty
-            // earlier products; stale inputs or rule versions remain stale.
+            // Derived rows change the visible session, not its inputs. Forward
+            // already-current markers so this does not dirty earlier
+            // derivations; stale inputs or rule versions stay stale.
             tx.execute(
                 "UPDATE derive_state SET from_changed=?3 WHERE session_pk=?1 AND from_changed=?2",
                 params![pk, changed, counter],

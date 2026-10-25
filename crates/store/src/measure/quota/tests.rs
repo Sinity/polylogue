@@ -30,11 +30,11 @@ fn a_past_reset_is_carried_forward_by_the_window_length() {
     );
 }
 
-/// Law 109: windows after a reported reset are unchanged when an earlier
+/// Windows after a reported reset are unchanged when an earlier
 /// message is inserted, and windows nothing reported are labelled
 /// inferred.
 #[test]
-fn law_109_windows_anchor_to_reported_resets() {
+fn windows_anchor_to_reported_resets() {
     let five = 5 * HOUR;
     let reset = T0 + 10 * HOUR;
     let anchors = [(reset - five, reset)];

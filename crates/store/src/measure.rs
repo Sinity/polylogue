@@ -1,12 +1,17 @@
-//! Measurement (architecture 1, "Measure things"; 7): tokens by kind, cost,
-//! subscription quota and the analyses over sessions and tool
-//! calls. Every figure says how many items it could not count; unknown is
-//! never shown as zero. Hidden sessions stay in every figure: hiding
-//! changes what is listed, not what was used.
+//! Measurement reads: tokens by kind, cost, subscription quota, and the
+//! measures over sessions and tool calls. Each runs at read time over the
+//! sessions a query selects; facts that depend only on one session's rows
+//! come from derivations (`session_survival`, message cost). Every figure says
+//! how many items it could not count; unknown is never shown as zero.
+//! Hidden sessions stay in every figure: hiding changes what is listed, not
+//! what was used.
 
-pub mod analysis;
+pub mod daily;
+pub mod drift;
 mod observations;
 pub mod quota;
+pub mod survival;
+pub mod tool_calls;
 mod usage;
 
 pub use usage::{
@@ -47,6 +52,31 @@ impl Scope {
             params.push(until.into());
             clauses.push(format!("m.at < ?{}", params.len()));
         }
+        self.session_clauses("m.session_pk", &mut clauses, &mut params);
+        (clauses.join(" AND "), params)
+    }
+
+    /// The SQL condition on a session primary key column, for figures read
+    /// from per-session facts. Those facts have no message times, so a
+    /// time-bounded scope is refused.
+    fn session_condition(&self, column: &str) -> Result<(String, Vec<rusqlite::types::Value>)> {
+        if self.since.is_some() || self.until.is_some() {
+            return Err(crate::StoreError::Invalid(
+                "per-session measures take no time bounds".into(),
+            ));
+        }
+        let mut clauses = vec!["1".to_owned()];
+        let mut params: Vec<rusqlite::types::Value> = vec![];
+        self.session_clauses(column, &mut clauses, &mut params);
+        Ok((clauses.join(" AND "), params))
+    }
+
+    fn session_clauses(
+        &self,
+        column: &str,
+        clauses: &mut Vec<String>,
+        params: &mut Vec<rusqlite::types::Value>,
+    ) {
         if let Some(origins) = &self.origins {
             let mut marks = vec![];
             for o in origins {
@@ -54,7 +84,7 @@ impl Scope {
                 marks.push(format!("?{}", params.len()));
             }
             clauses.push(format!(
-                "m.session_pk IN (SELECT pk FROM session WHERE origin IN ({}))",
+                "{column} IN (SELECT pk FROM session WHERE origin IN ({}))",
                 marks.join(",")
             ));
         }
@@ -63,9 +93,8 @@ impl Scope {
             // they are written into the statement rather than bound one by
             // one past SQLite's parameter limit.
             let list = pks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            clauses.push(format!("m.session_pk IN ({list})"));
+            clauses.push(format!("{column} IN ({list})"));
         }
-        (clauses.join(" AND "), params)
     }
 }
 

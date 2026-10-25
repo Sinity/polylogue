@@ -154,7 +154,7 @@ fn two_inputs(early_first: bool) -> Json {
 
 #[test]
 fn session_facts_do_not_depend_on_arrival_order() {
-    // Law 4 for a session's own facts: kind from the earliest input, an
+    // A session's own facts: kind from the earliest input, an
     // equal-precedence title and the branch from the latest, working
     // directories by first use.
     let expected = json!({
@@ -390,7 +390,7 @@ fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
 }
 
 #[test]
-fn failed_derived_publication_rolls_back_values_counters_and_cache_markers() {
+fn a_failed_derivation_rolls_back_values_counters_and_markers() {
     use super::{Derivation, Version};
     let mut index = rusqlite::Connection::open_in_memory().unwrap();
     crate::schema::create_index(&index).unwrap();

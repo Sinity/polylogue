@@ -95,7 +95,7 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
     assert_eq!(report.recorded_usage.unconfirmed_observations, 1);
     assert_eq!(report.recorded_usage.known_usage.input, Some(10));
     assert_eq!(report.recorded_usage.untimed_observations, 2);
-    let daily = analysis::daily(
+    let daily = crate::measure::daily::daily(
         &reader,
         &Scope::default(),
         "tokens",
@@ -104,12 +104,12 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
     .unwrap();
     assert_eq!(daily.days.iter().map(|d| d.1).sum::<f64>(), 12.0);
     assert_eq!(daily.days.len(), 1);
-    assert_eq!(daily.basis, "recorded_known_subset");
-    assert_eq!(daily.time_basis, "source_record_time");
+    assert_eq!(daily.covers, "recorded_known_values");
+    assert_eq!(daily.timed_by, "source_record_time");
     assert!(daily.incomplete && daily.unknown_spend_time && daily.response_completeness_unknown);
     assert!(daily.baseline_7d.iter().all(Option::is_none));
     assert!(daily.changes.is_empty());
-    let costs = analysis::daily(
+    let costs = crate::measure::daily::daily(
         &reader,
         &Scope::default(),
         "api_cost",
@@ -324,7 +324,7 @@ fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
     }
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let daily = analysis::daily(
+    let daily = crate::measure::daily::daily(
         &reader,
         &Scope::default(),
         "tokens",

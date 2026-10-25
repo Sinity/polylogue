@@ -1,7 +1,4 @@
-//! Laws for measurement (plnext-r1i.6): L14, L70, L138 here; L109 with the
-//! window rules in `quota`.
-
-use super::{Scope, analysis, quota, usage};
+use super::{Scope, drift, quota, survival, tool_calls, usage};
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use polylogue_model::{QuotaLimit, QuotaReading, QuotaWindow, Usage};
 use serde_json::json;
@@ -93,10 +90,10 @@ fn session(f: &mut Fixture, id: &str) -> i64 {
     .unwrap()
 }
 
-/// Law 14: each response's usage counts once; archive totals equal the sum
+/// Each response's usage counts once; archive totals equal the sum
 /// over distinct messages, whatever the sessions show.
 #[test]
-fn law_14_usage_counts_each_response_once() {
+fn usage_counts_each_response_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let parent = session(&mut f, "claude-code:p");
@@ -149,11 +146,11 @@ fn law_14_usage_counts_each_response_once() {
     assert_eq!(by_session, u.tokens.output.tokens);
 }
 
-/// Law 70: an unpriced model's cost is unknown, never 0, and totals say how
+/// An unpriced model's cost is unknown, never 0, and totals say how
 /// many messages are unpriced; a partly priced scope is partial; credits are
 /// never added to USD.
 #[test]
-fn law_70_unpriced_models_and_credits() {
+fn unpriced_models_stay_unknown_and_credits_stay_apart() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let priced = session(&mut f, "claude-code:priced");
@@ -229,10 +226,10 @@ fn law_70_unpriced_models_and_credits() {
     assert_eq!(window.usage.as_ref().unwrap().api_cost.known_usd, None);
 }
 
-/// Law 138: hiding a session never changes a usage figure; the figures say
+/// Hiding a session never changes a usage figure; the figures say
 /// a hidden session is included.
 #[test]
-fn law_138_hiding_never_changes_a_usage_figure() {
+fn hiding_never_changes_a_usage_figure() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let a = session(&mut f, "claude-code:a");
@@ -287,7 +284,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
 }
 
 #[test]
-fn outlook_reads_reported_windows_and_projects_exhaustion() {
+fn quota_reads_reported_windows_and_projects_exhaustion() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let codex = session(&mut f, "codex:s");
@@ -396,15 +393,16 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
         )
         .unwrap();
     }
+    f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let p = analysis::process(&r, &Scope::default(), 10).unwrap();
+    let p = tool_calls::process(&r, &Scope::default(), 10).unwrap();
     assert_eq!((p.sessions, p.calls), (1, 3));
     assert_eq!(p.outcomes.error, 1);
     assert_eq!(p.outcomes.ok, 2);
     assert_eq!(p.failure_examples.len(), 1);
     assert_eq!(p.common_sequences.len(), 1);
-    let s = analysis::first_failure(&r, &Scope::default(), false).unwrap();
+    let s = survival::first_failure(&r, &Scope::default(), false).unwrap();
     assert_eq!((s.sessions, s.events), (1, 1));
 }
 
@@ -529,7 +527,7 @@ fn failing_holds_commands_whose_latest_run_failed() {
     shell(&mut f, b1, mb1, "cargo test", "error", T0 + 5);
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let got: Vec<_> = analysis::failing_commands(&r, &Scope::default())
+    let got: Vec<_> = tool_calls::failing_commands(&r, &Scope::default())
         .unwrap()
         .into_iter()
         .map(|u| (u.repository, u.command, u.failures_since_ok, u.session))
@@ -607,9 +605,10 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
         T0,
         &tokens(1, 0, None, 1),
     );
+    f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let s = analysis::unanswered_end(&r, &Scope::default(), now).unwrap();
+    let s = survival::unanswered_end(&r, &Scope::default(), now).unwrap();
     assert_eq!(
         (s.sessions, s.events, s.censored, s.unmeasured),
         (3, 1, 2, 1)
@@ -636,7 +635,7 @@ fn drift_lists_new_unknowns_first_and_design_counts_last() {
     .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let got: Vec<_> = analysis::drift(&r)
+    let got: Vec<_> = drift::drift(&r)
         .unwrap()
         .into_iter()
         .map(|d| (d.what, d.count, d.by_design))
@@ -649,6 +648,21 @@ fn drift_lists_new_unknowns_first_and_design_counts_last() {
             ("record:event_msg/item_completed".into(), 50, true),
         ]
     );
+}
+
+/// Survival reads per-session facts, which carry no message times, so a
+/// time-bounded scope is refused rather than silently ignored.
+#[test]
+fn survival_refuses_a_time_bounded_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = Fixture::new(dir.path()).unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let scope = Scope {
+        since: Some(T0),
+        ..Scope::default()
+    };
+    assert!(survival::first_failure(&r, &scope, false).is_err());
 }
 
 mod observations;

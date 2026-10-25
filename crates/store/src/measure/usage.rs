@@ -54,8 +54,8 @@ pub struct ModelUsage {
 pub struct UsageReport {
     /// Physical records, with known response rows and independent observations apart.
     pub grain: &'static str,
-    /// Bounds select source record times, not established API spend times.
-    pub time_basis: &'static str,
+    /// Time bounds select source record times, not API spend times.
+    pub timed_by: &'static str,
     pub sessions: u64,
     /// Response total, unknown when source items lack response boundaries.
     pub messages: Option<u64>,
@@ -184,7 +184,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     total.reported.response_total_unknown = unknown;
     Ok(UsageReport {
         grain: "physical",
-        time_basis: "source_record_time",
+        timed_by: "source_record_time",
         sessions: conn.query_row(
             &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m WHERE {cond}"),
             rusqlite::params_from_iter(params.iter()),
@@ -205,11 +205,11 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     })
 }
 
-/// One session's usage at both grains (architecture 1, tokens at two
-/// grains): `physical` counts the responses stored in the session, each
-/// response once across the archive; `logical` counts what the session
-/// shows, the responses it inherited through fork and resume included, so a
-/// resumed session's logical figures repeat its parent's.
+/// One session's usage at both grains: `physical` counts the responses
+/// stored in the session, each response once across the archive; `logical`
+/// counts what the session shows, the responses it inherited through fork
+/// and resume included, so a resumed session's logical figures repeat its
+/// parent's.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct SessionUsage {
     pub session: String,

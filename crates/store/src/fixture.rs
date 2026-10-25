@@ -202,6 +202,12 @@ impl Fixture {
             ],
         )?;
         let pk = self.index.last_insert_rowid();
+        // As the writer does: a new message changes its session, so its
+        // derived rows are made again.
+        self.index.execute(
+            "UPDATE session SET changed = changed + 1 WHERE pk = ?1",
+            [session_pk],
+        )?;
         let mut idx = 0;
         if let Some(t) = m.thinking {
             let id = self.text(t, 1)?;

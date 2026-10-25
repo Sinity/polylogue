@@ -9,7 +9,7 @@ use super::query::Failure;
 use polylogue_model::LogicalDay;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
-use polylogue_store::measure::{self, Scope, analysis, quota};
+use polylogue_store::measure::{self, Scope, daily, drift, quota, survival, tool_calls};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -83,7 +83,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Tool outcomes: ok, error, no result and unknown, never one rate",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::outcomes(r, &x.scope)),
+        run: |r, x| json(tool_calls::outcomes(r, &x.scope)),
         text: text::json,
     },
     Measure {
@@ -91,7 +91,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::failing_commands(r, &x.scope)),
+        run: |r, x| json(tool_calls::failing_commands(r, &x.scope)),
         text: text::failing,
     },
     Measure {
@@ -99,7 +99,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
         whole_archive: true,
         metrics: &[],
-        run: |r, _| json(analysis::drift(r)),
+        run: |r, _| json(drift::drift(r)),
         text: text::drift,
     },
     Measure {
@@ -107,7 +107,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::unanswered_end(r, &x.scope, x.now)),
+        run: |r, x| json(survival::unanswered_end(r, &x.scope, x.now)),
         text: text::json,
     },
     Measure {
@@ -115,7 +115,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session's first failed tool call, in minutes (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::first_failure(r, &x.scope, false)),
+        run: |r, x| json(survival::first_failure(r, &x.scope, false)),
         text: text::json,
     },
     Measure {
@@ -123,15 +123,15 @@ pub static MEASURES: &[Measure] = &[
         help: "Time to a session's first failed tool call, in human prompts (Kaplan-Meier)",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::first_failure(r, &x.scope, true)),
+        run: |r, x| json(survival::first_failure(r, &x.scope, true)),
         text: text::json,
     },
     Measure {
         name: "daily",
         help: "A daily series with its 7-day baseline and level changes",
         whole_archive: false,
-        metrics: analysis::DAILY_METRICS,
-        run: |r, x| json(analysis::daily(r, &x.scope, x.metric, x.day)),
+        metrics: daily::DAILY_METRICS,
+        run: |r, x| json(daily::daily(r, &x.scope, x.metric, x.day)),
         text: text::json,
     },
     Measure {
@@ -139,7 +139,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Which tool call follows which, and what follows a failure",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::process(r, &x.scope, 20)),
+        run: |r, x| json(tool_calls::process(r, &x.scope, 20)),
         text: text::json,
     },
     Measure {
@@ -147,7 +147,7 @@ pub static MEASURES: &[Measure] = &[
         help: "Prompts by weekday and hour",
         whole_archive: false,
         metrics: &[],
-        run: |r, x| json(analysis::rhythm(r, &x.scope, x.day)),
+        run: |r, x| json(daily::rhythm(r, &x.scope, x.day)),
         text: text::json,
     },
 ];
