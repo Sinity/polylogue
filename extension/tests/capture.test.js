@@ -99,7 +99,7 @@ describe("a capture", () => {
     const page = chatgptPage();
     const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const before = start(chrome, { indexedDB });
-    await before.captureTab(1, "changed");
+    expect((await before.captureTab(1, "changed")).outcome).toBe("waiting");
     expect(await before.outbox.count()).toBe(1);
     expect((await before.popup(1)).waiting).toBe(1);
     const [waiting] = await before.outbox.all();

@@ -91,7 +91,7 @@ export class Backfill {
           }
           try {
             const done = await this.capturer.capture(tab.id, job.provider, { id: conversation.id, reason: "backfill" });
-            counts[done.outcome === "stored" ? "captured" : "unchanged"] += 1;
+            counts[done.outcome === "unchanged" ? "unchanged" : "captured"] += 1;
           } catch (error) {
             if (error.status === 429) {
               this.wait(error.retryAfter);
