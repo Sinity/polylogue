@@ -3,7 +3,7 @@
 This is the Rust rewrite of Polylogue. The README and CLI help describe what
 works today. The target architecture is
 `/realm/project/polylogue/analysis/architecture-20261018/polylogue-architecture.md`;
-planned work is in Beads (`bd` from this checkout). The Python predecessor
+planned work is in Beads (`bd` from this checkout). The Python version
 is kept for reference; the rewrite uses its own archive.
 
 ## Structure
@@ -53,8 +53,12 @@ Optimize for fast integration. See `docs/development.md`.
 ## Code
 
 - Rust, four-space indent, `rustfmt`.
-- Comments state constraints and reasons, briefly. No status, history or spec
-  narration in code; Git and Beads hold those.
+- A name says what the thing is in ordinary words: types, functions, local
+  variables, SQL, JSON keys, CLI help, errors, comments, tests and docs.
+  [docs/vocabulary.md](docs/vocabulary.md) lists each concept's one name and
+  the words not used; add a new concept there before naming it in code.
+- Comments state constraints and reasons, briefly. No status, history, Bead
+  IDs or spec section numbers in code; Git and Beads hold those.
 - A module is `name.rs`, its child modules in `name/`; no `mod.rs`.
 - Tests live in their own files, never inline: a module's unit tests in
   `name/tests.rs`, declared last with `#[cfg(test)] mod tests;` (more test
