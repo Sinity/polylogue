@@ -238,7 +238,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
             .pass
             .errors
             .iter()
-            .any(|error| error.contains("competing parsed origin"))
+            .any(|error| error.contains("already parsed as another origin"))
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), before);
 }

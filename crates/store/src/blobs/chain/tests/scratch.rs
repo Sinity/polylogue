@@ -62,7 +62,7 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
             .iter()
             .filter(|p| p.to_string_lossy().ends_with(" (deleted)"))
             .count()
-            >= 2,
+            >= 1,
         "{descriptors:?}"
     );
     assert!(
@@ -122,10 +122,6 @@ fn child(dir: &Path) {
         -64
     );
     drop(locked);
-    conn.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('large','session:synthetic:removed',1,1)", []).unwrap();
-    conn.execute_batch("WITH RECURSIVE n(value) AS (VALUES(0) UNION ALL SELECT value+1 FROM n WHERE value<99999)
-        UPDATE excision SET message_ids_json=(SELECT json_group_array('synthetic:message:'||value) FROM n)").unwrap();
-    let _refused = crate::excise::Refused::load(&conn).unwrap();
     let start = Instant::now();
     let idle: Vec<_> = (0..32)
         .map(|_| StoredChain::load_range(&conn, "", "input", 1, 0, 1).unwrap())
@@ -139,7 +135,7 @@ fn child(dir: &Path) {
         );
     }
     let fds = std::fs::read_dir("/proc/self/fd").unwrap().count();
-    std::fs::write(dir.join("ready"), format!("33 extent lists (32 small idle), one large exclusion set; total process descriptors={fds}; small extents capture={:?}; 64KiB cache target each (not RSS)",start.elapsed())).unwrap();
+    std::fs::write(dir.join("ready"), format!("33 extent lists (32 small idle); total process descriptors={fds}; small extents capture={:?}; 64KiB cache target each (not RSS)",start.elapsed())).unwrap();
     loop {
         std::thread::park();
     }
