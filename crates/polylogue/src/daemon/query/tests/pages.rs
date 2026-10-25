@@ -48,7 +48,7 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
     for query in [
         "kind:* | sort by id",
         "kind:*",
-        "messages | sort by text desc",
+        "messages | sort by model desc",
         "messages | distinct",
         "tool_calls | group by action | count",
         "sessions where exists tool_call(action:shell) | matches",

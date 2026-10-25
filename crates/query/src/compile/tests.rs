@@ -90,12 +90,14 @@ fn a_saved_query_that_cannot_stand_there_is_refused() {
 #[test]
 fn sort_takes_tie_breaking_keys() {
     let p = c("sessions | sort by live_rank, last_event_at desc");
-    let order = p.sql.rsplit("ORDER BY").next().unwrap();
-    let rank = order.find("WHEN 'waiting'").expect("live_rank first");
-    let last = order
-        .find("live_last_event_at) DESC")
-        .expect("then last_event_at");
-    assert!(rank < last, "{order}");
+    let directions: Vec<bool> = p.order.iter().map(|k| k.descending).collect();
+    assert_eq!(directions, [false, false, false, true, false, false]);
+    let term = |n: usize| {
+        let end = p.sql.find(&format!(" AS _o{n},")).expect("order column");
+        &p.sql[..end]
+    };
+    assert!(term(1).ends_with("END))"), "live_rank first: {}", p.sql);
+    assert!(term(3).ends_with("live_last_event_at)"), "then last_event_at: {}", p.sql);
     assert!(compile_err("sessions | group by repo | sort by count, repo").contains("one key"));
 }
 

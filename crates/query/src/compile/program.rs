@@ -103,11 +103,7 @@ impl<'a> Compiler<'a> {
                     } if !grouped && then.is_empty() => {
                         let (name, _) = match_column(rel, field, stage.span.start)?;
                         let dir = if *descending { " DESC" } else { "" };
-                        let mut sorted = vec![
-                            format!("{name} IS NULL"),
-                            format!("{name}{dir}"),
-                            format!("_pk{dir}"),
-                        ];
+                        let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
                         for identity in ["owner", "session", "match"] {
                             if rel.columns.iter().any(|(name, _)| name == identity) {
                                 sorted.push(format!("\"{identity}\"{dir}"));
@@ -651,7 +647,7 @@ impl<'a> Compiler<'a> {
             o.push(format!("{}.order_input_id", a.m));
             o.push(format!("{}.seq", a.m));
         }
-        o.push(format!("{}{desc}", a.expand(spec.key)));
+        o.push(format!("{}{desc}", a.expand(spec.identity)));
         o
     }
 }

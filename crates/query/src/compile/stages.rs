@@ -11,10 +11,13 @@ impl<'a> Compiler<'a> {
         scope: &Scope,
         at: usize,
     ) -> Result<Vec<String>, QueryError> {
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let identity = scope.a.expand(units::spec(scope.unit).identity);
         Ok(match key {
             SortKey::Random { seed } => match seed.or(self.opts.random_seed) {
-                Some(seed) => vec![format!("pl_random(CAST({pk} AS TEXT), '{seed}')"), pk],
+                Some(seed) => vec![
+                    format!("pl_random(CAST({identity} AS TEXT), '{seed}')"),
+                    identity,
+                ],
                 None => vec!["random()".into()],
             },
             SortKey::Field { field } => {
@@ -25,7 +28,7 @@ impl<'a> Compiler<'a> {
                 vec![
                     format!("({expr}) IS NULL"),
                     format!("({expr}){dir}"),
-                    format!("{pk}{dir}"),
+                    format!("{identity}{dir}"),
                 ]
             }
         })

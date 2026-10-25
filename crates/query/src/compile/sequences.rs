@@ -286,7 +286,6 @@ impl<'a> Compiler<'a> {
             "g._pk AS _pk".to_owned(),
             "(SELECT ss.id FROM session ss WHERE ss.pk = g.session_pk) AS session".to_owned(),
             "g.mt AS match".to_owned(),
-            "g.session_pk AS _m0".to_owned(),
         ];
         let mut columns = vec![
             ("session".to_owned(), ColKind::Text),
@@ -329,7 +328,10 @@ impl<'a> Compiler<'a> {
         Ok(MatchRel {
             sql,
             columns,
-            order: vec![OrderKey::ascending("_m0"), OrderKey::ascending("match")],
+            order: vec![
+                OrderKey::ascending("session"),
+                OrderKey::ascending("match"),
+            ],
             recursive: true,
         })
     }
