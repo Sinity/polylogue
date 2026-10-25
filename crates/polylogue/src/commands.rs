@@ -93,8 +93,6 @@ const fn opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cli {
-    /// Not offered on the command line.
-    Absent,
     Subcommand,
     /// A subcommand left out of help: programs run it, people do not.
     Hidden,
