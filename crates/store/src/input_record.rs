@@ -67,10 +67,11 @@ pub struct ObservationRecord {
 }
 
 impl InputRecord {
-    /// Inserts the rows at write counter `seq`. A revision already present
-    /// takes the recorded length (a later chunk grew it); everything else
-    /// present is left as it is, so inserting a record twice changes
-    /// nothing.
+    /// Inserts the rows at write counter `seq`. A revision or extent already
+    /// present takes the recorded one: a later chunk grew the revision, or a
+    /// write that stopped before its commit sent the bytes at that place
+    /// again, longer. Everything else present is left as it is, so inserting
+    /// a record twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
         tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
             .execute(params![self.input, self.format])?;
@@ -91,7 +92,7 @@ impl InputRecord {
         }
         if let Some(e) = &self.extent {
             tx.prepare_cached(
-                "INSERT OR IGNORE INTO extent(input, chain, offset, length, blob, blob_offset)
+                "INSERT OR REPLACE INTO extent(input, chain, offset, length, blob, blob_offset)
                  VALUES (?1, ?2, ?3, ?4, ?5, 0)",
             )?
             .execute(params![

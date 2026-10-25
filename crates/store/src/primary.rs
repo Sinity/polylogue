@@ -245,7 +245,7 @@ pub(crate) fn load(
                         Record::Request { request, .. } => {
                             crate::user_writes::apply(&tx, request, seq)?;
                         }
-                        Record::Excision(excision) => restore_excision(&tx, excision, seq)?,
+                        Record::Excision(excision) => excision_again(&tx, excision, seq)?,
                     }
                     record_material(&tx, &record, &material)?;
                 }
@@ -345,7 +345,7 @@ pub(crate) fn excision_record(conn: &Connection, id: &str) -> Result<ExcisionRec
 /// Puts an excision back while rebuilding: its rows, and the note targets
 /// naming what it removed (the notes it removed whole were excised in
 /// Sinex with their requests).
-fn restore_excision(tx: &Connection, excision: &ExcisionRecord, seq: i64) -> Result<()> {
+fn excision_again(tx: &Connection, excision: &ExcisionRecord, seq: i64) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO excision(id, scope, reason, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",

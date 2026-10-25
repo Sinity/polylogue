@@ -629,8 +629,9 @@ impl Drop for Runtime {
     }
 }
 
-/// Standalone, primary on Sinex, or blocked by a Sinex configuration or
-/// restore failure; never a fallback to another mode. Only a build with the
+/// Standalone, primary on Sinex, or blocked: a Sinex configuration that
+/// cannot be read, or a Sinex that cannot be reached at start; never a
+/// fallback to another mode. Only a build with the
 /// `sinex` feature reads a Sinex configuration, so only it can be blocked.
 pub enum ArchiveMode {
     Standalone,
@@ -663,7 +664,8 @@ enum ModeState {
 }
 
 impl ModeState {
-    /// Writes are paused until the Sinex configuration or restore is fixed.
+    /// Writes are paused until the Sinex configuration is fixed or Sinex
+    /// can be reached.
     fn blocked(&self) -> bool {
         #[cfg(feature = "sinex")]
         {
