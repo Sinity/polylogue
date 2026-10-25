@@ -132,7 +132,7 @@ fn a_job_names_its_session_and_the_one_it_resumed() {
 }
 
 #[test]
-fn tool_results_and_snapshots_cite_their_bytes() {
+fn tool_results_and_file_snapshots_cite_their_bytes() {
     let out = doc(
         "/h/.claude/projects/p/s1/tool-results/toolu_9.txt",
         b"big output",

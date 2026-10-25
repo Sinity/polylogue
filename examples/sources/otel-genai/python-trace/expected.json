@@ -177,7 +177,7 @@
             {
               "key": "vendor.experimental.signal",
               "value": {
-                "stringValue": "retained-verbatim"
+                "stringValue": "recorded-verbatim"
               }
             }
           ],

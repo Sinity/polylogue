@@ -44,17 +44,17 @@ pub struct Step {
     pub start: u64,
     /// Each record restates whole conversations, so a later record's
     /// version of a message replaces an earlier one in the same chain.
-    pub snapshot: bool,
+    pub restates: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("a document must be parsed from its first byte, got offset {0}")]
     NotWhole(u64),
-    #[error("exports require the retained item reader")]
+    #[error("exports require the export item reader")]
     Export,
-    #[error("invalid snapshot stream: {0}")]
-    Snapshot(String),
+    #[error("invalid capture log: {0}")]
+    CaptureLog(String),
     #[error(transparent)]
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
@@ -90,7 +90,7 @@ pub fn run<P: Parser>(
         accounting,
         consumed: consumed as u64,
         start: 0,
-        snapshot: false,
+        restates: false,
     })
 }
 
@@ -122,7 +122,7 @@ impl<P: Parser + Send> StepParser for P {
     }
 }
 
-/// A parser for an input read whole (architecture 5.3): an export, or a
+/// A parser for an input read whole: an export, or a
 /// capture file the extension rewrites in place. Records are the
 /// document's own items (one conversation, one span); the parser frames
 /// them and submits each disposition to the shared accounting sink.
@@ -157,7 +157,7 @@ pub fn run_document<D: DocumentParser + ?Sized>(
         accounting,
         consumed: bytes.len() as u64,
         start: 0,
-        snapshot: false,
+        restates: false,
     })
 }
 
@@ -168,18 +168,19 @@ pub enum Parse {
     /// One record per line; appends are parsed from where the last step
     /// stopped.
     Lines(Box<dyn StepParser>),
-    /// Retained export records, externally ordered and delivered one at a time.
+    /// Stored export records, externally ordered and delivered one at a time.
     Export(Box<dyn crate::export::ExportParser>),
     /// One document (or archive) read whole: an export, a capture the
     /// extension rewrites. Any change parses the whole input again.
     Document(Box<dyn DocumentParser + Send>),
-    /// Ordered, complete documents in an append-only snapshot log.
-    Snapshots(Box<dyn DocumentParser + Send>),
+    /// Ordered, complete documents in an append-only capture log, one per
+    /// frame.
+    CaptureLog(Box<dyn DocumentParser + Send>),
 }
 
 impl Parse {
-    pub fn is_snapshots(&self) -> bool {
-        matches!(self, Parse::Snapshots(_))
+    pub fn is_capture_log(&self) -> bool {
+        matches!(self, Parse::CaptureLog(_))
     }
 
     pub fn is_document(&self) -> bool {
@@ -197,11 +198,11 @@ impl Parse {
         match self {
             Parse::Export(_) => Err(ParseError::Export),
             Parse::Lines(p) => p.step(carry, bytes, base),
-            Parse::Snapshots(_) => {
+            Parse::CaptureLog(_) => {
                 let (mut steps, carry) = self.steps(carry, bytes, base)?;
                 if steps.len() != 1 {
-                    return Err(ParseError::Snapshot(
-                        "use steps for a multi-snapshot range".into(),
+                    return Err(ParseError::CaptureLog(
+                        "use steps for a range holding several captures".into(),
                     ));
                 }
                 Ok((steps.remove(0), carry))
@@ -215,8 +216,8 @@ impl Parse {
         }
     }
 
-    /// A range can contain several complete snapshots. Each remains a separate
-    /// writer step, so coalesced reads preserve every intermediate version.
+    /// A range can hold several complete captures. Each stays a separate
+    /// writer step, so reading them together keeps every intermediate version.
     pub fn steps(
         &self,
         carry: Option<&Json>,
@@ -224,7 +225,7 @@ impl Parse {
         base: u64,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
-            Parse::Snapshots(parser) => Ok((snapshots(&**parser, bytes, base)?, Json::Null)),
+            Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
             _ => self
                 .step(carry, bytes, base)
                 .map(|(step, carry)| (vec![step], carry)),
@@ -232,12 +233,12 @@ impl Parse {
     }
 }
 
-fn snapshots(
+fn capture_steps(
     parser: &dyn DocumentParser,
     bytes: &[u8],
     base: u64,
 ) -> Result<Vec<Step>, ParseError> {
-    use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+    use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
     let mut position = 0usize;
     if base == 0 {
         if MAGIC.starts_with(bytes) && bytes.len() < MAGIC.len() {
@@ -246,13 +247,13 @@ fn snapshots(
         if bytes.starts_with(MAGIC) {
             position = MAGIC.len();
         } else {
-            // An unframed file (an imported capture) is one snapshot.
+            // An unframed file (an imported capture) is one capture.
             match serde_json::from_slice::<serde::de::IgnoredAny>(bytes) {
                 Err(error) if error.is_eof() => return empty_steps(),
                 _ => {}
             }
             let mut step = run_document(parser, bytes)?;
-            mark_snapshot(&mut step, 0, bytes.len() as u64);
+            mark_whole_capture(&mut step, 0, bytes.len() as u64);
             return Ok(vec![step]);
         }
     }
@@ -260,10 +261,10 @@ fn snapshots(
     while bytes.len().saturating_sub(position) >= HEADER_LEN {
         let header_start = position;
         let header = Header::decode(&bytes[position..position + HEADER_LEN])
-            .map_err(ParseError::Snapshot)?;
+            .map_err(ParseError::CaptureLog)?;
         position += HEADER_LEN;
         let length = usize::try_from(header.length)
-            .map_err(|_| ParseError::Snapshot("frame length exceeds address space".into()))?;
+            .map_err(|_| ParseError::CaptureLog("frame length exceeds address space".into()))?;
         let Some(end) = position
             .checked_add(length)
             .filter(|end| *end <= bytes.len())
@@ -271,12 +272,10 @@ fn snapshots(
             break;
         };
         if !header.verifies(&bytes[position..end]) {
-            return Err(ParseError::Snapshot(
-                "snapshot payload digest mismatch".into(),
-            ));
+            return Err(ParseError::CaptureLog("capture digest mismatch".into()));
         }
         let mut step = run_document(parser, &bytes[position..end])?;
-        mark_snapshot(&mut step, base + position as u64, base + end as u64);
+        mark_whole_capture(&mut step, base + position as u64, base + end as u64);
         step.start = if base == 0 && steps.is_empty() {
             0
         } else {
@@ -292,7 +291,7 @@ fn snapshots(
     Ok(steps)
 }
 
-fn mark_snapshot(step: &mut Step, start: u64, end: u64) {
+fn mark_whole_capture(step: &mut Step, start: u64, end: u64) {
     for row in &mut step.output.messages {
         row.offset = start;
         row.end = end;
@@ -304,7 +303,7 @@ fn mark_snapshot(step: &mut Step, start: u64, end: u64) {
     for event in &mut step.output.events {
         event.range = Some((start, end));
     }
-    step.snapshot = true;
+    step.restates = true;
 }
 
 fn empty_steps() -> Result<Vec<Step>, ParseError> {
@@ -313,7 +312,7 @@ fn empty_steps() -> Result<Vec<Step>, ParseError> {
         accounting: Accounting::default(),
         consumed: 0,
         start: 0,
-        snapshot: false,
+        restates: false,
     }])
 }
 

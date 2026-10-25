@@ -1,5 +1,5 @@
 //! Codex's SQLite databases, read from their logical exports (the engine
-//! writes `<archive>/exports/codex-database/<db>.jsonl`; architecture 4.2).
+//! writes `<archive>/exports/codex-database/<db>.jsonl`).
 //! Lines are a schema line, row lines `{t, k, r, h}` and gone lines
 //! `{t, k, gone}`.
 //!

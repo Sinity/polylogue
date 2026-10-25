@@ -1,4 +1,4 @@
-//! Retained provider text that is not a conversation turn.
+//! Stored provider text that is not a conversation turn.
 use crate::{Block, DocumentId, Json, Timestamp};
 use serde::{Deserialize, Serialize};
 

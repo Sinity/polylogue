@@ -1,8 +1,8 @@
 use crate::{Json, MessageId, SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-/// A retained observation, optionally associated with a conversation.
-/// Without that association, its Input and record range own the fact.
+/// A recorded fact from an input, optionally tied to a conversation.
+/// Without a conversation, it belongs to its input and record range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19,7 +19,7 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<(u64, u64)>,
     /// Native fields kept as written, or the typed data of a normalized
-    /// observation (`observations`). Native events remain authoritative.
+    /// observation (`observations`). A native event is used as written.
     pub data: Json,
 }
 
@@ -108,7 +108,7 @@ impl Link {
     }
 
     /// Fills the parts this statement of the link lacks from another
-    /// statement of the same link (architecture 5.5a): a subagent's own file
+    /// statement of the same link: a subagent's own file
     /// names its parent, the parent's progress record names the tool call.
     pub fn merge(&mut self, other: &Link) {
         debug_assert_eq!(self.key(), other.key());

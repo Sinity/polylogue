@@ -4,7 +4,7 @@
 //!
 //! A conversation is `gen_ai.conversation.id`, else the trace. Each model
 //! call's `gen_ai.input.messages` repeats the history so far, so a message
-//! keeps its identity by its place in the conversation (architecture 5.5)
+//! keeps its identity by its place in the conversation
 //! and is written the first time that place appears; the call's
 //! `gen_ai.output.messages` follow it, with the call's token usage. Spans
 //! that are not GenAI spans are counted and set aside.
@@ -99,7 +99,7 @@ impl ExportParser for OtelGenAi {
             accounting: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: false,
+            restates: false,
         }))
     }
     fn item(

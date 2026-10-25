@@ -67,7 +67,7 @@ pub struct DocumentRow {
 /// message at the same offset may be sent again, longer (a response still
 /// being written); the writer replaces it. At another offset or in another
 /// input it is another version; the writer keeps every version and prefers
-/// one (architecture 5.5, 5.5a).
+/// one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageRow {
     pub offset: u64,

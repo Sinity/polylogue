@@ -120,7 +120,7 @@ fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
     let spooled = ctx.spool.join(ack["artifact_ref"].as_str().unwrap());
     let stored = std::fs::read(&spooled).unwrap();
     let body_start =
-        polylogue_model::snapshot_log::MAGIC.len() + polylogue_model::snapshot_log::HEADER_LEN;
+        polylogue_model::capture_log::MAGIC.len() + polylogue_model::capture_log::HEADER_LEN;
     assert_eq!(&stored[body_start..], bytes);
     assert!(spooled.starts_with(w.home.join(".local/state/polylogue/browser-capture")));
     // The same bytes again change nothing.

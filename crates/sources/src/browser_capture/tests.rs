@@ -150,7 +150,7 @@ fn inspection_refuses_a_raw_conversation_with_another_identity() {
 }
 
 #[test]
-fn claude_inline_media_is_linked_to_retained_bytes_and_reported_as_inline() {
+fn claude_inline_media_is_linked_to_stored_bytes_and_reported_as_inline() {
     let bytes = capture(
         json!({"uuid":"claude-inline", "chat_messages":[
             {"uuid":"inline-m1", "sender":"human", "content":[

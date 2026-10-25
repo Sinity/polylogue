@@ -1,5 +1,5 @@
 //! Durable append-only capture snapshots. The lock names the stable location.
-use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;

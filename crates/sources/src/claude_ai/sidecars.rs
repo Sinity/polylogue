@@ -107,7 +107,7 @@ static DOC: Fields = Fields::new(&[
         "file_size",
         Rule::Kept("reference descriptor; original bytes are not supplied"),
     ),
-    ("url", Rule::Kept("reference retained without fetching")),
+    ("url", Rule::Kept("reference kept without fetching")),
 ]);
 
 fn names(fields: &BTreeMap<String, Field<'_>>) -> Json {
@@ -132,7 +132,7 @@ fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<Timestamp>, bool) {
             if value.is_null() {
                 continue;
             }
-            // These sidecar fields declare offset-qualified ISO time, not epochs.
+            // These sidecar fields declare ISO times with an offset, not epochs.
             let time = value.as_str().and_then(Timestamp::parse_rfc3339);
             return (time, time.is_none());
         }
@@ -260,7 +260,7 @@ impl Sidecars {
                     fields::text(&fields, "filename"),
                     at,
                     names(&fields),
-                    bad.then(|| "unreadable document time; original value retained".into()),
+                    bad.then(|| "unreadable document time; original value kept".into()),
                 )
             }
             _ => return Err("unknown sidecar framing field".into()),
@@ -316,7 +316,7 @@ impl ExportParser for Sidecars {
         self.at = 0;
         if input.is_empty() {
             return Err(ScanError::Callback(
-                "sidecar parsing needs its retained input identity".into(),
+                "sidecar parsing needs its input identity".into(),
             ));
         }
         use export::FieldShape::{Array, Map, Value};
@@ -438,7 +438,7 @@ impl ExportParser for Sidecars {
             accounting: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: false,
+            restates: false,
         }))
     }
     fn item(
@@ -461,7 +461,7 @@ impl ExportParser for Sidecars {
                 &Disposition::unknown(
                     item.diagnostic
                         .as_deref()
-                        .unwrap_or("uninterpreted sidecar record"),
+                        .unwrap_or("unrecognized sidecar record"),
                 ),
             );
             return Ok(());

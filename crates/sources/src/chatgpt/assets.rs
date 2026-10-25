@@ -1,4 +1,4 @@
-//! Export member identities and naming sidecars. The caller supplies retained
+//! Export member identities and naming sidecars. The caller supplies stored
 //! bytes; this module never looks up a pathname or fetches a pointer.
 use crate::export::ScanError;
 use polylogue_model::Json;

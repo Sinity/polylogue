@@ -197,7 +197,7 @@ fn listings_distinguish_empty_invalid_and_refused_entries() {
             1,
         ),
         (
-            br#"{"files":[{"id":"not-published"}]} trailing"#.as_slice(),
+            br#"{"files":[{"id":"not-a-message"}]} trailing"#.as_slice(),
             1,
             1,
             0,

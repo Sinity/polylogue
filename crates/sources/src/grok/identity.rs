@@ -1,4 +1,4 @@
-//! Identity canonicalization is independent of response presentation order.
+//! The identity form of a conversation, independent of response order.
 use polylogue_model::{BlobHash, Json, Timestamp};
 
 pub(super) fn native<'a>(
@@ -30,7 +30,7 @@ pub(super) fn time(value: &Json) -> Result<Option<Timestamp>, &'static str> {
         };
         let parsed = if let Some(date) = value.get("$date") {
             // Only the declared Extended JSON shapes normalize. Extra fields
-            // remain uninterpreted identity evidence instead of disappearing.
+            // stay in the identity, unread, instead of disappearing.
             if value.as_object().is_none_or(|fields| fields.len() != 1)
                 || date.as_object().is_some_and(|fields| fields.len() != 1)
             {
@@ -57,7 +57,7 @@ pub(super) fn time(value: &Json) -> Result<Option<Timestamp>, &'static str> {
     Ok(at)
 }
 
-fn canonical(value: &Json) -> Json {
+fn identity_form(value: &Json) -> Json {
     let Some(mut fields) = value.as_object().cloned() else {
         return value.clone();
     };
@@ -73,7 +73,7 @@ fn canonical(value: &Json) -> Json {
             serde_json::json!(["absent"])
         }
         Ok(None) => serde_json::json!(["null"]),
-        Err(_) => serde_json::json!(["uninterpreted", raw]),
+        Err(_) => serde_json::json!(["unreadable", raw]),
     };
     serde_json::json!([fields, timestamp])
 }
@@ -101,25 +101,29 @@ fn digest(value: &Json) -> String {
     BlobHash::of(ordered(value).to_string().as_bytes()).to_string()
 }
 
-fn canonical_response(entry: &Json) -> Json {
+fn response_identity_form(entry: &Json) -> Json {
     if let Some(response) = entry.get("response") {
         let mut extra = entry.as_object().cloned().unwrap_or_default();
         extra.remove("response");
-        serde_json::json!([canonical(response), extra])
+        serde_json::json!([identity_form(response), extra])
     } else {
-        serde_json::json!([canonical(entry), {}])
+        serde_json::json!([identity_form(entry), {}])
     }
 }
 
 pub(super) fn response(entry: &Json) -> String {
-    digest(&canonical_response(entry))
+    digest(&response_identity_form(entry))
 }
 
 pub(super) fn conversation(metadata: &Json, responses: &[Json], wrapper: &Json) -> String {
-    let mut responses: Vec<_> = responses.iter().map(canonical_response).collect();
+    let mut responses: Vec<_> = responses.iter().map(response_identity_form).collect();
     responses.sort_by_cached_key(|value| ordered(value).to_string());
     let mut extra = wrapper.as_object().cloned().unwrap_or_default();
     extra.remove("conversation");
     extra.remove("responses");
-    digest(&serde_json::json!([canonical(metadata), responses, extra]))
+    digest(&serde_json::json!([
+        identity_form(metadata),
+        responses,
+        extra
+    ]))
 }

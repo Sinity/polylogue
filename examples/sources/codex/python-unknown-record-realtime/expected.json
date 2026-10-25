@@ -10,7 +10,7 @@
     "refused": {},
     "unknown": {
       "realtime_item: unrecognized record type": 2,
-      "retained_context: unrecognized record type": 1
+      "unknown_context: unrecognized record type": 1
     },
     "unread_fields": {}
   },
@@ -21,13 +21,13 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:retained-context-session"
+        "session": "codex:unknown-context-session"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 382,
+        "end": 381,
         "message": {
           "at": "2026-09-01T10:00:01Z",
           "blocks": [
@@ -36,15 +36,15 @@
               "type": "text"
             }
           ],
-          "id": "codex:retained-context-session@184",
+          "id": "codex:unknown-context-session@183",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:retained-context-session"
+          "session": "codex:unknown-context-session"
         },
-        "offset": 184
+        "offset": 183
       },
       {
-        "end": 641,
+        "end": 640,
         "message": {
           "at": "2026-09-01T10:00:02Z",
           "blocks": [
@@ -62,17 +62,17 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:retained-context-session@383",
+          "id": "codex:unknown-context-session@382",
           "production": {
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:retained-context-session"
+          "session": "codex:unknown-context-session"
         },
-        "offset": 383
+        "offset": 382
       },
       {
-        "end": 1130,
+        "end": 1128,
         "message": {
           "at": "2026-09-01T10:00:05.1Z",
           "blocks": [
@@ -85,15 +85,15 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:retained-context-session@920",
+          "id": "codex:unknown-context-session@918",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:retained-context-session"
+          "session": "codex:unknown-context-session"
         },
-        "offset": 920
+        "offset": 918
       },
       {
-        "end": 1731,
+        "end": 1729,
         "message": {
           "at": "2026-09-01T10:00:10Z",
           "blocks": [
@@ -102,14 +102,14 @@
               "type": "text"
             }
           ],
-          "id": "codex:retained-context-session@1538",
+          "id": "codex:unknown-context-session@1536",
           "production": {
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:retained-context-session"
+          "session": "codex:unknown-context-session"
         },
-        "offset": 1538
+        "offset": 1536
       }
     ],
     "sessions": [
@@ -117,7 +117,7 @@
         "cwd": [
           "/workspace/sample"
         ],
-        "id": "codex:retained-context-session",
+        "id": "codex:unknown-context-session",
         "kind": "main",
         "started": "2026-09-01T10:00:00Z"
       }

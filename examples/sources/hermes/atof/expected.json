@@ -65,7 +65,7 @@
       {
         "data": {
           "field": "timestamp",
-          "interpretation": "ATOF RFC3339 time unreadable; time remains unknown"
+          "reason": "ATOF RFC3339 time unreadable; time remains unknown"
         },
         "kind": "hermes_import_diagnostic",
         "range": [

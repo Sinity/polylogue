@@ -392,7 +392,7 @@ fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes(
 
 #[test]
 fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_changes() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
+    use polylogue_model::capture_log::{Header, MAGIC};
     let w = World::new();
     w.seed("a-matched", 1, &[b"secret"]);
     let payload = b"public";

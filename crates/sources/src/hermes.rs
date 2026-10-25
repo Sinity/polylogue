@@ -1,4 +1,4 @@
-//! Hermes state rows, framed from one retained logical export. Session facts
+//! Hermes state rows, framed from one stored logical export. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
 mod identity;
 mod message;
@@ -118,7 +118,7 @@ fn lines(
         }
         if bytes.last() != Some(&b'\n') {
             return Err(ScanError::Callback(
-                "unfinished Hermes logical export line".into(),
+                "incomplete Hermes logical export line".into(),
             ));
         }
         let value = serde_json::from_slice(&bytes).map_err(ScanError::Malformed)?;
@@ -171,7 +171,7 @@ impl Database {
         }
     }
     fn settle(&mut self) {
-        // Ancestors precede their children. A genuine cycle is retained as a
+        // Ancestors precede their children. A genuine cycle is kept as a
         // source relationship; the reader reports its incomplete ancestry.
         for session in self.sessions.keys() {
             let mut seen = HashSet::new();
@@ -244,11 +244,11 @@ impl Database {
         })?;
         if kind == LinkKind::Continuation {
             let mut seen = HashSet::from([session.to_owned()]);
-            while let Some(candidate) = self.sessions.get(&parent) {
-                if !seen.insert(parent.clone()) || candidate.messages || candidate.system {
+            while let Some(parent_facts) = self.sessions.get(&parent) {
+                if !seen.insert(parent.clone()) || parent_facts.messages || parent_facts.system {
                     break;
                 }
-                let Some(next) = candidate.parent.clone() else {
+                let Some(next) = parent_facts.parent.clone() else {
                     break;
                 };
                 parent = next;
@@ -346,7 +346,9 @@ impl ExportParser for Database {
             Ok(())
         })?;
         if self.profile.is_none() {
-            self.refusal.get_or_insert("Hermes logical export has no retained native profile binding; original rows remain unbound".into());
+            self.refusal.get_or_insert(
+                "Hermes logical export names no native profile; original rows stay unbound".into(),
+            );
         }
         self.settle();
         reader
@@ -392,7 +394,7 @@ impl ExportParser for Database {
             for _ in 0..*count {
                 records.record(
                     kind,
-                    &Disposition::unknown("superseded logical row remains in retained input"),
+                    &Disposition::unknown("superseded logical row stays in the stored input"),
                 );
             }
         }
@@ -402,7 +404,7 @@ impl ExportParser for Database {
             start: 0,
             consumed: length,
             // Rows restate their whole record: a later row replaces an earlier one.
-            snapshot: self.refusal.is_none() && self.view.is_some(),
+            restates: self.refusal.is_none() && self.view.is_some(),
         }))
     }
     fn item(
@@ -425,7 +427,7 @@ impl ExportParser for Database {
             sink.records.record(
                 table,
                 &Disposition::unknown(
-                    "provider deleted the row; its last known positive value remains retained",
+                    "provider deleted the row; its last known positive value is kept",
                 ),
             );
             return Ok(());
@@ -446,7 +448,7 @@ impl ExportParser for Database {
                 let facts = self
                     .sessions
                     .get(&raw)
-                    .ok_or("missing retained Hermes session facts")?;
+                    .ok_or("missing Hermes session facts")?;
                 sink.records.fields("sessions", row, &SESSION_FIELDS);
                 if !facts.messages
                     && !facts.system
@@ -454,7 +456,7 @@ impl ExportParser for Database {
                         .parent(&raw)
                         .is_some_and(|(_, kind)| kind == LinkKind::Continuation)
                 {
-                    sink.records.record(table,&Disposition::unknown("empty compression intermediary; ancestry uses its nearest retained source"));
+                    sink.records.record(table,&Disposition::unknown("empty compression intermediary; ancestry uses its nearest stored source"));
                     return Ok(());
                 }
                 let mut session = Session::new(id.clone(), facts.kind);
@@ -513,7 +515,7 @@ impl ExportParser for Database {
                         at: None,
                         after: None,
                         range: None,
-                        data: serde_json::json!({"interpretation":limits}),
+                        data: serde_json::json!({"reason":limits}),
                     });
                 }
                 if let Some((parent, kind)) = self.parent(&raw)
@@ -574,7 +576,7 @@ impl ExportParser for Database {
                 let selected = self
                     .selected
                     .get(&key)
-                    .ok_or("missing retained Hermes message key")?;
+                    .ok_or("missing Hermes message key")?;
                 if selected.seed.is_none() {
                     sink.records.record(table, &Disposition::unknown("unrecognized Hermes role or message shape; authorship was not assigned"));
                     return Ok(());
@@ -593,7 +595,7 @@ impl ExportParser for Database {
                 let Some(facts) = self.sessions.get(raw) else {
                     sink.records.record(
                         table,
-                        &Disposition::unknown("Hermes message has no retained owning session"),
+                        &Disposition::unknown("Hermes message has no owning session"),
                     );
                     return Ok(());
                 };
@@ -639,7 +641,7 @@ impl ExportParser for Database {
             "schema_version" => sink.records.record(table, &Disposition::Materialized),
             _ => sink.records.record(
                 table,
-                &Disposition::unknown("Hermes auxiliary row remains in retained input"),
+                &Disposition::unknown("Hermes auxiliary row stays in the stored input"),
             ),
         }
         Ok(())

@@ -10,7 +10,7 @@ fn parse_bound(parser: &mut Parse, input: &str, bytes: &[u8]) -> crate::parse::S
 fn memory_and_project_text_are_documents_with_unknown_authorship_and_exact_sources() {
     let bytes=br#"[{"project_memories":{"p":"project memory"},"conversations_memory":"account memory","account_uuid":"a"}]"#;
     let mut parser = open(Path::new("memories.json")).unwrap();
-    let step = parse_bound(&mut parser, "retained-a", bytes);
+    let step = parse_bound(&mut parser, "input-a", bytes);
     assert!(
         step.output.sessions.is_empty()
             && step.output.messages.is_empty()
@@ -30,7 +30,7 @@ fn memory_and_project_text_are_documents_with_unknown_authorship_and_exact_sourc
     let project = json!({"uuid":"p","name":"Native project","is_starter_project":true,"prompt_template":"Instruction λ🙂","created_at":"2026-05-01T00:00:00Z","docs":[{"uuid":"d","filename":"manual.md","content":"Supplied context","created_at":"2026-05-02T00:00:00Z"}]});
     let bytes = serde_json::to_vec(&project).unwrap();
     let mut parser = open(Path::new("projects/p.json")).unwrap();
-    let step = parse_bound(&mut parser, "retained-project", &bytes);
+    let step = parse_bound(&mut parser, "project-input", &bytes);
     assert_eq!(step.output.documents.len(), 2);
     assert!(
         step.output
@@ -165,7 +165,7 @@ fn project_arrays_frame_one_document_and_resolve_metadata_that_follows_them() {
 }
 
 #[test]
-fn explicit_null_collections_keep_sibling_text_and_interpretation_diagnostics() {
+fn explicit_null_collections_keep_sibling_text_and_parse_diagnostics() {
     for (path,raw,text) in [
         ("projects/p.json",br#"{"uuid":"p","prompt_template":"Keep instructions","docs":null}"#.as_slice(),"Keep instructions"),
         ("memories.json",br#"[{"account_uuid":"a","conversations_memory":"Keep memory","project_memories":null}]"#.as_slice(),"Keep memory"),

@@ -82,7 +82,7 @@ impl Plan {
             AND (start<?3 OR EXISTS(SELECT 1 FROM frames AS f INDEXED BY frames_start WHERE f.input=m.input AND f.chain=m.chain
                 AND f.start=(SELECT max(start) FROM frames INDEXED BY frames_start WHERE input=m.input AND chain=m.chain AND start<m.end)
                 AND f.start+?4>m.start))",
-            params![input,chain,polylogue_model::snapshot_log::MAGIC.len() as i64,polylogue_model::snapshot_log::HEADER_LEN as i64])?;
+            params![input,chain,polylogue_model::capture_log::MAGIC.len() as i64,polylogue_model::capture_log::HEADER_LEN as i64])?;
         self.conn.execute(
             "DELETE FROM write_ranges WHERE input=?1 AND chain=?2",
             params![input, chain],

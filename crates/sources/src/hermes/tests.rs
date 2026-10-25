@@ -95,7 +95,7 @@ fn rowid_reinsertion_keeps_content_identity_and_equal_turns_keep_occurrences() {
 }
 
 #[test]
-fn profiles_are_retained_bindings_and_unbound_or_conflicting_exports_do_not_guess() {
+fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     let records = vec![session("s", None, None), message(1, "s", "user", "body")];
     let a = parse([vec![header("a")], records.clone()].concat());
     let b = parse([vec![header("b")], records.clone()].concat());
@@ -136,7 +136,7 @@ fn compression_ancestry_uses_nonempty_ancestor_and_its_actual_leaf() {
         session("child", Some("empty"), None),
         session("empty", Some("parent"), Some("compression")),
         session("parent", None, Some("compression")),
-        message(1, "parent", "user", "retained ancestor"),
+        message(1, "parent", "user", "stored ancestor"),
         message(2, "child", "assistant", "own tail"),
     ]);
     assert_eq!(parsed.output.sessions.len(), 2);
@@ -282,7 +282,7 @@ fn unknown_authorship_and_unreadable_times_remain_explicit_without_guesses() {
 
 #[test]
 fn inactive_positive_rows_are_not_empty_compression_intermediaries() {
-    let mut row = message(1, "s", "user", "retained inactive source");
+    let mut row = message(1, "s", "user", "stored inactive source");
     row["r"]["active"] = json!(0);
     let parsed = parse(vec![
         header("a"),
@@ -351,7 +351,7 @@ fn missing_or_malformed_activity_does_not_assert_an_empty_path() {
         json!({"active":false,"compacted":false}),
         json!({"active":"0","compacted":0}),
     ] {
-        let mut row = message(1, "s", "user", "retained unknown source");
+        let mut row = message(1, "s", "user", "stored unknown source");
         row["r"].as_object_mut().unwrap().remove("active");
         row["r"].as_object_mut().unwrap().remove("compacted");
         row["r"]
@@ -391,7 +391,7 @@ fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
     let mut count = 0;
     parser
         .scan(
-            "retained-input",
+            "stored-input",
             &mut std::io::Cursor::new(raw.as_bytes()),
             &mut |_: Range<u64>, _: Vec<u8>, _: Option<&str>, _: &[u8]| {
                 count += 1;
@@ -404,7 +404,7 @@ fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
             .begin(raw.len() as u64, None)
             .unwrap()
             .unwrap()
-            .snapshot
+            .restates
     );
     assert_eq!(count, records.len());
     let parsed = parse(records);

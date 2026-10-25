@@ -2,7 +2,7 @@
 //! with `remove_diacritics 2`) folds case and accents and splits on
 //! anything that is not a letter or digit. It does not fold letters with a
 //! stroke, so `fold` maps those first, both when text is indexed and when a
-//! query is written; `Łódź` is then found by `lodz` (spec query.md).
+//! query is written; `Łódź` is then found by `lodz`.
 //!
 //! `tokens` and `key` reproduce the tokenizer's view in Rust, for marking
 //! matches in snippets and for turning a typed term into an FTS5 phrase.

@@ -163,7 +163,7 @@ fn native_ids_blank_text_and_only_supplied_models_survive() {
 }
 
 #[test]
-fn malformed_and_unknown_fields_refuse_interpretation_without_inventing_facts() {
+fn malformed_and_unknown_fields_are_not_read_and_invent_no_facts() {
     let parsed = parse(json!({"conversations":[
         {"not":"a conversation"},
         {"conversation":{"id":"diagnostics"}, "responses":[
@@ -198,7 +198,7 @@ fn detection_is_content_based_across_filenames_and_rejects_cli_history() {
     let head = &bytes[..bytes.len().min(64)];
     assert!(recognize(Path::new("prod-grok-backend.json"), head));
     assert!(recognize(Path::new("renamed.json"), head));
-    let metadata_first = br#"{"account":"uninterpreted metadata before the conversation signature"#;
+    let metadata_first = br#"{"account":"unread metadata before the conversation signature"#;
     assert!(recognize(
         Path::new("prod-grok-backend.json"),
         metadata_first
@@ -214,7 +214,7 @@ fn detection_is_content_based_across_filenames_and_rejects_cli_history() {
 }
 
 #[test]
-fn conflicting_native_ids_and_times_do_not_choose_an_interpretation() {
+fn conflicting_native_ids_and_times_do_not_choose_one() {
     let parsed = parse(json!({"conversations":[
         {"conversation":{"id":"first", "conversationId":"second"}, "responses":[]},
         {"conversation":{"id":"valid"}, "responses":[
@@ -260,7 +260,7 @@ fn placeholder_title_does_not_replace_a_preferred_title() {
 }
 
 #[test]
-fn unknown_time_object_fields_stay_uninterpreted_identity_evidence() {
+fn unknown_time_object_fields_stay_unread_in_the_identity() {
     let mut first = conversation();
     first["responses"][0]["response"]["create_time"] =
         json!({"$date":1712000001000i64,"unknown":"first"});

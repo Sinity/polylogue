@@ -1,7 +1,6 @@
-//! Shell command lines as structure (spec analysis.md, "the normalized
-//! command"): split into stages outside quotes, each stage's program and
-//! words with assignments and wrapper programs skipped. Nothing here reads
-//! meaning from a command's text; it only finds its shape.
+//! Shell command lines as structure: split into stages outside quotes, each
+//! stage's program and words with assignments and wrapper programs skipped.
+//! Nothing here reads meaning from a command's text; it only finds its shape.
 
 /// One pipeline or list element: the program run and its arguments, with
 /// leading `NAME=value` assignments and wrapper programs removed.
@@ -391,7 +390,7 @@ impl Stage {
 impl Stage {
     /// The command a runner stage runs, when it is one: `nix develop
     /// --command …`, `nix shell … -c …`, `flock FILE …`, `bash -c '…'`.
-    /// The normalized command keeps the runner (spec analysis.md); what a
+    /// The normalized command keeps the runner; what a
     /// command does is read from the command it runs.
     pub fn runs(&self) -> Option<Line> {
         let after = |flags: &[&str]| {

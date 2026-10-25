@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 pub enum Support {
     /// Parsed into sessions and messages.
     Parsed,
-    /// Declared and collected (bytes are stored), not parsed yet. Shown as
-    /// such in `status`, never as empty.
-    Reserved,
+    /// Declared only: where the tool writes is known; nothing is collected
+    /// or parsed yet.
+    Declared,
     /// Bytes kept with no records in them: the images, audio and HTML an
     /// export carries beside its conversations. Messages refer to them.
     Kept,
@@ -31,7 +31,7 @@ pub enum Route {
 
 /// The directory an origin's locations are relative to: the tool's own
 /// override variable when it is set, otherwise a directory under home.
-/// Exactly where the tool itself writes (architecture 5.5b): Claude Code
+/// Exactly where the tool itself writes: Claude Code
 /// honours `CLAUDE_CONFIG_DIR`, Codex `CODEX_HOME`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
@@ -64,7 +64,7 @@ pub enum Capture {
     Bytes,
     /// A tool's SQLite database: a typed logical export of its rows,
     /// written by the store and parsed in place of the database, never
-    /// page images (architecture 4.2).
+    /// page images.
     LogicalExport,
 }
 
@@ -99,6 +99,9 @@ pub struct OriginSpec {
     /// has, whether or not a response reported them (others come with the
     /// readings its parser stores).
     pub quota: Option<&'static [QuotaLimit]>,
+    /// Environment variables the tool sets in the commands its agent runs.
+    /// Any of them in a process's environment means an agent started it.
+    pub agent_env: &'static [&'static str],
 }
 
 impl OriginSpec {
@@ -136,14 +139,14 @@ fn none(_: &Path) -> Option<Parse> {
     None
 }
 
-macro_rules! reserved {
+macro_rules! declared {
     ($name:literal, $route:ident, [$($loc:literal),*]) => {
-        reserved!($name, $route, Root::HOME, [$($loc),*])
+        declared!($name, $route, Root::HOME, [$($loc),*])
     };
     ($name:literal, $route:ident, $root:expr, [$($loc:literal),*]) => {
         OriginSpec {
             name: $name,
-            support: Support::Reserved,
+            support: Support::Declared,
             route: Route::$route,
             root: $root,
             locations: &[$($loc),*],
@@ -153,6 +156,7 @@ macro_rules! reserved {
             resume: None,
             bare_uuid_ids: false,
             quota: None,
+            agent_env: &[],
         }
     };
 }
@@ -170,6 +174,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::claude_code::resume),
         bare_uuid_ids: true,
         quota: Some(crate::claude_code::QUOTA_LIMITS),
+        agent_env: &["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"],
     },
     OriginSpec {
         name: "claude-code-side",
@@ -183,6 +188,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "claude-code-history",
@@ -196,6 +202,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "codex",
@@ -209,6 +216,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::codex::resume),
         bare_uuid_ids: true,
         quota: Some(&[]),
+        agent_env: &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
     },
     OriginSpec {
         name: "codex-database",
@@ -222,6 +230,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "gemini-cli",
@@ -235,8 +244,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::gemini_cli::resume),
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &["GEMINI_CLI"],
     },
-    reserved!("antigravity", Live, [".gemini/antigravity/**"]),
+    declared!("antigravity", Live, [".gemini/antigravity/**"]),
     OriginSpec {
         name: "hermes",
         support: Support::Parsed,
@@ -249,6 +259,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "grok-cli",
@@ -262,6 +273,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "polylogue-repo-lookup",
@@ -275,6 +287,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
@@ -288,6 +301,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
@@ -301,6 +315,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "export-file",
@@ -314,6 +329,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
@@ -327,6 +343,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "chatgpt",
@@ -340,6 +357,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "claude-ai",
@@ -353,6 +371,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "claude-design",
@@ -366,6 +385,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
@@ -379,6 +399,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
@@ -392,6 +413,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: "grok",
@@ -405,6 +427,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
@@ -418,6 +441,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
@@ -431,6 +455,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
     // Last of the imports: its shapes are the most generic, so a specific
     // origin that recognizes the same file is tried first.
@@ -446,8 +471,18 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
+        agent_env: &[],
     },
 ];
+
+/// Environment variables that mean an agent started this process: every
+/// origin's `agent_env`, and the job runners agents use.
+pub fn agent_env() -> impl Iterator<Item = &'static str> {
+    ORIGINS
+        .iter()
+        .flat_map(|origin| origin.agent_env.iter().copied())
+        .chain(["AGENTCTL_JOB_ID", "AGENTCTL_RUN_ID", "POLYLOGUE_JOB_ID"])
+}
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
     ORIGINS.iter().find(|o| o.name == name)

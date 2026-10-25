@@ -1,4 +1,4 @@
-//! Stream selected object fields, array elements or map values while retaining
+//! Stream selected object fields, array elements or map values while keeping
 //! only named metadata. Selected text never enters the metadata object.
 use super::*;
 use polylogue_model::Json;
@@ -26,15 +26,15 @@ pub(crate) fn scan_objects(
     keep: &[&str],
     mut item: impl FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Vec<ObjectFields>, ScanStats), ScanError> {
-    let tap = Rc::new(RefCell::new(Tap::default()));
-    let input = Tapped {
+    let scan_state = Rc::new(RefCell::new(ScanState::default()));
+    let input = PositionReader {
         reader: BufReader::new(reader),
-        tap: Rc::clone(&tap),
+        scan_state: Rc::clone(&scan_state),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
     let objects = RefCell::new(Vec::new());
     let object = Object {
-        tap: &tap,
+        scan_state: &scan_state,
         frames,
         keep,
         item: &mut item,
@@ -48,8 +48,8 @@ pub(crate) fn scan_objects(
             .deserialize(&mut de)
             .map(|object| objects.borrow_mut().push(object))
     };
-    result.map_err(|error| scan_error(error, &tap))?;
-    let stats = finish_scan(de.end(), &tap)?;
+    result.map_err(|error| scan_error(error, &scan_state))?;
+    let stats = finish_scan(de.end(), &scan_state)?;
     Ok((objects.into_inner(), stats))
 }
 
@@ -73,7 +73,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         while let Some(fields) = seq.next_element_seed(Object {
-            tap: self.object.tap,
+            scan_state: self.object.scan_state,
             frames: self.object.frames,
             keep: self.object.keep,
             item: &mut *self.object.item,
@@ -86,7 +86,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
     }
 }
 struct Object<'a, F> {
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     frames: &'a [(&'a str, FieldShape)],
     keep: &'a [&'a str],
     item: &'a mut F,
@@ -109,7 +109,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
         f.write_str("an export object with unique fields")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ObjectFields, A::Error> {
-        let Some((start, b'{')) = self.tap.borrow().last else {
+        let Some((start, b'{')) = self.scan_state.borrow().last else {
             return Err(A::Error::custom("missing export object boundary"));
         };
         let mut fields = serde_json::Map::new();
@@ -122,13 +122,13 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 let mut emit = |range, raw: &RawValue| (self.item)(start, &key, None, range, raw);
                 let marker = match shape {
                     FieldShape::Value => {
-                        map_value(&mut map, self.tap, &mut emit)?;
+                        map_value(&mut map, self.scan_state, &mut emit)?;
                         Json::Null
                     }
                     FieldShape::Objects => {
                         map.next_value_seed(Objects {
                             object: Object {
-                                tap: self.tap,
+                                scan_state: self.scan_state,
                                 frames: self.frames,
                                 keep: self.keep,
                                 item: &mut *self.item,
@@ -139,7 +139,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                         Json::Array(Vec::new())
                     }
                     FieldShape::Array | FieldShape::Map => map.next_value_seed(Collection {
-                        tap: self.tap,
+                        scan_state: self.scan_state,
                         shape: *shape,
                         parent: start,
                         field: &key,
@@ -148,12 +148,13 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 };
                 fields.insert(key, marker);
             } else if self.keep.contains(&key.as_str()) {
-                let before = self.tap.borrow().position;
+                let before = self.scan_state.borrow().position;
                 let value = map.next_value::<Json>()?;
-                let bytes = (self.tap.borrow().position - before) as usize;
+                let bytes = (self.scan_state.borrow().position - before) as usize;
                 {
-                    let mut tap = self.tap.borrow_mut();
-                    tap.stats.peak_element_bytes = tap.stats.peak_element_bytes.max(bytes);
+                    let mut scan_state = self.scan_state.borrow_mut();
+                    scan_state.stats.peak_element_bytes =
+                        scan_state.stats.peak_element_bytes.max(bytes);
                 }
                 fields.insert(key, value);
             } else {
@@ -161,8 +162,8 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
                 fields.insert(key, Json::Null);
             }
         }
-        let end = self.tap.borrow().position;
-        if self.tap.borrow().last != Some((end - 1, b'}')) {
+        let end = self.scan_state.borrow().position;
+        if self.scan_state.borrow().last != Some((end - 1, b'}')) {
             return Err(A::Error::custom("missing export object end boundary"));
         }
         Ok(ObjectFields {
@@ -174,7 +175,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
     }
 }
 struct Collection<'a, F> {
-    tap: &'a Rc<RefCell<Tap>>,
+    scan_state: &'a Rc<RefCell<ScanState>>,
     shape: FieldShape,
     parent: u64,
     field: &'a str,
@@ -198,18 +199,18 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
     fn visit_unit<E: serde::de::Error>(self) -> Result<Json, E> {
         // Serde has consumed the literal null. Its four bytes are an exact
         // scalar record, distinct from an absent or empty collection.
-        let end = self.tap.borrow().position;
-        if self.tap.borrow().last != Some((end - 1, b'l')) {
+        let end = self.scan_state.borrow().position;
+        if self.scan_state.borrow().last != Some((end - 1, b'l')) {
             return Err(E::custom("missing null source boundary"));
         }
         let raw: &RawValue = serde_json::from_str("null").expect("static JSON null");
         (self.item)(self.parent, self.field, None, end - 4..end, raw).map_err(|error| {
-            self.tap.borrow_mut().failure = Some(ScanError::Callback(error));
+            self.scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
             E::custom("export callback failed")
         })?;
-        let mut tap = self.tap.borrow_mut();
-        tap.stats.elements += 1;
-        tap.stats.peak_element_bytes = tap.stats.peak_element_bytes.max(4);
+        let mut scan_state = self.scan_state.borrow_mut();
+        scan_state.stats.elements += 1;
+        scan_state.stats.peak_element_bytes = scan_state.stats.peak_element_bytes.max(4);
         Ok(Json::Null)
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
@@ -220,7 +221,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             |range, raw: &RawValue| (self.item)(self.parent, self.field, None, range, raw);
         while seq
             .next_element_seed(ItemSeed {
-                tap: self.tap,
+                scan_state: self.scan_state,
                 item: &mut emit,
             })?
             .is_some()
@@ -236,7 +237,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             if !seen.insert(key.clone()) {
                 return Err(A::Error::custom("duplicate export map key"));
             }
-            map_value(&mut map, self.tap, &mut |range, raw| {
+            map_value(&mut map, self.scan_state, &mut |range, raw| {
                 (self.item)(self.parent, self.field, Some(&key), range, raw)
             })?;
         }

@@ -1,5 +1,5 @@
 //! Parsers on bytes written in the test or kept as golden cases: the
-//! format knowledge ported from the Python predecessor's tests, and the
+//! format knowledge ported from the Python version's tests, and the
 //! expected rows of every case under `examples/sources/`.
 
 mod ai_studio_outcomes;

@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod batch;
 mod block;
+pub mod capture_log;
 mod change_position;
 pub mod command;
 mod document;
@@ -18,7 +19,6 @@ mod note;
 pub mod price;
 mod quota;
 mod session;
-pub mod snapshot_log;
 mod time;
 mod usage;
 mod work;

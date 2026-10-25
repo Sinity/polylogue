@@ -1,5 +1,5 @@
 //! ATOF runtime observations are not conversations. Native run/scope IDs stay
-//! in the observation; the retained input owns it when no conversation is proved.
+//! in the observation; it belongs to its input when no conversation is proved.
 use super::{Event, Json, Parse, Sink, lines};
 use crate::Disposition;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
@@ -101,7 +101,7 @@ impl ExportParser for Atof {
         if value.get("atof_version").and_then(Json::as_str) != Some("0.1") {
             sink.records.record(
                 "atof",
-                &Disposition::unknown("unsupported ATOF version; original record retained"),
+                &Disposition::unknown("unsupported ATOF version; original record kept"),
             );
             return Ok(());
         }
@@ -114,7 +114,7 @@ impl ExportParser for Atof {
             sink.records.record(
                 "atof",
                 &Disposition::unknown(
-                    "unsupported ATOF envelope or scope phase; original record retained",
+                    "unsupported ATOF envelope or scope phase; original record kept",
                 ),
             );
             return Ok(());
@@ -124,7 +124,7 @@ impl ExportParser for Atof {
         if value.get("timestamp").is_some_and(|time| !time.is_null()) && at.is_none() {
             sink.out.events.push(Event {
                 session: None, kind: "hermes_import_diagnostic".into(), at: None, after: None, range: None,
-                data: serde_json::json!({"field":"timestamp","interpretation":"ATOF RFC3339 time unreadable; time remains unknown"}),
+                data: serde_json::json!({"field":"timestamp","reason":"ATOF RFC3339 time unreadable; time remains unknown"}),
             });
         }
         sink.out.events.push(Event {

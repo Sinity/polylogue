@@ -63,7 +63,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
         accounting,
         consumed: bytes.len() as u64,
         start: 0,
-        snapshot: false,
+        restates: false,
     })
 }
 

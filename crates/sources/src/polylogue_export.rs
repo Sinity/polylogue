@@ -1,6 +1,7 @@
-//! Read Polylogue exports with whole-file validation before publication.
-//! Session/document identity is retained. Input-owned observations acquire local
-//! retained-record citations; sender identity and source claims stay in raw bytes.
+//! Read Polylogue exports, checking the whole file before emitting anything.
+//! Session and document identities are kept. Observations that belong to the
+//! input cite the local export record; sender identity and source claims stay
+//! in the raw bytes.
 
 use crate::document::Sink;
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
@@ -17,7 +18,7 @@ pub fn recognize(_path: &Path, head: &[u8]) -> bool {
     recognize_reader(head).unwrap_or(false)
 }
 
-/// Check a stable input, skipping preceding values without retaining their bodies.
+/// Check a stable input, skipping preceding values without keeping their bodies.
 pub fn recognize_reader(reader: impl std::io::Read) -> std::io::Result<bool> {
     use serde::de::{IgnoredAny, MapAccess, Visitor};
     struct Header<'a>(&'a mut bool);
@@ -156,7 +157,7 @@ impl ExportParser for Export {
             accounting: records.finish().map_err(|e| e.to_string())?,
             start: 0,
             consumed: length,
-            snapshot: false,
+            restates: false,
         }))
     }
 
@@ -193,7 +194,7 @@ impl ExportParser for Export {
             Kind::Event => {
                 let mut exported: EventExport =
                     serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-                // Sender IDs/coordinates remain claims in retained export bytes.
+                // Sender IDs and coordinates stay claims in the stored export bytes.
                 // This observation belongs to this local export record.
                 exported.event.range = None;
                 sink.out.events.push(exported.event);

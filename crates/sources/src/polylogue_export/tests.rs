@@ -134,7 +134,7 @@ fn reads_back_the_same_ids_with_exact_export_session_spans() {
 }
 
 #[test]
-fn refuses_newer_headers_and_late_invalid_sessions_without_publishing_a_prefix() {
+fn refuses_newer_headers_and_late_invalid_sessions_without_emitting_a_prefix() {
     let good = serde_json::to_string(&doc().sessions[0]).unwrap();
     for text in [
         format!("{{\"format\":\"polylogue-export\",\"sessions\":[{good}],\"version\":99}}"),
@@ -205,7 +205,7 @@ fn typed_export_collections_refuse_null_instead_of_becoming_empty_arrays() {
 }
 
 #[test]
-fn wire3_events_rebind_only_to_the_local_export_record_and_keep_sender_claims_in_retained_bytes() {
+fn version3_events_rebind_only_to_the_local_export_record_and_keep_sender_claims_in_stored_bytes() {
     let native = serde_json::json!({"approved":false,"value":null,"text":" exact λ "});
     let fact = polylogue_model::export::EventExport {
         id: "sender-observation".into(),
@@ -233,11 +233,11 @@ fn wire3_events_rebind_only_to_the_local_export_record_and_keep_sender_claims_in
         assert!(fact.session.is_none());
         assert_eq!(fact.data, native);
         let (start, end) = fact.range.unwrap();
-        let retained: serde_json::Value =
+        let record: serde_json::Value =
             serde_json::from_str(&raw[start as usize..end as usize]).unwrap();
-        assert_eq!(retained["input"], "sender-input");
-        assert_eq!(retained["source_chain"], 7);
-        assert_eq!(retained["id"], "sender-observation");
+        assert_eq!(record["input"], "sender-input");
+        assert_eq!(record["source_chain"], 7);
+        assert_eq!(record["id"], "sender-observation");
         assert_ne!((start, end), (200, 300));
     }
     assert!(

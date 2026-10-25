@@ -1,7 +1,7 @@
 //! Snapshot headers are structural bytes. Payloads share the operation's verified
 //! plaintext owner; each header and digest is checked before replacement begins.
 use super::*;
-use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
 
 pub(super) fn scan(
     archive: &rusqlite::Connection,

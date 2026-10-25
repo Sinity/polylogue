@@ -1,7 +1,7 @@
 [
  {
   "uuid": "native-rich-blocks",
-  "name": "Synthetic canonical blocks",
+  "name": "Synthetic rich blocks",
   "chat_messages": [
    {
     "uuid": "assistant-1",

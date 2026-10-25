@@ -474,7 +474,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
                 "parsed_cmd": item.get("parsed_cmd"),
             });
             // A code-mode script's command: the `exec_command` tool the
-            // script called (spec sources/codex.md, code mode).
+            // script called.
             ("exec_command", input, command, None, output)
         }
         "FileChange" => {

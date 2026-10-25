@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 pub enum Rule {
     /// The parser reads it into a row.
     Read,
-    /// Kept whole in the stored record or an event's data, not interpreted
+    /// Kept whole in the stored record or an event's data, not parsed
     /// yet, for the stated reason.
     Kept(&'static str),
     /// Not read, for the stated reason.

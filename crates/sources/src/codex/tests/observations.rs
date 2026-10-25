@@ -266,7 +266,7 @@ fn header_only_and_rate_only_rollouts_keep_the_unknown_boundary_scope_fact() {
 }
 
 #[test]
-fn regressive_snapshots_cannot_recharge_an_old_delta_or_prove_a_new_counter_epoch() {
+fn regressive_counter_reports_cannot_recharge_an_old_delta_or_prove_a_new_counter_epoch() {
     let trace = vec![
         meta(json!({})),
         count(2, counters(10, 2), counters(10, 2)),

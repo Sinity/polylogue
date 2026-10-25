@@ -143,7 +143,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
-/// routes produce the same IDs and unite (architecture 5.5).
+/// routes produce the same IDs and unite.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut crate::export::MemoryState) {
     conversation_with_owners(conv, sink, owners).expect("in-memory message ownership");
 }

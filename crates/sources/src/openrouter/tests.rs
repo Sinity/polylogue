@@ -119,7 +119,7 @@ fn integer_time_id_and_object_key_order_matches_optional_tuple_comparison() {
 }
 
 #[test]
-fn ordering_reads_last_header_values_without_interpreting_the_message_body() {
+fn ordering_reads_last_header_values_without_parsing_the_message_body() {
     let raw=serde_json::value::RawValue::from_string(r#"{"id":"old","createdAt":"2026-01-02T00:00:00Z","id":"new","createdAt":"1969-12-31T23:59:59.999Z","content":{"nested":[1,2,3]}}"#.into()).unwrap();
     assert_eq!(
         message_order(&raw, "key"),

@@ -191,7 +191,7 @@ impl DocumentParser for SideFile {
             ),
             // Type and description only, as an event: the transcript owns
             // the session's kind and title, so a meta file read before or
-            // after it never changes them (architecture 5.5a merge order).
+            // after it never changes them.
             Side::Meta { stem, session } => (
                 "subagent_meta",
                 match json(bytes) {

@@ -101,7 +101,7 @@ fn atif_transcript_keeps_text_tools_images_and_embedded_scope_without_fabricated
 fn atif_future_versions_are_explicitly_unsupported_and_foreign_schema_keys_do_not_claim_hermes() {
     let mut value = trajectory(
         "future",
-        json!([{"step_id":1,"source":"agent","message":"retained source text"}]),
+        json!([{"step_id":1,"source":"agent","message":"stored source text"}]),
     );
     value["schema_version"] = json!("ATIF-v99");
     let parsed = parse(

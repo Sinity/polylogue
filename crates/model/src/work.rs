@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// What a work-graph node is (spec model.md, The work graph).
+/// What a work-graph node is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkNodeKind {

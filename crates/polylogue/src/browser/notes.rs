@@ -49,18 +49,14 @@ pub(super) fn save(ctx: &Ctx, input: SelectionNote) -> Response {
     let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
         return invalid("the source page URL is invalid");
     };
-    let (host, marker) = match source.provider.as_str() {
-        "chatgpt" => ("chatgpt.com", "c"),
-        "claude-ai" => ("claude.ai", "chat"),
-        "grok" => ("grok.com", "c"),
-        "gemini" => ("gemini.google.com", "app"),
-        _ => return invalid("this provider has no selection-note target"),
+    let Some(chat) = polylogue_sources::browser_capture::web_chat(&source.provider) else {
+        return invalid("this provider has no selection-note target");
     };
     let parts: Vec<_> = url.path().split('/').filter(|s| !s.is_empty()).collect();
     if url.scheme_str() != Some("https")
-        || url.authority().map(|a| a.as_str()) != Some(host)
+        || url.authority().map(|a| a.as_str()) != Some(chat.host)
         || parts.len() != 2
-        || parts[0] != marker
+        || parts[0] != chat.path
         || parts[1] != source.conversation_id
     {
         return invalid("the source page does not identify the supplied provider conversation");

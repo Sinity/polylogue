@@ -17,7 +17,7 @@
     "events": [],
     "links": [
       {
-        "child": "claude-code:agent-task-agent-12-change-proof",
+        "child": "claude-code:agent-task-agent-12-change-check",
         "evidence": "agentId",
         "kind": "spawn",
         "parent": "claude-code:claude-lineage-parent"
@@ -37,7 +37,7 @@
           "id": "claude-code:task-compact-u",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:agent-task-agent-12-change-proof"
+          "session": "claude-code:agent-task-agent-12-change-check"
         },
         "offset": 0
       },
@@ -55,14 +55,14 @@
           "model": "claude-sonnet-4-5-20250929",
           "parent": "claude-code:task-compact-u",
           "role": "assistant",
-          "session": "claude-code:agent-task-agent-12-change-proof"
+          "session": "claude-code:agent-task-agent-12-change-check"
         },
         "offset": 371
       }
     ],
     "sessions": [
       {
-        "id": "claude-code:agent-task-agent-12-change-proof",
+        "id": "claude-code:agent-task-agent-12-change-check",
         "kind": "subagent",
         "started": "2026-07-01T12:10:00Z"
       }

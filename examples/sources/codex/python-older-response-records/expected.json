@@ -2,7 +2,7 @@
   "accounting": {
     "framed": 11,
     "materialized": {
-      "legacy_header": 1,
+      "older_header": 1,
       "response_item/function_call": 2,
       "response_item/function_call_output": 2,
       "response_item/message": 2,
@@ -21,13 +21,13 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:legacy-response-session"
+        "session": "codex:older-response-session"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 382,
+        "end": 381,
         "message": {
           "blocks": [
             {
@@ -35,15 +35,15 @@
               "type": "text"
             }
           ],
-          "id": "codex:legacy-response-session@280",
+          "id": "codex:older-response-session@279",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 280
+        "offset": 279
       },
       {
-        "end": 578,
+        "end": 577,
         "message": {
           "blocks": [
             {
@@ -56,12 +56,12 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 407
+        "offset": 406
       },
       {
-        "end": 693,
+        "end": 692,
         "message": {
           "blocks": [
             {
@@ -78,17 +78,17 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:legacy-response-session@579",
+          "id": "codex:older-response-session@578",
           "production": {
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 579
+        "offset": 578
       },
       {
-        "end": 860,
+        "end": 859,
         "message": {
           "blocks": [
             {
@@ -100,15 +100,15 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:legacy-response-session@694",
+          "id": "codex:older-response-session@693",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 694
+        "offset": 693
       },
       {
-        "end": 990,
+        "end": 989,
         "message": {
           "blocks": [
             {
@@ -125,17 +125,17 @@
               "type": "tool_call"
             }
           ],
-          "id": "codex:legacy-response-session@861",
+          "id": "codex:older-response-session@860",
           "production": {
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 861
+        "offset": 860
       },
       {
-        "end": 1189,
+        "end": 1188,
         "message": {
           "blocks": [
             {
@@ -151,15 +151,15 @@
               "type": "tool_result"
             }
           ],
-          "id": "codex:legacy-response-session@991",
+          "id": "codex:older-response-session@990",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 991
+        "offset": 990
       },
       {
-        "end": 1339,
+        "end": 1338,
         "message": {
           "blocks": [
             {
@@ -167,20 +167,20 @@
               "type": "text"
             }
           ],
-          "id": "codex:legacy-response-session@1214",
+          "id": "codex:older-response-session@1213",
           "production": {
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:legacy-response-session"
+          "session": "codex:older-response-session"
         },
-        "offset": 1214
+        "offset": 1213
       }
     ],
     "sessions": [
       {
         "git_branch": "main",
-        "id": "codex:legacy-response-session",
+        "id": "codex:older-response-session",
         "kind": "main",
         "started": "2025-08-01T10:00:00Z"
       }

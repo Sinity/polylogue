@@ -1,4 +1,4 @@
-//! Codex rollout knowledge from the Python predecessor's
+//! Codex rollout knowledge from the Python version's
 //! `test_parsers_codex.py` and `test_codex_event_stream_contract.py`.
 
 use crate::support::{blocks, jsonl, messages, parse, sessions};

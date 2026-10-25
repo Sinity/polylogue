@@ -38,7 +38,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                         path: args.get("path").and_then(Json::as_str).map(str::to_owned),
                     });
                 } else {
-                    limits.push("tool call requires textual IDs/name and object arguments; original call retained");
+                    limits.push("tool call requires textual IDs/name and object arguments; original call kept");
                     out.push(Block::Other {
                         type_name: "atif_tool_call".into(),
                         data: call.clone(),
@@ -46,14 +46,14 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                 }
             }
         } else if !calls.is_null() {
-            limits.push("tool_calls is not an array; original field retained");
+            limits.push("tool_calls is not an array; original field kept");
         }
     }
     if let Some(observation) = step.get("observation").filter(|v| !v.is_null()) {
         if let Some(results) = observation.get("results").and_then(Json::as_array) {
             for result in results {
                 let Some(fields) = result.as_object() else {
-                    limits.push("observation result is not an object; original result retained");
+                    limits.push("observation result is not an object; original result kept");
                     out.push(Block::Other {
                         type_name: "atif_observation".into(),
                         data: result.clone(),
@@ -82,7 +82,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                 });
             }
         } else {
-            limits.push("observation requires a results array; original observation retained");
+            limits.push("observation requires a results array; original observation kept");
             out.push(Block::Other {
                 type_name: "atif_observation".into(),
                 data: observation.clone(),
@@ -111,7 +111,7 @@ fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>
             } else if let Some(image) = image(part) {
                 blocks.push(Block::Image(image));
             } else {
-                limits.push("uninterpreted ATIF content part; native reference retained without inferred model direction");
+                limits.push("unrecognized ATIF content part; native reference kept without inferred model direction");
                 blocks.push(Block::Other {
                     type_name: "atif_content_part".into(),
                     data: part.clone(),
@@ -119,7 +119,7 @@ fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>
             }
         }
     } else {
-        limits.push("message is neither text nor a content-part array; original value retained");
+        limits.push("message is neither text nor a content-part array; original value kept");
         blocks.push(Block::Other {
             type_name: "atif_message".into(),
             data: value.clone(),
@@ -167,8 +167,7 @@ fn result_content(
             (Some(text), images)
         }
         Some(value) if !value.is_null() => {
-            limits
-                .push("result content is neither text nor content parts; original value retained");
+            limits.push("result content is neither text nor content parts; original value kept");
             (None, vec![])
         }
         _ => (None, vec![]),

@@ -43,7 +43,7 @@ impl Parser for ClassifiedLines {
         records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
             "message" => Disposition::Materialized,
-            "metadata" => Disposition::unknown("not interpreted"),
+            "metadata" => Disposition::unknown("not parsed"),
             _ => Disposition::refused("not a supported record"),
         }
     }
@@ -69,14 +69,14 @@ fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
     let whole = run(&ClassifiedLines, &mut whole_carry, bytes, 17).unwrap();
     assert_eq!(whole.accounting.framed, 4);
     assert_eq!(whole.accounting.materialized["message"], 1);
-    assert_eq!(whole.accounting.unknown["metadata: not interpreted"], 1);
+    assert_eq!(whole.accounting.unknown["metadata: not parsed"], 1);
     assert_eq!(whole.accounting.refused.values().sum::<u64>(), 2);
     assert_eq!(whole.accounting.unread_fields["message.extra"], 1);
     assert!(whole.consumed < bytes.len() as u64);
     for split in 0..=bytes.len() {
         let mut carry = Vec::new();
         let first = run(&ClassifiedLines, &mut carry, &bytes[..split], 17).unwrap();
-        // The caller retains a partial trailing record, not just bytes after
+        // The caller keeps a partial trailing record, not just bytes after
         // its most recent read boundary.
         let start = first.consumed as usize;
         let second = run(
@@ -99,9 +99,9 @@ fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
 }
 
 #[test]
-fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
-    let parser = Parse::Snapshots(Box::new(EmptyDocument));
+fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
+    use polylogue_model::capture_log::{Header, MAGIC};
+    let parser = Parse::CaptureLog(Box::new(EmptyDocument));
     let body = b"{}";
     let mut bytes = MAGIC.to_vec();
     bytes.extend(Header::of(body).encode());
@@ -109,7 +109,7 @@ fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].consumed, bytes.len() as u64);
-    assert!(steps[0].snapshot);
+    assert!(steps[0].restates);
     let end = bytes.len();
     bytes.extend(&Header::of(body).encode()[..10]);
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
@@ -119,7 +119,7 @@ fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
     bytes[end - 1] = b'[';
     assert!(matches!(
         parser.steps(None, &bytes, 0),
-        Err(ParseError::Snapshot(_))
+        Err(ParseError::CaptureLog(_))
     ));
 }
 
@@ -139,8 +139,8 @@ impl DocumentParser for DocumentEvent {
 }
 
 #[test]
-fn snapshot_event_ranges_name_the_payload_in_whole_and_incremental_reads() {
-    use polylogue_model::snapshot_log::{Header, MAGIC};
+fn capture_event_ranges_name_the_capture_in_whole_and_incremental_reads() {
+    use polylogue_model::capture_log::{Header, MAGIC};
     let body = br#"{"kept":true}"#;
     let mut bytes = MAGIC.to_vec();
     let mut expected = Vec::new();
@@ -150,7 +150,7 @@ fn snapshot_event_ranges_name_the_payload_in_whole_and_incremental_reads() {
         bytes.extend(body);
         expected.push((start, bytes.len() as u64));
     }
-    let parser = Parse::Snapshots(Box::new(DocumentEvent));
+    let parser = Parse::CaptureLog(Box::new(DocumentEvent));
     let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
     assert_eq!(steps.len(), 2);
     for (step, &range) in steps.iter().zip(&expected) {

@@ -153,7 +153,7 @@ fn nanoseconds_are_exact_unknowns_precede_known_and_equal_keys_keep_physical_ord
 }
 
 #[test]
-fn duplicate_selected_containers_and_bad_suffixes_publish_no_prefix_spans() {
+fn duplicate_selected_containers_and_bad_suffixes_emit_no_prefix_spans() {
     let span = named("a", Some(1), "prefix");
     let duplicate = format!(
         r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{span}]}}]}}],"resourceSpans":[]}}"#

@@ -36,7 +36,7 @@ fn naming_and_library_sidecars_preserve_exact_metadata_without_opening_files() {
     assert_eq!(entries[0].name.as_deref(), Some("résumé.pdf"));
     assert_eq!(entries[1].name.as_deref(), Some(""));
     entries.clear();
-    metadata("library_files.json", br#"[{"file_id":"file_0123","file_name":"plot.png","mime_type":"image/png","file_size_bytes":0,"uninterpreted":{"kept":"in raw input"}}]"#.as_slice(), |entry| { entries.push(entry); Ok(()) }).unwrap();
+    metadata("library_files.json", br#"[{"file_id":"file_0123","file_name":"plot.png","mime_type":"image/png","file_size_bytes":0,"unknown_field":{"kept":"in raw input"}}]"#.as_slice(), |entry| { entries.push(entry); Ok(()) }).unwrap();
     assert_eq!(entries[0].size, Some(0));
     assert_eq!(entries[0].media_type.as_deref(), Some("image/png"));
 }

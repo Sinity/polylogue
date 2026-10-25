@@ -68,7 +68,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(
         pass.bytes_read,
-        reversion.len() as u64 + polylogue_model::snapshot_log::HEADER_LEN as u64,
+        reversion.len() as u64 + polylogue_model::capture_log::HEADER_LEN as u64,
         "append reads only new frame bytes"
     );
     let pool = ReadPool::open(&archive).unwrap();

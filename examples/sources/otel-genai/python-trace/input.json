@@ -28,7 +28,7 @@
                   {"key": "query", "value": {"stringValue": "rain forecast"}}
                 ]}}},
                 {"key": "gen_ai.tool.call.result", "value": {"stringValue": "Rain expected tomorrow."}},
-                {"key": "vendor.experimental.signal", "value": {"stringValue": "retained-verbatim"}}
+                {"key": "vendor.experimental.signal", "value": {"stringValue": "recorded-verbatim"}}
               ]
             },
             {

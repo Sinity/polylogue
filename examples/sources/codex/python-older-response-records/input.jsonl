@@ -1,4 +1,4 @@
-{"id":"legacy-response-session","timestamp":"2025-08-01T10:00:00.000Z","instructions":"Synthetic project instructions.","git":{"commit_hash":"0000000000000000000000000000000000000001","branch":"main","repository_url":"https://example.invalid/sample.git"}}
+{"id":"older-response-session","timestamp":"2025-08-01T10:00:00.000Z","instructions":"Synthetic project instructions.","git":{"commit_hash":"0000000000000000000000000000000000000001","branch":"main","repository_url":"https://example.invalid/sample.git"}}
 {"record_type":"state"}
 {"type":"message","role":"user","content":[{"type":"input_text","text":"List the sample directory."}]}
 {"record_type":"state"}

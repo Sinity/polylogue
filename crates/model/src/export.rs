@@ -28,8 +28,8 @@ pub struct SessionExport {
     pub links: Vec<Link>,
 }
 
-/// The sender's event identity and source citation are claims retained in the
-/// export. Import owns a new local Input and cites the exported record itself.
+/// The sender's event identity and source citation are claims kept in the
+/// export. Import makes a new local input and cites the exported record itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventExport {
     pub id: String,

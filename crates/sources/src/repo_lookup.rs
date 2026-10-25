@@ -1,5 +1,4 @@
-//! Polylogue's repository lookup record (spec sources/README.md, the
-//! repo-lookup record): one JSON document per repository directory, written
+//! Polylogue's repository lookup record: one JSON document per repository directory, written
 //! by the engine from what `.git` says on this host. Storing the lookup as
 //! an input keeps the join to sessions a function of stored bytes, so a
 //! rebuild gives every session the same repository.
