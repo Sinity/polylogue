@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::BlobHash;
 use crate::archive::{cache, open_read, open_write};
 use std::collections::BTreeSet;
 
@@ -27,7 +28,7 @@ fn admit(writer: &Writer, store: &Arc<hashed_blobs::Store>, group: Vec<PreparedB
     let results = writer
         .sender()
         .unwrap()
-        .retain_group(group, Arc::clone(store))
+        .store_group(group, Arc::clone(store))
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
 }

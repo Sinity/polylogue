@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn watched_pool_rejection_does_not_publish_unowned_raw_or_decoded_bytes() {
+fn refused_watched_bytes_install_no_file() {
     for image in [false, true] {
         let world = ClaudeHome::new();
         let path = world.file("pool-custody.jsonl");
@@ -64,7 +64,7 @@ fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]
 }
 
 #[test]
-fn decoded_ownership_survives_failed_index_admission_and_provider_free_rebuild() {
+fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider_file() {
     let world = ClaudeHome::new();
     let (encoded, decoded) = image_payload('A');
     let path = world.file("decoded-custody.jsonl");
@@ -79,25 +79,14 @@ fn decoded_ownership_survives_failed_index_admission_and_provider_free_rebuild()
     )
     .unwrap();
     let hash = polylogue_model::BlobHash::of(&decoded);
-    let original;
     {
         let (mut engine, _lock) = engine(&world, 1 << 20);
         let index = rusqlite::Connection::open(world.root.join("index.db")).unwrap();
         index.execute_batch("CREATE TRIGGER reject_decoded_message BEFORE INSERT ON message BEGIN SELECT RAISE(ABORT,'synthetic derived admission refusal'); END;").unwrap();
         let pass = engine.converge().unwrap();
         assert!(!pass.errors.is_empty());
-        assert_eq!(
-            world.count("SELECT count(*) AS n FROM a.extracted_blob WHERE state='present'"),
-            1
-        );
         assert_eq!(world.count("SELECT count(*) AS n FROM message"), 0);
         assert_blob(&engine, hash, &decoded);
-        original = world
-            .reads()
-            .reader()
-            .unwrap()
-            .query("SELECT * FROM a.extracted_blob", &[])
-            .unwrap();
     }
     std::fs::remove_file(path).unwrap();
     polylogue_testkit::delete_index(&world.root);
@@ -105,20 +94,11 @@ fn decoded_ownership_survives_failed_index_admission_and_provider_free_rebuild()
     let pass = engine.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(world.count("SELECT count(*) AS n FROM message"), 1);
-    assert_eq!(
-        world
-            .reads()
-            .reader()
-            .unwrap()
-            .query("SELECT * FROM a.extracted_blob", &[])
-            .unwrap(),
-        original
-    );
     assert_blob(&engine, hash, &decoded);
 }
 
 #[test]
-fn input_excision_without_an_index_preserves_another_decoded_source_owner() {
+fn input_excision_without_an_index_keeps_bytes_another_input_decodes() {
     let world = ClaudeHome::new();
     let (encoded, decoded) = image_payload('A');
     let first = world.file("first-image.jsonl");
@@ -150,7 +130,6 @@ fn input_excision_without_an_index_preserves_another_decoded_source_owner() {
         let pass = engine.converge().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         input = engine.location_id(&first);
-        assert_eq!(world.count("SELECT count(*) AS n FROM a.extracted_blob"), 2);
     }
     std::fs::remove_file(first).unwrap();
     std::fs::remove_file(second).unwrap();
@@ -164,7 +143,6 @@ fn input_excision_without_an_index_preserves_another_decoded_source_owner() {
             dry_run: false,
         })
         .unwrap();
-    assert_eq!(world.count("SELECT count(*) AS n FROM a.extracted_blob"), 1);
     assert_blob(&engine, hash, &decoded);
     let pass = engine.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
@@ -172,114 +150,9 @@ fn input_excision_without_an_index_preserves_another_decoded_source_owner() {
     assert_blob(&engine, hash, &decoded);
 }
 
-#[test]
-fn a_stale_decode_cannot_reinstall_bytes_after_same_length_source_excision() {
-    use polylogue_store::{
-        Batch, Change, InputKey,
-        retention::{Extraction, PreparedBatch},
-    };
-    let world = ClaudeHome::new();
-    let (encoded, decoded) = image_payload('A');
-    let (other_encoded, other_decoded) = image_payload('B');
-    let path = world.file("stale-image.jsonl");
-    std::fs::write(
-        &path,
-        image_record(
-            "stale-image",
-            "stale-image",
-            "Synthetic stale image",
-            &encoded,
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        world.file("surviving-image.jsonl"),
-        image_record("survivor", "survivor", "Synthetic survivor", &other_encoded),
-    )
-    .unwrap();
-    let (mut engine, _lock) = engine(&world, 1 << 20);
-    assert!(engine.converge().unwrap().errors.is_empty());
-    let input = engine.location_id(&path);
-    let row = engine
-        .reads
-        .reader()
-        .unwrap()
-        .query(
-            "SELECT * FROM a.extracted_blob WHERE input=?1",
-            &[polylogue_store::SqlValue::Text(input.clone())],
-        )
-        .unwrap()
-        .pop()
-        .unwrap();
-    let chain = row["chain"].as_i64().unwrap();
-    let range = row["source_start"].as_u64().unwrap()..row["source_end"].as_u64().unwrap();
-    let source_bytes = std::fs::read(&path).unwrap();
-    let source_hash =
-        polylogue_model::BlobHash::of(&source_bytes[range.start as usize..range.end as usize]);
-    let (piece, file) = engine.archive.prepare_piece(&[], &decoded).unwrap();
-    let hash = piece.hash;
-    let pending = PreparedBatch {
-        batch: Batch {
-            input: InputKey {
-                id: input.clone(),
-                format: "claude-code".into(),
-                route_rank: 0,
-            },
-            change: Change::Reparse { chain },
-            observation: None,
-            continues: false,
-            piece: None,
-            blobs: vec![piece],
-            length: source_bytes.len() as u64,
-            parse: Vec::new(),
-            release: Default::default(),
-        },
-        files: file.into_iter().collect(),
-        extracted: vec![Extraction {
-            range,
-            source_hash,
-            blob: hash,
-        }],
-    };
-    let before = source_bytes.len();
-    engine
-        .excise(ExciseRequest {
-            id: "remove-decoded-source-value".into(),
-            scope: ExciseScope::Text(encoded),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap();
-    let retained = engine
-        .reads
-        .reader()
-        .unwrap()
-        .retained_input(&input)
-        .unwrap()
-        .unwrap();
-    assert_eq!(retained.length, before as u64);
-    assert!(!engine.blobs.contains(&hashed_blobs::Hash(hash.0)));
-    let result = engine
-        .writer
-        .sender()
-        .unwrap()
-        .retain_group(vec![pending], std::sync::Arc::clone(&engine.blobs))
-        .unwrap();
-    assert!(result[0].is_err());
-    assert!(
-        !engine.blobs.contains(&hashed_blobs::Hash(hash.0)),
-        "stale decoded stage became public before source validation"
-    );
-    assert_blob(
-        &engine,
-        polylogue_model::BlobHash::of(&other_decoded),
-        &other_decoded,
-    );
-}
-
 #[cfg(feature = "faults")]
 #[test]
-fn pending_watched_groups_retry_exact_bytes_without_substituting_an_edited_provider() {
+fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
     use polylogue_store::fault::{self, Action};
     for edited in [false, true] {
         let world = ClaudeHome::new();
@@ -299,11 +172,11 @@ fn pending_watched_groups_retry_exact_bytes_without_substituting_an_edited_provi
         {
             let (mut engine, _lock) = engine(&world, 1 << 20);
             input = engine.location_id(&path);
-            fault::arm("import.reserved", &input, Action::Fail, 0, 1);
+            fault::arm("import.install", &input, Action::Fail, 0, 1);
             assert!(!engine.converge().unwrap().errors.is_empty());
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.extracted_blob WHERE state='writing'"),
-                1
+                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
+                2
             );
             assert!(!engine.blobs.contains(&raw));
             assert!(!engine.blobs.contains(&image));
@@ -330,12 +203,12 @@ fn pending_watched_groups_retry_exact_bytes_without_substituting_an_edited_provi
         if edited {
             assert_eq!(world.count("SELECT count(*) AS n FROM a.revision"), 2);
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.extracted_blob WHERE state='writing'"),
-                1
+                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
+                2
             );
         } else {
             assert_eq!(
-                world.count("SELECT count(*) AS n FROM a.extracted_blob WHERE state='writing'"),
+                world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
                 0
             );
             assert_blob(&engine, polylogue_model::BlobHash(image.0), &decoded);

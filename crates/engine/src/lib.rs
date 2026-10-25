@@ -173,7 +173,7 @@ impl Config {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unfinished_inputs: Vec<polylogue_store::retention::Unfinished>,
+    pub unfinished_inputs: Vec<polylogue_store::staging::Unfinished>,
     /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -631,7 +631,7 @@ impl Engine {
         let started = Instant::now();
         let unfinished_inputs = self
             .writer
-            .reconcile_retained_bytes(Arc::clone(&self.blobs))?
+            .finish_writing(Arc::clone(&self.blobs))?
             .unfinished;
         self.load()?;
         self.restore_failed_writes()?;

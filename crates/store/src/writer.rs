@@ -27,7 +27,7 @@ use std::thread::JoinHandle;
 mod batch;
 mod bytes;
 mod excluded;
-mod retention;
+mod staging;
 mod rows;
 mod search;
 
@@ -45,19 +45,19 @@ use rows::*;
 use search::*;
 
 enum Msg {
-    Retain(
-        Box<crate::retention::PreparedBytes>,
+    StoreBytes(
+        Box<crate::staging::PreparedBytes>,
         Box<Batch>,
-        SyncSender<Result<crate::retention::Retained>>,
+        SyncSender<Result<crate::staging::StoredInput>>,
     ),
-    RetainGroup(
-        Vec<crate::retention::PreparedBatch>,
+    StoreGroup(
+        Vec<crate::staging::PreparedBatch>,
         std::sync::Arc<hashed_blobs::Store>,
-        SyncSender<Vec<Result<crate::retention::Retained>>>,
+        SyncSender<Vec<Result<crate::staging::StoredInput>>>,
     ),
-    ReconcileRetained(
+    FinishWriting(
         std::sync::Arc<hashed_blobs::Store>,
-        SyncSender<Result<crate::retention::Reconciled>>,
+        SyncSender<Result<crate::staging::Finished>>,
     ),
     Assets(
         Box<crate::export_items::ExportItems>,
@@ -286,32 +286,32 @@ impl Writer {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
 
-    /// Reserve byte ownership durably before publishing the prepared object.
-    /// The batch contains only acquisition metadata, never parsed rows.
-    pub fn retain_bytes(
+    /// Stores one acquisition's bytes ([`Inner::store_bytes`]). The batch
+    /// carries the observation, never parsed rows.
+    pub fn store_bytes(
         &self,
-        prepared: crate::retention::PreparedBytes,
+        prepared: crate::staging::PreparedBytes,
         batch: Batch,
-    ) -> Result<crate::retention::Retained> {
+    ) -> Result<crate::staging::StoredInput> {
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Retain(Box::new(prepared), Box::new(batch), reply))
+            .send(Msg::StoreBytes(Box::new(prepared), Box::new(batch), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Reconcile only canonically reserved hashes, using the configured blob roots.
-    pub fn reconcile_retained_bytes(
+    /// Completes blobs a stop left `writing` ([`Inner::finish_writing`]).
+    pub fn finish_writing(
         &self,
         store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> Result<crate::retention::Reconciled> {
+    ) -> Result<crate::staging::Finished> {
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::ReconcileRetained(store, reply))
+            .send(Msg::FinishWriting(store, reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -355,14 +355,14 @@ impl Drop for Writer {
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
-    pub fn retain_group(
+    pub fn store_group(
         &self,
-        group: Vec<crate::retention::PreparedBatch>,
+        group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> Result<Vec<Result<crate::retention::Retained>>> {
+    ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
         let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::RetainGroup(group, store, reply))
+            .send(Msg::StoreGroup(group, store, reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)
     }
@@ -426,9 +426,9 @@ impl Inner {
         let mut users = Vec::new();
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
-        let mut retentions = Vec::new();
-        let mut retention_groups = Vec::new();
-        let mut reconciliations = Vec::new();
+        let mut single_files = Vec::new();
+        let mut file_groups = Vec::new();
+        let mut unfinished = Vec::new();
         let mut assets = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
@@ -437,16 +437,16 @@ impl Inner {
             let mut bytes = 0;
             let mut push =
                 |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
-                    Msg::Retain(prepared, batch, reply) => {
-                        retentions.push((prepared, batch, reply));
+                    Msg::StoreBytes(prepared, batch, reply) => {
+                        single_files.push((prepared, batch, reply));
                         false
                     }
-                    Msg::RetainGroup(group, store, reply) => {
-                        retention_groups.push((group, store, reply));
+                    Msg::StoreGroup(group, store, reply) => {
+                        file_groups.push((group, store, reply));
                         false
                     }
-                    Msg::ReconcileRetained(store, reply) => {
-                        reconciliations.push((store, reply));
+                    Msg::FinishWriting(store, reply) => {
+                        unfinished.push((store, reply));
                         false
                     }
                     Msg::Assets(staged, reply) => {
@@ -508,14 +508,14 @@ impl Inner {
             // Later queue replies also observe release of the parsed batches'
             // memory reservations, not only their committed database rows.
             drop(group);
-            for (prepared, batch, reply) in retentions.drain(..) {
-                let _ = reply.send(self.retain_bytes(*prepared, *batch));
+            for (prepared, batch, reply) in single_files.drain(..) {
+                let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
-            for (group, store, reply) in retention_groups.drain(..) {
-                let _ = reply.send(self.retain_group(group, store));
+            for (group, store, reply) in file_groups.drain(..) {
+                let _ = reply.send(self.store_group(group, store));
             }
-            for (store, reply) in reconciliations.drain(..) {
-                let _ = reply.send(self.reconcile_retained_bytes(&store));
+            for (store, reply) in unfinished.drain(..) {
+                let _ = reply.send(self.finish_writing(&store));
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
@@ -795,9 +795,9 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if crate::containers::linked(b) {
+            if crate::containers::coordinate(b).is_some() {
                 return Err(StoreError::Invalid(
-                    "container members require staged group retention".into(),
+                    "a ZIP member is stored with its ZIP's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;

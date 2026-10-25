@@ -566,7 +566,7 @@ impl<'a> Plan<'a> {
         if !req.dry_run {
             hashes.visit_blob_candidates(|hash| {
                 let used: bool = t.archive.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1) OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob=?1)",
+                    "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
                     [hash],
                     |r| r.get(0),
                 )? || t.index.query_row(

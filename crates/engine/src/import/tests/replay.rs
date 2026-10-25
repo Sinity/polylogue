@@ -211,7 +211,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_mutating_retained_evidence
             .is_empty()
     );
     let before = w.count("SELECT count(*) AS n FROM a.observation");
-    let mut captured = Captured::read(
+    let mut captured = Captured::stream(
         &e.archive,
         &e.config.blob_roots,
         std::fs::File::open(&path).unwrap(),

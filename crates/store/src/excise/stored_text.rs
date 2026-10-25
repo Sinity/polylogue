@@ -116,11 +116,6 @@ impl StoredText {
         self.plan.visit_blobs(|hash| {
             self.plan.freeze_extents(t.archive, hash)?;
             self.plan.visit_extents(|e| {
-                let sources = crate::retention::extracted::candidates(
-                    t.archive,
-                    Some((&e.input, e.chain, e.offset, e.offset + e.length)),
-                    None,
-                )?;
                 let key = (e.input.clone(), e.chain);
                 let mut edits = self.plan.edits(&key, e.offset)?;
                 let mut buffer = Vec::with_capacity(WRITE_CHUNK);
@@ -148,10 +143,6 @@ impl StoredText {
                 if !buffer.is_empty() {
                     install_piece(t, req, &e, &mut offset, &buffer)?;
                 }
-                let retired = crate::retention::extracted::invalidate(t.archive, t.store, sources)?;
-                refused
-                    .blobs
-                    .extend(retired.iter().map(|hash| hex(&hash.0)));
                 Ok(())
             })?;
             refused.blobs.push(hex(&hash.0));

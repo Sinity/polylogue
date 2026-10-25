@@ -168,8 +168,7 @@ pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash)
     refuse_delta_base(archive, hash)?;
     Ok(archive.execute(
         "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state = 'present'
-         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)
-         AND NOT EXISTS (SELECT 1 FROM extracted_blob WHERE blob = ?1)",
+         AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
         [&hash.0[..]],
     )? > 0)
 }
@@ -198,7 +197,6 @@ pub(crate) fn delete_marked(archive: &rusqlite::Connection, store: &hashed_blobs
     for (hash, place) in &marked {
         let referenced: bool = archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM extent WHERE blob = ?1)
-                 OR EXISTS(SELECT 1 FROM extracted_blob WHERE blob = ?1)
                  OR EXISTS(SELECT 1 FROM blob WHERE base = ?1)",
             [hash],
             |r| r.get(0),

@@ -37,7 +37,7 @@ fn dump(root: &std::path::Path) -> Vec<String> {
     let mut blobs = db
         .prepare(
             "SELECT hash, size FROM blob
-             WHERE hash IN (SELECT blob FROM extent UNION SELECT blob FROM extracted_blob)",
+             WHERE hash IN (SELECT blob FROM extent)",
         )
         .unwrap();
     for row in blobs

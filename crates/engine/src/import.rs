@@ -20,11 +20,11 @@ impl Engine {
         use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let reconciled = self
+        let finished = self
             .writer
-            .reconcile_retained_bytes(Arc::clone(&self.blobs))?;
-        report.pass.unfinished_inputs = reconciled.unfinished;
-        if reconciled.completed > 0 {
+            .finish_writing(Arc::clone(&self.blobs))?;
+        report.pass.unfinished_inputs = finished.unfinished;
+        if finished.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
         }
         let mut files = Vec::new();
@@ -62,7 +62,8 @@ impl Engine {
             let n = file.read(&mut head)?;
             let head = &head[..n];
             file.seek(SeekFrom::Start(0))?;
-            let whole = if polylogue_sources::polylogue_export::recognize_reader(&mut file)? {
+            let polylogue_export = polylogue_sources::polylogue_export::recognize_reader(&mut file)?;
+            let whole = if polylogue_export {
                 polylogue_sources::origin::by_name("polylogue-export")
             } else {
                 recognize_import(path, head)
@@ -71,8 +72,12 @@ impl Engine {
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
                 self.import_zip(path, file, facts, membership, &mut report)?;
             } else {
-                let mut captured =
-                    Captured::read(&self.archive, &self.config.blob_roots, &mut file)?;
+                let mut captured = Captured::file(
+                    &self.archive,
+                    &self.config.blob_roots,
+                    &mut file,
+                    polylogue_export,
+                )?;
                 captured.member = Some(membership.clone());
                 unchanged(&file, facts, captured.prepared.len())?;
                 let origin = self
@@ -142,7 +147,7 @@ impl Engine {
         let id = captured.prepared.hash().to_string();
         let batch = self.import_batch(path, origin, captured.member, facts, id, size);
         let input = batch.input.clone();
-        let admitted = match self.writer.retain_bytes(captured.prepared, batch) {
+        let admitted = match self.writer.store_bytes(captured.prepared, batch) {
             Ok(admitted) => admitted,
             Err(error) => {
                 report.pass.errors.push(error.to_string());
@@ -194,7 +199,7 @@ impl Engine {
         path: &Path,
         origin: &'static OriginSpec,
         input: InputKey,
-        admitted: &polylogue_store::retention::Retained,
+        admitted: &polylogue_store::staging::StoredInput,
         facts: Option<FileFacts>,
     ) -> Result<Option<Plan>, EngineError> {
         let size = admitted.length;
@@ -252,17 +257,39 @@ fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::R
     Ok(())
 }
 
-/// A completed acquisition. The blob store hashes and compresses bounded
-/// frames while this reader counts original bytes and remembers the prefix.
+/// A completed acquisition: its bytes hashed and compressed into a private
+/// file, with their first bytes for recognition.
 struct Captured {
-    prepared: polylogue_store::retention::PreparedBytes,
+    prepared: polylogue_store::staging::PreparedBytes,
     head: Vec<u8>,
     polylogue_export: bool,
     member: Option<polylogue_store::ImportMember>,
 }
 
 impl Captured {
-    fn read(
+    /// A file already inspected in place.
+    fn file(
+        archive: &Archive,
+        roots: &[PathBuf],
+        file: &mut std::fs::File,
+        polylogue_export: bool,
+    ) -> polylogue_store::Result<Self> {
+        let mut reader = CaptureReader {
+            reader: file,
+            size: 0,
+            head: Vec::new(),
+        };
+        let prepared = archive.prepare_bytes(roots, &mut reader)?;
+        Ok(Self {
+            prepared,
+            head: reader.head,
+            polylogue_export,
+            member: None,
+        })
+    }
+
+    /// Bytes that can be read only once, inspected from a scratch copy.
+    fn stream(
         archive: &Archive,
         roots: &[PathBuf],
         reader: impl std::io::Read,
@@ -272,12 +299,11 @@ impl Captured {
             size: 0,
             head: Vec::new(),
         };
-        let (prepared, polylogue_export) =
-            archive.inspect_and_prepare_bytes(roots, &mut reader, |scratch| {
-                Ok(polylogue_sources::polylogue_export::recognize_reader(
-                    scratch,
-                )?)
-            })?;
+        let (prepared, polylogue_export) = archive.prepare_stream(roots, &mut reader, |scratch| {
+            Ok(polylogue_sources::polylogue_export::recognize_reader(
+                scratch,
+            )?)
+        })?;
         Ok(Self {
             prepared,
             head: reader.head,

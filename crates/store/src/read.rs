@@ -110,7 +110,7 @@ pub struct RetainedInput {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Canonically reserved byte extents that have not been admitted as present.
-    pub unfinished_inputs: Vec<crate::retention::Unfinished>,
+    pub unfinished_inputs: Vec<crate::staging::Unfinished>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -686,7 +686,7 @@ impl Reader<'_> {
             unrecognized.push((w, n as u64));
         }
         Ok(Status {
-            unfinished_inputs: crate::retention::unfinished(c, "a.")?,
+            unfinished_inputs: crate::staging::unfinished(c, "a.")?,
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM message")?,
             documents: count("SELECT COUNT(*) FROM document")?,
@@ -714,7 +714,7 @@ impl Reader<'_> {
         chain: i64,
         range: std::ops::Range<u64>,
     ) -> Result<()> {
-        crate::retention::require_range(self.conn()?, "a.", input, chain, range)
+        crate::staging::require_range(self.conn()?, "a.", input, chain, range)
     }
 
     pub fn stored_chain(

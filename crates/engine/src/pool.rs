@@ -5,9 +5,9 @@
 //! most one job in flight, so its parser state passes from job to job.
 
 use crate::read;
-use polylogue_model::{BlobHash, Json};
+use polylogue_model::Json;
 use polylogue_sources::OriginSpec;
-use polylogue_store::retention::{Extraction, PreparedBatch};
+use polylogue_store::staging::PreparedBatch;
 use polylogue_store::writer::WriterSender;
 use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
 use std::collections::VecDeque;
@@ -245,7 +245,7 @@ fn flush(
     let durable = held.iter().any(|(batch, _, _)| {
         batch
             .as_ref()
-            .is_some_and(|b| !b.files.is_empty() || !b.extracted.is_empty())
+            .is_some_and(|b| !b.files.is_empty())
     });
     if durable {
         let queued: Vec<bool> = held.iter().map(|(batch, _, _)| batch.is_some()).collect();
@@ -260,7 +260,7 @@ fn flush(
                 release(shared, *size);
             }
         }
-        let results = writer.retain_group(batches, Arc::clone(store));
+        let results = writer.store_group(batches, Arc::clone(store));
         match results {
             Ok(results) => {
                 let mut results = results.into_iter();
@@ -270,7 +270,7 @@ fn flush(
                             Some(Err(error)) => result.error = Some(error.to_string()),
                             Some(Ok(_)) => {}
                             None => {
-                                result.error = Some("retention group returned no result".into())
+                                result.error = Some("the writer returned no result".into())
                             }
                         }
                     }
@@ -339,7 +339,6 @@ fn run(
     };
     out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
-    let mut extracted = Vec::new();
     let piece = match job.piece_from {
         Some(from) => match time(Stage::Store, || {
             archive.prepare_piece(roots, &bytes[(from - job.start) as usize..])
@@ -382,9 +381,6 @@ fn run(
                     out.carry = Some(carry);
                     let mut parsed = Vec::new();
                     for mut step in steps {
-                        let range = job.start + step.start..job.start + step.consumed;
-                        let source_hash =
-                            BlobHash::of(&bytes[step.start as usize..step.consumed as usize]);
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_piece(roots, &blob.bytes)) {
                                 Ok((p, file)) => {
@@ -393,11 +389,6 @@ fn run(
                                         return Vec::new();
                                     }
                                     files.extend(file);
-                                    extracted.push(Extraction {
-                                        range: range.clone(),
-                                        source_hash,
-                                        blob: p.hash,
-                                    });
                                     extra.push(p);
                                 }
                                 Err(e) => out.error = Some(format!("store inline bytes: {e}")),
@@ -447,11 +438,7 @@ fn run(
         release: InFlight::default(),
     };
     (
-        Some(PreparedBatch {
-            batch,
-            files,
-            extracted,
-        }),
+        Some(PreparedBatch { batch, files }),
         out,
     )
 }

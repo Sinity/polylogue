@@ -28,7 +28,7 @@ mod ordered_blocks;
 mod publication;
 pub mod read;
 mod repo_lookup;
-pub mod retention;
+pub mod staging;
 pub mod row_batches;
 pub mod schema;
 pub mod search;

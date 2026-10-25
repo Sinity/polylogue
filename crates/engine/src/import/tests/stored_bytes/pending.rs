@@ -2,13 +2,13 @@ use super::*;
 use polylogue_store::{
     StoreError,
     fault::{self, Action},
-    retention::UnfinishedState,
+    staging::UnfinishedState,
     row_batches::{RowBatch, Snapshot},
 };
 
 #[test]
-fn reservation_and_installed_boundaries_keep_exact_custody_across_restart() {
-    for point in ["import.reserved", "import.installed", "import.admit_commit"] {
+fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
+    for point in ["import.install", "import.installed"] {
         let world = ClaudeHome::new();
         let path = world.dir.path().join("manual.jsonl");
         let original = claude_user(
@@ -19,7 +19,7 @@ fn reservation_and_installed_boundaries_keep_exact_custody_across_restart() {
         std::fs::write(&path, &original).unwrap();
         let hash = hashed_blobs::Hash::of(original.as_bytes());
         let id = hash.hex();
-        let physically_installed = point != "import.reserved";
+        let physically_installed = point != "import.install";
         {
             let (mut engine, _lock) = engine(&world, 64);
             fault::arm(point, &id, Action::Fail, 0, 1);
@@ -51,8 +51,8 @@ fn reservation_and_installed_boundaries_keep_exact_custody_across_restart() {
             );
             drop(rows);
         }
-        // Current provider bytes are deliberately different. Recovery may use
-        // only the reserved hash; it cannot substitute this replacement.
+        // The provider file now holds other bytes; only the stored hash may
+        // finish the import, never this replacement.
         std::fs::write(
             &path,
             claude_user(
@@ -95,7 +95,7 @@ fn reservation_and_installed_boundaries_keep_exact_custody_across_restart() {
 }
 
 #[test]
-fn whole_input_excision_removes_a_missing_reservation_and_refuses_its_retry() {
+fn whole_input_excision_removes_bytes_never_installed_and_refuses_their_retry() {
     let world = ClaudeHome::new();
     let path = world.dir.path().join("manual.jsonl");
     let original = claude_user(
@@ -106,7 +106,7 @@ fn whole_input_excision_removes_a_missing_reservation_and_refuses_its_retry() {
     std::fs::write(&path, &original).unwrap();
     let id = blake3::hash(original.as_bytes()).to_hex().to_string();
     let (mut engine, _lock) = engine(&world, 64);
-    fault::arm("import.reserved", &id, Action::Fail, 0, 1);
+    fault::arm("import.install", &id, Action::Fail, 0, 1);
     assert!(
         !engine
             .import(std::slice::from_ref(&path))
@@ -140,7 +140,7 @@ fn whole_input_excision_removes_a_missing_reservation_and_refuses_its_retry() {
 }
 
 #[test]
-fn text_excision_can_remove_installed_unfinalized_bytes_without_projection_rows() {
+fn text_excision_can_remove_installed_bytes_still_writing() {
     let world = ClaudeHome::new();
     let path = world.dir.path().join("manual.jsonl");
     let marker = "synthetic installed unfinished text";

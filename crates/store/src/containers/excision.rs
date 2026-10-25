@@ -1,68 +1,35 @@
-//! Retire containing representations without manufacturing replacement originals.
+//! Excising bytes read from a ZIP removes the ZIP: its compressed bytes
+//! hold the same text, and they cannot be rewritten in place.
 use super::*;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use polylogue_model::BlobHash;
+use std::collections::BTreeSet;
 
-/// Iterative closure over canonical member ownership, independent of Sessions.
-/// All source facts must still have their admitted exact byte basis.
+/// The ZIPs the `selected` inputs were read from, and the ZIPs those were
+/// read from in turn.
 pub(crate) fn containing(
     conn: &Connection,
     selected: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>> {
-    verify_all(conn)?;
-    let mut visited = BTreeSet::new();
-    let mut pending: VecDeque<_> = selected.iter().cloned().collect();
-    let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
     let mut originals = BTreeSet::new();
-    while let Some(input) = pending.pop_front() {
-        if !visited.insert(input.clone()) {
-            continue;
-        }
-        let mut stmt = conn.prepare_cached("SELECT DISTINCT c.container_input FROM observation_container c JOIN observation o ON o.id=c.observation_id WHERE o.input=?1 ORDER BY c.container_input")?;
-        for parent in stmt.query_map([&input], |r| r.get::<_, String>(0))? {
-            let parent = parent?;
-            edges
-                .entry(input.clone())
-                .or_default()
-                .insert(parent.clone());
-            originals.insert(parent.clone());
-            pending.push_back(parent);
-        }
-    }
-    // A forged cycle cannot describe nested original ZIP byte streams.
-    let mut indegree: BTreeMap<_, usize> = visited.iter().map(|s| (s.clone(), 0)).collect();
-    for parents in edges.values() {
-        for parent in parents {
-            *indegree.get_mut(parent).expect("visited parent") += 1;
-        }
-    }
-    let mut ready: VecDeque<_> = indegree
-        .iter()
-        .filter(|(_, n)| **n == 0)
-        .map(|(s, _)| s.clone())
-        .collect();
-    let mut count = 0;
-    while let Some(input) = ready.pop_front() {
-        count += 1;
-        if let Some(parents) = edges.get(&input) {
-            for parent in parents {
-                let degree = indegree.get_mut(parent).expect("visited parent");
-                *degree -= 1;
-                if *degree == 0 {
-                    ready.push_back(parent.clone());
-                }
+    let mut pending: Vec<String> = selected.iter().cloned().collect();
+    let mut seen: BTreeSet<String> = selected.clone();
+    let mut stmt = conn.prepare_cached(
+        "SELECT DISTINCT c.container_input FROM observation_container c
+         JOIN observation o ON o.id = c.observation_id WHERE o.input = ?1",
+    )?;
+    while let Some(input) = pending.pop() {
+        for zip in stmt.query_map([&input], |r| r.get::<_, String>(0))? {
+            let zip = zip?;
+            originals.insert(zip.clone());
+            if seen.insert(zip.clone()) {
+                pending.push(zip);
             }
         }
-    }
-    if count != visited.len() {
-        return Err(StoreError::Invalid(
-            "cyclic container relationships cannot be excised".into(),
-        ));
     }
     Ok(originals)
 }
 
-/// The original is unavailable after retirement. Member observations and their
-/// acquired names survive, but cannot continue to claim an available container.
+/// The removed ZIPs no longer back their members' observations.
 pub(crate) fn detach(conn: &Connection, originals: &BTreeSet<String>) -> Result<()> {
     let mut stmt =
         conn.prepare_cached("DELETE FROM observation_container WHERE container_input=?1")?;
@@ -72,8 +39,8 @@ pub(crate) fn detach(conn: &Connection, originals: &BTreeSet<String>) -> Result<
     Ok(())
 }
 
-/// Input removal preserves unrelated byte owners. If one holds an entire
-/// forbidden container representation, retiring only its import is insufficient.
+/// Refuses when a ZIP's bytes are also another kept input's, or shown in
+/// the index, or the base of a delta: removing the ZIP would take them too.
 pub(crate) fn require_removable(
     archive: &Connection,
     index: &Connection,
@@ -86,10 +53,10 @@ pub(crate) fn require_removable(
         let unsupported = || {
             StoreError::ExcisionFormat {
             input: original.clone(), format: "zip".into(),
-            detail: "original ZIP bytes have another retained owner; coordinated removal of that representation is unsupported".into(),
+            detail: "the ZIP's bytes are also used elsewhere; removing them is not supported".into(),
         }
         };
-        let mut owners=archive.prepare_cached("SELECT input FROM extent WHERE blob=?1 UNION SELECT input FROM extracted_blob WHERE blob=?1")?;
+        let mut owners = archive.prepare_cached("SELECT input FROM extent WHERE blob=?1")?;
         for input in owners.query_map([&hash.0[..]], |r| r.get::<_, String>(0))? {
             if !whole.contains(&input?) {
                 return Err(unsupported());

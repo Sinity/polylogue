@@ -47,7 +47,7 @@ fn dropping_private_preparation_and_refusing_another_archive_publish_no_cas_name
     );
     let foreign = other.prepare_bytes(&[], body.as_slice()).unwrap();
     assert!(matches!(
-        writer.retain_bytes(foreign, batch(&hash.to_string(), body.len() as u64)),
+        writer.store_bytes(foreign, batch(&hash.to_string(), body.len() as u64)),
         Err(StoreError::Invalid(_))
     ));
     assert!(!store.contains(&hashed_blobs::Hash(hash.0)));
@@ -70,7 +70,7 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
     let hash = prepared.hash();
     let id = hash.to_string();
     writer
-        .retain_bytes(prepared, batch(&id, body.len() as u64))
+        .store_bytes(prepared, batch(&id, body.len() as u64))
         .unwrap();
     let prepared = archive.prepare_bytes(&[], body.as_slice()).unwrap();
     let barrier = Arc::new(Barrier::new(3));
@@ -80,7 +80,7 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
         let id = id.clone();
         std::thread::spawn(move || {
             barrier.wait();
-            writer.retain_bytes(prepared, batch(&id, body.len() as u64))
+            writer.store_bytes(prepared, batch(&id, body.len() as u64))
         })
     };
     let remove = {
@@ -110,7 +110,7 @@ fn concurrent_excision_and_exact_admission_cannot_resurrect_a_public_blob() {
         .prepare_bytes(&[], b"x".repeat(256 * 1024).as_slice())
         .unwrap();
     assert!(matches!(
-        writer.retain_bytes(retry, batch(&id, 256 * 1024)),
+        writer.store_bytes(retry, batch(&id, 256 * 1024)),
         Err(StoreError::InputRefused { .. })
     ));
     assert!(!store.contains(&hashed_blobs::Hash(hash.0)));
@@ -139,11 +139,10 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let result = writer
         .sender()
         .unwrap()
-        .retain_group(
-            vec![crate::retention::PreparedBatch {
+        .store_group(
+            vec![crate::staging::PreparedBatch {
                 batch,
                 files: vec![source, stray],
-                extracted: Vec::new(),
             }],
             Arc::clone(&store),
         )

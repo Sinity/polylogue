@@ -8,7 +8,7 @@ mod pool;
 mod watched;
 
 #[test]
-fn first_admission_refusal_does_not_publish_unowned_import_bytes() {
+fn a_refused_import_installs_no_file() {
     for changed in [false, true] {
         let world = ClaudeHome::new();
         let path = world.dir.path().join("manual.jsonl");
@@ -72,7 +72,7 @@ fn first_admission_refusal_does_not_publish_unowned_import_bytes() {
 }
 
 #[test]
-fn deduplicating_inline_material_does_not_publish_an_untracked_file_copy() {
+fn equal_inline_bytes_install_no_file_copy() {
     let world = ClaudeHome::new();
     let original = claude_user("inline-user", "inline-session", "synthetic inline content");
     world.append("inline-session.jsonl", &original);
