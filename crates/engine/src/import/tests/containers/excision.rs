@@ -96,7 +96,7 @@ fn nested_real_zips_retire_each_original_and_keep_both_levels_siblings() {
         .unwrap();
     assert_eq!(
         removed
-            .containers_retired
+            .zips_removed
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>(),
         [

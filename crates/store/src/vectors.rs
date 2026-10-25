@@ -46,11 +46,7 @@ pub struct Vectors {
 }
 
 impl Vectors {
-    pub(crate) fn for_reader(
-        archive: &Archive,
-        cache_kib: i64,
-        writable: bool,
-    ) -> Result<Self> {
+    pub(crate) fn for_reader(archive: &Archive, cache_kib: i64, writable: bool) -> Result<Self> {
         let conn = if writable {
             open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
         } else {
@@ -151,9 +147,11 @@ impl Vectors {
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
         let conn = &mut self.conn;
         let index = self.index.clone();
-        Self::while_texts_exist_at(&index, vectors.iter().map(|v| v.text_hash.clone()), |present| {
-            Self::insert(conn, key, vectors, present)
-        })
+        Self::while_texts_exist_at(
+            &index,
+            vectors.iter().map(|v| v.text_hash.clone()),
+            |present| Self::insert(conn, key, vectors, present),
+        )
     }
 
     fn insert(

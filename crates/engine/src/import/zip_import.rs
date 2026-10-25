@@ -13,40 +13,40 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let acquisition = uuid::Uuid::now_v7().to_string();
         let mut members = {
-                let mut archive = zip::ZipArchive::new(&mut file)
-                    .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
-                let mut captured = Vec::new();
-                for index in 0..archive.len() {
-                    let mut member = archive.by_index(index).map_err(|e| {
-                        std::io::Error::other(format!("{} member {index}: {e}", path.display()))
-                    })?;
-                    if !member.is_file() {
-                        continue;
-                    }
-                    let name = member.name().to_owned();
-                    let declared = member.size();
-                    let mut bytes =
-                        Captured::stream(&self.archive, &self.config.blob_roots, &mut member)?;
-                    if bytes.prepared.len() != declared {
-                        return Err(std::io::Error::other(
-                            "ZIP member length differs from its declaration",
-                        )
-                        .into());
-                    }
-                    bytes.member = Some(polylogue_store::ImportMember {
-                        version: 1,
-                        acquisition: acquisition.clone(),
-                        member: name.clone(),
-                        format: None,
-                        container: None,
-                    });
-                    captured.push((
-                        PathBuf::from(format!("{}!/{name}", path.display())),
-                        index as u64,
-                        bytes,
-                    ));
+            let mut archive = zip::ZipArchive::new(&mut file)
+                .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
+            let mut captured = Vec::new();
+            for index in 0..archive.len() {
+                let mut member = archive.by_index(index).map_err(|e| {
+                    std::io::Error::other(format!("{} member {index}: {e}", path.display()))
+                })?;
+                if !member.is_file() {
+                    continue;
                 }
-                captured
+                let name = member.name().to_owned();
+                let declared = member.size();
+                let mut bytes =
+                    Captured::stream(&self.archive, &self.config.blob_roots, &mut member)?;
+                if bytes.prepared.len() != declared {
+                    return Err(std::io::Error::other(
+                        "ZIP member length differs from its declaration",
+                    )
+                    .into());
+                }
+                bytes.member = Some(polylogue_store::ImportMember {
+                    version: 1,
+                    acquisition: acquisition.clone(),
+                    member: name.clone(),
+                    format: None,
+                    container: None,
+                });
+                captured.push((
+                    PathBuf::from(format!("{}!/{name}", path.display())),
+                    index as u64,
+                    bytes,
+                ));
+            }
+            captured
         };
         std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))?;
         let original = self

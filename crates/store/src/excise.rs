@@ -123,9 +123,10 @@ pub struct Excised {
     pub texts: u64,
     /// Inputs removed whole.
     pub inputs_removed: Vec<String>,
-    /// Original ZIP representations retired while independent member bytes survive.
+    /// ZIPs removed because bytes read from them were removed; their other
+    /// members stay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub containers_retired: Vec<String>,
+    pub zips_removed: Vec<String>,
     /// Inputs whose bytes were overwritten in place, and how many spans.
     pub inputs_overwritten: BTreeMap<String, u64>,
     /// Shared whole documents (exports) where some of the session's texts
@@ -204,9 +205,6 @@ struct RefusedJson {
 
 impl RefusedJson {
     fn decode(value: &str) -> Result<Self> {
-        if refused::legacy_empty(value) {
-            return Ok(Self::default());
-        }
         if !value.trim_start().starts_with('{') {
             return Err(StoreError::Invalid(
                 "invalid excision refusal payload".into(),
@@ -459,7 +457,7 @@ impl<'a> Plan<'a> {
         }
         self.whole.extend(originals.iter().cloned());
         crate::containers::require_removable(t.archive, t.index, &originals, &self.whole)?;
-        done.containers_retired = originals.iter().cloned().collect();
+        done.zips_removed = originals.iter().cloned().collect();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));

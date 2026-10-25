@@ -176,10 +176,9 @@ fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
             assert!(!engine.converge().unwrap().errors.is_empty());
             assert_eq!(
                 world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
-                2
+                1
             );
             assert!(!engine.blobs.contains(&raw));
-            assert!(!engine.blobs.contains(&image));
         }
         if edited {
             std::fs::write(
@@ -199,12 +198,12 @@ fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
             assert!(pass.errors.is_empty(), "{edited}: {:?}", pass.errors);
         }
         assert_eq!(engine.blobs.contains(&raw), !edited);
-        assert_eq!(engine.blobs.contains(&image), !edited);
+        assert!(engine.blobs.contains(&image));
         if edited {
             assert_eq!(world.count("SELECT count(*) AS n FROM a.revision"), 2);
             assert_eq!(
                 world.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
-                2
+                1
             );
         } else {
             assert_eq!(

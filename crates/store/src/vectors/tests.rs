@@ -3,7 +3,8 @@ use super::*;
 /// Index text rows for `hashes`: vectors are stored only for texts the
 /// index holds.
 fn texts(archive: &Archive, hashes: &[&[u8]]) {
-    let index = crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    let index =
+        crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     for hash in hashes {
         index
             .execute("INSERT INTO text(hash, body) VALUES (?1, x'00')", [hash])

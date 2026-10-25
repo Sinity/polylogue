@@ -27,9 +27,9 @@ use std::thread::JoinHandle;
 mod batch;
 mod bytes;
 mod excluded;
-mod staging;
 mod rows;
 mod search;
+mod staging;
 
 #[cfg(test)]
 use crate::encoding::pack_block;

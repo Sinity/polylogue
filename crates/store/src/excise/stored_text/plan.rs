@@ -67,7 +67,10 @@ impl Plan {
     }
 
     pub(super) fn remember(&self, hash: &BlobHash, start: u64, length: u64) -> Result<()> {
-        self.state.borrow_mut().places.insert(*hash, (start, length));
+        self.state
+            .borrow_mut()
+            .places
+            .insert(*hash, (start, length));
         Ok(())
     }
 
@@ -93,7 +96,10 @@ impl Plan {
     }
 
     /// Every changed range: a chain's matches, then its header patches.
-    pub(super) fn changed(&self, mut visit: impl FnMut(&str, i64, u64, u64) -> Result<()>) -> Result<()> {
+    pub(super) fn changed(
+        &self,
+        mut visit: impl FnMut(&str, i64, u64, u64) -> Result<()>,
+    ) -> Result<()> {
         let state = self.state.borrow();
         let chains: BTreeSet<&Chain> = state.matches.keys().chain(state.patches.keys()).collect();
         for key in chains {
@@ -143,11 +149,7 @@ impl Plan {
                 .collect();
             if let Some(matches) = state.matches.get_mut(&key) {
                 matches.retain(|&(start, end)| {
-                    let header = headers
-                        .iter()
-                        .take_while(|&&at| at < end)
-                        .last()
-                        .copied();
+                    let header = headers.iter().take_while(|&&at| at < end).last().copied();
                     start >= MAGIC.len() as u64
                         && header.is_none_or(|at| at + HEADER_LEN as u64 <= start)
                 });
@@ -180,7 +182,12 @@ impl Plan {
     }
 
     pub(super) fn frames(&self, key: &Chain) -> Vec<(u64, Header)> {
-        self.state.borrow().frames.get(key).cloned().unwrap_or_default()
+        self.state
+            .borrow()
+            .frames
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The blobs holding a changed range, and the spans each `excised`
@@ -249,7 +256,10 @@ impl Plan {
     ) -> Result<()> {
         let mut by_input: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for (input, span) in &self.state.borrow().observations {
-            by_input.entry(input.clone()).or_default().push(span.clone());
+            by_input
+                .entry(input.clone())
+                .or_default()
+                .push(span.clone());
         }
         for (input, spans) in by_input {
             visit(&input, serde_json::Value::Array(spans))?;

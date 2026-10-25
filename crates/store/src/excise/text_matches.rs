@@ -330,10 +330,7 @@ impl TextMatches {
                 * std::mem::size_of::<(u64, u64)>()
             + self.escape.capacity()
             + self.utf8_tail.capacity()
-            + self
-                .nested
-                .as_ref()
-                .map_or(0, |nested| nested.held_bytes())
+            + self.nested.as_ref().map_or(0, |nested| nested.held_bytes())
     }
 
     fn validate(&self) -> MatchResult<()> {

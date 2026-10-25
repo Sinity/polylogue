@@ -378,7 +378,7 @@ fn removing_a_zip_keeps_its_members_then_removing_a_member_succeeds() {
     );
     assert!(removed.status.success(), "{removed:?}");
     assert_eq!(
-        json(&removed)["containers_retired"],
+        json(&removed)["zips_removed"],
         serde_json::json!([original])
     );
     let after = cli(&world.env(), &["--json", "read", SESSION]);
@@ -438,10 +438,7 @@ fn removing_a_zip_member_removes_the_original_zip_and_marks_the_attachment_unava
         ],
     );
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(
-        json(&result)["containers_retired"],
-        serde_json::json!([original])
-    );
+    assert_eq!(json(&result)["zips_removed"], serde_json::json!([original]));
     let descriptor = world.descriptor();
     assert_eq!(descriptor["state"], "unavailable", "{descriptor}");
     assert!(descriptor["candidates"].as_array().unwrap().is_empty());

@@ -242,11 +242,9 @@ fn flush(
     done: &Sender<Done>,
 ) -> bool {
     let mut held = std::mem::take(&mut group.held);
-    let durable = held.iter().any(|(batch, _, _)| {
-        batch
-            .as_ref()
-            .is_some_and(|b| !b.files.is_empty())
-    });
+    let durable = held
+        .iter()
+        .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
     if durable {
         let queued: Vec<bool> = held.iter().map(|(batch, _, _)| batch.is_some()).collect();
         let mut batches = Vec::new();
@@ -269,9 +267,7 @@ fn flush(
                         match results.next() {
                             Some(Err(error)) => result.error = Some(error.to_string()),
                             Some(Ok(_)) => {}
-                            None => {
-                                result.error = Some("the writer returned no result".into())
-                            }
+                            None => result.error = Some("the writer returned no result".into()),
                         }
                     }
                 }
@@ -437,8 +433,5 @@ fn run(
         parse,
         release: InFlight::default(),
     };
-    (
-        Some(PreparedBatch { batch, files }),
-        out,
-    )
+    (Some(PreparedBatch { batch, files }), out)
 }

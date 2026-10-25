@@ -41,7 +41,10 @@ fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
     let hash = store.put(bytes.as_slice(), 1).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index
-        .execute("INSERT INTO meta VALUES ('stale-marker', 'from before')", [])
+        .execute(
+            "INSERT INTO meta VALUES ('stale-marker', 'from before')",
+            [],
+        )
         .unwrap();
     drop(index);
     // A stop after the archive's commit: the excision is recorded and its
@@ -68,8 +71,11 @@ fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(
         index
-            .query_row("SELECT count(*) FROM meta WHERE key='stale-marker'", [], |r| r
-                .get::<_, i64>(0))
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key='stale-marker'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
             .unwrap(),
         0
     );

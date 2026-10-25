@@ -833,9 +833,9 @@ impl Engine {
             {
                 Ok(()) => {}
                 Err(polylogue_store::StoreError::InputUnfinished { .. }) => {
-                    // A new full capture never substitutes current provider
-                    // bytes into the older reservation. Exact bytes can dedup;
-                    // edited bytes acquire a separate retained chain.
+                    // Bytes still being written are never replaced by what the
+                    // file holds now: equal bytes are stored again under the
+                    // same hash, edited bytes start a new chain.
                     change = Change::Rewritten;
                 }
                 Err(error) => return Err(error.into()),

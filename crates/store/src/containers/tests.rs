@@ -1,9 +1,9 @@
 use super::*;
-use polylogue_model::BlobHash;
 use crate::blobs::Stored;
 use crate::staging::PreparedBatch;
 use crate::writer::{InFlight, InputKey};
 use crate::{Archive, Change, ImportMember, Observation, Piece, Writer};
+use polylogue_model::BlobHash;
 use std::sync::{Arc, Barrier};
 
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
@@ -146,10 +146,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         2
     );
     let removed = remove(&writer, store, "linked-member").unwrap();
-    assert_eq!(
-        removed.containers_retired,
-        [BlobHash::of(ORIGINAL).to_string()]
-    );
+    assert_eq!(removed.zips_removed, [BlobHash::of(ORIGINAL).to_string()]);
     assert_eq!(count("excision"), 1);
     assert_eq!(count("extent"), 0);
     assert_eq!(count("observation_container"), 0);

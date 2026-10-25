@@ -1,8 +1,8 @@
 //! The blob layer: inputs, revisions and extents over `hashed-blobs`
 //! (architecture 4.2). A blob under 128 KiB lives inline in `archive.db`,
 //! zstd-compressed; larger ones are files of seekable zstd frames. Hashing
-//! and compression run before Writer admission. The Writer reserves canonical
-//! ownership before installing private file stages, then finalizes completion.
+//! and compression run before the writer; the writer writes a file's blob row
+//! (`writing`) before installing the file, then marks it `present`.
 
 use crate::Result;
 use polylogue_model::BlobHash;
@@ -167,7 +167,7 @@ impl Piece {
 pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash) -> Result<bool> {
     refuse_delta_base(archive, hash)?;
     Ok(archive.execute(
-        "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state = 'present'
+        "UPDATE blob SET state = 'deleting' WHERE hash = ?1 AND state IN ('present', 'writing')
          AND NOT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
         [&hash.0[..]],
     )? > 0)
@@ -189,7 +189,10 @@ pub(crate) fn refuse_delta_base(archive: &rusqlite::Connection, hash: &BlobHash)
 /// Deletes the files of blobs marked for deletion, then their rows. The
 /// writer runs it after each excision and when it starts, so a stop between
 /// the commit and the file deletion leaves nothing behind.
-pub(crate) fn delete_marked(archive: &rusqlite::Connection, store: &hashed_blobs::Store) -> Result<u64> {
+pub(crate) fn delete_marked(
+    archive: &rusqlite::Connection,
+    store: &hashed_blobs::Store,
+) -> Result<u64> {
     let marked: Vec<(Vec<u8>, String)> = archive
         .prepare("SELECT hash, place FROM blob WHERE state = 'deleting'")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?

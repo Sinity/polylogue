@@ -2,8 +2,8 @@ use super::*;
 use polylogue_store::{
     StoreError,
     fault::{self, Action},
-    staging::UnfinishedState,
     row_batches::{RowBatch, Snapshot},
+    staging::UnfinishedState,
 };
 
 #[test]

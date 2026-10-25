@@ -50,11 +50,11 @@ pub(crate) fn require_removable(
     for original in originals {
         let hash = BlobHash::parse(original)
             .map_err(|_| StoreError::Invalid("invalid original container identity".into()))?;
-        let unsupported = || {
-            StoreError::ExcisionFormat {
-            input: original.clone(), format: "zip".into(),
-            detail: "the ZIP's bytes are also used elsewhere; removing them is not supported".into(),
-        }
+        let unsupported = || StoreError::ExcisionFormat {
+            input: original.clone(),
+            format: "zip".into(),
+            detail: "the ZIP's bytes are also used elsewhere; removing them is not supported"
+                .into(),
         };
         let mut owners = archive.prepare_cached("SELECT input FROM extent WHERE blob=?1")?;
         for input in owners.query_map([&hash.0[..]], |r| r.get::<_, String>(0))? {

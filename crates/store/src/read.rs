@@ -109,7 +109,7 @@ pub struct RetainedInput {
 /// not be read is an error, not a 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
-    /// Canonically reserved byte extents that have not been admitted as present.
+    /// Inputs whose bytes are still being written.
     pub unfinished_inputs: Vec<crate::staging::Unfinished>,
     pub sessions: u64,
     pub messages: u64,

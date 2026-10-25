@@ -13,16 +13,14 @@ mod zip_import;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
-    /// bytes. Acquisition prepares private bytes; the writer durably reserves
-    /// their ownership before installation, then admits them for parsing.
+    /// bytes. The bytes are hashed and compressed into a private file; the
+    /// writer stores them (row first, then file) before they are parsed.
     /// Document-framed origins still parse a whole document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let finished = self
-            .writer
-            .finish_writing(Arc::clone(&self.blobs))?;
+        let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
         report.pass.unfinished_inputs = finished.unfinished;
         if finished.completed > 0 {
             self.replay_imports(None, &mut report.pass)?;
@@ -62,7 +60,8 @@ impl Engine {
             let n = file.read(&mut head)?;
             let head = &head[..n];
             file.seek(SeekFrom::Start(0))?;
-            let polylogue_export = polylogue_sources::polylogue_export::recognize_reader(&mut file)?;
+            let polylogue_export =
+                polylogue_sources::polylogue_export::recognize_reader(&mut file)?;
             let whole = if polylogue_export {
                 polylogue_sources::origin::by_name("polylogue-export")
             } else {
@@ -299,11 +298,12 @@ impl Captured {
             size: 0,
             head: Vec::new(),
         };
-        let (prepared, polylogue_export) = archive.prepare_stream(roots, &mut reader, |scratch| {
-            Ok(polylogue_sources::polylogue_export::recognize_reader(
-                scratch,
-            )?)
-        })?;
+        let (prepared, polylogue_export) =
+            archive.prepare_stream(roots, &mut reader, |scratch| {
+                Ok(polylogue_sources::polylogue_export::recognize_reader(
+                    scratch,
+                )?)
+            })?;
         Ok(Self {
             prepared,
             head: reader.head,

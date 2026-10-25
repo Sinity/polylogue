@@ -210,7 +210,7 @@ fn session_and_document_removal_retire_original_while_unrelated_input_still_remo
             .unwrap();
         if index == 0 {
             assert_eq!(
-                removed.containers_retired.as_slice(),
+                removed.zips_removed.as_slice(),
                 std::slice::from_ref(&original_id)
             );
         }

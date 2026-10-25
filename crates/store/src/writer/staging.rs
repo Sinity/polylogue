@@ -80,7 +80,9 @@ impl Inner {
                 {
                     return group
                         .into_iter()
-                        .flat_map(|item| self.store_group(vec![item], std::sync::Arc::clone(&store)))
+                        .flat_map(|item| {
+                            self.store_group(vec![item], std::sync::Arc::clone(&store))
+                        })
                         .collect();
                 }
                 return errors(&group, error);
@@ -110,10 +112,9 @@ impl Inner {
                 if present {
                     continue;
                 }
-                match file
-                    .prepared
-                    .install_checked::<StoreError>(|| crate::fault::check("import.install", &subject))
-                {
+                match file.prepared.install_checked::<StoreError>(|| {
+                    crate::fault::check("import.install", &subject)
+                }) {
                     Ok(_) => {
                         installed.insert(hash);
                     }
@@ -136,8 +137,9 @@ impl Inner {
         let finished: Result<()> = (|| {
             let tx = self.archive.transaction()?;
             for hash in &installed {
-                let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(hash.0))?)
-                    .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
+                let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(hash.0))?).map_err(
+                    |_| StoreError::Invalid("blob exceeds archive address space".into()),
+                )?;
                 tx.execute(
                     "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
                     params![&hash.0[..], size],
