@@ -6,7 +6,9 @@
 use crate::{Config, Error, Result};
 use async_nats::jetstream;
 use futures_util::StreamExt;
-use sinex_protocol::{Acknowledgment, Have, HeldMaterial, Ingress, Materials, Subjects};
+use sinex_protocol::{
+    Acknowledgment, Excise, ExciseReply, Have, HeldMaterial, Ingress, Materials, Subjects,
+};
 use sinex_transport::spool;
 use std::collections::HashMap;
 use std::io::Read;
@@ -96,6 +98,34 @@ impl Client {
             });
         }
         Ok(serde_json::from_value(value)?)
+    }
+
+    /// Asks Sinex to excise these materials this producer registered.
+    pub(crate) async fn excise(&self, materials: &[String]) -> Result<()> {
+        let materials = materials
+            .iter()
+            .map(|id| {
+                id.parse()
+                    .map(sinex_model::MaterialId)
+                    .map_err(|e| Error::Invalid(format!("material {id}: {e}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let reply = self
+            .client
+            .request(
+                self.subjects.excise(&self.producer),
+                serde_json::to_vec(&Excise { materials })?.into(),
+            )
+            .await
+            .map_err(|e| Error::Unreachable(e.to_string()))?;
+        let reply: ExciseReply = serde_json::from_slice(&reply.payload)?;
+        match reply.refusal {
+            Some(reason) => Err(Error::Refused {
+                name: "excision".into(),
+                reason,
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Writes `bytes` (`length` long, named `blob`) to the spool directory of

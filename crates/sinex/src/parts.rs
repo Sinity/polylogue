@@ -99,6 +99,7 @@ pub(crate) fn held(store: &hashed_blobs::Reader, held: HeldMaterial) -> Result<H
         let record: Record = serde_json::from_slice(&bytes)?;
         return Ok(Held::Record {
             number: held.number,
+            material: material.id.to_string(),
             record,
         });
     }

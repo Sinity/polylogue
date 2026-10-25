@@ -413,10 +413,12 @@ pub(super) fn send_to_sinex(
     let input = input_name(tx, record)?;
     let Some(extent) = &record.extent else {
         if record.observation.is_some() {
-            sinex.send_record(&crate::primary::Record::Observation {
+            let record = crate::primary::Record::Observation {
                 input,
                 stored: record.clone(),
-            })?;
+            };
+            let material = sinex.send_record(&record)?;
+            crate::primary::record_material(tx, &record, &material)?;
         }
         return Ok(());
     };
@@ -445,7 +447,7 @@ pub(super) fn send_to_sinex(
         },
         &mut bytes,
     )?;
-    crate::primary::record_material(tx, record, index, &material)
+    crate::primary::part_material(tx, record, index, &material)
 }
 
 /// The input's origin, its latest path and the host it was seen on.

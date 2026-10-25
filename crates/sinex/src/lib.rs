@@ -190,8 +190,15 @@ impl polylogue_store::primary::Sinex for Sinex {
         Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
     }
 
-    fn send_record(&self, record: &polylogue_store::primary::Record) -> polylogue_store::Result<()> {
+    fn send_record(
+        &self,
+        record: &polylogue_store::primary::Record,
+    ) -> polylogue_store::Result<String> {
         Ok(self.with(async |client| records::send(client, &self.host, record).await)?)
+    }
+
+    fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {
+        Ok(self.with(async |client| client.excise(materials).await)?)
     }
 
     fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {

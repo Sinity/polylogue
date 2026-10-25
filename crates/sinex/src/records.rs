@@ -1,8 +1,9 @@
 //! Records Polylogue writes as Sinex materials: a look at an input that found
 //! no new bytes (a part of that input's history, under its own name), and
-//! each request a person or agent makes (under Polylogue's requests on this
-//! host). The material's bytes are the record as JSON. A note, setting, kept
-//! result or delivery also becomes its typed event, anchored at the record.
+//! each request a person or agent makes and each excision (under Polylogue's
+//! requests on this host). The material's bytes are the record as JSON. A
+//! note, setting, kept result, delivery or excision also becomes its typed
+//! event, anchored at the record.
 use crate::client::Client;
 use crate::parts::{RECORDS, parser_version};
 use crate::{Error, Result};
@@ -14,7 +15,8 @@ use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Ingress, MaterialFrame, ProducerEvent};
 
 /// Sends `record` and its event, and waits until Sinex acknowledged both.
-pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Result<()> {
+/// Returns the material holding the record.
+pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Result<String> {
     let (name, input) = match record {
         Record::Observation { input, stored } => (
             format!(
@@ -33,12 +35,9 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
         ),
         Record::Request { request, .. } => (
             format!("request:{}", request.id),
-            InputRef {
-                kind: "polylogue".into(),
-                locator: "requests".into(),
-                host: host.to_owned(),
-            },
+            requests(host),
         ),
+        Record::Excision(excision) => (format!("excision:{}", excision.id), requests(host)),
     };
     let bytes = serde_json::to_vec(record)?;
     let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
@@ -62,11 +61,26 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
         .await?
         .material
         .ok_or_else(|| Error::Invalid(format!("{name} registered no material")))?;
-    let Record::Request { request, root } = record else {
-        return Ok(());
+    let event = match record {
+        Record::Request { request, root } => request_event(request, root.as_deref())?
+            .map(|(event_type, payload)| (event_type, payload, request.at.unix_ms())),
+        Record::Excision(excision) => Some((
+            "polylogue.excision",
+            serde_json::to_value(event::Excision {
+                excision: excision.id.clone(),
+                scope: excision.scope.clone(),
+                reason: excision.reason.clone(),
+                created_at: time(
+                    Timestamp::from_unix_ms(excision.created_at)
+                        .ok_or_else(|| Error::Invalid("an excision time out of range".into()))?,
+                )?,
+            })?,
+            excision.created_at,
+        )),
+        Record::Observation { .. } => None,
     };
-    let Some((event_type, payload)) = request_event(request, root.as_deref())? else {
-        return Ok(());
+    let Some((event_type, payload, reading_order)) = event else {
+        return Ok(material.to_string());
     };
     client
         .send(Ingress::Events {
@@ -80,13 +94,22 @@ pub(crate) async fn send(client: &mut Client, host: &str, record: &Record) -> Re
                 }),
                 ordinal: 0,
                 parents: vec![],
-                reading_order: request.at.unix_ms(),
+                reading_order,
                 class: Class::Open,
             }],
             failures: vec![],
         })
         .await?;
-    Ok(())
+    Ok(material.to_string())
+}
+
+/// What Polylogue's own records are read from: its requests on this host.
+fn requests(host: &str) -> InputRef {
+    InputRef {
+        kind: "polylogue".into(),
+        locator: "requests".into(),
+        host: host.to_owned(),
+    }
 }
 
 pub(crate) fn time(at: Timestamp) -> Result<sinex_model::Timestamp> {

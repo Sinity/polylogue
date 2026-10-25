@@ -77,7 +77,11 @@ impl polylogue_store::primary::Sinex for Offline {
         self.refused()
     }
 
-    fn send_record(&self, _: &Record) -> polylogue_store::Result<()> {
+    fn send_record(&self, _: &Record) -> polylogue_store::Result<String> {
+        self.refused()
+    }
+
+    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
         self.refused()
     }
 

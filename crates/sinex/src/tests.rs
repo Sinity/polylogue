@@ -116,5 +116,13 @@ fn a_held_record_is_read_from_the_content_store_and_checked() {
         material(RECORDS, &format!("blake3:{}", hash.hex()), serde_json::json!({})),
     )
     .unwrap();
-    assert_eq!(held, Held::Record { number: 7, record });
+    let Held::Record {
+        number,
+        record: back,
+        ..
+    } = held
+    else {
+        panic!("a record")
+    };
+    assert_eq!((number, back), (7, record));
 }

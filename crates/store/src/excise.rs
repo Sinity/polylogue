@@ -14,7 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-mod index_rows;
+pub(crate) mod index_rows;
 mod refused;
 
 pub(crate) use refused::{RefusedIds, any_excision, matching, raw_import};
@@ -88,6 +88,9 @@ pub struct Excised {
     /// Notes whose every target was removed.
     #[serde(default)]
     pub notes_removed: u64,
+    /// Their IDs, which in primary mode name their records in Sinex.
+    #[serde(skip)]
+    pub(crate) notes: Vec<String>,
     pub blobs_deleted: u64,
     pub embeddings_deleted: u64,
     /// Paths the loop no longer collects, as `machine:path`.
@@ -120,6 +123,11 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
+    /// The stored inputs it removes.
+    pub(crate) fn inputs(&self) -> &BTreeSet<String> {
+        &self.inputs
+    }
+
     pub(crate) fn recorded(&self) -> bool {
         self.recorded
     }
@@ -240,7 +248,8 @@ pub(crate) fn apply(
         let reference = format!("document:{id}");
         references.push(reference);
     }
-    done.notes_removed = index_rows::remove_notes_about(t.archive, &references)?;
+    done.notes = index_rows::remove_notes_about(t.archive, &references)?;
+    done.notes_removed = done.notes.len() as u64;
 
     let mut locations = BTreeSet::new();
     for input in &plan.inputs {

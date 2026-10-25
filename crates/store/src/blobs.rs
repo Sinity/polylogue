@@ -170,17 +170,18 @@ pub(crate) fn settle(archive: &rusqlite::Connection, store: &hashed_blobs::Store
         )? as u64;
     }
     tx.commit()?;
-    delete_marked(archive, store)?;
+    delete_marked(archive, Some(store))?;
     Ok(completed)
 }
 
 /// Deletes the files of blobs marked for deletion, then their rows. The
 /// writer runs it after each excision, and [`settle`] runs it when the
 /// archive opens, so a stop between the commit and the file deletion leaves
-/// nothing behind.
+/// nothing behind. Without a `store` (primary mode, where Sinex holds the
+/// files and excised them) only the rows go.
 pub(crate) fn delete_marked(
     archive: &rusqlite::Connection,
-    store: &hashed_blobs::Store,
+    store: Option<&hashed_blobs::Store>,
 ) -> Result<u64> {
     let marked: Vec<(Vec<u8>, String)> = archive
         .prepare("SELECT hash, place FROM blob WHERE state = 'deleting'")?
@@ -201,7 +202,7 @@ pub(crate) fn delete_marked(
         if referenced {
             return Err(crate::StoreError::ExcisionBlobReferenced(hash));
         }
-        if place == "file" {
+        if let (Some(store), "file") = (store, place.as_str()) {
             crate::fault::check("blob.before_delete", &hash.to_string())?;
             match store.delete(&hashed_blobs::Hash(hash.0)) {
                 Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}

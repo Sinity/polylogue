@@ -730,7 +730,8 @@ impl Inner {
         // Then the blob files and rows go, and the database files are
         // scrubbed of every freed page.
         let result = result.and_then(|done| {
-            crate::blobs::delete_marked(&self.archive, store)
+            let files = self.sinex.is_none().then_some(store);
+            crate::blobs::delete_marked(&self.archive, files)
                 .and_then(|_| {
                     let _lock = crate::write_lock::hold(&self.archive)?;
                     self.scrub_after_excision()
@@ -801,7 +802,18 @@ impl Inner {
             seq,
             counter,
         };
-        let done = match crate::excise::apply(&txs, request, plan) {
+        let materials = match &self.sinex {
+            Some(_) => crate::primary::materials_of_inputs(&atx, plan.inputs()),
+            None => Ok(Vec::new()),
+        };
+        let applied = materials.and_then(|materials| {
+            let done = crate::excise::apply(&txs, request, plan)?;
+            if let (Some(sinex), false) = (&self.sinex, request.dry_run) {
+                excise_on_sinex(sinex.as_ref(), &atx, request, plan, &done, materials)?;
+            }
+            Ok(done)
+        });
+        let done = match applied {
             Ok(done) => done,
             Err(error) => {
                 rollback(&embeddings);
@@ -937,10 +949,12 @@ impl Inner {
             tx.rollback()?;
         } else {
             if let Some(sinex) = &self.sinex {
-                sinex.send_record(&crate::primary::Record::Request {
+                let record = crate::primary::Record::Request {
                     request: request.clone(),
                     root: crate::user_writes::note_root(&tx, request)?,
-                })?;
+                };
+                let material = sinex.send_record(&record)?;
+                crate::primary::record_material(&tx, &record, &material)?;
             }
             tx.commit()?;
         }
@@ -995,6 +1009,31 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
+}
+
+/// In primary mode, before an excision commits: Sinex excises the parts and
+/// records of the removed inputs and the requests of the removed notes, then
+/// keeps the excision itself, so a rebuild keeps refusing what it removed.
+fn excise_on_sinex(
+    sinex: &dyn crate::primary::Sinex,
+    archive: &Connection,
+    request: &crate::excise::ExciseRequest,
+    plan: &crate::excise::Plan,
+    done: &crate::excise::Excised,
+    mut materials: Vec<String>,
+) -> Result<()> {
+    materials.extend(crate::primary::materials_of_records(archive, &done.notes)?);
+    if !materials.is_empty() {
+        sinex.excise(&materials)?;
+    }
+    crate::primary::forget_inputs(archive, plan.inputs())?;
+    crate::primary::forget_records(archive, &done.notes)?;
+    let record = crate::primary::Record::Excision(crate::primary::excision_record(
+        archive,
+        &request.id,
+    )?);
+    let material = sinex.send_record(&record)?;
+    crate::primary::record_material(archive, &record, &material)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

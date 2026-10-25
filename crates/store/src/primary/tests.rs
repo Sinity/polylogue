@@ -46,14 +46,25 @@ impl Sinex for Recorder {
         Ok(material)
     }
 
-    fn send_record(&self, record: &Record) -> Result<()> {
+    fn send_record(&self, record: &Record) -> Result<String> {
         if self.refuse {
             return Err(StoreError::Sinex("synthetic outage".into()));
         }
+        let material = uuid::Uuid::now_v7().to_string();
         let number = self.next();
         self.held.lock().unwrap().push(Held::Record {
             number,
+            material: material.clone(),
             record: record.clone(),
+        });
+        Ok(material)
+    }
+
+    fn excise(&self, materials: &[String]) -> Result<()> {
+        self.held.lock().unwrap().retain(|held| match held {
+            Held::Part { material, .. } | Held::Record { material, .. } => {
+                !materials.contains(material)
+            }
         });
         Ok(())
     }
@@ -204,4 +215,61 @@ fn nothing_is_written_locally_that_sinex_did_not_take() {
     writer.flush().unwrap();
     drop(writer);
     assert!(register(&archive).is_empty());
+}
+
+#[test]
+fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let store = dir.path().join("sinex-store");
+    let sinex = Recorder::new(&store, false);
+    let path = "/home/op/.claude/projects/p/s.jsonl";
+    let before = {
+        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
+        let prepared = archive.prepare_bytes(b"{\"first\":1}\n".as_slice()).unwrap();
+        writer
+            .store_bytes(prepared, observed(path, Change::First, 12))
+            .unwrap();
+        writer.user(note()).unwrap();
+        let excised = writer
+            .excise(
+                crate::excise::ExciseRequest {
+                    id: "0199d8a0-0000-7000-8000-00000000d001".into(),
+                    scope: crate::excise::Scope::Input("synthetic-input".into()),
+                    reason: None,
+                    dry_run: false,
+                },
+                Arc::new(archive.blobs().unwrap()),
+            )
+            .unwrap();
+        assert_eq!(excised.inputs_removed, ["synthetic-input"]);
+        drop(writer);
+        register(&archive)
+    };
+    {
+        let held = sinex.held.lock().unwrap();
+        assert!(
+            !held.iter().any(|h| matches!(h, Held::Part { .. })),
+            "Sinex excised the input's part"
+        );
+        assert!(
+            held.iter()
+                .any(|h| matches!(h, Held::Record { record: Record::Excision(_), .. }))
+        );
+    }
+    assert!(
+        store.join("blobs").exists(),
+        "Polylogue never deletes from Sinex's content store"
+    );
+    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm", "index.db", "index.db-wal", "index.db-shm"] {
+        let _ = std::fs::remove_file(root.join(name));
+    }
+    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+    assert_eq!(register(&archive), before);
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let excised: i64 = conn
+        .query_row("SELECT count(*) FROM excised WHERE kind = 'input'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(excised, 1, "the rebuilt copy still refuses the input");
 }
