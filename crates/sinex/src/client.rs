@@ -19,10 +19,10 @@ use std::time::Duration;
 /// How long a frame may wait for its acknowledgment.
 const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 
-/// How long an excision may wait for Sinex's answer. Sinex plans it over
-/// every event it holds, which takes far longer than NATS's default request
-/// timeout on a large store; giving up early would leave Sinex excising
-/// what Polylogue then keeps.
+/// How long an excision may wait for Sinex's answer. On a large store Sinex
+/// can take minutes to plan and apply one, far longer than NATS's default
+/// request timeout; giving up early would leave Sinex excising what
+/// Polylogue then keeps.
 const EXCISION_WAIT: Duration = Duration::from_secs(600);
 
 /// Room left in a NATS message for its subject and headers.
