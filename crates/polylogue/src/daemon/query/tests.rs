@@ -862,25 +862,48 @@ fn an_empty_result_explains_itself() {
     assert_eq!(v["count"], 7);
 }
 
-#[test]
-fn near_ranks_by_the_nearest_texts_it_is_given() {
-    let w = morrow();
+/// Similarities for `near:` computed from stored vectors: the texts of the
+/// sessions whose ID is `LIKE like` lie along the query, every other text
+/// across it.
+fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::vectors::Similarity> {
     let pool = w.fx.reads().unwrap();
-    let text_id = pool
-        .reader()
-        .unwrap()
+    let reader = pool.reader().unwrap();
+    let rows = reader
         .query(
-            "SELECT b.text_id AS t FROM block b JOIN session s ON s.pk = b.session_pk
-             WHERE s.id LIKE '%0002-4000%' AND b.text_id IS NOT NULL LIMIT 1",
-            &[],
+            "SELECT hex(t.hash) AS h, EXISTS (SELECT 1 FROM block b JOIN session s ON s.pk = b.session_pk
+                 WHERE b.text_id = t.id AND s.id LIKE ?1) AS near FROM text t",
+            &[SqlValue::Text(like.into())],
         )
-        .unwrap()[0]["t"]
-        .as_i64()
         .unwrap();
-    let hits = format!("[[{text_id}, 0.93]]");
-    let near = |q: &str| -> Result<String, String> {
+    let vectors: Vec<polylogue_store::vectors::Vector> = rows
+        .iter()
+        .map(|r| {
+            let hex = r["h"].as_str().unwrap();
+            let text_hash = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let near = r["near"].as_i64() == Some(1);
+            polylogue_store::vectors::Vector {
+                text_hash,
+                chunk: 0,
+                values: if near { vec![1.0, 0.0] } else { vec![0.0, 1.0] },
+            }
+        })
+        .collect();
+    let key = "local/test/2/document/unit";
+    reader.vectors_writer().unwrap().put(key, &vectors).unwrap();
+    let loaded = std::sync::Arc::new(reader.vectors().unwrap().load(key).unwrap());
+    std::sync::Arc::new(loaded.similarity(&[1.0, 0.0]).unwrap())
+}
+
+#[test]
+fn near_ranks_every_row_by_similarity() {
+    let w = morrow();
+    let s = similarity(&w, "%0002-4000%");
+    let near = |q: &str| {
         assert_eq!(q, "ambiguous date formats");
-        Ok(hits.clone())
+        Ok(std::sync::Arc::clone(&s))
     };
     let mut a = ask("near:\"ambiguous date formats\"");
     a.embeddings = true;
@@ -891,6 +914,54 @@ fn near_ranks_by_the_nearest_texts_it_is_given() {
     // Ranking keeps every row; the nearest comes first.
     assert_eq!(v["count"], 7);
     assert_eq!(ids(&v)[0], "#2");
+}
+
+#[test]
+fn near_applies_its_conditions_before_ranking() {
+    let w = morrow();
+    // Every text of #2 is nearer than any other, yet a condition that
+    // excludes #2 still ranks what it keeps instead of finding nothing.
+    let s = similarity(&w, "%0002-4000%");
+    let near = |_: &str| Ok(std::sync::Arc::clone(&s));
+    let mut a = ask("near:x -id:claude-code:7f3a2c10-0002");
+    a.embeddings = true;
+    a.near = Some(&near);
+    let v = run_q(&w, a).unwrap();
+    assert_eq!(v["count"], 6, "{v}");
+    assert!(!ids(&v).contains(&"#2".to_owned()));
+    assert!(
+        v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["rank"].is_number()),
+        "the rows kept have similarities: {v}"
+    );
+}
+
+#[test]
+fn text_and_similarity_rank_together() {
+    let w = morrow();
+    let s = similarity(&w, "%0002-4000%");
+    let near = |_: &str| Ok(std::sync::Arc::clone(&s));
+    let mut text_only = ask("messages where parser");
+    text_only.page_size = Some(100);
+    let lexical = run_q(&w, text_only).unwrap();
+    let mut both = ask("messages where parser near:x");
+    both.page_size = Some(100);
+    both.embeddings = true;
+    both.near = Some(&near);
+    let fused = run_q(&w, both).unwrap();
+    // The same rows: words filter, similarity only reorders.
+    assert_eq!(fused["count"], lexical["count"], "{fused}");
+    assert_eq!(fused["ranked"], true);
+    let ranks: Vec<f64> = fused["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["rank"].as_f64().unwrap())
+        .collect();
+    assert!(ranks.windows(2).all(|p| p[0] <= p[1]), "{ranks:?}");
 }
 
 #[test]

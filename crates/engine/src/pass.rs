@@ -9,6 +9,11 @@ const KEEP_STATE_NS: i128 = 6 * 3600 * 1_000_000_000;
 
 /// The longest a burst of file events delays the next pass.
 const COALESCE: Duration = Duration::from_secs(2);
+/// Jobs queued in the parse pool per worker; the rest of a pass's plans
+/// wait outside it.
+const IN_POOL_PER_WORKER: usize = 16;
+/// A known file written this recently is live: the session being written.
+const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 
 impl Engine {
     /// Writes the repository lookups for the working directories the index
@@ -185,28 +190,8 @@ impl Engine {
             };
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
-            if !self.inputs.contains_key(&f.path) {
-                if !collect::recognize(&f) {
-                    continue;
-                }
-                let id = self.location_id(&f.path);
-                self.inputs.insert(
-                    f.path.clone(),
-                    InputState {
-                        input_id: id,
-                        origin: f.origin,
-                        facts: None,
-                        stored: 0,
-                        parsed_upto: 0,
-                        parsed: false,
-                        waiting: false,
-                        parser_state: None,
-                        tail: None,
-                        chain: None,
-                        failed: None,
-                        failed_history: HashMap::new(),
-                    },
-                );
+            if !self.track(&f) {
+                continue;
             }
             let pending = pass
                 .pending_inputs
@@ -281,6 +266,76 @@ impl Engine {
         pass.sessions_derived = self.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
+    }
+
+    /// Starts tracking a found path its origin recognizes; false when it
+    /// does not.
+    fn track(&mut self, f: &collect::Found) -> bool {
+        if self.inputs.contains_key(&f.path) {
+            return true;
+        }
+        if !collect::recognize(f) {
+            return false;
+        }
+        let id = self.location_id(&f.path);
+        self.inputs.insert(
+            f.path.clone(),
+            InputState {
+                input_id: id,
+                origin: f.origin,
+                facts: None,
+                stored: 0,
+                parsed_upto: 0,
+                parsed: false,
+                waiting: false,
+                parser_state: None,
+                tail: None,
+                chain: None,
+                failed: None,
+                failed_history: HashMap::new(),
+            },
+        );
+        true
+    }
+
+    /// Plans for live inputs that changed since the pass began: every file
+    /// in the spools, and the known files of live origins written in the
+    /// last minutes (a session being written). They run ahead of the
+    /// pass's bulk work. Paths with work in flight are left to it.
+    fn live_plans(&mut self, busy: &HashMap<PathBuf, Plan>) -> Result<Vec<Plan>, EngineError> {
+        let now_ns = i128::from(now_ms()) * 1_000_000;
+        let mut found = collect::scan_spools(&self.config);
+        found.extend(
+            self.inputs
+                .iter()
+                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live)
+                .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
+                .map(|(path, st)| collect::Found {
+                    path: path.clone(),
+                    origin: st.origin,
+                }),
+        );
+        let mut plans = Vec::new();
+        for f in found {
+            if self.refused.contains(&f.path) || busy.contains_key(&f.path) {
+                continue;
+            }
+            let Ok(meta) = std::fs::metadata(&f.path) else {
+                continue;
+            };
+            if !self.track(&f) {
+                continue;
+            }
+            let now = FileFacts::of(&meta);
+            if self.inputs[&f.path].facts == Some(now) {
+                continue;
+            }
+            if let Some(mut plan) = self.plan(&f.path, now, false)? {
+                plan.priority = Priority::Live;
+                plans.push(plan);
+            }
+        }
+        Ok(plans)
     }
 
     /// Decides what to read for one tracked path.
@@ -639,22 +694,47 @@ impl Engine {
             self.archive.clone(),
             done_tx,
         );
+        // Plans wait here and enter the pool a few at a time, so live inputs
+        // that arrive meanwhile can go ahead of what is still waiting.
+        let mut waiting: std::collections::VecDeque<Plan> = plans.into();
         let mut running: HashMap<PathBuf, Plan> = HashMap::new();
         let mut outstanding = 0usize;
-        for mut plan in plans {
-            if plan.finished() {
-                self.settle(plan);
-                continue;
+        let mut checked = Instant::now();
+        let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
+        let every = self.config.live_every;
+        loop {
+            if checked.elapsed() >= every {
+                checked = Instant::now();
+                match self.live_plans(&running) {
+                    Ok(live) => {
+                        for plan in live.into_iter().rev() {
+                            waiting.retain(|w| w.path != plan.path);
+                            waiting.push_front(plan);
+                        }
+                    }
+                    Err(e) => pass.errors.push(format!("live inputs: {e}")),
+                }
             }
-            let job = plan.next_job();
-            pass.bytes_read += job.end - job.start;
-            pool.submit(job);
-            outstanding += 1;
-            running.insert(plan.path.clone(), plan);
-        }
-        while outstanding > 0 {
-            let Ok(d) = done_rx.recv() else {
+            while outstanding < room
+                && let Some(mut plan) = waiting.pop_front()
+            {
+                if plan.finished() {
+                    self.settle(plan);
+                    continue;
+                }
+                let job = plan.next_job();
+                pass.bytes_read += job.end - job.start;
+                pool.submit(job);
+                outstanding += 1;
+                running.insert(plan.path.clone(), plan);
+            }
+            if outstanding == 0 {
                 break;
+            }
+            let d = match done_rx.recv_timeout(every.max(Duration::from_millis(10))) {
+                Ok(d) => d,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             };
             outstanding -= 1;
             let Some(mut plan) = running.remove(&d.path) else {
@@ -669,11 +749,8 @@ impl Engine {
             if plan.finished() {
                 self.settle(plan);
             } else {
-                let job = plan.next_job();
-                pass.bytes_read += job.end - job.start;
-                pool.submit(job);
-                outstanding += 1;
-                running.insert(plan.path.clone(), plan);
+                // The next part of the same input keeps its place.
+                waiting.push_front(plan);
             }
         }
         drop(pool);

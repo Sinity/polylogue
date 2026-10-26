@@ -76,6 +76,10 @@ pub struct Config {
     /// The running loop scans every watched location at least this often,
     /// even when no change is reported (a minute).
     pub rescan_every: Duration,
+    /// While a pass runs, its spools and recently written files are looked
+    /// at this often, and what changed there goes ahead of the pass's
+    /// remaining work (two seconds).
+    pub live_every: Duration,
 }
 
 impl Config {
@@ -166,6 +170,7 @@ impl Config {
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
             rescan_every: Duration::from_secs(60),
+            live_every: Duration::from_secs(2),
         }
     }
 }

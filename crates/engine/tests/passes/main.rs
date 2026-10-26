@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 
 mod excision_selected;
+mod live_first;
 mod older_chains;
 mod tool_captures;
 

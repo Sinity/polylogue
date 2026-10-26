@@ -94,31 +94,52 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         return Ok("1".into());
     }
     let text = x.value()?;
-    // The caller binds the nearest texts as `[[text id, similarity], ...]`.
-    let param = c.bind(Param::Text("[]".into()));
-    let index = c.params.len();
-    let cte = format!("n{}", c.ctes.len() + 1);
-    c.ctes.push(format!(
-        "{cte} AS MATERIALIZED (SELECT CAST(json_extract(j.value, '$[0]') AS INTEGER) AS text_id, \
-         -json_extract(j.value, '$[1]') AS rank FROM json_each({param}) j)"
-    ));
+    // `pl_similarity` answers from the similarities the caller computed for
+    // this text. Each message's best text is found once, in one pass over
+    // the texts; a session ranks by the best message in it and its
+    // subagents; a row with no vector has no rank. The similarities join
+    // the unit's rows, so ranking and fusion read them as columns.
     let a = &x.scope.a;
+    let messages = format!("n{}", c.ctes.len() + 1);
+    c.ctes.push(format!(
+        "{messages} AS MATERIALIZED (SELECT xb.message_pk AS m, max(xs.s) AS s \
+         FROM (SELECT xt.id AS t, pl_similarity(xt.hash) AS s FROM text xt) xs \
+         JOIN block xb ON xb.text_id = xs.t WHERE xs.s IS NOT NULL GROUP BY xb.message_pk)"
+    ));
     let rank = match x.unit {
-        Unit::Sessions => format!(
-            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-             WHERE xb.session_pk IN ({}))",
-            fields::subtree(&a.s)
-        ),
-        Unit::Messages => format!(
-            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-             WHERE xb.message_pk = {}.pk)",
-            a.m
-        ),
+        Unit::Sessions => {
+            // Each session's best message, carried up to the sessions that
+            // spawned it, once per query.
+            let tree = format!("n{}", c.ctes.len() + 1);
+            c.ctes.push(format!(
+                "{tree}(p, s) AS (SELECT xm.session_pk, max(nm.s) FROM {messages} nm \
+                 JOIN message xm ON xm.pk = nm.m GROUP BY xm.session_pk \
+                 UNION SELECT lp.pk, nt.s FROM {tree} nt JOIN link l ON l.child_pk = nt.p \
+                 AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id)"
+            ));
+            let sessions = format!("n{}", c.ctes.len() + 1);
+            c.ctes.push(format!(
+                "{sessions} AS MATERIALIZED (SELECT p, max(s) AS s FROM {tree} GROUP BY p)"
+            ));
+            c.near_join = Some(format!(
+                "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
+                a.s
+            ));
+            "-near_s.s".to_owned()
+        }
+        Unit::Messages => {
+            c.near_join = Some(format!(
+                "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
+                a.m
+            ));
+            "-near_m.s".to_owned()
+        }
         Unit::Blocks => format!(
-            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
+            "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
             a.b
         ),
         other => {
+            c.ctes.pop();
             return Err(QueryError::Invalid {
                 message: format!(
                     "near: ranks sessions, messages and blocks, not {}",
@@ -128,10 +149,8 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             });
         }
     };
-    // Semantic similarity ranks the whole query, ahead of any full-text
-    // rank.
-    c.rank = Some(rank);
-    c.near = Some(Near { text, param: index });
+    c.near_rank = Some(rank);
+    c.near = Some(Near { text });
     Ok("1".into())
 }
 

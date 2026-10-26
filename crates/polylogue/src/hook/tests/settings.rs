@@ -31,7 +31,7 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
             let original = format!(" \n{text}\n ");
             std::fs::write(&path, &original).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-            let result = install(&path, on);
+            let result = install(&path, Harness::ClaudeCode, on);
             assert!(result.is_err(), "on={on}, input={text}, result={result:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
             assert_eq!(
@@ -55,7 +55,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
         ]});
         let original = json!({"model":"example","hooks":{"Stop":[entry],"UnknownFutureEvent":[]},"future":{"a":[{"key":1},{"key":2}]}});
         std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
-        install(&path, on).unwrap();
+        install(&path, Harness::ClaudeCode, on).unwrap();
         let once: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             once["hooks"]["Stop"][0],
@@ -64,7 +64,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
         assert_eq!(once["hooks"]["UnknownFutureEvent"], json!([]));
         assert_eq!(once["model"], original["model"]);
         assert_eq!(once["future"], original["future"]);
-        install(&path, on).unwrap();
+        install(&path, Harness::ClaudeCode, on).unwrap();
         let twice: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(once, twice);
     }
@@ -77,8 +77,8 @@ fn unknown_hook_kinds_and_native_json_numbers_survive_setup() {
     let original = r#"{"large":900719925474099312345,"real":1.23456789012345,"hooks":{"Stop":[{"hooks":[{"type":"future","command":"polylogue hook Stop","opaque":null}]}]}}"#;
     std::fs::write(&path, original).unwrap();
     let expected: Value = serde_json::from_str(original).unwrap();
-    install(&path, true).unwrap();
-    install(&path, false).unwrap();
+    install(&path, Harness::ClaudeCode, true).unwrap();
+    install(&path, Harness::ClaudeCode, false).unwrap();
     let actual: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }
@@ -91,6 +91,9 @@ fn uninstall_preserves_empty_containers_and_shell_programs_it_did_not_install() 
         json!({"hooks":{"Stop":[{"hooks":[]}]}}),
         json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"polylogue hook Stop && notify-send done"}]}]}}),
     ] {
-        assert_eq!(merge_hooks(original.clone(), false).unwrap(), original);
+        assert_eq!(
+            merge_hooks(original.clone(), Harness::ClaudeCode, false).unwrap(),
+            original
+        );
     }
 }

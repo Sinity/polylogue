@@ -111,6 +111,9 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
         Kind::FlagOrText => arg.num_args(0..=1),
     };
+    if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
+        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(query_word));
+    }
     if let Some(d) = a.default {
         arg = arg.default_value(d);
     }
@@ -332,6 +335,49 @@ fn when_ready<T>(
             other => return other,
         }
     }
+}
+
+/// Completions for a query word, from the daemon; none when it
+/// does not answer within a moment, so a shell never hangs on a tab.
+fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
+    let Some(word) = current.to_str() else {
+        return Vec::new();
+    };
+    let socket = Archive::at(&Archive::default_root()).socket();
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return Vec::new();
+    };
+    let wait = Some(std::time::Duration::from_millis(500));
+    let _ = stream.set_read_timeout(wait);
+    let _ = stream.set_write_timeout(wait);
+    let request = Request::Complete {
+        word: word.to_owned(),
+    };
+    let Ok(mut line) = serde_json::to_string(&request) else {
+        return Vec::new();
+    };
+    line.push('\n');
+    let mut reply = String::new();
+    if stream.write_all(line.as_bytes()).is_err()
+        || BufReader::new(stream).read_line(&mut reply).is_err()
+    {
+        return Vec::new();
+    }
+    let Ok(Response::Ok { data }) = serde_json::from_str::<Response>(&reply) else {
+        return Vec::new();
+    };
+    data.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let value = c["value"].as_str()?;
+            let help = c["help"].as_str().filter(|h| !h.is_empty());
+            Some(
+                clap_complete::CompletionCandidate::new(value)
+                    .help(help.map(|h| h.to_owned().into())),
+            )
+        })
+        .collect()
 }
 
 /// Sends one request and reads its response.

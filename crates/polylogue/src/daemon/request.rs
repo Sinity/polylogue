@@ -72,6 +72,10 @@ pub enum Request {
         ids: Vec<String>,
     },
     Status,
+    /// Completions for one word of a query being typed.
+    Complete {
+        word: String,
+    },
     Attachment {
         message: polylogue_model::MessageId,
         block: usize,
@@ -129,6 +133,21 @@ pub enum Request {
     AddNote {
         request_id: String,
         note: NewNote,
+    },
+    /// A note on every row a query returns (sessions, messages, documents
+    /// or notes); `note.targets` is filled from the rows.
+    AnnotateQuery {
+        request_id: String,
+        query: String,
+        note: NewNote,
+    },
+    /// The operator accepts or rejects one revision of an agent's note.
+    Judge {
+        request_id: String,
+        note: String,
+        accepted: bool,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
@@ -213,6 +232,7 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::Complete { .. }
             | Self::Attachment { .. }
             | Self::Query { .. }
             | Self::Changes { .. }
@@ -239,6 +259,8 @@ impl Request {
             | Self::ChatDecide { .. }
             | Self::Import { .. }
             | Self::AddNote { .. }
+            | Self::AnnotateQuery { .. }
+            | Self::Judge { .. }
             | Self::Keep { .. }
             | Self::Withdraw { .. }
             | Self::DeliveryEvent { .. }

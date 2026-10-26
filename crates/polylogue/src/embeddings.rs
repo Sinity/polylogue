@@ -31,8 +31,6 @@ const BATCH: usize = 32;
 const CHUNK_CHARS: usize = 6000;
 /// Texts read from the index per page.
 const PAGE: u64 = 2000;
-/// Texts `near:` ranks by.
-pub const NEAREST: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -368,44 +366,61 @@ pub fn build(
     Ok(out)
 }
 
-/// For `near:`: the index's nearest texts to `text`, as the JSON the
-/// query binds (`[[text id, similarity], ...]`). Embeds the query text
-/// once with the provider.
-pub fn nearest_json(
-    reader: &Reader<'_>,
-    provider: &Provider,
-    text: &str,
-) -> Result<String, EmbedError> {
-    let vectors = reader.vectors()?;
-    let Some(key) = vectors
-        .status()?
-        .keys
-        .into_iter()
-        .map(|k| k.key)
-        .find(|k| k.starts_with(&provider.key_prefix()))
-    else {
-        return Ok("[]".into());
-    };
+/// For `near:`: the query text as a unit vector, embedded as a query.
+pub fn query_vector(provider: &Provider, text: &str) -> Result<Vec<f32>, EmbedError> {
     let nfc: String = text.nfc().collect();
-    let query = provider.embed(&[nfc], true)?.remove(0);
-    let hits = vectors.nearest(&key, &query, NEAREST)?;
-    let hashes: Vec<Vec<u8>> = hits.iter().map(|(h, _)| h.clone()).collect();
-    let ids = reader.text_ids(&hashes)?;
-    let pairs: Vec<Value> = hits
-        .iter()
-        .zip(ids)
-        .filter_map(|((_, score), id)| id.map(|id| json!([id, score])))
-        .collect();
-    Ok(Value::Array(pairs).to_string())
+    Ok(provider.embed(&[nfc], true)?.remove(0))
 }
 
-/// Whether `near:` can rank: a provider is set and vectors exist for it.
-pub fn available(reader: &Reader<'_>, provider: Option<&Provider>) -> bool {
-    let Some(p) = provider else { return false };
+/// The embedding key `near:` ranks by: the provider's model with vectors,
+/// if any. `near:` is unavailable without one.
+pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<String> {
+    let p = provider?;
     reader
         .vectors()
-        .and_then(|v| v.status())
-        .is_ok_and(|s| s.keys.iter().any(|k| k.key.starts_with(&p.key_prefix())))
+        .and_then(|v| v.key_with_prefix(&p.key_prefix()))
+        .ok()
+        .flatten()
+}
+
+/// The IDs of every session a sessions query returns, through all its
+/// pages.
+fn query_sessions(reader: &Reader<'_>, query: &str) -> Result<Vec<String>, Response> {
+    let mut ids = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let ask = crate::daemon::query::Ask {
+            text: query,
+            cursor: cursor.as_deref(),
+            page_size: Some(1_000),
+            why: false,
+            session: None,
+            now: now_ms(),
+            day: polylogue_model::LogicalDay::system(),
+            embeddings: false,
+            near: None,
+            fields: &[],
+        };
+        let page = crate::daemon::query::run(reader, ask).map_err(|f| Response::Error {
+            kind: f.kind,
+            message: f.message,
+            detail: f.detail,
+        })?;
+        if page["unit"] != "sessions" {
+            return Err(error("bad_request", "embed takes a sessions query"));
+        }
+        ids.extend(
+            page["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r["id"].as_str().map(str::to_owned)),
+        );
+        match page["next"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => return Ok(ids),
+        }
+    }
 }
 
 /// Embedding status, cost preview and build ([`crate::embeddings`]).
@@ -441,38 +456,10 @@ pub fn handle(
     // A query limits the work to the sessions it finds.
     let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
         None => None,
-        Some(q) => {
-            let ask = crate::daemon::query::Ask {
-                text: q,
-                cursor: None,
-                page_size: Some(1_000_000),
-                why: false,
-                session: None,
-                now: now_ms(),
-                day: polylogue_model::LogicalDay::system(),
-                embeddings: false,
-                near: None,
-                fields: &[],
-            };
-            match crate::daemon::query::run(reader, ask) {
-                Ok(v) if v["unit"] == "sessions" => Some(
-                    v["rows"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
-                        .collect(),
-                ),
-                Ok(_) => return error("bad_request", "embed takes a sessions query"),
-                Err(f) => {
-                    return Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    };
-                }
-            }
-        }
+        Some(q) => match query_sessions(reader, q) {
+            Ok(ids) => Some(ids),
+            Err(response) => return response,
+        },
     };
     let result = match what {
         "preview" => preview(reader, &provider, sessions.as_deref(), limit)

@@ -63,7 +63,11 @@ reports.
 ## Storing bytes
 
 [Import](../crates/engine/src/import.rs) and the loop store the bytes before
-anything parses them. The [writer](../crates/store/src/writer/staging.rs)
+anything parses them. A pass feeds its plans to the parse pool a few at a
+time; every two seconds it looks at Polylogue's own spools (hook events,
+browser captures) and at the live files written in the last ten minutes, and
+what changed there goes ahead of the work still waiting, so a capture or a
+session being written shows up within seconds even during a first build. The [writer](../crates/store/src/writer/staging.rs)
 checks them against excisions, commits the blob rows as `writing` with their
 revision and extents, writes the files, then marks the rows `present`. After a
 stop, opening the archive and every pass settle what is left: files not yet
@@ -147,7 +151,11 @@ Every query answer has a total order: its sort keys, then the unit's
 identity. A page's cursor holds the last row's values of those keys, with the
 question, clock and random seed; the next page reads the rows after them, so a
 write between pages neither refuses the cursor nor repeats or skips rows. A
-query ranked by `near:` returns one complete page.
+query ranked by `near:` pages the same way: its similarities come from the
+vectors held in memory, through `pl_similarity(text_hash)` while the query
+runs, so its other conditions choose the rows before any ranking; with
+words in the same query the two orders are fused (reciprocal rank fusion).
+Its cursor is refused once vectors were stored or removed.
 [Query page tests](../crates/polylogue/src/daemon/query/tests/pages.rs)
 cover this.
 
@@ -183,7 +191,11 @@ object keys. Stored bytes never change.
 [CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
 
 The daemon owns the archive; CLI commands that touch it need a running
-daemon in either mode. The application runtime owns the loop, signal workers,
+daemon in either mode. It keeps [warm state](../crates/polylogue/src/daemon/warm.rs)
+between requests: the vectors `near:` ranks by (reloaded after a commit
+stores or removes vectors), the provider's vectors of recent `near:` texts,
+recent query answers by read position, and completion data. A write moves
+the read position and so retires what was read before it. The application runtime owns the loop, signal workers,
 and the archive lock; transports own listeners and client
 work. Shutdown stops accepting requests and closes the read pool, joins
 transports and workers, then releases the archive lock. Writes already

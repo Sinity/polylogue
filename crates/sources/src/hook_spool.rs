@@ -5,7 +5,9 @@
 //! (`carriers/<provider>/<date>/*.ndjson`, each holding the hook lines one
 //! process wrote). The `polylogue hook` command writes a
 //! third: one file per harness process (`<pid>.ndjson`), lines
-//! `{"at_ns", "event", "harness_pid", "payload"}`, for Claude Code.
+//! `{"at_ns", "event", "harness_pid", "provider", "session_id", "payload"}`
+//! for Claude Code, Codex and Hermes; lines written before it named the
+//! harness carry no `provider` and are Claude Code's.
 //!
 //! Each line becomes an event on the session it names, kept whole: what
 //! the hook saw (tool input, permission mode, effort, working directory)
@@ -112,8 +114,8 @@ impl Parser for HookSpool {
         else {
             return RecordOutcome::unreadable("no event_type");
         };
-        // The hook command's lines name no provider: it is installed for
-        // Claude Code only.
+        // The hook command's lines from before it named the harness are
+        // Claude Code's.
         let provider = match str_of(value, "provider") {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",

@@ -145,18 +145,27 @@ pub fn socket_owner(peer: SocketAddr, server: SocketAddr) -> Option<u32> {
     })
 }
 
-/// The uid owning the socket listening on loopback `port`, so a client
-/// never sends the token to another user's listener.
+/// The uid owning the socket listening on 127.0.0.1:`port`, the address
+/// the reader binds and its URL names, so a client never sends the token to
+/// another user's listener or to one on another address.
 pub fn listener_owner(port: u16) -> Option<u32> {
-    let suffix = format!(":{port:04X}");
-    ["/proc/net/tcp", "/proc/net/tcp6"].iter().find_map(|file| {
-        let table = fs::read_to_string(file).ok()?;
-        table.lines().skip(1).find_map(|line| {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            // State 0A is LISTEN.
-            (cols.get(1)?.ends_with(&suffix) && cols.get(3)? == &"0A")
-                .then(|| cols.get(7)?.parse().ok())?
-        })
+    let loopback = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
+    // A dual-stack socket bound to the v4 address is listed as v4-mapped v6.
+    let mapped = std::net::SocketAddrV6::new(loopback.ip().to_ipv6_mapped(), port, 0, 0);
+    [
+        ("/proc/net/tcp", v4_hex(loopback)),
+        ("/proc/net/tcp6", v6_hex(mapped)),
+    ]
+    .iter()
+    .find_map(|(file, local)| listener_in(&fs::read_to_string(file).ok()?, local))
+}
+
+/// The uid of the socket listening on `local` in a `/proc/net/tcp` table.
+/// State `0A` is LISTEN.
+fn listener_in(table: &str, local: &str) -> Option<u32> {
+    table.lines().skip(1).find_map(|line| {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        (cols.get(1)? == &local && cols.get(3)? == &"0A").then(|| cols.get(7)?.parse().ok())?
     })
 }
 

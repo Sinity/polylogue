@@ -115,6 +115,12 @@ the same change.
   briefing can cite them.
 - **setting**: a value the operator or an agent sets, kept with its history.
 - **delivery**: exactly what was put into a model's context.
+- **brief**: the session-start context for a directory; it fits its
+  **budget** (`briefing.budget`, tokens).
+- **judgment**: the operator's `accepted` or `rejected` on one revision of
+  an agent's note, itself a note of kind `judgment`.
+- **notice**: a delivery a signal rule fired; an interrupting one is also
+  a desktop notification.
 - **client request**: one write request, kept so a retry does not repeat it.
 - **chat action**: see "Where inputs come from".
 - **excision**: stored inputs removed on purpose, with everything parsed from
@@ -133,6 +139,8 @@ the same change.
 - **write lock**: what a register commit holds so readers start from a
   consistent pair of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
+- **warm state**: what the daemon keeps between requests so answers need
+  no reload: loaded vectors, query vectors, recent answers, completion data.
 - **mode**: `standalone`, or `primary` with Sinex holding the archive.
 - **register**: the archive's rows for inputs and for what people and agents
   wrote: `archive.db` in standalone mode, `sinex.db` (a copy of what Sinex
@@ -172,7 +180,7 @@ the same change.
   page need not read the messages before it again.
 - **parent row**: in `| matches`, the row a matching child belongs to
   (`parent_id`).
-- **budget**: the size a page for a model may take.
+- **budget**: the size a page for a model, or a brief, may take.
 - **masking**: hiding credentials in output; stored bytes never change.
 - **change feed** and **position**: `changes --since POSITION`.
 

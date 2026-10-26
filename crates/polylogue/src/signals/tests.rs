@@ -119,7 +119,7 @@ fn on_new_fires_each_row_once_and_the_first_reading_is_a_baseline() {
 }
 
 #[test]
-fn past_the_rate_limit_a_notice_waits_for_the_next_briefing() {
+fn past_the_rate_limit_a_notice_is_kept_for_the_briefs() {
     let rule = Rule {
         rate_limit: Some((1, HOUR)),
         ..base("failing", "q")
@@ -270,4 +270,62 @@ fn rule_notes_are_read_or_refused_by_name() {
     .unwrap_err();
     assert!(e.reason.contains("not built"), "{}", e.reason);
     assert!(rule(&note("not json", Author::Operator)).is_err());
+    // The operator's rules reach the desktop unless they say otherwise;
+    // agents' rules only when they ask.
+    let plain = r#"{"query":"q"}"#;
+    assert!(rule(&note(plain, Author::Operator)).unwrap().interrupt);
+    assert!(!rule(&note(plain, Author::Agent(None))).unwrap().interrupt);
+    let quiet = r#"{"query":"q","interrupt":false}"#;
+    assert!(!rule(&note(quiet, Author::Operator)).unwrap().interrupt);
+}
+
+#[test]
+fn an_interrupt_runs_the_notify_command_and_reports_its_failure() {
+    use crate::daemon::{Request, Response, service::handle};
+    use std::os::unix::fs::PermissionsExt;
+    let d = crate::test_daemon::start("hello");
+    let out = d.home.join("notified");
+    let script = d.home.join("notify");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$1\" \"$2\" >> {}\n",
+            out.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let set = |value: &str| {
+        let r = handle(
+            Request::Setting {
+                request_id: Some(polylogue_store::user_writes::new_request_id()),
+                key: "notify.command".into(),
+                value: Some(value.into()),
+                machine: false,
+            },
+            &d.daemon,
+        );
+        assert!(matches!(r, Response::Ok { .. }), "{r:?}");
+    };
+    let rule = Rule {
+        name: "waiting".into(),
+        ..base("r1", "q")
+    };
+    let h = Handoff {
+        rule: "r1".into(),
+        row: "claude-code:s1".into(),
+        matched: 0,
+        at: 0,
+        how: How::Interrupt,
+        why: None,
+    };
+    set(&script.to_string_lossy());
+    notify(&d.daemon, &rule, &h).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "Polylogue: waiting|waiting: claude-code:s1\n"
+    );
+    set("/nonexistent/notifier");
+    let e = notify(&d.daemon, &rule, &h).unwrap_err();
+    assert!(e.contains("/nonexistent/notifier"), "{e}");
 }

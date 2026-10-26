@@ -54,15 +54,15 @@ pub struct Ask<'a> {
     pub now: i64,
     pub day: LogicalDay,
     pub embeddings: bool,
-    /// For `near:`: the nearest texts to a text, as the JSON the query
-    /// binds.
+    /// For `near:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
     pub fields: &'a [String],
 }
 
-/// Looks up the nearest texts to a text, as the JSON the query binds.
-pub type NearFn<'a> = dyn Fn(&str) -> Result<String, String> + 'a;
+/// Every stored text's similarity to a text, for `near:`.
+pub type NearFn<'a> =
+    dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
 /// The current saved queries by name (`saved_query` notes, newest
 /// revision, not withdrawn), for `query:NAME`.
@@ -205,29 +205,37 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         cursor.as_ref().map_or(ask.now, |c| c.now),
         seed,
     )?;
-    let mut program = polylogue_query::compile(ask.text, &opts)?;
+    let program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     let question = page::question(&program, &opts, ask.why)?;
-    let after = match &cursor {
-        Some(cursor) => {
-            let after = cursor.check(&program, &question)?;
-            if program.near.is_some() {
-                return Err(page::semantic_paging());
-            }
-            Some(after)
-        }
-        None => None,
-    };
-    if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
-        let hits = f(&near.text).map_err(|message| Failure {
+    let after = cursor
+        .as_ref()
+        .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
+        .transpose()?;
+    let similarity = match (&program.near, ask.near) {
+        (Some(near), Some(f)) => Some(f(&near.text).map_err(|message| Failure {
             kind: "embed".into(),
             message,
             detail: None,
-        })?;
-        if let Some(p) = program.params.get_mut(near.param - 1) {
-            *p = Param::Text(hits);
-        }
+        })?),
+        _ => None,
+    };
+    let answer = || answer(reader, &program, after, seed, question, ask.why);
+    match similarity {
+        Some(similarity) => reader.with_similarity(similarity, answer),
+        None => answer(),
     }
+}
+
+/// The answer to a compiled program: its count and one page after `after`.
+fn answer(
+    reader: &Reader<'_>,
+    program: &Program,
+    after: Option<Vec<Value>>,
+    seed: u64,
+    question: String,
+    why_asked: bool,
+) -> Result<Value, Failure> {
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
@@ -252,7 +260,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .unwrap_or(0);
     let page_size = program.page_size.max(1);
     let mut page_params = params.clone();
-    if let Some(after) = after {
+    if let Some(after) = &after {
         page_params.extend(after.iter().map(key_value));
     }
     // One row past the page says whether another page follows.
@@ -262,20 +270,17 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
     let more = rows.len() as u64 > page_size;
     rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
-    if more && program.near.is_some() {
-        return Err(page::semantic_paging());
-    }
     let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(&program, last, seed, question).encode()?),
+        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
         _ => None,
     };
 
     if program.shape == Shape::Rows {
-        snippets(reader, &program, &mut rows)?;
-        attach(reader, &program, &mut rows)?;
+        snippets(reader, program, &mut rows)?;
+        attach(reader, program, &mut rows)?;
     }
     for row in &mut rows {
-        present(&program, row)?;
+        present(program, row)?;
     }
     let outcome = if !program.incomplete.is_empty() {
         "incomplete"
@@ -302,8 +307,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         },
         "read_at": read_at,
     });
-    if ask.why && count == 0 {
-        out["why"] = why(reader, &program, &params)?;
+    if why_asked && count == 0 {
+        out["why"] = why(reader, program, &params)?;
     }
     Ok(out)
 }

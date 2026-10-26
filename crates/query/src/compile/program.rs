@@ -305,6 +305,28 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        // Words and `near:` together: the conditions and both orders are
+        // evaluated once, over the rows the conditions keep, and each row's
+        // fused rank joins it.
+        if let (Some(text), Some(near)) = (self.rank.clone(), self.near_rank.clone()) {
+            let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+            let rows = format!("f{}", self.ctes.len() + 1);
+            self.ctes.push(format!(
+                "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {} WHERE {})",
+                self.from(&scope)?,
+                and_all(&where_sql)
+            ));
+            let fused = format!("f{}", self.ctes.len() + 1);
+            self.ctes.push(format!(
+                "{fused} AS MATERIALIZED (SELECT k, -(1.0 / (60 + row_number() OVER (ORDER BY t IS NULL, t, k))) \
+                 - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / (60 + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r \
+                 FROM {rows})"
+            ));
+            // The fused rows are the rows the conditions keep: the join
+            // replaces evaluating them again.
+            self.fused_join = Some(format!("JOIN {fused} fused ON fused.k = {pk}"));
+            where_sql.clear();
+        }
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
@@ -482,8 +504,8 @@ impl<'a> Compiler<'a> {
                     cols.push((n, e, k, reference));
                 }
             }
-            if let Some(rank) = &self.rank {
-                cols.push(("rank".into(), rank.clone(), ColKind::Number, None));
+            if let Some(rank) = self.ranking() {
+                cols.push(("rank".into(), rank, ColKind::Number, None));
                 columns.push(Column {
                     name: "rank".into(),
                     kind: ColKind::Number,
@@ -564,7 +586,7 @@ impl<'a> Compiler<'a> {
             sql,
             params: self.params,
             columns,
-            ranked: self.rank.is_some(),
+            ranked: self.rank.is_some() || self.near_rank.is_some(),
             text_terms: self.text_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
@@ -610,7 +632,12 @@ impl<'a> Compiler<'a> {
 
     /// The FROM clause of a unit, joining the rows its fields read.
     pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
-        Ok(base_from(scope.unit, &scope.a))
+        let mut from = base_from(scope.unit, &scope.a);
+        for join in [&self.near_join, &self.fused_join].into_iter().flatten() {
+            from.push(' ');
+            from.push_str(join);
+        }
+        Ok(from)
     }
 
     /// The default filters a unit binds, dropped by a top-level condition
@@ -627,14 +654,26 @@ impl<'a> Compiler<'a> {
             .collect()
     }
 
+    /// How the rows rank, lower first: by full-text relevance, by
+    /// similarity to a `near:` text, or, with both, by reciprocal rank
+    /// fusion of the two orders over the rows the conditions keep (each
+    /// row scores `1/(60 + its place)` in each order it is in; a row with
+    /// no vector is in the text order only).
+    pub(super) fn ranking(&self) -> Option<String> {
+        if self.fused_join.is_some() {
+            return Some("fused.r".into());
+        }
+        self.rank.clone().or_else(|| self.near_rank.clone())
+    }
+
     pub(super) fn default_order(&self, scope: &RowContext) -> Vec<String> {
         let a = &scope.a;
         let spec = units::spec(scope.unit);
         let time = a.expand(spec.time);
-        if let Some(rank) = &self.rank {
+        if let Some(rank) = self.ranking() {
             return vec![
                 format!("{rank} IS NULL"),
-                rank.clone(),
+                rank,
                 format!("{time} IS NULL"),
                 format!("{time} DESC"),
             ];

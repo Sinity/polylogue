@@ -158,12 +158,12 @@ pub struct WhyClause {
     pub sql: String,
 }
 
-/// A `near:` term to rank by: its text and the parameter holding the
-/// nearest texts as a JSON array of `[text id, similarity]`.
+/// A `near:` term to rank by: the text whose similarity to each stored
+/// text the caller computes and supplies while the query runs
+/// (`pl_similarity`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Near {
     pub text: String,
-    pub param: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -192,8 +192,7 @@ pub struct Program {
     pub why: Vec<WhyClause>,
     pub why_of: String,
     pub page_size: u64,
-    /// `near:`: the text to embed, and the 1-based parameter the caller
-    /// fills with the nearest texts before running the query.
+    /// `near:`: the text to embed and rank by.
     pub near: Option<Near>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
@@ -429,8 +428,15 @@ pub(crate) struct Compiler<'a> {
     aliases: usize,
     /// Saved queries being expanded, innermost last: a cycle is refused.
     saved_stack: Vec<String>,
-    /// The ranking expression, when a top-level text term ranks the rows.
+    /// The full-text ranking expression, when a top-level text term ranks
+    /// the rows.
     rank: Option<String>,
+    /// The semantic ranking expression of a `near:` term, and the join
+    /// that brings its similarities to the unit's rows.
+    near_rank: Option<String>,
+    near_join: Option<String>,
+    /// With words and `near:` together, the join of each row's fused rank.
+    fused_join: Option<String>,
     near: Option<Near>,
 }
 
@@ -450,6 +456,9 @@ impl<'a> Compiler<'a> {
             aliases: 0,
             saved_stack: vec![],
             rank: None,
+            near_rank: None,
+            near_join: None,
+            fused_join: None,
             near: None,
         }
     }
