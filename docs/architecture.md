@@ -31,7 +31,10 @@ rules are checked by [xtask](../xtask/src/main.rs).
 ## Databases
 
 [Archive](../crates/store/src/archive.rs) owns the directory, the archive lock
-and the checks at open. One writer thread makes every change.
+and the checks at open. One writer thread makes every change. Notes,
+settings, deliveries and browser requests have a queue of their own that it
+serves before its next batch, so during a first build they wait for at most
+the transaction being written.
 
 | File | Holds |
 |---|---|

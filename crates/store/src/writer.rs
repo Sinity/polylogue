@@ -69,13 +69,10 @@ enum Msg {
         SyncSender<Result<BlobHash>>,
     ),
     Stop,
+    /// A user write is waiting in its own queue.
+    Wake,
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>),
-    /// A note, delivery or setting; answered once committed.
-    User(
-        Box<crate::user_writes::UserRequest>,
-        SyncSender<Result<crate::user_writes::UserOutcome>>,
-    ),
     /// An excision, with the blob store whose files it changes.
     Excise(
         Box<crate::excise::ExciseRequest>,
@@ -97,12 +94,35 @@ pub struct Writer {
 /// Orders new work against shutdown. Once the stop message is queued,
 /// every remaining sender refuses new work rather than acknowledging a
 /// message that the receiver will never process.
+///
+/// User writes have a queue of their own, which the writer serves before
+/// its next piece of bulk work: a note, setting, delivery or browser
+/// request waits for at most the transaction being written, not behind a
+/// first build's queued batches.
 #[derive(Clone)]
-struct WriterQueue(Arc<Mutex<Option<SyncSender<Msg>>>>);
+struct WriterQueue {
+    bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
+    users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
+}
+
+type UserMsg = (
+    Box<crate::user_writes::UserRequest>,
+    SyncSender<Result<crate::user_writes::UserOutcome>>,
+);
+
+/// User writes waiting before their senders block.
+const USER_QUEUE: usize = 64;
 
 impl WriterQueue {
+    fn new(bulk: SyncSender<Msg>, users: SyncSender<UserMsg>) -> Self {
+        Self {
+            bulk: Arc::new(Mutex::new(Some(bulk))),
+            users: Arc::new(Mutex::new(Some(users))),
+        }
+    }
+
     fn send(&self, message: Msg) -> std::result::Result<(), ()> {
-        self.0
+        self.bulk
             .lock()
             .map_err(|_| ())?
             .as_ref()
@@ -111,8 +131,30 @@ impl WriterQueue {
             .map_err(|_| ())
     }
 
+    fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
+        self.users
+            .lock()
+            .map_err(|_| ())?
+            .as_ref()
+            .ok_or(())?
+            .send(message)
+            .map_err(|_| ())?;
+        // Wakes an idle writer. While a bulk sender holds the lock the queue
+        // is full and the writer busy; it serves user writes before its next
+        // bulk message anyway.
+        if let Ok(bulk) = self.bulk.try_lock()
+            && let Some(bulk) = bulk.as_ref()
+        {
+            let _ = bulk.try_send(Msg::Wake);
+        }
+        Ok(())
+    }
+
     fn stop(&self) {
-        if let Ok(mut accepting) = self.0.lock()
+        if let Ok(mut users) = self.users.lock() {
+            users.take();
+        }
+        if let Ok(mut accepting) = self.bulk.lock()
             && let Some(sender) = accepting.take()
         {
             let _ = sender.send(Msg::Stop);
@@ -243,11 +285,12 @@ impl Writer {
         // corpus). With a short queue the pool keeps a job's bytes counted
         // until its batch is queued, so memory stays bounded by that limit.
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
+        let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
-            .spawn(move || inner.run(&rx))?;
+            .spawn(move || inner.run(&rx, &users_rx))?;
         Ok(Self {
-            tx: Some(WriterQueue(Arc::new(Mutex::new(Some(tx))))),
+            tx: Some(WriterQueue::new(tx, users)),
             handle: Some(handle),
         })
     }
@@ -268,7 +311,7 @@ impl Writer {
     }
 
     /// Writes one user request (a note, delivery or setting) and waits for
-    /// it to commit. It is written after the batches already queued.
+    /// it to commit. It goes ahead of batches still queued.
     pub fn user(
         &self,
         request: crate::user_writes::UserRequest,
@@ -441,7 +484,7 @@ fn user_via(
     request: crate::user_writes::UserRequest,
 ) -> Result<crate::user_writes::UserOutcome> {
     let (reply, wait) = sync_channel(1);
-    tx.send(Msg::User(Box::new(request), reply))
+    tx.send_user((Box::new(request), reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -466,9 +509,15 @@ struct Inner {
 }
 
 impl Inner {
-    fn run(&mut self, rx: &Receiver<Msg>) {
+    /// Writes every waiting user request, each answered once committed.
+    fn serve_users(&mut self, users: &Receiver<UserMsg>) {
+        while let Ok((request, reply)) = users.try_recv() {
+            let _ = reply.send(self.write_user(&request));
+        }
+    }
+
+    fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
         let mut flushes = Vec::new();
-        let mut users = Vec::new();
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
@@ -477,6 +526,7 @@ impl Inner {
         let mut assets = Vec::new();
         let mut blobs = Vec::new();
         while let Ok(first) = rx.recv() {
+            self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
                 .lock()
@@ -511,6 +561,7 @@ impl Inner {
                         stopping = true;
                         false
                     }
+                    Msg::Wake => false,
                     Msg::Batch(b) => {
                         *rows += weight(&b);
                         *bytes += input_bytes(&b);
@@ -519,10 +570,6 @@ impl Inner {
                     }
                     Msg::Flush(reply) => {
                         flushes.push(reply);
-                        false
-                    }
-                    Msg::User(request, reply) => {
-                        users.push((request, reply));
                         false
                     }
                     Msg::Excise(request, store, reply) => {
@@ -575,9 +622,7 @@ impl Inner {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
             }
-            for (request, reply) in users.drain(..) {
-                let _ = reply.send(self.write_user(&request));
-            }
+            self.serve_users(users);
             for (request, store, reply) in excisions.drain(..) {
                 let result = self.write_excision(&request, &store);
                 let interrupted = matches!(&result, Err(StoreError::ExcisionInterrupted(_)));
