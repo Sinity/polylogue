@@ -54,7 +54,25 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
 
 /// Runs the daemon until its listener stops. Each transport is dropped
 /// before the application workers and archive lock.
+/// The loop holds a file open for each blob it is storing, and a first build
+/// stores thousands at once. Services start with a soft limit of 1,024 open
+/// files; the hard limit is the real bound, so the soft one is raised to it.
+fn raise_open_file_limit() {
+    use rustix::process::{Resource, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    if limit.current != limit.maximum {
+        let raised = rustix::process::Rlimit {
+            current: limit.maximum,
+            maximum: limit.maximum,
+        };
+        if let Err(e) = setrlimit(Resource::Nofile, raised) {
+            eprintln!("polylogue: raise the open file limit: {e}");
+        }
+    }
+}
+
 pub fn serve() -> std::io::Result<()> {
+    raise_open_file_limit();
     let root = Archive::default_root();
     #[cfg(feature = "sinex")]
     let mode = crate::sinex::configured();

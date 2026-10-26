@@ -104,7 +104,7 @@ fn capture_failure_leaves_no_catalog_input() {
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 0);
 }
 
-pub(super) fn engine(
+pub(crate) fn engine(
     w: &polylogue_testkit::ClaudeHome,
     chunk: u64,
 ) -> (Engine, polylogue_store::ArchiveLock) {

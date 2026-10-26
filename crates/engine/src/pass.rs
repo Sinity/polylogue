@@ -619,7 +619,7 @@ impl Engine {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 stored,
                 Arc::clone(&self.blobs),
-            )?)))
+            ))))
         } else {
             pool::Bytes::Stored(Arc::new(stored))
         };

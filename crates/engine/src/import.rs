@@ -216,7 +216,7 @@ impl Engine {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 chain,
                 Arc::clone(&self.blobs),
-            )?)))
+            ))))
         };
         let mut plan = Plan::stored(
             path.to_path_buf(),
@@ -364,4 +364,4 @@ pub(super) fn files_under(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Resul
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
