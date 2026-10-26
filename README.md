@@ -95,8 +95,9 @@ context, on by default (`polylogue setting briefing.session_start off`
 turns it off). The brief carries the operator's notes on the directory and
 its repository, other agents working there now, Beads claimed there and
 still open, what the recent sessions there did (commits, pull requests,
-files changed, checks, plan items left open, the last answer), commands
-that failed there with no later success, and the last day's signal notices.
+files changed, checks, plan items left open, the last answer), checks
+(tests, builds, lints) that failed there with no later pass, and the last
+day's signal notices.
 It stays within `briefing.budget` tokens (default 2000) and names what it
 left out with the command that shows it. A session ID pasted into a prompt
 brings that session's takeover context.

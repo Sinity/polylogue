@@ -11,7 +11,7 @@
 //! - Beads claimed here and not closed or released;
 //! - what the recent sessions here did: commits, pull requests, files
 //!   changed, checks, Beads, plan items left open, the last answer;
-//! - commands that failed here with no later success;
+//! - checks (tests, builds, lints) that failed here with no later pass;
 //! - signal notices of the last day;
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
@@ -757,10 +757,10 @@ fn session_start(
         })
         .collect();
     fit.section(
-        "Commands that failed here with no later success:",
+        "Checks that failed here with no later pass:",
         failing,
-        "failing commands",
-        &format!("polylogue tool_calls where outcome:error since:7d cwd:{here}"),
+        "failing checks",
+        "polylogue work kind:verification state:error",
     );
     let notices: Vec<Item> = reader
         .notices_since(

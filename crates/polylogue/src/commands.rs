@@ -652,7 +652,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "brief",
-        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, commands failing with no later success, and signal notices; within `briefing.budget` tokens",
+        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, checks failing with no later pass, and signal notices; within `briefing.budget` tokens",
         args: &[
             opt(
                 "session",
