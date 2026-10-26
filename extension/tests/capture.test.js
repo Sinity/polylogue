@@ -90,13 +90,13 @@ describe("a capture", () => {
     expect(state.last.outcome).toBe("unchanged");
   });
 
-  it("is not stored again over several cycles when the provider only reorders its JSON", async () => {
+  it("is not stored again over several cycles when the provider only reorders its JSON or adds null keys", async () => {
     const host = storingHost();
     let read = 0;
     const versions = [
       { conversation_id: "c1", safe_urls: ["https://a.example", "https://b.example"], mapping: {} },
       { safe_urls: ["https://b.example", "https://a.example"], mapping: {}, conversation_id: "c1" },
-      { mapping: {}, conversation_id: "c1", safe_urls: ["https://a.example", "https://b.example"] },
+      { mapping: {}, conversation_id: "c1", flags: null, safe_urls: ["https://a.example", "https://b.example"] },
     ];
     const page = async (request) => (request.type === "conversation"
       ? { status: 200, info: { id: "c1", url: "https://chatgpt.com/c/c1" }, body: new Blob([JSON.stringify(versions[read++ % 3])]) }
