@@ -377,6 +377,7 @@ fn recall_pages_continue_by_cursor() {
     let now = Timestamp::from_unix_ms(0).unwrap();
     let mut seen = Vec::new();
     let mut cursor = None;
+    let mut first_next = None;
     loop {
         let ask = Ask::Recall {
             text: "wombat".into(),
@@ -387,7 +388,10 @@ fn recall_pages_continue_by_cursor() {
         let p = prepare(&reader, &ask, "d", now, None).unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
         match p.next {
-            Some(next) => cursor = Some(next),
+            Some(next) => {
+                first_next.get_or_insert_with(|| next.clone());
+                cursor = Some(next);
+            }
             None => break,
         }
     }
@@ -401,7 +405,7 @@ fn recall_pages_continue_by_cursor() {
         text: "other".into(),
         cwd: None,
         for_session: None,
-        cursor: Some(recall_cursor(20, "wombat", None)),
+        cursor: first_next,
     };
     assert!(prepare(&reader, &ask, "d", now, None).is_err());
 }

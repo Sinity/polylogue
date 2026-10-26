@@ -170,6 +170,7 @@ pub fn run(
     what: &str,
     sessions: Option<Vec<i64>>,
     now: i64,
+    day: &LogicalDay,
 ) -> Result<Value, Failure> {
     let Some((m, metric)) = find(what) else {
         return Err(bad_request(format!("no measurement `{what}`: {}", names())));
@@ -180,14 +181,13 @@ pub fn run(
             m.name
         )));
     }
-    let day = LogicalDay::system();
     let run = Run {
         selection: Selection {
             sessions,
             ..Selection::default()
         },
         now,
-        day: &day,
+        day,
         metric,
     };
     Ok((m.run)(reader, &run)?)

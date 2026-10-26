@@ -190,6 +190,47 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         .replace("{v}", &t.end().to_string()))
 }
 
+/// `evidence_until:T`: the evidence Polylogue had by T, read with today's
+/// parsers, prices and excisions. Rows count when their bytes were first
+/// seen by then; notes as each family stood then.
+pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let end = c.time(x.name, &x.value()?, x.span)?.end();
+    let a = &x.scope.a;
+    let cutoff = match x.unit {
+        Unit::Messages | Unit::Blocks | Unit::ToolCalls => {
+            format!("{} < {end}", fields::first_seen_of(&a.m))
+        }
+        Unit::Events => format!("{} < {end}", fields::event_first_seen(a)),
+        Unit::Notes => format!(
+            "({r}.created_at < {end} \
+             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = {r}.first_note \
+               AND later.commit_seq > {r}.commit_seq AND later.created_at < {end}) \
+             AND NOT EXISTS (SELECT 1 FROM a.note_relation nw JOIN a.note wn ON wn.id = nw.note_id \
+               WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {r}.first_note AND wn.created_at < {end}))",
+            r = x.row()
+        ),
+        // A session's counts, cost, times and title as they stood then
+        // would each need recomputing from that evidence; the rows of that
+        // time answer the question instead.
+        other => {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "evidence_until asks for rows as Polylogue had them; {} figures are not recomputed \
+                     as they stood then: ask for the session's messages, tool calls or notes \
+                     (`messages where session:ID evidence_until:…`)",
+                    other.singular()
+                ),
+                position: x.span.start,
+            });
+        }
+    };
+    let note = "evidence_until: the rows Polylogue had by then, read with today's parsers, prices and excisions";
+    if !c.notes.iter().any(|n| n == note) {
+        c.notes.push(note.into());
+    }
+    Ok(cutoff)
+}
+
 pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let cursor = x
         .one()

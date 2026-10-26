@@ -8,7 +8,7 @@
 //! same ID with other content is refused as a conflict.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Author, DeliveryOutcome, NewNote, Timestamp};
+use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
@@ -421,7 +421,10 @@ fn add_note(
     note: &NewNote,
     seq: i64,
 ) -> Result<UserOutcome> {
-    if note.targets.is_empty() {
+    // A saved query or a signal rule is a definition, about nothing in
+    // particular; every other note is about something.
+    let definition = matches!(note.kind, NoteKind::SavedQuery | NoteKind::Signal);
+    if note.targets.is_empty() && !definition {
         return Err(StoreError::Invalid(
             "a note needs at least one target".into(),
         ));

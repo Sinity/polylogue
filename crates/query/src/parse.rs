@@ -30,6 +30,7 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
             return Err(not_a_unit(text, &bad));
         }
     }
+    refuse_bare_where(text, query.clone())?;
     let Some(shape) = query.children().find(|p| p.as_rule() != Rule::EOI) else {
         return Ok(Query {
             source: Source::Empty,
@@ -37,6 +38,11 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
             stages: vec![],
         });
     };
+    Ok(shaped(shape))
+}
+
+/// A query from its shape: `unit_query` or `expr_query`.
+fn shaped(shape: Pair<'_, Rule>) -> Query {
     match shape.as_rule() {
         Rule::unit_query => {
             let mut inner = shape.children();
@@ -52,26 +58,13 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
                     _ => {}
                 }
             }
-            Ok(Query {
+            Query {
                 source: Source::Unit { unit, cond },
                 attach,
                 stages,
-            })
+            }
         }
         Rule::expr_query => {
-            if let Some((start, end)) = shape.clone().children().next().and_then(bare_where) {
-                // `kind:* where exists …` would search for the word "where"
-                // and answer wrongly; refuse it with the reading meant.
-                let joined = format!("{} {}", text[..start].trim_end(), text[end..].trim_start());
-                return Err(QueryError::syntax(
-                    text,
-                    start,
-                    "`where` follows a unit (`sessions where …`); conditions on sessions are \
-                     joined directly or with AND, and \"where\" in quotes searches the word"
-                        .to_owned(),
-                    Some(joined.trim().to_owned()),
-                ));
-            }
             let mut inner = shape.children();
             let cond = expr(inner.next().expect("expr"));
             let mut attach = vec![];
@@ -83,14 +76,42 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
                     _ => {}
                 }
             }
-            Ok(Query {
+            Query {
                 source: Source::Sessions { cond },
                 attach,
                 stages,
-            })
+            }
         }
         other => unreachable!("query shape {other:?}"),
     }
+}
+
+/// The query inside parentheses (`inner_query`).
+fn inner_query(p: Pair<'_, Rule>) -> Query {
+    shaped(p.children().next().expect("inner query shape"))
+}
+
+/// `kind:* where exists …` would search for the word "where" and answer
+/// wrongly; it is refused with the reading meant, wherever conditions
+/// without a unit stand.
+fn refuse_bare_where(text: &str, query: Pair<'_, Rule>) -> Result<(), QueryError> {
+    for shape in query.into_inner().flatten() {
+        if shape.as_rule() != Rule::expr_query {
+            continue;
+        }
+        if let Some((start, end)) = shape.children().next().and_then(bare_where) {
+            let joined = format!("{} {}", text[..start].trim_end(), text[end..].trim_start());
+            return Err(QueryError::syntax(
+                text,
+                start,
+                "`where` follows a unit (`sessions where …`); conditions on sessions are \
+                 joined directly or with AND, and \"where\" in quotes searches the word"
+                    .to_owned(),
+                Some(joined.trim().to_owned()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The deepest parenthesis nesting outside quotes.
@@ -139,6 +160,8 @@ impl<'i> InnerPairs<'i> for Pair<'i, Rule> {
                     | Rule::kw_NOT
                     | Rule::kw_exists
                     | Rule::kw_seq
+                    | Rule::kw_count
+                    | Rule::kw_in
             )
         }
         self.into_inner()
@@ -279,6 +302,63 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
                 cond: Box::new(cond),
             }
         }
+        Rule::counted => {
+            let mut i = p.children();
+            let unit = unit(i.next().expect("row unit"));
+            let mut cond = None;
+            let mut op = None;
+            let mut n = 0;
+            for q in i {
+                match q.as_rule() {
+                    Rule::expr => cond = Some(Box::new(expr(q))),
+                    Rule::op => op = Op::parse(q.as_str()),
+                    Rule::number => n = number(q),
+                    _ => {}
+                }
+            }
+            CondKind::Count {
+                unit,
+                cond,
+                op: op.expect("grammar op"),
+                n,
+            }
+        }
+        Rule::member_of => {
+            let mut i = p.children();
+            CondKind::In {
+                field: i.next().expect("field").as_str().to_owned(),
+                query: Box::new(inner_query(i.next().expect("inner query"))),
+            }
+        }
+        Rule::saved_call => {
+            let mut i = p.children();
+            let head = i.next().expect("saved head");
+            let name = head
+                .children()
+                .next()
+                .expect("saved name")
+                .as_str()
+                .to_owned();
+            let arguments = i
+                .map(|a| {
+                    let mut parts = a.children();
+                    let parameter = parts.next().expect("parameter").as_str().to_owned();
+                    let value = parts.next().expect("argument value");
+                    let quoted = value.as_rule() == Rule::quoted;
+                    let text = if quoted {
+                        unquote(value)
+                    } else {
+                        value.as_str().to_owned()
+                    };
+                    Argument {
+                        parameter,
+                        text,
+                        quoted,
+                    }
+                })
+                .collect();
+            CondKind::Saved { name, arguments }
+        }
         Rule::seq => {
             let mut steps = vec![];
             let mut gaps = vec![];
@@ -314,6 +394,10 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
             let field = i.next().expect("field").as_str().to_owned();
             let v = i.next().expect("mvalue").children().next().expect("value");
             match v.as_rule() {
+                Rule::quoted if field.eq_ignore_ascii_case("query") => CondKind::Saved {
+                    name: unquote(v),
+                    arguments: vec![],
+                },
                 Rule::quoted => CondKind::Match {
                     field,
                     value: Value::One {
@@ -330,6 +414,10 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
                 Rule::any_value => CondKind::Match {
                     field,
                     value: Value::Any,
+                },
+                Rule::bare if field.eq_ignore_ascii_case("query") => CondKind::Saved {
+                    name: v.as_str().to_owned(),
+                    arguments: vec![],
                 },
                 Rule::bare => {
                     let text = v.as_str();
@@ -568,6 +656,25 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
             StageKind::Scope {
                 unit,
                 cond: i.next().map(expr),
+            }
+        }
+        Rule::combine => {
+            let mut i = s.children();
+            let how = match i
+                .next()
+                .expect("combination")
+                .as_str()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "union" => Combination::Union,
+                "intersect" => Combination::Intersect,
+                "except" => Combination::Except,
+                _ => Combination::Fuse,
+            };
+            StageKind::Combine {
+                how,
+                query: Box::new(inner_query(i.next().expect("inner query"))),
             }
         }
         other => unreachable!("stage {other:?}"),

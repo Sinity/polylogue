@@ -55,7 +55,7 @@ fn ask(text: &str) -> Ask<'_> {
         why: false,
         session: None,
         now: NOW,
-        day: LogicalDay::named("Europe/Warsaw", 240).unwrap(),
+        day: Some(LogicalDay::named("Europe/Warsaw", 240).unwrap()),
         embeddings: false,
         near: None,
         fields: &[],

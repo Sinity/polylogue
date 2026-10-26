@@ -721,7 +721,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "setting",
-        help: "Read or set a setting (`briefing.session_start off`)",
+        help: "Read or set a setting: `briefing.session_start off`, `briefing.budget 2000`, `notify.command`, `day.zone Europe/Warsaw` and `day.logical_start 04:00` (the logical day that dates, `today` and `group by day` use)",
         args: &[
             pos("key", Kind::Text, "The setting"),
             pos_opt(
@@ -785,6 +785,55 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "save",
+        help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
+        args: &[
+            Arg {
+                required: true,
+                ..pos("name", Kind::Text, "Letters, digits, `_`, `-` and `.`")
+            },
+            Arg {
+                required: true,
+                ..pos("query", Kind::Rest, "The query")
+            },
+        ],
+        action: Action::Request(requests::save),
+        mcp: true,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "watch",
+        help: "Watch a query: each row that starts matching is a notice in `status`, the next briefs and `notices`. Rows matching when the watch starts are its baseline. Withdraw it like a note",
+        args: &[
+            opt(
+                "name",
+                Kind::Text,
+                "What the notices are called (default: the query)",
+            ),
+            opt(
+                "for",
+                Kind::Text,
+                "How long a row must keep matching before it is a notice, such as 20m",
+            ),
+            opt(
+                "notify",
+                Kind::Bool,
+                "Also show each notice as a desktop notification",
+            ),
+            Arg {
+                required: true,
+                ..pos("query", Kind::Rest, "The query")
+            },
+        ],
+        action: Action::Request(requests::watch),
+        mcp: true,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
         name: "keep",
         help: "Run a query and keep the rows it returned, to read back later as `result:<id>` (or `result:<id>.matches`) exactly as they were",
         args: &[
@@ -800,7 +849,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "sql",
-        help: "Read-only SQL over the stable views",
+        help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_notes, whose names and columns stay; the tables change with the index format",
         args: &[pos("statement", Kind::Text, "One SQL statement")],
         action: Action::Request(requests::sql),
         http: true,

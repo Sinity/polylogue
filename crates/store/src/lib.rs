@@ -37,6 +37,7 @@ pub mod search;
 pub mod session_export;
 mod session_row;
 pub mod sql_functions;
+pub mod sql_views;
 pub mod staging;
 mod text_rows;
 pub mod timing;

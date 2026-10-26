@@ -118,11 +118,37 @@ pub enum CondKind {
         unit: Unit,
         cond: Box<Cond>,
     },
+    /// `count(UNIT [where COND]) OP N`: how many related rows match.
+    Count {
+        unit: Unit,
+        cond: Option<Box<Cond>>,
+        op: Op,
+        n: u64,
+    },
+    /// `FIELD in (QUERY)`: the field's value is one of the values the
+    /// other query groups by.
+    In {
+        field: String,
+        query: Box<Query>,
+    },
+    /// `query:NAME` or `query:NAME(PARAMETER=VALUE, …)`: a saved query.
+    Saved {
+        name: String,
+        arguments: Vec<Argument>,
+    },
     /// `seq(step -> [gap] step …)`: tool calls in session order.
     Seq {
         steps: Vec<Cond>,
         gaps: Vec<Gap>,
     },
+}
+
+/// A saved query's parameter and the value given for it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Argument {
+    pub parameter: String,
+    pub text: String,
+    pub quoted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -248,6 +274,26 @@ pub enum StageKind {
         unit: Unit,
         cond: Option<Cond>,
     },
+    /// `| union (QUERY)` and the others: the rows combined with another
+    /// query's rows of the same unit.
+    Combine {
+        how: Combination,
+        query: Box<Query>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Combination {
+    /// The rows of either query; ranked rows are ranked by reciprocal
+    /// rank fusion of both orders.
+    Union,
+    /// The rows of both, in this query's order.
+    Intersect,
+    /// This query's rows that the other does not have, in this order.
+    Except,
+    /// The same rows, ranked also by the other query's order.
+    Fuse,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

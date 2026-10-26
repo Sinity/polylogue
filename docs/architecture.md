@@ -168,7 +168,11 @@ query ranked by `near:` pages the same way: its similarities come from the
 vectors held in memory, through `pl_similarity(text_hash)` while the query
 runs, so its other conditions choose the rows before any ranking; with
 words in the same query the two orders are fused (reciprocal rank fusion).
-Its cursor is refused once vectors were stored or removed.
+Its cursor is refused once vectors were stored or removed. A query inside a
+query (a combining stage, `FIELD in (…)`) is compiled on its own over the
+outer query's parameters and read as a subquery of the one statement; a
+union with a ranked side ranks by fusing every list's order, computed once
+in the statement, so it pages like any other answer.
 [Query page tests](../crates/polylogue/src/daemon/query/tests/pages.rs)
 cover this.
 

@@ -431,6 +431,18 @@ pub static FIELDS: &[Field] = &[
     sp(Sessions, "tool", "the session made such a tool call", custom::session_tool_call),
     sp(Sessions, "action", "the session made such a tool call", custom::session_tool_call),
     f(Sessions, "started", Time, "first own message or event").sql("{s}.started_at"),
+    f(
+        Sessions,
+        "first_seen",
+        Time,
+        "when Polylogue first had any of its messages",
+    ).sql_fn(session_first_seen),
+    sp(
+        Sessions,
+        "evidence_until",
+        "the evidence Polylogue had by the time (asked of messages, blocks, tool calls, events and notes)",
+        custom::evidence_until,
+    ),
     f(Sessions, "last_active", Time, "last own message or event").sql("{s}.last_activity_at"),
     sp(Sessions, "since", "active on or after the time", custom::since),
     sp(Sessions, "until", "begun on or before the time", custom::until),
@@ -504,6 +516,18 @@ pub static FIELDS: &[Field] = &[
     f(Messages, "at", Time, "provider time").sql("{m}.at"),
     f(
         Messages,
+        "first_seen",
+        Time,
+        "when Polylogue first had its bytes",
+    ).sql_fn(message_first_seen),
+    sp(
+        Messages,
+        "evidence_until",
+        "first seen by the time: the evidence Polylogue had then",
+        custom::evidence_until,
+    ),
+    f(
+        Messages,
         "duplicate",
         Bool,
         "a turn another input of the session also holds, shown from that input",
@@ -537,6 +561,18 @@ pub static FIELDS: &[Field] = &[
     f(Blocks, "media_type", Match, "").sql("{b}.media_type"),
     f(Blocks, "file_name", Substring, "").sql("{b}.file_name"),
     f(Blocks, "at", Time, "the message's time").sql("{m}.at"),
+    f(
+        Blocks,
+        "first_seen",
+        Time,
+        "when Polylogue first had its message's bytes",
+    ).sql_fn(message_first_seen),
+    sp(
+        Blocks,
+        "evidence_until",
+        "its message first seen by the time",
+        custom::evidence_until,
+    ),
     sp(Blocks, "since", "at or after the time", custom::since),
     sp(Blocks, "until", "at or before the time", custom::until),
     // tool_calls
@@ -571,6 +607,18 @@ pub static FIELDS: &[Field] = &[
     ),
     f(ToolCalls, "exit_code", Number, "").sql("{t}.exit_code"),
     f(ToolCalls, "at", Time, "").sql("{t}.at"),
+    f(
+        ToolCalls,
+        "first_seen",
+        Time,
+        "when Polylogue first had the bytes of the message that made the call",
+    ).sql_fn(message_first_seen),
+    sp(
+        ToolCalls,
+        "evidence_until",
+        "its call first seen by the time",
+        custom::evidence_until,
+    ),
     sp(ToolCalls, "since", "ended at or after the time, or still open", custom::since),
     sp(ToolCalls, "until", "started at or before the time", custom::until),
     sp(ToolCalls, "child", "for subagent calls: the child session", custom::spawned_child),
@@ -599,6 +647,18 @@ pub static FIELDS: &[Field] = &[
         "compaction, model_switch, permission, …",
     ).sql("{r}.kind"),
     f(Events, "at", Time, "").sql("{r}.at"),
+    f(
+        Events,
+        "first_seen",
+        Time,
+        "when Polylogue first had its bytes",
+    ).sql_fn(event_first_seen),
+    sp(
+        Events,
+        "evidence_until",
+        "first seen by the time",
+        custom::evidence_until,
+    ),
     sp(Events, "since", "at or after the time", custom::since),
     sp(Events, "until", "at or before the time", custom::until),
     // links
@@ -663,6 +723,12 @@ pub static FIELDS: &[Field] = &[
         "a withdrawal names it",
     ).sql_fn(notes_withdrawn),
     sp(Notes, "since", "created at or after the time", custom::since),
+    sp(
+        Notes,
+        "evidence_until",
+        "the notes stored by the time, each family at its revision then",
+        custom::evidence_until,
+    ),
     sp(Notes, "until", "created at or before the time", custom::until),
     // deliveries
     f(Deliveries, "id", Prefix, "").sql("{r}.id"),
@@ -1202,6 +1268,47 @@ fn work_goal_field(a: &Aliases) -> String {
 /// A note that is its family's current revision and not withdrawn.
 pub fn live_note(n: &str) -> String {
     format!("{} AND NOT {}", current_note(n), withdrawn_note(n))
+}
+
+/// When Polylogue first had message `m`'s bytes: the earliest observation,
+/// over every chain whose records hold a version of it, of a revision of
+/// that chain long enough to cover those records.
+pub fn first_seen_of(m: &str) -> String {
+    format!(
+        "(SELECT min(fo.seen_at) FROM message_source fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         WHERE fs.message_pk = {m}.pk)"
+    )
+}
+
+fn message_first_seen(a: &Aliases) -> String {
+    first_seen_of(&a.m)
+}
+
+fn session_first_seen(a: &Aliases) -> String {
+    format!(
+        "(SELECT min(fo.seen_at) FROM message fm JOIN message_source fs ON fs.message_pk = fm.pk \
+         JOIN input_ref fi ON fi.pk = fs.input_pk \
+         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         WHERE fm.session_pk = {}.pk)",
+        a.s
+    )
+}
+
+/// An event's first observation, as for a message, over its one chain.
+pub fn event_first_seen(a: &Aliases) -> String {
+    format!(
+        "(SELECT min(fo.seen_at) FROM input_ref fi \
+         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
+         AND fr.length > {r}.source_start AND fr.length >= coalesce({r}.source_end, {r}.source_start) \
+         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         WHERE fi.pk = {r}.input_pk)",
+        r = a.row
+    )
 }
 
 pub fn current_note(n: &str) -> String {

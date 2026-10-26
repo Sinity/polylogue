@@ -175,6 +175,13 @@ the same change.
 
 - **query**, **unit** (what a query lists: sessions, messages, ...),
   **field**, **condition**, **measure**.
+- **saved query** (`query:NAME`) and its **parameters** (`$word` in its
+  text, given as `query:NAME(word=VALUE)`); the note revision a name
+  resolved to is its **definition**.
+- **combining stage**: `| union (…)`, `| intersect (…)`, `| except (…)` or
+  `| fuse (…)`, with another query of the same unit.
+- **reciprocal rank fusion**: ranking rows by their places in several
+  ordered lists; `found_in` names the lists that ranked a row.
 - **page** and **cursor**: a page ends with a cursor holding the last key
   shown; the next page reads the rows after it.
 - **view**: how a session is shown: `full`, `dialogue`, `prompts`,

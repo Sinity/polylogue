@@ -1,7 +1,7 @@
 //! One batch of the change feed, prepared completely before it is sent.
 use super::{Failure, present, validate, values};
 use crate::daemon::Response;
-use polylogue_model::{ChangePosition, LogicalDay};
+use polylogue_model::ChangePosition;
 use polylogue_query::{Clock, Options};
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
@@ -154,7 +154,7 @@ pub(crate) fn prepare(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: Clock::new(now, LogicalDay::system()),
+            clock: Clock::new(now, super::logical_day(reader)?),
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,

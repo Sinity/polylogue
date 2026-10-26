@@ -16,7 +16,7 @@ fn ask(text: &str, now: i64) -> Ask<'_> {
         why: false,
         session: None,
         now,
-        day: LogicalDay::named("UTC", 0).unwrap(),
+        day: Some(LogicalDay::named("UTC", 0).unwrap()),
         embeddings: false,
         near: None,
         fields: &[],

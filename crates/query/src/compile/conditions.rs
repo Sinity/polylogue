@@ -9,7 +9,8 @@ impl<'a> Compiler<'a> {
             CondKind::Url { .. } | CondKind::Position { .. } => true,
             CondKind::Match { field, .. } => {
                 let f = field.to_ascii_lowercase();
-                self.opts.origins.contains(&f) || matches!(f.as_str(), "session" | "message")
+                self.opts.origins.contains(&f)
+                    || matches!(f.as_str(), "session" | "message" | "block" | "note")
             }
             CondKind::Text {
                 text,
@@ -70,6 +71,13 @@ impl<'a> Compiler<'a> {
                 });
             }
             CondKind::Exists { unit, cond } => self.exists(*unit, cond, scope, c.span)?,
+            CondKind::Count { unit, cond, op, n } => {
+                self.counted(*unit, cond.as_deref(), *op, *n, scope, c.span)?
+            }
+            CondKind::In { field, query } => self.member_of(field, query, scope, c.span)?,
+            CondKind::Saved { name, arguments } => {
+                self.saved_cond(name, arguments, scope, c.span)?
+            }
             CondKind::Seq { steps, gaps } => self.seq(steps, gaps, scope, c.span)?,
             CondKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
@@ -204,6 +212,69 @@ impl<'a> Compiler<'a> {
         self.session_ref(&id, scope, span)
     }
 
+    /// `block:<message id>:<position>`: one block, in a blocks query; its
+    /// message, or its session, elsewhere.
+    pub(super) fn block_ref(
+        &mut self,
+        text: &str,
+        scope: &RowContext,
+        span: Span,
+    ) -> Result<String, QueryError> {
+        let Some((message, position)) = text
+            .rsplit_once(':')
+            .and_then(|(m, i)| Some((m, i.parse::<i64>().ok()?)))
+        else {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "block:{text} is not a block reference: block:<message id>:<position>"
+                ),
+                position: span.start,
+            });
+        };
+        let message = self.text_param(message);
+        let a = &scope.a;
+        Ok(match scope.unit {
+            Unit::Blocks => format!("({}.id = {message} AND {}.idx = {position})", a.m, a.b),
+            Unit::Messages => format!("{}.id = {message}", a.m),
+            _ => {
+                let s = self.session_alias(scope, span)?;
+                format!("{s}.pk IN (SELECT session_pk FROM message WHERE id = {message})")
+            }
+        })
+    }
+
+    /// `note:<first note>`, its current revision, or
+    /// `note:<first note>@<revision>`, one revision by a prefix of its ID:
+    /// rows of a notes query.
+    pub(super) fn note_ref(
+        &mut self,
+        text: &str,
+        scope: &RowContext,
+        span: Span,
+    ) -> Result<String, QueryError> {
+        if scope.unit != Unit::Notes {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "note:{text} names a note: read it with `notes where note:{text}`"
+                ),
+                position: span.start,
+            });
+        }
+        let r = scope.a.row.clone();
+        let (root, revision) = match text.split_once('@') {
+            Some((root, revision)) => (root, Some(revision)),
+            None => (text, None),
+        };
+        let root = self.text_param(root);
+        Ok(match revision {
+            None => format!("({r}.first_note = {root} AND {})", fields::current_note(&r)),
+            Some(revision) => {
+                let revision = self.text_param(&like_prefix(revision));
+                format!("({r}.first_note = {root} AND {r}.id LIKE {revision} ESCAPE '\\')")
+            }
+        })
+    }
+
     /// `origin:native` (or a unique prefix of it) as a session condition.
     pub(super) fn session_ref(
         &mut self,
@@ -308,7 +379,6 @@ impl<'a> Compiler<'a> {
                         _ => format!("{s}.pk IN (SELECT session_pk FROM message WHERE id = {p})"),
                     });
                 }
-                "query" => return self.saved_cond(text, scope, span),
                 "result" => {
                     return Err(QueryError::Invalid {
                         message: "result:<id> is a source: start the query with it \
@@ -317,11 +387,15 @@ impl<'a> Compiler<'a> {
                         position: span.start,
                     });
                 }
+                "block" => return self.block_ref(text, scope, span),
+                "note" => return self.note_ref(text, scope, span),
                 "page" => {
-                    return Err(not_built("page: references (pages are not built yet)"));
+                    return Err(not_built("page: references (pages do not exist yet)"));
                 }
-                "note" | "block" | "file" => {
-                    return Err(not_built(&format!("{lower}: references")));
+                "file" => {
+                    return Err(not_built(
+                        "file:<path>@<commit> references (commits are not a unit yet)",
+                    ));
                 }
                 _ => {}
             }

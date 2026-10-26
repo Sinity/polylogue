@@ -3,7 +3,7 @@
 //! by the same rules everywhere.
 
 use super::{Ask, run};
-use polylogue_model::{LogicalDay, Note, Target, Timestamp};
+use polylogue_model::{Note, Target, Timestamp};
 use polylogue_store::{Reader, StoreError};
 
 /// Every note `notes where CONDITIONS` lists, newest first.
@@ -84,7 +84,7 @@ fn page(
             why: false,
             session: None,
             now: now.unix_ms(),
-            day: LogicalDay::system(),
+            day: None,
             embeddings: false,
             near: None,
             fields: &[],

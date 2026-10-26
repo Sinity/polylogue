@@ -4,7 +4,7 @@
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
-use polylogue_model::Author;
+use polylogue_model::{Author, NewNote, NoteKind};
 use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
@@ -25,7 +25,7 @@ pub struct Daemon {
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
-    status: Arc<Mutex<LoopStatus>>,
+    pub(crate) status: Arc<Mutex<LoopStatus>>,
     started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
@@ -318,9 +318,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 why,
                 session,
                 now: now_ms(),
-                // The operator's zone and 04:00 day start; there are no
-                // `day.zone` or `day.logical_start` settings yet.
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings,
                 near: Some(&near),
                 fields: &fields,
@@ -456,7 +454,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 why: false,
                 session: None,
                 now: now_ms(),
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings: false,
                 near: None,
                 fields: &[],
@@ -483,6 +481,88 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     read_at,
                 },
             )
+        }
+        Request::Save {
+            request_id,
+            name,
+            text,
+            author,
+        } => {
+            let revises = match saved_revision(&reader, &name, &text) {
+                Ok(revises) => revises,
+                Err(response) => return response,
+            };
+            drop(reader);
+            let note = NewNote {
+                kind: NoteKind::SavedQuery,
+                key: Some(name),
+                value: Some(text),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises,
+                valid_until: None,
+            };
+            write(d, request_id, UserWrite::AddNote { note })
+        }
+        Request::Watch {
+            request_id,
+            query,
+            name,
+            hold,
+            notify,
+            author,
+        } => {
+            if let Some(hold) = &hold
+                && crate::signals::duration(hold).is_none()
+            {
+                return error(
+                    "invalid",
+                    format!("--for {hold:?} is not a duration such as 20m"),
+                );
+            }
+            // A watch whose query cannot run would only be refused later.
+            let ask = super::query::Ask {
+                text: &query,
+                cursor: None,
+                page_size: Some(1),
+                why: false,
+                session: None,
+                now: now_ms(),
+                day: None,
+                embeddings: false,
+                near: None,
+                fields: &[],
+            };
+            if let Err(f) = super::query::run(&reader, ask) {
+                return Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                };
+            }
+            drop(reader);
+            let mut rule = serde_json::json!({
+                "name": name.clone().unwrap_or_else(|| query.clone()),
+                "query": query,
+                "fires": "on_new",
+                "deliver": "notice",
+                "interrupt": notify,
+            });
+            if let Some(hold) = hold {
+                rule["for"] = serde_json::json!(hold);
+            }
+            let note = NewNote {
+                kind: NoteKind::Signal,
+                key: name,
+                value: Some(rule.to_string()),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises: None,
+                valid_until: None,
+            };
+            write(d, request_id, UserWrite::AddNote { note })
         }
         Request::AddNote { request_id, note } => {
             drop(reader);
@@ -638,7 +718,7 @@ fn query_targets(
             why: false,
             session: None,
             now: now_ms(),
-            day: polylogue_model::LogicalDay::system(),
+            day: None,
             embeddings: false,
             near: None,
             fields: &[],
@@ -1056,3 +1136,47 @@ mod read;
 
 #[cfg(test)]
 mod tests;
+
+/// The saved query a `save` revises: the current definition with that
+/// name, if any. The name must be one `query:NAME` can say, and the text a
+/// query.
+fn saved_revision(
+    reader: &polylogue_store::Reader<'_>,
+    name: &str,
+    text: &str,
+) -> Result<Option<String>, Response> {
+    let usable = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !usable {
+        return Err(error(
+            "invalid",
+            format!("{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"),
+        ));
+    }
+    if let Err(e) = polylogue_query::parse(text) {
+        return Err(error(e.kind(), e.to_string()));
+    }
+    let saved = super::query::saved_queries(reader).map_err(|f| Response::Error {
+        kind: f.kind,
+        message: f.message,
+        detail: f.detail,
+    })?;
+    match saved.get(name).map(Vec::as_slice) {
+        None | Some([]) => Ok(None),
+        Some([one]) => Ok(Some(one.revision.clone())),
+        Some(several) => Err(error(
+            "ambiguous",
+            format!(
+                "{} saved queries are named {name}: {}; withdraw all but one first",
+                several.len(),
+                several
+                    .iter()
+                    .map(|s| format!("note:{}", s.first_note))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}

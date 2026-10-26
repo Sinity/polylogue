@@ -52,12 +52,28 @@ impl<'a> Compiler<'a> {
 
         let mut matched: Option<MatchRel> = preset;
         let mut measure: Option<Measure> = None;
+        let mut pending = combine::PendingFusion::default();
         for stage in &q.stages {
             if measure.is_some() {
                 return Err(QueryError::Invalid {
                     message: "`| measure WHAT` is the last stage".into(),
                     position: stage.span.start,
                 });
+            }
+            let fusing = matches!(
+                stage.kind,
+                StageKind::Combine {
+                    how: Combination::Union | Combination::Fuse,
+                    ..
+                }
+            );
+            if !fusing && !pending.is_empty() {
+                self.fuse_pending(
+                    std::mem::take(&mut pending),
+                    &scope,
+                    &mut where_sql,
+                    &mut order,
+                )?;
             }
             let grouped = group.is_some() || aggs.is_some();
             if let Some(rel) = &matched {
@@ -147,6 +163,34 @@ impl<'a> Compiler<'a> {
                     why.clear();
                     order = None;
                     selection = None;
+                    // A fused rank and the lists it names belong to the
+                    // sessions.
+                    self.fusion = None;
+                    self.shown.retain(|(name, ..)| name != "found_in");
+                }
+                StageKind::Combine { how, query } => {
+                    if grouped {
+                        return Err(QueryError::Invalid {
+                            message: "rows combine before they are grouped or counted".into(),
+                            position: stage.span.start,
+                        });
+                    }
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
+                    let at = stage.span.start;
+                    match how {
+                        Combination::Union => pending
+                            .unions
+                            .push(self.combined_rows(query, scope.unit, at)?),
+                        Combination::Fuse => pending
+                            .fuses
+                            .push(self.combined_rows(query, scope.unit, at)?),
+                        Combination::Intersect | Combination::Except => {
+                            self.membership(*how, query, &scope, &mut where_sql, at)?
+                        }
+                    }
+                    why.clear();
                 }
                 StageKind::Where { cond } if !grouped => {
                     if selection.is_some() {
@@ -305,28 +349,13 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        // Words and `near:` together: the conditions and both orders are
-        // evaluated once, over the rows the conditions keep, and each row's
-        // fused rank joins it.
-        if let (Some(text), Some(near)) = (self.rank.clone(), self.near_rank.clone()) {
-            let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
-            let rows = format!("f{}", self.ctes.len() + 1);
-            self.ctes.push(format!(
-                "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {} WHERE {})",
-                self.from(&scope)?,
-                and_all(&where_sql)
-            ));
-            let fused = format!("f{}", self.ctes.len() + 1);
-            self.ctes.push(format!(
-                "{fused} AS MATERIALIZED (SELECT k, -(1.0 / (60 + row_number() OVER (ORDER BY t IS NULL, t, k))) \
-                 - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / (60 + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r \
-                 FROM {rows})"
-            ));
-            // The fused rows are the rows the conditions keep: the join
-            // replaces evaluating them again.
-            self.fused_join = Some(format!("JOIN {fused} fused ON fused.k = {pk}"));
-            where_sql.clear();
-        }
+        self.fuse_pending(
+            std::mem::take(&mut pending),
+            &scope,
+            &mut where_sql,
+            &mut order,
+        )?;
+        self.fuse_text_and_near(&scope, &mut where_sql)?;
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
@@ -571,6 +600,7 @@ impl<'a> Compiler<'a> {
             "{ctes}SELECT count(*) FROM {from} WHERE {}",
             and_all(&defaults_only)
         );
+        let ranked = self.ranking().is_some();
         let page_size =
             self.opts
                 .page_size
@@ -586,7 +616,7 @@ impl<'a> Compiler<'a> {
             sql,
             params: self.params,
             columns,
-            ranked: self.rank.is_some() || self.near_rank.is_some(),
+            ranked,
             text_terms: self.text_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
@@ -597,12 +627,51 @@ impl<'a> Compiler<'a> {
             why_of,
             page_size,
             near: self.near,
+            definitions: self.definitions,
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
             measure,
             order,
         })
+    }
+
+    /// Words and `near:` together: the conditions and both orders are
+    /// evaluated once, over the rows the conditions keep, and each row's
+    /// fused rank joins it. Done once, when the rows are complete or when a
+    /// combining stage needs their order.
+    pub(super) fn fuse_text_and_near(
+        &mut self,
+        scope: &RowContext,
+        where_sql: &mut Vec<String>,
+    ) -> Result<(), QueryError> {
+        if self.fusion.is_some() {
+            return Ok(());
+        }
+        let (Some(text), Some(near)) = (self.rank.clone(), self.near_rank.clone()) else {
+            return Ok(());
+        };
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let rows = format!("f{}", self.ctes.len() + 1);
+        self.ctes.push(format!(
+            "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {} WHERE {})",
+            self.from(scope)?,
+            and_all(where_sql)
+        ));
+        let fused = format!("f{}", self.ctes.len() + 1);
+        self.ctes.push(format!(
+            "{fused} AS MATERIALIZED (SELECT k, -(1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY t IS NULL, t, k))) \
+             - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r \
+             FROM {rows})"
+        ));
+        // The fused rows are the rows the conditions keep: the join
+        // replaces evaluating them again.
+        self.fusion = Some(Fusion {
+            join: format!("JOIN {fused} fused ON fused.k = {pk}"),
+            rank: "fused.r".into(),
+        });
+        where_sql.clear();
+        Ok(())
     }
 
     /// A selection (`| limit`, `| offset`) turned into a membership test,
@@ -633,7 +702,8 @@ impl<'a> Compiler<'a> {
     /// The FROM clause of a unit, joining the rows its fields read.
     pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
         let mut from = base_from(scope.unit, &scope.a);
-        for join in [&self.near_join, &self.fused_join].into_iter().flatten() {
+        let fused = self.fusion.as_ref().map(|f| &f.join);
+        for join in [self.near_join.as_ref(), fused].into_iter().flatten() {
             from.push(' ');
             from.push_str(join);
         }
@@ -660,8 +730,8 @@ impl<'a> Compiler<'a> {
     /// row scores `1/(60 + its place)` in each order it is in; a row with
     /// no vector is in the text order only).
     pub(super) fn ranking(&self) -> Option<String> {
-        if self.fused_join.is_some() {
-            return Some("fused.r".into());
+        if let Some(fusion) = &self.fusion {
+            return Some(fusion.rank.clone());
         }
         self.rank.clone().or_else(|| self.near_rank.clone())
     }

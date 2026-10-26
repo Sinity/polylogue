@@ -381,6 +381,36 @@ pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
     ))
 }
 
+/// `save NAME QUERY`. Over MCP the author is the calling agent.
+pub fn save(_: &Command, v: &Values, caller: &Caller) -> Built {
+    Ok(Request::Save {
+        request_id: v.request_id(),
+        name: v.text("name").unwrap_or_default(),
+        text: v.text("query").unwrap_or_default(),
+        author: if caller.surface == super::Surface::Mcp {
+            Author::Agent(None)
+        } else {
+            Author::Operator
+        },
+    })
+}
+
+/// `watch QUERY`. Over MCP the author is the calling agent.
+pub fn watch(_: &Command, v: &Values, caller: &Caller) -> Built {
+    Ok(Request::Watch {
+        request_id: v.request_id(),
+        query: v.text("query").unwrap_or_default(),
+        name: v.text("name"),
+        hold: v.text("for"),
+        notify: v.flag("notify"),
+        author: if caller.surface == super::Surface::Mcp {
+            Author::Agent(None)
+        } else {
+            Author::Operator
+        },
+    })
+}
+
 pub fn keep(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Keep {
         request_id: v.request_id(),

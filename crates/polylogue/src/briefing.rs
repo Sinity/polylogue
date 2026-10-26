@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 /// Recent sessions a session-start brief reports on.
 const RECENT_SESSIONS: u64 = 5;
 /// Hits a recall returns per page.
-const RECALL_PAGE: usize = 20;
+const RECALL_PAGE: u64 = 20;
 /// A brief's budget in tokens when `briefing.budget` is unset.
 pub const DEFAULT_BUDGET: u64 = 2_000;
 /// Bytes kept for the lines that name what did not fit.
@@ -44,9 +44,6 @@ const POINTER_RESERVE: usize = 600;
 /// How far back failing checks, Bead claims and notices are reported.
 const FAILING_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const NOTICE_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
-/// Reciprocal rank fusion's constant: a hit at place `p` of a list scores
-/// `1 / (FUSION_K + p)`.
-const FUSION_K: f64 = 60.0;
 
 /// Why a session is starting, as the harness reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -148,8 +145,6 @@ pub struct SearchSummary {
     /// Hits on this page and the sessions they are in.
     pub hits: usize,
     pub sessions: usize,
-    /// Hits before this page.
-    pub offset: usize,
     /// More hits exist after this page.
     pub more: bool,
 }
@@ -473,7 +468,7 @@ fn live_here(
                 why: false,
                 session: None,
                 now: now.unix_ms(),
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings: false,
                 near: None,
                 fields: &fields,
@@ -964,67 +959,52 @@ fn takeover(
 struct Hit {
     session: String,
     message: String,
-    /// The lists it was found in: `prose`, `output`, `semantic`.
+    /// The lists that rank it: `prose`, `output`, `semantic`.
     found_in: Vec<&'static str>,
     snippet: Option<String>,
-    score: f64,
 }
 
-/// One ranked list of messages: the first `want` rows of a query, and
-/// whether it holds more.
-fn ranked_list(
-    reader: &Reader<'_>,
+/// A recall's query: messages with every word in prose, every word in
+/// tool output and, with `similarity`, every message ranked by similarity
+/// to the whole text, ranked together by reciprocal rank fusion; with
+/// `directory`, sessions there rank in one more list. Also the name of
+/// each list, in `found_in`'s numbering.
+fn recall_query(
+    words: &[String],
     text: &str,
-    want: usize,
-    now: Timestamp,
-    near: Option<&NearFn<'_>>,
-) -> Result<(Vec<serde_json::Value>, bool), StoreError> {
-    let mut rows = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let page = crate::daemon::query::run(
-            reader,
-            crate::daemon::query::Ask {
-                text,
-                cursor: cursor.as_deref(),
-                page_size: Some((want - rows.len()) as u64),
-                why: false,
-                session: None,
-                now: now.unix_ms(),
-                day: polylogue_model::LogicalDay::system(),
-                embeddings: near.is_some(),
-                near,
-                fields: &[],
-            },
-        )
-        .map_err(|f| StoreError::Invalid(format!("recall query {text:?}: {}", f.message)))?;
-        rows.extend(page["rows"].as_array().cloned().unwrap_or_default());
-        match page["next"].as_str() {
-            Some(next) if rows.len() < want => cursor = Some(next.to_owned()),
-            Some(_) => return Ok((rows, true)),
-            None => return Ok((rows, false)),
-        }
+    similarity: bool,
+    directory: Option<&str>,
+) -> Option<(String, Vec<&'static str>)> {
+    let quoted = |prefix: &str| {
+        words
+            .iter()
+            .map(|w| format!("{prefix}{}", notes::quoted(w)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut lists: Vec<(&'static str, String)> = Vec::new();
+    if !words.is_empty() {
+        lists.push(("prose", format!("messages where {}", quoted(""))));
+        lists.push(("output", format!("messages where {}", quoted("output:"))));
     }
-}
-
-/// A recall cursor: hits already shown, bound to the text and directory.
-fn recall_cursor(offset: usize, text: &str, cwd: Option<&Path>) -> String {
-    let mut digest = blake3::Hasher::new();
-    digest.update(text.as_bytes());
-    digest.update(b"\0");
-    if let Some(c) = cwd {
-        digest.update(c.as_os_str().as_encoded_bytes());
+    if similarity {
+        lists.push((
+            "semantic",
+            format!("messages where near:{}", notes::quoted(text)),
+        ));
     }
-    format!("{offset}.{}", &digest.finalize().to_hex()[..16])
-}
-
-fn recall_offset(cursor: &str, text: &str, cwd: Option<&Path>) -> Result<usize, StoreError> {
-    let offset = cursor
-        .split_once('.')
-        .and_then(|(n, _)| n.parse::<usize>().ok())
-        .filter(|n| recall_cursor(*n, text, cwd) == cursor)
-        .ok_or_else(|| StoreError::Invalid("the cursor belongs to a different recall".into()))?;
-    Ok(offset)
+    let ((_, first), rest) = lists.split_first()?;
+    let mut query = first.clone();
+    for (_, other) in rest {
+        query.push_str(&format!(" | union ({other})"));
+    }
+    if let Some(dir) = directory {
+        query.push_str(&format!(
+            " | fuse (messages where cwd:{})",
+            notes::quoted(dir)
+        ));
+    }
+    Some((query, lists.iter().map(|(name, _)| *name).collect()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1038,98 +1018,84 @@ fn recall(
     near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
-    let offset = match cursor {
-        Some(c) => recall_offset(c, text_in, cwd)?,
-        None => 0,
-    };
-    // Each list gives a hit `1 / (60 + place)`; a hit in a session in this
-    // directory counts as first in one more list. Every list is read as
-    // deep as this page reaches.
-    let want = offset + RECALL_PAGE + 1;
-    let mut lists: Vec<(&'static str, String)> = Vec::new();
-    if !words.is_empty() {
-        let quoted = |prefix: &str| {
-            words
-                .iter()
-                .map(|w| format!("{prefix}{}", notes::quoted(w)))
-                .collect::<Vec<_>>()
-                .join(" ")
+    let text = text_in.trim();
+    let directory = cwd.and_then(|c| scope_dirs(c).pop());
+    let mut similarity = near.is_some() && !text.is_empty();
+    let mut similarity_failed = None;
+    let found = loop {
+        let Some((query, indexes)) = recall_query(&words, text, similarity, directory.as_deref())
+        else {
+            break None;
         };
-        lists.push(("prose", format!("messages where {}", quoted(""))));
-        lists.push(("output", format!("messages where {}", quoted("output:"))));
-    }
-    if near.is_some() && !text_in.trim().is_empty() {
-        lists.push((
-            "semantic",
-            format!("messages where near:{}", notes::quoted(text_in.trim())),
-        ));
-    }
-    let mut hits: Vec<Hit> = Vec::new();
-    let mut more = false;
+        let answer = crate::daemon::query::run(
+            reader,
+            crate::daemon::query::Ask {
+                text: &query,
+                cursor,
+                page_size: Some(RECALL_PAGE),
+                why: false,
+                session: None,
+                now: now.unix_ms(),
+                day: None,
+                embeddings: similarity,
+                near: if similarity { near } else { None },
+                fields: &[],
+            },
+        );
+        match answer {
+            Ok(page) => break Some((page, indexes)),
+            // The provider could not embed the text: the words still search.
+            Err(f) if similarity && f.kind == "embed" => {
+                similarity = false;
+                similarity_failed = Some(f.message);
+            }
+            Err(f) => {
+                return Err(StoreError::Invalid(format!(
+                    "recall query {query:?}: {}",
+                    f.message
+                )));
+            }
+        }
+    };
+    let mut page: Vec<Hit> = Vec::new();
     let mut indexes = Vec::new();
-    for (name, query) in &lists {
-        let semantic = *name == "semantic";
-        let (rows, beyond) =
-            match ranked_list(reader, query, want, now, semantic.then_some(near).flatten()) {
-                Ok(found) => found,
-                // No vectors for the provider: recall is full text only.
-                Err(_) if semantic => continue,
-                Err(e) => return Err(e),
+    let mut next = None;
+    if let Some((answer, names)) = found {
+        let mut exhausted = false;
+        for row in answer["rows"].as_array().into_iter().flatten() {
+            // Without fusion one list ranks every row it ranks at all.
+            let found_in: Vec<&'static str> = match row.get("found_in") {
+                Some(lists) => lists
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|n| names.get(n.as_u64()? as usize - 1).copied())
+                    .collect(),
+                None if row["rank"].is_null() => vec![],
+                None => vec![names[0]],
             };
-        indexes.push(*name);
-        more |= beyond;
-        let mut place = 0usize;
-        for row in rows {
-            // A message with no vector has no similarity: it is not a
-            // semantic hit.
-            if semantic && row["rank"].is_null() {
-                continue;
+            // Rows no list ranks (messages with no vector and no word)
+            // come last: the hits have ended.
+            if found_in.is_empty() {
+                exhausted = true;
+                break;
             }
             let (Some(session), Some(message)) = (row["session"].as_str(), row["id"].as_str())
             else {
                 continue;
             };
-            place += 1;
-            let score = 1.0 / (FUSION_K + place as f64);
-            let snippet = row["snippet"]["text"].as_str().map(str::to_owned);
-            match hits.iter_mut().find(|h| h.message == message) {
-                Some(h) => {
-                    h.score += score;
-                    h.found_in.push(name);
-                    if h.snippet.is_none() {
-                        h.snippet = snippet;
-                    }
-                }
-                None => hits.push(Hit {
-                    session: session.to_owned(),
-                    message: message.to_owned(),
-                    found_in: vec![name],
-                    snippet,
-                    score,
-                }),
-            }
+            page.push(Hit {
+                session: session.to_owned(),
+                message: message.to_owned(),
+                found_in,
+                snippet: row["snippet"]["text"].as_str().map(str::to_owned),
+            });
         }
-    }
-    let local: Vec<String> = match cwd {
-        Some(c) => reader
-            .sessions_under(&scope_dirs(c), None, u64::MAX)?
-            .into_iter()
-            .map(|s| s.id.to_string())
-            .collect(),
-        None => Vec::new(),
-    };
-    for h in &mut hits {
-        if local.contains(&h.session) {
-            h.score += 1.0 / (FUSION_K + 1.0);
+        if !exhausted {
+            next = answer["next"].as_str().map(str::to_owned);
         }
+        indexes = names;
     }
-    hits.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| a.message.cmp(&b.message))
-    });
-    more |= hits.len() > offset + RECALL_PAGE;
-    let page: Vec<Hit> = hits.into_iter().skip(offset).take(RECALL_PAGE).collect();
     let mut sessions: Vec<String> = Vec::new();
     for h in &page {
         if !sessions.contains(&h.session) {
@@ -1144,8 +1110,11 @@ fn recall(
         "Polylogue recall for {:?} (delivery {delivery_id})",
         text_in.trim()
     );
-    if offset > 0 {
-        let _ = writeln!(out, "Hits after the first {offset}.");
+    if cursor.is_some() {
+        let _ = writeln!(out, "A later page of hits.");
+    }
+    if let Some(reason) = &similarity_failed {
+        let _ = writeln!(out, "Similarity could not run ({reason}); words only.");
     }
     if page.is_empty() {
         let _ = writeln!(
@@ -1202,18 +1171,16 @@ fn recall(
             refs.push(format!("note:{}", n.id));
         }
     }
-    let next = more.then(|| recall_cursor(offset + RECALL_PAGE, text_in, cwd));
     let search_summary = SearchSummary {
         words,
         indexes,
         hits: page.len(),
         sessions: sessions.len(),
-        offset,
-        more,
+        more: next.is_some(),
     };
     let _ = writeln!(
         out,
-        "\nHow this was found: {}, ranked together by reciprocal rank fusion, sessions in this directory first among equals; \
+        "\nHow this was found: {}, ranked together by reciprocal rank fusion{}; \
          {} hits in {} sessions{}.",
         search_summary
             .indexes
@@ -1225,6 +1192,11 @@ fn recall(
             })
             .collect::<Vec<_>>()
             .join(", "),
+        if directory.is_some() {
+            ", with this directory's sessions ranked in one more list"
+        } else {
+            ""
+        },
         search_summary.hits,
         search_summary.sessions,
         match &next {

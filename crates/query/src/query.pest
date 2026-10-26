@@ -5,6 +5,9 @@
 //   tool_calls where outcome:error | group by session | count
 //   tag:project:morrow | tool_calls where action:shell
 //
+// Another query appears in parentheses after a combining stage
+// (`| union (…)`), in `FIELD in (…)` and in `count(UNIT where …)`.
+//
 // Field names are checked against the field table after parsing, so the
 // grammar accepts any identifier as a field. Each top-level shape carries
 // its own end-of-input check, so an ordered choice that matched a prefix
@@ -40,6 +43,8 @@ kw_OR      = @{ "OR" ~ !ident_char }
 kw_NOT     = @{ "NOT" ~ !ident_char }
 kw_exists  = @{ ^"exists" ~ !ident_char }
 kw_seq     = @{ ^"seq" ~ !ident_char }
+kw_count   = @{ ^"count" ~ !ident_char }
+kw_in      = @{ ^"in" ~ !ident_char }
 
 // Boolean conditions. Juxtaposition is AND; AND, OR and NOT are written in
 // capitals so the lower-case words remain searchable.
@@ -55,7 +60,10 @@ stop = _{ kw_OR | kw_with ~ unit ~ "(" | "->" | "|" | ")" | "]" | "," | EOI }
 atom = {
     "(" ~ expr ~ ")"
   | exists
+  | counted
   | seq
+  | member_of
+  | saved_call
   | between
   | compare
   | url
@@ -65,6 +73,24 @@ atom = {
 }
 
 exists = { kw_exists ~ unit ~ "(" ~ expr ~ ")" }
+
+// `count(tool_call where outcome:error) >= 3`: how many related rows match.
+counted = { kw_count ~ "(" ~ unit ~ (kw_where ~ expr)? ~ ")" ~ op ~ number }
+
+// `id in (messages where … | group by session)`: the field's value is one
+// of the other query's values.
+member_of = { field ~ kw_in ~ "(" ~ inner_query ~ ")" }
+
+// Another query inside parentheses. Conditions without a unit are on the
+// rows they are combined with; a lone word is text, not a unit.
+inner_query = { expr_query ~ &")" | unit_query ~ &")" }
+
+// A saved query given its parameters: `query:failing(repo=morrow)`.
+saved_call = { saved_head ~ argument ~ ("," ~ argument)* ~ ")" }
+saved_head = ${ ^"query:" ~ saved_name ~ "(" }
+saved_name = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ".")+ }
+argument   = { parameter ~ "=" ~ (quoted | bare) }
+parameter  = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 
 seq       = { kw_seq ~ "(" ~ step ~ (arrow ~ step)+ ~ ")" }
 arrow     = { "->" ~ gap? }
@@ -111,7 +137,7 @@ window_n = ${ (^"first" | ^"last") ~ ":" ~ number }
 // Pipeline stages.
 stage = {
     sort_by | group_by | agg | count | limit | offset | where_stage
-  | distinct | matches | measure | scope_stage
+  | distinct | matches | measure | combine | scope_stage
 }
 sort_by     = { ^"sort" ~ ^"by" ~ sort_key ~ direction? ~ ("," ~ sort_then)* }
 // Later keys break ties left by earlier ones.
@@ -135,4 +161,9 @@ matches     = { ^"matches" ~ !ident_char }
 measure      = { ^"measure" ~ measure_what }
 measure_what = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ":")+ }
 scope_stage = { unit ~ (kw_where ~ expr)? }
+// `| union (…)`, `| intersect (…)`, `| except (…)`: the rows combined with
+// another query's rows of the same unit; `| fuse (…)` ranks the rows also
+// by the other query's order.
+combine     = { combination ~ "(" ~ inner_query ~ ")" }
+combination = @{ (^"union" | ^"intersect" | ^"except" | ^"fuse") ~ !ident_char }
 number      = @{ ASCII_DIGIT+ }

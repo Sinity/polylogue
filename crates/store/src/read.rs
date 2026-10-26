@@ -172,6 +172,7 @@ impl ReadPool {
         let conn = open_read(&self.archive.index_db())?;
         let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
         conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        crate::sql_views::create(&conn)?;
         for schema in ["main", "a"] {
             conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
             conn.pragma_update(Some(schema), "mmap_size", 0)?;

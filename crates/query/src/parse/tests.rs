@@ -272,3 +272,83 @@ fn unit_names_resolve_through_the_registry() {
         assert_eq!(e.suggestion(), fix, "{text}");
     }
 }
+
+#[test]
+fn queries_inside_parentheses_parse_as_queries() {
+    let q =
+        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
+    let combined: Vec<(Combination, bool)> = q
+        .stages
+        .iter()
+        .map(|s| match &s.kind {
+            StageKind::Combine { how, query } => {
+                (*how, matches!(query.source, Source::Unit { .. }))
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        combined,
+        [(Combination::Union, false), (Combination::Except, true)]
+    );
+    match cond("count(tool_call where outcome:error) >= 3") {
+        CondKind::Count { unit, op, n, cond } => {
+            assert_eq!((unit, op, n), (Unit::ToolCalls, Op::Ge, 3));
+            assert!(cond.is_some());
+        }
+        other => panic!("{other:?}"),
+    }
+    match cond("id in (messages where chrono | group by session)") {
+        CondKind::In { field, query } => {
+            assert_eq!(field, "id");
+            assert_eq!(query.stages.len(), 1);
+        }
+        other => panic!("{other:?}"),
+    }
+    // A lone word in parentheses is text, not a unit.
+    let q = p("origin:codex | union (messages)");
+    let StageKind::Combine { query, .. } = &q.stages[0].kind else {
+        panic!("{q:?}")
+    };
+    assert!(matches!(query.source, Source::Sessions { .. }));
+    // `where` among conditions without a unit is refused inside too.
+    assert!(parse("origin:codex | union (kind:* where exists message(x))").is_err());
+}
+
+#[test]
+fn a_saved_query_takes_values_for_its_parameters() {
+    match cond("query:failing(repo=morrow, phrase=\"two words\")") {
+        CondKind::Saved { name, arguments } => {
+            assert_eq!(name, "failing");
+            let given: Vec<(&str, &str, bool)> = arguments
+                .iter()
+                .map(|a| (a.parameter.as_str(), a.text.as_str(), a.quoted))
+                .collect();
+            assert_eq!(
+                given,
+                [("repo", "morrow", false), ("phrase", "two words", true)]
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        cond("query:failing"),
+        CondKind::Saved { arguments, .. } if arguments.is_empty()
+    ));
+}
+
+#[test]
+fn the_words_count_and_in_are_still_searched() {
+    for text in ["error in parser", "count words", "count(x)", "in (x)"] {
+        let q = p(text);
+        let Source::Sessions { cond } = &q.source else {
+            panic!("{text}: {q:?}")
+        };
+        let words = match &cond.kind {
+            CondKind::And { all } => all.iter().all(|c| matches!(c.kind, CondKind::Text { .. })),
+            CondKind::Text { .. } => true,
+            _ => false,
+        };
+        assert!(words, "{text}: {cond:?}");
+    }
+}
