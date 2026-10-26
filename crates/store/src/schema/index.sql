@@ -64,7 +64,7 @@ CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL
 
 CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,
+  id                TEXT NOT NULL,          -- unique: message_id
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
   order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
@@ -107,6 +107,9 @@ CREATE TABLE message (
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
+-- A first build drops the three unique indexes on natural keys and builds
+-- them once at its end; meanwhile the writer finds rows by key in memory.
+CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
@@ -132,7 +135,7 @@ CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- forei
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
   id                INTEGER PRIMARY KEY,
-  hash              BLOB NOT NULL UNIQUE,   -- BLAKE3 of the UTF-8 text; embeddings are keyed by it
+  hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
   -- Keep membership before the body: testing it must not read body overflow pages.
   indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
   body              BLOB NOT NULL           -- the UTF-8 text, zstd-compressed (the search indexes are
@@ -163,6 +166,7 @@ CREATE TABLE block (
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
+CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 
@@ -262,7 +266,7 @@ CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- computed by the parser from the raw record; an
+  id                TEXT NOT NULL,          -- unique: event_id. Computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
   seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
@@ -275,6 +279,7 @@ CREATE TABLE event (
   source_end        INTEGER,
   data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
+CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;

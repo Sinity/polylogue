@@ -3,25 +3,35 @@
 
 use crate::Result;
 use crate::encoding::{pack_text, unpack_text};
+use crate::first_build::FirstBuild;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::HashMap;
 
 /// The text row for `body`, stored once per distinct content, and its
-/// entry in the search index `bit` names (1 prose, 2 tool output).
+/// entry in the search index `bit` names (1 prose, 2 tool output). During a
+/// first build the text is found through `first_build`, not its hash index.
 pub(crate) fn intern(
     conn: &Connection,
     body: &str,
     bit: i64,
     prepared: Option<&HashMap<[u8; 32], Vec<u8>>>,
-    bulk: bool,
+    first_build: Option<&FirstBuild>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
-    let found: Option<(i64, i64)> = conn
-        .prepare_cached("SELECT id, indexed FROM text WHERE hash = ?1")?
-        .query_row([&hash.as_bytes()[..]], |r| Ok((r.get(0)?, r.get(1)?)))
-        .optional()?;
-    let (id, indexed) = match found {
-        Some(f) => f,
+    let id = match first_build {
+        Some(first_build) => first_build.text(conn, hash.as_bytes())?,
+        None => conn
+            .prepare_cached("SELECT id FROM text WHERE hash = ?1")?
+            .query_row([&hash.as_bytes()[..]], |r| r.get(0))
+            .optional()?,
+    };
+    let bulk = first_build.is_some();
+    let (id, indexed) = match id {
+        Some(id) => (
+            id,
+            conn.prepare_cached("SELECT indexed FROM text WHERE id = ?1")?
+                .query_row([id], |r| r.get(0))?,
+        ),
         None => {
             let packed = match prepared.and_then(|p| p.get(hash.as_bytes())) {
                 Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
@@ -32,7 +42,11 @@ pub(crate) fn intern(
             let claimed = if bulk { bit } else { 0 };
             conn.prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
                 .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
-            (conn.last_insert_rowid(), claimed)
+            let id = conn.last_insert_rowid();
+            if let Some(first_build) = first_build {
+                first_build.add_text(hash.as_bytes(), id);
+            }
+            (id, claimed)
         }
     };
     // `indexed` marks a text for its search index; the entry itself is

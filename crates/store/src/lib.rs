@@ -21,6 +21,7 @@ mod events;
 pub mod excise;
 pub mod export_items;
 pub mod fault;
+pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod input_rows;
