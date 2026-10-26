@@ -64,7 +64,9 @@ fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answ
         // `error (kind): message`, with the corrected query on a last line
         // of its own when there is one.
         Err(text) => {
-            let text = text.rsplit_once("\ntry: ").map_or(text.as_str(), |(t, _)| t);
+            let text = text
+                .rsplit_once("\ntry: ")
+                .map_or(text.as_str(), |(t, _)| t);
             let (kind, message) = text
                 .strip_prefix("error (")
                 .and_then(|rest| rest.split_once("): "))
