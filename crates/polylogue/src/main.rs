@@ -47,6 +47,18 @@ fn main() -> ExitCode {
     {
         return browser::native::run();
     }
+    // A command whose reader stops reading (`polylogue … | head`) ends
+    // quietly, as other command-line tools do, instead of failing on the
+    // closed pipe. The daemon keeps ignoring it: a client that goes away
+    // must not stop it.
+    if std::env::args().nth(1).as_deref() != Some("daemon") {
+        // SAFETY: restoring the default disposition of one signal before any
+        // other thread exists.
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     // `COMPLETE=<shell>` set: the shell asks for completions.
     clap_complete::CompleteEnv::with_factory(cli::command).complete();
     // `@N` names row N of the last list printed in this terminal.

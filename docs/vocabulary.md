@@ -115,6 +115,8 @@ the same change.
   briefing can cite them.
 - **setting**: a value the operator or an agent sets, kept with its history.
 - **delivery**: exactly what was put into a model's context.
+- **check run**: one `xtask` check or test run, as devkit's machine-wide
+  run history records it with its checkout and outcome.
 - **brief**: the session-start context for a directory; it fits its
   **budget** (`briefing.budget`, tokens).
 - **judgment**: the operator's `accepted` or `rejected` on one revision of

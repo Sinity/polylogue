@@ -12,7 +12,9 @@
 //!   closed or released;
 //! - what the recent sessions here did: commits, pull requests, files
 //!   changed, checks, Beads, plan items left open, the last answer;
-//! - checks (tests, builds, lints) that failed here with no later pass;
+//! - checks that failed here with no later pass: `xtask` check and test
+//!   runs (what AgentCTL's jobs run) in this checkout, from devkit's run
+//!   history, and test, build and lint commands sessions ran themselves;
 //! - signal notices of the last day;
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
@@ -423,6 +425,19 @@ fn budget(reader: &Reader<'_>) -> Result<u64, StoreError> {
     }
 }
 
+/// Where the development tooling's check history is: the
+/// `briefing.check_history` setting, else devkit's file under the home
+/// directory.
+fn check_history(reader: &Reader<'_>) -> Result<PathBuf, StoreError> {
+    let machine = polylogue_store::user_writes::machine_id();
+    Ok(match reader.setting("briefing.check_history", &machine)? {
+        Some(path) => PathBuf::from(path),
+        None => polylogue_store::check_runs::default_path(Path::new(
+            &std::env::var_os("HOME").unwrap_or_default(),
+        )),
+    })
+}
+
 /// Sessions working under `dirs` now, other than `me`, through the query
 /// `live` runs.
 fn live_here(
@@ -738,27 +753,52 @@ fn session_start(
     let since = previous
         .as_ref()
         .map_or(now.unix_ms() - FAILING_WINDOW_MS, |p| p.at.unix_ms());
-    let failing: Vec<Item> = reader
-        .failing_commands(&dirs, since)?
-        .into_iter()
-        .map(|f| {
-            let mut text = format!("- `{}`", f.command);
-            if let Some(code) = f.exit_code {
-                let _ = write!(text, " exit {code}");
-            }
-            let _ = write!(text, ", last {} in {}", day(f.at), f.session);
-            if f.times > 1 {
-                let _ = write!(text, " ({} failures)", f.times);
-            }
-            if let Some(latest) = &f.latest {
-                let _ = write!(text, ": {}", one_line(latest, 120));
-            }
-            Item {
-                text,
-                refs: vec![format!("session:{}", f.session)],
-            }
-        })
-        .collect();
+    // Check runs the development tooling recorded for this checkout (what
+    // AgentCTL's check and test jobs run) come first; checks a session ran
+    // itself follow.
+    let mut failing: Vec<Item> =
+        polylogue_store::check_runs::failed_since(&check_history(reader)?, &dirs, since)?
+            .into_iter()
+            .map(|f| {
+                let mut text = format!(
+                    "- `{}` failed {} in {}",
+                    f.check,
+                    day(Timestamp::from_unix_ms(f.started_ms)),
+                    f.checkout
+                );
+                if f.times > 1 {
+                    let _ = write!(text, " ({} failures)", f.times);
+                }
+                if let Some(job) = &f.job {
+                    let _ = write!(text, ", job {job}");
+                }
+                if let Some(why) = &f.failure {
+                    let _ = write!(text, ": {}", one_line(why, 120));
+                }
+                let _ = write!(text, "; `xtask history failures {}`", f.run);
+                Item {
+                    text,
+                    refs: vec![format!("check_run:{}", f.run)],
+                }
+            })
+            .collect();
+    failing.extend(reader.failing_commands(&dirs, since)?.into_iter().map(|f| {
+        let mut text = format!("- `{}`", f.command);
+        if let Some(code) = f.exit_code {
+            let _ = write!(text, " exit {code}");
+        }
+        let _ = write!(text, ", last {} in {}", day(f.at), f.session);
+        if f.times > 1 {
+            let _ = write!(text, " ({} failures)", f.times);
+        }
+        if let Some(latest) = &f.latest {
+            let _ = write!(text, ": {}", one_line(latest, 120));
+        }
+        Item {
+            text,
+            refs: vec![format!("session:{}", f.session)],
+        }
+    }));
     fit.section(
         "Checks that failed here with no later pass:",
         failing,

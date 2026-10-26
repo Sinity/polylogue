@@ -2522,6 +2522,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "jiff",
+ "libc",
  "mimalloc",
  "polylogue-engine",
  "polylogue-model",

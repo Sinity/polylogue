@@ -12,6 +12,7 @@ pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
+pub mod check_runs;
 pub mod context;
 pub mod derive;
 pub mod documents;
