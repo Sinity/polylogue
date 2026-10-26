@@ -64,7 +64,9 @@ export function captureBody({ provider, conversation, url, raw = null, session =
 /**
  * The conversation as content, for telling whether it changed: keys in
  * order, and lists of plain values in order too, since providers return
- * some (ChatGPT's `safe_urls`) in a new order on every read.
+ * some (ChatGPT's `safe_urls`) in a new order on every read. A key whose
+ * value is null counts as absent: claude.ai sends `"flags": null` on some
+ * reads of an unchanged conversation and leaves it out on others.
  */
 function content(value) {
   if (Array.isArray(value)) {
@@ -74,7 +76,8 @@ function content(value) {
       : items;
   }
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, content(value[key])]));
+    return Object.fromEntries(Object.keys(value).filter((key) => value[key] !== null).sort()
+      .map((key) => [key, content(value[key])]));
   }
   return value;
 }
