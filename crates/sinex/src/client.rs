@@ -19,6 +19,12 @@ use std::time::Duration;
 /// How long a frame may wait for its acknowledgment.
 const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 
+/// How long an excision may wait for Sinex's answer. Sinex plans it over
+/// every event it holds, which takes far longer than NATS's default request
+/// timeout on a large store; giving up early would leave Sinex excising
+/// what Polylogue then keeps.
+const EXCISION_WAIT: Duration = Duration::from_secs(600);
+
 /// Room left in a NATS message for its subject and headers.
 const MESSAGE_OVERHEAD: usize = 4096;
 
@@ -121,12 +127,12 @@ impl Client {
                     .map_err(|e| Error::Invalid(format!("material {id}: {e}")))
             })
             .collect::<Result<Vec<_>>>()?;
+        let request = async_nats::Request::new()
+            .payload(serde_json::to_vec(&Excise { materials })?.into())
+            .timeout(Some(EXCISION_WAIT));
         let reply = self
             .client
-            .request(
-                self.subjects.excise(&self.producer),
-                serde_json::to_vec(&Excise { materials })?.into(),
-            )
+            .send_request(self.subjects.excise(&self.producer), request)
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
         let reply: ExciseReply = serde_json::from_slice(&reply.payload)?;
