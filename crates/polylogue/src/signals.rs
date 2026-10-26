@@ -213,7 +213,10 @@ impl Evaluator {
     }
 
     /// One evaluation at `now`: `matches` holds each rule's matching rows.
-    /// `local_hour` gives the local hour of an instant, for quiet hours.
+    /// A rule with no entry was not read exactly this time (the index is
+    /// catching up, or its answer is incomplete): it is held as it was, so
+    /// an inexact reading never makes a row look new or gone. `local_hour`
+    /// gives the local hour of an instant, for quiet hours.
     pub fn step(
         &mut self,
         now: i64,
@@ -228,10 +231,10 @@ impl Evaluator {
             .retain(|(rule, _), _| live.contains(rule.as_str()));
         let mut out = Vec::new();
         for rule in rules {
-            let rows: HashSet<&str> = matches
-                .get(&rule.id)
-                .map(|v| v.iter().map(String::as_str).collect())
-                .unwrap_or_default();
+            let Some(rows) = matches.get(&rule.id) else {
+                continue;
+            };
+            let rows: HashSet<&str> = rows.iter().map(String::as_str).collect();
             let first = self.known.insert(rule.id.clone());
             // A row that stopped matching: pending work is dropped, and a
             // later match is a new episode that may fire again.
@@ -393,13 +396,13 @@ fn history(d: &Daemon) -> Vec<Sent> {
         .collect()
 }
 
-/// Every row a rule's query matches, by key, through all its pages.
+/// Every row a rule's query matches, by key, through all its pages; `None`
+/// when the answer is incomplete, so not exact.
 fn matching_rows(
     reader: &polylogue_store::Reader<'_>,
     query: &str,
     now: i64,
-    day: &polylogue_model::LogicalDay,
-) -> Result<Vec<String>, crate::daemon::query::Failure> {
+) -> Result<Option<Vec<String>>, crate::daemon::query::Failure> {
     let mut rows = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -412,16 +415,19 @@ fn matching_rows(
                 why: false,
                 session: None,
                 now,
-                day: day.clone(),
+                day: None,
                 embeddings: false,
                 near: None,
                 fields: &[],
             },
         )?;
+        if page["outcome"] == "incomplete" {
+            return Ok(None);
+        }
         rows.extend(page["rows"].as_array().into_iter().flatten().map(row_key));
         match page["next"].as_str() {
             Some(next) => cursor = Some(next.to_owned()),
-            None => return Ok(rows),
+            None => return Ok(Some(rows)),
         }
     }
 }
@@ -476,7 +482,6 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
     let Some(writes) = &d.writes else {
         return;
     };
-    let day = LogicalDay::system();
     let mut eval = Evaluator::new(&history(d));
     loop {
         if !matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
@@ -492,6 +497,11 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             }
             continue;
         };
+        // Quiet hours are local hours of the operator's day; a setting that
+        // cannot be read leaves the machine's, and the rules' queries
+        // report it.
+        let day =
+            crate::daemon::query::logical_day(&reader).unwrap_or_else(|_| LogicalDay::system());
         let signals = Timestamp::from_unix_ms(now)
             .map(|at| {
                 crate::daemon::query::notes::list(
@@ -509,12 +519,30 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 Err(u) => unusable.push(u),
             }
         }
+        // Until the loop has finished its first pass since the daemon
+        // started, the index may still be catching up with the stored
+        // inputs: nothing is read as new or gone.
+        let catching_up = d
+            .status
+            .lock()
+            .map(|s| s.busy && s.passes == 0)
+            .unwrap_or(true);
         let mut matches = std::collections::HashMap::new();
         let mut usable = vec![];
+        let mut held = vec![];
         for rule in rules {
-            match matching_rows(&reader, &rule.query, now, &day) {
-                Ok(rows) => {
+            if catching_up {
+                held.push(json!({"id": rule.id, "reason": "the index is catching up"}));
+                usable.push(rule);
+                continue;
+            }
+            match matching_rows(&reader, &rule.query, now) {
+                Ok(Some(rows)) => {
                     matches.insert(rule.id.clone(), rows);
+                    usable.push(rule);
+                }
+                Ok(None) => {
+                    held.push(json!({"id": rule.id, "reason": "its answer is incomplete"}));
                     usable.push(rule);
                 }
                 Err(f) => unusable.push(Unusable {
@@ -528,6 +556,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
         drop(reader);
         if let Ok(mut s) = d.signals.lock() {
             *s = summary(&usable, &unusable);
+            s["held"] = json!(held);
         }
         for h in eval.step(now, &usable, &matches, |t| day.local_hour(t)) {
             let Some(rule) = usable.iter().find(|r| r.id == h.rule) else {

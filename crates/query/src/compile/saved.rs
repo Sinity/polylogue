@@ -63,7 +63,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Records the revision a saved query's name resolved to.
-    pub(super) fn used(&mut self, name: &str, definition: &SavedQuery) {
+    fn used(&mut self, name: &str, definition: &SavedQuery) {
         let used = Definition {
             name: name.to_owned(),
             revision: definition.revision.clone(),
@@ -322,11 +322,7 @@ impl Parameters {
     fn bind(&self, query: &mut Query, position: usize) -> Result<(), QueryError> {
         let mut used = vec![];
         self.query(query, &mut used, position)?;
-        if let Some(unused) = self
-            .arguments
-            .iter()
-            .find(|a| !used.contains(&a.parameter))
-        {
+        if let Some(unused) = self.arguments.iter().find(|a| !used.contains(&a.parameter)) {
             return Err(QueryError::Invalid {
                 message: format!(
                     "query:{} has no parameter {}{}",
@@ -365,9 +361,10 @@ impl Parameters {
         }
         for stage in &mut query.stages {
             match &mut stage.kind {
-                StageKind::Where { cond } | StageKind::Scope { cond: Some(cond), .. } => {
-                    self.cond(cond, used, position)?
-                }
+                StageKind::Where { cond }
+                | StageKind::Scope {
+                    cond: Some(cond), ..
+                } => self.cond(cond, used, position)?,
                 StageKind::Combine { query, .. } => self.query(query, used, position)?,
                 _ => {}
             }
@@ -375,7 +372,12 @@ impl Parameters {
         Ok(())
     }
 
-    fn cond(&self, c: &mut Cond, used: &mut Vec<String>, position: usize) -> Result<(), QueryError> {
+    fn cond(
+        &self,
+        c: &mut Cond,
+        used: &mut Vec<String>,
+        position: usize,
+    ) -> Result<(), QueryError> {
         let inside = self
             .region
             .as_ref()
@@ -394,11 +396,9 @@ impl Parameters {
             CondKind::Not { cond } | CondKind::Exists { cond, .. } => {
                 self.cond(cond, used, position)?
             }
-            CondKind::Count { cond, .. } => {
-                if let Some(cond) = cond {
-                    self.cond(cond, used, position)?;
-                }
-            }
+            CondKind::Count {
+                cond: Some(cond), ..
+            } => self.cond(cond, used, position)?,
             CondKind::In { query, .. } => self.query(query, used, position)?,
             CondKind::Match { value, .. } if inside => {
                 if let Value::One { text, quoted } = value

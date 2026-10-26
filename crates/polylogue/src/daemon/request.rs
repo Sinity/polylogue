@@ -160,6 +160,21 @@ pub enum Request {
         text: String,
         author: Author,
     },
+    /// Watches a query: each row that starts matching becomes a notice
+    /// (a signal rule delivering notices).
+    Watch {
+        request_id: String,
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// How long a row must keep matching first, such as `20m`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hold: Option<String>,
+        /// Also show each notice as a desktop notification.
+        #[serde(default)]
+        notify: bool,
+        author: Author,
+    },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
         request_id: String,
@@ -274,6 +289,7 @@ impl Request {
             | Self::Judge { .. }
             | Self::Keep { .. }
             | Self::Save { .. }
+            | Self::Watch { .. }
             | Self::Withdraw { .. }
             | Self::DeliveryEvent { .. }
             | Self::Excise { .. } => false,

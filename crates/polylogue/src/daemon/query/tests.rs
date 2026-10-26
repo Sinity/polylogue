@@ -377,7 +377,7 @@ fn ask(text: &str) -> Ask<'_> {
         why: false,
         session: None,
         now: OCT1 + 7 * DAY,
-        day: LogicalDay::named("UTC", 0).unwrap(),
+        day: Some(LogicalDay::named("UTC", 0).unwrap()),
         embeddings: false,
         near: None,
         fields: &[],
@@ -1097,8 +1097,12 @@ fn the_work_unit_reads_the_derived_graph() {
 }
 
 mod combine;
+mod day;
+mod evidence;
 mod live;
+mod modes;
 mod morrow_examples;
+mod references;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {

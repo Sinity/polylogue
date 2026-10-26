@@ -25,7 +25,7 @@ pub struct Daemon {
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
     loop_tx: Mutex<Sender<LoopMsg>>,
-    status: Arc<Mutex<LoopStatus>>,
+    pub(crate) status: Arc<Mutex<LoopStatus>>,
     started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
@@ -318,9 +318,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 why,
                 session,
                 now: now_ms(),
-                // The operator's zone and 04:00 day start; there are no
-                // `day.zone` or `day.logical_start` settings yet.
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings,
                 near: Some(&near),
                 fields: &fields,
@@ -456,7 +454,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 why: false,
                 session: None,
                 now: now_ms(),
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings: false,
                 near: None,
                 fields: &[],
@@ -503,6 +501,65 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 targets: vec![],
                 relations: vec![],
                 revises,
+                valid_until: None,
+            };
+            write(d, request_id, UserWrite::AddNote { note })
+        }
+        Request::Watch {
+            request_id,
+            query,
+            name,
+            hold,
+            notify,
+            author,
+        } => {
+            if let Some(hold) = &hold
+                && crate::signals::duration(hold).is_none()
+            {
+                return error(
+                    "invalid",
+                    format!("--for {hold:?} is not a duration such as 20m"),
+                );
+            }
+            // A watch whose query cannot run would only be refused later.
+            let ask = super::query::Ask {
+                text: &query,
+                cursor: None,
+                page_size: Some(1),
+                why: false,
+                session: None,
+                now: now_ms(),
+                day: None,
+                embeddings: false,
+                near: None,
+                fields: &[],
+            };
+            if let Err(f) = super::query::run(&reader, ask) {
+                return Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                };
+            }
+            drop(reader);
+            let mut rule = serde_json::json!({
+                "name": name.clone().unwrap_or_else(|| query.clone()),
+                "query": query,
+                "fires": "on_new",
+                "deliver": "notice",
+                "interrupt": notify,
+            });
+            if let Some(hold) = hold {
+                rule["for"] = serde_json::json!(hold);
+            }
+            let note = NewNote {
+                kind: NoteKind::Signal,
+                key: name,
+                value: Some(rule.to_string()),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises: None,
                 valid_until: None,
             };
             write(d, request_id, UserWrite::AddNote { note })
@@ -661,7 +718,7 @@ fn query_targets(
             why: false,
             session: None,
             now: now_ms(),
-            day: polylogue_model::LogicalDay::system(),
+            day: None,
             embeddings: false,
             near: None,
             fields: &[],
@@ -1083,7 +1140,11 @@ mod tests;
 /// The saved query a `save` revises: the current definition with that
 /// name, if any. The name must be one `query:NAME` can say, and the text a
 /// query.
-fn saved_revision(reader: &Reader<'_>, name: &str, text: &str) -> Result<Option<String>, Response> {
+fn saved_revision(
+    reader: &polylogue_store::Reader<'_>,
+    name: &str,
+    text: &str,
+) -> Result<Option<String>, Response> {
     let usable = !name.is_empty()
         && name
             .chars()

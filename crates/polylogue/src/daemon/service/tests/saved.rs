@@ -52,11 +52,44 @@ fn a_save_that_query_names_could_not_say_is_refused() {
     for (name, text) in [
         ("two words", "kind:*"),
         ("", "kind:*"),
-        ("broken", "cost >"),
+        ("broken", "\"unclosed"),
     ] {
         match answer(&d, save("r", name, text)) {
             Response::Error { .. } => {}
             other => panic!("{name:?} {text:?}: {other:?}"),
+        }
+    }
+}
+
+fn watch(id: &str, query: &str, hold: Option<&str>) -> Request {
+    Request::Watch {
+        request_id: id.into(),
+        query: query.into(),
+        name: Some("my watch".into()),
+        hold: hold.map(str::to_owned),
+        notify: false,
+        author: Author::Operator,
+    }
+}
+
+#[test]
+fn a_watch_is_a_signal_rule_delivering_notices() {
+    let d = test_daemon::start("first prompt");
+    ok(&d, watch("w1", "sessions where live:waiting", Some("20m")));
+    let rules = ok(&d, query("notes where kind:signal"));
+    assert_eq!(rules["count"], 1, "{rules}");
+    let value: serde_json::Value =
+        serde_json::from_str(rules["rows"][0]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(value["query"], "sessions where live:waiting");
+    assert_eq!(value["for"], "20m");
+    assert_eq!(value["interrupt"], false);
+    for bad in [
+        watch("w2", "sessions where nonsense_field:1", None),
+        watch("w3", "kind:*", Some("soon")),
+    ] {
+        match answer(&d, bad) {
+            Response::Error { .. } => {}
+            other => panic!("{other:?}"),
         }
     }
 }

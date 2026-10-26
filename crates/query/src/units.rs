@@ -716,13 +716,27 @@ pub static UNITS: &[UnitSpec] = &[
         ),
         search: Search::Substring("{r}.value"),
         defaults: &[
-            d(Expr::Template("{r}.kind <> 'withdrawal'"), &["kind"], false),
             d(
-                Expr::Fn(current_note),
-                &["current", "first_note", "withdrawn"],
+                Expr::Template("{r}.kind <> 'withdrawal'"),
+                &["kind", "note"],
                 false,
             ),
-            d(Expr::Fn(not_withdrawn), &["withdrawn"], false),
+            d(
+                Expr::Fn(current_note),
+                &[
+                    "current",
+                    "first_note",
+                    "withdrawn",
+                    "note",
+                    "evidence_until",
+                ],
+                false,
+            ),
+            d(
+                Expr::Fn(not_withdrawn),
+                &["withdrawn", "note", "evidence_until"],
+                false,
+            ),
         ],
         relations: &[],
         parents: &[],

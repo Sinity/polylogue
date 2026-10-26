@@ -349,7 +349,12 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        self.fuse_pending(std::mem::take(&mut pending), &scope, &mut where_sql, &mut order)?;
+        self.fuse_pending(
+            std::mem::take(&mut pending),
+            &scope,
+            &mut where_sql,
+            &mut order,
+        )?;
         self.fuse_text_and_near(&scope, &mut where_sql)?;
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {

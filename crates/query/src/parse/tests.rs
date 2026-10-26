@@ -275,7 +275,8 @@ fn unit_names_resolve_through_the_registry() {
 
 #[test]
 fn queries_inside_parentheses_parse_as_queries() {
-    let q = p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
+    let q =
+        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
     let combined: Vec<(Combination, bool)> = q
         .stages
         .iter()

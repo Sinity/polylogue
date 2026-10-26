@@ -396,7 +396,7 @@ fn query_sessions(reader: &Reader<'_>, query: &str) -> Result<Vec<String>, Respo
             why: false,
             session: None,
             now: now_ms(),
-            day: polylogue_model::LogicalDay::system(),
+            day: None,
             embeddings: false,
             near: None,
             fields: &[],

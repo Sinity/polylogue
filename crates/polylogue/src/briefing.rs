@@ -468,7 +468,7 @@ fn live_here(
                 why: false,
                 session: None,
                 now: now.unix_ms(),
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings: false,
                 near: None,
                 fields: &fields,
@@ -1023,8 +1023,7 @@ fn recall(
     let mut similarity = near.is_some() && !text.is_empty();
     let mut similarity_failed = None;
     let found = loop {
-        let Some((query, indexes)) =
-            recall_query(&words, text, similarity, directory.as_deref())
+        let Some((query, indexes)) = recall_query(&words, text, similarity, directory.as_deref())
         else {
             break None;
         };
@@ -1037,7 +1036,7 @@ fn recall(
                 why: false,
                 session: None,
                 now: now.unix_ms(),
-                day: polylogue_model::LogicalDay::system(),
+                day: None,
                 embeddings: similarity,
                 near: if similarity { near } else { None },
                 fields: &[],

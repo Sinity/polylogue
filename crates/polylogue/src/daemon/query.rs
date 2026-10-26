@@ -52,7 +52,9 @@ pub struct Ask<'a> {
     pub session: Option<String>,
     /// Unix ms; the reader's `now` unless a cursor fixes it.
     pub now: i64,
-    pub day: LogicalDay,
+    /// The logical day times resolve in; `None` reads the operator's
+    /// settings ([`logical_day`]).
+    pub day: Option<LogicalDay>,
     pub embeddings: bool,
     /// For `near:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
@@ -143,9 +145,48 @@ fn kept_results(
         .collect()
 }
 
+/// The operator's logical day: `day.zone` (an IANA zone; the machine's
+/// unless set) and `day.logical_start` (`HH:MM`; 04:00 unless set).
+pub fn logical_day(reader: &Reader<'_>) -> Result<LogicalDay, Failure> {
+    let machine = polylogue_store::user_writes::machine_id();
+    let invalid = |message: String| Failure {
+        kind: "invalid".into(),
+        message,
+        detail: None,
+    };
+    let start = match reader.setting("day.logical_start", &machine)? {
+        None => LogicalDay::DEFAULT_START_MINUTES,
+        Some(text) => text
+            .split_once(':')
+            .and_then(|(h, m)| Some((h.parse::<u16>().ok()?, m.parse::<u16>().ok()?)))
+            .filter(|(h, m)| *h < 24 && *m < 60)
+            .map(|(h, m)| h * 60 + m)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "day.logical_start is {text:?}; it is a time of day such as 04:00"
+                ))
+            })?,
+    };
+    match reader.setting("day.zone", &machine)? {
+        None => Ok(LogicalDay {
+            start_minutes: start,
+            ..LogicalDay::system()
+        }),
+        Some(zone) => LogicalDay::named(&zone, start).ok_or_else(|| {
+            invalid(format!(
+                "day.zone is {zone:?}; it is a time zone such as Europe/Warsaw"
+            ))
+        }),
+    }
+}
+
 fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Options, Failure> {
+    let day = match &ask.day {
+        Some(day) => day.clone(),
+        None => logical_day(reader)?,
+    };
     Ok(Options {
-        clock: polylogue_query::Clock::new(now, ask.day.clone()),
+        clock: polylogue_query::Clock::new(now, day),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -239,7 +280,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         })?),
         _ => None,
     };
-    let answer = || answer(reader, &program, after, seed, question, ask.why);
+    let day = opts.clock.day.clone();
+    let answer = || answer(reader, &program, &day, after, seed, question, ask.why);
     match similarity {
         Some(similarity) => reader.with_similarity(similarity, answer),
         None => answer(),
@@ -247,9 +289,11 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 }
 
 /// The answer to a compiled program: its count and one page after `after`.
+/// `day` is the logical day its times resolved in.
 fn answer(
     reader: &Reader<'_>,
     program: &Program,
+    day: &LogicalDay,
     after: Option<Vec<Value>>,
     seed: u64,
     question: String,
@@ -264,7 +308,7 @@ fn answer(
             let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
             Some(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
         };
-        let data = super::measure::run(reader, &m.what, sessions, program.now)?;
+        let data = super::measure::run(reader, &m.what, sessions, program.now, day)?;
         return Ok(json!({
             "outcome": "measure",
             "measure": m.what,

@@ -105,8 +105,12 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         match changed {
             "fields" => request.fields = &fields,
             "caller" => request.session = Some("claude-code:different-caller".into()),
-            "zone" => request.day = LogicalDay::named("Europe/Warsaw", 0).unwrap(),
-            "day-start" => request.day.start_minutes = 240,
+            "zone" => request.day = Some(LogicalDay::named("Europe/Warsaw", 0).unwrap()),
+            "day-start" => {
+                if let Some(day) = &mut request.day {
+                    day.start_minutes = 240;
+                }
+            }
             "embeddings" => request.embeddings = true,
             "why" => request.why = true,
             "selection" => request.text = "kind:* | limit 4",

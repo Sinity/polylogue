@@ -329,3 +329,27 @@ fn an_interrupt_runs_the_notify_command_and_reports_its_failure() {
     let e = notify(&d.daemon, &rule, &h).unwrap_err();
     assert!(e.contains("/nonexistent/notifier"), "{e}");
 }
+
+#[test]
+fn a_rule_not_read_exactly_is_held_as_it_was() {
+    let rule = base("errors", "tool_calls where outcome:error");
+    let rules = std::slice::from_ref(&rule);
+    let mut e = Evaluator::new(&[]);
+    // While the index catches up the rule is not read: nothing is a
+    // baseline yet.
+    assert!(e.step(at(14, 0), rules, &HashMap::new(), hour).is_empty());
+    // The first exact reading is the baseline.
+    assert!(
+        e.step(at(14, 1), rules, &m("errors", &["a"]), hour)
+            .is_empty()
+    );
+    // An incomplete reading that misses `a` neither drops it nor fires.
+    assert!(e.step(at(14, 2), rules, &HashMap::new(), hour).is_empty());
+    assert!(
+        e.step(at(14, 3), rules, &m("errors", &["a"]), hour)
+            .is_empty()
+    );
+    // A row that is new in an exact reading fires once.
+    let h = e.step(at(14, 4), rules, &m("errors", &["a", "b"]), hour);
+    assert_eq!(fired(&h), [("b".to_owned(), How::Notice)]);
+}

@@ -49,21 +49,16 @@ impl<'a> Compiler<'a> {
         inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query)?;
         self.params = std::mem::take(&mut program.params);
-        self.notes.append(&mut program.notes);
-        self.incomplete.append(&mut program.incomplete);
-        for term in std::mem::take(&mut program.text_terms) {
-            if !self.text_terms.contains(&term) {
-                self.text_terms.push(term);
-            }
-        }
-        self.id_checks.append(&mut program.id_checks);
-        self.change_generations
-            .append(&mut program.change_generations);
-        for d in std::mem::take(&mut program.definitions) {
-            if !self.definitions.contains(&d) {
-                self.definitions.push(d);
-            }
-        }
+        // A condition is compiled again for `--why`: what it adds is kept once.
+        join(&mut self.notes, &mut program.notes);
+        join(&mut self.incomplete, &mut program.incomplete);
+        join(&mut self.text_terms, &mut program.text_terms);
+        join(&mut self.id_checks, &mut program.id_checks);
+        join(
+            &mut self.change_generations,
+            &mut program.change_generations,
+        );
+        join(&mut self.definitions, &mut program.definitions);
         match (&self.near, &program.near) {
             (Some(mine), Some(theirs)) if mine != theirs => {
                 return Err(QueryError::Invalid {
@@ -91,8 +86,7 @@ impl<'a> Compiler<'a> {
             )
         }) {
             return Err(QueryError::Invalid {
-                message: "a combined query gives rows; distinct, matches and measure do not"
-                    .into(),
+                message: "a combined query gives rows; distinct, matches and measure do not".into(),
                 position: stage.span.start,
             });
         }
@@ -166,7 +160,11 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), QueryError> {
         let other = self.combined_rows(query, scope.unit, at)?;
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
-        let not = if how == Combination::Except { "NOT " } else { "" };
+        let not = if how == Combination::Except {
+            "NOT "
+        } else {
+            ""
+        };
         where_sql.push(format!("{pk} {not}IN (SELECT _pk FROM ({}))", other.sql));
         Ok(())
     }
@@ -187,8 +185,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
-        let any_ranked =
-            self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
+        let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
         if pending.fuses.is_empty() && !any_ranked {
             let mut any = vec![format!("({})", and_all(where_sql))];
             for other in &pending.unions {
@@ -264,6 +261,15 @@ impl<'a> Compiler<'a> {
     }
 }
 
+/// Moves the items of `more` not already in `list` to its end.
+fn join<T: PartialEq>(list: &mut Vec<T>, more: &mut Vec<T>) {
+    for item in more.drain(..) {
+        if !list.contains(&item) {
+            list.push(item);
+        }
+    }
+}
+
 /// The ranked list of another query's rows: each row's place in its
 /// order, counted when the query ranks it. With `within`, only the rows
 /// that query selects take places. `list` names it in `found_in` (0:
@@ -274,7 +280,11 @@ fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
     } else {
         order_by(&other.order)
     };
-    let counts = if other.ranked { "rank IS NOT NULL" } else { "1" };
+    let counts = if other.ranked {
+        "rank IS NOT NULL"
+    } else {
+        "1"
+    };
     let within = within
         .map(|rows| format!(" WHERE _pk IN ({rows})"))
         .unwrap_or_default();

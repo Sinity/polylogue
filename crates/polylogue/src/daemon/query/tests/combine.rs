@@ -41,7 +41,10 @@ fn set_stages_select_what_their_conditions_would() {
     );
     // Each side keeps its own defaults: the subagent joins only by name.
     assert_eq!(
-        ids(&q(&w, "origin:codex | union (model:claude-opus-5-5 kind:*)")),
+        ids(&q(
+            &w,
+            "origin:codex | union (model:claude-opus-5-5 kind:*)"
+        )),
         ["#6", "#5", "#3"]
     );
     // Later stages see the combined rows.
@@ -104,7 +107,8 @@ fn a_union_of_ranked_rows_fuses_their_orders() {
 #[test]
 fn fused_pages_concatenate_to_the_whole_answer() {
     let w = morrow();
-    let text = "messages where parser | union (messages where chrono) | union (messages where continue)";
+    let text =
+        "messages where parser | union (messages where chrono) | union (messages where continue)";
     let mut whole = ask(text);
     whole.page_size = Some(100);
     let whole = run_q(&w, whole).unwrap();
@@ -115,7 +119,13 @@ fn fused_pages_concatenate_to_the_whole_answer() {
         a.page_size = Some(2);
         a.cursor = cursor.as_deref();
         let page = run_q(&w, a).unwrap();
-        seen.extend(page["rows"].as_array().unwrap().iter().map(|r| r["id"].clone()));
+        seen.extend(
+            page["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].clone()),
+        );
         match page["next"].as_str() {
             Some(next) => cursor = Some(next.to_owned()),
             None => break,
@@ -144,7 +154,10 @@ fn counted_conditions_count_related_rows() {
         &w,
         "sessions where NOT count(tool_call where outcome:error) >= 1",
     );
-    assert_eq!(count(&q(&w, failing)) + count(&not), count(&q(&w, "sessions")));
+    assert_eq!(
+        count(&q(&w, failing)) + count(&not),
+        count(&q(&w, "sessions"))
+    );
 }
 
 #[test]
@@ -178,7 +191,10 @@ fn saved_queries_take_their_parameters_as_values() {
     assert_eq!(count(&v), count(&q(&w, "tool_calls where outcome:error")));
     assert_eq!(v["definitions"][0]["name"], "by-outcome");
     assert_eq!(
-        ids(&q(&w, "query:costly(over=2) | union (query:costly(over=1.5))")),
+        ids(&q(
+            &w,
+            "query:costly(over=2) | union (query:costly(over=1.5))"
+        )),
         ids(&q(&w, "sessions where cost > 1.5"))
     );
     // A value is one value: it cannot add a condition.

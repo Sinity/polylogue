@@ -68,16 +68,17 @@ it.
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions; `--query QUERY` notes every row a query returns. |
 | `note accept\|reject NOTE` | Judge a note an agent wrote: an accepted note reaches briefs as the operator's own. `note list --agents --judged none` lists the notes waiting. |
 | `save NAME QUERY` | Save a query to run as `query:NAME`; a `$word` in it is a parameter, given as `query:NAME(word=VALUE)`. |
+| `watch QUERY` | Report each row that starts matching as a notice (`--for 20m` holds it first, `--notify` also shows it on the desktop). |
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work (words and, with vectors, similarity, ranked together, by pages) with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
 | `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
 | `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. `status` also shows the last day's notices. |
 | `changes [--since POSITION]` | The change feed: JSON lines naming changed sessions, notes, removals and excisions since a position, ending with the next position. |
-| `sql STATEMENT` | Read-only SQL over the stable views. |
+| `sql STATEMENT` | Read-only SQL. The views `v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links` and `v1_notes` keep their names and columns ([crates/store/src/sql_views.rs](crates/store/src/sql_views.rs)); the tables under them change with the index format. |
 | `excise TARGET` | Remove a session, document or input whole, with everything parsed from it ([excision](docs/excision.md)). |
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
-| `setting KEY [VALUE]` | Read or set a setting. |
+| `setting KEY [VALUE]` | Read or set a setting. `day.zone` (an IANA zone; the machine's unless set) and `day.logical_start` (default `04:00`) define the logical day that dates, `today` and `group by day` mean. |
 | `web` | Open the web reader. |
 | `mcp` | Serve MCP over stdio. |
 | `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`) and Hermes: live state, the session-start brief and takeovers. |
@@ -111,7 +112,10 @@ brings that session's takeover context.
 | Hermes | In `config.yaml`: `hooks: {pre_llm_call: [{command: "polylogue hook pre_llm_call --harness hermes"}]}` and `hooks_auto_accept: true`; the brief comes with the first turn. |
 
 A signal is a note of kind `signal` whose body names a watched query, such
-as `{"name": "agent waiting", "query": "sessions where live:waiting", "for": "20m"}`.
+as `{"name": "agent waiting", "query": "sessions where live:waiting", "for": "20m"}`;
+`polylogue watch` writes one. While the daemon's first pass catches the
+index up, and whenever a query's answer is incomplete, a watch is held as it
+was rather than read as rows appearing or leaving.
 Each notice it fires shows in `status`, the next briefs and `notices`; a
 rule the operator writes also shows it as a desktop notification through
 `notify.command` (default `notify-send`), within its quiet hours and rate
@@ -152,6 +156,11 @@ parents or cycles keep what is available readable and mark the result
 
 Sessions show the title the tool recorded, or else one made from the first
 prompt (`display_title` in JSON).
+
+`first_seen` is when Polylogue first had a message's bytes (a session's:
+its first message's). `evidence_until:TIME` limits messages, blocks, tool
+calls, events and notes to what Polylogue had by then, read with today's
+parsers; a session's figures are not recomputed as they stood then.
 
 Text that is not a conversation (claude.ai memories, project instructions
 and project documents, Hermes transcripts) is stored as documents:
