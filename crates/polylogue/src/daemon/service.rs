@@ -4,7 +4,7 @@
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
-use polylogue_model::Author;
+use polylogue_model::{Author, NewNote, NoteKind};
 use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
@@ -483,6 +483,29 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     read_at,
                 },
             )
+        }
+        Request::Save {
+            request_id,
+            name,
+            text,
+            author,
+        } => {
+            let revises = match saved_revision(&reader, &name, &text) {
+                Ok(revises) => revises,
+                Err(response) => return response,
+            };
+            drop(reader);
+            let note = NewNote {
+                kind: NoteKind::SavedQuery,
+                key: Some(name),
+                value: Some(text),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises,
+                valid_until: None,
+            };
+            write(d, request_id, UserWrite::AddNote { note })
         }
         Request::AddNote { request_id, note } => {
             drop(reader);
@@ -1056,3 +1079,43 @@ mod read;
 
 #[cfg(test)]
 mod tests;
+
+/// The saved query a `save` revises: the current definition with that
+/// name, if any. The name must be one `query:NAME` can say, and the text a
+/// query.
+fn saved_revision(reader: &Reader<'_>, name: &str, text: &str) -> Result<Option<String>, Response> {
+    let usable = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !usable {
+        return Err(error(
+            "invalid",
+            format!("{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"),
+        ));
+    }
+    if let Err(e) = polylogue_query::parse(text) {
+        return Err(error(e.kind(), e.to_string()));
+    }
+    let saved = super::query::saved_queries(reader).map_err(|f| Response::Error {
+        kind: f.kind,
+        message: f.message,
+        detail: f.detail,
+    })?;
+    match saved.get(name).map(Vec::as_slice) {
+        None | Some([]) => Ok(None),
+        Some([one]) => Ok(Some(one.revision.clone())),
+        Some(several) => Err(error(
+            "ambiguous",
+            format!(
+                "{} saved queries are named {name}: {}; withdraw all but one first",
+                several.len(),
+                several
+                    .iter()
+                    .map(|s| format!("note:{}", s.first_note))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}

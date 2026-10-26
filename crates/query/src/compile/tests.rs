@@ -16,7 +16,16 @@ fn opts(saved: &[(&str, &str)]) -> Options {
         self_session: None,
         saved: saved
             .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .map(|(name, text)| {
+                (
+                    (*name).to_owned(),
+                    vec![SavedQuery {
+                        text: (*text).to_owned(),
+                        revision: format!("{name}-revision"),
+                        first_note: format!("{name}-first"),
+                    }],
+                )
+            })
             .collect(),
         kept: Default::default(),
         fields: vec![],

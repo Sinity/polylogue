@@ -70,6 +70,13 @@ impl<'a> Compiler<'a> {
                 });
             }
             CondKind::Exists { unit, cond } => self.exists(*unit, cond, scope, c.span)?,
+            CondKind::Count { unit, cond, op, n } => {
+                self.counted(*unit, cond.as_deref(), *op, *n, scope, c.span)?
+            }
+            CondKind::In { field, query } => self.member_of(field, query, scope, c.span)?,
+            CondKind::Saved { name, arguments } => {
+                self.saved_cond(name, arguments, scope, c.span)?
+            }
             CondKind::Seq { steps, gaps } => self.seq(steps, gaps, scope, c.span)?,
             CondKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
@@ -308,7 +315,6 @@ impl<'a> Compiler<'a> {
                         _ => format!("{s}.pk IN (SELECT session_pk FROM message WHERE id = {p})"),
                     });
                 }
-                "query" => return self.saved_cond(text, scope, span),
                 "result" => {
                     return Err(QueryError::Invalid {
                         message: "result:<id> is a source: start the query with it \

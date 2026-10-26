@@ -58,7 +58,7 @@ it.
 
 | Command | What it does |
 |---|---|
-| `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, deliveries, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, deliveries, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. Queries combine: `\| union (…)`, `\| intersect (…)`, `\| except (…)`, `\| fuse (…)`, `count(UNIT where …) >= N` and `FIELD in (… \| group by FIELD)`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
 | `status` | What the archive holds and what the daemon is doing; during a long pass the counts come from memory, with the read position they are from. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
@@ -67,6 +67,7 @@ it.
 | `export SESSION…` | Write sessions, documents or events as JSON (read back by `import`), Markdown, HTML or terminal text. |
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions; `--query QUERY` notes every row a query returns. |
 | `note accept\|reject NOTE` | Judge a note an agent wrote: an accepted note reaches briefs as the operator's own. `note list --agents --judged none` lists the notes waiting. |
+| `save NAME QUERY` | Save a query to run as `query:NAME`; a `$word` in it is a parameter, given as `query:NAME(word=VALUE)`. |
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work (words and, with vectors, similarity, ranked together, by pages) with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
@@ -122,7 +123,13 @@ Words in a query match full text and rank the rows by relevance. With
 embeddings built, `near:TEXT` ranks rows by similarity to TEXT: the query's
 other conditions choose the rows first and every row they keep is ranked,
 and with words in the same query both orders are fused (reciprocal rank
-fusion). Ranked answers page by cursor like any other.
+fusion). `| union (…)` adds another query's rows; when either side is
+ranked, the rows rank by fusing every list's order, and `found_in` names
+the lists that ranked each row. `| fuse (…)` ranks the rows also by another
+query's order without adding any. Ranked answers page by cursor like any
+other. `recall` is one such query: every word in prose, every word in tool
+output and similarity to the whole text, with the current directory's
+sessions ranked in one more list.
 
 The daemon keeps warm what common answers need: the vectors in memory, the
 vectors of recent `near:` texts, recent answers by read position, and

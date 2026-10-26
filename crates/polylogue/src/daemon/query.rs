@@ -65,21 +65,39 @@ pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
 /// The current saved queries by name (`saved_query` notes, newest
-/// revision, not withdrawn), for `query:NAME`.
-fn saved_queries(
+/// revision of each family, not withdrawn), for `query:NAME`. Two families
+/// with one name both stay listed, so the name is refused as ambiguous.
+pub(crate) fn saved_queries(
     reader: &Reader<'_>,
-) -> Result<std::collections::BTreeMap<String, String>, Failure> {
+) -> Result<std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>>, Failure> {
     let sql = format!(
-        "SELECT n.key AS k, n.value AS v FROM a.note n WHERE n.kind = 'saved_query' \
-         AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {}",
+        "SELECT n.key AS k, n.value AS v, n.id AS id, n.first_note AS first \
+         FROM a.note n WHERE n.kind = 'saved_query' \
+         AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {} ORDER BY n.first_note",
         polylogue_query::fields::current_note("n"),
         polylogue_query::fields::withdrawn_note("n"),
     );
-    Ok(reader
-        .query(&sql, &[])?
-        .iter()
-        .filter_map(|r| Some((r["k"].as_str()?.to_owned(), r["v"].as_str()?.to_owned())))
-        .collect())
+    let mut saved: std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>> =
+        Default::default();
+    for r in reader.query(&sql, &[])? {
+        let (Some(name), Some(text), Some(id), Some(first)) = (
+            r["k"].as_str(),
+            r["v"].as_str(),
+            r["id"].as_str(),
+            r["first"].as_str(),
+        ) else {
+            continue;
+        };
+        saved
+            .entry(name.to_owned())
+            .or_default()
+            .push(polylogue_query::SavedQuery {
+                text: text.to_owned(),
+                revision: id.to_owned(),
+                first_note: first.to_owned(),
+            });
+    }
+    Ok(saved)
 }
 
 /// Kept results by ID, with the shape of their stored rows, for
@@ -179,6 +197,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "rows": rows,
         "query": ask.text,
         "now": program.now,
+        "definitions": program.definitions,
     });
     if !ask.text.contains('|')
         && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
@@ -307,6 +326,9 @@ fn answer(
         },
         "read_at": read_at,
     });
+    if !program.definitions.is_empty() {
+        out["definitions"] = json!(program.definitions);
+    }
     if why_asked && count == 0 {
         out["why"] = why(reader, program, &params)?;
     }

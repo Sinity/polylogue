@@ -785,6 +785,25 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "save",
+        help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
+        args: &[
+            Arg {
+                required: true,
+                ..pos("name", Kind::Text, "Letters, digits, `_`, `-` and `.`")
+            },
+            Arg {
+                required: true,
+                ..pos("query", Kind::Rest, "The query")
+            },
+        ],
+        action: Action::Request(requests::save),
+        mcp: true,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
         name: "keep",
         help: "Run a query and keep the rows it returned, to read back later as `result:<id>` (or `result:<id>.matches`) exactly as they were",
         args: &[

@@ -1096,6 +1096,7 @@ fn the_work_unit_reads_the_derived_graph() {
     );
 }
 
+mod combine;
 mod live;
 mod morrow_examples;
 

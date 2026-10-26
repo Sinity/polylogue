@@ -12,6 +12,7 @@ use crate::{QueryError, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+mod combine;
 mod conditions;
 pub(crate) mod custom_fields;
 mod program;
@@ -20,6 +21,11 @@ mod sequences;
 mod stages;
 
 use saved::{bind_saved_source, compile_kept};
+
+/// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
+/// each ranked list it is in; the offset keeps one list's first places
+/// from outweighing agreement between lists.
+pub const RANK_FUSION_OFFSET: u32 = 60;
 
 /// What compiling needs besides the text.
 #[derive(Debug, Clone)]
@@ -39,8 +45,10 @@ pub struct Options {
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
-    /// Saved queries by name (current `saved_query` notes): `query:NAME`.
-    pub saved: std::collections::BTreeMap<String, String>,
+    /// Saved queries by name: the current revision of each `saved_query`
+    /// note family with that name (`query:NAME`). Two families with one
+    /// name are an ambiguity the query refuses.
+    pub saved: std::collections::BTreeMap<String, Vec<SavedQuery>>,
     /// The columns to show instead of the unit's defaults (`--fields`):
     /// field names, `prefix.field` paths included.
     pub fields: Vec<String>,
@@ -48,6 +56,24 @@ pub struct Options {
     pub kept: std::collections::BTreeMap<String, Kept>,
     /// Web chats whose conversation page URLs name sessions.
     pub chat_pages: Vec<ChatPage>,
+}
+
+/// A saved query's definition: the text of one revision of a
+/// `saved_query` note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SavedQuery {
+    pub text: String,
+    /// The note revision the text is from.
+    pub revision: String,
+    /// The first note of its revisions: the family's identity.
+    pub first_note: String,
+}
+
+/// A saved query a program ran, by the revision its name resolved to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Definition {
+    pub name: String,
+    pub revision: String,
 }
 
 /// A web chat's conversation pages, `https://<host>/<path>/<id>`, whose
@@ -194,6 +220,9 @@ pub struct Program {
     pub page_size: u64,
     /// `near:`: the text to embed and rank by.
     pub near: Option<Near>,
+    /// The saved queries it ran, each at the revision its name resolved
+    /// to when it was compiled.
+    pub definitions: Vec<Definition>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
     pub zone: String,
@@ -321,11 +350,16 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
     if let Some(program) = compile_kept(text, opts)? {
         return Ok(program);
     }
-    let bound = bind_saved_source(text, opts)?;
-    let text = bound.as_deref().unwrap_or(text);
-    let query = parse(text)?;
-    refuse_commands(text, &query, opts)?;
-    Compiler::new(text, opts).program(&query)
+    let Some(bound) = bind_saved_source(text, opts)? else {
+        let query = parse(text)?;
+        refuse_commands(text, &query, opts)?;
+        return Compiler::new(text, opts).program(&query);
+    };
+    let mut query = parse(&bound.text)?;
+    bound.bind(&mut query)?;
+    let mut compiler = Compiler::new(&bound.text, opts);
+    compiler.definitions.push(bound.definition.clone());
+    compiler.program(&query)
 }
 
 /// Words a query may start with only quoted: command names, and near
@@ -435,9 +469,19 @@ pub(crate) struct Compiler<'a> {
     /// that brings its similarities to the unit's rows.
     near_rank: Option<String>,
     near_join: Option<String>,
-    /// With words and `near:` together, the join of each row's fused rank.
-    fused_join: Option<String>,
+    /// Rows ranked by reciprocal rank fusion (words and `near:` together,
+    /// or a combining stage): the join bringing each row's fused rank.
+    fusion: Option<Fusion>,
     near: Option<Near>,
+    definitions: Vec<Definition>,
+}
+
+/// A fused ranking: the join that brings it to the rows, and the rank
+/// column, lower first.
+#[derive(Debug, Clone)]
+struct Fusion {
+    join: String,
+    rank: String,
 }
 
 impl<'a> Compiler<'a> {
@@ -458,8 +502,9 @@ impl<'a> Compiler<'a> {
             rank: None,
             near_rank: None,
             near_join: None,
-            fused_join: None,
+            fusion: None,
             near: None,
+            definitions: vec![],
         }
     }
 

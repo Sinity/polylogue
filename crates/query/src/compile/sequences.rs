@@ -11,6 +11,35 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
+        let related = self.related_rows(unit, Some(cond), scope, span)?;
+        Ok(format!("EXISTS (SELECT 1 FROM {related})"))
+    }
+
+    /// `count(UNIT where COND) OP N`: how many related rows match. A count
+    /// is always known, so the condition and its `NOT` partition the rows.
+    pub(super) fn counted(
+        &mut self,
+        unit: Unit,
+        cond: Option<&Cond>,
+        op: Op,
+        n: u64,
+        scope: &RowContext,
+        span: Span,
+    ) -> Result<String, QueryError> {
+        let related = self.related_rows(unit, cond, scope, span)?;
+        let n = i64::try_from(n).unwrap_or(i64::MAX);
+        Ok(format!("(SELECT count(*) FROM {related}) {} {n}", op.sql()))
+    }
+
+    /// `FROM … WHERE …` of the rows of `unit` related to one row of
+    /// `scope` that match `cond`, by `unit`'s defaults.
+    fn related_rows(
+        &mut self,
+        unit: Unit,
+        cond: Option<&Cond>,
+        scope: &RowContext,
+        span: Span,
+    ) -> Result<String, QueryError> {
         let child = RowContext {
             unit,
             a: self.fresh(),
@@ -18,12 +47,14 @@ impl<'a> Compiler<'a> {
         let key = scope.a.expand(units::spec(scope.unit).key);
         let session = self.session_alias(scope, span).map(|s| format!("{s}.pk"));
         let link = self.under_parent(scope.unit, &child, &key, session)?;
-        let top = top_level(cond);
+        let top = cond.map(top_level).unwrap_or_default();
         let mut w = self.defaults(&child, &top);
         w.push(link);
-        w.push(self.cond(cond, &child, false)?);
+        if let Some(cond) = cond {
+            w.push(self.cond(cond, &child, false)?);
+        }
         Ok(format!(
-            "EXISTS (SELECT 1 FROM {} WHERE {})",
+            "{} WHERE {}",
             base_from(unit, &child.a),
             and_all(&w)
         ))

@@ -152,6 +152,14 @@ pub enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// Saves a query under a name, to run as `query:NAME`; saving a name
+    /// again revises its definition.
+    Save {
+        request_id: String,
+        name: String,
+        text: String,
+        author: Author,
+    },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
         request_id: String,
@@ -265,6 +273,7 @@ impl Request {
             | Self::AnnotateQuery { .. }
             | Self::Judge { .. }
             | Self::Keep { .. }
+            | Self::Save { .. }
             | Self::Withdraw { .. }
             | Self::DeliveryEvent { .. }
             | Self::Excise { .. } => false,
