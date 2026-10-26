@@ -137,3 +137,28 @@ fn a_held_register_material_is_read_from_the_content_store_and_checked() {
     };
     assert_eq!((number, back), (7, change));
 }
+
+#[test]
+fn credentials_in_the_nats_url_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sinex.toml");
+    std::fs::write(
+        &path,
+        "mode = 'primary'\nnats = 'nats://polylogue:secret@127.0.0.1:4222'\nstore = '/unused'\n",
+    )
+    .unwrap();
+    let error = crate::Config::load_from(&path).unwrap_err().to_string();
+    assert!(error.contains("password_file"), "{error}");
+    assert!(!error.contains("secret"), "{error}");
+
+    std::fs::write(
+        &path,
+        "mode = 'primary'\nnats = 'nats://127.0.0.1:4222'\npassword_file = '/run/secret'\nstore = '/unused'\n",
+    )
+    .unwrap();
+    let config = crate::Config::load_from(&path).unwrap().unwrap();
+    assert_eq!(
+        config.password_file.unwrap(),
+        std::path::Path::new("/run/secret")
+    );
+}

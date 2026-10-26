@@ -36,9 +36,16 @@ pub(crate) struct Client {
 
 impl Client {
     pub(crate) async fn connect(config: &Config) -> Result<Self> {
-        let client = async_nats::connect(&config.nats)
+        let options = match config.credentials()? {
+            Some((user, password)) => {
+                async_nats::ConnectOptions::with_user_and_password(user, password)
+            }
+            None => async_nats::ConnectOptions::new(),
+        };
+        let client = options
+            .connect(config.nats.as_str())
             .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
+            .map_err(|e| Error::Unreachable(format!("NATS at {}: {e}", config.nats)))?;
         let subjects = Subjects::new(config.subject_root.clone());
         let acknowledgments = client
             .subscribe(subjects.ack(&config.producer))
@@ -208,3 +215,6 @@ pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> 
         None => Ok(acknowledgment),
     }
 }
+
+#[cfg(test)]
+mod tests;
