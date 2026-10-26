@@ -67,8 +67,9 @@ struct Hit {
 
 impl Reader<'_> {
     /// Keep raw FTS selection, then mask chosen source blocks before cutting.
-    /// Each chosen session's prefix is decoded once, through its last hit.
-    /// This is linear prefix I/O, not a bound supplied by snippet length.
+    /// A chosen block is masked alone when masking reaches it with no PEM
+    /// block open; otherwise its session's prefix is masked once, through
+    /// its last such hit.
     pub fn snippets(
         &self,
         fts: &str,
@@ -91,32 +92,59 @@ impl Reader<'_> {
             }
         }
         let mut snippets = vec![None; scopes.len()];
+        let cut_from = |block: &polylogue_model::Block,
+                        indices: Vec<usize>,
+                        snippets: &mut Vec<Option<Snippet>>|
+         -> Result<()> {
+            let text = match block {
+                polylogue_model::Block::Text { text } => text.as_str(),
+                polylogue_model::Block::ToolResult {
+                    output: Some(text), ..
+                } => text.as_str(),
+                _ => {
+                    return Err(StoreError::Invalid(
+                        "selected snippet block has no matching source text".into(),
+                    ));
+                }
+            };
+            let (text, marks) = cut(text, terms);
+            for index in indices {
+                let hit = hits[index].as_ref().expect("chosen hit index");
+                snippets[index] = Some(Snippet {
+                    text: text.clone(),
+                    marks: marks.clone(),
+                    session: hit.session.clone(),
+                    message: hit.message.clone(),
+                });
+            }
+            Ok(())
+        };
         for (session, mut pending) in sessions {
+            // Masking runs over a session's blocks in order, and the only
+            // state it carries across a block boundary is an open PEM block.
+            // A hit block reached with none open masks the same alone; the
+            // others are masked after reading their session from its start.
+            let alone = crate::ordered_blocks::masked_alone(
+                self.conn()?,
+                session,
+                &pending.keys().copied().collect(),
+            )?;
+            for block_pk in alone {
+                let Some(indices) = pending.remove(&block_pk) else {
+                    continue;
+                };
+                let mut block = crate::ordered_blocks::one(self.conn()?, block_pk)?;
+                polylogue_model::masking::MessageMasker::default().block(&mut block);
+                cut_from(&block, indices, &mut snippets)?;
+            }
+            if pending.is_empty() {
+                continue;
+            }
             let mut masker = polylogue_model::masking::MessageMasker::default();
             crate::ordered_blocks::visit(self.conn()?, session, |mut source| {
                 masker.block(&mut source.block);
                 if let Some(indices) = pending.remove(&source.pk) {
-                    let text = match &source.block {
-                        polylogue_model::Block::Text { text } => text.as_str(),
-                        polylogue_model::Block::ToolResult {
-                            output: Some(text), ..
-                        } => text.as_str(),
-                        _ => {
-                            return Err(StoreError::Invalid(
-                                "selected snippet block has no matching source text".into(),
-                            ));
-                        }
-                    };
-                    let (text, marks) = cut(text, terms);
-                    for index in indices {
-                        let hit = hits[index].as_ref().expect("chosen hit index");
-                        snippets[index] = Some(Snippet {
-                            text: text.clone(),
-                            marks: marks.clone(),
-                            session: hit.session.clone(),
-                            message: hit.message.clone(),
-                        });
-                    }
+                    cut_from(&source.block, indices, &mut snippets)?;
                 }
                 Ok(if pending.is_empty() {
                     ControlFlow::Break(())
