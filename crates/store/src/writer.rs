@@ -279,6 +279,8 @@ impl Writer {
             report: WriteReport::default(),
             first_build: empty.then(crate::first_build::FirstBuild::default),
             deferred_indexes,
+            derive_due: true,
+            derived_version: None,
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
             excisions,
@@ -504,6 +506,12 @@ struct Inner {
     first_build: Option<crate::first_build::FirstBuild>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
+    /// This writer wrote index rows since the last derive, or none has run
+    /// yet (a rule version may have changed).
+    derive_due: bool,
+    /// `data_version` of the index when the last derive ended: it moves when
+    /// another connection commits.
+    derived_version: Option<i64>,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
@@ -610,9 +618,7 @@ impl Inner {
                 // Derived rows follow every commit; a first build derives
                 // once, after its indexes exist.
                 if self.first_build.is_none()
-                    && let Err(e) = crate::timing::time(crate::timing::Stage::Derive, || {
-                        crate::derive::run(&mut self.index)
-                    })
+                    && let Err(e) = self.derive()
                 {
                     self.report.errors.push(format!("derive: {e}"));
                 }
@@ -643,11 +649,7 @@ impl Inner {
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
-                let result = self.settle().and_then(|()| {
-                    crate::timing::time(crate::timing::Stage::Derive, || {
-                        crate::derive::run(&mut self.index)
-                    })
-                });
+                let result = self.settle().and_then(|()| self.derive());
                 for reply in derives.drain(..) {
                     let _ = reply.send(match &result {
                         Ok(n) => Ok(*n),
@@ -662,9 +664,7 @@ impl Inner {
             }
             // Whatever a flush reports written is also derived.
             if !flushes.is_empty()
-                && let Err(e) = crate::timing::time(crate::timing::Stage::Derive, || {
-                    crate::derive::run(&mut self.index)
-                })
+                && let Err(e) = self.derive()
             {
                 self.report.errors.push(format!("derive: {e}"));
             }
@@ -672,6 +672,7 @@ impl Inner {
                 let result = self
                     .settle()
                     .and_then(|()| crate::assets::install(&mut self.index, &self.archive, *staged));
+                self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
             // Whatever a flush reports written is also searchable.
@@ -690,6 +691,26 @@ impl Inner {
             }
         }
         let _ = self.settle();
+    }
+
+    /// Derives from the rows written since the last derive. With nothing
+    /// written since, by this writer or another connection, nothing is
+    /// stale, so the scan for stale sessions, which reads every session for
+    /// every derivation, is skipped.
+    fn derive(&mut self) -> Result<u64> {
+        // Changes only when another connection commits.
+        let version = |index: &Connection| -> Result<i64> {
+            Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
+        };
+        if !self.derive_due && self.derived_version == Some(version(&self.index)?) {
+            return Ok(0);
+        }
+        let derived = crate::timing::time(crate::timing::Stage::Derive, || {
+            crate::derive::run(&mut self.index)
+        })?;
+        self.derive_due = false;
+        self.derived_version = Some(version(&self.index)?);
+        Ok(derived)
     }
 
     /// Ends an unsynced build: makes the index durable, then clears the mark
@@ -801,6 +822,7 @@ impl Inner {
             .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
         if result.is_ok() {
             self.excisions = true;
+            self.derive_due = true;
         }
         result
     }
@@ -1056,6 +1078,7 @@ impl Inner {
         }
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        self.derive_due = true;
         self.search.wake();
         self.report.batches += stats.0;
         self.report.messages += stats.1;
