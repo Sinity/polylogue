@@ -334,8 +334,10 @@ impl MessageSelection<'_, '_> {
 
     /// The latest place at or before `message` where masking can start
     /// afresh: masking carries nothing from one block to the next but a
-    /// private key block still open, so every place before the first block
-    /// that leaves one open (`block.pem_open`) is a fresh start.
+    /// private key block still open. Every place before the first block that
+    /// leaves one open (`block.pem_open`) is a fresh start; after it, the
+    /// stored bytes are followed, without masking, to the last place where
+    /// no key is open.
     pub fn fresh_masking_start(&self, message: usize) -> Result<usize> {
         let conn = self.reader.conn()?;
         let mut flagged = HashSet::new();
@@ -350,8 +352,32 @@ impl MessageSelection<'_, '_> {
         if flagged.is_empty() {
             return Ok(message);
         }
-        let first = self.keys()?.iter().position(|pk| flagged.contains(pk));
-        Ok(first.map_or(message, |first| first.min(message)))
+        let keys = self.keys()?;
+        let Some(first) = keys
+            .iter()
+            .take(message)
+            .position(|pk| flagged.contains(pk))
+        else {
+            return Ok(message);
+        };
+        let mut blocks = conn.prepare_cached(
+            "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
+             WHERE b.message_pk = ?1 ORDER BY b.idx",
+        )?;
+        let mut state = crate::ordered_blocks::PemState::default();
+        let mut fresh = first;
+        for (at, pk) in keys.iter().enumerate().take(message).skip(first) {
+            if !state.open() {
+                fresh = at;
+            }
+            let mut rows = blocks.query([pk])?;
+            while let Some(row) = rows.next()? {
+                let body: Vec<u8> = row.get(0)?;
+                let text: Option<Vec<u8>> = row.get(1)?;
+                state.block(&body, text.as_deref())?;
+            }
+        }
+        Ok(if state.open() { fresh } else { message })
     }
 
     pub(super) fn keys(&self) -> Result<Vec<i64>> {

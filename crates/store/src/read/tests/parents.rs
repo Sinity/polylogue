@@ -264,6 +264,15 @@ fn masking_starts_afresh_anywhere_before_a_block_that_leaves_a_key_open() {
         ],
     );
     session(&mut f, "plain", &["one", "two", "three"]);
+    session(
+        &mut f,
+        "closed",
+        &[
+            "opens -----BEGIN RSA PRIVATE KEY-----",
+            "inside -----END RSA PRIVATE KEY----- closes",
+            "after",
+        ],
+    );
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let keyed = reader
@@ -277,4 +286,11 @@ fn masking_starts_afresh_anywhere_before_a_block_that_leaves_a_key_open() {
         .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
         .unwrap();
     assert_eq!(plain.fresh_masking_start(2).unwrap(), 2);
+    let closed = reader
+        .select_messages(&SessionId::parse("claude-code:closed").unwrap(), false)
+        .unwrap();
+    let starts: Vec<usize> = (0..3)
+        .map(|at| closed.fresh_masking_start(at).unwrap())
+        .collect();
+    assert_eq!(starts, [0, 0, 2]);
 }
