@@ -173,10 +173,11 @@ A budgeted session or document read is bound to the selected content, view
 and index generation: unrelated writes leave the cursor usable, a changed
 content or new index returns `stale_cursor`. The only masking state that
 crosses a block boundary is an open private key block, and the writer marks
-each block that leaves one open; a page starts masking afresh at its
-cursor's message when no earlier block is marked, seeking to that message
-by its key, and otherwise rebuilds the state from the message holding the
-first marked block. Cursors are sealed with a secret of the index
+each message with a block that leaves one open; a page starts masking
+afresh at its cursor's message when no earlier message is marked, seeking
+to that message by its key. Otherwise it follows the stored bytes from the
+first marked message, without masking, to the last place before the cursor
+where no key is open, and masks from there. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
 The budget limits output size, not

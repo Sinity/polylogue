@@ -305,6 +305,21 @@ fn main() {
     let mut engine = Engine::new(config, archive.clone()).unwrap();
     let setup_seconds = started.elapsed().as_secs_f64();
     let ingest_started = Instant::now();
+    // Seconds per stage so far, on stderr each minute: a run stopped before
+    // it ends still shows where its time went.
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let stages: serde_json::Map<_, _> = polylogue_store::timing::stage_seconds()
+                .into_iter()
+                .map(|(s, secs)| (s.name().to_owned(), serde_json::json!(secs.round())))
+                .collect();
+            eprintln!(
+                "{}",
+                serde_json::json!({"seconds": ingest_started.elapsed().as_secs(), "stages": stages})
+            );
+        }
+    });
     let pass = engine.run_pass().unwrap();
     drop(engine);
     let ingest_seconds = ingest_started.elapsed().as_secs_f64();
