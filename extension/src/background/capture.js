@@ -61,16 +61,36 @@ export function captureBody({ provider, conversation, url, raw = null, session =
   });
 }
 
-async function sha256(blob) {
-  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+/**
+ * The conversation as content, for telling whether it changed: keys in
+ * order, and lists of plain values in order too, since providers return
+ * some (ChatGPT's `safe_urls`) in a new order on every read.
+ */
+function content(value) {
+  if (Array.isArray(value)) {
+    const items = value.map(content);
+    return items.every((item) => item === null || typeof item !== "object")
+      ? items.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+      : items;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, content(value[key])]));
+  }
+  return value;
+}
+
+async function fingerprint(raw, session) {
+  const value = raw ? JSON.parse(await raw.text()) : session || {};
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(content(value))));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export class Capturer {
   /**
    * `chrome` and `host` are the browser and the host; `outbox`
-   * keeps captures until the host has them; `seen` remembers each
-   * conversation's last stored provider JSON (a chrome.storage area).
+   * keeps captures until the host has them; `seen` remembers what each
+   * conversation held when it was last captured (a chrome.storage area
+   * that outlives restarts, so a restart does not capture it again).
    */
   constructor({ chrome, host, outbox, seen, log = () => {} }) {
     this.chrome = chrome;
@@ -94,9 +114,10 @@ export class Capturer {
     if (!conversation) throw new CaptureError("no_conversation_on_page");
     const key = `${provider}:${conversation}`;
     const raw = page.body;
-    const fingerprint = await sha256(raw || new Blob([JSON.stringify(info.session || {})]));
-    const known = (await this.seen.get({ [key]: null }))[key];
-    if (!force && known === fingerprint) return { outcome: "unchanged", provider, conversation };
+    const now = await fingerprint(raw, info.session);
+    const seenKey = `seen ${key}`;
+    const known = (await this.seen.get({ [seenKey]: null }))[seenKey];
+    if (!force && known === now) return { outcome: "unchanged", provider, conversation };
 
     const version = this.chrome.runtime.getManifest().version;
     const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version };
@@ -108,7 +129,7 @@ export class Capturer {
     const body = captureBody({ ...base, files });
     await this.outbox.add({ provider, conversation, body });
     const delivered = await this.deliver();
-    await this.seen.set({ [key]: fingerprint });
+    await this.seen.set({ [seenKey]: now });
     return { outcome: delivered ? "stored" : "waiting", provider, conversation };
   }
 

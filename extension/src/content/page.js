@@ -66,12 +66,23 @@
   });
 
   // Change notices. A conversation that is still being written (the
-  // provider shows its stop button) is announced once it settles.
+  // provider shows its stop button) is announced once it settles. Pages
+  // change their markup all the time (menus, animations); only a change of
+  // the conversation's text, or another page, is announced.
   let timer = null;
   let lastUrl = location.href;
+  let announced = null;
+  function shownText() {
+    const shown = document.querySelector("main") || document.body;
+    const text = shown?.innerText ?? shown?.textContent ?? "";
+    return `${location.href}\n${text.length}\n${text.slice(-2000)}`;
+  }
   function announce(reason) {
     const id = provider.conversationId(location.href);
     if (!id && !provider.temporary?.(location.href)) return;
+    const shown = shownText();
+    if (shown === announced) return;
+    announced = shown;
     chrome.runtime.sendMessage({ type: "polylogue.changed", provider: provider.name, reason }).catch(() => undefined);
   }
   function settleThenAnnounce(reason) {
