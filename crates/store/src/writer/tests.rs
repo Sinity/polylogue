@@ -793,7 +793,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     let (reply, received) = sync_channel(1);
     sender
         .0
-        .send(Msg::User(
+        .send_user((
             Box::new(crate::UserRequest::now(
                 crate::user_writes::new_request_id(),
                 crate::UserWrite::SetSetting {
@@ -968,3 +968,66 @@ mod authorship;
 mod hash_order;
 
 mod documents;
+
+#[test]
+fn a_user_write_goes_ahead_of_queued_batches() {
+    let w = test_archive();
+    let sender = w.writer.sender().unwrap();
+    // The writer stops inside batch `a` (its release runs after `a`
+    // commits) until the gate opens.
+    let (entered, inside) = sync_channel(1);
+    let (open, gate) = sync_channel::<()>(1);
+    let mut a = batch("a", 0, 0, vec![], &[]);
+    a.release = InFlight::new(move || {
+        entered.send(()).unwrap();
+        gate.recv().unwrap();
+    });
+    sender.send(a).unwrap();
+    inside.recv().unwrap();
+    // Batches fill the queue behind it; one more sender waits for room.
+    let queued = std::thread::spawn({
+        let sender = sender.clone();
+        move || {
+            for name in ["b", "c", "d", "e", "f"] {
+                sender.send(batch(name, 0, 0, vec![], &[])).unwrap();
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let user = std::thread::spawn({
+        let sender = sender.clone();
+        move || {
+            sender.user(crate::UserRequest::now(
+                crate::user_writes::new_request_id(),
+                crate::UserWrite::SetSetting {
+                    key: "ahead".into(),
+                    value: "yes".into(),
+                    author: polylogue_model::Author::Operator,
+                    machine: None,
+                },
+            ))
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    open.send(()).unwrap();
+    assert!(user.join().unwrap().is_ok());
+    queued.join().unwrap();
+    w.writer.flush().unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let rows = reader
+        .query(
+            "SELECT (SELECT commit_seq FROM a.setting WHERE key = 'ahead') AS setting,
+                    (SELECT min(commit_seq) FROM a.observation WHERE path IN ('/p/b', '/p/c', '/p/d', '/p/e', '/p/f')) AS batches",
+            &[],
+        )
+        .unwrap();
+    let (setting, batches) = (
+        rows[0]["setting"].as_i64().unwrap(),
+        rows[0]["batches"].as_i64().unwrap(),
+    );
+    assert!(
+        setting < batches,
+        "the setting committed at {setting}, the queued batches from {batches}"
+    );
+}
