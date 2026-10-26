@@ -58,7 +58,7 @@ impl BrowserHost {
         Self::at(&Config::from_env(), &Archive::at(&Archive::default_root()))
     }
 
-    /// Asks the daemon. `None` when it is not running: callers report what
+    /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
     pub fn ask(&self, request: &Request) -> Option<Response> {
         crate::cli::send(&self.socket, request).ok()

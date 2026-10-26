@@ -102,7 +102,7 @@ fn started_as_chrome_starts_it_the_binary_is_the_host() {
         })
         .collect();
     let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(status["daemon"], "not_running");
+    assert_eq!(status["daemon"], "no_answer");
 }
 
 #[test]

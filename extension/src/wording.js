@@ -45,7 +45,7 @@
       case "spooled":
         return {
           tone: page.daemon === "running" ? "ok" : "warn",
-          label: page.daemon === "running" ? "Stored; Polylogue is reading it" : "Stored; Polylogue reads it when its daemon starts",
+          label: page.daemon === "running" ? "Stored; Polylogue is reading it" : "Stored; Polylogue reads it when its daemon answers",
           detail: lastLine,
         };
       case "missing":
@@ -53,8 +53,8 @@
       default:
         return {
           tone: last?.outcome === "stored" ? "ok" : "warn",
-          label: last?.outcome === "stored" ? "Stored; the daemon is not running" : "The daemon is not running",
-          detail: lastLine || "Start it with `polylogue daemon`.",
+          label: last?.outcome === "stored" ? "Stored; the daemon did not answer" : "The daemon did not answer",
+          detail: lastLine || "It is stopped (start it with `polylogue daemon`) or busy.",
         };
     }
   }
