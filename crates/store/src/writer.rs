@@ -92,6 +92,9 @@ enum Msg {
 pub struct Writer {
     tx: Option<WriterQueue>,
     handle: Option<JoinHandle<()>>,
+    /// The index was empty when the writer started: its first pass is a
+    /// first build.
+    started_empty: bool,
 }
 
 /// Orders new work against shutdown. Once the stop message is queued,
@@ -193,7 +196,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "pr_link_number",
     "work_node_session",
     "removed_session_changed",
-    "block_pem_open",
+    "message_pem_open",
 ];
 
 /// Unique indexes on natural keys, which the writer's statements use: a first
@@ -306,7 +309,13 @@ impl Writer {
         Ok(Self {
             tx: Some(WriterQueue::new(tx, users)),
             handle: Some(handle),
+            started_empty: empty,
         })
+    }
+
+    /// Whether the index was empty when the writer started.
+    pub fn started_empty(&self) -> bool {
+        self.started_empty
     }
 
     /// Queues one batch. Blocks while the writer is busy and its queue is

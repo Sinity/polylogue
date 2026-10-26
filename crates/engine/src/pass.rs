@@ -154,53 +154,22 @@ impl Engine {
                 ))
             })
             .collect();
-        match self.exporter.turn(databases, 1024) {
-            Ok(turn) => {
-                pass.capture_pending = turn.pending;
-                pass.errors.extend(turn.errors);
-            }
-            Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
-        }
+        // A first build captures tool databases whole while it reads the
+        // files, and parses the captures in the same pass; afterwards a pass
+        // captures in turns of 1,024 rows, so other work goes between them.
+        let whole_capture = if discover && self.first_pass && self.writer.started_empty() {
+            Some(databases)
+        } else {
+            self.capture_turn(databases, 1024, &mut pass);
+            None
+        };
         let mut found: Vec<_> = found
             .into_iter()
             .filter(|f| f.origin.capture != Capture::RowDump)
             .collect();
-        // Accepted captures remain inputs even if their provider disappears
-        // while a pinned source view is being read.
-        for out in self.exporter.paths() {
-            if let Some(origin) = ORIGINS.iter().find(|o| {
-                o.capture == Capture::RowDump
-                    && out.starts_with(self.archive.exports_dir().join(o.name))
-            }) {
-                found.push(collect::Found {
-                    path: out.into(),
-                    origin,
-                });
-            }
-        }
-        let mut plans = Vec::new();
+        found.extend(self.capture_outputs());
         let mut seen = HashSet::new();
-        for f in found {
-            if self.refused.contains(&f.path) {
-                continue;
-            }
-            seen.insert(f.path.clone());
-            let Ok(meta) = std::fs::metadata(&f.path) else {
-                continue;
-            };
-            pass.inputs_seen += 1;
-            let now = FileFacts::of(&meta);
-            if !self.track(&f) {
-                continue;
-            }
-            let pending = pass
-                .pending_inputs
-                .iter()
-                .any(|u| u.input == self.inputs[&f.path].input_id);
-            if let Some(plan) = self.plan(&f.path, now, pending)? {
-                plans.push(plan);
-            }
-        }
+        let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Paths seen before and gone now: an observation, never a delete.
         let gone: Vec<PathBuf> = self
             .inputs
@@ -256,16 +225,98 @@ impl Engine {
             }
         }
         pass.inputs_changed = plans.len() as u64;
-        if plans.is_empty() {
+        if plans.is_empty() && whole_capture.is_none() {
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
-        self.execute(plans, &mut pass)?;
+        if let Some(databases) = whole_capture {
+            let mut exporter = std::mem::take(&mut self.exporter);
+            let turn = std::thread::scope(|scope| {
+                let capture = scope.spawn(move || {
+                    let turn = exporter.turn(databases, usize::MAX);
+                    (exporter, turn)
+                });
+                let executed = self.execute(plans, &mut pass);
+                let (exporter, turn) = capture.join().expect("the capture thread does not panic");
+                self.exporter = exporter;
+                executed.map(|()| turn)
+            })?;
+            record_turn(turn, &mut pass);
+            let outputs = self.capture_outputs();
+            let plans = self.plan_found(outputs, &mut pass, &mut seen)?;
+            pass.inputs_changed += plans.len() as u64;
+            self.execute(plans, &mut pass)?;
+        } else {
+            self.execute(plans, &mut pass)?;
+        }
+        self.first_pass = false;
         self.restore_failed_writes()?;
         self.refresh_import_assets(&mut pass)?;
         pass.sessions_derived = self.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
+    }
+
+    /// One turn of the SQLite capture, of at most `limit` rows.
+    fn capture_turn(
+        &mut self,
+        databases: Vec<(PathBuf, PathBuf, Option<Observation>)>,
+        limit: usize,
+        pass: &mut Pass,
+    ) {
+        let turn = self.exporter.turn(databases, limit);
+        record_turn(turn, pass);
+    }
+
+    /// The captures of tool databases the capture accepted, as found inputs.
+    /// Accepted captures remain inputs even if their provider disappears
+    /// while a pinned source view is being read.
+    fn capture_outputs(&self) -> Vec<collect::Found> {
+        self.exporter
+            .paths()
+            .filter_map(|out| {
+                let origin = ORIGINS.iter().find(|o| {
+                    o.capture == Capture::RowDump
+                        && out.starts_with(self.archive.exports_dir().join(o.name))
+                })?;
+                Some(collect::Found {
+                    path: out.into(),
+                    origin,
+                })
+            })
+            .collect()
+    }
+
+    /// Plans for found files; `seen` collects their paths.
+    fn plan_found(
+        &mut self,
+        found: Vec<collect::Found>,
+        pass: &mut Pass,
+        seen: &mut HashSet<PathBuf>,
+    ) -> Result<Vec<Plan>, EngineError> {
+        let mut plans = Vec::new();
+        for f in found {
+            if self.refused.contains(&f.path) {
+                continue;
+            }
+            seen.insert(f.path.clone());
+            let Ok(meta) = std::fs::metadata(&f.path) else {
+                continue;
+            };
+            pass.inputs_seen += 1;
+            let now = FileFacts::of(&meta);
+            if !self.track(&f) {
+                continue;
+            }
+            let pending = pass
+                .pending_inputs
+                .iter()
+                .any(|u| u.input == self.inputs[&f.path].input_id);
+            if let Some(plan) = self.plan(&f.path, now, pending)? {
+                plans.push(plan);
+            }
+        }
+        Ok(plans)
     }
 
     /// Starts tracking a found path its origin recognizes; false when it
@@ -941,5 +992,21 @@ impl Engine {
                 }
             }
         }
+    }
+}
+
+fn record_turn(
+    turn: Result<
+        polylogue_store::tool_databases::CaptureTurn,
+        polylogue_store::tool_databases::ExportError,
+    >,
+    pass: &mut Pass,
+) {
+    match turn {
+        Ok(turn) => {
+            pass.capture_pending = turn.pending;
+            pass.errors.extend(turn.errors);
+        }
+        Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
     }
 }

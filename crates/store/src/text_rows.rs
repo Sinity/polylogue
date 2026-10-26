@@ -79,40 +79,44 @@ pub(crate) fn activate(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Resu
 const SEARCH_ROWS: i64 = 2_000;
 const SEARCH_BYTES: usize = 16 * 1024 * 1024;
 
-/// Writes the first build's marked texts in ID order. Only the FTS table
-/// changes while its source cursor is open.
+/// Writes the first build's marked texts in ID order, both search indexes
+/// from one scan of `text`. Only the FTS tables change while its source
+/// cursor is open.
 pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
-    for bit in [1, 2] {
-        let mut after = 0;
-        loop {
-            let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-            let mut bytes = 0;
-            let mut last = after;
-            {
-                let mut select = tx.prepare_cached(
-                    "SELECT id, body FROM text WHERE id > ?1 AND indexed & ?2 ORDER BY id LIMIT ?3",
-                )?;
-                let mut rows = select.query(params![after, bit, SEARCH_ROWS])?;
-                while let Some(row) = rows.next()? {
-                    last = row.get(0)?;
-                    let packed: Vec<u8> = row.get(1)?;
-                    bytes += write_entry(&tx, last, bit, &packed)?;
-                    if bytes >= SEARCH_BYTES {
-                        break;
-                    }
+    let mut after = 0;
+    loop {
+        let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let mut bytes = 0;
+        let mut last = after;
+        {
+            let mut select = tx.prepare_cached(
+                "SELECT id, indexed, body FROM text WHERE id > ?1 AND indexed <> 0
+                 ORDER BY id LIMIT ?2",
+            )?;
+            let mut rows = select.query(params![after, SEARCH_ROWS])?;
+            while let Some(row) = rows.next()? {
+                last = row.get(0)?;
+                let indexed: i64 = row.get(1)?;
+                let packed: Vec<u8> = row.get(2)?;
+                let (folded, length) = folded_text(&packed)?;
+                for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
+                    insert_entry(&tx, last, bit, &folded)?;
+                }
+                bytes += length;
+                if bytes >= SEARCH_BYTES {
+                    break;
                 }
             }
-            if last != after {
-                crate::archive::bump_counter(&tx)?;
-            }
-            tx.commit()?;
-            if last == after {
-                break;
-            }
-            after = last;
         }
+        if last != after {
+            crate::archive::bump_counter(&tx)?;
+        }
+        tx.commit()?;
+        if last == after {
+            return Ok(());
+        }
+        after = last;
     }
-    Ok(())
 }
 
 /// Drains committed search work in bounded transactions, each inside what
@@ -174,20 +178,31 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
 }
 
 fn write_entry(conn: &Connection, id: i64, bit: i64, packed: &[u8]) -> Result<usize> {
+    let (folded, length) = folded_text(packed)?;
+    insert_entry(conn, id, bit, &folded)?;
+    Ok(length)
+}
+
+/// A stored text as the search indexes hold it, and its length in bytes.
+fn folded_text(packed: &[u8]) -> Result<(String, usize)> {
     let text = unpack_text(packed)?;
-    let bytes = text.len();
+    let length = text.len();
     let folded = if text.is_ascii() {
         text
     } else {
         polylogue_model::text::fold(&text)
     };
+    Ok((folded, length))
+}
+
+fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()> {
     let sql = if bit == 1 {
         "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
     } else {
         "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
     };
     conn.prepare_cached(sql)?.execute(params![id, folded])?;
-    Ok(bytes)
+    Ok(())
 }
 
 /// Historical versions keep their text row, but only current blocks contribute

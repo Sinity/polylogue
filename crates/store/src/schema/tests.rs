@@ -249,8 +249,8 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            44,
-            "4daf839924a3a38e54dfcd18cb96d2971bb4b051622164bd5a890aedf48e1d45".to_owned(),
+            45,
+            "73c64eb0ce5e639149e53406b56f95afdc79e415e981f26da546e512b3ef1a18".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"

@@ -1,20 +1,44 @@
 use super::*;
 
+/// A database of `rows` rows where Codex keeps one.
+fn database(w: &ClaudeHome, rows: u32) -> std::path::PathBuf {
+    let db = w.home.join(".codex/state_5.sqlite");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(&format!(
+            "CREATE TABLE kept_rows(id INTEGER PRIMARY KEY,n INTEGER);
+             WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<{rows})
+             INSERT INTO kept_rows SELECT n,10 FROM ids;"
+        ))
+        .unwrap();
+    db
+}
+
+#[test]
+fn a_first_build_captures_a_database_whole_in_its_pass() {
+    let w = ClaudeHome::new();
+    database(&w, 3000);
+    w.append("live.jsonl", &user("u1", "live", "beside the capture"));
+    let (mut engine, _lock) = w.engine(64 << 20);
+    let first = engine.run_turn().unwrap();
+    assert!(!first.capture_pending, "{first:?}");
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    assert_eq!(w.texts("live"), ["beside the capture"]);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
+        1
+    );
+}
+
 #[test]
 fn ordinary_inputs_are_serviced_between_database_capture_turns() {
     let w = ClaudeHome::new();
-    let db = w.home.join(".codex/state_5.sqlite");
-    fs::create_dir_all(db.parent().unwrap()).unwrap();
-    let source = rusqlite::Connection::open(&db).unwrap();
-    source
-        .execute_batch(
-            "CREATE TABLE kept_rows(id INTEGER PRIMARY KEY,n INTEGER);
-        WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<3000)
-        INSERT INTO kept_rows SELECT n,10 FROM ids;",
-        )
-        .unwrap();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
     let (mut engine, _lock) = w.engine(64 << 20);
+    // A first build captures whole; later passes capture in turns.
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let db = database(&w, 3000);
     let first = engine.run_turn().unwrap();
     assert!(first.capture_pending);
     assert!(first.errors.is_empty(), "{:?}", first.errors);
@@ -50,20 +74,13 @@ fn daemon_continues_capture_without_a_watcher_event() {
     use std::sync::{Arc, Mutex, mpsc::channel};
     use std::time::Duration;
     let w = ClaudeHome::new();
-    let db = w.home.join(".codex/state_5.sqlite");
-    fs::create_dir_all(db.parent().unwrap()).unwrap();
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .execute_batch(
-            "CREATE TABLE kept_rows(id INTEGER PRIMARY KEY);
-         WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<4000)
-         INSERT INTO kept_rows SELECT n FROM ids;",
-        )
-        .unwrap();
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
     let mut config = w.config(64 << 20);
     config.rescan_every = Duration::MAX;
     let mut engine = Engine::new(config, archive).unwrap();
+    // A first build captures whole; this one has nothing to capture.
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    database(&w, 4000);
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = status.clone();
     let (tx, rx) = channel();

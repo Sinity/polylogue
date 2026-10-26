@@ -335,15 +335,14 @@ impl MessageSelection<'_, '_> {
     /// The latest place at or before `message` where masking can start
     /// afresh: masking carries nothing from one block to the next but a
     /// private key block still open. Every place before the first block that
-    /// leaves one open (`block.pem_open`) is a fresh start; after it, the
+    /// leaves one open (`message.pem_open`) is a fresh start; after it, the
     /// stored bytes are followed, without masking, to the last place where
     /// no key is open.
     pub fn fresh_masking_start(&self, message: usize) -> Result<usize> {
         let conn = self.reader.conn()?;
         let mut flagged = HashSet::new();
-        let mut statement = conn.prepare_cached(
-            "SELECT DISTINCT message_pk FROM block WHERE session_pk = ?1 AND pem_open = 1",
-        )?;
+        let mut statement =
+            conn.prepare_cached("SELECT pk FROM message WHERE session_pk = ?1 AND pem_open = 1")?;
         for (session, _) in self.sessions() {
             for pk in statement.query_map([session], |r| r.get::<_, i64>(0))? {
                 flagged.insert(pk?);

@@ -106,6 +106,9 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
+  pem_open          INTEGER NOT NULL DEFAULT 0, -- 1: masked from a fresh start, one of its blocks leaves a
+                                            --   private key block open, the only masking state that crosses
+                                            --   a block boundary; a read masks afresh before the first such message
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
@@ -114,6 +117,7 @@ CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
+CREATE INDEX message_pem_open ON message(session_pk) WHERE pem_open = 1;   -- where a read can mask afresh
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it (the shown version's row repeats the
@@ -164,16 +168,12 @@ CREATE TABLE block (
   signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  pem_open          INTEGER NOT NULL DEFAULT 0, -- 1: masked from a fresh start, it leaves a private key block
-                                            --   open, the only masking state that crosses a block boundary;
-                                            --   a read masks afresh from any message before the first such block
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
-CREATE INDEX block_pem_open ON block(session_pk) WHERE pem_open = 1;   -- where a read can mask afresh
 
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output

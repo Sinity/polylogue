@@ -223,6 +223,10 @@ pub(super) struct Version {
     complete: bool,
     rank: i64,
     hash: Vec<u8>,
+    /// Masked from a fresh start, a block of the version leaves a private
+    /// key block open ([`crate::ordered_blocks::leaves_pem_open`]). Written
+    /// with the version, never compared.
+    pem_open: bool,
 }
 
 impl Version {
@@ -247,13 +251,6 @@ impl Version {
         }
         self.hash < cur.hash
     }
-}
-
-/// A block's packed body and whether masking it from a fresh start leaves a
-/// private key block open ([`crate::ordered_blocks::leaves_pem_open`]).
-struct StoredBlock<'a> {
-    body: &'a [u8],
-    pem_open: bool,
 }
 
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
@@ -408,6 +405,7 @@ impl RowWriter<'_, '_> {
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: prepared.hash.to_vec(),
+            pem_open: prepared.pem_open.iter().any(|open| *open),
         };
         let id = m.id.to_string();
         let cur = match self.message_pk(&id)? {
@@ -440,6 +438,7 @@ impl RowWriter<'_, '_> {
                         complete: r.get::<_, i64>(7)? == 0,
                         rank: r.get(8)?,
                         hash: r.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
+                        pem_open: false,
                     },
                     (r.get::<_, i64>(10)?, r.get::<_, String>(11)?),
                 ))
@@ -639,7 +638,8 @@ impl RowWriter<'_, '_> {
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, cost_nusd = NULL, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
+                 record_position = ?31, pem_open = ?32,
+                 order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, arrival_rank, role, written_by,
@@ -647,9 +647,10 @@ impl RowWriter<'_, '_> {
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, order_input_id)
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem_open,
+                 order_input_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31,
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32,
                  (SELECT id FROM input_ref WHERE pk = ?3))"
         };
         let first: rusqlite::types::Value = match pk {
@@ -691,6 +692,7 @@ impl RowWriter<'_, '_> {
             n(u.cache_write_1h),
             u.speed,
             order.1.1,
+            v.pem_open,
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
@@ -753,23 +755,13 @@ impl RowWriter<'_, '_> {
         m: &Message,
         prepared: &PreparedMessage,
     ) -> Result<()> {
-        if prepared.blocks.len() != m.blocks.len() || prepared.pem_open.len() != m.blocks.len() {
+        if prepared.blocks.len() != m.blocks.len() {
             return Err(StoreError::Invalid(
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
-        for (idx, ((block, body), pem_open)) in m
-            .blocks
-            .iter()
-            .zip(&prepared.blocks)
-            .zip(&prepared.pem_open)
-            .enumerate()
-        {
-            let stored = StoredBlock {
-                body,
-                pem_open: *pem_open,
-            };
-            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
+        for (idx, (block, body)) in m.blocks.iter().zip(&prepared.blocks).enumerate() {
+            self.insert_block(message_pk, session_pk, idx as i64, block, body, ms(m.at))?;
         }
         Ok(())
     }
@@ -780,7 +772,7 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        stored: StoredBlock<'_>,
+        body: &[u8],
         at: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
@@ -818,8 +810,8 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type, pem_open)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     other_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?
             .execute(params![
                 message_pk,
@@ -827,7 +819,7 @@ impl RowWriter<'_, '_> {
                 idx,
                 kind,
                 text_id,
-                stored.body,
+                body,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -838,7 +830,6 @@ impl RowWriter<'_, '_> {
                 signature,
                 i64::from(encrypted),
                 other_type,
-                stored.pem_open,
             ])?;
         let block_pk = self.tx.last_insert_rowid();
 
