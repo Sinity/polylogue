@@ -115,3 +115,32 @@ fn an_excised_session_leaves_no_readable_copy_in_database_files() {
     assert!(!in_database_files(&w.root, secret));
     assert_eq!(w.texts("other"), ["another kept message"]);
 }
+
+#[test]
+fn an_open_read_delays_emptying_the_logs_but_not_the_excision() {
+    let w = ClaudeHome::new();
+    let secret = "kestrelsecret5520";
+    w.append(
+        "removed.jsonl",
+        &user("u1", "removed", &format!("the value {secret} is private")),
+    );
+    w.append("other.jsonl", &user("o1", "other", "another kept message"));
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    // A read transaction open on the snapshot before the excision.
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM message", &[])
+            .unwrap()[0]["n"],
+        2
+    );
+    excise(&mut engine, "session:claude-code:removed", false);
+    drop(reader);
+    // The writer empties the logs once no read holds the old snapshot.
+    while in_database_files(&w.root, secret) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(w.texts("other"), ["another kept message"]);
+}
