@@ -255,10 +255,11 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "the change feed uses the finite socket stream",
         ),
         Request::Status => {
-            let store = match reader.status() {
-                Ok(s) => s,
-                Err(e) => return error("store", e),
+            let position = match reader.change_position() {
+                Ok(p) => p.to_string(),
+                Err(e) => return store_error(&e),
             };
+            let counted = d.warm.counts(&reader, &position);
             // Read after the store counts: a loop seen idle now has finished
             // the pass that wrote any row those counts include.
             let loop_status = d.status.lock().map(|s| s.clone()).unwrap_or_default();
@@ -266,7 +267,16 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "archive": d.archive.root,
                 "pid": std::process::id(),
                 "uptime_seconds": d.started.elapsed().as_secs(),
-                "store": store,
+                "store": counted.as_ref().map(|c| &c.status),
+                "counted": counted.as_ref().map_or_else(
+                    || serde_json::json!({ "state": "counting" }),
+                    |c| serde_json::json!({
+                        "position": c.position,
+                        "current": c.position == position,
+                        "seconds_ago": c.at.elapsed().as_secs_f64(),
+                        "seconds_to_count": c.took.as_secs_f64(),
+                    }),
+                ),
                 "busy": loop_status.busy,
                 "passes": loop_status.passes,
                 "last_pass": loop_status.last_pass,
@@ -733,6 +743,8 @@ pub struct Runtime {
     pub daemon: Arc<Daemon>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
+    counts_stop: Option<Sender<()>>,
+    counts: Option<JoinHandle<()>>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
@@ -752,6 +764,15 @@ impl Runtime {
         self.stop_accepting();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
+        }
+        if let Some(stop) = self.counts_stop.take() {
+            let _ = stop.send(());
+            self.daemon.warm.clear();
+        }
+        if let Some(counts) = self.counts.take()
+            && counts.join().is_err()
+        {
+            eprintln!("polylogue: the count worker panicked");
         }
         let mut failure = None;
         if let Some(signals) = self.signals.take()
@@ -942,6 +963,8 @@ pub fn start(
         daemon,
         signals_stop: None,
         signals: None,
+        counts_stop: None,
+        counts: None,
         engine: None,
         lock: Some(lock),
     };
@@ -973,6 +996,14 @@ pub fn start(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
             .spawn(move || crate::signals::run(&daemon, &stopped))?,
+    );
+    let (stop, stopped) = channel();
+    runtime.counts_stop = Some(stop);
+    let daemon = Arc::clone(&runtime.daemon);
+    runtime.counts = Some(
+        std::thread::Builder::new()
+            .name("polylogue-counts".into())
+            .spawn(move || daemon.warm.count_worker(&daemon.reads, &stopped))?,
     );
     // Load the vectors `near:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);
