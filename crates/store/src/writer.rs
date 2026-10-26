@@ -82,6 +82,9 @@ enum Msg {
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
+    /// An excision another archive recorded, brought in with its user
+    /// state; answered with whether it was new here.
+    ImportExcision(Box<crate::primary::ExcisionRows>, SyncSender<Result<bool>>),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -349,6 +352,19 @@ impl Writer {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
 
+    /// Records an excision another archive made, so what it removed is
+    /// refused here too ([`Inner::import_excision`]). `false` when this
+    /// archive already holds it.
+    pub fn import_excision(&self, excision: crate::primary::ExcisionRows) -> Result<bool> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::ImportExcision(Box::new(excision), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Stores one import's bytes ([`Inner::store_bytes`]). The batch
     /// carries the observation, never parsed rows.
     pub fn store_bytes(
@@ -534,6 +550,7 @@ impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
         let mut flushes = Vec::new();
         let mut excisions = Vec::new();
+        let mut imported_excisions = Vec::new();
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
@@ -599,6 +616,10 @@ impl Inner {
                         derives.push(reply);
                         false
                     }
+                    Msg::ImportExcision(excision, reply) => {
+                        imported_excisions.push((excision, reply));
+                        false
+                    }
                 };
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
@@ -645,6 +666,9 @@ impl Inner {
                 if interrupted {
                     return;
                 }
+            }
+            for (excision, reply) in imported_excisions.drain(..) {
+                let _ = reply.send(self.import_excision(&excision));
             }
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
@@ -1035,6 +1059,60 @@ impl Inner {
             crate::write_lock::commit(tx)?;
         }
         Ok(outcome)
+    }
+
+    /// Records an excision from another archive's user state. What it
+    /// removed is refused from now on; when this archive already holds any
+    /// of it (collected before the import), it is refused instead, because
+    /// recording the excision would not remove it.
+    fn import_excision(&mut self, excision: &crate::primary::ExcisionRows) -> Result<bool> {
+        let tx = self.archive.transaction()?;
+        let known: bool = tx
+            .prepare_cached("SELECT 1 FROM excision WHERE id = ?1")?
+            .exists([&excision.id])?;
+        if known {
+            return Ok(false);
+        }
+        for (kind, value) in &excision.excised {
+            let held = match kind.as_str() {
+                "session" => self
+                    .index
+                    .prepare_cached("SELECT 1 FROM session WHERE id = ?1")?
+                    .exists([value])?,
+                "document" => self
+                    .index
+                    .prepare_cached("SELECT 1 FROM document WHERE id = ?1")?
+                    .exists([value])?,
+                "input" => tx
+                    .prepare_cached("SELECT 1 FROM revision WHERE input = ?1")?
+                    .exists([value])?,
+                "blob" => {
+                    let hash = BlobHash::parse(value)
+                        .map_err(|e| StoreError::Invalid(format!("excised blob {value}: {e}")))?;
+                    tx.prepare_cached("SELECT 1 FROM extent WHERE blob = ?1")?
+                        .exists([&hash.0[..]])?
+                }
+                _ => false,
+            };
+            if held {
+                return Err(StoreError::ExcisionRefused {
+                    target: excision.target.clone(),
+                    reason: format!(
+                        "this archive holds {kind} {value}, which the imported excision removed; excise it here, then import again"
+                    ),
+                });
+            }
+        }
+        let seq = bump_counter(&tx)?;
+        crate::primary::insert_excision(&tx, excision, seq)?;
+        if let Some(sinex) = &self.sinex {
+            let change = crate::primary::RegisterChange::Excision(excision.clone());
+            let material = sinex.send_change(&change)?;
+            crate::primary::change_material(&tx, &change, &material)?;
+        }
+        crate::write_lock::commit(tx)?;
+        self.excisions = true;
+        Ok(true)
     }
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {

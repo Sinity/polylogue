@@ -299,7 +299,9 @@ pub(crate) fn note_references(
 }
 
 /// Removes the note targets naming `references`; a note left without
-/// targets goes whole. Returns the notes that went.
+/// targets goes whole, with its request and the withdrawals of it. A note
+/// that stays but revises one that goes is refused, because its request
+/// could no longer be replayed. Returns the notes that went.
 pub(crate) fn remove_notes_about(
     archive: &Connection,
     references: &[String],
@@ -314,7 +316,7 @@ pub(crate) fn remove_notes_about(
         );
         archive.execute("DELETE FROM note_target WHERE ref = ?1", [reference])?;
     }
-    let mut removed = Vec::new();
+    let mut removed = BTreeSet::new();
     for note in notes {
         let remains: bool = archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM note_target WHERE note_id = ?1)",
@@ -322,12 +324,44 @@ pub(crate) fn remove_notes_about(
             |r| r.get(0),
         )?;
         if !remains {
-            archive.execute("DELETE FROM note_relation WHERE note_id = ?1", [&note])?;
-            archive.execute("DELETE FROM note WHERE id = ?1", [&note])?;
-            removed.push(note);
+            removed.insert(note);
         }
     }
-    Ok(removed)
+    let mut withdrawals = BTreeSet::new();
+    for note in &removed {
+        let reference = format!("note:{note}");
+        withdrawals.extend(
+            archive
+                .prepare_cached(
+                    "SELECT note_id FROM note_relation WHERE kind = 'withdraws' AND other = ?1",
+                )?
+                .query_map([&reference], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        let revision: Option<String> = archive
+            .prepare_cached(
+                "SELECT note_id FROM note_relation WHERE kind = 'revises' AND other = ?1",
+            )?
+            .query_map([&reference], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .find(|revision| !removed.contains(revision));
+        if let Some(revision) = revision {
+            return Err(StoreError::ExcisionRefused {
+                target: reference,
+                reason: format!(
+                    "the note would go, but its revision note:{revision} stays; withdraw or excise that revision first"
+                ),
+            });
+        }
+    }
+    removed.extend(withdrawals);
+    for note in &removed {
+        archive.execute("DELETE FROM note_relation WHERE note_id = ?1", [note])?;
+        archive.execute("DELETE FROM note WHERE id = ?1", [note])?;
+        archive.execute("DELETE FROM client_request WHERE id = ?1", [note])?;
+    }
+    Ok(removed.into_iter().collect())
 }
 
 /// What removing an input whole removed, for the refusals of later reads.

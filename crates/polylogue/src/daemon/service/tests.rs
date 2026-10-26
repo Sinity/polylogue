@@ -305,6 +305,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
         Request::Export {
             targets: vec![crate::daemon::ReadTarget::Session(id.clone())],
             format: "json".into(),
+            user_state: false,
         },
         &w.daemon,
     ) {

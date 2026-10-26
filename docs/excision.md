@@ -13,7 +13,8 @@ content refuses with `unsupported_excision` before anything changes.
 - **`session:<id>`:** every input the session came from, when those inputs
   hold nothing but this session: their stored bytes, the session's rows in
   every `index.db` table, its texts in search and `embeddings.db` when no
-  other row holds them, and the notes about it.
+  other row holds them, and the notes about it. A note left with no target
+  goes whole, with its request and the withdrawals of it.
 - **`document:<id>`:** every input the document came from, when those inputs
   hold nothing but this document, with its rows and notes.
 - **`input:<id>`:** the input, with the sessions and documents it holds, when
@@ -37,6 +38,9 @@ Each refuses, naming the input or record that stops it:
 - an input holding a session or document that also comes from another
   input; excise that session instead;
 - a session a delivered brief names, since the brief holds its text;
+- a session whose note would go while a revision of that note stays, since
+  the revision's request could no longer be replayed; withdraw or excise the
+  revision first;
 - a text inside messages (`text:`).
 
 ## The order of the work

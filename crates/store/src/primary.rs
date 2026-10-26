@@ -274,7 +274,7 @@ pub(crate) fn load(
                         RegisterChange::Request { request, .. } => {
                             crate::user_writes::apply(&tx, request, seq)?;
                         }
-                        RegisterChange::Excision(excision) => excision_again(&tx, excision, seq)?,
+                        RegisterChange::Excision(excision) => insert_excision(&tx, excision, seq)?,
                     }
                     change_material(&tx, &change, &material)?;
                 }
@@ -395,10 +395,10 @@ pub(crate) fn excision_rows(conn: &Connection, id: &str) -> Result<ExcisionRows>
     })
 }
 
-/// Puts an excision back while rebuilding: its rows, and the note targets
-/// naming what it removed (the notes it removed whole were excised in
-/// Sinex with their requests).
-fn excision_again(tx: &Connection, excision: &ExcisionRows, seq: i64) -> Result<()> {
+/// Puts an excision's rows into the register, when rebuilding from Sinex or
+/// importing user state: its rows, and the note targets naming what it
+/// removed (the notes it removed whole went with their requests).
+pub(crate) fn insert_excision(tx: &Connection, excision: &ExcisionRows, seq: i64) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO excision(id, target, reason, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",

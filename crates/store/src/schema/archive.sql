@@ -101,11 +101,15 @@ CREATE INDEX observation_path ON observation(machine, path, seen_at);
 -- One row per client write request: its ID and the hash of its content, so a resent
 -- request (same ID, same content) writes nothing and a reused ID with other content is
 -- refused as `conflict`. Rows created by the request take their IDs
--- from it.
+-- from it. The request itself is kept: replayed in commit order with the
+-- excisions, the requests rebuild every row they wrote, which is how user
+-- state moves to another archive (`export user-state`).
 CREATE TABLE client_request (
   id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
   content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's sorted-key JSON, without the ID
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  request       BLOB,                    -- the whole request as JSON, zstd; NULL before archive version 3
+  commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE note (

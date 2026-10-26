@@ -198,8 +198,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         None => {}
     }
     tx.execute(
-        "INSERT INTO client_request(id, content_hash, created_at) VALUES (?1, ?2, ?3)",
-        params![r.id, hash.as_bytes().as_slice(), r.at.unix_ms()],
+        "INSERT INTO client_request(id, content_hash, created_at, request, commit_seq)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            r.id,
+            hash.as_bytes().as_slice(),
+            r.at.unix_ms(),
+            crate::encoding::pack_text(&serde_json::to_string(r)?)?,
+            seq
+        ],
     )?;
     let at = r.at.unix_ms();
     match &r.write {

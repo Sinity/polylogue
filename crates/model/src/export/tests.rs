@@ -165,3 +165,16 @@ fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_
         Err(ExportError::ContentNeedsVersion3)
     ));
 }
+
+#[test]
+fn user_state_needs_version_4() {
+    let doc = Document::new(vec![]).with_user_state(vec![serde_json::json!({"change": "request"})]);
+    assert_eq!(doc.version, 4);
+    let text = doc.to_json().unwrap();
+    assert_eq!(Document::from_json(&text).unwrap(), doc);
+    let older = text.replace("\"version\": 4", "\"version\": 3");
+    assert!(matches!(
+        Document::from_json(&older),
+        Err(ExportError::UserStateNeedsVersion4)
+    ));
+}

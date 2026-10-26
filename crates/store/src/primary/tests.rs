@@ -399,3 +399,49 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
         .unwrap();
     assert_eq!((blobs, length), (1, 16));
 }
+
+#[test]
+fn an_imported_excision_in_primary_mode_goes_to_sinex_and_survives_a_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let store = dir.path().join("sinex-store");
+    let sinex = Recorder::new(&store, false);
+    let excision = ExcisionRows {
+        id: "0199d8a0-0000-7000-8000-00000000d002".into(),
+        target: "session:claude-code:gone".into(),
+        reason: None,
+        created_at: 1_790_000_000_000,
+        excised: vec![("session".into(), "claude-code:gone".into())],
+        observations: vec![],
+    };
+    {
+        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
+        assert!(writer.import_excision(excision.clone()).unwrap());
+        assert!(!writer.import_excision(excision.clone()).unwrap());
+    }
+    let sent: Vec<RegisterChange> = sinex
+        .held
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|held| match held {
+            Held::Change { change, .. } => Some(change.clone()),
+            Held::Part { .. } => None,
+        })
+        .collect();
+    assert_eq!(sent, [RegisterChange::Excision(excision)]);
+    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm"] {
+        let _ = std::fs::remove_file(root.join(name));
+    }
+    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let excised: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM excised WHERE kind = 'session' AND value = 'claude-code:gone'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(excised, 1);
+}

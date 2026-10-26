@@ -129,6 +129,9 @@ pub enum Request {
     Export {
         targets: Vec<ReadTarget>,
         format: String,
+        /// Also the archive's user state: every request and excision.
+        #[serde(default)]
+        user_state: bool,
     },
     AddNote {
         request_id: String,

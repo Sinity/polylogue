@@ -218,7 +218,18 @@ pub struct ImportReport {
     pub already_stored: Vec<PathBuf>,
     /// Files no parsed origin recognizes; their bytes may also be imported or already stored.
     pub unrecognized: Vec<PathBuf>,
+    /// The user state Polylogue exports carried.
+    pub user_state: UserStateReport,
     pub pass: Pass,
+}
+
+/// Requests and excisions replayed from Polylogue exports.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct UserStateReport {
+    /// Written into this archive.
+    pub applied: u64,
+    /// Already here, from an earlier import or the archive's own history.
+    pub present: u64,
 }
 
 /// Messages the loop thread waits on.

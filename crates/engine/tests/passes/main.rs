@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 
 mod excision_selected;
+mod export_round_trip;
 mod live_first;
 mod older_chains;
 mod tool_captures;
@@ -529,32 +530,6 @@ fn excising_a_session_from_a_file_holding_another_session_refuses() {
         assert!(stored(&w.root, "pelican77"));
         assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
     }
-}
-
-#[test]
-fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_and_ids() {
-    let w = ClaudeHome::new();
-    w.append(
-        "s1.jsonl",
-        &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
-    );
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    let original = w.export("claude-code:s1");
-    let doc = polylogue_model::export::Document::new(vec![original.clone()]);
-    let file = w.dir.path().join("export.json");
-    fs::write(&file, doc.to_json().unwrap()).unwrap();
-
-    let fresh = ClaudeHome::new();
-    let (mut e2, _lock2) = fresh.engine(64 << 20);
-    let report = e2.import(std::slice::from_ref(&file)).unwrap();
-    assert_eq!(report.imported, std::slice::from_ref(&file), "{report:?}");
-    let back = fresh.export("claude-code:s1");
-    assert_eq!(back.session.id, original.session.id);
-    assert_eq!(back.session.title, original.session.title);
-    assert_eq!(back.messages, original.messages);
-    assert_eq!(back.events, original.events);
-    assert_eq!(back.links, original.links);
 }
 
 #[test]

@@ -129,7 +129,16 @@ impl ExportParser for Export {
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
             },
         )?;
-        let metadata = metadata.pop().expect("root export object").fields;
+        let mut metadata = metadata.pop().expect("root export object").fields;
+        // User state is not parsed into sessions: import replays it through
+        // the writer. The scan marks it present without keeping it.
+        if metadata
+            .as_object_mut()
+            .and_then(|fields| fields.remove("user_state"))
+            .is_some()
+        {
+            required_version = required_version.max(4);
+        }
         self.refusal = Document::from_json(&metadata.to_string())
             .err()
             .map(|e| e.to_string())

@@ -402,7 +402,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "import",
-        help: "Store files, including the files in directories and export ZIPs, and parse those in a known format. The answer lists paths `imported`, `already_stored` and `unrecognized`; an unrecognized file is stored too",
+        help: "Store files, including the files in directories and export ZIPs, and parse those in a known format. The answer lists paths `imported`, `already_stored` and `unrecognized`; an unrecognized file is stored too. A Polylogue export's user state is replayed, counted as `user_state.applied` and `user_state.present`",
         args: &[pos_opt("paths", Kind::List, "Files or directories")],
         action: Action::Request(requests::import),
         writes: true,
@@ -504,12 +504,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "export",
-        help: "Write sessions, text documents and events out as files",
+        help: "Write sessions, text documents and events out as files. `user-state` adds every note, setting, kept result, delivery, chat action, backfill job and excision, which `import` replays into another archive",
         args: &[
             pos_opt(
                 "sessions",
                 Kind::List,
-                "Session IDs, document:origin:native_id or event:ID references",
+                "Session IDs, document:origin:native_id or event:ID references, or user-state",
             ),
             Arg {
                 default: Some("json"),
