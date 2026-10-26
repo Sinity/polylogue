@@ -8,7 +8,8 @@
 //!   lessons, handoffs, decisions, blockers and goals on this directory,
 //!   its repository, or the session itself;
 //! - other agents working here now;
-//! - Beads claimed here and not closed or released;
+//! - Beads claimed here in the last week that the claiming session has not
+//!   closed or released;
 //! - what the recent sessions here did: commits, pull requests, files
 //!   changed, checks, Beads, plan items left open, the last answer;
 //! - checks (tests, builds, lints) that failed here with no later pass;
@@ -38,7 +39,7 @@ const RECALL_PAGE: usize = 20;
 pub const DEFAULT_BUDGET: u64 = 2_000;
 /// Bytes kept for the lines that name what did not fit.
 const POINTER_RESERVE: usize = 600;
-/// How far back failing commands and notices are reported.
+/// How far back failing checks, Bead claims and notices are reported.
 const FAILING_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const NOTICE_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 /// Reciprocal rank fusion's constant: a hit at place `p` of a list scores
@@ -694,13 +695,15 @@ fn session_start(
         "live sessions",
         "polylogue live",
     );
+    let claims_since = previous
+        .as_ref()
+        .map_or(now.unix_ms() - FAILING_WINDOW_MS, |p| p.at.unix_ms());
     let beads: Vec<Item> = reader
-        .open_beads(&dirs)?
+        .open_beads(&dirs, claims_since)?
         .into_iter()
-        .filter(|b| after(b.since))
         .map(|b| Item {
             text: format!(
-                "- {} claimed {} by {}, not closed or released",
+                "- {} claimed {} by {}, which has not closed or released it",
                 b.id,
                 day(b.since),
                 b.session
@@ -709,7 +712,7 @@ fn session_start(
         })
         .collect();
     fit.section(
-        "Beads claimed here and still open:",
+        "Beads claimed here this week and still open:",
         beads,
         "open Beads",
         "polylogue work kind:attempt state:open",

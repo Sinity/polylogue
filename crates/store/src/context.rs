@@ -484,16 +484,16 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// Beads whose latest claim by a session under `dirs` is still open,
-    /// most recent first.
-    pub fn open_beads(&self, dirs: &[String]) -> Result<Vec<OpenBead>> {
+    /// Beads claimed since `since` whose latest claim by a session under
+    /// `dirs` is still open in that session, most recent first.
+    pub fn open_beads(&self, dirs: &[String], since: i64) -> Result<Vec<OpenBead>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT g.title, a.state, a.at, s.id FROM work_node a
                JOIN work_edge e ON e.from_pk = a.pk AND e.kind = 'pursues'
                JOIN work_node g ON g.pk = e.to_pk
                JOIN session s ON s.pk = a.session_pk
-              WHERE a.kind = 'attempt' AND g.key >= 'bead:' AND g.key < 'bead;'
+              WHERE a.kind = 'attempt' AND g.key >= 'bead:' AND g.key < 'bead;' AND a.at >= ?2
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
               ORDER BY a.at IS NULL, a.at DESC, a.pk DESC",
@@ -501,7 +501,7 @@ impl Reader<'_> {
         let dirs = serde_json::to_string(dirs)?;
         let mut seen: Vec<String> = Vec::new();
         let mut out = Vec::new();
-        for row in stmt.query_map([dirs], |r| {
+        for row in stmt.query_map(params![dirs, since], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
@@ -510,7 +510,12 @@ impl Reader<'_> {
             ))
         })? {
             let (id, state, at, session) = row?;
-            if seen.contains(&id) {
+            // A claim names a Bead by its ID; a shell variable or other
+            // text in its place names none.
+            let plain = id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c));
+            if !plain || seen.contains(&id) {
                 continue;
             }
             seen.push(id.clone());

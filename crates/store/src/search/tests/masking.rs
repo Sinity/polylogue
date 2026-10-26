@@ -112,3 +112,65 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
         snippets
     );
 }
+
+#[test]
+fn a_hit_with_no_pem_before_it_is_masked_alone_and_one_after_a_pem_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:alone",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    let text = |id: &'static str, text: &'static str| MessageFacts {
+        id,
+        role: "user",
+        written_by: "human",
+        prompt_kind: Some("prose"),
+        text: Some(text),
+        ..Default::default()
+    };
+    let first = fixture
+        .message(
+            session,
+            text(
+                "claude-code:alone/1",
+                "wombat token AKIAIOSFODNN7EXAMPLE here",
+            ),
+        )
+        .unwrap();
+    fixture
+        .message(
+            session,
+            text("claude-code:alone/2", "-----BEGIN PRIVATE KEY-----open"),
+        )
+        .unwrap();
+    let after = fixture
+        .message(
+            session,
+            text("claude-code:alone/3", "wombat keybody continues"),
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let terms = ["wombat".into()];
+    let snippets = reader
+        .snippets(
+            "wombat",
+            &[Within::Message(first), Within::Message(after)],
+            &terms,
+        )
+        .unwrap();
+    let first = snippets[0].as_ref().unwrap();
+    assert!(first.text.contains("wombat"), "{}", first.text);
+    assert!(
+        !first.text.contains("AKIAIOSFODNN7EXAMPLE"),
+        "{}",
+        first.text
+    );
+    // The open PEM block masks everything after it, across blocks.
+    let after = snippets[1].as_ref().unwrap();
+    assert!(!after.text.contains("keybody"), "{}", after.text);
+}

@@ -93,8 +93,8 @@ invalid request, 6 no daemon running.
 Each harness's start hook brings the session-start brief into the agent's
 context, on by default (`polylogue setting briefing.session_start off`
 turns it off). The brief carries the operator's notes on the directory and
-its repository, other agents working there now, Beads claimed there and
-still open, what the recent sessions there did (commits, pull requests,
+its repository, other agents working there now, Beads claimed there this
+week and still open, what the recent sessions there did (commits, pull requests,
 files changed, checks, plan items left open, the last answer), checks
 (tests, builds, lints) that failed there with no later pass, and the last
 day's signal notices.
