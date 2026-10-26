@@ -72,7 +72,7 @@ pub enum Request {
         ids: Vec<String>,
     },
     Status,
-    /// Completion candidates for one word of a query being typed.
+    /// Completions for one word of a query being typed.
     Complete {
         word: String,
     },

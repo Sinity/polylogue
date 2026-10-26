@@ -355,9 +355,9 @@ fn quoted(v: &str) -> String {
     }
 }
 
-/// The candidates for the word being typed: field names, values of the
+/// The completions of the word being typed: field names, values of the
 /// field it names, unit names and session IDs, each starting with it.
-pub fn candidates(data: &Completion, word: &str) -> Vec<(String, String)> {
+pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut add = |value: &str, help: &str| {
         if value.starts_with(word) && !out.iter().any(|(v, _)| v == value) {

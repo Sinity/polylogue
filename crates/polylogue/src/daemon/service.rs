@@ -333,7 +333,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(e) => return store_error(&e),
             };
             match d.warm.completion(&reader, &position) {
-                Ok(data) => ok(super::warm::candidates(&data, &word)
+                Ok(data) => ok(super::warm::completions(&data, &word)
                     .into_iter()
                     .map(|(value, help)| serde_json::json!({"value": value, "help": help}))
                     .collect::<Vec<_>>()),

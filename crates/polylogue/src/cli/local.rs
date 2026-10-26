@@ -57,7 +57,7 @@ pub fn browser_host(_: &Command, _: &Values, _: bool) -> ExitCode {
 }
 
 /// Prints what `COMPLETE=<shell> polylogue` prints: shell code that asks
-/// this binary for candidates as the operator types.
+/// this binary for completions as the operator types.
 pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
     let shell = v.text("shell").unwrap_or_default();
     let shells = clap_complete::env::Shells::builtins();

@@ -40,7 +40,7 @@ fn a_first_page_is_reused_only_briefly() {
 }
 
 #[test]
-fn candidates_complete_fields_values_and_sessions() {
+fn completions_cover_fields_values_and_sessions() {
     let data = Completion {
         units: vec!["sessions".into(), "messages".into()],
         fields: vec!["repo:".into(), "origin:".into()],
@@ -48,7 +48,7 @@ fn candidates_complete_fields_values_and_sessions() {
         sessions: vec![("claude-code:abc".into(), "a title".into())],
     };
     let values = |word: &str| -> Vec<String> {
-        candidates(&data, word)
+        completions(&data, word)
             .into_iter()
             .map(|(v, _)| v)
             .collect()

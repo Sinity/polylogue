@@ -337,7 +337,7 @@ fn when_ready<T>(
     }
 }
 
-/// Completion candidates for a query word, from the daemon; none when it
+/// Completions for a query word, from the daemon; none when it
 /// does not answer within a moment, so a shell never hangs on a tab.
 fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
     let Some(word) = current.to_str() else {

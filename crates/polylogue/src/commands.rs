@@ -1032,7 +1032,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "complete",
-        help: "Completion candidates for one word of a query: field names, values seen, unit names and recent session IDs",
+        help: "Completions for one word of a query: field names, values seen, unit names and recent session IDs",
         args: &[pos_opt("word", Kind::Text, "The word being typed")],
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,

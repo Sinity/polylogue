@@ -119,7 +119,7 @@ fn on_new_fires_each_row_once_and_the_first_reading_is_a_baseline() {
 }
 
 #[test]
-fn past_the_rate_limit_a_notice_waits_for_the_next_briefing() {
+fn past_the_rate_limit_a_notice_is_kept_for_the_briefs() {
     let rule = Rule {
         rate_limit: Some((1, HOUR)),
         ..base("failing", "q")
