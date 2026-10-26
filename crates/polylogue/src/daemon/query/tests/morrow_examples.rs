@@ -404,7 +404,10 @@ fn three_valued_filters_partition() {
         .filter(|s| !has.contains(s))
         .collect();
     assert_eq!(
-        has.union(&hasnt).chain(&unknown).cloned().collect::<BTreeSet<_>>(),
+        has.union(&hasnt)
+            .chain(&unknown)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
         top,
         "{has:?} {hasnt:?} {unknown:?}"
     );
@@ -437,10 +440,7 @@ fn a_nested_condition_does_not_drop_a_default() {
         every_call
     );
     // A later `| where` narrows the bound rows; it binds no default again.
-    assert_eq!(
-        count("tool_calls | where action:* | agg count"),
-        37
-    );
+    assert_eq!(count("tool_calls | where action:* | agg count"), 37);
     let chrono = |text: &str| rows(&q(&r, text)).len();
     let human = r#"messages where written_by:human "chrono""#;
     assert_eq!(chrono(human), 2);

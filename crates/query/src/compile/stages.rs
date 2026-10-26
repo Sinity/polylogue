@@ -220,9 +220,7 @@ impl<'a> Compiler<'a> {
         // unpriced) is a lower bound, and the total says how many. A tree
         // cost is one too when a session in the tree is, or when a
         // subagent the tree spawned is not in the archive.
-        if scope.unit == Unit::Sessions
-            && matches!(f, AggFn::Sum { .. } | AggFn::Avg { .. })
-        {
+        if scope.unit == Unit::Sessions && matches!(f, AggFn::Sum { .. } | AggFn::Avg { .. }) {
             let s = &scope.a.s;
             let unpriced = |sessions: &str| {
                 format!(

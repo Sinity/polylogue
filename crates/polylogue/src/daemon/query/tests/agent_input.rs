@@ -86,9 +86,8 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
             assert!(f.message.contains(id), "{text}: {} lacks {id}", f.message);
         }
     }
-    let s = w
-        .fx
-        .session(SessionFacts {
+    let s =
+        w.fx.session(SessionFacts {
             id: "claude-code:7f3a2c10-0002-4000-8000-000000000002-copy",
             started: at(9, 9),
             last: at(9, 10),

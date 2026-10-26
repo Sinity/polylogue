@@ -523,9 +523,8 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
                 continue;
             };
             for (name, day, messages) in [("new-early", -5, 9), ("new-late", 20, 1)] {
-                let s = w
-                    .fx
-                    .session(SessionFacts {
+                let s =
+                    w.fx.session(SessionFacts {
                         id: &format!("claude-code:{name}"),
                         started: at(day, 9),
                         last: at(day, 10),
@@ -541,10 +540,7 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
                 }
             }
             let now = row_ids(&q(&w, text));
-            let anchor = now
-                .iter()
-                .position(|id| Some(id) == shown.last())
-                .unwrap();
+            let anchor = now.iter().position(|id| Some(id) == shown.last()).unwrap();
             loop {
                 let page = next_page(&w, text, size, Some(&cursor));
                 assert_eq!(page["count"], now.len() as u64, "{text} by {size}");

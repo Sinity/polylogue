@@ -314,7 +314,8 @@ impl<'a> Compiler<'a> {
         // An answer of groups, a summary, match rows or a measurement uses
         // only which rows match, so `near:` computes no similarity for it,
         // unless a selection already chose rows by the ranking.
-        let rows_answer = matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
+        let rows_answer =
+            matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
         if self.near_rank.is_some() && !rows_answer && !self.ranking_chose_rows {
             self.ctes.drain(self.near_ctes.clone());
             self.near_rank = None;

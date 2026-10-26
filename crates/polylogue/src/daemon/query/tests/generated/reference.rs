@@ -19,7 +19,11 @@ pub const SPEAKERS: [(&str, &str); 4] = [
     ("user", "unknown"),
 ];
 /// Tool and action.
-pub const TOOLS: [(&str, &str); 3] = [("Bash", "shell"), ("Edit", "file_edit"), ("Read", "file_read")];
+pub const TOOLS: [(&str, &str); 3] = [
+    ("Bash", "shell"),
+    ("Edit", "file_edit"),
+    ("Read", "file_read"),
+];
 pub const OUTCOMES: [&str; 3] = ["ok", "error", "unknown"];
 /// Message costs, in nano-dollars.
 pub const COSTS: [i64; 3] = [200_000_000, 700_000_000, 1_300_000_000];
@@ -75,7 +79,13 @@ pub fn message_id(i: usize, j: usize) -> String {
 /// A tool call as its result row shows it: its message, tool, command,
 /// outcome and exit code. Calls alike in all of these are alike to every
 /// condition the generator writes.
-pub fn call_key(message: &str, tool: &str, command: Option<&str>, outcome: &str, exit_code: Option<i64>) -> String {
+pub fn call_key(
+    message: &str,
+    tool: &str,
+    command: Option<&str>,
+    outcome: &str,
+    exit_code: Option<i64>,
+) -> String {
     format!("{message} {tool} {command:?} {outcome} {exit_code:?}")
 }
 
@@ -369,7 +379,9 @@ impl Leaf {
             Leaf::Subagent(s) => Truth::of(session.subagent == *s),
             Leaf::Repo(name) => Truth::known(session.repo.map(|r| {
                 let r = r.trim_end_matches('/').to_lowercase();
-                r == *name || r.ends_with(&format!("/{name}")) || r.ends_with(&format!("/{name}.git"))
+                r == *name
+                    || r.ends_with(&format!("/{name}"))
+                    || r.ends_with(&format!("/{name}.git"))
             })),
             Leaf::RepoUnknown => Truth::of(session.repo.is_none()),
             Leaf::Model(name) => Truth::known(
@@ -476,10 +488,17 @@ fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
     let sessions = rows.sessions.iter().enumerate();
     match unit {
         Unit::Sessions => {
-            let mut out: Vec<(usize, &SessionRow)> =
-                sessions.filter(|(_, s)| names_kind || !s.subagent).collect();
+            let mut out: Vec<(usize, &SessionRow)> = sessions
+                .filter(|(_, s)| names_kind || !s.subagent)
+                .collect();
             // Newest activity first, unknown last, then the ID, highest first.
-            out.sort_by_key(|(i, s)| (s.last_active().is_none(), Reverse(s.last_active()), Reverse(session_id(rows, *i))));
+            out.sort_by_key(|(i, s)| {
+                (
+                    s.last_active().is_none(),
+                    Reverse(s.last_active()),
+                    Reverse(session_id(rows, *i)),
+                )
+            });
             out.into_iter().map(|(i, _)| Row::Session(i)).collect()
         }
         Unit::Messages => {
@@ -494,7 +513,9 @@ fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
             // Oldest first, unknown last, then session order (the order
             // they were written in).
             out.sort_by_key(|(at, row)| {
-                let Row::Message(i, j) = row else { unreachable!() };
+                let Row::Message(i, j) = row else {
+                    unreachable!()
+                };
                 (at.is_none(), *at, *i, *j)
             });
             out.into_iter().map(|(_, row)| row).collect()
@@ -514,7 +535,9 @@ fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
             // Oldest first, unknown last, then the message ID and the
             // call's place in it.
             out.sort_by_key(|(at, row)| {
-                let Row::Call(i, j, k) = row else { unreachable!() };
+                let Row::Call(i, j, k) = row else {
+                    unreachable!()
+                };
                 (at.is_none(), *at, message_id(*i, *j), *k)
             });
             out.into_iter().map(|(_, row)| row).collect()
@@ -543,7 +566,13 @@ pub fn key(rows: &Rows, row: Row) -> String {
         Row::Message(i, j) => message_id(i, j),
         Row::Call(i, j, k) => {
             let c = &rows.sessions[i].messages[j].calls[k];
-            call_key(&message_id(i, j), c.tool.0, c.command, c.outcome, c.exit_code)
+            call_key(
+                &message_id(i, j),
+                c.tool.0,
+                c.command,
+                c.outcome,
+                c.exit_code,
+            )
         }
     }
 }

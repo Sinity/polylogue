@@ -8,17 +8,15 @@ use super::*;
 #[test]
 fn a_negated_condition_never_matches_an_unknown_value() {
     let mut w = morrow();
-    let s = w
-        .fx
-        .session(SessionFacts {
+    let s =
+        w.fx.session(SessionFacts {
             id: "claude-code:unknowns",
             ..SessionFacts::default()
         })
         .unwrap();
-    let m = w
-        .fx
-        .message(s, msg("u0", "assistant", "unknown", "", None))
-        .unwrap();
+    let m =
+        w.fx.message(s, msg("u0", "assistant", "unknown", "", None))
+            .unwrap();
     w.fx.tool_call(
         s,
         m,
@@ -86,7 +84,10 @@ fn a_missing_child_makes_the_tree_cost_partial() {
         "sessions where id:claude-code:7f3a2c10-0001-4000-8000-000000000001 | agg sum:tree_cost",
     );
     assert_eq!(one["partial_tree_cost"], 1, "{one}");
-    assert!((one["sum_tree_cost"].as_f64().unwrap() - 1.26).abs() < 1e-9, "{one}");
+    assert!(
+        (one["sum_tree_cost"].as_f64().unwrap() - 1.26).abs() < 1e-9,
+        "{one}"
+    );
     // #2's tree has its subagent #3, priced, so it is complete.
     let two = total(
         "sessions where id:claude-code:7f3a2c10-0002-4000-8000-000000000002 | agg sum:tree_cost",
@@ -110,11 +111,9 @@ fn near_says_how_many_rows_have_no_vector() {
     assert_eq!(v["unknown"]["near"], 7, "{v}");
     assert_eq!(ids(&v)[0], "#2");
     assert!(
-        v["notes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n.as_str().is_some_and(|n| n.starts_with("7 of 8 rows have no vector"))),
+        v["notes"].as_array().unwrap().iter().any(|n| n
+            .as_str()
+            .is_some_and(|n| n.starts_with("7 of 8 rows have no vector"))),
         "{v}"
     );
 }
