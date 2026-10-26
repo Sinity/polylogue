@@ -431,8 +431,12 @@ pub(crate) struct Compiler<'a> {
     /// The full-text ranking expression, when a top-level text term ranks
     /// the rows.
     rank: Option<String>,
-    /// The semantic ranking expression of a `near:` term.
+    /// The semantic ranking expression of a `near:` term, and the join
+    /// that brings its similarities to the unit's rows.
     near_rank: Option<String>,
+    near_join: Option<String>,
+    /// With words and `near:` together, the join of each row's fused rank.
+    fused_join: Option<String>,
     near: Option<Near>,
 }
 
@@ -453,6 +457,8 @@ impl<'a> Compiler<'a> {
             saved_stack: vec![],
             rank: None,
             near_rank: None,
+            near_join: None,
+            fused_join: None,
             near: None,
         }
     }

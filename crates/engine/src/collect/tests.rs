@@ -57,6 +57,7 @@ fn config(home: &Path) -> Config {
         host: "h".into(),
         chunk: 1 << 20,
         rescan_every: std::time::Duration::from_secs(60),
+        live_every: std::time::Duration::from_secs(2),
     }
 }
 

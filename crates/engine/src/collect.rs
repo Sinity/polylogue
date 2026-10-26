@@ -40,9 +40,23 @@ fn collected() -> impl Iterator<Item = &'static OriginSpec> {
 /// exist but could not be read. Recognition is separate ([`recognize`]),
 /// so known paths are not reopened every pass.
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
+    scan_origins(config, collected())
+}
+
+/// Every file in Polylogue's own spools (hook events, browser captures,
+/// collectors' output): small directories, read again while a long pass
+/// runs so what arrives there is not left behind it.
+pub fn scan_spools(config: &Config) -> Vec<Found> {
+    scan_origins(config, collected().filter(|o| o.arrival == Arrival::Spool)).0
+}
+
+fn scan_origins(
+    config: &Config,
+    origins: impl Iterator<Item = &'static OriginSpec>,
+) -> (Vec<Found>, Vec<PathBuf>) {
     let mut found = Vec::new();
     let mut unreadable = Vec::new();
-    for origin in collected() {
+    for origin in origins {
         let root = config.root(origin.root);
         for pattern in origin.locations {
             let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();

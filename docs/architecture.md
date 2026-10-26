@@ -63,7 +63,11 @@ reports.
 ## Storing bytes
 
 [Import](../crates/engine/src/import.rs) and the loop store the bytes before
-anything parses them. The [writer](../crates/store/src/writer/staging.rs)
+anything parses them. A pass feeds its plans to the parse pool a few at a
+time; every two seconds it looks at Polylogue's own spools (hook events,
+browser captures) and at the live files written in the last ten minutes, and
+what changed there goes ahead of the work still waiting, so a capture or a
+session being written shows up within seconds even during a first build. The [writer](../crates/store/src/writer/staging.rs)
 checks them against excisions, commits the blob rows as `writing` with their
 revision and extents, writes the files, then marks the rows `present`. After a
 stop, opening the archive and every pass settle what is left: files not yet
