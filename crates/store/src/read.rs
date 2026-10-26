@@ -752,9 +752,7 @@ impl Reader<'_> {
             sessions: count("SELECT COUNT(*) FROM session")?,
             messages: count("SELECT COUNT(*) FROM message")?,
             documents: count("SELECT COUNT(*) FROM document")?,
-            tool_calls: count(
-                "SELECT COUNT(*) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk",
-            )?,
+            tool_calls: count("SELECT COUNT(*) FROM tool_call")?,
             inputs: count("SELECT COUNT(*) FROM a.input")?,
             revisions: count("SELECT COUNT(*) FROM a.revision")?,
             stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob WHERE state='present'")?,
