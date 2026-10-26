@@ -61,11 +61,11 @@ fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answ
         .collect();
     match crate::mcp::call(&w.daemon.archive, &c.mcp_name(), arguments) {
         Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
-        // `error (kind): message`, with the corrected query on a line of
-        // its own when there is one.
+        // `error (kind): message`, with the corrected query on a last line
+        // of its own when there is one.
         Err(text) => {
-            let first = text.lines().next().unwrap_or_default();
-            let (kind, message) = first
+            let text = text.rsplit_once("\ntry: ").map_or(text.as_str(), |(t, _)| t);
+            let (kind, message) = text
                 .strip_prefix("error (")
                 .and_then(|rest| rest.split_once("): "))
                 .unwrap_or_else(|| panic!("{text}"));
@@ -153,7 +153,9 @@ fn every_client_answers_the_same_request_identically() {
     });
     for (name, args) in ASKED {
         let mut argv = vec!["polylogue"];
-        argv.extend(name.split(' '));
+        if command(name).unwrap().cli != Cli::NoSubcommand {
+            argv.extend(name.split(' '));
+        }
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
         let cli = cli_answer(&w, &argv);
