@@ -256,7 +256,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         w.writer
             .send(batch("i", 0, 100, vec![row(100, second)], &["s"]))
             .unwrap();
-        w.writer.flush().unwrap();
+        w.writer.derive().unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();
         let r = pool.reader().unwrap();
         let rows = r
@@ -281,7 +281,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
 }
 
 #[test]
-fn prose_and_tool_output_are_searchable_after_a_flush() {
+fn prose_and_tool_output_are_searchable_once_a_first_build_ends() {
     let w = test_archive();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
@@ -294,7 +294,7 @@ fn prose_and_tool_output_are_searchable_after_a_flush() {
     w.writer
         .send(batch("i", 0, 0, vec![row(0, m)], &["s"]))
         .unwrap();
-    w.writer.flush().unwrap();
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let n = |sql: &str| r.query(sql, &[]).unwrap()[0]["n"].clone();
@@ -327,7 +327,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             &["s"],
         ))
         .unwrap();
-    w.writer.flush().unwrap(); // ends the first build
+    w.writer.derive().unwrap(); // ends the first build
     w.writer
         .send(batch(
             "j",
@@ -389,7 +389,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
         evidence: "agentId".into(),
     }];
     w.writer.send(b2).unwrap();
-    w.writer.flush().unwrap();
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let parent = r.session(&sid("parent")).unwrap().unwrap();
@@ -941,6 +941,7 @@ fn first_build_stays_in_wal_and_settles_while_a_read_stays_open() {
             &["a"],
         ))
         .unwrap();
+    w.writer.derive().unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let current = reader_pool.reader().unwrap();

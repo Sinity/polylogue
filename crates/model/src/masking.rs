@@ -66,7 +66,25 @@ impl MessageMasker {
         }
     }
 
+    /// As [`Self::message`] for a text view, which shows no structured value:
+    /// a tool result's data, a call's arguments when its command or path is
+    /// shown, other blocks' data and thinking signatures are left as they
+    /// are. They are masked whole, one value at a time, so the stream and
+    /// the shown text are the same either way; a tool result's data can be
+    /// most of a large message.
+    pub fn message_text(&mut self, message: &mut crate::Message) {
+        for block in &mut message.blocks {
+            self.block_with(block, false);
+        }
+    }
+
     pub fn block(&mut self, block: &mut crate::Block) {
+        self.block_with(block, true);
+    }
+
+    /// Masks `block`; without `structured`, the values no text view shows
+    /// ([`Self::message_text`]) stay as they are.
+    fn block_with(&mut self, block: &mut crate::Block, structured: bool) {
         use crate::{Block, ErrorReason, ToolOutcome};
         match block {
             Block::Text { text } => {
@@ -78,7 +96,7 @@ impl MessageMasker {
                 if let Some(text) = text {
                     self.fragment(text);
                 }
-                if let Some(signature) = signature {
+                if let Some(signature) = signature.as_mut().filter(|_| structured) {
                     *signature = mask(signature);
                 }
             }
@@ -109,7 +127,9 @@ impl MessageMasker {
                         .map_or_else(|| mask(path), |(_, masked)| masked.clone());
                 }
                 if let Some(alias) = alias {
-                    mask_alias(input, &alias);
+                    if structured {
+                        mask_alias(input, &alias);
+                    }
                 } else if let serde_json::Value::String(text) = input {
                     self.fragment(text);
                 } else {
@@ -135,7 +155,7 @@ impl MessageMasker {
                     let original = self.fragment(output);
                     (original, output.clone())
                 });
-                if let Some(data) = data {
+                if let Some(data) = data.as_mut().filter(|_| structured) {
                     if let Some(alias) = alias {
                         mask_alias(data, &alias);
                     } else {
@@ -159,7 +179,9 @@ impl MessageMasker {
             Block::Image(attachment) | Block::File(attachment) => self.attachment(attachment),
             Block::Other { type_name, data } => {
                 *type_name = mask(type_name);
-                mask_json(data);
+                if structured {
+                    mask_json(data);
+                }
             }
         }
     }

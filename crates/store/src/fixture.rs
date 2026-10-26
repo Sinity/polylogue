@@ -171,10 +171,22 @@ impl Fixture {
         body: serde_json::Value,
     ) -> Result<i64> {
         let packed = crate::encoding::pack_json(&body)?;
+        let text = text_id
+            .map(|id| {
+                self.index
+                    .query_row("SELECT body FROM text WHERE id = ?1", [id], |r| {
+                        r.get::<_, Vec<u8>>(0)
+                    })
+                    .map_err(crate::StoreError::from)
+                    .and_then(|packed| crate::encoding::unpack_text(&packed))
+            })
+            .transpose()?;
+        let pem_open =
+            crate::ordered_blocks::leaves_pem_open(&serde_json::to_vec(&body)?, text.as_deref());
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![message_pk, session_pk, idx, kind, text_id, packed],
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, pem_open)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![message_pk, session_pk, idx, kind, text_id, packed, pem_open],
         )?;
         Ok(self.index.last_insert_rowid())
     }

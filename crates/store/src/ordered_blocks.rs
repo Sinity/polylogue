@@ -59,7 +59,33 @@ type OpenPem = Option<Option<Vec<u8>>>;
 const PEM_LABEL: usize = 512;
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
+    memchr::memmem::find(haystack, needle)
+}
+
+/// Whether masking a block from a fresh start, stored as `body` with its
+/// text moved to `text`, leaves a private key block open after it: the only
+/// masking state that crosses a block boundary.
+pub(crate) fn leaves_pem_open(body: &[u8], text: Option<&str>) -> bool {
+    after_block(None, body, text.map(str::as_bytes)).is_some()
+}
+
+/// Whether a private key block is open after the blocks given so far, read
+/// from stored bytes without masking them.
+#[derive(Default)]
+pub(crate) struct PemState(OpenPem);
+
+impl PemState {
+    /// Follows one stored block: its packed body and packed text.
+    pub(crate) fn block(&mut self, body: &[u8], text: Option<&[u8]>) -> Result<()> {
+        let body = crate::encoding::unpack_bytes(body)?;
+        let text = text.map(crate::encoding::unpack_bytes).transpose()?;
+        self.0 = after_block(self.0.take(), &body, text.as_deref());
+        Ok(())
+    }
+
+    pub(crate) fn open(&self) -> bool {
+        self.0.is_some()
+    }
 }
 
 /// The masker's rule for a PEM header at `at` (just after `-----BEGIN `):

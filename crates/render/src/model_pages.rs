@@ -32,6 +32,15 @@ pub struct PageEnd {
 }
 
 impl PageEnd {
+    /// The state at `message` when no private key block is open before it,
+    /// so masking starts afresh there.
+    pub fn fresh(message: usize) -> Self {
+        Self {
+            message,
+            masker: MessageMasker::default(),
+        }
+    }
+
     pub fn message(&self) -> usize {
         self.message
     }
@@ -101,7 +110,8 @@ impl Pager {
         });
         // Replay prior source messages on resume. Hidden blocks establish the
         // same context ordinary and structured outputs use before projection.
-        self.masker.message(&mut message);
+        // Pages are text: values no text view shows stay unmasked.
+        self.masker.message_text(&mut message);
         if self.message < self.at.message {
             return self.push_pieces(Vec::new(), header(&message), Vec::new());
         }

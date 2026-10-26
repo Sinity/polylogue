@@ -49,6 +49,14 @@ struct Frame {
     via: Option<(SessionId, Option<String>)>,
 }
 
+/// Where a visit of a selection starts: a message's place in it, and the
+/// message's key when the caller knows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VisitStart {
+    pub message: usize,
+    pub key: Option<i64>,
+}
+
 /// A message selection belongs to the reader that made it. Bodies are read
 /// lazily; the parents' history keeps keys for ordering, anchors and deduplication.
 pub struct MessageSelection<'r, 'a> {
@@ -237,17 +245,24 @@ impl MessageSelection<'_, '_> {
     }
 
     pub fn visit(&self, visit: impl FnMut(Message) -> ControlFlow<()>) -> Result<()> {
-        self.visit_from(0, visit)
+        self.visit_from(VisitStart::default(), visit).map(drop)
     }
 
     /// Skip source messages before hydrating their blocks. Rendering callers must
-    /// restore masking state checked against this exact selection.
+    /// restore masking state checked against this exact selection. With the
+    /// start message's key, a session's own messages before it are not read
+    /// at all. Returns the key of the last message visited.
     pub fn visit_from(
         &self,
-        from: usize,
+        start: VisitStart,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
-    ) -> Result<()> {
-        let mut remaining = from;
+    ) -> Result<Option<i64>> {
+        let mut last = None;
+        let mut visit = |pk, message| {
+            last = Some(pk);
+            visit(message)
+        };
+        let mut remaining = start.message;
         let mut after_prefix = |_| {
             if remaining == 0 {
                 true
@@ -271,21 +286,98 @@ impl MessageSelection<'_, '_> {
                     .visit_messages_where(
                         key.session_pk,
                         &key.session,
+                        None,
                         |m| set.contains(&m) && after_prefix(m),
                         &mut visit,
                     )?
                     .is_break()
                 {
-                    return Ok(());
+                    return Ok(last);
                 }
                 start = end;
             }
         } else if let Some((pk, id)) = &self.own {
-            let _ = self
-                .reader
-                .visit_messages_where(*pk, id, after_prefix, &mut visit)?;
+            let _ = match start.key {
+                Some(key) => {
+                    self.reader
+                        .visit_messages_where(*pk, id, Some(key), |_| true, &mut visit)?
+                }
+                None => {
+                    self.reader
+                        .visit_messages_where(*pk, id, None, after_prefix, &mut visit)?
+                }
+            };
         }
-        Ok(())
+        Ok(last)
+    }
+
+    /// The sessions of the selection in order, each with the messages it
+    /// contributes when that is not all of its own.
+    fn sessions(&self) -> Vec<(i64, Option<Vec<i64>>)> {
+        match (&self.with_parents, &self.own) {
+            (Some(keys), _) => {
+                let mut sessions: Vec<(i64, Option<Vec<i64>>)> = Vec::new();
+                for key in keys {
+                    match sessions.last_mut() {
+                        Some((pk, Some(members))) if *pk == key.session_pk => {
+                            members.push(key.message_pk);
+                        }
+                        _ => sessions.push((key.session_pk, Some(vec![key.message_pk]))),
+                    }
+                }
+                sessions
+            }
+            (None, Some((pk, _))) => vec![(*pk, None)],
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// The latest place at or before `message` where masking can start
+    /// afresh: masking carries nothing from one block to the next but a
+    /// private key block still open. Every place before the first block that
+    /// leaves one open (`block.pem_open`) is a fresh start; after it, the
+    /// stored bytes are followed, without masking, to the last place where
+    /// no key is open.
+    pub fn fresh_masking_start(&self, message: usize) -> Result<usize> {
+        let conn = self.reader.conn()?;
+        let mut flagged = HashSet::new();
+        let mut statement = conn.prepare_cached(
+            "SELECT DISTINCT message_pk FROM block WHERE session_pk = ?1 AND pem_open = 1",
+        )?;
+        for (session, _) in self.sessions() {
+            for pk in statement.query_map([session], |r| r.get::<_, i64>(0))? {
+                flagged.insert(pk?);
+            }
+        }
+        if flagged.is_empty() {
+            return Ok(message);
+        }
+        let keys = self.keys()?;
+        let Some(first) = keys
+            .iter()
+            .take(message)
+            .position(|pk| flagged.contains(pk))
+        else {
+            return Ok(message);
+        };
+        let mut blocks = conn.prepare_cached(
+            "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
+             WHERE b.message_pk = ?1 ORDER BY b.idx",
+        )?;
+        let mut state = crate::ordered_blocks::PemState::default();
+        let mut fresh = first;
+        for (at, pk) in keys.iter().enumerate().take(message).skip(first) {
+            if !state.open() {
+                fresh = at;
+            }
+            let mut rows = blocks.query([pk])?;
+            while let Some(row) = rows.next()? {
+                let body: Vec<u8> = row.get(0)?;
+                let text: Option<Vec<u8>> = row.get(1)?;
+                state.block(&body, text.as_deref())?;
+            }
+        }
+        Ok(if state.open() { fresh } else { message })
     }
 
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
@@ -303,47 +395,38 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// Message facts, the content hash of each message's shown version and
-    /// parents status. The blocks are written only with a new shown version,
-    /// whose hash names them, so no block or text is read.
+    /// What the selected content is: parents status; for the session read,
+    /// the write counter of its last change (`session.changed`, which every
+    /// change to its messages, their versions and blocks, or its derived rows
+    /// moves); for each parent, the row and shown version of each message it
+    /// contributes, since a parent's later messages are not selected. No
+    /// block or text is read: blocks are written only with a new shown
+    /// version, whose content hash names them.
     pub fn fingerprint(&self) -> Result<String> {
         let mut hash = blake3::Hasher::new();
         if self.with_parents.is_some() {
             hash.update(&serde_json::to_vec(&self.parents)?);
         }
-        let mut facts = self
-            .reader
-            .conn()?
-            .prepare_cached("SELECT * FROM message WHERE pk=?1")?;
-        let mut version = self.reader.conn()?.prepare_cached(
-            "SELECT version_hash FROM message_source WHERE message_pk=?1 AND shown=1",
+        let conn = self.reader.conn()?;
+        let mut changed = conn.prepare_cached("SELECT changed FROM session WHERE pk = ?1")?;
+        let mut facts = conn.prepare_cached("SELECT * FROM message WHERE pk = ?1")?;
+        let mut version = conn.prepare_cached(
+            "SELECT version_hash FROM message_source WHERE message_pk = ?1 AND shown = 1",
         )?;
-        for pk in self.keys()? {
-            for stmt in [&mut facts, &mut version] {
-                let count = stmt.column_count();
-                let mut rows = stmt.query([pk])?;
-                while let Some(row) = rows.next()? {
-                    hash.update(b"row");
-                    for column in 0..count {
-                        use rusqlite::types::ValueRef;
-                        match row.get_ref(column)? {
-                            ValueRef::Null => {
-                                hash.update(b"n");
-                            }
-                            ValueRef::Integer(n) => {
-                                hash.update(b"i");
-                                hash.update(&n.to_le_bytes());
-                            }
-                            ValueRef::Real(n) => {
-                                hash.update(b"r");
-                                hash.update(&n.to_bits().to_le_bytes());
-                            }
-                            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
-                                hash.update(b"b");
-                                hash.update(&(bytes.len() as u64).to_le_bytes());
-                                hash.update(bytes);
-                            }
-                        }
+        let own = self.own.as_ref().map(|(pk, _)| *pk);
+        for (session, members) in self.sessions() {
+            hash.update(b"session");
+            hash.update(&session.to_le_bytes());
+            if Some(session) == own {
+                let counter: i64 = changed.query_row([session], |r| r.get(0))?;
+                hash.update(&counter.to_le_bytes());
+                continue;
+            }
+            for pk in members.iter().flatten() {
+                for statement in [&mut facts, &mut version] {
+                    let mut rows = statement.query([pk])?;
+                    while let Some(row) = rows.next()? {
+                        hash_row(&mut hash, row)?;
                     }
                 }
             }
@@ -356,15 +439,17 @@ impl MessageSelection<'_, '_> {
     pub fn attachment_fingerprint(&self) -> Result<String> {
         let conn = self.reader.conn()?;
         let mut scopes = std::collections::BTreeSet::new();
+        // The imports of every input parsed into the selected sessions: a
+        // superset of those holding the selected versions, read without
+        // visiting each message.
         let mut selected = conn.prepare_cached(
-            "SELECT DISTINCT own.import_id FROM message_source ms
-            JOIN message_source shown ON shown.message_pk=ms.message_pk AND shown.shown=1
-            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id
+            "SELECT DISTINCT own.import_id FROM parsed p
+            JOIN input_ref ir ON ir.pk=p.input_pk JOIN a.input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.version_hash=shown.version_hash",
+            WHERE p.session_pk=?1",
         )?;
-        for pk in self.keys()? {
-            for scope in selected.query_map([pk], |row| row.get::<_, String>(0))? {
+        for (session, _) in self.sessions() {
+            for scope in selected.query_map([session], |row| row.get::<_, String>(0))? {
                 scopes.insert(scope?);
             }
         }
@@ -382,30 +467,36 @@ impl MessageSelection<'_, '_> {
             hash.update(scope.as_bytes());
             let mut rows = stmt.query([scope])?;
             while let Some(row) = rows.next()? {
-                hash.update(b"row");
-                for column in 0..row.as_ref().column_count() {
-                    use rusqlite::types::ValueRef;
-                    match row.get_ref(column)? {
-                        ValueRef::Null => {
-                            hash.update(b"n");
-                        }
-                        ValueRef::Integer(value) => {
-                            hash.update(b"i");
-                            hash.update(&value.to_le_bytes());
-                        }
-                        ValueRef::Real(value) => {
-                            hash.update(b"r");
-                            hash.update(&value.to_bits().to_le_bytes());
-                        }
-                        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
-                            hash.update(b"b");
-                            hash.update(&(bytes.len() as u64).to_le_bytes());
-                            hash.update(bytes);
-                        }
-                    }
-                }
+                hash_row(&mut hash, row)?;
             }
         }
         Ok(hash.finalize().to_hex().to_string())
     }
+}
+
+/// Folds every column of a row into `hash`, with its type.
+fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
+    use rusqlite::types::ValueRef;
+    hash.update(b"row");
+    for column in 0..row.as_ref().column_count() {
+        match row.get_ref(column)? {
+            ValueRef::Null => {
+                hash.update(b"n");
+            }
+            ValueRef::Integer(value) => {
+                hash.update(b"i");
+                hash.update(&value.to_le_bytes());
+            }
+            ValueRef::Real(value) => {
+                hash.update(b"r");
+                hash.update(&value.to_bits().to_le_bytes());
+            }
+            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+                hash.update(b"b");
+                hash.update(&(bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+        }
+    }
+    Ok(())
 }

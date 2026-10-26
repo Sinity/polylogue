@@ -134,3 +134,44 @@ fn argument_object_values_are_complete_values_not_a_source_chronology() {
     assert_eq!(value["input"]["second"], "independent ordinary value");
     assert_eq!(value["input"]["empty"], "");
 }
+
+#[test]
+fn text_masking_shows_the_same_text_and_leaves_unshown_values() {
+    let mut message: crate::Message = serde_json::from_value(
+        json!({"id": "test:m", "session": "test:s", "role": "assistant", "blocks": []}),
+    )
+    .unwrap();
+    message.blocks = vec![
+        crate::Block::ToolResult {
+            call_id: None,
+            outcome: crate::ToolOutcome::Ok,
+            output: Some(format!(
+                "output {SECRET}\n-----BEGIN RSA PRIVATE KEY-----\nopen"
+            )),
+            data: Some(json!({"raw": SECRET})),
+            attachments: vec![],
+        },
+        crate::Block::Text {
+            text: "still inside the key\n-----END RSA PRIVATE KEY-----\nafter".into(),
+        },
+    ];
+    let mut whole = message.clone();
+    MessageMasker::default().message(&mut whole);
+    let mut text = message.clone();
+    MessageMasker::default().message_text(&mut text);
+    let shown = |m: &crate::Message| -> Vec<String> {
+        m.blocks
+            .iter()
+            .filter_map(|b| b.text().map(str::to_owned))
+            .collect()
+    };
+    let output = |m: &crate::Message| match &m.blocks[0] {
+        crate::Block::ToolResult { output, data, .. } => (output.clone(), data.clone()),
+        _ => unreachable!(),
+    };
+    assert_eq!(output(&text).0, output(&whole).0);
+    assert_eq!(shown(&text), shown(&whole));
+    assert!(!shown(&text).concat().contains("still inside"));
+    assert_eq!(output(&text).1, Some(json!({"raw": SECRET})));
+    assert!(!output(&whole).1.unwrap().to_string().contains(SECRET));
+}
