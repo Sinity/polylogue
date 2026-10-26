@@ -689,7 +689,8 @@ proptest! {
         let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
             panic!("a count computed a similarity")
         };
-        let mut request = ask(&format!("{ranked_text} | agg count"));
+        let count_text = format!("{ranked_text} | agg count");
+        let mut request = ask(&count_text);
         request.embeddings = true;
         request.near = Some(&never);
         let counted = run_q(&w, request).unwrap();
@@ -711,9 +712,9 @@ proptest! {
         let queries = [
             over(Unit::Sessions, &format!("exists tool_call({a})")),
             over(Unit::Sessions, &format!("exists tool_call({a}) | matches")),
-            over(Unit::Sessions, &format!("seq({a} -> {b})")),
-            over(Unit::Sessions, &format!("seq({a} -> {b}) | matches")),
-            over(Unit::Sessions, &format!("seq({a} -> [next] {b}) | matches")),
+            over(Unit::Sessions, &format!("seq(({a}) -> ({b}))")),
+            over(Unit::Sessions, &format!("seq(({a}) -> ({b})) | matches")),
+            over(Unit::Sessions, &format!("seq(({a}) -> [next] ({b})) | matches")),
             over(Unit::ToolCalls, &format!("({a})")),
         ];
         let answers = |w: &TestArchive| -> Vec<Value> {

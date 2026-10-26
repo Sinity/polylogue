@@ -197,7 +197,7 @@ impl<'a> Compiler<'a> {
         let flat_field = flat(field);
         let unknown = (
             format!("unknown_{flat_field}"),
-            format!("sum(({expr}) IS NULL)"),
+            format!("count(*) - count({expr})"),
             ColKind::Number,
         );
         let mut out = match f {
@@ -246,7 +246,7 @@ impl<'a> Compiler<'a> {
             if let Some(partial) = partial {
                 out.push((
                     format!("partial_{flat_field}"),
-                    format!("sum(({expr}) IS NOT NULL AND {partial})"),
+                    format!("count(CASE WHEN ({expr}) IS NOT NULL AND {partial} THEN 1 END)"),
                     ColKind::Number,
                 ));
             }

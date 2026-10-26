@@ -349,6 +349,10 @@ impl<'a> Compiler<'a> {
             return Err(self.unknown_field(field, scope.unit, span));
         };
         let def = fields::lookup(unit, &lower).expect("checked");
+        // `F:*` names a field without restricting it, whatever its rule.
+        if matches!(op, FieldOp::Match(Value::Any)) {
+            return Ok("1".into());
+        }
         if let Some(compile) = def.compile {
             let call = custom_fields::Call {
                 unit,

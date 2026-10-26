@@ -397,11 +397,18 @@ fn three_valued_filters_partition() {
         .into_iter()
         .collect();
     assert!(has.is_disjoint(&hasnt), "{has:?} {hasnt:?}");
+    // The rest have no failing call but a call whose outcome is unknown:
+    // `exists` is unknown for them, so neither form returns them.
+    let unknown: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:unknown)"))
+        .into_iter()
+        .filter(|s| !has.contains(s))
+        .collect();
     assert_eq!(
-        has.union(&hasnt).cloned().collect::<BTreeSet<_>>(),
+        has.union(&hasnt).chain(&unknown).cloned().collect::<BTreeSet<_>>(),
         top,
-        "{has:?} {hasnt:?}"
+        "{has:?} {hasnt:?} {unknown:?}"
     );
+    assert!(hasnt.is_disjoint(&unknown), "{hasnt:?} {unknown:?}");
 }
 
 /// Defaults are bound once. A condition every row satisfies,

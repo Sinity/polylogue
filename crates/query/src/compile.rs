@@ -326,19 +326,7 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
     }
     let bound = bind_saved_source(text, opts)?;
     let text = bound.as_deref().unwrap_or(text);
-    let query = match parse(text) {
-        Ok(query) => query,
-        Err(e) => {
-            // `sessin where …` does not parse, but the fix it needs is the
-            // unit's name, not the parser's repair.
-            let trimmed = text.trim_start();
-            let first = trimmed.split_whitespace().next().unwrap_or("");
-            if first.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-                refuse_word(first, trimmed[first.len()..].trim_start(), opts)?;
-            }
-            return Err(e);
-        }
-    };
+    let query = parse(text)?;
     refuse_commands(text, &query, opts)?;
     Compiler::new(text, opts).program(&query)
 }
@@ -363,19 +351,14 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
     if first.span.start != text.len() - text.trim_start().len() {
         return Ok(());
     }
-    refuse_word(word, text[first.span.end..].trim_start(), opts)
-}
-
-/// Refuses `word`, the first of a query followed by `rest`, when it is a
-/// command name or a near miss of a unit or command name.
-fn refuse_word(word: &str, rest: &str, opts: &Options) -> Result<(), QueryError> {
     let lower = word.to_ascii_lowercase();
     if matches!(lower.as_str(), "last" | "latest" | "self") || opts.origins.contains(&lower) {
         return Ok(());
     }
+    let rest = text[first.span.end..].trim_start();
     if opts.command_words.contains(&lower) {
         return Err(QueryError::NotAQuery {
-            word: word.to_owned(),
+            word: word.clone(),
             message: format!(
                 "\"{word}\" is a command, not a query; to search for the word, quote it"
             ),
@@ -397,7 +380,7 @@ fn refuse_word(word: &str, rest: &str, opts: &Options) -> Result<(), QueryError>
     {
         if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
             return Err(QueryError::NotAQuery {
-                word: word.to_owned(),
+                word: word.clone(),
                 message: format!("did you mean \"{name}\"?"),
                 suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
             });
@@ -563,7 +546,7 @@ fn match_agg(
     let (name, kind) = match_column(rel, field, at)?;
     let unknown = (
         format!("unknown_{name}"),
-        format!("sum({name} IS NULL)"),
+        format!("count(*) - count({name})"),
         ColKind::Number,
     );
     Ok(match f {

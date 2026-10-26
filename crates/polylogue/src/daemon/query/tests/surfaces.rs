@@ -84,7 +84,7 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
             ("brief yesterday", "not_a_query", "\"brief\" yesterday"),
             ("status", "not_a_query", "\"status\""),
             ("messges cargo", "not_a_query", "messages cargo"),
-            ("sessin where repo:morrow", "not_a_query", "sessions where repo:morrow"),
+            ("sessin where repo:morrow", "invalid_query", "session where repo:morrow"),
             ("statsu", "not_a_query", "status"),
             ("sessions where outcome:error", "bad_value", "tool_calls"),
             ("tool_calls where outcome:solved", "bad_value", "sessions"),

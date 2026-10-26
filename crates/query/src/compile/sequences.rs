@@ -81,8 +81,11 @@ impl<'a> Compiler<'a> {
                 match gaps[i - 1] {
                     Gap::Later => w.push(format!("{o}.n > {prev}.n")),
                     Gap::Next => w.push(format!("{o}.n = {prev}.n + 1")),
+                    // Both times known, the later strictly later: a missing
+                    // or reversed time does not satisfy a window.
                     Gap::Within { ms } => {
                         w.push(format!("{o}.n > {prev}.n"));
+                        w.push(format!("{o}.at > {prev}.at"));
                         w.push(format!("{o}.at - {prev}.at <= {ms}"));
                     }
                 }
