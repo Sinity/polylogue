@@ -286,6 +286,7 @@ impl Writer {
             deferred_indexes,
             derive_due: true,
             derived_version: None,
+            logs_hold_excised: false,
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
             excisions,
@@ -532,6 +533,9 @@ struct Inner {
     /// `data_version` of the index when the last derive ended: it moves when
     /// another connection commits.
     derived_version: Option<i64>,
+    /// A write-ahead log may still hold text an excision removed
+    /// ([`Self::empty_logs`]).
+    logs_hold_excised: bool,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
@@ -561,7 +565,24 @@ impl Inner {
         let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
         let mut blobs = Vec::new();
-        while let Ok(first) = rx.recv() {
+        loop {
+            // While a log still holds excised text, the writer wakes to
+            // empty it even when no work comes.
+            let first = if self.logs_hold_excised {
+                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                    Ok(first) => first,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        self.empty_logs_or_report();
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(first) => first,
+                    Err(_) => break,
+                }
+            };
             self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
@@ -707,11 +728,22 @@ impl Inner {
             for reply in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
+            if self.logs_hold_excised {
+                self.empty_logs_or_report();
+            }
             if stopping {
                 break;
             }
         }
         let _ = self.settle();
+    }
+
+    fn empty_logs_or_report(&mut self) {
+        if let Err(e) = self.empty_logs() {
+            self.report
+                .errors
+                .push(format!("empty the write-ahead logs: {e}"));
+        }
     }
 
     /// Derives from the rows written since the last derive. With nothing
@@ -851,7 +883,7 @@ impl Inner {
     /// After an excision commits: the search indexes are merged into one
     /// segment each, so deleted entries leave the old segments, and both
     /// write-ahead logs are emptied into the database files, whose freed pages
-    /// `secure_delete` has zeroed.
+    /// `secure_delete` has zeroed ([`Self::empty_logs`]).
     fn scrub_after_excision(&mut self) -> Result<()> {
         for table in ["text_fts", "output_fts", "tool_call_trigram"] {
             self.index.execute(
@@ -859,9 +891,35 @@ impl Inner {
                 [],
             )?;
         }
+        self.logs_hold_excised = true;
+        self.empty_logs()
+    }
+
+    /// Empties both write-ahead logs into the database files and truncates
+    /// them, so excised text leaves them. A read still open on an older
+    /// snapshot keeps its frames; rather than wait for it, the writer tries
+    /// again after its next work, or within a second when idle, until both
+    /// logs are empty.
+    fn empty_logs(&mut self) -> Result<()> {
+        let mut emptied = true;
         for conn in [&self.index, &self.archive] {
-            conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+            conn.busy_timeout(std::time::Duration::ZERO)?;
+            let busy = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            });
+            conn.busy_timeout(std::time::Duration::from_secs(30))?;
+            match busy {
+                Ok(0) => {}
+                Ok(_) => emptied = false,
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::DatabaseBusy =>
+                {
+                    emptied = false;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
+        self.logs_hold_excised = !emptied;
         Ok(())
     }
 

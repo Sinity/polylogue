@@ -52,8 +52,11 @@ failure only costs buying them again); once the archive commits the
 excision is in force. Blobs nothing refers to are marked `deleting`, and the
 index's meta records how many excisions it holds. With `secure_delete` on,
 freed pages are zeroed; afterwards the search indexes are merged and both
-write-ahead logs are checkpointed, so no removed text stays readable in the
-database files, and the files of blobs marked `deleting` are deleted.
+write-ahead logs are checkpointed and emptied, so no removed text stays
+readable in the database files, and the files of blobs marked `deleting` are
+deleted. A read still open on the snapshot before the excision keeps its log
+frames; the writer does not wait for it, but empties the logs once no read
+holds them, trying again after each piece of work and every second.
 
 A stop needs no recovery code. Reopening the archive deletes the files of
 blobs still marked `deleting`, and an index that holds fewer excisions than
