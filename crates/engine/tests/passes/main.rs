@@ -11,9 +11,9 @@ use std::fs;
 use std::path::Path;
 
 mod excision_selected;
+mod live_first;
 mod older_chains;
 mod tool_captures;
-mod live_first;
 
 #[test]
 fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {

@@ -121,11 +121,17 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             c.ctes.push(format!(
                 "{sessions} AS MATERIALIZED (SELECT p, max(s) AS s FROM {tree} GROUP BY p)"
             ));
-            c.near_join = Some(format!("LEFT JOIN {sessions} near_s ON near_s.p = {}.pk", a.s));
+            c.near_join = Some(format!(
+                "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
+                a.s
+            ));
             "-near_s.s".to_owned()
         }
         Unit::Messages => {
-            c.near_join = Some(format!("LEFT JOIN {messages} near_m ON near_m.m = {}.pk", a.m));
+            c.near_join = Some(format!(
+                "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
+                a.m
+            ));
             "-near_m.s".to_owned()
         }
         Unit::Blocks => format!(

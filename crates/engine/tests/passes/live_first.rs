@@ -9,11 +9,22 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     const BACKLOG: i64 = 1500;
     let mut lines = String::new();
     for i in 0..10 {
-        lines.push_str(&user(&format!("u{i}"), "SESSION", &"backlog text ".repeat(40)));
-        lines.push_str(&assistant(&format!("a{i}"), "SESSION", &"answer text ".repeat(40)));
+        lines.push_str(&user(
+            &format!("u{i}"),
+            "SESSION",
+            &"backlog text ".repeat(40),
+        ));
+        lines.push_str(&assistant(
+            &format!("a{i}"),
+            "SESSION",
+            &"answer text ".repeat(40),
+        ));
     }
     for n in 0..BACKLOG {
-        w.append(&format!("b{n}.jsonl"), &lines.replace("SESSION", &format!("b{n}")));
+        w.append(
+            &format!("b{n}.jsonl"),
+            &lines.replace("SESSION", &format!("b{n}")),
+        );
     }
     let mut config = w.config(64 << 20);
     config.workers = 1;
@@ -26,7 +37,9 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
         drop(lock);
         pass
     });
-    let sessions = |w: &ClaudeHome| w.count("SELECT count(*) AS n FROM session WHERE id LIKE 'claude-code:b%'");
+    let sessions = |w: &ClaudeHome| {
+        w.count("SELECT count(*) AS n FROM session WHERE id LIKE 'claude-code:b%'")
+    };
     while sessions(&w) == 0 {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -37,9 +50,14 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
 "#,
     )
     .unwrap();
-    let live = |w: &ClaudeHome| w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:live1'");
+    let live = |w: &ClaudeHome| {
+        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:live1'")
+    };
     while live(&w) == 0 {
-        assert!(!pass.is_finished(), "the pass ended before the hook event was stored");
+        assert!(
+            !pass.is_finished(),
+            "the pass ended before the hook event was stored"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let behind = sessions(&w);
