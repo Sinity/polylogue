@@ -134,17 +134,20 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
 }
 
 pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
-    let targets = v
-        .list("sessions")
+    let names = v.list("sessions");
+    let user_state = names.iter().any(|text| text == "user-state");
+    let targets = names
         .iter()
+        .filter(|text| *text != "user-state")
         .map(|text| ReadTarget::parse(text))
         .collect::<Result<Vec<_>, _>>()?;
-    if targets.is_empty() {
-        return Err("name at least one session, document or event".into());
+    if targets.is_empty() && !user_state {
+        return Err("name at least one session, document or event, or user-state".into());
     }
     Ok(Request::Export {
         targets,
         format: v.text("format").unwrap_or_else(|| "json".into()),
+        user_state,
     })
 }
 

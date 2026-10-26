@@ -294,13 +294,24 @@ left as it was.
    standalone daemon on its own archive (a configuration directory without
    `sinex.toml`, and a separate state directory so it does not collect
    alongside the primary one). Compare `polylogue sql "select id from
-   session"` on both archives, `polylogue export` the sessions only the
-   standalone one holds into a file, and `polylogue import` that file into
-   the primary archive. These are mostly manual imports and captures whose
-   files are gone; manual exports whose original ZIPs still exist can be
-   imported again from those instead.
+   session"` on both archives and `polylogue export` the sessions only the
+   standalone one holds, together with `user-state`, into one file:
+   `polylogue export <session>... user-state --out moved.json`. Then
+   `polylogue import moved.json` into the primary archive. The sessions are
+   mostly manual imports and captures whose files are gone; manual exports
+   whose original ZIPs still exist can be imported again from those
+   instead.
 3. **Switch.** Point the live daemon, CLI and browser host at the primary
    archive and stop the standalone daemon.
 
-Notes, settings and kept results are not carried by export and import, so
-the primary archive starts without them.
+**User state** is every request a person or agent made (notes with their
+revisions, withdrawals and judgments, settings, kept results, deliveries,
+chat actions and backfill jobs) and every excision, in commit order.
+`archive.db` keeps each request whole, and import replays them through the
+writer as the requests they were, so in primary mode they reach Sinex like
+any new request. A request or excision already in the archive counts as
+`present`, so importing the same file again changes nothing. An imported
+excision refuses what it removed from then on. When step 1 already collected
+something an excision removed (its provider file was still there), the
+import stops at that excision and names it: excise it in the primary
+archive and import the file again.

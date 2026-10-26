@@ -395,7 +395,11 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the loop has stopped"),
             }
         }
-        Request::Export { targets, format } => export(&reader, &targets, &format),
+        Request::Export {
+            targets,
+            format,
+            user_state,
+        } => export(&reader, &targets, &format, user_state),
         Request::Embed {
             what,
             query,
@@ -691,7 +695,14 @@ fn query_targets(
 
 /// Whole sessions in the structured export format (`json`, read back by
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-fn export(reader: &polylogue_store::Reader<'_>, targets: &[ReadTarget], format: &str) -> Response {
+/// With `user_state`, the `json` export also carries every request and
+/// excision, which `import` replays.
+fn export(
+    reader: &polylogue_store::Reader<'_>,
+    targets: &[ReadTarget],
+    format: &str,
+    user_state: bool,
+) -> Response {
     let mut sessions = Vec::new();
     for id in targets.iter().filter_map(|t| match t {
         ReadTarget::Session(id) => Some(id),
@@ -725,9 +736,27 @@ fn export(reader: &polylogue_store::Reader<'_>, targets: &[ReadTarget], format: 
             Err(e) => return store_error(&e),
         }
     }
-    let doc = polylogue_model::export::Document::new(sessions)
+    let mut doc = polylogue_model::export::Document::new(sessions)
         .with_documents(documents)
         .with_events(events);
+    if user_state {
+        if format != "json" {
+            return error("bad_request", "user state is exported only as json");
+        }
+        let entries = match reader.user_state() {
+            Ok(entries) => entries,
+            Err(e) => return store_error(&e),
+        };
+        let entries = match entries
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(entries) => entries,
+            Err(e) => return error("internal", e.to_string()),
+        };
+        doc = doc.with_user_state(entries);
+    }
     let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown export format {format:?}"));
     };

@@ -1,11 +1,13 @@
-//! The export format: one JSON document holding whole sessions. Importing
-//! an export into a fresh archive gives the same sessions and IDs.
+//! The export format: one JSON document holding whole sessions, and the
+//! archive's user state. Importing an export into a fresh archive gives the
+//! same sessions and IDs, and the same notes, settings, kept results,
+//! deliveries, chat actions, backfill jobs and excisions.
 
 use crate::{Event, Link, Message, Session};
 use serde::{Deserialize, Serialize};
 
 pub const FORMAT: &str = "polylogue-export";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
@@ -16,6 +18,12 @@ pub struct Document {
     pub documents: Vec<crate::Document>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventExport>,
+    /// Every request a person or agent made and every excision, in commit
+    /// order, each as the store writes it (`{"change": "request", ...}` or
+    /// `{"change": "excision", ...}`). Import replays them through the
+    /// writer; the store checks each entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_state: Vec<crate::Json>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +100,8 @@ pub enum ExportError {
     DocumentsNeedVersion2,
     #[error("input events, transcripts and unknown media direction require export version 3")]
     ContentNeedsVersion3,
+    #[error("user state requires export version 4")]
+    UserStateNeedsVersion4,
     #[error("invalid event association or exported source citation")]
     InvalidEvent,
     #[error("malformed export: {0}")]
@@ -106,6 +116,7 @@ impl Document {
             sessions,
             documents: Vec::new(),
             events: Vec::new(),
+            user_state: Vec::new(),
         };
         document.version = document.required_version();
         document
@@ -123,8 +134,16 @@ impl Document {
         self
     }
 
+    pub fn with_user_state(mut self, user_state: Vec<crate::Json>) -> Self {
+        self.user_state = user_state;
+        self.version = self.version.max(self.required_version());
+        self
+    }
+
     pub fn required_version(&self) -> u32 {
-        if !self.events.is_empty()
+        if !self.user_state.is_empty() {
+            4
+        } else if !self.events.is_empty()
             || self.documents.iter().any(|d| {
                 d.purpose == crate::DocumentPurpose::Transcript
                     || d.blocks.iter().any(unknown_media)
@@ -145,7 +164,10 @@ impl Document {
     }
 
     pub fn validate(&self) -> Result<(), ExportError> {
-        if self.version < 3 && self.required_version() == 3 {
+        if self.version < 4 && !self.user_state.is_empty() {
+            return Err(ExportError::UserStateNeedsVersion4);
+        }
+        if self.version < 3 && self.required_version() >= 3 {
             return Err(ExportError::ContentNeedsVersion3);
         }
         if self.version < 2 && !self.documents.is_empty() {

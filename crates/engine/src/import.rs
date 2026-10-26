@@ -79,6 +79,9 @@ impl Engine {
                         polylogue_sources::origin::by_name(KEPT).expect("declared origin")
                     });
                 self.import_captured(path, origin, captured, Some(facts), &mut report)?;
+                if polylogue_export {
+                    self.import_user_state(path, &mut report)?;
+                }
             }
         }
         self.restore_failed_writes()?;
@@ -96,6 +99,87 @@ impl Engine {
         report.pass.sessions_derived = self.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
+    }
+
+    /// Replays the user state a Polylogue export carries, in its order,
+    /// through the writer: each request as the request it was, each excision
+    /// as a record that refuses what it removed. An entry already here counts
+    /// as present; the first entry that fails stops the replay, so a later
+    /// entry never lands without the one before it.
+    fn import_user_state(
+        &mut self,
+        path: &Path,
+        report: &mut ImportReport,
+    ) -> Result<(), EngineError> {
+        use polylogue_store::primary::RegisterChange;
+        #[derive(serde::Deserialize)]
+        struct UserState {
+            version: u32,
+            #[serde(default)]
+            user_state: Vec<serde_json::Value>,
+        }
+        // A file that is not a well-formed export was already reported
+        // unreadable by its parse.
+        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        let Ok(state) = serde_json::from_reader::<_, UserState>(file) else {
+            return Ok(());
+        };
+        if state.user_state.is_empty() || state.version < 4 {
+            return Ok(());
+        }
+        let entries = state.user_state.into_iter().map(|entry| {
+            serde_json::from_value::<RegisterChange>(entry).map_err(|e| {
+                polylogue_store::StoreError::Invalid(format!("not a user state entry: {e}"))
+            })
+        });
+        for (n, entry) in entries.enumerate() {
+            let applied = entry.and_then(|entry| match entry {
+                RegisterChange::Request { request, .. } => {
+                    self.writer.user(*request).map(|outcome| !outcome.repeat)
+                }
+                RegisterChange::Excision(excision) => {
+                    let locations: Vec<String> = excision
+                        .excised
+                        .iter()
+                        .filter(|(kind, _)| kind == "location")
+                        .map(|(_, value)| value.clone())
+                        .collect();
+                    let applied = self.writer.import_excision(excision);
+                    if applied.is_ok() {
+                        self.refuse_locations(&locations);
+                    }
+                    applied
+                }
+                RegisterChange::Observation { .. } => Err(polylogue_store::StoreError::Invalid(
+                    "an observation is not user state".into(),
+                )),
+            });
+            match applied {
+                Ok(true) => report.user_state.applied += 1,
+                Ok(false) => report.user_state.present += 1,
+                Err(error) => {
+                    report
+                        .pass
+                        .errors
+                        .push(format!("{}: user state entry {n}: {error}", path.display()));
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stops collecting the excised locations (`["machine","path"]`) of this
+    /// machine.
+    fn refuse_locations(&mut self, locations: &[String]) {
+        for location in locations {
+            if let Ok((machine, path)) = serde_json::from_str::<(String, PathBuf)>(location)
+                && machine == self.config.machine
+            {
+                self.inputs.remove(&path);
+                self.refused.insert(path);
+            }
+        }
     }
 
     fn recognize_captured(

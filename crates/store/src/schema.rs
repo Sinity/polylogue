@@ -27,6 +27,8 @@ pub const INDEX_VERSION: u32 = 43;
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
     // 2: backfill jobs.
     include_str!("schema/archive_2.sql"),
+    // 3: requests kept whole.
+    include_str!("schema/archive_3.sql"),
 ];
 
 /// The version `archive.sql` creates.

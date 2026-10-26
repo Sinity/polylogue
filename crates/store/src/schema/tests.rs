@@ -86,6 +86,25 @@ fn migration_2_adds_backfill_jobs_and_keeps_every_row() {
     .unwrap();
 }
 
+#[test]
+fn migration_3_keeps_every_request_and_leaves_old_ones_without_their_content() {
+    let conn = archive_at(2);
+    conn.execute_batch(
+        "INSERT INTO client_request(id, content_hash, created_at) VALUES ('r1', x'01', 5);",
+    )
+    .unwrap();
+    ensure_archive(&conn).unwrap();
+    assert!(version(&conn).unwrap() >= 3);
+    let row: (String, Vec<u8>, i64, Option<Vec<u8>>, i64) = conn
+        .query_row(
+            "SELECT id, content_hash, created_at, request, commit_seq FROM client_request",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("r1".into(), vec![1], 5, None, 0));
+}
+
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
     CREATE TABLE added(value TEXT NOT NULL) STRICT;";
 

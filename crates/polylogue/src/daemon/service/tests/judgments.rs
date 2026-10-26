@@ -163,3 +163,48 @@ fn a_note_applies_to_every_row_of_a_query() {
         "{refused:?}"
     );
 }
+
+/// `export user-state` carries the agent's note and the operator's judgment
+/// of it, as the requests that wrote them; only as json.
+#[test]
+fn user_state_exports_notes_and_judgments_as_their_requests() {
+    let d = test_daemon::start("first prompt");
+    let session = Target::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let agent = ok(
+        &d,
+        Request::AddNote {
+            request_id: "r1".into(),
+            note: note(Author::Agent(None), vec![session], "use the fast path"),
+        },
+    );
+    ok(
+        &d,
+        Request::Judge {
+            request_id: "r2".into(),
+            note: agent["id"].as_str().unwrap().into(),
+            accepted: true,
+            reason: None,
+        },
+    );
+    let export = |format: &str| {
+        handle(
+            Request::Export {
+                targets: vec![],
+                format: format.into(),
+                user_state: true,
+            },
+            &d.daemon,
+        )
+    };
+    let Response::Ok { data } = export("json") else {
+        panic!("export failed");
+    };
+    let document = polylogue_model::export::Document::from_json(&data.to_string()).unwrap();
+    let requests: Vec<&str> = document
+        .user_state
+        .iter()
+        .map(|entry| entry["request"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(requests, ["r1", "r2"]);
+    assert!(matches!(export("markdown"), Response::Error { .. }));
+}

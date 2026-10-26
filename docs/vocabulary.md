@@ -123,7 +123,10 @@ the same change.
   an agent's note, itself a note of kind `judgment`.
 - **notice**: a delivery a signal rule fired; an interrupting one is also
   a desktop notification.
-- **client request**: one write request, kept so a retry does not repeat it.
+- **client request**: one write request, kept whole so a retry does not
+  repeat it and so it can be replayed.
+- **user state**: every client request and excision, in commit order: what
+  `export user-state` writes and `import` replays into another archive.
 - **chat action**: see "Where inputs come from".
 - **excision**: stored inputs removed on purpose, with everything parsed from
   them. The request is recorded once with its **target** (an input, a session or a

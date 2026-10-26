@@ -41,6 +41,7 @@ pub mod staging;
 mod text_rows;
 pub mod timing;
 pub mod tool_databases;
+pub mod user_state;
 pub mod user_writes;
 pub mod vectors;
 mod write_lock;
