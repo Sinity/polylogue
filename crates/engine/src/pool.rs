@@ -57,6 +57,15 @@ pub enum Bytes {
     /// What the archive stored for the input: its file changed, moved or
     /// went, or the index is being built again.
     Stored(Arc<polylogue_store::blobs::StoredChain>),
+    /// A stored chain not loaded yet: a pass plans every stored input before
+    /// it runs any, and a loaded chain holds its extent list in a database
+    /// of its own. The engine loads it as the plan starts, as `Import` when
+    /// `decoded` (read forward from the start), else as `Stored`.
+    Unloaded {
+        chain: i64,
+        length: u64,
+        decoded: bool,
+    },
 }
 
 impl Job {
@@ -325,6 +334,9 @@ fn run(
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
         Bytes::File => read::read_range(&job.path, job.start, job.end),
+        Bytes::Unloaded { .. } => Err(std::io::Error::other(
+            "stored bytes were not loaded before their job",
+        )),
     };
     add(Stage::Read, started.elapsed());
     let bytes = match read {
