@@ -180,8 +180,8 @@ describe("the in-page panel", () => {
     window.eval(source("content/panel.js"));
     const said = window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "archived", messages: 12, daemon: "running" });
     expect(said).toMatchObject({ tone: "ok", label: "In the archive: 12 messages" });
-    expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "unknown", daemon: "not_running" }).label)
-      .toBe("The daemon is not running");
+    expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "unknown", daemon: "no_answer" }).label)
+      .toBe("The daemon did not answer");
     expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "spooled", daemon: "running" }).label)
       .toBe("Stored; Polylogue is reading it");
   });

@@ -176,13 +176,13 @@ fn without_the_daemon_a_capture_is_stored_and_the_index_is_unknown() {
     let a = exchange(&host, "POST", "/v1/captures", &capture("conv-2", "hi"));
     assert_eq!(a.status, 200);
     let state = conversations(&host, &["conv-2", "never"]);
-    assert_eq!(state["daemon"], "not_running");
+    assert_eq!(state["daemon"], "no_answer");
     assert_eq!(state["conversations"][0]["state"], "spooled");
     assert_eq!(state["conversations"][0]["messages"], Value::Null);
     assert_eq!(state["conversations"][1]["state"], "unknown");
     assert_eq!(
         exchange(&host, "GET", "/v1/status", b"").json()["daemon"],
-        "not_running"
+        "no_answer"
     );
     let jobs = exchange(&host, "GET", "/v1/backfill", b"");
     assert_eq!(jobs.status, 503);

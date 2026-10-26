@@ -50,7 +50,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 }
 
 /// Asks the daemon and answers with its data, or its refusal's status and
-/// code; 503 `daemon_required` when it is not running.
+/// code; 503 `daemon_required` when it does not answer (stopped, or too busy).
 async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
     match blocking(move || host.ask(&request)).await.flatten() {
         Some(Response::Ok { data }) => Ok(data),
@@ -74,7 +74,7 @@ async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<Http
         None => Err(Box::new(refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "daemon_required",
-            "the Polylogue daemon is not running",
+            "the Polylogue daemon did not answer; it is stopped or busy",
         ))),
     }
 }
@@ -91,7 +91,7 @@ async fn answer(host: Arc<BrowserHost>, request: Request) -> HttpResponse {
 async fn status(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
     let setting = blocking(move || host.actions_setting()).await.flatten();
     Json(json!({
-        "daemon": if setting.is_some() { "running" } else { "not_running" },
+        "daemon": if setting.is_some() { "running" } else { "no_answer" },
         "chat_actions": setting == Some(true),
         "version": env!("CARGO_PKG_VERSION"),
     }))
@@ -189,7 +189,7 @@ struct ConversationsAsked {
 
 /// What the archive holds of some conversations: `archived` with its
 /// message count and last capture time, `spooled` (stored, not yet read by
-/// the daemon), `missing`, or `unknown` while the daemon is not running.
+/// the daemon), `missing`, or `unknown` while the daemon does not answer.
 async fn conversations(
     State(host): State<Arc<BrowserHost>>,
     Json(asked): Json<ConversationsAsked>,
@@ -230,7 +230,7 @@ async fn conversations(
         })
         .collect();
     Json(json!({
-        "daemon": if daemon { "running" } else { "not_running" },
+        "daemon": if daemon { "running" } else { "no_answer" },
         "conversations": rows,
     }))
     .into_response()

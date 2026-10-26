@@ -138,7 +138,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     }
     return {
       provider, conversation, panel, last, host: hostState,
-      state: held?.state || "unknown", messages: held?.messages ?? null, daemon: held?.daemon || "not_running",
+      state: held?.state || "unknown", messages: held?.messages ?? null, daemon: held?.daemon || "no_answer",
     };
   }
 

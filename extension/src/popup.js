@@ -35,8 +35,8 @@
       label = "Polylogue did not answer";
     } else if (status.daemon !== "running") {
       tone = "warn";
-      label = "The daemon is not running";
-      detail = "Captures are stored and read once it starts: polylogue daemon";
+      label = "The daemon did not answer";
+      detail = "Captures are still stored. It is stopped (start it with `polylogue daemon`) or busy.";
     } else if (status.chat_actions) {
       detail = "Chat actions are on.";
     }

@@ -29,8 +29,9 @@ token or pairing step.
   plain lists such as ChatGPT's `safe_urls`, which the provider reshuffles on
   every read). Open chat tabs are checked every 15 minutes as well.
 - Reads (what the archive holds of a conversation, whether the daemon runs)
-  go from the host to the daemon. While the daemon is not running, captures
-  are still stored, and what the archive holds is shown as unknown.
+  go from the host to the daemon. While the daemon does not answer (stopped,
+  or busy), captures are still stored, and what the archive holds is shown
+  as unknown.
 
 ## Backfill
 
