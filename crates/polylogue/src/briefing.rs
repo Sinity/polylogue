@@ -1,7 +1,7 @@
 //! Context and briefings. This module is the one scheduler for context
-//! Polylogue puts in front of a model: every brief, takeover and recall is
-//! prepared here, and the daemon records each one it hands out as a
-//! delivery with its exact text.
+//! Polylogue puts in front of a model: every brief, takeover, recall and
+//! piece of advice before a tool runs is prepared here, and the daemon
+//! records each one it hands out as a delivery with its exact text.
 //!
 //! A session-start brief brings an agent up to speed on its directory:
 //! - notes the operator wrote, or agents wrote and the operator accepted:
@@ -23,6 +23,8 @@
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
+
+mod advice;
 
 use crate::daemon::query::{NearFn, notes};
 use polylogue_model::DeliveryEvent;
@@ -96,12 +98,21 @@ pub enum Ask {
         #[serde(default)]
         cursor: Option<String>,
     },
+    /// A command a session is about to run (a harness's pre-tool hook).
+    ToolUse {
+        cwd: PathBuf,
+        #[serde(default)]
+        session: Option<SessionId>,
+        command: String,
+    },
 }
 
 impl Ask {
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
-            Self::SessionStart { session, .. } => session.as_ref(),
+            Self::SessionStart { session, .. } | Self::ToolUse { session, .. } => {
+                session.as_ref()
+            }
             Self::Takeover { for_session, .. } | Self::Recall { for_session, .. } => {
                 for_session.as_ref()
             }
@@ -110,7 +121,7 @@ impl Ask {
 
     pub fn cwd(&self) -> Option<&Path> {
         match self {
-            Self::SessionStart { cwd, .. } => Some(cwd),
+            Self::SessionStart { cwd, .. } | Self::ToolUse { cwd, .. } => Some(cwd),
             Self::Recall { cwd, .. } => cwd.as_deref(),
             Self::Takeover { .. } => None,
         }
@@ -226,6 +237,9 @@ pub fn prepare(
             now,
             near,
         ),
+        Ask::ToolUse { cwd, command, .. } => {
+            advice::advice(reader, cwd, command, delivery_id, now)
+        }
     }
 }
 

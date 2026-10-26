@@ -195,6 +195,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "commit_link_hash",
     "pr_link_number",
     "work_node_session",
+    "work_node_check",
     "removed_session_changed",
     "message_pem",
 ];

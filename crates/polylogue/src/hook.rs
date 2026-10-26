@@ -13,6 +13,10 @@
 //!   carries every prompt the operator typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   pasted into it brings that session's takeover context.
+//! - a shell command about to run (`PreToolUse`, Claude Code and Codex):
+//!   advice, only when the command is a check that failed here repeatedly
+//!   since it last passed. The daemon has [`ADVICE_BUDGET`] to answer; a
+//!   tool call never waits longer.
 //!
 //! Claude Code and Codex take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -37,6 +41,10 @@ use std::time::Duration;
 /// during a first build over a large archive takes a few seconds. The
 /// harnesses' hook timeouts are longer.
 const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
+
+/// How long a hook before a tool runs waits for advice, and then for the
+/// record that it was delivered: the tool call waits on it.
+const ADVICE_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +210,7 @@ fn is_uuid(w: &str) -> bool {
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
 fn context(ask: Ask) -> Option<(String, String)> {
+    let budget = budget_for(&ask);
     let request_id = polylogue_store::user_writes::new_request_id();
     let reply = ask_daemon(
         &Request::Context {
@@ -209,7 +218,7 @@ fn context(ask: Ask) -> Option<(String, String)> {
             ask,
             sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
         },
-        CONTEXT_BUDGET,
+        budget,
     )?;
     let Response::Ok { data } = reply else {
         return None;
@@ -222,14 +231,21 @@ fn context(ask: Ask) -> Option<(String, String)> {
     Some((delivery, text))
 }
 
-fn delivered(delivery: &str) {
+fn budget_for(ask: &Ask) -> Duration {
+    match ask {
+        Ask::ToolUse { .. } => ADVICE_BUDGET,
+        _ => CONTEXT_BUDGET,
+    }
+}
+
+fn delivered(delivery: &str, budget: Duration) {
     let _ = ask_daemon(
         &Request::DeliveryEvent {
             delivery: delivery.to_owned(),
             what: DeliveryOutcome::Delivered,
             detail: Some("written to the harness hook output".into()),
         },
-        CONTEXT_BUDGET,
+        budget,
     );
 }
 
@@ -255,6 +271,31 @@ fn start(harness: Harness, payload: &Value, source: StartSource) -> Option<(Stri
         cwd,
         session: session_of(harness, payload),
         source,
+    })
+}
+
+/// The shell command a pre-tool payload is about to run: Claude Code's
+/// `tool_input.command`, or a command given as its words.
+fn shell_command(payload: &Value) -> Option<String> {
+    match &payload["tool_input"]["command"] {
+        Value::String(command) => Some(command.clone()),
+        Value::Array(words) => {
+            let words: Option<Vec<&str>> = words.iter().map(Value::as_str).collect();
+            Some(words?.join(" "))
+        }
+        _ => None,
+    }
+    .filter(|command| !command.trim().is_empty())
+}
+
+/// Advice before a shell command runs.
+fn advice(harness: Harness, payload: &Value) -> Option<(String, String)> {
+    let cwd = payload["cwd"].as_str().map(PathBuf::from)?;
+    let command = shell_command(payload)?;
+    context(Ask::ToolUse {
+        cwd,
+        session: session_of(harness, payload),
+        command,
     })
 }
 
@@ -293,6 +334,7 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit") => {
             takeovers(harness, payload, payload["prompt"].as_str()?)
         }
+        (Harness::ClaudeCode | Harness::Codex, "PreToolUse") => advice(harness, payload),
         // Hermes injects context only into a turn's prompt: the first
         // turn's carries the brief, and any turn's the takeovers it asks for.
         (Harness::Hermes, "pre_llm_call") => {
@@ -324,8 +366,13 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
     if let Some((deliveries, text)) = respond(harness, event, &payload)
         && emit(harness, event, &text)
     {
+        let budget = if event == "PreToolUse" {
+            ADVICE_BUDGET
+        } else {
+            CONTEXT_BUDGET
+        };
         for d in deliveries.split(',') {
-            delivered(d);
+            delivered(d, budget);
         }
     }
     ExitCode::SUCCESS

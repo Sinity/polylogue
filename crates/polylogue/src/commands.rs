@@ -1036,7 +1036,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID, advice before a check that keeps failing",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {

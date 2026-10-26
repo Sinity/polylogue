@@ -12,6 +12,8 @@ pub enum DeliveryEvent {
     Takeover,
     Recall,
     Signal,
+    /// A hint just before a tool runs.
+    Advice,
 }
 
 stored_names!(DeliveryEvent {
@@ -21,6 +23,7 @@ stored_names!(DeliveryEvent {
     Takeover => "takeover",
     Recall => "recall",
     Signal => "signal",
+    Advice => "advice",
 });
 
 /// What prepared a delivery.

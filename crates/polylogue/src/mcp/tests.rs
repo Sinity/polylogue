@@ -56,6 +56,35 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(e.starts_with("error (not_found)"), "{e}");
 }
 
+/// The example queries the instructions give agents run as given, and each
+/// tool they name exists.
+#[test]
+fn the_instructions_name_real_tools_and_working_queries() {
+    let w = test_daemon::start("the walrus migration");
+    let archive = Archive::at(&w.daemon.archive.root);
+    let examples: Vec<&str> = INSTRUCTIONS
+        .split("Examples:")
+        .nth(1)
+        .unwrap()
+        .split("An empty answer")
+        .next()
+        .unwrap()
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .collect();
+    assert_eq!(examples.len(), 5, "{examples:?}");
+    for query in examples {
+        let answer = call(&archive, "query", args(json!({ "query": query })));
+        assert!(answer.is_ok(), "{query}: {answer:?}");
+    }
+    let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
+    for tool in ["brief", "recall", "takeover", "query", "read", "note_add", "status"] {
+        assert!(names.contains(&tool.to_owned()), "no tool {tool}");
+        assert!(INSTRUCTIONS.contains(&format!("`{tool}`")), "{tool} is not described");
+    }
+}
+
 mod read_pages;
 
 mod events;
