@@ -3,8 +3,49 @@ use super::*;
 fn stats(source: &Imported) -> hashed_blobs::VerificationStats {
     match &source.reader {
         Decoder::Plain(reader) => reader.stats(),
-        Decoder::Chain(_) => panic!("the plain reader is the counted case"),
+        Decoder::Chain(_) | Decoder::Unopened(_) => panic!("the plain reader is the counted case"),
     }
+}
+
+#[test]
+fn stored_bytes_are_opened_at_their_first_read() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    // Larger than the inline limit, so the bytes are a blob file.
+    let body = "synthetic stored body ".repeat(10_000);
+    home.append(
+        "large.jsonl",
+        &polylogue_testkit::claude_user("u1", "s", &body),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let blobs = std::sync::Arc::clone(&engine.blobs);
+    let (input, chain, length): (String, i64, i64) =
+        rusqlite::Connection::open(home.root.join("archive.db"))
+            .unwrap()
+            .query_row("SELECT input, chain, length FROM revision", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+    let reads = home.reads();
+    let stored = reads
+        .reader()
+        .unwrap()
+        .stored_chain(&input, chain, length as u64)
+        .unwrap();
+    let hex = hashed_blobs::Hash(stored.single_file_blob().expect("a blob file").0).hex();
+    let file = home
+        .root
+        .join("blobs")
+        .join(&hex[..2])
+        .join(format!("{hex}.zst"));
+    let aside = home.root.join("aside.zst");
+    std::fs::rename(&file, &aside).unwrap();
+    // A plan holds no open file: making one succeeds, reading it fails.
+    let mut missing = Imported::from_chain(stored.clone(), std::sync::Arc::clone(&blobs));
+    assert!(missing.read_range(0, 16).is_err());
+    std::fs::rename(&aside, &file).unwrap();
+    let mut present = Imported::from_chain(stored, blobs);
+    assert_eq!(present.read_range(0, 1).unwrap(), b"{");
 }
 
 #[test]

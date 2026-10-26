@@ -52,13 +52,33 @@ impl std::fmt::Debug for Imported {
 }
 
 enum Decoder {
+    /// Stored bytes not read yet. A pass plans every input it parses again
+    /// before it reads any, so a plan opens no file until its first job.
+    Unopened(
+        Box<(
+            polylogue_store::blobs::StoredChain,
+            std::sync::Arc<hashed_blobs::Store>,
+        )>,
+    ),
     Plain(Box<hashed_blobs::PlainReader>),
     Chain(Box<polylogue_store::blobs::ChainReader>),
 }
 
 impl Read for Decoder {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if let Self::Unopened(stored) = self {
+            let (chain, store) = &**stored;
+            *self = match chain.single_file_blob() {
+                Some(hash) => Self::Plain(Box::new(
+                    store
+                        .read_plain(&hashed_blobs::Hash(hash.0), Some(chain.length), || Ok(()))
+                        .map_err(io::Error::other)?,
+                )),
+                None => Self::Chain(Box::new(chain.reader(std::sync::Arc::clone(store)))),
+            };
+        }
         match self {
+            Self::Unopened(_) => unreachable!("opened above"),
             Self::Plain(reader) => reader.read(out),
             Self::Chain(reader) => reader.read(out),
         }
@@ -82,18 +102,16 @@ impl Imported {
         })
     }
 
+    /// A chain's stored bytes, opened when they are first read.
     pub fn from_chain(
         chain: polylogue_store::blobs::StoredChain,
         store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> polylogue_store::Result<Self> {
-        if let Some(hash) = chain.single_file_blob() {
-            return Ok(Self::open(&store, hash, chain.length)?);
-        }
-        Ok(Self {
-            reader: Decoder::Chain(Box::new(chain.reader(store))),
+    ) -> Self {
+        Self {
+            reader: Decoder::Unopened(Box::new((chain, store))),
             start: 0,
             pending: Vec::new(),
-        })
+        }
     }
 
     pub fn read_range(&mut self, start: u64, end: u64) -> io::Result<Vec<u8>> {
