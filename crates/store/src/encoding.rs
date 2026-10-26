@@ -59,6 +59,9 @@ pub(crate) struct PreparedMessage {
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
+    /// Whether masking each block from a fresh start leaves a private key
+    /// block open after it ([`crate::ordered_blocks::leaves_pem_open`]).
+    pub(crate) pem_open: Vec<bool>,
 }
 
 impl std::ops::Deref for PreparedMessage {
@@ -138,10 +141,6 @@ impl RowPacker {
         Ok(self.pack_row(&serde_json::to_vec(value)?)?)
     }
 
-    fn pack_block(&mut self, block: &Block) -> Result<Vec<u8>> {
-        Ok(self.pack_row(&block_bytes(block)?)?)
-    }
-
     pub(crate) fn pack_event(&mut self, event: &Event) -> Result<(String, Vec<u8>)> {
         let (id, data) = event_bytes(event)?;
         Ok((id, self.pack_row(&data)?))
@@ -192,12 +191,20 @@ impl RowPacker {
             hasher.update(&serde_json::to_vec(&sorted)?);
             *hasher.finalize().as_bytes()
         };
+        let mut packed = Vec::with_capacity(blocks.len());
+        let mut pem_open = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            let bytes = block_bytes(block)?;
+            pem_open.push(crate::ordered_blocks::leaves_pem_open(
+                &bytes,
+                block_text(block),
+            ));
+            packed.push(self.pack_row(&bytes)?);
+        }
         Ok(PreparedContent {
             hash,
-            blocks: blocks
-                .iter()
-                .map(|block| self.pack_block(block))
-                .collect::<Result<_>>()?,
+            blocks: packed,
+            pem_open,
         })
     }
 }

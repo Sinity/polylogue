@@ -6,10 +6,22 @@ use rusqlite::{Connection, OptionalExtension};
 pub(crate) fn create(index: &Connection) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     index.execute(
-        "INSERT INTO meta(key,value) VALUES ('generation',?1),('boot_id',?2)",
-        [uuid::Uuid::now_v7().to_string(), boot.trim().to_owned()],
+        "INSERT INTO meta(key,value) VALUES ('generation',?1),('boot_id',?2),('cursor_key',?3)",
+        [
+            uuid::Uuid::now_v7().to_string(),
+            boot.trim().to_owned(),
+            cursor_key()?,
+        ],
     )?;
     Ok(())
+}
+
+/// A new secret for sealing read cursors: 32 random bytes, hex.
+fn cursor_key() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 pub(super) fn open(archive: &super::Archive) -> Result<()> {
@@ -41,6 +53,7 @@ fn begin(index: &Connection, boot: &str) -> Result<()> {
         {
             let generation = uuid::Uuid::now_v7().to_string();
             tx.execute("INSERT INTO meta(key,value) VALUES ('generation',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [generation])?;
+            tx.execute("INSERT INTO meta(key,value) VALUES ('cursor_key',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [cursor_key()?])?;
             tx.execute("DELETE FROM removed_session", [])?;
         }
         tx.execute("INSERT INTO meta(key,value) VALUES ('boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot])?;

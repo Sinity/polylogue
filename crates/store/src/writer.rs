@@ -190,6 +190,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "pr_link_number",
     "work_node_session",
     "removed_session_changed",
+    "block_pem_open",
 ];
 
 /// Unique indexes on natural keys, which the writer's statements use: a first

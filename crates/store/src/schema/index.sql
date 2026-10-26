@@ -1,5 +1,6 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
--- INDEX_VERSION, generation, the write counter, unsynced, facts_version,
+-- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
+-- cursors), the write counter, unsynced, facts_version,
 -- the status counters count.sessions, count.messages, count.tool_calls,
 -- count.tool_calls_failed, count.unused,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
@@ -163,12 +164,16 @@ CREATE TABLE block (
   signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
+  pem_open          INTEGER NOT NULL DEFAULT 0, -- 1: masked from a fresh start, it leaves a private key block
+                                            --   open, the only masking state that crosses a block boundary;
+                                            --   a read masks afresh from any message before the first such block
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
+CREATE INDEX block_pem_open ON block(session_pk) WHERE pem_open = 1;   -- where a read can mask afresh
 
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output

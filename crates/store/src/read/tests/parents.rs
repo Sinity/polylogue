@@ -234,11 +234,47 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
         );
         let mut actual = Vec::new();
         selected
-            .visit_from(from, |message| {
-                actual.push(message.text());
-                ControlFlow::Continue(())
-            })
+            .visit_from(
+                VisitStart {
+                    message: from,
+                    key: None,
+                },
+                |message| {
+                    actual.push(message.text());
+                    ControlFlow::Continue(())
+                },
+            )
             .unwrap();
         assert_eq!(actual, expected);
     }
+}
+
+#[test]
+fn masking_starts_afresh_anywhere_before_a_block_that_leaves_a_key_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(
+        &mut f,
+        "keyed",
+        &[
+            "ordinary",
+            "closed -----BEGIN RSA PRIVATE KEY-----x-----END RSA PRIVATE KEY----- block",
+            "left open -----BEGIN RSA PRIVATE KEY-----",
+            "after the open key",
+        ],
+    );
+    session(&mut f, "plain", &["one", "two", "three"]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let keyed = reader
+        .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
+        .unwrap();
+    let starts: Vec<usize> = (0..4)
+        .map(|at| keyed.fresh_masking_start(at).unwrap())
+        .collect();
+    assert_eq!(starts, [0, 1, 2, 2]);
+    let plain = reader
+        .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
+        .unwrap();
+    assert_eq!(plain.fresh_masking_start(2).unwrap(), 2);
 }

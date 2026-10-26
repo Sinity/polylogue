@@ -23,7 +23,7 @@ pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::CapturedSession;
 mod rows;
 
-pub use parents::{MessageSelection, ParentIssue, Parents};
+pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
@@ -439,6 +439,18 @@ impl Reader<'_> {
         self.index_identity.ok_or(StoreError::ReadIndexReplaced)
     }
 
+    /// The key read cursors are sealed with: a secret of this index
+    /// generation that no answer carries, so a cursor a client changed or
+    /// made up is refused.
+    pub fn cursor_key(&self) -> Result<[u8; 32]> {
+        let secret: String = self.conn()?.query_row(
+            "SELECT value FROM main.meta WHERE key = 'cursor_key'",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(*blake3::hash(secret.as_bytes()).as_bytes())
+    }
+
     /// Both counters and the index identity from this reader's read.
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         Ok(self.conn()?.query_row(
@@ -568,21 +580,65 @@ impl Reader<'_> {
         Ok(blocks)
     }
 
+    /// Visits the session's messages in order, from message `from` (a key)
+    /// when given, without reading the messages before it.
     fn visit_messages_where(
         &self,
         session_pk: i64,
         session: &SessionId,
+        from: Option<i64>,
         mut keep: impl FnMut(i64) -> bool,
-        visit: &mut impl FnMut(Message) -> std::ops::ControlFlow<()>,
+        visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
-                    cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
-                    duration_ms, attrs_json, cache_write_1h_tokens, speed
-             FROM message WHERE session_pk = ?1 AND duplicate_of IS NULL
-             ORDER BY order_input_id, seq, record_position, id",
-        )?;
-        let rows = stmt.query_map([session_pk], |r| {
+        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at, m.parent_id,
+            m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
+            m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
+            m.cache_write_1h_tokens, m.speed";
+        const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";
+        let start: Option<(String, i64, i64, String)> = match from {
+            Some(pk) => self
+                .conn()?
+                .prepare_cached(
+                    "SELECT order_input_id, seq, record_position, id FROM message
+                     WHERE pk = ?1 AND session_pk = ?2",
+                )?
+                .query_row(rusqlite::params![pk, session_pk], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .optional()?,
+            None => None,
+        };
+        if from.is_some() && start.is_none() {
+            return Err(StoreError::Invalid(
+                "the read starts at a message the session does not hold".into(),
+            ));
+        }
+        let mut stmt = match &start {
+            None => self.conn()?.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM message m
+                 WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL {ORDER}"
+            ))?,
+            // Index order from the start message: its key or a later one.
+            Some(_) => self.conn()?.prepare_cached(&format!(
+                "SELECT {COLUMNS} FROM message m
+                 WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
+                   AND (m.order_input_id, m.seq, m.record_position) >= (?2, ?3, ?4)
+                   AND NOT ((m.order_input_id, m.seq, m.record_position) = (?2, ?3, ?4)
+                            AND m.id < ?5)
+                 {ORDER}"
+            ))?,
+        };
+        let parameters: Vec<rusqlite::types::Value> = match start {
+            None => vec![session_pk.into()],
+            Some((input, seq, position, id)) => vec![
+                session_pk.into(),
+                input.into(),
+                seq.into(),
+                position.into(),
+                id.into(),
+            ],
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(parameters), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -665,7 +721,7 @@ impl Reader<'_> {
                     .and_then(|p| serde_json::from_value(p.clone()).ok())
                     .unwrap_or_default(),
             };
-            if visit(message).is_break() {
+            if visit(pk, message).is_break() {
                 return Ok(std::ops::ControlFlow::Break(()));
             }
         }

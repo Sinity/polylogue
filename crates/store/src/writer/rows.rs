@@ -249,6 +249,13 @@ impl Version {
     }
 }
 
+/// A block's packed body and whether masking it from a fresh start leaves a
+/// private key block open ([`crate::ordered_blocks::leaves_pem_open`]).
+struct StoredBlock<'a> {
+    body: &'a [u8],
+    pem_open: bool,
+}
+
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
     t.map(Timestamp::unix_ms)
 }
@@ -497,11 +504,26 @@ impl RowWriter<'_, '_> {
         // parent's messages (a compaction call, a side question replaying
         // the history); such a copy may become the shown version, but it
         // never moves the message out of a main session.
+        let declared = session_pk;
         let session_pk = if cur_session != session_pk && cur_kind == "main" && !new.main {
             cur_session
         } else {
             session_pk
         };
+        if cur_session != declared {
+            // Both sessions change: the one the version came in and the
+            // one the message was in. Each is derived again and its reads
+            // see the change, and the input is recorded as one the
+            // message's session was parsed from.
+            self.tx
+                .prepare_cached("UPDATE session SET changed = ?3 WHERE pk IN (?1, ?2)")?
+                .execute(params![cur_session, declared, self.counter])?;
+            self.tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO parsed(input_pk, chain, session_pk) VALUES (?1, ?2, ?3)",
+                )?
+                .execute(params![self.input_pk, self.chain, session_pk])?;
+        }
         self.tx
             .prepare_cached("UPDATE message_source SET shown = 0 WHERE message_pk = ?1")?
             .execute([pk])?;
@@ -731,13 +753,23 @@ impl RowWriter<'_, '_> {
         m: &Message,
         prepared: &PreparedMessage,
     ) -> Result<()> {
-        if prepared.blocks.len() != m.blocks.len() {
+        if prepared.blocks.len() != m.blocks.len() || prepared.pem_open.len() != m.blocks.len() {
             return Err(StoreError::Invalid(
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
-        for (idx, (block, body)) in m.blocks.iter().zip(&prepared.blocks).enumerate() {
-            self.insert_block(message_pk, session_pk, idx as i64, block, body, ms(m.at))?;
+        for (idx, ((block, body), pem_open)) in m
+            .blocks
+            .iter()
+            .zip(&prepared.blocks)
+            .zip(&prepared.pem_open)
+            .enumerate()
+        {
+            let stored = StoredBlock {
+                body,
+                pem_open: *pem_open,
+            };
+            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
         }
         Ok(())
     }
@@ -748,7 +780,7 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        body: &[u8],
+        stored: StoredBlock<'_>,
         at: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
@@ -786,8 +818,8 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     other_type, pem_open)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
                 message_pk,
@@ -795,7 +827,7 @@ impl RowWriter<'_, '_> {
                 idx,
                 kind,
                 text_id,
-                body,
+                stored.body,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -806,6 +838,7 @@ impl RowWriter<'_, '_> {
                 signature,
                 i64::from(encrypted),
                 other_type,
+                stored.pem_open,
             ])?;
         let block_pk = self.tx.last_insert_rowid();
 

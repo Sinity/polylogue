@@ -4,12 +4,12 @@
 use super::{Response, error, ok, store_error};
 use base64::Engine as _;
 use polylogue_model::SessionId;
-use polylogue_render::model_pages::{Pager, Position};
+use polylogue_render::model_pages::{PageEnd, Pager, Position};
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
-const CURSOR_VERSION: u8 = 3;
+const CURSOR_VERSION: u8 = 4;
 
 mod attachments;
 pub(crate) mod page_ends;
@@ -30,6 +30,56 @@ struct Cursor {
     content: String,
     generation: String,
     position: [usize; 3],
+    /// The key of the message the position is in, so the next read starts
+    /// there without reading the messages before it. Absent for documents
+    /// and events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_key: Option<i64>,
+    /// A keyed hash of the rest, keyed by the index generation's cursor key
+    /// ([`Reader::cursor_key`]): a cursor changed or made up is refused.
+    seal: String,
+}
+
+impl Cursor {
+    fn seal(mut self, key: &[u8; 32]) -> Result<String, serde_json::Error> {
+        self.seal = String::new();
+        self.seal = blake3::keyed_hash(key, &serde_json::to_vec(&self)?)
+            .to_hex()
+            .to_string();
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&self)?))
+    }
+
+    /// The cursor in `token`, when this index generation sealed it. One
+    /// from an earlier generation is stale (its key is gone); anything else
+    /// that does not open is invalid.
+    fn open(token: &str, key: &[u8; 32], generation: &str) -> Result<Self, Response> {
+        let invalid = || {
+            error(
+                "bad_request",
+                "the read cursor is invalid or from an unsupported version",
+            )
+        };
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token)
+            .map_err(|_| invalid())?;
+        let mut cursor: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        if cursor.version != CURSOR_VERSION {
+            return Err(invalid());
+        }
+        let seal =
+            blake3::Hash::from_hex(std::mem::take(&mut cursor.seal)).map_err(|_| invalid())?;
+        let body = serde_json::to_vec(&cursor).map_err(|_| invalid())?;
+        if seal == blake3::keyed_hash(key, &body) {
+            Ok(cursor)
+        } else if cursor.generation != generation {
+            Err(error(
+                "stale_cursor",
+                "the index was rebuilt; start the read again",
+            ))
+        } else {
+            Err(invalid())
+        }
+    }
 }
 
 pub(super) fn run(
@@ -136,16 +186,14 @@ pub(super) fn run(
         Ok(position) => position.generation,
         Err(e) => return store_error(&e),
     };
+    let cursor_key = match reader.cursor_key() {
+        Ok(key) => key,
+        Err(e) => return store_error(&e),
+    };
     let position = if let Some(text) = options.cursor {
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(text)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
-        let Some(cursor) = decoded.filter(|cursor| cursor.version == CURSOR_VERSION) else {
-            return error(
-                "bad_request",
-                "the read cursor is invalid or from an unsupported version",
-            );
+        let cursor = match Cursor::open(text, &cursor_key, &generation) {
+            Ok(cursor) => cursor,
+            Err(response) => return response,
         };
         if cursor.binding != binding {
             return error(
@@ -159,13 +207,20 @@ pub(super) fn run(
                 "the session read changed; start the read again",
             );
         }
-        Some(Position {
-            message: cursor.position[0],
-            block: cursor.position[1],
-            character: cursor.position[2],
-        })
+        Some((
+            Position {
+                message: cursor.position[0],
+                block: cursor.position[1],
+                character: cursor.position[2],
+            },
+            cursor.message_key,
+        ))
     } else {
         None
+    };
+    let (position, message_key) = match position {
+        Some((position, key)) => (Some(position), key),
+        None => (None, None),
     };
     let index = match reader.index_identity() {
         Ok(index) => index,
@@ -177,10 +232,34 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
+    // A read resumes at its cursor's message when no private key block is
+    // open before it, with masking afresh; otherwise from a remembered page
+    // end, or from the last place before it where masking starts afresh.
     // The epoch taken when the read began stops a read that overlaps a write
     // from restoring or saving cached state after that write clears it.
-    let page_end = cache.get(&key, epoch, position.map_or(0, |at| at.message));
-    let from = page_end.as_ref().map_or(0, |page_end| page_end.message());
+    let fresh = match position {
+        Some(at) => match selected.fresh_masking_start(at.message) {
+            Ok(fresh) => fresh,
+            Err(e) => return store_error(&e),
+        },
+        None => 0,
+    };
+    let page_end = match (
+        position,
+        cache.get(&key, epoch, position.map_or(0, |at| at.message)),
+    ) {
+        (_, Some(cached)) if cached.message() >= fresh => Some(cached),
+        (Some(_), _) => Some(PageEnd::fresh(fresh)),
+        (None, cached) => cached,
+    };
+    let from = polylogue_store::read::VisitStart {
+        message: page_end.as_ref().map_or(0, |page_end| page_end.message()),
+        key: message_key.filter(|_| {
+            position
+                .zip(page_end.as_ref())
+                .is_some_and(|(at, page_end)| page_end.message() == at.message)
+        }),
+    };
     let mut pager = match (position, page_end) {
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),
@@ -223,9 +302,10 @@ pub(super) fn run(
             }
         }
     });
-    if let Err(e) = result {
-        return store_error(&e);
-    }
+    let last_key = match result {
+        Ok(last_key) => last_key,
+        Err(e) => return store_error(&e),
+    };
     if let Some(error) = attachment_error {
         return store_error(&error);
     }
@@ -248,15 +328,18 @@ pub(super) fn run(
     }
     let next = match page.next {
         Some(position) => {
+            // A page breaks in the last message it visited.
             let cursor = Cursor {
                 version: CURSOR_VERSION,
                 binding,
                 content,
                 generation,
                 position: [position.message, position.block, position.character],
+                message_key: last_key,
+                seal: String::new(),
             };
-            match serde_json::to_vec(&cursor) {
-                Ok(bytes) => Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)),
+            match cursor.seal(&cursor_key) {
+                Ok(token) => Some(token),
                 Err(e) => return error("internal", e),
             }
         }
@@ -328,7 +411,11 @@ pub(super) fn document(
         Ok(position) => position.generation,
         Err(e) => return store_error(&e),
     };
-    let position = match content_position(&options, &binding, &content, &generation) {
+    let cursor_key = match reader.cursor_key() {
+        Ok(key) => key,
+        Err(e) => return store_error(&e),
+    };
+    let position = match content_position(&options, &cursor_key, &binding, &content, &generation) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -351,7 +438,7 @@ pub(super) fn document(
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
     };
-    let next = content_next(page.next, binding, content, generation);
+    let next = content_next(page.next, &cursor_key, binding, content, generation);
     let metadata = match selected.metadata() {
         Ok(value) => value,
         Err(e) => return store_error(&e),
@@ -361,6 +448,7 @@ pub(super) fn document(
 
 fn content_position(
     options: &Options<'_>,
+    key: &[u8; 32],
     binding: &str,
     content: &str,
     generation: &str,
@@ -368,13 +456,7 @@ fn content_position(
     let Some(text) = options.cursor else {
         return Ok(None);
     };
-    let cursor = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
-    let Some(cursor) = cursor.filter(|c| c.version == CURSOR_VERSION) else {
-        return Err(error("bad_request", "invalid or unsupported read cursor"));
-    };
+    let cursor = Cursor::open(text, key, generation)?;
     if cursor.binding != binding {
         return Err(error(
             "bad_request",
@@ -395,21 +477,23 @@ fn content_position(
 }
 fn content_next(
     next: Option<Position>,
+    key: &[u8; 32],
     binding: String,
     content: String,
     generation: String,
 ) -> Option<String> {
     next.map(|p| {
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&Cursor {
-                version: CURSOR_VERSION,
-                binding,
-                content,
-                generation,
-                position: [p.message, p.block, p.character],
-            })
-            .expect("cursor is serializable"),
-        )
+        Cursor {
+            version: CURSOR_VERSION,
+            binding,
+            content,
+            generation,
+            position: [p.message, p.block, p.character],
+            message_key: None,
+            seal: String::new(),
+        }
+        .seal(key)
+        .expect("cursor is serializable")
     })
 }
 
@@ -467,7 +551,11 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
         Ok(p) => p.generation,
         Err(e) => return store_error(&e),
     };
-    let position = match content_position(&options, &binding, &content, &generation) {
+    let cursor_key = match reader.cursor_key() {
+        Ok(key) => key,
+        Err(e) => return store_error(&e),
+    };
+    let position = match content_position(&options, &cursor_key, &binding, &content, &generation) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -485,6 +573,6 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
         Ok(p) => p,
         Err(e) => return error("bad_request", e),
     };
-    let next = content_next(page.next, binding, content, generation);
+    let next = content_next(page.next, &cursor_key, binding, content, generation);
     ok(serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}))
 }
