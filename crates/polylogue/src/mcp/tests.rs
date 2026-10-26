@@ -79,9 +79,14 @@ fn the_instructions_name_real_tools_and_working_queries() {
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
-    for tool in ["brief", "recall", "takeover", "query", "read", "note_add", "status"] {
+    for tool in [
+        "brief", "recall", "takeover", "query", "read", "note_add", "status",
+    ] {
         assert!(names.contains(&tool.to_owned()), "no tool {tool}");
-        assert!(INSTRUCTIONS.contains(&format!("`{tool}`")), "{tool} is not described");
+        assert!(
+            INSTRUCTIONS.contains(&format!("`{tool}`")),
+            "{tool} is not described"
+        );
     }
 }
 

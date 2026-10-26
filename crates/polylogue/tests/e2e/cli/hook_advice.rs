@@ -14,14 +14,18 @@ fn failing_session(cwd: &str) -> String {
             .unwrap()
             .to_string()
     };
-    let mut lines = vec![json!({"type": "user", "uuid": "u0", "sessionId": "advised", "cwd": cwd,
-        "timestamp": at(0), "message": {"role": "user", "content": "run the tests"}})];
+    let mut lines = vec![
+        json!({"type": "user", "uuid": "u0", "sessionId": "advised", "cwd": cwd,
+        "timestamp": at(0), "message": {"role": "user", "content": "run the tests"}}),
+    ];
     for n in 1..=2i64 {
-        lines.push(json!({"type": "assistant", "uuid": format!("a{n}"), "sessionId": "advised", "cwd": cwd,
+        lines.push(
+            json!({"type": "assistant", "uuid": format!("a{n}"), "sessionId": "advised", "cwd": cwd,
             "timestamp": at(n * 10),
             "message": {"id": format!("msg_a{n}"), "role": "assistant", "stop_reason": "tool_use",
                 "content": [{"type": "tool_use", "id": format!("call{n}"), "name": "Bash",
-                             "input": {"command": "cargo test"}}]}}));
+                             "input": {"command": "cargo test"}}]}}),
+        );
         lines.push(json!({"type": "user", "uuid": format!("r{n}"), "sessionId": "advised", "cwd": cwd,
             "timestamp": at(n * 10 + 5),
             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("call{n}"),
@@ -78,16 +82,13 @@ fn a_check_that_keeps_failing_here_is_named_before_it_runs_again() {
             break;
         }
     }
-    let output: serde_json::Value = serde_json::from_str(advice.trim())
-        .unwrap_or_else(|e| panic!("{e}: {advice:?}"));
+    let output: serde_json::Value =
+        serde_json::from_str(advice.trim()).unwrap_or_else(|e| panic!("{e}: {advice:?}"));
     assert_eq!(output["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     let text = output["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    assert!(
-        text.contains("`cargo test` failed 2 times here"),
-        "{text}"
-    );
+    assert!(text.contains("`cargo test` failed 2 times here"), "{text}");
     assert!(text.contains("claude-code:advised"), "{text}");
     // A command that runs no check gets nothing.
     assert_eq!(pre_tool_use(&env, cwd, "ls -la"), "");

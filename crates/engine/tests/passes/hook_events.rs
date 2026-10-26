@@ -28,18 +28,25 @@ fn a_hook_event_never_creates_a_session() {
     let w = ClaudeHome::new();
     let spool = hook_spool(&w);
     let nested = user("n1", "nested", "a transcript inside a payload");
-    let lines = hook_line(1_790_856_000_000_000_000, "SessionStart", "h1", serde_json::json!({"cwd": "/proj"}))
-        + &hook_line(
-            1_790_856_001_000_000_000,
-            "PreCompact",
-            "h1",
-            serde_json::json!({"transcript": [serde_json::from_str::<serde_json::Value>(nested.trim()).unwrap()]}),
-        );
+    let lines = hook_line(
+        1_790_856_000_000_000_000,
+        "SessionStart",
+        "h1",
+        serde_json::json!({"cwd": "/proj"}),
+    ) + &hook_line(
+        1_790_856_001_000_000_000,
+        "PreCompact",
+        "h1",
+        serde_json::json!({"transcript": [serde_json::from_str::<serde_json::Value>(nested.trim()).unwrap()]}),
+    );
     fs::write(spool.join("4242.ndjson"), lines).unwrap();
     let (mut e, _lock) = w.engine(64 << 20);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(w.count("SELECT count(*) AS n FROM session WHERE stub = 0"), 0);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM session WHERE stub = 0"),
+        0
+    );
     assert_eq!(
         w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:nested'"),
         0,
@@ -50,7 +57,10 @@ fn a_hook_event_never_creates_a_session() {
                  WHERE s.id = 'claude-code:h1' AND e.kind LIKE 'hook_%'";
     assert_eq!(w.count(on_h1), 2);
 
-    w.append("h1.jsonl", &(user("u1", "h1", "hello") + &assistant("a1", "h1", "hi")));
+    w.append(
+        "h1.jsonl",
+        &(user("u1", "h1", "hello") + &assistant("a1", "h1", "hi")),
+    );
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(w.texts("h1"), ["hello", "hi"]);
@@ -69,8 +79,12 @@ fn a_stored_hook_line_is_one_event_however_often_it_is_stored() {
     w.append("h2.jsonl", &user("u1", "h2", "run it"));
     // Two invocations with the same payload in the same millisecond.
     let payload = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
-    let lines = hook_line(1_790_856_000_000_000_001, "PreToolUse", "h2", payload.clone())
-        + &hook_line(1_790_856_000_000_000_002, "PreToolUse", "h2", payload);
+    let lines = hook_line(
+        1_790_856_000_000_000_001,
+        "PreToolUse",
+        "h2",
+        payload.clone(),
+    ) + &hook_line(1_790_856_000_000_000_002, "PreToolUse", "h2", payload);
     fs::write(spool.join("4242.ndjson"), &lines).unwrap();
     let (mut e, _lock) = w.engine(64 << 20);
     e.run_pass().unwrap();

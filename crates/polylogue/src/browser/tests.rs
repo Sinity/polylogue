@@ -504,7 +504,11 @@ fn grok_capture() -> Value {
 
 /// The file blobs of the Grok fixture's question once the loop has read
 /// a capture holding `text`.
-fn grok_file_blobs(w: &TestDaemon, host: &Arc<BrowserHost>, text: &str) -> Vec<Option<polylogue_model::BlobHash>> {
+fn grok_file_blobs(
+    w: &TestDaemon,
+    host: &Arc<BrowserHost>,
+    text: &str,
+) -> Vec<Option<polylogue_model::BlobHash>> {
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
         || match host.ask(&crate::daemon::Request::Read {

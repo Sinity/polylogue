@@ -36,7 +36,10 @@ fn each_line_is_an_event_on_the_harness_session() {
         let second_len = input[first_len..].iter().position(|&b| b == b'\n').unwrap();
         &input[first_len..first_len + second_len]
     });
-    assert!(step.output.sessions.is_empty(), "a hook line made a session");
+    assert!(
+        step.output.sessions.is_empty(),
+        "a hook line made a session"
+    );
     assert_eq!(step.counts.skipped["Stop: event names no session"], 1);
     assert_eq!(step.counts.records, 3);
 }

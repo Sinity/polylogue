@@ -76,7 +76,11 @@ fn a_check_that_failed_repeatedly_since_its_last_pass_gets_a_hint() {
         "The last failure is in claude-code:s2, exit 101",
         "`polylogue read claude-code:s2`",
     ] {
-        assert!(p.text.contains(expected), "missing {expected:?} in {}", p.text);
+        assert!(
+            p.text.contains(expected),
+            "missing {expected:?} in {}",
+            p.text
+        );
     }
     assert_eq!(p.refs, ["session:claude-code:s2"]);
 }

@@ -110,9 +110,7 @@ pub enum Ask {
 impl Ask {
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
-            Self::SessionStart { session, .. } | Self::ToolUse { session, .. } => {
-                session.as_ref()
-            }
+            Self::SessionStart { session, .. } | Self::ToolUse { session, .. } => session.as_ref(),
             Self::Takeover { for_session, .. } | Self::Recall { for_session, .. } => {
                 for_session.as_ref()
             }
@@ -237,9 +235,7 @@ pub fn prepare(
             now,
             near,
         ),
-        Ask::ToolUse { cwd, command, .. } => {
-            advice::advice(reader, cwd, command, delivery_id, now)
-        }
+        Ask::ToolUse { cwd, command, .. } => advice::advice(reader, cwd, command, delivery_id, now),
     }
 }
 

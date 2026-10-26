@@ -5,8 +5,8 @@
 use super::*;
 use crate::daemon::Response;
 use crate::test_daemon;
-use std::sync::Arc;
 use axum::body::{Body, to_bytes};
+use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Every read command all three surfaces offer, with the arguments it is
@@ -92,7 +92,10 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
         let texts = match value {
             Value::Array(items) => items
                 .iter()
-                .map(|item| item.as_str().map_or_else(|| item.to_string(), str::to_owned))
+                .map(|item| {
+                    item.as_str()
+                        .map_or_else(|| item.to_string(), str::to_owned)
+                })
                 .collect(),
             Value::String(text) => vec![text.clone()],
             Value::Bool(false) | Value::Null => Vec::new(),
@@ -156,7 +159,17 @@ fn every_client_answers_the_same_request_identically() {
         let cli = cli_answer(&w, &argv);
         let mcp = mcp_answer(&w, c, &values);
         let http = http_answer(&web, c, &values);
-        assert_eq!(cli, mcp, "`{}`: the command line and MCP differ", argv.join(" "));
-        assert_eq!(cli, http, "`{}`: the command line and HTTP differ", argv.join(" "));
+        assert_eq!(
+            cli,
+            mcp,
+            "`{}`: the command line and MCP differ",
+            argv.join(" ")
+        );
+        assert_eq!(
+            cli,
+            http,
+            "`{}`: the command line and HTTP differ",
+            argv.join(" ")
+        );
     }
 }

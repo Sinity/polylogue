@@ -31,8 +31,7 @@ pub(super) fn advice(
         return Ok(prepared);
     };
     let dirs = scope_dirs(cwd);
-    let Some(failures) =
-        reader.check_failures(&dirs, &check, now.unix_ms() - FAILING_WINDOW_MS)?
+    let Some(failures) = reader.check_failures(&dirs, &check, now.unix_ms() - FAILING_WINDOW_MS)?
     else {
         return Ok(prepared);
     };

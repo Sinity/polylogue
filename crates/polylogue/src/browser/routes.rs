@@ -187,7 +187,9 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
             );
         }
     };
-    let provider = listed["conversation"]["provider"].as_str().map(str::to_owned);
+    let provider = listed["conversation"]["provider"]
+        .as_str()
+        .map(str::to_owned);
     let conversation = listed["conversation"]["id"].as_str().map(str::to_owned);
     let stored = match provider.zip(conversation) {
         Some((provider, conversation)) => ask(
