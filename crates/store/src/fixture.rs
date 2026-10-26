@@ -383,6 +383,17 @@ impl Fixture {
         Ok(())
     }
 
+    /// An archive-wide setting, as the operator would set it.
+    pub fn setting(&mut self, key: &str, value: &str) -> Result<()> {
+        self.commit_seq += 1;
+        self.notes.execute(
+            "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
+             VALUES ('s' || ?3, '*', ?1, ?2, 'operator', ?3, ?3)",
+            params![key, value, self.commit_seq],
+        )?;
+        Ok(())
+    }
+
     pub fn note(
         &mut self,
         kind: &str,

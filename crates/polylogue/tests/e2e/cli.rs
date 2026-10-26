@@ -43,7 +43,8 @@ fn wait_status(
         let out = cli(env, &["--json", "status"]);
         assert!(out.status.success(), "{out:?}");
         let status = json(&out);
-        if status["busy"] == false && ready(&status) {
+        // The archive counts come once the daemon's first count ends.
+        if status["busy"] == false && status["store"].is_object() && ready(&status) {
             return status;
         }
     }

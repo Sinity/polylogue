@@ -248,6 +248,30 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         .unwrap();
     }
     f.derive().unwrap();
+    // The development tooling's run history: a failed check in the
+    // checkout, and a test run there that failed and then passed.
+    let history = dir.path().join("history.db");
+    let runs = rusqlite::Connection::open(&history).unwrap();
+    runs.execute_batch(
+        "CREATE TABLE runs (id INTEGER PRIMARY KEY, project TEXT NOT NULL, checkout TEXT NOT NULL,
+            command TEXT NOT NULL, args TEXT NOT NULL, agentctl_job TEXT, started_ms INTEGER NOT NULL,
+            status TEXT NOT NULL, failure TEXT);",
+    )
+    .unwrap();
+    for (command, status, at) in [
+        ("check", "failed", 7_000),
+        ("test", "failed", 8_000),
+        ("test", "passed", 9_000),
+    ] {
+        runs.execute(
+            "INSERT INTO runs(project, checkout, command, args, agentctl_job, started_ms, status, failure)
+             VALUES ('proj', '/home/op/proj', ?1, '[]', 'proj-' || ?1, ?3, ?2, 'clippy failed')",
+            rusqlite::params![command, status, T0 + at],
+        )
+        .unwrap();
+    }
+    f.setting("briefing.check_history", &history.to_string_lossy())
+        .unwrap();
     (dir, f)
 }
 
@@ -273,7 +297,8 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         "claimed pl-1, still open",
         "last answer: \"Finished the parser fix; one test still fails.\"",
         "Beads claimed here this week and still open:\n- pl-1",
-        "Checks that failed here with no later pass:\n- `cargo test` exit 101",
+        "Checks that failed here with no later pass:\n- `proj check` failed",
+        "in /home/op/proj, job proj-check: clippy failed; `xtask history failures 1`\n- `cargo test` exit 101",
         "formatting",
     ] {
         assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
