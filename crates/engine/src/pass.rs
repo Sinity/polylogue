@@ -460,12 +460,17 @@ impl Engine {
     /// the index from stored bytes as from files, so a rebuild needs no
     /// command of its own; older chains go through the ordinary parser and
     /// writer, where a newer chain wins. `selected` limits it to some inputs.
+    ///
+    /// The chains run on the parse pool together, in rounds that hold one
+    /// chain per path, since the pool runs one plan per path at a time.
     pub(crate) fn reparse_behind(
         &mut self,
         selected: Option<&[String]>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let behind = self.reads.reader()?.chains_behind_index()?;
+        let mut rounds: Vec<Vec<Plan>> = Vec::new();
+        let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
         let watched: HashMap<String, PathBuf> = self
             .inputs
             .iter()
@@ -537,7 +542,15 @@ impl Engine {
             else {
                 continue;
             };
-            self.execute(vec![plan], pass)?;
+            let round = chains_per_path.entry(plan.path.clone()).or_default();
+            if *round == rounds.len() {
+                rounds.push(Vec::new());
+            }
+            rounds[*round].push(plan);
+            *round += 1;
+        }
+        for round in rounds {
+            self.execute(round, pass)?;
         }
         Ok(())
     }

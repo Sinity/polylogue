@@ -13,6 +13,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
         );
         first.parse[0].output.sessions[0].tool_version = Some("previous version".into());
         w.writer.send(first).unwrap();
+        w.writer.derive().unwrap();
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let conn = crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();

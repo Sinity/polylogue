@@ -210,9 +210,10 @@ impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
     /// An empty index is built without syncs: every row in it can be
     /// recomputed, and syncing a first build of tens of GB through a busy
-    /// drive costs more than the build. The first flush syncs it and clears
-    /// the mark; an index still marked when the archive is next opened is
-    /// set aside and rebuilt.
+    /// drive costs more than the build. The first derive (the end of the
+    /// pass), or an excision, ends the build: it builds what the build
+    /// deferred, syncs the index and clears the mark; an index still marked
+    /// when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -408,6 +409,8 @@ impl Writer {
 
     /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
+    /// Outside a first build what it reports is also derived and searchable;
+    /// a first build derives and indexes once, when it ends.
     pub fn flush(&self) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
         self.tx
@@ -657,27 +660,20 @@ impl Inner {
                     });
                 }
             }
-            if !flushes.is_empty()
-                && let Err(e) = self.settle()
-            {
-                self.report.errors.push(format!("sync the index: {e}"));
-            }
-            // Whatever a flush reports written is also derived.
-            if !flushes.is_empty()
-                && let Err(e) = self.derive()
-            {
+            // Whatever a flush reports written is also derived, except in a
+            // first build, which a flush in the middle of a pass (each import
+            // item, each run of the parse pool) must not end.
+            let derived_on_flush = !flushes.is_empty() && self.first_build.is_none();
+            if derived_on_flush && let Err(e) = self.derive() {
                 self.report.errors.push(format!("derive: {e}"));
             }
             for (staged, reply) in assets.drain(..) {
-                let result = self
-                    .settle()
-                    .and_then(|()| crate::assets::install(&mut self.index, &self.archive, *staged));
+                let result = crate::assets::install(&mut self.index, &self.archive, *staged);
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
             // Whatever a flush reports written is also searchable.
-            if !flushes.is_empty()
-                && let Err(e) = crate::text_rows::index_pending(&self.index, || ())
+            if derived_on_flush && let Err(e) = crate::text_rows::index_pending(&self.index, || ())
             {
                 self.report
                     .errors
