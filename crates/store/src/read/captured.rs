@@ -1,7 +1,7 @@
 //! What the index holds of conversations the browser extension captures:
-//! enough for the extension to show a page's state and to skip, during a
+//! enough for the extension to show a page's state, to skip, during a
 //! backfill, conversations the provider has not changed since their last
-//! capture.
+//! capture, and to skip downloading files whose bytes are already stored.
 use super::*;
 
 /// One captured conversation's session in the index.
@@ -11,6 +11,15 @@ pub struct CapturedSession {
     /// When the latest stored capture of it was taken (ms): the provider's
     /// conversation at that moment is in the archive.
     pub last_captured_at: Option<i64>,
+}
+
+/// A file of a conversation whose bytes the blob store holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredFile {
+    /// The provider's ID of the file.
+    pub id: String,
+    pub blob: polylogue_model::BlobHash,
+    pub size: Option<u64>,
 }
 
 impl Reader<'_> {
@@ -39,5 +48,34 @@ impl Reader<'_> {
                     .optional()?)
             })
             .collect()
+    }
+
+    /// The files of `session` whose bytes are stored, by the provider's
+    /// file ID; one entry per ID.
+    pub fn stored_files(&self, session: &polylogue_model::SessionId) -> Result<Vec<StoredFile>> {
+        let mut stmt = self.conn()?.prepare_cached(
+            "SELECT b.body FROM block b JOIN session s ON s.pk = b.session_pk
+             WHERE s.id = ?1 AND b.kind IN ('image', 'file', 'tool_result')",
+        )?;
+        let mut rows = stmt.query([session.to_string()])?;
+        let mut found: BTreeMap<String, StoredFile> = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
+            let attachments = match &block {
+                Block::Image(a) | Block::File(a) => std::slice::from_ref(a),
+                Block::ToolResult { attachments, .. } => attachments.as_slice(),
+                _ => &[],
+            };
+            for a in attachments {
+                if let (Some(id), Some(blob)) = (&a.source_id, a.blob) {
+                    found.entry(id.clone()).or_insert(StoredFile {
+                        id: id.clone(),
+                        blob,
+                        size: a.size,
+                    });
+                }
+            }
+        }
+        Ok(found.into_values().collect())
     }
 }

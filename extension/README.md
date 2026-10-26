@@ -13,11 +13,16 @@ starts the host only for the extension IDs its manifest names, so there is no
 token or pairing step.
 
 - When a conversation page settles after a change (and is not still
-  answering), the extension fetches the conversation, asks the host which
-  files it names, fetches their bytes through the page and hands the host one
+  answering), the extension fetches the conversation and hands the host one
   capture. The host appends it to the conversation's capture log in the spool,
   `$XDG_STATE_HOME/polylogue/browser-capture/<provider>/`, and answers only
   once the file is synced. The daemon reads the spool like any location.
+- Files the conversation names (uploads, generated images and files) are
+  downloaded through the page after the conversation is stored, one at a
+  time, and the conversation is then stored again with their bytes. A large
+  file can take minutes; the conversation does not wait for it. A file whose
+  bytes the archive already holds is named by its hash instead of being
+  downloaded again.
 - Until the host has answered, a capture waits in the extension's outbox, so
   a stopped service worker, a browser restart or an extension update loses
   nothing: on start, the extension sends what waits again. The host does not

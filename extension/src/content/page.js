@@ -14,7 +14,9 @@
   if (!provider) return;
   globalThis.polylogueContent = true;
 
-  const PIECE_BYTES = 4 * 1024 * 1024;
+  // A body is sent in pieces as it arrives, so a slow download keeps
+  // talking to the background, which Chrome would otherwise stop as idle.
+  const PIECE_BYTES = 256 * 1024;
   // The page counts as settled once its messages stop changing for this long.
   const SETTLED_MS = 3000;
 
@@ -26,11 +28,38 @@
     return btoa(text);
   }
 
+  /** Sends a body (a Blob, or a fetch Response read as it arrives). */
   async function sendBody(port, body) {
-    for (let at = 0; at < body.size; at += PIECE_BYTES) {
-      const piece = new Uint8Array(await body.slice(at, at + PIECE_BYTES).arrayBuffer());
-      port.postMessage({ type: "piece", data: base64(piece) });
+    if (body instanceof Blob) {
+      for (let at = 0; at < body.size; at += PIECE_BYTES) {
+        const piece = new Uint8Array(await body.slice(at, at + PIECE_BYTES).arrayBuffer());
+        port.postMessage({ type: "piece", data: base64(piece) });
+      }
+      return;
     }
+    const reader = body.body.getReader();
+    let held = [];
+    let size = 0;
+    const flush = () => {
+      if (!size) return;
+      const piece = new Uint8Array(size);
+      let at = 0;
+      for (const chunk of held) {
+        piece.set(chunk, at);
+        at += chunk.length;
+      }
+      port.postMessage({ type: "piece", data: base64(piece) });
+      held = [];
+      size = 0;
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      held.push(value);
+      size += value.length;
+      if (size >= PIECE_BYTES) flush();
+    }
+    flush();
   }
 
   async function answer(request) {
@@ -56,7 +85,7 @@
       try {
         const { body = null, ...facts } = await answer(request);
         if (!open) return;
-        port.postMessage({ type: "facts", ...facts, size: body ? body.size : null });
+        port.postMessage({ type: "facts", ...facts });
         if (body) await sendBody(port, body);
         if (open) port.postMessage({ type: "end" });
       } catch (error) {

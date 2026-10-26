@@ -57,6 +57,26 @@ fn a_chatgpt_capture_reads_the_provider_json_under_the_export_ids() {
 }
 
 #[test]
+fn a_file_named_by_the_hash_of_stored_bytes_links_without_bytes() {
+    let hash = BlobHash::of(b"hello");
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider": "chatgpt", "provider_session_id": "c1", "turns": [],
+               "attachments": [{"provider_attachment_id": "file-Pic", "message_provider_id": "m1",
+                                "blob": hash.to_string(), "size_bytes": 5}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    match &step.output.messages[0].message.blocks[0] {
+        Block::Image(a) => {
+            assert_eq!(a.blob, Some(hash));
+            assert_eq!(a.size, Some(5));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(step.output.blobs.is_empty());
+}
+
+#[test]
 fn without_provider_json_the_extension_turns_are_read() {
     let bytes = capture(
         json!({}),

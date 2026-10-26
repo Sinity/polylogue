@@ -29,7 +29,9 @@ function page(url, scripts, { html = "<body></body>", routes = {}, resources = [
     status,
     headers: { get: (name) => headers[name.toLowerCase()] ?? null },
     json: async () => JSON.parse(text),
+    text: async () => text,
     blob: async () => new window.Blob([text]),
+    body: new Blob([text]).stream(),
   });
   window.fetch = async (path, init = {}) => {
     const href = new URL(path, url).href;
@@ -119,19 +121,52 @@ describe("the Gemini page script", () => {
 });
 
 describe("the shared page script", () => {
-  it("answers through a port with the facts, then the body in pieces", async () => {
-    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
-    const big = "x".repeat(5 * 1024 * 1024);
-    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
+  async function exchanged(window) {
     const received = [];
     const port = { name: "polylogue", onMessage: event(), onDisconnect: event(), postMessage: (m) => received.push(m) };
     window.chrome.runtime.onConnect.fire(port);
     port.onMessage.fire({ type: "conversation" });
     await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
-    expect(received[0]).toMatchObject({ type: "facts", status: 200, info: { id: "c1" }, size: big.length });
+    return received;
+  }
+
+  it("answers through a port with the facts, then the body in pieces", async () => {
+    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
+    const big = "x".repeat(5 * 1024 * 1024);
+    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
+    const received = await exchanged(window);
+    expect(received[0]).toEqual({ type: "facts", status: 200, info: { id: "c1" } });
     const pieces = received.filter((m) => m.type === "piece");
-    expect(pieces.length).toBe(2);
+    expect(pieces.length).toBe(20);
     expect(pieces.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+  });
+
+  it("sends a download in pieces as it arrives, before it has finished", async () => {
+    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
+    const chunk = new Uint8Array(300 * 1024).fill(7);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(chunk);
+        await held;
+        controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new Response(stream) });
+    const received = [];
+    const port = { name: "polylogue", onMessage: event(), onDisconnect: event(), postMessage: (m) => received.push(m) };
+    window.chrome.runtime.onConnect.fire(port);
+    port.onMessage.fire({ type: "conversation" });
+    // The first piece arrives while the rest of the download is held back.
+    await new Promise((resolve) => { const check = () => (received.some((m) => m.type === "piece") ? resolve() : setTimeout(check, 5)); check(); });
+    expect(received.at(-1).type).toBe("piece");
+    release();
+    await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
+    const bytes = Buffer.concat(received.filter((m) => m.type === "piece").map((p) => Buffer.from(p.data, "base64")));
+    expect(bytes.length).toBe(2 * chunk.length);
+    expect(bytes.every((b) => b === 7)).toBe(true);
   });
 
   it("tells the background when the conversation's text changes, not when the markup does", async () => {
