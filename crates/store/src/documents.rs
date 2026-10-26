@@ -172,7 +172,13 @@ fn insert_blocks(
     document: &Document,
     prepared: &PreparedDocument,
 ) -> Result<()> {
-    for (idx, (block, body)) in document.blocks.iter().zip(&prepared.blocks).enumerate() {
+    for (idx, ((block, body), data)) in document
+        .blocks
+        .iter()
+        .zip(&prepared.blocks)
+        .zip(&prepared.data)
+        .enumerate()
+    {
         let text = block_text(block)
             .map(|text| {
                 crate::text_rows::intern(tx, text, 1, Some(source.packed), source.first_build)
@@ -182,7 +188,7 @@ fn insert_blocks(
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
             _ => None,
         };
-        tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash) VALUES (?1,?2,?3,?4,?5,?6)",params![pk,idx as i64,block.kind().as_str(),body,text,blob])?;
+        tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![pk,idx as i64,block.kind().as_str(),body,text,blob,data])?;
     }
     Ok(())
 }
@@ -254,12 +260,15 @@ impl DocumentRead<'_, '_> {
         Ok(document)
     }
     pub fn visit_blocks(&self, mut visit: impl FnMut(Block) -> ControlFlow<()>) -> Result<()> {
-        let mut statement=self.reader.conn()?.prepare("SELECT b.body,t.body FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 ORDER BY b.idx")?;
+        let mut statement=self.reader.conn()?.prepare("SELECT b.body,t.body,b.data FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 ORDER BY b.idx")?;
         let mut rows = statement.query([self.pk])?;
         while let Some(row) = rows.next()? {
             let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
             if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
                 restore_text(&mut block, unpack_text(&text)?);
+            }
+            if let Some(data) = row.get::<_, Option<Vec<u8>>>(2)? {
+                crate::encoding::restore_data(&mut block, &data)?;
             }
             if visit(block).is_break() {
                 break;

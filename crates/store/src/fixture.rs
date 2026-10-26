@@ -187,12 +187,11 @@ impl Fixture {
             params![message_pk, session_pk, idx, kind, text_id, packed],
         )?;
         let block = self.index.last_insert_rowid();
-        if crate::ordered_blocks::leaves_pem_open(&serde_json::to_vec(&body)?, text.as_deref()) {
-            self.index.execute(
-                "UPDATE message SET pem_open = 1 WHERE pk = ?1",
-                [message_pk],
-            )?;
-        }
+        let pem = crate::ordered_blocks::pem(&serde_json::to_vec(&body)?, text.as_deref());
+        self.index.execute(
+            "UPDATE message SET pem = MAX(pem, ?2) WHERE pk = ?1",
+            params![message_pk, pem],
+        )?;
         Ok(block)
     }
 

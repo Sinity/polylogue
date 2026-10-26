@@ -250,7 +250,7 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
 }
 
 #[test]
-fn masking_starts_afresh_anywhere_before_a_block_that_leaves_a_key_open() {
+fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     session(
@@ -260,37 +260,52 @@ fn masking_starts_afresh_anywhere_before_a_block_that_leaves_a_key_open() {
             "ordinary",
             "closed -----BEGIN RSA PRIVATE KEY-----x-----END RSA PRIVATE KEY----- block",
             "left open -----BEGIN RSA PRIVATE KEY-----",
-            "after the open key",
+            "inside the open key",
+            "still inside",
+            "closes -----END RSA PRIVATE KEY----- shown",
+            "after the key",
+            "a second -----BEGIN EC PRIVATE KEY----- never closed",
+            "hidden to the end",
         ],
     );
     session(&mut f, "plain", &["one", "two", "three"]);
-    session(
-        &mut f,
-        "closed",
-        &[
-            "opens -----BEGIN RSA PRIVATE KEY-----",
-            "inside -----END RSA PRIVATE KEY----- closes",
-            "after",
-        ],
-    );
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let keyed = reader
-        .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
-        .unwrap();
-    let starts: Vec<usize> = (0..4)
-        .map(|at| keyed.fresh_masking_start(at).unwrap())
-        .collect();
-    assert_eq!(starts, [0, 1, 2, 2]);
     let plain = reader
         .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
         .unwrap();
-    assert_eq!(plain.fresh_masking_start(2).unwrap(), 2);
-    let closed = reader
-        .select_messages(&SessionId::parse("claude-code:closed").unwrap(), false)
+    assert!(plain.masking_before(2).unwrap().is_none());
+    let keyed = reader
+        .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
         .unwrap();
-    let starts: Vec<usize> = (0..3)
-        .map(|at| closed.fresh_masking_start(at).unwrap())
-        .collect();
-    assert_eq!(starts, [0, 0, 2]);
+    let mut messages = Vec::new();
+    keyed
+        .visit(|message| {
+            messages.push(message);
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+    let shown = |mut masker: polylogue_model::masking::MessageMasker, from: usize| {
+        messages[from..]
+            .iter()
+            .map(|message| {
+                let mut message = message.clone();
+                masker.message_text(&mut message);
+                message.text()
+            })
+            .collect::<Vec<_>>()
+    };
+    for at in 0..messages.len() {
+        let mut from_start = polylogue_model::masking::MessageMasker::default();
+        for message in &messages[..at] {
+            from_start.message_text(&mut message.clone());
+        }
+        let resumed = keyed.masking_before(at).unwrap();
+        assert_eq!(resumed.is_none(), at <= 2, "at {at}");
+        assert_eq!(
+            shown(resumed.unwrap_or_default(), at),
+            shown(from_start, at),
+            "at {at}"
+        );
+    }
 }

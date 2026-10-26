@@ -88,3 +88,13 @@ fn index_rename_outranks_database_caption_in_either_merge_order() {
         }
     );
 }
+
+#[test]
+fn a_title_that_copies_the_first_prompt_is_not_a_title() {
+    let prompt = "Fix the flaky test\nand the long rest of a first prompt";
+    let session = thread(json!({"title":prompt,"first_user_message":prompt}));
+    assert!(session.title.is_none());
+    let session =
+        thread(json!({"title":prompt,"first_user_message":prompt,"agent_nickname":"Arden"}));
+    assert_eq!(session.title.unwrap().source, TitleSource::AgentName);
+}

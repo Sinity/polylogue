@@ -359,6 +359,11 @@ pub mod cache {
     pub const SETUP: i64 = 16;
 }
 
+/// Pages of write-ahead log after which a write connection copies the log
+/// into the database file: about 1 GB rather than 4 MB, so a page written by
+/// many transactions reaches the database file once.
+pub(crate) const WAL_AUTOCHECKPOINT: i64 = 262_144;
+
 /// A connection the writer (or setup) uses. Each connection belongs to one
 /// thread, so SQLite's own mutexes are off (they cost about 3% of the
 /// writer's time).
@@ -375,9 +380,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     // Mapped pages count as resident memory and speed up reads only; the
     // writer's reads go through its page cache.
     conn.pragma_update(None, "mmap_size", 0)?;
-    // Checkpoint after about 1 GB of WAL rather than 4 MB, so a page written
-    // by many transactions reaches the database file once.
-    conn.pragma_update(None, "wal_autocheckpoint", 262_144)?;
+    conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
     Ok(conn)
 }
 

@@ -63,11 +63,14 @@ rebuilds an index that holds fewer excisions than the archive. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
 
-A first build, into an empty index, writes without syncs and without the
+A first build, into an empty index, writes without syncs, without copying
+its write-ahead log into the database file until its rows are written, and
+without the
 indexes only reads use or those on natural keys (message and event IDs, text
 hashes); the writer finds rows by key through hashes it keeps in memory. When
 the build ends it writes the search entries, rebuilds the trigram index and
-creates each dropped index once from a sorted scan, then derives. Until then a
+creates each dropped index once from a sorted scan, then derives, one session
+at a time through every derivation. Until then a
 read that needs one of those indexes scans instead.
 
 ## Storing bytes
@@ -172,12 +175,13 @@ cover this.
 A budgeted session or document read is bound to the selected content, view
 and index generation: unrelated writes leave the cursor usable, a changed
 content or new index returns `stale_cursor`. The only masking state that
-crosses a block boundary is an open private key block, and the writer marks
-each message with a block that leaves one open; a page starts masking
-afresh at its cursor's message when no earlier message is marked, seeking
-to that message by its key. Otherwise it follows the stored bytes from the
-first marked message, without masking, to the last place before the cursor
-where no key is open, and masks from there. Cursors are sealed with a secret of the index
+crosses a block boundary is an open private key block, and a PEM header or
+END line counts only whole within one block. The writer marks each message
+holding either, and those holding a block that leaves a key open. A page
+starts at its cursor's message, seeking to it by its key: masking starts
+afresh there when no earlier message leaves a key open, and otherwise from
+the state reached by masking only the marked messages from the first that
+does. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
 The budget limits output size, not

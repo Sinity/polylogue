@@ -1,5 +1,5 @@
-//! Masking state at page ends, cached so a later page need not replay the
-//! messages before it. Evicting an entry costs work, never changes an answer.
+//! Masking state at page ends, cached so the next page need not replay the
+//! messages that set it ([`polylogue_store::read::MessageSelection::masking_before`]). Evicting an entry costs work, never changes an answer.
 use polylogue_render::model_pages::PageEnd;
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
@@ -71,8 +71,7 @@ impl Cache {
         let found = state
             .entries
             .iter()
-            .filter(|(entry, page_end)| entry == key && page_end.message() <= message)
-            .max_by_key(|(_, page_end)| page_end.message())
+            .find(|(entry, page_end)| entry == key && page_end.message() == message)
             .map(|(_, page_end)| page_end.clone());
         #[cfg(test)]
         if found.is_some() {

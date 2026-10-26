@@ -144,9 +144,10 @@ everything that depends on them.
 first build and incremental updates; `-- reads --repetitions 3` measures
 interactive reads. `agentctl job start polylogue measure --workspace
 <worktree> -- <command>` runs another performance driver. Both use the
-one-slot measure queue, so they never hold a slot a check needs, and refuse to start while host I/O pressure (`full avg60`) is above 5%,
-because timings taken under load are not valid; start them again when the
-host is quiet. Record the pool and resource limits with the timings.
+one-slot measure queue, so they never hold a slot a check needs. They run
+under whatever load the host has: a run records its load, and a change is
+judged by a paired run (`bench pair`), both builds at once over one sample.
+Record the pool and resource limits with the timings.
 
 A first-build report gives wall time, time per stage (pool time in
 thread-seconds, which do not add up to wall time), input bytes, physical I/O,
@@ -163,8 +164,14 @@ requests (samples, median, p95), page counts and daemon memory. `--full-walk`
 also reads every page of the large session. It has no elapsed-time
 assertions.
 
-The full-corpus estimate assumes time is linear in input bytes.
-`bench validate` compares that estimate with a full run's result.
+A single sample's estimate assumes time is linear in input bytes. Samples
+of two or more sizes (`bench sample --name NAME --mb MB`, then `bench run
+--name NAME`) let `bench estimate` fit each stage as fixed seconds plus
+seconds per input MB and predict the whole corpus stage by stage; `bench
+validate RESULT` compares that prediction with a full run, stage by stage.
+`--binary PATH --build LABEL` runs a `first_build` built elsewhere, such as
+the commit a full run used. `bench tails --name NAME` times the last pages of
+the largest sessions in a sample run's archive, and of any `--session`.
 
 ## Row dictionary
 

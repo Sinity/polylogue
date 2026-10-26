@@ -46,9 +46,10 @@ fn matching_private_checkpoints_are_bounded_and_content_bound() {
         "oldest entry must be evicted"
     );
     assert_eq!(cache.get(&key, epoch, 3).unwrap().message(), 3);
-    assert_eq!(
-        cache.get(&key, epoch, usize::MAX).unwrap().message(),
-        ENTRIES
+    assert_eq!(cache.get(&key, epoch, ENTRIES).unwrap().message(), ENTRIES);
+    assert!(
+        cache.get(&key, epoch, usize::MAX).is_none(),
+        "only the state at the message asked for is used"
     );
     let mut other = key.clone();
     other.content = "changed".into();

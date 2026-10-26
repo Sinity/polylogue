@@ -560,20 +560,32 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    fn message_blocks(&self, message_pk: i64) -> Result<Vec<Block>> {
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
-             WHERE b.message_pk=?1 ORDER BY b.idx",
-        )?;
+    /// A message's blocks; without `structured`, tool results lack their
+    /// structured data (`block.data`), which is then neither read nor decoded.
+    fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
+        let mut stmt = self.conn()?.prepare_cached(if structured {
+            "SELECT b.body, t.body, b.data FROM block b LEFT JOIN text t ON t.id=b.text_id
+             WHERE b.message_pk=?1 ORDER BY b.idx"
+        } else {
+            "SELECT b.body, t.body, NULL FROM block b LEFT JOIN text t ON t.id=b.text_id
+             WHERE b.message_pk=?1 ORDER BY b.idx"
+        })?;
         let rows = stmt.query_map([message_pk], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Option<Vec<u8>>>(1)?,
+                r.get::<_, Option<Vec<u8>>>(2)?,
+            ))
         })?;
         let mut blocks = Vec::new();
         for row in rows {
-            let (body, text) = row?;
+            let (body, text, data) = row?;
             let mut block = unpack_block(&body)?;
             if let Some(text) = text {
                 restore_text(&mut block, unpack_text(&text)?);
+            }
+            if let Some(data) = data {
+                crate::encoding::restore_data(&mut block, &data)?;
             }
             blocks.push(block);
         }
@@ -587,6 +599,7 @@ impl Reader<'_> {
         session_pk: i64,
         session: &SessionId,
         from: Option<i64>,
+        structured: bool,
         mut keep: impl FnMut(i64) -> bool,
         visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
@@ -697,7 +710,7 @@ impl Reader<'_> {
                 at: ts(at),
                 model,
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
-                blocks: self.message_blocks(pk)?,
+                blocks: self.message_blocks(pk, structured)?,
                 usage: Usage {
                     input: n(tokens[0]),
                     cached_input: n(tokens[1]),
@@ -749,13 +762,13 @@ impl Reader<'_> {
         }
         Ok(Status {
             pending_inputs: crate::staging::pending_blobs(c, "a.")?,
-            sessions: count("SELECT COUNT(*) FROM session")?,
-            messages: count("SELECT COUNT(*) FROM message")?,
-            documents: count("SELECT COUNT(*) FROM document")?,
-            tool_calls: count("SELECT COUNT(*) FROM tool_call")?,
-            inputs: count("SELECT COUNT(*) FROM a.input")?,
-            revisions: count("SELECT COUNT(*) FROM a.revision")?,
-            stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob WHERE state='present'")?,
+            sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
+            messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
+            documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
+            tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
+            inputs: count("SELECT n FROM a.row_count WHERE name = 'input'")?,
+            revisions: count("SELECT n FROM a.row_count WHERE name = 'revision'")?,
+            stored_bytes: count("SELECT n FROM a.row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,

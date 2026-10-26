@@ -235,6 +235,65 @@ fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
     assert_eq!(first.status().unwrap().sessions, 0);
 }
 
+#[test]
+fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
+    use crate::fixture::{MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    for (name, messages) in [("one", 3), ("two", 2)] {
+        let id = format!("claude-code:{name}");
+        let pk = f
+            .session(SessionFacts {
+                id: &id,
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+        for i in 0..messages {
+            f.message(
+                pk,
+                MessageFacts {
+                    id: &format!("claude-code:{name}-{i}"),
+                    role: "user",
+                    written_by: "human",
+                    text: Some("text"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+    }
+    let counted = |f: &Fixture| {
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let status = reader.status().unwrap();
+        let rows = |table: &str| -> u64 {
+            reader
+                .query(&format!("SELECT COUNT(*) AS n FROM {table}"), &[])
+                .unwrap()[0]["n"]
+                .as_u64()
+                .unwrap()
+        };
+        assert_eq!(status.sessions, rows("session"));
+        assert_eq!(status.messages, rows("message"));
+        assert_eq!(status.documents, rows("document"));
+        assert_eq!(status.tool_calls, rows("tool_call"));
+        assert_eq!(status.inputs, rows("a.input"));
+        assert_eq!(status.revisions, rows("a.revision"));
+        (status.sessions, status.messages)
+    };
+    assert_eq!(counted(&f), (2, 5));
+    let index = rusqlite::Connection::open(f.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "DELETE FROM block WHERE message_pk IN
+                 (SELECT pk FROM message WHERE id = 'claude-code:one-0');
+             DELETE FROM message WHERE id = 'claude-code:one-0';",
+        )
+        .unwrap();
+    assert_eq!(counted(&f), (2, 4));
+}
+
 mod read_start;
 
 mod messages;

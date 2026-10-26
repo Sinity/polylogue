@@ -1,8 +1,6 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
 -- cursors), the write counter, unsynced, facts_version,
--- the status counters count.sessions, count.messages, count.tool_calls,
--- count.tool_calls_failed, count.unused,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose
@@ -106,9 +104,10 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  pem_open          INTEGER NOT NULL DEFAULT 0, -- 1: masked from a fresh start, one of its blocks leaves a
-                                            --   private key block open, the only masking state that crosses
-                                            --   a block boundary; a read masks afresh before the first such message
+  pem               INTEGER NOT NULL DEFAULT 0, -- 1: a block holds a PEM header or END line; 2: masked from a
+                                            --   fresh start, one of its blocks leaves a private key block open.
+                                            --   An open key is the only masking state that crosses a block
+                                            --   boundary, and only these messages change it
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
@@ -117,7 +116,7 @@ CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
-CREATE INDEX message_pem_open ON message(session_pk) WHERE pem_open = 1;   -- where a read can mask afresh
+CREATE INDEX message_pem     ON message(session_pk) WHERE pem <> 0;   -- the masking state a read starts with
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it (the shown version's row repeats the
@@ -168,6 +167,8 @@ CREATE TABLE block (
   signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
+  data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
+                                            --   out of body and last, so a text read never reads or decodes it
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -502,6 +503,7 @@ CREATE TABLE document_block (
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
   blob_hash BLOB,
+  data BLOB,                                -- as block.data
   PRIMARY KEY(document_pk,idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
@@ -538,3 +540,19 @@ CREATE TABLE import_asset_sidecar (
   error TEXT,
   PRIMARY KEY(input,sidecar)
 ) STRICT, WITHOUT ROWID;
+
+-- How many rows the tables status counts hold, kept by the triggers below so
+-- that status does not scan the tables.
+CREATE TABLE row_count (
+  name              TEXT PRIMARY KEY,       -- the table
+  n                 INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+INSERT INTO row_count(name, n) VALUES ('session', 0), ('message', 0), ('document', 0), ('tool_call', 0);
+CREATE TRIGGER session_added AFTER INSERT ON session BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'session'; END;
+CREATE TRIGGER session_removed AFTER DELETE ON session BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'session'; END;
+CREATE TRIGGER message_added AFTER INSERT ON message BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'message'; END;
+CREATE TRIGGER message_removed AFTER DELETE ON message BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'message'; END;
+CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'document'; END;
+CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
+CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
+CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;

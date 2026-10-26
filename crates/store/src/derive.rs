@@ -3,14 +3,19 @@
 //! derivations it reads, a version, and the rows it owns for a session; the
 //! derive step recomputes a session's rows whenever the session changed
 //! since they were made or the derivation's version moved, in dependency
-//! order. The writer's ingest path stores records only and never writes a
-//! derived row, so a first build and an incremental one derive the same
-//! rows from the same records. Excision needs nothing per derivation: a
+//! order. It takes one session at a time through every derivation it needs,
+//! so each session's rows are read from disk once, not once per derivation.
+//! The writer's ingest path stores records and no derived row, except a
+//! value that depends on its own row alone (a message's cost, a shell
+//! call's normalized command), which it writes with the row by the same
+//! function so that a first build's derive does not rewrite those rows.
+//! A first build and an incremental one derive the same rows from the same
+//! records. Excision needs nothing per derivation: a
 //! removed session takes its rows with it.
 
 use crate::{Result, StoreError};
 use polylogue_model::Catalog;
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 
 mod active_path;
@@ -91,10 +96,113 @@ fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]
     // changes invalidate consumers even when their source session is unchanged.
     let versions = versions(derivations, catalog)?;
     let mut done = 0;
-    for (d, version) in derivations.iter().zip(&versions) {
-        done += run_one(index, d, version, catalog)?;
+    let todo = sessions_to_derive(index, derivations, &versions)?;
+    for sessions in todo.chunks(SESSIONS_PER_TRANSACTION) {
+        // Immediate, like the writer's and the search thread's: a deferred
+        // transaction fails to upgrade while the search thread writes.
+        let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let counter = crate::archive::bump_counter(&tx)?;
+        for &pk in sessions {
+            done += derive_session(&tx, pk, derivations, &versions, catalog, counter)?;
+        }
+        tx.commit()?;
     }
+    let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let before = tx.total_changes();
+    for finish in derivations.iter().filter_map(|d| d.finish) {
+        finish(&tx)?;
+    }
+    if tx.total_changes() != before {
+        crate::archive::bump_counter(&tx)?;
+    }
+    tx.commit()?;
     Ok(done)
+}
+
+/// The sessions some derivation has not derived at their current state and
+/// its current version.
+fn sessions_to_derive(
+    index: &Connection,
+    derivations: &[Derivation],
+    versions: &[String],
+) -> Result<Vec<i64>> {
+    if derivations.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wanted = vec!["(?, ?)"; derivations.len()].join(", ");
+    let sql = format!(
+        "WITH wanted(name, version) AS (VALUES {wanted})
+         SELECT s.pk FROM session s
+         WHERE (SELECT count(*) FROM wanted w JOIN derive_state d
+                  ON d.name = w.name AND d.session_pk = s.pk
+                 WHERE d.version = w.version AND d.from_changed = s.changed) < {}
+         ORDER BY s.pk",
+        derivations.len()
+    );
+    let mut values: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    for (d, version) in derivations.iter().zip(versions) {
+        values.push(&d.name);
+        values.push(version);
+    }
+    Ok(index
+        .prepare(&sql)?
+        .query_map(values.as_slice(), |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Runs, in order, every derivation that has not derived the session at its
+/// current state and version, while the session's rows are read once into
+/// the cache; returns how many ran. Derived rows change the visible session,
+/// not its inputs, so the markers of derivations that were current move to
+/// the session's new state and do not make them run again.
+fn derive_session(
+    tx: &Transaction<'_>,
+    pk: i64,
+    derivations: &[Derivation],
+    versions: &[String],
+    catalog: &Catalog,
+    counter: i64,
+) -> Result<u64> {
+    let Some(changed) = tx
+        .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
+        .query_row([pk], |r| r.get::<_, i64>(0))
+        .optional()?
+    else {
+        return Ok(0);
+    };
+    let mut current = std::collections::HashSet::new();
+    let mut statement = tx.prepare_cached(
+        "SELECT name, version FROM derive_state WHERE session_pk = ?1 AND from_changed = ?2",
+    )?;
+    for row in statement.query_map(params![pk, changed], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        current.insert(row?);
+    }
+    let stale: Vec<usize> = (0..derivations.len())
+        .filter(|&i| !current.contains(&(derivations[i].name.to_owned(), versions[i].clone())))
+        .collect();
+    if stale.is_empty() {
+        return Ok(0);
+    }
+    for &i in &stale {
+        (derivations[i].run)(tx, pk, catalog)?;
+    }
+    tx.prepare_cached(
+        "UPDATE derive_state SET from_changed = ?3 WHERE session_pk = ?1 AND from_changed = ?2",
+    )?
+    .execute(params![pk, changed, counter])?;
+    tx.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1")?
+        .execute(params![pk, counter])?;
+    let mut mark = tx.prepare_cached(
+        "INSERT INTO derive_state(name, session_pk, version, from_changed)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(name, session_pk) DO UPDATE SET version = ?3, from_changed = ?4",
+    )?;
+    for &i in &stale {
+        mark.execute(params![derivations[i].name, pk, versions[i], counter])?;
+    }
+    Ok(stale.len() as u64)
 }
 
 fn versions(derivations: &[Derivation], catalog: &Catalog) -> Result<Vec<String>> {
@@ -169,66 +277,6 @@ fn check_dependencies(
     }
     marks[i] = 2;
     Ok(())
-}
-
-fn run_one(
-    index: &mut Connection,
-    d: &Derivation,
-    version: &str,
-    catalog: &Catalog,
-) -> Result<u64> {
-    let mut done = 0;
-    loop {
-        // Immediate, like the writer's and the search thread's: a deferred
-        // transaction fails to upgrade while the search thread writes.
-        let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let todo: Vec<(i64, i64)> = tx
-            .prepare_cached(
-                "SELECT s.pk, s.changed FROM session s
-                 LEFT JOIN derive_state d ON d.session_pk = s.pk AND d.name = ?1
-                 WHERE d.session_pk IS NULL OR d.version <> ?2 OR d.from_changed <> s.changed
-                 LIMIT ?3",
-            )?
-            .query_map(
-                params![d.name, version, SESSIONS_PER_TRANSACTION as i64],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?
-            .collect::<rusqlite::Result<_>>()?;
-        if todo.is_empty() {
-            let before = tx.total_changes();
-            if let Some(finish) = d.finish {
-                finish(&tx)?;
-            }
-            if tx.total_changes() != before {
-                crate::archive::bump_counter(&tx)?;
-            }
-            tx.commit()?;
-            return Ok(done);
-        }
-        let counter = crate::archive::bump_counter(&tx)?;
-        for (pk, changed) in &todo {
-            (d.run)(&tx, *pk, catalog)?;
-            // Derived rows change the visible session, not its inputs. Forward
-            // already-current markers so this does not dirty earlier
-            // derivations; stale inputs or rule versions stay stale.
-            tx.execute(
-                "UPDATE derive_state SET from_changed=?3 WHERE session_pk=?1 AND from_changed=?2",
-                params![pk, changed, counter],
-            )?;
-            tx.execute(
-                "UPDATE session SET changed=?2 WHERE pk=?1",
-                params![pk, counter],
-            )?;
-            tx.prepare_cached(
-                "INSERT INTO derive_state(name, session_pk, version, from_changed)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(name, session_pk) DO UPDATE SET version = ?3, from_changed = ?4",
-            )?
-            .execute(params![d.name, pk, version, counter])?;
-        }
-        tx.commit()?;
-        done += todo.len() as u64;
-    }
 }
 
 #[cfg(test)]

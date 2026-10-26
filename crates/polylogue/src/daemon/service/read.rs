@@ -232,33 +232,24 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
-    // A read resumes at its cursor's message when no private key block is
-    // open before it, with masking afresh; otherwise from a remembered page
-    // end, or from the last place before it where masking starts afresh.
-    // The epoch taken when the read began stops a read that overlaps a write
-    // from restoring or saving cached state after that write clears it.
-    let fresh = match position {
-        Some(at) => match selected.fresh_masking_start(at.message) {
-            Ok(fresh) => fresh,
-            Err(e) => return store_error(&e),
+    let selected = selected.for_text();
+    // A read resumes at its cursor's message, from the masking state
+    // remembered at that page end or else the state the selection gives
+    // there. The epoch taken when the read began stops a read that overlaps
+    // a write from restoring or saving cached state after that write clears it.
+    let page_end = match position {
+        Some(at) => match cache.get(&key, epoch, at.message) {
+            Some(cached) => Some(cached),
+            None => match selected.masking_before(at.message) {
+                Ok(masker) => Some(PageEnd::new(at.message, masker.unwrap_or_default())),
+                Err(e) => return store_error(&e),
+            },
         },
-        None => 0,
-    };
-    let page_end = match (
-        position,
-        cache.get(&key, epoch, position.map_or(0, |at| at.message)),
-    ) {
-        (_, Some(cached)) if cached.message() >= fresh => Some(cached),
-        (Some(_), _) => Some(PageEnd::fresh(fresh)),
-        (None, cached) => cached,
+        None => None,
     };
     let from = polylogue_store::read::VisitStart {
-        message: page_end.as_ref().map_or(0, |page_end| page_end.message()),
-        key: message_key.filter(|_| {
-            position
-                .zip(page_end.as_ref())
-                .is_some_and(|(at, page_end)| page_end.message() == at.message)
-        }),
+        message: position.map_or(0, |at| at.message),
+        key: message_key,
     };
     let mut pager = match (position, page_end) {
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),

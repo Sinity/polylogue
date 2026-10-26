@@ -75,19 +75,25 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
 }
 
 #[test]
-fn block_rows_separate_only_text_and_restore_the_complete_value() {
+fn block_rows_separate_text_and_data_and_restore_the_complete_value() {
     for value in [
         json!({"type": "text", "text": "prose"}),
         json!({"type": "thinking", "text": "reasoning", "signature": "sig", "redacted": false}),
         json!({"type": "tool_result", "call_id": "call:1", "output": "result", "data": {"kept": [1, null]}, "outcome": {"kind":"ok"}}),
+        json!({"type": "tool_result", "call_id": "call:2", "output": null, "data": [true], "outcome": {"kind":"ok"}}),
         json!({"type": "tool_call", "call_id": "call:1", "tool": "shell", "input": {"command": "true"}}),
     ] {
         let block: Block = serde_json::from_value(value).unwrap();
         let text = block_text(&block).map(str::to_owned);
+        let data = block_data(&block).map(|data| pack_json(data).unwrap());
         let mut restored = unpack_block(&pack_block(&block).unwrap()).unwrap();
+        assert!(block_data(&restored).is_none());
         if let Some(text) = text {
             assert!(block_text(&restored).is_none());
             restore_text(&mut restored, text);
+        }
+        if let Some(data) = data {
+            restore_data(&mut restored, &data).unwrap();
         }
         assert_eq!(restored, block);
     }
@@ -134,19 +140,32 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
     }))
     .unwrap();
     let prepared = PreparedMessage::new(&message).unwrap();
-    for (block, packed) in message.blocks.iter().zip(&prepared.blocks) {
-        let mut old_body = block.clone();
-        match &mut old_body {
+    for ((block, packed), data) in message
+        .blocks
+        .iter()
+        .zip(&prepared.blocks)
+        .zip(&prepared.data)
+    {
+        let mut body = block.clone();
+        match &mut body {
             Block::Text { text }
             | Block::Thinking {
                 text: Some(text), ..
-            }
-            | Block::ToolResult {
-                output: Some(text), ..
             } => text.clear(),
+            Block::ToolResult { output, data, .. } => {
+                if let Some(text) = output {
+                    text.clear();
+                }
+                *data = None;
+            }
             _ => {}
         }
-        assert_eq!(unpack_block(packed).unwrap(), old_body);
+        assert_eq!(unpack_block(packed).unwrap(), body);
+        assert_eq!(
+            data.as_deref()
+                .map(|data| unpack_json::<serde_json::Value>(data).unwrap()),
+            block_data(block).cloned()
+        );
     }
 }
 

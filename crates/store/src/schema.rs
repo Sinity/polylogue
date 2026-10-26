@@ -17,7 +17,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// A different version rebuilds the index into a new file. Raise it when the
 /// index schema, the row encoding, or what any parser produces from the same
 /// bytes changes.
-pub const INDEX_VERSION: u32 = 45;
+pub const INDEX_VERSION: u32 = 46;
 
 /// The steps that bring `archive.db` forward: the first takes version 1 to
 /// version 2, and so on. A change to `archive.sql` appends one step, which
@@ -29,6 +29,8 @@ pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/archive_2.sql"),
     // 3: requests kept whole.
     include_str!("schema/archive_3.sql"),
+    // 4: row counts kept by triggers.
+    include_str!("schema/archive_4.sql"),
 ];
 
 /// The version `archive.sql` creates.

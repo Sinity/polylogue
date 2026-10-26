@@ -59,9 +59,11 @@ pub(crate) struct PreparedMessage {
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
-    /// Whether masking each block from a fresh start leaves a private key
-    /// block open after it ([`crate::ordered_blocks::leaves_pem_open`]).
-    pub(crate) pem_open: Vec<bool>,
+    /// Each block's structured value, packed for `block.data` ([`block_data`]).
+    pub(crate) data: Vec<Option<Vec<u8>>>,
+    /// What each block holds of PEM private key blocks
+    /// ([`crate::ordered_blocks::pem`]).
+    pub(crate) pem: Vec<i64>,
 }
 
 impl std::ops::Deref for PreparedMessage {
@@ -192,19 +194,23 @@ impl RowPacker {
             *hasher.finalize().as_bytes()
         };
         let mut packed = Vec::with_capacity(blocks.len());
-        let mut pem_open = Vec::with_capacity(blocks.len());
+        let mut data = Vec::with_capacity(blocks.len());
+        let mut pem = Vec::with_capacity(blocks.len());
         for block in blocks {
             let bytes = block_bytes(block)?;
-            pem_open.push(crate::ordered_blocks::leaves_pem_open(
-                &bytes,
-                block_text(block),
-            ));
+            pem.push(crate::ordered_blocks::pem(&bytes, block_text(block)));
             packed.push(self.pack_row(&bytes)?);
+            data.push(
+                block_data(block)
+                    .map(|value| self.pack_json(value))
+                    .transpose()?,
+            );
         }
         Ok(PreparedContent {
             hash,
             blocks: packed,
-            pem_open,
+            data,
+            pem,
         })
     }
 }
@@ -232,14 +238,14 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
         Block::ToolResult {
             call_id,
             outcome,
-            output: Some(_),
+            output,
             data,
             attachments,
-        } => Block::ToolResult {
+        } if output.is_some() || data.is_some() => Block::ToolResult {
             call_id: call_id.clone(),
             outcome: outcome.clone(),
-            output: Some(String::new()),
-            data: data.clone(),
+            output: output.as_ref().map(|_| String::new()),
+            data: None,
             attachments: attachments.clone(),
         },
         // These values are stored whole, so serialization can borrow them.
@@ -330,6 +336,26 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
         } if !o.is_empty() => Some(o),
         _ => None,
     }
+}
+
+/// The structured value a block keeps in `block.data` rather than its packed
+/// body: a tool result's data. No text view shows it, and it can be most of
+/// a large message, so a text read never decodes it.
+pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
+    match block {
+        Block::ToolResult {
+            data: Some(data), ..
+        } => Some(data),
+        _ => None,
+    }
+}
+
+/// Puts a block's structured value back from `block.data`.
+pub(crate) fn restore_data(block: &mut Block, packed: &[u8]) -> Result<()> {
+    if let Block::ToolResult { data, .. } = block {
+        *data = Some(unpack_json(packed)?);
+    }
+    Ok(())
 }
 
 /// Puts a block's text back from its `text` row.
