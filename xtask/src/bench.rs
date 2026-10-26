@@ -8,16 +8,21 @@
 //! release `first_build` over it under the real-data lock, records the
 //! per-stage result with periodic host-load observations, and prints an
 //! uncalibrated linear input-byte estimate. `--incremental` appends the rest
-//! of every session file and measures the incremental pass. `bench validate`
-//! compares that assumption with a supplied full run; it does not establish
-//! calibration across sizes or check that both runs used the same build
-//! and input.
+//! of every session file and measures the incremental pass. `--name` keeps
+//! samples of several sizes apart; `bench estimate` fits each stage over the
+//! latest runs of one build at two or more sizes and predicts the whole
+//! corpus stage by stage, and `bench validate` compares that prediction with
+//! a full run's result, stage by stage. `bench pair` runs two builds at once
+//! over one sample, so both see the same load. `bench tails` times the last
+//! pages of the largest sessions, and any named, of a sample run's archive.
 //!
 //! `--target largest` does the same over the largest Claude Code session and
 //! the largest Codex database, which a sample of a few GB cannot hold; it
 //! measures peak memory and throughput on one huge input and predicts
 //! nothing.
+mod fit;
 mod reads;
+mod tails;
 
 use devkit::bench::{self, Candidate as SampleFile, LoadMonitor, Manifest};
 use devkit::history::Store;
@@ -64,17 +69,32 @@ impl Target {
             Target::Largest => "first_build-largest",
         }
     }
-
-    fn dir(self) -> PathBuf {
-        bench_home().join(self.name())
-    }
 }
 
-fn manifest_path(target: Target) -> PathBuf {
-    PathBuf::from(format!(
-        "/realm/project/polylogue/analysis/bench/polylogue-{}.json",
-        target.name()
-    ))
+/// A drawn sample: its target and the name its manifest, copy and runs go
+/// under (the target's name unless several sizes are kept).
+#[derive(Debug, Clone)]
+struct Drawn {
+    target: Target,
+    name: String,
+}
+
+impl Drawn {
+    fn new(target: Target, name: Option<String>) -> Self {
+        let name = name.unwrap_or_else(|| target.name().to_owned());
+        Self { target, name }
+    }
+
+    fn dir(&self) -> PathBuf {
+        bench_home().join(&self.name)
+    }
+
+    fn manifest(&self) -> PathBuf {
+        PathBuf::from(format!(
+            "/realm/project/polylogue/analysis/bench/polylogue-{}.json",
+            self.name
+        ))
+    }
 }
 
 const LOCK: &str = "/realm/tmp/work/realdata.lock";
@@ -85,6 +105,10 @@ pub enum Bench {
     Sample {
         #[arg(long, value_enum, default_value = "sample")]
         target: Target,
+        /// The sample's name, for keeping samples of several sizes
+        /// (default: the target's name).
+        #[arg(long)]
+        name: Option<String>,
         /// Target size of the sample, in MB.
         #[arg(long, default_value_t = 3000)]
         mb: u64,
@@ -99,6 +123,15 @@ pub enum Bench {
     Run {
         #[arg(long, value_enum, default_value = "sample")]
         target: Target,
+        #[arg(long)]
+        name: Option<String>,
+        /// A `first_build` built elsewhere, instead of this checkout's.
+        #[arg(long, requires = "build")]
+        binary: Option<PathBuf>,
+        /// The name the run's build is recorded and fitted under (default:
+        /// the checkout's commit).
+        #[arg(long)]
+        build: Option<String>,
         /// `disk` keeps the archive on /realm like the real one; `memory`
         /// puts it in /dev/shm and measures the pipeline alone.
         #[arg(long, default_value = "disk")]
@@ -107,6 +140,40 @@ pub enum Bench {
         /// incremental pass.
         #[arg(long)]
         incremental: bool,
+    },
+    /// Two builds' first builds at once over one sample, so both see the same
+    /// load; records both and prints their differences per stage.
+    Pair {
+        #[arg(long)]
+        name: Option<String>,
+        /// `LABEL=PATH` of the first `first_build`.
+        #[arg(long)]
+        a: String,
+        /// `LABEL=PATH` of the second.
+        #[arg(long)]
+        b: String,
+    },
+    /// Fits each stage over the latest runs of one build at two or more sample
+    /// sizes and predicts the whole corpus stage by stage.
+    Estimate {
+        /// The build (default: the checkout's commit).
+        #[arg(long)]
+        build: Option<String>,
+    },
+    /// Cold and warm times of the last pages of a sample run's largest
+    /// sessions and of any named ones, through the daemon and CLI.
+    Tails {
+        #[arg(long)]
+        name: Option<String>,
+        /// Largest sessions by message count to read.
+        #[arg(long, default_value_t = 5)]
+        largest: usize,
+        /// A session to read besides the largest.
+        #[arg(long)]
+        session: Vec<String>,
+        /// A `polylogue` built elsewhere, instead of this checkout's.
+        #[arg(long)]
+        binary: Option<PathBuf>,
     },
     /// Native cold/warm CLI and bounded session-page measurements on synthetic inputs.
     Reads {
@@ -117,10 +184,16 @@ pub enum Bench {
         #[arg(long)]
         full_walk: bool,
     },
-    /// Compare the latest linear estimate with a supplied full-run result.
-    /// Whether both runs used the same build and input, and calibration
-    /// across sizes, are not checked.
-    Validate { result: PathBuf },
+    /// Compare a build's estimate with a supplied full-run result, stage by
+    /// stage: the fit over two or more sample sizes, or else the latest
+    /// linear estimate. That the full run used the same build and input is
+    /// not checked.
+    Validate {
+        result: PathBuf,
+        /// The build (default: the checkout's commit).
+        #[arg(long)]
+        build: Option<String>,
+    },
     /// Recorded runs and comparisons (devkit's shared commands).
     #[command(flatten)]
     Shared(devkit::cli::Bench),
@@ -130,20 +203,38 @@ pub fn execute(command: Bench) -> ExitCode {
     let result = match command {
         Bench::Sample {
             target,
+            name,
             mb,
             seed,
             cut,
-        } => sample(target, mb * 1_000_000, seed, cut),
+        } => sample(&Drawn::new(target, name), mb * 1_000_000, seed, cut),
         Bench::Run {
             target,
+            name,
+            binary,
+            build,
             storage,
             incremental,
-        } => run(target, &storage, incremental),
+        } => run(
+            &Drawn::new(target, name),
+            binary,
+            build,
+            &storage,
+            incremental,
+        ),
+        Bench::Pair { name, a, b } => pair(&Drawn::new(Target::Sample, name), &a, &b),
+        Bench::Estimate { build } => fit::estimate(build),
+        Bench::Tails {
+            name,
+            largest,
+            session,
+            binary,
+        } => tails::run(&Drawn::new(Target::Sample, name), largest, &session, binary),
         Bench::Reads {
             repetitions,
             full_walk,
         } => return reads::execute(repetitions, full_walk),
-        Bench::Validate { result } => validate(&result),
+        Bench::Validate { result, build } => fit::validate(&result, build),
         Bench::Shared(b) => return devkit::cli::bench("polylogue", b),
     };
     match result {
@@ -287,15 +378,15 @@ fn largest(all: &[SampleFile]) -> Vec<SampleFile> {
         .collect()
 }
 
-fn sample(target: Target, bytes: u64, seed: u64, cut: f64) -> Result<(), String> {
+fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> {
     let all = input_files();
-    let chosen = match target {
+    let chosen = match drawn.target {
         Target::Sample => bench::select(&all, bytes, seed),
         Target::Largest => largest(&all),
     };
     let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed, cut)
         .map_err(|e| format!("hash the sample: {e}"))?;
-    let path = manifest_path(target);
+    let path = drawn.manifest();
     manifest
         .write(&path)
         .map_err(|e| format!("write {}: {e}", path.display()))?;
@@ -343,10 +434,29 @@ fn first_build(
     out: &Path,
     messages_required: bool,
 ) -> Result<Value, String> {
+    first_build_locked(binary, home, out, messages_required, false)
+}
+
+/// As [`first_build`], sharing the lock with the other run of a pair.
+fn first_build_shared(binary: &Path, home: &Path, out: &Path) -> Result<Value, String> {
+    first_build_locked(binary, home, out, true, true)
+}
+
+fn first_build_locked(
+    binary: &Path,
+    home: &Path,
+    out: &Path,
+    messages_required: bool,
+    shared: bool,
+) -> Result<Value, String> {
     // AgentCTL queues the outer benchmark job; the lock excludes other
     // benchmarks over real data without queueing nested work.
     let output = Command::new("flock")
-        .arg("-o")
+        .args(if shared {
+            ["-s", "-o"].as_slice()
+        } else {
+            ["-o"].as_slice()
+        })
         .arg(LOCK)
         .arg(binary)
         .arg("--home")
@@ -431,28 +541,69 @@ fn available(path: &Path) -> Option<u64> {
         .ok()
 }
 
-fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
-    let path = manifest_path(target);
+/// The sample's manifest and its copy, made once.
+fn materialized(drawn: &Drawn) -> Result<(Manifest, PathBuf), String> {
+    let path = drawn.manifest();
     let manifest = Manifest::read(&path).map_err(|e| {
         format!(
-            "{}: {e} (run `xtask bench sample --target {}` first)",
+            "{}: {e} (run `xtask bench sample --target {} --name {}` first)",
             path.display(),
-            target.name()
+            drawn.target.name(),
+            drawn.name
         )
     })?;
-    let sample_home = target.dir().join("home");
+    let home = drawn.dir().join("home");
     let fresh = manifest
-        .materialize(&sample_home)
+        .materialize(&home)
         .map_err(|e| format!("materialize the sample: {e}"))?;
     eprintln!(
-        "sample {} ({} files, {:.0} MB){}",
+        "sample {} {} ({} files, {:.0} MB){}",
+        drawn.name,
         manifest.id(),
         manifest.entries.len(),
         manifest.bytes() as f64 / 1e6,
         if fresh { ", copied" } else { "" }
     );
+    Ok((manifest, home))
+}
+
+/// The checkout's commit, the default name of its build.
+fn head() -> Result<String, String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err("git rev-parse HEAD failed".into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// The metrics a sample run records: the result, its build, the linear
+/// estimate and the corpus input it stands for.
+fn run_metrics(drawn: &Drawn, manifest: &Manifest, build: &str, result: &Value) -> Value {
+    let mut metrics = result.clone();
+    metrics["build"] = json!(build);
+    if drawn.target == Target::Sample {
+        let scale = manifest.representativeness()["scale"].as_f64();
+        metrics["linear_estimate"] =
+            bench::linear_estimate(result["seconds"].as_f64(), &stages_of(result), scale);
+        metrics["corpus_input_mb"] =
+            json!(scale.zip(result["input_mb"].as_f64()).map(|(s, mb)| s * mb));
+    }
+    metrics
+}
+
+fn run(
+    drawn: &Drawn,
+    binary: Option<PathBuf>,
+    build: Option<String>,
+    storage: &str,
+    incremental: bool,
+) -> Result<(), String> {
+    let (manifest, sample_home) = materialized(drawn)?;
     let out = match storage {
-        "disk" => target.dir().join("out"),
+        "disk" => drawn.dir().join("out"),
         "memory" => PathBuf::from("/dev/shm/polylogue-bench-out"),
         other => return Err(format!("storage is disk or memory, not {other}")),
     };
@@ -469,28 +620,25 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
     if out.exists() {
         fs::remove_dir_all(&out).map_err(|e| e.to_string())?;
     }
-    let binary = first_build_binary()?;
+    let binary = match binary {
+        Some(binary) => binary,
+        None => first_build_binary()?,
+    };
+    let build = match build {
+        Some(build) => build,
+        None => head()?,
+    };
     let load = LoadMonitor::start()?;
     let result = first_build(&binary, &sample_home, &out, true)?;
     let load = load.finish()?;
-    let mut metrics = result.clone();
-    let estimate = (target == Target::Sample).then(|| {
-        bench::linear_estimate(
-            result["seconds"].as_f64(),
-            &stages_of(&result),
-            manifest.representativeness()["scale"].as_f64(),
-        )
-    });
-    if let Some(value) = &estimate {
-        metrics["linear_estimate"] = value.clone();
-    }
+    let metrics = run_metrics(drawn, &manifest, &build, &result);
     let store = Store::open().map_err(|e| e.to_string())?;
     let checkout = env::current_dir().unwrap_or_default();
     let id = bench::record(
         &store,
         &checkout,
         "polylogue",
-        target.bench(),
+        drawn.target.bench(),
         &manifest.id(),
         &out,
         &load,
@@ -499,9 +647,9 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     println!(
         "{}",
-        json!({"run": id, "storage": bench::storage_of(&out),
+        json!({"run": id, "build": build, "storage": bench::storage_of(&out),
                "load_checks_passed": load.checks_passed(), "load": load.to_json(),
-               "result": result, "linear_estimate": estimate})
+               "result": result, "linear_estimate": metrics.get("linear_estimate")})
     );
     if incremental {
         let appended = manifest
@@ -514,6 +662,7 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
             .as_f64()
             .filter(|n| n.is_finite() && *n > 0.0);
         let mut metrics = result.clone();
+        metrics["build"] = json!(build);
         metrics["appended_mb"] = json!(appended as f64 / 1e6);
         metrics["appended_mb_per_s"] =
             json!(seconds.map(|seconds| appended as f64 / 1e6 / seconds));
@@ -521,7 +670,7 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
             &store,
             &checkout,
             "polylogue",
-            &format!("{}-incremental", target.bench()),
+            &format!("{}-incremental", drawn.target.bench()),
             &manifest.id(),
             &out,
             &load,
@@ -539,53 +688,82 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn validate(path: &Path) -> Result<(), String> {
-    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let actual = text
-        .lines()
-        .rev()
-        .find_map(|l| {
-            serde_json::from_str::<Value>(l.trim())
-                .ok()
-                .filter(|v| v.get("seconds").is_some())
-        })
-        .ok_or("no first_build result line in that file")?;
-    let store = Store::open().map_err(|e| e.to_string())?;
-    let runs = bench::runs(&store, "polylogue", 50).map_err(|e| e.to_string())?;
-    let run = runs
-        .iter()
-        .find(|r| r.bench == "first_build" && r.storage == "disk")
-        .ok_or("no recorded first_build bench run on disk")?;
-    let mut report = validation_report(&run.metrics["linear_estimate"], &actual)?;
-    report["bench_run"] = json!(run.id);
-    report["sample_load_checks_passed"] = json!(run.load_checks_passed);
-    report["sample_load"] = run.load.clone();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-    );
-    Ok(())
+/// Splits `LABEL=PATH`.
+fn labelled(spec: &str) -> Result<(String, PathBuf), String> {
+    let (label, path) = spec
+        .split_once('=')
+        .filter(|(label, path)| !label.is_empty() && !path.is_empty())
+        .ok_or_else(|| format!("{spec:?} is not LABEL=PATH"))?;
+    Ok((label.to_owned(), PathBuf::from(path)))
 }
 
-fn validation_report(estimate: &Value, actual: &Value) -> Result<Value, String> {
-    let seconds = |v: &Value| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
-    if estimate["method"] != "linear_in_input_bytes" {
-        return Err(
-            "the recorded run has no explicit linear estimate; make a new sample run".into(),
-        );
+/// Both builds' first builds at once over one sample, on disk.
+fn pair(drawn: &Drawn, a: &str, b: &str) -> Result<(), String> {
+    let builds = [labelled(a)?, labelled(b)?];
+    if builds[0].0 == builds[1].0 {
+        return Err("the two builds need different labels".into());
     }
-    let estimated =
-        seconds(&estimate["estimate"]["seconds"]).ok_or("the recorded estimate is unavailable")?;
-    let real = seconds(&actual["seconds"]).ok_or("the supplied run has no valid seconds value")?;
-    Ok(json!({
-        "estimated_seconds": estimated, "actual_seconds": real,
-        "relative_error": (real > 0.0).then(|| (estimated - real) / real),
-        "scale": estimate["scale"], "assumptions": estimate["assumptions"],
-        "actual_input_mb": actual["input_mb"], "calibrated": false,
-        "build_match": "not_verified", "input_match": "not_verified",
-        "full_run_load": actual.get("load"),
-        "limitation": "One supplied result does not establish multi-size calibration or matching work."
-    }))
+    let (manifest, sample_home) = materialized(drawn)?;
+    let outs: Vec<PathBuf> = builds
+        .iter()
+        .map(|(label, _)| drawn.dir().join(format!("out-{label}")))
+        .collect();
+    for out in &outs {
+        if out.exists() {
+            fs::remove_dir_all(out).map_err(|e| e.to_string())?;
+        }
+    }
+    let load = LoadMonitor::start()?;
+    // Both run at once, so both see the same host load; the real-data lock
+    // is shared between them.
+    let results: Vec<Result<Value, String>> = std::thread::scope(|scope| {
+        let runs: Vec<_> = builds
+            .iter()
+            .zip(&outs)
+            .map(|((_, binary), out)| {
+                let home = &sample_home;
+                scope.spawn(move || first_build_shared(binary, home, out))
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| {
+                run.join()
+                    .unwrap_or_else(|_| Err("a build panicked".into()))
+            })
+            .collect()
+    });
+    let load = load.finish()?;
+    let store = Store::open().map_err(|e| e.to_string())?;
+    let checkout = env::current_dir().unwrap_or_default();
+    let mut recorded = Vec::new();
+    for (((label, _), out), result) in builds.iter().zip(&outs).zip(results) {
+        let result = result?;
+        let mut metrics = run_metrics(drawn, &manifest, label, &result);
+        metrics["paired"] = json!(true);
+        let id = bench::record(
+            &store,
+            &checkout,
+            "polylogue",
+            "first_build-pair",
+            &manifest.id(),
+            out,
+            &load,
+            &metrics,
+        )
+        .map_err(|e| e.to_string())?;
+        recorded.push((label.clone(), id, result));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runs": recorded.iter().map(|(label, id, _)| json!({"build": label, "run": id})).collect::<Vec<_>>(),
+            "load_checks_passed": load.checks_passed(), "load": load.to_json(),
+            "difference": fit::difference(&recorded[0].2, &recorded[1].2),
+            "results": recorded.iter().map(|(label, _, result)| json!({"build": label, "result": result})).collect::<Vec<_>>(),
+        }))
+        .unwrap_or_default()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

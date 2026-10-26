@@ -107,10 +107,9 @@ timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
 cap = "cargo"
-max_io_pressure = 5
 
 [operations.measure]
-description = "Run a performance driver in the measure queue; refuses to start under I/O pressure"
+description = "Run a performance driver in the measure queue"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "measure"
@@ -119,7 +118,6 @@ timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
 cap = "cargo"
-max_io_pressure = 5
 
 [operations.fmt]
 description = "Format the workspace"

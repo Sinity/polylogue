@@ -32,13 +32,9 @@ pub struct PageEnd {
 }
 
 impl PageEnd {
-    /// The state at `message` when no private key block is open before it,
-    /// so masking starts afresh there.
-    pub fn fresh(message: usize) -> Self {
-        Self {
-            message,
-            masker: MessageMasker::default(),
-        }
+    /// The state before `message`: the masker after the messages before it.
+    pub fn new(message: usize, masker: MessageMasker) -> Self {
+        Self { message, masker }
     }
 
     pub fn message(&self) -> usize {

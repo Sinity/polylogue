@@ -1,4 +1,5 @@
-//! Source blocks on an existing connection, one decoded value at a time.
+//! Source blocks on an existing connection, one decoded value at a time,
+//! without tool results' structured data (`block.data`).
 use crate::Result;
 use crate::encoding::{restore_text, unpack_block, unpack_text};
 use polylogue_model::Block;
@@ -62,30 +63,20 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     memchr::memmem::find(haystack, needle)
 }
 
-/// Whether masking a block from a fresh start, stored as `body` with its
-/// text moved to `text`, leaves a private key block open after it: the only
-/// masking state that crosses a block boundary.
-pub(crate) fn leaves_pem_open(body: &[u8], text: Option<&str>) -> bool {
-    after_block(None, body, text.map(str::as_bytes)).is_some()
-}
-
-/// Whether a private key block is open after the blocks given so far, read
-/// from stored bytes without masking them.
-#[derive(Default)]
-pub(crate) struct PemState(OpenPem);
-
-impl PemState {
-    /// Follows one stored block: its packed body and packed text.
-    pub(crate) fn block(&mut self, body: &[u8], text: Option<&[u8]>) -> Result<()> {
-        let body = crate::encoding::unpack_bytes(body)?;
-        let text = text.map(crate::encoding::unpack_bytes).transpose()?;
-        self.0 = after_block(self.0.take(), &body, text.as_deref());
-        Ok(())
+/// What a block, stored as `body` with its text moved to `text`, holds of
+/// PEM private key blocks, as `message.pem` records it: 0 nothing; 1 a PEM
+/// header or END line; 2 also a header that masking the block from a fresh
+/// start leaves open after it. Masking carries nothing else from one block
+/// to the next, and a header or END line counts only whole within one block,
+/// so a block holding neither leaves the masking state as it found it.
+pub(crate) fn pem(body: &[u8], text: Option<&str>) -> i64 {
+    let text = text.map(str::as_bytes);
+    if after_block(None, body, text).is_some() {
+        return 2;
     }
-
-    pub(crate) fn open(&self) -> bool {
-        self.0.is_some()
-    }
+    let marked =
+        |bytes: &[u8]| find(bytes, b"-----BEGIN ").is_some() || find(bytes, b"-----END ").is_some();
+    i64::from(marked(body) || text.is_some_and(marked))
 }
 
 /// The masker's rule for a PEM header at `at` (just after `-----BEGIN `):
@@ -164,6 +155,14 @@ pub(crate) fn masked_alone(
     session: i64,
     blocks: &std::collections::HashSet<i64>,
 ) -> Result<Vec<i64>> {
+    let opens: bool = connection
+        .prepare_cached("SELECT EXISTS (SELECT 1 FROM message WHERE session_pk = ?1 AND pem = 2)")?
+        .query_row([session], |r| r.get(0))?;
+    if !opens {
+        let mut alone: Vec<i64> = blocks.iter().copied().collect();
+        alone.sort_unstable();
+        return Ok(alone);
+    }
     let mut statement = connection.prepare_cached(
         "SELECT b.pk, b.body, t.body
          FROM message m JOIN block b ON b.message_pk=m.pk

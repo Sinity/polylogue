@@ -155,8 +155,9 @@ impl Engine {
             })
             .collect();
         // A first build captures tool databases whole while it reads the
-        // files, and parses the captures in the same pass; afterwards a pass
-        // captures in turns of 1,024 rows, so other work goes between them.
+        // files, and parses each capture's parts in the same pass as they are
+        // appended; afterwards a pass captures in turns of 1,024 rows, so
+        // other work goes between them.
         let whole_capture = if discover && self.first_pass && self.writer.started_empty() {
             Some(databases)
         } else {
@@ -230,13 +231,33 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         if let Some(databases) = whole_capture {
+            let captures: Vec<PathBuf> = databases.iter().map(|(_, out, _)| out.clone()).collect();
             let mut exporter = std::mem::take(&mut self.exporter);
             let turn = std::thread::scope(|scope| {
                 let capture = scope.spawn(move || {
                     let turn = exporter.turn(databases, usize::MAX);
                     (exporter, turn)
                 });
-                let executed = self.execute(plans, &mut pass);
+                let mut executed = self.execute(plans, &mut pass);
+                // A large database's capture becomes input in parts while it
+                // is read; each part is stored and parsed meanwhile.
+                while executed.is_ok() && !capture.is_finished() {
+                    let parts = captures
+                        .iter()
+                        .filter(|out| out.exists())
+                        .filter_map(|out| self.capture_found(out))
+                        .collect();
+                    executed = self
+                        .plan_found(parts, &mut pass, &mut seen)
+                        .and_then(|plans| {
+                            if plans.is_empty() {
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                return Ok(());
+                            }
+                            pass.inputs_changed += plans.len() as u64;
+                            self.execute(plans, &mut pass)
+                        });
+                }
                 let (exporter, turn) = capture.join().expect("the capture thread does not panic");
                 self.exporter = exporter;
                 executed.map(|()| turn)
@@ -274,17 +295,20 @@ impl Engine {
     fn capture_outputs(&self) -> Vec<collect::Found> {
         self.exporter
             .paths()
-            .filter_map(|out| {
-                let origin = ORIGINS.iter().find(|o| {
-                    o.capture == Capture::RowDump
-                        && out.starts_with(self.archive.exports_dir().join(o.name))
-                })?;
-                Some(collect::Found {
-                    path: out.into(),
-                    origin,
-                })
-            })
+            .filter_map(|out| self.capture_found(out))
             .collect()
+    }
+
+    /// A capture of a tool database as a found input.
+    fn capture_found(&self, out: &Path) -> Option<collect::Found> {
+        let origin = ORIGINS.iter().find(|o| {
+            o.capture == Capture::RowDump
+                && out.starts_with(self.archive.exports_dir().join(o.name))
+        })?;
+        Some(collect::Found {
+            path: out.into(),
+            origin,
+        })
     }
 
     /// Plans for found files; `seen` collects their paths.

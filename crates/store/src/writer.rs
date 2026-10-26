@@ -196,7 +196,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "pr_link_number",
     "work_node_session",
     "removed_session_changed",
-    "message_pem_open",
+    "message_pem",
 ];
 
 /// Unique indexes on natural keys, which the writer's statements use: a first
@@ -254,6 +254,10 @@ impl Writer {
                 [],
             )?;
             index.pragma_update(None, "synchronous", "off")?;
+            // The log is not copied into the database file until the rows
+            // are written: each copy read every page back from the log and
+            // wrote it again, which cost more than writing the rows.
+            index.pragma_update(None, "wal_autocheckpoint", 0)?;
         }
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
@@ -781,12 +785,28 @@ impl Inner {
         if self.first_build.is_none() {
             return Ok(());
         }
+        // The rows' log is copied into the database file once, before the
+        // scans that build the deferred indexes: read through a log of tens
+        // of GB, every page costs a search of the whole log's index. The
+        // usual checkpoints resume for what those builds write.
+        let copied = std::time::Instant::now();
+        self.index
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+        self.index.pragma_update(
+            None,
+            "wal_autocheckpoint",
+            crate::archive::WAL_AUTOCHECKPOINT,
+        )?;
+        crate::timing::add(crate::timing::Stage::Sync, copied.elapsed());
         self.build_deferred()?;
         let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
-        // The FULL WAL commit synchronizes preceding build frames together
-        // with marker removal. No journal-mode switch can wait on old readers.
+        // A FULL checkpoint syncs the database file, with every page the
+        // unsynced checkpoints wrote, then the FULL commit syncs the log
+        // with the marker's removal. No journal-mode switch can wait on old
+        // readers.
+        i.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
         i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
         i.pragma_update(None, "synchronous", "normal")?;
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());

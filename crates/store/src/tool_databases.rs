@@ -21,8 +21,9 @@
 //! Exports wait for quiet files, with an hourly capture during continuous
 //! writes. Comparison state is a disposable disk-backed SQLite catalog.
 //! Changed rows are staged privately, then a synced marker naming the
-//! completed prefix commits the batch. Bytes beyond that marker are removed
-//! on the next open.
+//! completed prefix commits them, every 64 MB of rows and at the end, so a
+//! large database's capture becomes input while it is read. Bytes beyond
+//! that marker are removed on the next open.
 
 use crate::FileFacts;
 use base64::Engine as _;
@@ -31,7 +32,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -161,6 +162,27 @@ impl Exporter {
     }
 }
 
+/// Rows staged before they are appended to the capture, so a large
+/// database's capture becomes input in parts while it is read.
+const APPEND_BYTES: u64 = 64 << 20;
+
+/// Appends the staged rows to the capture's synced prefix and empties the
+/// staging file.
+fn append_staged(
+    w: &mut BufWriter<fs::File>,
+    synced: Option<&mut SyncedPrefix>,
+    out: &Path,
+) -> Result<(), ExportError> {
+    w.flush()?;
+    let staged = w.get_mut();
+    synced
+        .expect("verified synced prefix")
+        .append(out, staged)?;
+    staged.set_len(0)?;
+    staged.seek(std::io::SeekFrom::Start(0))?;
+    Ok(())
+}
+
 /// The digest naming a row: its table and its key.
 fn row_key(table: &str, key: &Value) -> u64 {
     digest(&format!("{table}\0{key}"))
@@ -265,8 +287,7 @@ fn write_export(
     transaction
         .execute("UPDATE row_state SET seen=0", [])
         .map_err(sql_err)?;
-    let mut staged = tempfile::tempfile()?;
-    let mut w = BufWriter::new(&mut staged);
+    let mut w = BufWriter::new(tempfile::tempfile()?);
     let schema: Map<String, Value> = tables
         .iter()
         .map(|t| (t.name.clone(), Value::String(t.sql.clone())))
@@ -286,6 +307,7 @@ fn write_export(
         w.write_all(b"\n")?;
     }
     let mut done = Exported::default();
+    let mut staged_bytes = 0;
     for t in &tables {
         let quoted = t.name.replace('"', "\"\"");
         let select = if t.key.is_empty() {
@@ -325,6 +347,14 @@ fn write_export(
                 crate::fault::check("tool_export.after_row", &t.name)
                     .map_err(std::io::Error::other)?;
                 done.rows += 1;
+                staged_bytes += encoded.len() as u64;
+                if staged_bytes >= APPEND_BYTES {
+                    // The rows so far become input now, so the loop can
+                    // store and parse a large database's capture while the
+                    // rest is still read.
+                    append_staged(&mut w, st.synced.as_mut(), out)?;
+                    staged_bytes = 0;
+                }
             }
             checkpoint()?;
         }
@@ -351,13 +381,8 @@ fn write_export(
     transaction
         .execute("DELETE FROM row_state WHERE seen=0", [])
         .map_err(sql_err)?;
-    w.flush()?;
-    drop(w);
     conn.execute_batch("COMMIT").map_err(sql_err)?;
-    st.synced
-        .as_mut()
-        .expect("verified synced prefix")
-        .append(out, &mut staged)?;
+    append_staged(&mut w, st.synced.as_mut(), out)?;
     crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
     transaction.commit().map_err(sql_err)?;
     catalog.schema = Some(schema_digest);

@@ -302,13 +302,16 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
             "claude-code:parent",
             vec![(
                 "claude-code:parent-0",
-                "inherited -----BEGIN VENDOR PRIVATE KEY-----hidden-----END VEND",
+                "inherited -----BEGIN VENDOR PRIVATE KEY-----hidden",
             )],
         ),
         (
             "claude-code:child",
             vec![
-                ("claude-code:child-0", "OR PRIVATE KEY----- visible λ🙂"),
+                (
+                    "claude-code:child-0",
+                    "still hidden -----END VENDOR PRIVATE KEY----- visible λ🙂",
+                ),
                 ("claude-code:child-1", "another child message"),
             ],
         ),
@@ -388,7 +391,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
         if with_parents {
             assert!(!joined.contains("hidden"));
         } else {
-            assert!(joined.contains("OR PRIVATE KEY"));
+            assert!(joined.contains("still hidden -----END VENDOR PRIVATE KEY-----"));
         }
     }
     assert!(cache.test_counts().1 > 0);

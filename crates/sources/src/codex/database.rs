@@ -122,7 +122,12 @@ impl Parser for Database {
                 if let Some(name) = str_field(row, "name") {
                     s.offer_title(name, TitleSource::Generated);
                 }
-                if let Some(title) = str_field(row, "title") {
+                // Codex fills `title` with the whole first prompt until a
+                // thread is named; that copy is not a title, and the derived
+                // title is its first line.
+                if let Some(title) = str_field(row, "title")
+                    .filter(|title| Some(*title) != str_field(row, "first_user_message"))
+                {
                     s.offer_title(title, TitleSource::Summary);
                 }
                 if let Some(nick) = str_field(row, "agent_nickname") {

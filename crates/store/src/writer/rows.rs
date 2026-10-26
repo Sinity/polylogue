@@ -193,6 +193,13 @@ pub(super) fn write_rows(
     Ok(written)
 }
 
+/// A block's packed body and structured value, as `block` stores them.
+#[derive(Clone, Copy)]
+struct StoredBlock<'a> {
+    body: &'a [u8],
+    data: Option<&'a [u8]>,
+}
+
 pub(super) struct RowWriter<'a, 't> {
     tx: &'a Transaction<'t>,
     input_pk: i64,
@@ -223,10 +230,10 @@ pub(super) struct Version {
     complete: bool,
     rank: i64,
     hash: Vec<u8>,
-    /// Masked from a fresh start, a block of the version leaves a private
-    /// key block open ([`crate::ordered_blocks::leaves_pem_open`]). Written
-    /// with the version, never compared.
-    pem_open: bool,
+    /// The most any block of the version holds of PEM private key blocks
+    /// ([`crate::ordered_blocks::pem`]). Written with the version, never
+    /// compared.
+    pem: i64,
 }
 
 impl Version {
@@ -405,7 +412,7 @@ impl RowWriter<'_, '_> {
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: prepared.hash.to_vec(),
-            pem_open: prepared.pem_open.iter().any(|open| *open),
+            pem: prepared.pem.iter().copied().max().unwrap_or(0),
         };
         let id = m.id.to_string();
         let cur = match self.message_pk(&id)? {
@@ -438,7 +445,7 @@ impl RowWriter<'_, '_> {
                         complete: r.get::<_, i64>(7)? == 0,
                         rank: r.get(8)?,
                         hash: r.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
-                        pem_open: false,
+                        pem: 0,
                     },
                     (r.get::<_, i64>(10)?, r.get::<_, String>(11)?),
                 ))
@@ -636,9 +643,9 @@ impl RowWriter<'_, '_> {
                  source_end = ?26, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, cost_nusd = NULL, provider_cost_nusd = ?27,
+                 words = ?25, cost_nusd = ?33, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, pem_open = ?32,
+                 record_position = ?31, pem = ?32,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1"
         } else {
@@ -647,10 +654,10 @@ impl RowWriter<'_, '_> {
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem_open,
-                 order_input_id)
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem,
+                 cost_nusd, order_input_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32,
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
                  (SELECT id FROM input_ref WHERE pk = ?3))"
         };
         let first: rusqlite::types::Value = match pk {
@@ -692,7 +699,10 @@ impl RowWriter<'_, '_> {
             n(u.cache_write_1h),
             u.speed,
             order.1.1,
-            v.pem_open,
+            v.pem,
+            // The cost derivation's value, written with the row so a first
+            // build's derive does not rewrite every priced message.
+            polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
@@ -760,8 +770,18 @@ impl RowWriter<'_, '_> {
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
-        for (idx, (block, body)) in m.blocks.iter().zip(&prepared.blocks).enumerate() {
-            self.insert_block(message_pk, session_pk, idx as i64, block, body, ms(m.at))?;
+        for (idx, ((block, body), data)) in m
+            .blocks
+            .iter()
+            .zip(&prepared.blocks)
+            .zip(&prepared.data)
+            .enumerate()
+        {
+            let stored = StoredBlock {
+                body,
+                data: data.as_deref(),
+            };
+            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
         }
         Ok(())
     }
@@ -772,7 +792,7 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        body: &[u8],
+        StoredBlock { body, data }: StoredBlock<'_>,
         at: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
@@ -810,8 +830,8 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     other_type, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
                 message_pk,
@@ -830,6 +850,7 @@ impl RowWriter<'_, '_> {
                 signature,
                 i64::from(encrypted),
                 other_type,
+                data,
             ])?;
         let block_pk = self.tx.last_insert_rowid();
 
@@ -889,8 +910,8 @@ impl RowWriter<'_, '_> {
         self.tx
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
-                     command, path, outcome, outcome_reason, run_by_script)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result', ?9)",
+                     command, path, outcome, outcome_reason, run_by_script, command_norm)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result', ?9, ?10)",
             )?
             .execute(params![
                 session_pk,
@@ -901,7 +922,14 @@ impl RowWriter<'_, '_> {
                 action.as_str(),
                 command,
                 path,
-                run_by_script
+                run_by_script,
+                // The tool-call derivation's value, written with the row so a
+                // first build's derive does not rewrite every shell call.
+                (action == polylogue_model::ToolAction::Shell)
+                    .then(|| command
+                        .as_deref()
+                        .and_then(polylogue_model::command::normalize))
+                    .flatten()
             ])?;
         let pk = self.tx.last_insert_rowid();
         if self.first_build.is_none() {

@@ -1,5 +1,6 @@
 //! Message selection in one pinned read, with incomplete parents kept explicit.
 use super::*;
+use polylogue_model::masking::MessageMasker;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
@@ -64,6 +65,9 @@ pub struct MessageSelection<'r, 'a> {
     own: Option<(i64, SessionId)>,
     with_parents: Option<Vec<Key>>,
     parents: Parents,
+    /// Whether tool results carry their structured data; a text read leaves
+    /// it unread ([`Self::for_text`]).
+    structured: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -85,6 +89,7 @@ impl<'a> Reader<'a> {
                 complete: issues.is_empty(),
                 issues,
             },
+            structured: true,
         })
     }
 
@@ -233,6 +238,14 @@ impl<'a> Reader<'a> {
 }
 
 impl MessageSelection<'_, '_> {
+    /// The same selection read for a text view, which never shows a tool
+    /// result's structured data: it is left unread, so a large value costs
+    /// nothing to page past.
+    pub fn for_text(mut self) -> Self {
+        self.structured = false;
+        self
+    }
+
     pub fn parents(&self) -> &Parents {
         &self.parents
     }
@@ -255,21 +268,36 @@ impl MessageSelection<'_, '_> {
     pub fn visit_from(
         &self,
         start: VisitStart,
-        mut visit: impl FnMut(Message) -> ControlFlow<()>,
+        visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
-        let mut last = None;
-        let mut visit = |pk, message| {
-            last = Some(pk);
-            visit(message)
-        };
         let mut remaining = start.message;
-        let mut after_prefix = |_| {
+        let after_prefix = |_| {
             if remaining == 0 {
                 true
             } else {
                 remaining -= 1;
                 false
             }
+        };
+        match (start.key, &self.with_parents) {
+            (Some(key), None) => self.visit_kept(Some(key), |_| true, visit),
+            _ => self.visit_kept(None, after_prefix, visit),
+        }
+    }
+
+    /// Visits the selected messages `keep` takes, in order, from the own
+    /// session's message `from` when given; `keep` sees each key before its
+    /// blocks are read.
+    fn visit_kept(
+        &self,
+        from: Option<i64>,
+        mut keep: impl FnMut(i64) -> bool,
+        mut visit: impl FnMut(Message) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut last = None;
+        let mut visit = |pk, message| {
+            last = Some(pk);
+            visit(message)
         };
         if let Some(keys) = &self.with_parents {
             let mut start = 0;
@@ -287,7 +315,8 @@ impl MessageSelection<'_, '_> {
                         key.session_pk,
                         &key.session,
                         None,
-                        |m| set.contains(&m) && after_prefix(m),
+                        self.structured,
+                        |m| set.contains(&m) && keep(m),
                         &mut visit,
                     )?
                     .is_break()
@@ -297,16 +326,14 @@ impl MessageSelection<'_, '_> {
                 start = end;
             }
         } else if let Some((pk, id)) = &self.own {
-            let _ = match start.key {
-                Some(key) => {
-                    self.reader
-                        .visit_messages_where(*pk, id, Some(key), |_| true, &mut visit)?
-                }
-                None => {
-                    self.reader
-                        .visit_messages_where(*pk, id, None, after_prefix, &mut visit)?
-                }
-            };
+            let _ = self.reader.visit_messages_where(
+                *pk,
+                id,
+                from,
+                self.structured,
+                keep,
+                &mut visit,
+            )?;
         }
         Ok(last)
     }
@@ -332,51 +359,52 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// The latest place at or before `message` where masking can start
-    /// afresh: masking carries nothing from one block to the next but a
-    /// private key block still open. Every place before the first block that
-    /// leaves one open (`message.pem_open`) is a fresh start; after it, the
-    /// stored bytes are followed, without masking, to the last place where
-    /// no key is open.
-    pub fn fresh_masking_start(&self, message: usize) -> Result<usize> {
+    /// The masking state before the selection's message `message` when a
+    /// private key block may be open there; `None` when masking starts
+    /// afresh. An open key is the only masking state that crosses a block
+    /// boundary, and only messages holding a PEM header or END line
+    /// (`message.pem`) open or close one. So the state is the masker after
+    /// those messages alone, in order from the first that leaves a key open.
+    pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
         let conn = self.reader.conn()?;
-        let mut flagged = HashSet::new();
+        let mut marked = HashMap::new();
         let mut statement =
-            conn.prepare_cached("SELECT pk FROM message WHERE session_pk = ?1 AND pem_open = 1")?;
+            conn.prepare_cached("SELECT pk, pem FROM message WHERE session_pk = ?1 AND pem <> 0")?;
         for (session, _) in self.sessions() {
-            for pk in statement.query_map([session], |r| r.get::<_, i64>(0))? {
-                flagged.insert(pk?);
+            for row in statement.query_map([session], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?)))? {
+                let (pk, pem): (i64, i64) = row?;
+                marked.insert(pk, pem);
             }
         }
-        if flagged.is_empty() {
-            return Ok(message);
+        if !marked.values().any(|pem| *pem == 2) {
+            return Ok(None);
         }
         let keys = self.keys()?;
-        let Some(first) = keys
-            .iter()
-            .take(message)
-            .position(|pk| flagged.contains(pk))
-        else {
-            return Ok(message);
+        let before = &keys[..message.min(keys.len())];
+        let Some(first) = before.iter().position(|pk| marked.get(pk) == Some(&2)) else {
+            return Ok(None);
         };
-        let mut blocks = conn.prepare_cached(
-            "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
-             WHERE b.message_pk = ?1 ORDER BY b.idx",
+        let replay: HashSet<i64> = before[first..]
+            .iter()
+            .filter(|pk| marked.contains_key(pk))
+            .copied()
+            .collect();
+        let mut masker = MessageMasker::default();
+        let mut left = replay.len();
+        self.visit_kept(
+            None,
+            |pk| replay.contains(&pk),
+            |mut message| {
+                masker.message_text(&mut message);
+                left -= 1;
+                if left == 0 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            },
         )?;
-        let mut state = crate::ordered_blocks::PemState::default();
-        let mut fresh = first;
-        for (at, pk) in keys.iter().enumerate().take(message).skip(first) {
-            if !state.open() {
-                fresh = at;
-            }
-            let mut rows = blocks.query([pk])?;
-            while let Some(row) = rows.next()? {
-                let body: Vec<u8> = row.get(0)?;
-                let text: Option<Vec<u8>> = row.get(1)?;
-                state.block(&body, text.as_deref())?;
-            }
-        }
-        Ok(if state.open() { fresh } else { message })
+        Ok(Some(masker))
     }
 
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
