@@ -90,6 +90,28 @@ describe("a capture", () => {
     expect(state.last.outcome).toBe("unchanged");
   });
 
+  it("is not stored again over several cycles when the provider only reorders its JSON", async () => {
+    const host = storingHost();
+    let read = 0;
+    const versions = [
+      { conversation_id: "c1", safe_urls: ["https://a.example", "https://b.example"], mapping: {} },
+      { safe_urls: ["https://b.example", "https://a.example"], mapping: {}, conversation_id: "c1" },
+      { mapping: {}, conversation_id: "c1", safe_urls: ["https://a.example", "https://b.example"] },
+    ];
+    const page = async (request) => (request.type === "conversation"
+      ? { status: 200, info: { id: "c1", url: "https://chatgpt.com/c/c1" }, body: new Blob([JSON.stringify(versions[read++ % 3])]) }
+      : { status: 200, info: { id: "c1" } });
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    const outcomes = [];
+    for (let cycle = 0; cycle < 3; cycle += 1) outcomes.push((await extension.captureTab(1, "changed")).outcome);
+    expect(outcomes).toEqual(["stored", "unchanged", "unchanged"]);
+    expect(host.stored).toHaveLength(1);
+    // A restarted extension keeps what it last captured.
+    const restarted = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await restarted.captureTab(1, "changed")).outcome).toBe("unchanged");
+  });
+
   it("waits in the outbox while the host refuses it, and survives a restart of the extension", async () => {
     const indexedDB = new IDBFactory();
     const host = storingHost();

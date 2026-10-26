@@ -23,8 +23,11 @@ token or pairing step.
   nothing: on start, the extension sends what waits again. The host does not
   append bytes the log already holds. The outbox is the only thing the
   extension keeps; everything else lives in Polylogue.
-- A conversation whose JSON has not changed since its last capture is not
-  captured again. Open chat tabs are checked every 15 minutes as well.
+- A page is announced only when the conversation's text on it changes, and a
+  conversation whose content has not changed since its last capture is not
+  captured again, across restarts too (the comparison ignores the order of
+  plain lists such as ChatGPT's `safe_urls`, which the provider reshuffles on
+  every read). Open chat tabs are checked every 15 minutes as well.
 - Reads (what the archive holds of a conversation, whether the daemon runs)
   go from the host to the daemon. While the daemon is not running, captures
   are still stored, and what the archive holds is shown as unknown.

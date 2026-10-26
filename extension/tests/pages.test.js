@@ -134,12 +134,24 @@ describe("the shared page script", () => {
     expect(pieces.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
   });
 
-  it("tells the background when the conversation settles", async () => {
-    const { window, sent } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
-    await new Promise((resolve) => setTimeout(resolve, 3200));
-    expect(sent).toContainEqual({ type: "polylogue.changed", provider: "claude-ai", reason: "opened" });
-    window.close();
-  }, 10_000);
+  it("tells the background when the conversation's text changes, not when the markup does", async () => {
+    const { window, sent } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"], {
+      html: "<body><main><p>first answer</p></main><div id='menu'></div></body>",
+    });
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 3300));
+    await settle();
+    expect(sent).toEqual([{ type: "polylogue.changed", provider: "claude-ai", reason: "opened" }]);
+    // A menu opening and closing, as pages do all the time.
+    window.document.getElementById("menu").append(window.document.createElement("span"));
+    await settle();
+    window.document.getElementById("menu").replaceChildren();
+    await settle();
+    expect(sent).toHaveLength(1);
+    window.document.querySelector("main").append(window.document.createTextNode(" and a new turn"));
+    await settle();
+    expect(sent).toHaveLength(2);
+    expect(sent[1].reason).toBe("changed");
+  }, 20_000);
 });
 
 describe("the in-page panel", () => {
