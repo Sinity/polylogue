@@ -78,11 +78,11 @@ pub struct SessionWork {
     pub plan_open: Vec<String>,
 }
 
-/// A command that failed under a directory with no later success of the
-/// same command there.
+/// A check (test, build, lint) that failed under a directory with no later
+/// pass of the same check there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailingCommand {
-    /// The command's shape (`cargo test`).
+    /// The check as the work graph names it (`cargo test`).
     pub command: String,
     /// The latest failing command as given.
     pub latest: Option<String>,
@@ -433,8 +433,9 @@ impl Reader<'_> {
         Ok(Some(work))
     }
 
-    /// Commands that failed since `since` in sessions under `dirs`, with no
-    /// later success of the same command shape there, most recent first.
+    /// Checks (tests, builds, lints: the work graph's verifications) that
+    /// failed since `since` in sessions under `dirs`, with no later pass of
+    /// the same check there, most recent first.
     pub fn failing_commands(&self, dirs: &[String], since: i64) -> Result<Vec<FailingCommand>> {
         let conn = self.conn()?;
         let under = |alias: &str| {
@@ -444,17 +445,18 @@ impl Reader<'_> {
             )
         };
         let sql = format!(
-            "SELECT t.command_norm, t.command, t.exit_code, t.at, s.id,
-                    (SELECT count(*) FROM tool_call f JOIN session fs ON fs.pk = f.session_pk
-                      WHERE f.command_norm = t.command_norm AND f.outcome = 'error'
+            "SELECT v.title, t.command, t.exit_code, v.at, s.id,
+                    (SELECT count(*) FROM work_node f JOIN session fs ON fs.pk = f.session_pk
+                      WHERE f.kind = 'verification' AND f.title = v.title AND f.state = 'error'
                         AND f.at >= ?2 AND {fs})
-               FROM tool_call t JOIN session s ON s.pk = t.session_pk
-              WHERE t.outcome = 'error' AND t.command_norm IS NOT NULL AND t.at >= ?2 AND {s}
+               FROM work_node v JOIN session s ON s.pk = v.session_pk
+               LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
+              WHERE v.kind = 'verification' AND v.state = 'error' AND v.at >= ?2 AND {s}
                 AND NOT EXISTS (
-                    SELECT 1 FROM tool_call u JOIN session us ON us.pk = u.session_pk
-                     WHERE u.command_norm = t.command_norm AND u.outcome = 'ok'
-                       AND u.at > t.at AND {us})
-              ORDER BY t.at DESC, t.pk DESC",
+                    SELECT 1 FROM work_node u JOIN session us ON us.pk = u.session_pk
+                     WHERE u.kind = 'verification' AND u.title = v.title AND u.state = 'ok'
+                       AND u.at > v.at AND {us})
+              ORDER BY v.at DESC, v.pk DESC",
             fs = under("fs"),
             s = under("s"),
             us = under("us"),

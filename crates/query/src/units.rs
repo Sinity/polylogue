@@ -156,8 +156,17 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         cte = h.cte,
         m = a.m
     );
+    // The messages holding a hit, found from the hits: the rows are read by
+    // key instead of every message being tested.
+    let holding = format!(
+        "{m}.pk IN (SELECT xb.message_pk FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+         WHERE {})",
+        h.block_kind("xb"),
+        cte = h.cte,
+        m = a.m
+    );
     Some((
-        format!("(EXISTS (SELECT 1 {from}){})", h.writer(&a.m)),
+        format!("({holding}{})", h.writer(&a.m)),
         format!("(SELECT min(h.rank) {from})"),
     ))
 }

@@ -33,8 +33,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// How long a hook that brings context waits for the daemon.
-const CONTEXT_BUDGET: Duration = Duration::from_secs(3);
+/// How long a hook that brings context waits for the daemon: a brief
+/// during a first build over a large archive takes a few seconds. The
+/// harnesses' hook timeouts are longer.
+const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

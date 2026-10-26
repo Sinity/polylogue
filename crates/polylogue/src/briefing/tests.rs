@@ -273,7 +273,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         "claimed pl-1, still open",
         "last answer: \"Finished the parser fix; one test still fails.\"",
         "Beads claimed here and still open:\n- pl-1",
-        "Commands that failed here with no later success:\n- `cargo test` exit 101",
+        "Checks that failed here with no later pass:\n- `cargo test` exit 101",
         "formatting",
     ] {
         assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
