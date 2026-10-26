@@ -2,6 +2,7 @@
 //! sources, blocks, tool calls, events, links and parse positions.
 
 use super::*;
+use crate::first_build::FirstBuild;
 use std::collections::BTreeMap;
 
 /// Writes a parse step's rows; returns the number of message rows written.
@@ -11,7 +12,7 @@ pub(super) fn write_rows(
     p: &ParseStep,
     chain: i64,
     counter: i64,
-    bulk: bool,
+    first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
     p.prepared.validate(&p.output)?;
     tx.prepare_cached("INSERT INTO input_ref(id,format) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
@@ -28,7 +29,7 @@ pub(super) fn write_rows(
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
-        bulk,
+        first_build,
     };
     // A step parsed from the chain's first byte restates everything the
     // chain said: its earlier events and session facts go first.
@@ -53,7 +54,7 @@ pub(super) fn write_rows(
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
-        bulk,
+        first_build,
     };
     for (i, row) in p.output.documents.iter().enumerate() {
         let fallback;
@@ -202,10 +203,11 @@ pub(super) struct RowWriter<'a, 't> {
     rank: i64,
     counter: i64,
     packed: &'a HashMap<[u8; 32], Vec<u8>>,
-    /// A first build ([`Writer::start`]): search entries, trigram entries
-    /// and secondary indexes are built once, in bulk, when it ends
-    /// ([`Inner::build_deferred`]).
-    bulk: bool,
+    /// Set during a first build ([`Writer::start`]): search entries,
+    /// trigram entries and secondary indexes are built once, in bulk, when
+    /// it ends ([`Inner::build_deferred`]), and rows are found by natural
+    /// key through it ([`FirstBuild`]).
+    first_build: Option<&'a FirstBuild>,
 }
 
 /// The shown version of a message, as compared with a new one.
@@ -259,6 +261,30 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 }
 
 impl RowWriter<'_, '_> {
+    /// The message with natural ID `id`.
+    fn message_pk(&self, id: &str) -> Result<Option<i64>> {
+        match self.first_build {
+            Some(first_build) => first_build.message(self.tx, id),
+            None => Ok(self
+                .tx
+                .prepare_cached("SELECT pk FROM message WHERE id = ?1")?
+                .query_row([id], |r| r.get(0))
+                .optional()?),
+        }
+    }
+
+    /// The event with ID `id`.
+    fn event_pk(&self, id: &str) -> Result<Option<i64>> {
+        match self.first_build {
+            Some(first_build) => first_build.event(self.tx, id),
+            None => Ok(self
+                .tx
+                .prepare_cached("SELECT pk FROM event WHERE id = ?1")?
+                .query_row([id], |r| r.get(0))
+                .optional()?),
+        }
+    }
+
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
         let key = id.to_string();
         if let Some(pk) = cache.get(&key) {
@@ -376,18 +402,21 @@ impl RowWriter<'_, '_> {
             rank: self.rank,
             hash: prepared.hash.to_vec(),
         };
-        let cur = self
-            .tx
-            .prepare_cached(
-                "SELECT m.pk, m.order_input_pk, m.seq, m.order_input_id, m.input_pk, m.source_chain,
+        let id = m.id.to_string();
+        let cur = match self.message_pk(&id)? {
+            None => None,
+            Some(pk) => self
+                .tx
+                .prepare_cached(
+                    "SELECT m.pk, m.order_input_pk, m.seq, m.order_input_id, m.input_pk, m.source_chain,
                         m.source_start, m.in_progress, m.arrival_rank, s.version_hash, m.session_pk, ss.kind,
                         m.record_position
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.shown = 1
                  JOIN session ss ON ss.pk = m.session_pk
-                 WHERE m.id = ?1",
-            )?
-            .query_row([m.id.to_string()], |r| {
+                 WHERE m.pk = ?1",
+                )?
+                .query_row([pk], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     (
@@ -407,12 +436,16 @@ impl RowWriter<'_, '_> {
                     },
                     (r.get::<_, i64>(10)?, r.get::<_, String>(11)?),
                 ))
-            })
-            .optional()?;
+                })
+                .optional()?,
+        };
 
         let Some((pk, (order_input, order_seq, order_id), shown, (cur_session, cur_kind))) = cur
         else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
+            if let Some(first_build) = self.first_build {
+                first_build.add_message(&id, pk);
+            }
             self.upsert_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, prepared)?;
             return Ok(true);
@@ -663,7 +696,7 @@ impl RowWriter<'_, '_> {
             .query_map([message_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         for (pk, command, path) in old_calls {
-            if !self.bulk {
+            if self.first_build.is_none() {
                 self.tx
                     .prepare_cached(
                         "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
@@ -686,7 +719,7 @@ impl RowWriter<'_, '_> {
             .prepare_cached("DELETE FROM block WHERE message_pk = ?1")?
             .execute([message_pk])?;
         for text in texts {
-            crate::text_rows::unindex_unused(self.tx, text, self.bulk)?;
+            crate::text_rows::unindex_unused(self.tx, text, self.first_build.is_some())?;
         }
         Ok(())
     }
@@ -724,7 +757,9 @@ impl RowWriter<'_, '_> {
             1
         };
         let text_id = block_text(block)
-            .map(|text| crate::text_rows::intern(self.tx, text, bit, Some(self.packed), self.bulk))
+            .map(|text| {
+                crate::text_rows::intern(self.tx, text, bit, Some(self.packed), self.first_build)
+            })
             .transpose()?;
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
@@ -845,7 +880,7 @@ impl RowWriter<'_, '_> {
                 run_by_script
             ])?;
         let pk = self.tx.last_insert_rowid();
-        if !self.bulk {
+        if self.first_build.is_none() {
             self.tx
                 .prepare_cached(
                     "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
@@ -912,11 +947,15 @@ impl RowWriter<'_, '_> {
             std::borrow::Cow::Borrowed(content_id.as_str())
         };
         let after: Option<(i64, i64)> = match &e.after {
-            Some(id) => self
-                .tx
-                .prepare_cached("SELECT pk, seq FROM message WHERE id = ?1")?
-                .query_row([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
-                .optional()?,
+            Some(id) => match self.message_pk(&id.to_string())? {
+                Some(pk) => Some((
+                    pk,
+                    self.tx
+                        .prepare_cached("SELECT seq FROM message WHERE pk = ?1")?
+                        .query_row([pk], |r| r.get(0))?,
+                )),
+                None => None,
+            },
             None => None,
         };
         // An event with its own byte range sorts by it among the input's
@@ -931,45 +970,68 @@ impl RowWriter<'_, '_> {
                 .then_some(step_start as i64))
             .or(after.map(|a| a.1))
             .unwrap_or(0);
+        let source_chain = e.range.map(|_| self.chain);
         // The first input to state an event keeps it; within that input the
         // later position (chain, then place in the chain) wins.
-        self.tx
-            .prepare_cached(
-                "INSERT INTO event(id, session_pk, seq, after_message_pk, kind, at, input_pk,
-                     source_chain, source_start, source_end, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(id) DO UPDATE SET seq = excluded.seq,
-                     after_message_pk = excluded.after_message_pk, source_chain = excluded.source_chain,
-                     source_start = excluded.source_start, source_end = excluded.source_end
-                 WHERE event.input_pk = excluded.input_pk
-                   AND (COALESCE(excluded.source_chain, 0), excluded.seq)
-                       > (COALESCE(event.source_chain, 0), event.seq)",
-            )?
-            .execute(params![
-                &*id,
-                session_pk,
-                seq,
-                after.map(|a| a.0),
-                e.kind,
-                ms(e.at),
-                self.input_pk,
-                e.range.map(|_| self.chain),
-                e.range.map(|r| r.0 as i64),
-                e.range.map(|r| r.1 as i64),
-                data,
-            ])?;
+        let pk = match self.event_pk(&id)? {
+            Some(pk) => {
+                self.tx
+                    .prepare_cached(
+                        "UPDATE event SET seq = ?2, after_message_pk = ?3, source_chain = ?4,
+                             source_start = ?5, source_end = ?6
+                         WHERE pk = ?1 AND input_pk = ?7
+                           AND (COALESCE(?4, 0), ?2) > (COALESCE(source_chain, 0), seq)",
+                    )?
+                    .execute(params![
+                        pk,
+                        seq,
+                        after.map(|a| a.0),
+                        source_chain,
+                        e.range.map(|r| r.0 as i64),
+                        e.range.map(|r| r.1 as i64),
+                        self.input_pk,
+                    ])?;
+                pk
+            }
+            None => {
+                self.tx
+                    .prepare_cached(
+                        "INSERT INTO event(id, session_pk, seq, after_message_pk, kind, at, input_pk,
+                             source_chain, source_start, source_end, data)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    )?
+                    .execute(params![
+                        &*id,
+                        session_pk,
+                        seq,
+                        after.map(|a| a.0),
+                        e.kind,
+                        ms(e.at),
+                        self.input_pk,
+                        source_chain,
+                        e.range.map(|r| r.0 as i64),
+                        e.range.map(|r| r.1 as i64),
+                        data,
+                    ])?;
+                let pk = self.tx.last_insert_rowid();
+                if let Some(first_build) = self.first_build {
+                    first_build.add_event(&id, pk);
+                }
+                pk
+            }
+        };
         if crate::encoding::reading_confirmed(&e.data) {
             // A copy of a reading that reports a measured completion
             // replaces one stored without it.
             let stored: Vec<u8> = self
                 .tx
-                .prepare_cached("SELECT data FROM event WHERE id = ?1")?
-                .query_row([&*id], |r| r.get(0))?;
+                .prepare_cached("SELECT data FROM event WHERE pk = ?1")?
+                .query_row([pk], |r| r.get(0))?;
             let stored: serde_json::Value = crate::encoding::unpack_json(&stored)?;
             if !crate::encoding::reading_confirmed(&stored) {
                 self.tx
-                    .prepare_cached("UPDATE event SET data = ?2 WHERE id = ?1")?
-                    .execute(params![&*id, data])?;
+                    .prepare_cached("UPDATE event SET data = ?2 WHERE pk = ?1")?
+                    .execute(params![pk, data])?;
             }
         }
         Ok(())

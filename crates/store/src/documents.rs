@@ -20,7 +20,8 @@ pub(crate) struct Source<'a> {
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
-    pub bulk: bool,
+    /// Set during a first build ([`crate::first_build`]).
+    pub first_build: Option<&'a crate::first_build::FirstBuild>,
 }
 
 /// What decides the shown version: a known source time first, then the
@@ -159,7 +160,7 @@ fn show(
     tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
     insert_blocks(tx, pk, source, document, prepared)?;
     for text in old {
-        crate::text_rows::unindex_unused(tx, text, source.bulk)?;
+        crate::text_rows::unindex_unused(tx, text, source.first_build.is_some())?;
     }
     Ok(())
 }
@@ -173,7 +174,9 @@ fn insert_blocks(
 ) -> Result<()> {
     for (idx, (block, body)) in document.blocks.iter().zip(&prepared.blocks).enumerate() {
         let text = block_text(block)
-            .map(|text| crate::text_rows::intern(tx, text, 1, Some(source.packed), source.bulk))
+            .map(|text| {
+                crate::text_rows::intern(tx, text, 1, Some(source.packed), source.first_build)
+            })
             .transpose()?;
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),

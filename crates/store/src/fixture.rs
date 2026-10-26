@@ -88,7 +88,7 @@ impl Fixture {
     /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
-        let id = crate::text_rows::intern(&tx, body, 1, None, false)?;
+        let id = crate::text_rows::intern(&tx, body, 1, None, None)?;
         tx.commit()?;
         Ok(id)
     }
@@ -155,7 +155,7 @@ impl Fixture {
             &self.index,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id = crate::text_rows::intern(&tx, body, bit, None, false)?;
+        let id = crate::text_rows::intern(&tx, body, bit, None, None)?;
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
         Ok(id)

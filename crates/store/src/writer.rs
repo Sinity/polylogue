@@ -192,6 +192,11 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "removed_session_changed",
 ];
 
+/// Unique indexes on natural keys, which the writer's statements use: a first
+/// build drops them too, finds rows by key in memory meanwhile
+/// ([`crate::first_build`]), and builds them first when it ends.
+const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
+
 /// Batches waiting for the writer before senders block.
 const QUEUE: usize = 4;
 
@@ -243,12 +248,13 @@ impl Writer {
             index.pragma_update(None, "synchronous", "off")?;
         }
         // A first build inserts rows without maintaining the indexes only
-        // reads use; each is built once from a sorted scan when the build
-        // ends. Indexes the writer's own statements use stay, and an index
-        // missing from this list is kept, which is the safe default.
+        // reads use, or the unique indexes on natural keys; each is built
+        // once from a sorted scan when the build ends. The writer's other
+        // indexes stay, and an index missing from these lists is kept, which
+        // is the safe default.
         let deferred_indexes = if empty {
             let mut defs = Vec::new();
-            for name in READ_ONLY_INDEXES {
+            for name in KEY_INDEXES.iter().chain(READ_ONLY_INDEXES) {
                 let sql: Option<String> = index
                     .query_row(
                         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
@@ -271,7 +277,7 @@ impl Writer {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            unsynced: empty,
+            first_build: empty.then(crate::first_build::FirstBuild::default),
             deferred_indexes,
             search: Search::start(archive.index_db(), !empty)?,
             location: archive.clone(),
@@ -493,8 +499,9 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    /// The index is being built without syncs ([`Writer::start`]).
-    unsynced: bool,
+    /// Set while the index is being built from nothing, without syncs
+    /// ([`Writer::start`]).
+    first_build: Option<crate::first_build::FirstBuild>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// The search thread ([`search_thread`]): woken after each commit, and
@@ -602,7 +609,7 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
                 // Derived rows follow every commit; a first build derives
                 // once, after its indexes exist.
-                if !self.unsynced
+                if self.first_build.is_none()
                     && let Err(e) = crate::timing::time(crate::timing::Stage::Derive, || {
                         crate::derive::run(&mut self.index)
                     })
@@ -688,7 +695,7 @@ impl Inner {
     /// Ends an unsynced build: makes the index durable, then clears the mark
     /// and returns to normal syncing.
     fn settle(&mut self) -> Result<()> {
-        if !self.unsynced {
+        if self.first_build.is_none() {
             return Ok(());
         }
         self.build_deferred()?;
@@ -700,14 +707,14 @@ impl Inner {
         i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
         i.pragma_update(None, "synchronous", "normal")?;
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
-        self.unsynced = false;
+        self.first_build = None;
         self.search.ready();
         Ok(())
     }
 
     /// Ends a first build's bulk load: writes the search entries the build
     /// marked, rebuilds the trigram index from `tool_call`, and creates the
-    /// secondary indexes it dropped. Each from one ordered scan, so the
+    /// indexes it dropped, the unique ones on natural keys first. Each from one ordered scan, so the
     /// indexes are written once instead of rewritten through the build.
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
@@ -1042,7 +1049,7 @@ impl Inner {
         for (b, chain) in batches.zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    stats.1 += write_rows(&itx, b, p, chain, counter, self.unsynced)?;
+                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
                 }
             }
             stats.0 += 1;

@@ -63,6 +63,13 @@ rebuilds an index that holds fewer excisions than the archive. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
 
+A first build, into an empty index, writes without syncs and without the
+indexes only reads use or those on natural keys (message and event IDs, text
+hashes); the writer finds rows by key through hashes it keeps in memory. When
+the build ends it writes the search entries, rebuilds the trigram index and
+creates each dropped index once from a sorted scan, then derives. Until then a
+read that needs one of those indexes scans instead.
+
 ## Storing bytes
 
 [Import](../crates/engine/src/import.rs) and the loop store the bytes before
