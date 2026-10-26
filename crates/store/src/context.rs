@@ -536,7 +536,7 @@ impl Reader<'_> {
             if !sessions.contains(&session) {
                 sessions.push(session.clone());
             }
-            let failures = found.get_or_insert_with(|| CheckFailures {
+            let failures = found.get_or_insert(CheckFailures {
                 times: 0,
                 sessions: 0,
                 first: None,
