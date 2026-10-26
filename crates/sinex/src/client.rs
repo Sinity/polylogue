@@ -19,6 +19,12 @@ use std::time::Duration;
 /// How long a frame may wait for its acknowledgment.
 const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 
+/// How long an excision may wait for Sinex's answer. On a large store Sinex
+/// can take minutes to plan and apply one, far longer than NATS's default
+/// request timeout; giving up early would leave Sinex excising what
+/// Polylogue then keeps.
+const EXCISION_WAIT: Duration = Duration::from_secs(600);
+
 /// Room left in a NATS message for its subject and headers.
 const MESSAGE_OVERHEAD: usize = 4096;
 
@@ -36,9 +42,16 @@ pub(crate) struct Client {
 
 impl Client {
     pub(crate) async fn connect(config: &Config) -> Result<Self> {
-        let client = async_nats::connect(&config.nats)
+        let options = match config.credentials()? {
+            Some((user, password)) => {
+                async_nats::ConnectOptions::with_user_and_password(user, password)
+            }
+            None => async_nats::ConnectOptions::new(),
+        };
+        let client = options
+            .connect(config.nats.as_str())
             .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
+            .map_err(|e| Error::Unreachable(format!("NATS at {}: {e}", config.nats)))?;
         let subjects = Subjects::new(config.subject_root.clone());
         let acknowledgments = client
             .subscribe(subjects.ack(&config.producer))
@@ -114,12 +127,12 @@ impl Client {
                     .map_err(|e| Error::Invalid(format!("material {id}: {e}")))
             })
             .collect::<Result<Vec<_>>>()?;
+        let request = async_nats::Request::new()
+            .payload(serde_json::to_vec(&Excise { materials })?.into())
+            .timeout(Some(EXCISION_WAIT));
         let reply = self
             .client
-            .request(
-                self.subjects.excise(&self.producer),
-                serde_json::to_vec(&Excise { materials })?.into(),
-            )
+            .send_request(self.subjects.excise(&self.producer), request)
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
         let reply: ExciseReply = serde_json::from_slice(&reply.payload)?;
@@ -208,3 +221,6 @@ pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> 
         None => Ok(acknowledgment),
     }
 }
+
+#[cfg(test)]
+mod tests;

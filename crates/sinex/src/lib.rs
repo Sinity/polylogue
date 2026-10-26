@@ -67,8 +67,12 @@ pub enum Mode {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub mode: Mode,
-    /// NATS server URL, with the producer's credentials when required.
+    /// NATS server URL, without credentials.
     pub nats: String,
+    /// A file holding this producer's NATS password, when the server
+    /// requires one. The NATS user is the producer's name, as Sinex
+    /// declares its producers.
+    pub password_file: Option<PathBuf>,
     /// Subject root (`sinex` when deployed).
     #[serde(default = "default_subject_root")]
     pub subject_root: String,
@@ -108,12 +112,47 @@ impl Config {
     /// Reads one explicitly selected configuration file.
     pub fn load_from(path: &Path) -> Result<Option<Self>> {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text)
-                .map(Some)
-                .map_err(|e| Error::Invalid(format!("{}: {e}", path.display()))),
+            Ok(text) => {
+                let config: Self = toml::from_str(&text)
+                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+                config
+                    .check()
+                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
+                Ok(Some(config))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())).into()),
         }
+    }
+
+    /// A password in the URL would sit in the configuration file, and the
+    /// NATS client ignores it there, so it is refused.
+    fn check(&self) -> std::result::Result<(), String> {
+        let authority = self
+            .nats
+            .split_once("://")
+            .map_or(self.nats.as_str(), |(_, rest)| rest)
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        if authority.contains('@') {
+            return Err("`nats` holds credentials; name the producer's password file in `password_file` instead".into());
+        }
+        Ok(())
+    }
+
+    /// The NATS user and password, read from `password_file` when one is set.
+    /// The file's trailing whitespace is not part of the password.
+    pub(crate) fn credentials(&self) -> Result<Option<(String, String)>> {
+        let Some(path) = &self.password_file else {
+            return Ok(None);
+        };
+        let password = std::fs::read_to_string(path)
+            .map_err(|e| Error::Invalid(format!("password file {}: {e}", path.display())))?;
+        Ok(Some((
+            self.producer.clone(),
+            password.trim_end().to_owned(),
+        )))
     }
 }
 

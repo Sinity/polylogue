@@ -186,14 +186,25 @@ version.
 
 ## Sinex primary mode
 
-With the `sinex` feature, `$XDG_CONFIG_HOME/polylogue/sinex.toml` selects the
-mode. A missing file means standalone. With `mode = "primary"`, the daemon
-sends Sinex every archive write it does not hold yet, once a minute, and an
-empty archive is restored from Sinex when the file names `archive = "<id>"`.
-Once Sinex holds an archive, excision refuses.
+With the `sinex` feature (on in the Nix package),
+`$XDG_CONFIG_HOME/polylogue/sinex.toml` selects the mode. A missing file means
+standalone. With `mode = "primary"`, Sinex holds the archive and Polylogue is
+one of its producers:
 
-If the configuration is malformed or the restore fails, the daemon starts
-without collecting: `status.mode` shows `state: blocked`, the configuration
-path and the error, reads and queries work, and archive writes return
-`sinex_unavailable`. Fix the cause and restart the daemon. An archive in
-primary mode starts and serves reads while Sinex is offline.
+```toml
+mode = "primary"
+nats = "nats://127.0.0.1:4222"
+# The NATS user is the producer's name, `polylogue` unless `producer` says
+# otherwise. The password stays in its own file, never in this one.
+password_file = "/run/agenix/sinex-nats-polylogue"
+# Sinex's store root; Polylogue writes the bytes it sends under it, so its
+# user needs the store's group.
+store = "/var/lib/sinex/daemon/store"
+```
+
+If the configuration is malformed or Sinex cannot be reached at start, the
+daemon starts without collecting: `status.mode` shows `state: blocked`, the
+configuration path and the error, reads and queries work, and archive writes
+return `sinex_unavailable`. Fix the cause and restart the daemon.
+[docs/architecture.md](docs/architecture.md#sinex-primary-mode) describes
+how primary mode stores the archive and how a standalone archive moves to it.

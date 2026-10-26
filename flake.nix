@@ -17,6 +17,9 @@
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.zstd ];
         cargoBuildFlags = [ "-p" "polylogue" ];
+        # Primary mode is chosen by `sinex.toml` at run time, so the packaged
+        # binary carries it.
+        buildFeatures = [ "sinex" ];
         doCheck = false;
       };
     in {

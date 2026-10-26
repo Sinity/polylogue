@@ -82,6 +82,7 @@ fn sinex(dir: &Path) -> Running {
     let config = Config {
         mode: Mode::Primary,
         nats: nats.url().into(),
+        password_file: None,
         subject_root: "rebuild".into(),
         producer: "polylogue".into(),
         store,

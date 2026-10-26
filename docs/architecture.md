@@ -270,8 +270,37 @@ queries always read `index.db`.
   remove one cleanly, and nothing changes. The excision itself is then sent
   as a register material, so a rebuild keeps refusing what it removed.
   Polylogue never deletes from Sinex's content store.
-- **Moving an archive to primary** uses no tool of its own: start primary
-  mode on a new archive directory, and the loop collects every provider file
-  again into Sinex; what the standalone archive holds besides its provider
-  files comes over by `polylogue export` from it and `polylogue import` into
-  the primary one.
+- **Connection.** `sinex.toml` names the NATS server, the producer
+  (`polylogue`, also its NATS user), a `password_file` holding its
+  password, and Sinex's store root. Credentials in the `nats` URL are
+  refused, so no password sits in the configuration file. Polylogue
+  writes the bytes it sends under the store root, so the account it runs
+  as needs the store's group.
+
+### Moving to primary mode
+
+There is no tool for the move; it is a fresh collection into Sinex plus an
+export of what only the standalone archive holds. The standalone archive is
+left as it was.
+
+1. **Start primary on an empty directory.** Write `sinex.toml` with
+   `mode = "primary"` and start the daemon with `XDG_DATA_HOME` pointing at
+   an empty directory, keeping the same state directory, so browser
+   captures and hook spools are collected again. The loop collects every
+   provider file and tool database into Sinex; wait until `polylogue
+   status` shows `mode.state: primary`, `busy: false` and no
+   `store.pending_inputs`.
+2. **Export from standalone and import into primary.** Start the
+   standalone daemon on its own archive (a configuration directory without
+   `sinex.toml`, and a separate state directory so it does not collect
+   alongside the primary one). Compare `polylogue sql "select id from
+   session"` on both archives, `polylogue export` the sessions only the
+   standalone one holds into a file, and `polylogue import` that file into
+   the primary archive. These are mostly manual imports and captures whose
+   files are gone; manual exports whose original ZIPs still exist can be
+   imported again from those instead.
+3. **Switch.** Point the live daemon, CLI and browser host at the primary
+   archive and stop the standalone daemon.
+
+Notes, settings and kept results are not carried by export and import, so
+the primary archive starts without them.
