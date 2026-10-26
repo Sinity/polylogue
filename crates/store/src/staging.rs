@@ -129,6 +129,9 @@ impl crate::Archive {
         let store = std::sync::Arc::new(self.blobs()?);
         let prepared =
             store.prepare_plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
+        // Synced here, on the thread that prepared it, so the writer only
+        // links it and syncs its directory.
+        prepared.sync()?;
         Ok(PreparedBytes {
             owner: self.root.clone(),
             file: Prepared::Local {

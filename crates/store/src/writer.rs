@@ -541,9 +541,13 @@ impl Inner {
                         single_files.push((prepared, batch, reply));
                         false
                     }
-                    Msg::StoreGroup(group, store, reply) => {
-                        file_groups.push((group, store, reply));
-                        false
+                    Msg::StoreGroup(items, store, reply) => {
+                        for item in &items {
+                            *rows += weight(&item.batch);
+                            *bytes += input_bytes(&item.batch);
+                        }
+                        file_groups.push((items, store, reply));
+                        true
                     }
                     Msg::FinishWriting(store, reply) => {
                         finish_writing.push((store, reply));
@@ -612,9 +616,7 @@ impl Inner {
             for (prepared, batch, reply) in single_files.drain(..) {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
-            for (group, store, reply) in file_groups.drain(..) {
-                let _ = reply.send(self.store_group(group, store));
-            }
+            self.store_groups(std::mem::take(&mut file_groups));
             for (store, reply) in finish_writing.drain(..) {
                 let _ = reply.send(self.finish_writing(&store));
             }

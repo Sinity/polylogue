@@ -8,6 +8,14 @@ use crate::staging::{Finished, PreparedBatch, PreparedBytes, StoredInput};
 use polylogue_model::BlobHash;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A parse-pool group waiting for the writer, with the store its files go
+/// to and where its results are answered.
+pub(super) type WaitingGroup = (
+    Vec<PreparedBatch>,
+    Arc<hashed_blobs::Store>,
+    SyncSender<Vec<Result<StoredInput>>>,
+);
+
 impl Inner {
     /// Stores one import's bytes: a batch with an observation and no
     /// parsed rows.
@@ -42,6 +50,35 @@ impl Inner {
         )
         .pop()
         .expect("one result")
+    }
+
+    /// Stores the groups that were waiting together, so their files and
+    /// rows share syncs and commits ([`Self::store_group`]), and answers
+    /// each. A group with a ZIP member is stored alone: a failure keeps the
+    /// ZIP's group whole, which would fail the others with it.
+    pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
+        let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) =
+            groups.into_iter().partition(|(items, _, _)| {
+                items
+                    .iter()
+                    .any(|item| crate::zip_members::zip_of(&item.batch).is_some())
+            });
+        for (items, store, reply) in alone {
+            let _ = reply.send(self.store_group(items, store));
+        }
+        let Some(store) = together.first().map(|(_, store, _)| Arc::clone(store)) else {
+            return;
+        };
+        let mut items = Vec::new();
+        let mut replies = Vec::new();
+        for (group, _, reply) in together {
+            replies.push((group.len(), reply));
+            items.extend(group);
+        }
+        let mut results = self.store_group(items, store).into_iter();
+        for (count, reply) in replies {
+            let _ = reply.send(results.by_ref().take(count).collect());
+        }
     }
 
     /// Stores a group of batches whose new blobs include private files, then
@@ -93,11 +130,15 @@ impl Inner {
                 item.files.clear();
             }
         }
+        // The files were synced where they were prepared; one batch links
+        // them and syncs each directory it touched once.
+        let mut files = store.batch(hashed_blobs::Durability::PerFile);
+        let mut adding = BTreeSet::new();
         for item in &mut group {
             let subject = item.batch.input.id.clone();
             for file in item.files.drain(..) {
                 let hash = file.hash();
-                if installed.contains(&hash) || failed.contains_key(&hash) {
+                if adding.contains(&hash) || failed.contains_key(&hash) {
                     continue;
                 }
                 // Bytes stored before need no second copy.
@@ -122,15 +163,23 @@ impl Inner {
                     );
                     continue;
                 };
-                match prepared.install_checked::<StoreError>(|| {
-                    crate::fault::check("import.install", &subject)
-                }) {
+                let added = crate::fault::check("import.install", &subject)
+                    .and_then(|()| files.add(*prepared).map_err(StoreError::from));
+                match added {
                     Ok(_) => {
-                        installed.insert(hash);
+                        adding.insert(hash);
                     }
                     Err(error) => {
                         failed.insert(hash, error.to_string());
                     }
+                }
+            }
+        }
+        match files.commit() {
+            Ok(_) => installed = adding,
+            Err(error) => {
+                for hash in adding {
+                    failed.insert(hash, error.to_string());
                 }
             }
         }
