@@ -194,6 +194,9 @@ pub struct Program {
     pub page_size: u64,
     /// `near:`: the text to embed and rank by.
     pub near: Option<Near>,
+    /// With `near:`, counts the matching rows that have no vector: they
+    /// follow the ranked rows, unranked.
+    pub count_without_vectors: Option<String>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
     pub zone: String,
@@ -323,7 +326,19 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
     }
     let bound = bind_saved_source(text, opts)?;
     let text = bound.as_deref().unwrap_or(text);
-    let query = parse(text)?;
+    let query = match parse(text) {
+        Ok(query) => query,
+        Err(e) => {
+            // `sessin where …` does not parse, but the fix it needs is the
+            // unit's name, not the parser's repair.
+            let trimmed = text.trim_start();
+            let first = trimmed.split_whitespace().next().unwrap_or("");
+            if first.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                refuse_word(first, trimmed[first.len()..].trim_start(), opts)?;
+            }
+            return Err(e);
+        }
+    };
     refuse_commands(text, &query, opts)?;
     Compiler::new(text, opts).program(&query)
 }
@@ -348,14 +363,19 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
     if first.span.start != text.len() - text.trim_start().len() {
         return Ok(());
     }
+    refuse_word(word, text[first.span.end..].trim_start(), opts)
+}
+
+/// Refuses `word`, the first of a query followed by `rest`, when it is a
+/// command name or a near miss of a unit or command name.
+fn refuse_word(word: &str, rest: &str, opts: &Options) -> Result<(), QueryError> {
     let lower = word.to_ascii_lowercase();
     if matches!(lower.as_str(), "last" | "latest" | "self") || opts.origins.contains(&lower) {
         return Ok(());
     }
-    let rest = text[first.span.end..].trim_start();
     if opts.command_words.contains(&lower) {
         return Err(QueryError::NotAQuery {
-            word: word.clone(),
+            word: word.to_owned(),
             message: format!(
                 "\"{word}\" is a command, not a query; to search for the word, quote it"
             ),
@@ -377,7 +397,7 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
     {
         if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
             return Err(QueryError::NotAQuery {
-                word: word.clone(),
+                word: word.to_owned(),
                 message: format!("did you mean \"{name}\"?"),
                 suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
             });
@@ -438,6 +458,16 @@ pub(crate) struct Compiler<'a> {
     /// With words and `near:` together, the join of each row's fused rank.
     fused_join: Option<String>,
     near: Option<Near>,
+    /// The common table expressions `near:` added, removed again when the
+    /// answer needs no ranking.
+    near_ctes: std::ops::Range<usize>,
+    /// Where `incomplete` says `near:` could not rank, for the same reason.
+    near_disabled: Option<usize>,
+    /// A selection (`| limit`) chose rows by the ranking, so the ranking
+    /// is part of the answer even when only counts are returned.
+    ranking_chose_rows: bool,
+    /// Compiling a `| where` stage, where `near:` cannot appear.
+    in_stage: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -460,6 +490,10 @@ impl<'a> Compiler<'a> {
             near_join: None,
             fused_join: None,
             near: None,
+            near_ctes: 0..0,
+            near_disabled: None,
+            ranking_chose_rows: false,
+            in_stage: false,
         }
     }
 

@@ -1096,8 +1096,13 @@ fn the_work_unit_reads_the_derived_graph() {
     );
 }
 
+mod agent_input;
+mod generated;
 mod live;
 mod morrow_examples;
+mod sequences;
+mod surfaces;
+mod unknowns;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {

@@ -80,7 +80,7 @@ fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
 }
 
 pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    if !x.top {
+    if !x.top || c.in_stage {
         return Err(QueryError::Invalid {
             message:
                 "near: ranks the whole query, so it appears once among the top-level conditions"
@@ -89,11 +89,13 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         });
     }
     if !c.opts.embeddings {
+        c.near_disabled = Some(c.incomplete.len());
         c.incomplete
             .push("semantic search is not enabled; rows are ordered by time and unranked".into());
         return Ok("1".into());
     }
     let text = x.value()?;
+    let first_cte = c.ctes.len();
     // `pl_similarity` answers from the similarities the caller computed for
     // this text. Each message's best text is found once, in one pass over
     // the texts; a session ranks by the best message in it and its
@@ -150,6 +152,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         }
     };
     c.near_rank = Some(rank);
+    c.near_ctes = first_cte..c.ctes.len();
     c.near = Some(Near { text });
     Ok("1".into())
 }
@@ -520,13 +523,18 @@ pub(crate) fn session_tool_call(
 pub(crate) fn tool_call_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let t = &x.scope.a.t;
     let name = x.name;
+    if x.unknown() {
+        return Ok(format!("{t}.{name} IS NULL"));
+    }
     let mut parts = vec![];
     for v in x.values() {
         if v.chars().count() >= 3 {
             let phrase = format!("\"{}\"", v.replace('"', "\"\""));
             let p = c.text_param(&phrase);
+            // A call without the value is unknown for the condition, as
+            // the shorter values' `instr` already makes it.
             parts.push(format!(
-                "{t}.pk IN (SELECT rowid FROM tool_call_trigram WHERE tool_call_trigram MATCH '{name}:' || {p})"
+                "CASE WHEN {t}.{name} IS NOT NULL THEN {t}.pk IN (SELECT rowid FROM tool_call_trigram WHERE tool_call_trigram MATCH '{name}:' || {p}) END"
             ));
         } else {
             let p = c.text_param(&v.to_lowercase());

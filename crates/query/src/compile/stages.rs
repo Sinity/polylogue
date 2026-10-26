@@ -217,19 +217,39 @@ impl<'a> Compiler<'a> {
             }
         };
         // A session cost known only in part (some request-bearing messages
-        // unpriced) is a lower bound, and the total says how many.
+        // unpriced) is a lower bound, and the total says how many. A tree
+        // cost is one too when a session in the tree is, or when a
+        // subagent the tree spawned is not in the archive.
         if scope.unit == Unit::Sessions
-            && matches!(field, "cost" | "tree_cost")
             && matches!(f, AggFn::Sum { .. } | AggFn::Avg { .. })
         {
-            out.push((
-                format!("partial_{flat_field}"),
+            let s = &scope.a.s;
+            let unpriced = |sessions: &str| {
                 format!(
-                    "sum(({expr}) IS NOT NULL AND EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL))",
-                    fields::own_messages(&scope.a.s, "xp")
-                ),
-                ColKind::Number,
-            ));
+                    "EXISTS (SELECT 1 FROM message xp WHERE xp.session_pk IN ({sessions}) \
+                     AND xp.duplicate_of IS NULL AND COALESCE(xp.on_active_path, 1) = 1 \
+                     AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)"
+                )
+            };
+            let partial = match field {
+                "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
+                "tree_cost" => {
+                    let tree = fields::subtree(s);
+                    Some(format!(
+                        "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
+                         WHERE xl.kind = 'subagent' AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
+                        unpriced(&tree)
+                    ))
+                }
+                _ => None,
+            };
+            if let Some(partial) = partial {
+                out.push((
+                    format!("partial_{flat_field}"),
+                    format!("sum(({expr}) IS NOT NULL AND {partial})"),
+                    ColKind::Number,
+                ));
+            }
         }
         Ok(out)
     }

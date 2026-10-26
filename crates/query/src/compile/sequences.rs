@@ -21,11 +21,16 @@ impl<'a> Compiler<'a> {
         let top = top_level(cond);
         let mut w = self.defaults(&child, &top);
         w.push(link);
-        w.push(self.cond(cond, &child, false)?);
+        let rows = and_all(&w);
+        let inner = self.cond(cond, &child, false)?;
+        let from = base_from(unit, &child.a);
+        // True when some child satisfies the condition, false when every
+        // child fails it, unknown otherwise, so `NOT exists` leaves out a
+        // row whose children are all unknown for it.
         Ok(format!(
-            "EXISTS (SELECT 1 FROM {} WHERE {})",
-            base_from(unit, &child.a),
-            and_all(&w)
+            "(CASE WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND {inner}) THEN 1 \
+             WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND ({inner}) IS NULL) THEN NULL \
+             ELSE 0 END)"
         ))
     }
 

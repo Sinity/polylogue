@@ -122,7 +122,9 @@ Words in a query match full text and rank the rows by relevance. With
 embeddings built, `near:TEXT` ranks rows by similarity to TEXT: the query's
 other conditions choose the rows first and every row they keep is ranked,
 and with words in the same query both orders are fused (reciprocal rank
-fusion). Ranked answers page by cursor like any other.
+fusion). Rows without a vector follow the ranked ones, unranked, and the
+answer counts them (`unknown.near`); a count or grouping after `near:`
+computes no similarity. Ranked answers page by cursor like any other.
 
 The daemon keeps warm what common answers need: the vectors in memory, the
 vectors of recent `near:` texts, recent answers by read position, and

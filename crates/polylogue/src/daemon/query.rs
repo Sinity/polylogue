@@ -282,6 +282,21 @@ fn answer(
     for row in &mut rows {
         present(program, row)?;
     }
+    let mut notes = program.notes.clone();
+    let mut unknown = serde_json::Map::new();
+    if let Some(sql) = &program.count_without_vectors {
+        let rows = reader.query(sql, &params)?;
+        let without = rows
+            .first()
+            .and_then(|r| r["count(*)"].as_u64())
+            .unwrap_or(0);
+        if without > 0 {
+            notes.push(format!(
+                "{without} of {count} rows have no vector; they follow the ranked rows, unranked"
+            ));
+        }
+        unknown.insert("near".into(), json!(without));
+    }
     let outcome = if !program.incomplete.is_empty() {
         "incomplete"
     } else if count == 0 {
@@ -298,7 +313,7 @@ fn answer(
         "count": count,
         "next": next,
         "ranked": program.ranked,
-        "notes": program.notes,
+        "notes": notes,
         "incomplete": program.incomplete,
         "resolved": {
             "now": polylogue_model::Timestamp::from_unix_ms(program.now),
@@ -307,6 +322,9 @@ fn answer(
         },
         "read_at": read_at,
     });
+    if !unknown.is_empty() {
+        out["unknown"] = Value::Object(unknown);
+    }
     if why_asked && count == 0 {
         out["why"] = why(reader, program, &params)?;
     }

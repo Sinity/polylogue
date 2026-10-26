@@ -2532,6 +2532,7 @@ dependencies = [
  "polylogue-sources",
  "polylogue-store",
  "polylogue-testkit",
+ "proptest",
  "rmcp",
  "rusqlite",
  "rustix 1.1.5",
