@@ -194,8 +194,11 @@ The daemon owns the archive; CLI commands that touch it need a running
 daemon in either mode. It keeps [warm state](../crates/polylogue/src/daemon/warm.rs)
 between requests: the vectors `near:` ranks by (reloaded after a commit
 stores or removes vectors), the provider's vectors of recent `near:` texts,
-recent query answers by read position, and completion data. A write moves
-the read position and so retires what was read before it. The application runtime owns the loop, signal workers,
+recent query answers by read position, completion data, and the archive
+counts `status` shows. A write moves the read position and so retires what
+was read before it. Counts that take more than 50 ms are counted again by a
+worker of their own, so `status` answers from memory during a long pass and
+says which read position its counts are from (`counted`). The application runtime owns the loop, signal workers,
 and the archive lock; transports own listeners and client
 work. Shutdown stops accepting requests and closes the read pool, joins
 transports and workers, then releases the archive lock. Writes already

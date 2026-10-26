@@ -12,6 +12,14 @@
 //!   states), so it is good for [`FIRST_PAGE_FOR`] at most.
 //! - **Completion data**: unit and field names, values seen and recent
 //!   session IDs, rebuilt on the first request after a write.
+//! - **Archive counts** for `status`: counted by a worker of their own when
+//!   the daemon starts and whenever a `status` finds them older than its
+//!   read, while `status` answers from memory (no counts until the first
+//!   count ends), so it stays fast during a long pass. Counts that take
+//!   under 50 ms are simply taken again inside the request. A count of a large
+//!   archive under load takes seconds; the worker leaves at least four
+//!   times as long between counts, and `status` says which read position
+//!   its counts are from.
 //!
 //! Every entry is checked against the read position (or the vector write
 //! count) of the request that uses it, so a write is never answered from
@@ -33,6 +41,8 @@ pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
 const QUERY_VECTORS: usize = 256;
 /// Recent answers kept.
 const ANSWERS: usize = 128;
+/// A count this quick is repeated inside the `status` request.
+const QUICK_COUNT: Duration = Duration::from_millis(50);
 
 /// The most recently used entries, by key, at most `capacity`.
 struct Recent<V> {
@@ -100,8 +110,21 @@ struct Counts {
     query_vectors_reused: AtomicU64,
 }
 
+/// The archive counts `status` shows, and what they were read at.
+#[derive(Clone)]
+pub struct Counted {
+    pub position: String,
+    pub at: Instant,
+    pub took: Duration,
+    pub status: polylogue_store::Status,
+}
+
 pub struct Warm {
     vectors: Mutex<Option<Arc<Loaded>>>,
+    archive_counts: Mutex<Option<Counted>>,
+    /// Wakes the count worker: a request saw counts older than its read.
+    recount: std::sync::Condvar,
+    recount_wanted: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     answers: Mutex<Recent<Answer>>,
     completion: Mutex<Option<(String, Arc<Completion>)>>,
@@ -112,6 +135,10 @@ impl Default for Warm {
     fn default() -> Self {
         Self {
             vectors: Mutex::new(None),
+            archive_counts: Mutex::new(None),
+            recount: std::sync::Condvar::new(),
+            // The first count starts with the daemon.
+            recount_wanted: std::sync::atomic::AtomicBool::new(true),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             answers: Mutex::new(Recent::new(ANSWERS)),
             completion: Mutex::new(None),
@@ -233,6 +260,83 @@ impl Warm {
         Ok(data)
     }
 
+    /// The archive counts for `status`. When the last count was quick
+    /// (under [`QUICK_COUNT`]) and is older than `position`, it counts again
+    /// now, so a small archive's status is exact; otherwise it answers from
+    /// memory and asks the worker for newer counts. `None` until the first
+    /// count ends.
+    pub fn counts(&self, reader: &Reader<'_>, position: &str) -> Option<Counted> {
+        let held = self.archive_counts.lock().ok()?.clone();
+        match held {
+            Some(c) if c.position == position => Some(c),
+            Some(c) if c.took < QUICK_COUNT => {
+                let counted = count(reader, position).ok()?;
+                if let Ok(mut held) = self.archive_counts.lock() {
+                    *held = Some(counted.clone());
+                }
+                Some(counted)
+            }
+            held => {
+                self.recount_wanted.store(true, Ordering::Release);
+                self.recount.notify_one();
+                held
+            }
+        }
+    }
+
+    /// The count worker: counts again when a `status` asked for newer
+    /// counts, leaving at least four times the last count's duration
+    /// between counts, until `stop` says so.
+    pub fn count_worker(
+        &self,
+        reads: &polylogue_store::ReadPool,
+        stop: &std::sync::mpsc::Receiver<()>,
+    ) {
+        loop {
+            match stop.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                _ => return,
+            }
+            let gap = {
+                let Ok(held) = self.archive_counts.lock() else {
+                    return;
+                };
+                let gap = held.as_ref().map_or(Duration::ZERO, |c| {
+                    (c.took * 4)
+                        .max(Duration::from_millis(200))
+                        .saturating_sub(c.at.elapsed())
+                });
+                let wanted = self.recount_wanted.load(Ordering::Acquire);
+                let wait = if gap.is_zero() && wanted {
+                    Duration::ZERO
+                } else if gap.is_zero() {
+                    Duration::from_secs(1)
+                } else {
+                    gap
+                };
+                let Ok((held, _)) = self.recount.wait_timeout(held, wait) else {
+                    return;
+                };
+                drop(held);
+                gap
+            };
+            if !gap.is_zero() || !self.recount_wanted.swap(false, Ordering::AcqRel) {
+                continue;
+            }
+            let Ok(reader) = reads.reader() else {
+                continue;
+            };
+            let Ok(position) = reader.change_position().map(|p| p.to_string()) else {
+                continue;
+            };
+            if let Ok(counted) = count(&reader, &position)
+                && let Ok(mut held) = self.archive_counts.lock()
+            {
+                *held = Some(counted);
+            }
+        }
+    }
+
     /// Drops everything; the next requests rebuild what they use.
     pub fn clear(&self) {
         if let Ok(mut v) = self.vectors.lock() {
@@ -247,6 +351,10 @@ impl Warm {
         if let Ok(mut c) = self.completion.lock() {
             *c = None;
         }
+        if let Ok(mut c) = self.archive_counts.lock() {
+            *c = None;
+        }
+        self.recount.notify_all();
     }
 
     /// What `status` shows.
@@ -263,6 +371,17 @@ impl Warm {
             "answers_computed": self.counts.answers_computed.load(Ordering::Relaxed),
         })
     }
+}
+
+fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
+    let started = Instant::now();
+    let status = reader.status().map_err(|e| e.to_string())?;
+    Ok(Counted {
+        position: position.to_owned(),
+        at: Instant::now(),
+        took: started.elapsed(),
+        status,
+    })
 }
 
 /// Values completion offers, read from the index and the archive.
