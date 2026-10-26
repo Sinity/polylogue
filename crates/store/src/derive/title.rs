@@ -5,7 +5,9 @@
 
 use super::{Derivation, Version};
 use crate::Result;
-use rusqlite::{Transaction, params};
+use polylogue_model::Block;
+use rusqlite::{OptionalExtension, Transaction, params};
+use std::ops::ControlFlow;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
@@ -19,28 +21,51 @@ pub(super) const DERIVATION: Derivation = Derivation {
 const LENGTH: usize = 80;
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    let mut masker = polylogue_model::masking::MessageMasker::default();
-    let mut title = None;
-    crate::ordered_blocks::visit(tx, session_pk, |mut source| {
-        use std::ops::ControlFlow;
-        masker.block(&mut source.block);
-        if source.written_by == "human"
-            && source
-                .prompt_kind
-                .as_deref()
-                .is_none_or(|kind| kind == "prose")
-            && matches!(source.block, polylogue_model::Block::Text { .. })
-        {
-            title = source.block.text().and_then(title_of);
-            return Ok(ControlFlow::Break(()));
+    // The first text block a person typed as prose, in reading order.
+    let first: Option<i64> = tx
+        .prepare_cached(
+            "SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk
+             WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND m.written_by='human'
+               AND COALESCE(m.prompt_kind, 'prose')='prose' AND b.kind='text'
+             ORDER BY m.order_input_id, m.seq, m.record_position, m.id, b.idx LIMIT 1",
+        )?
+        .query_row([session_pk], |r| r.get(0))
+        .optional()?;
+    let title = match first {
+        None => None,
+        Some(pk) => {
+            let alone = crate::ordered_blocks::masked_alone(tx, session_pk, &[pk].into())?;
+            let block = if alone.contains(&pk) {
+                // No PEM block is open before it, so it masks the same alone.
+                let mut block = crate::ordered_blocks::one(tx, pk)?;
+                polylogue_model::masking::MessageMasker::default().block(&mut block);
+                Some(block)
+            } else {
+                masked_in_order(tx, session_pk, pk)?
+            };
+            block.as_ref().and_then(Block::text).and_then(title_of)
         }
-        Ok(ControlFlow::Continue(()))
-    })?;
+    };
     tx.prepare_cached(
         "UPDATE session SET derived_title = ?2 WHERE pk = ?1 AND derived_title IS NOT ?2",
     )?
     .execute(params![session_pk, title])?;
     Ok(())
+}
+
+/// Block `pk` masked after every earlier block of the session.
+fn masked_in_order(tx: &Transaction<'_>, session_pk: i64, pk: i64) -> Result<Option<Block>> {
+    let mut masker = polylogue_model::masking::MessageMasker::default();
+    let mut found = None;
+    crate::ordered_blocks::visit(tx, session_pk, |mut source| {
+        masker.block(&mut source.block);
+        if source.pk == pk {
+            found = Some(source.block);
+            return Ok(ControlFlow::Break(()));
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok(found)
 }
 
 pub(crate) fn title_of(prompt: &str) -> Option<String> {
