@@ -527,7 +527,7 @@ impl Engine {
                     (path.clone(), st.origin)
                 }
             };
-            let Some(plan) = self.reparse_plan(
+            let plan = self.reparse_plan(
                 path,
                 origin,
                 InputKey {
@@ -538,10 +538,7 @@ impl Engine {
                 &state,
                 None,
                 false,
-            )?
-            else {
-                continue;
-            };
+            );
             let round = chains_per_path.entry(plan.path.clone()).or_default();
             if *round == rounds.len() {
                 rounds.push(Vec::new());
@@ -585,7 +582,7 @@ impl Engine {
                 polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
             .arrival_rank;
-        self.reparse_plan(
+        Ok(Some(self.reparse_plan(
             path.to_path_buf(),
             origin,
             InputKey {
@@ -596,7 +593,7 @@ impl Engine {
             &state,
             facts,
             true,
-        )
+        )))
     }
 
     /// A parse-only plan over a chain's stored bytes. A capture log resumes
@@ -611,16 +608,7 @@ impl Engine {
         state: &polylogue_store::read::ChainProgress,
         facts: Option<FileFacts>,
         tracked: bool,
-    ) -> Result<Option<Plan>, EngineError> {
-        let stored = match self
-            .reads
-            .reader()?
-            .stored_chain(&input.id, state.chain, state.length)
-        {
-            Ok(stored) => stored,
-            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
+    ) -> Plan {
         let parser = (origin.open)(&path);
         let parse_pos = if state.parsed && parser.as_ref().is_some_and(|p| p.is_capture_log()) {
             state.parsed_upto
@@ -628,15 +616,7 @@ impl Engine {
             0
         };
         let export = matches!(parser, Some(polylogue_sources::Parse::Export(_)));
-        let source = if parse_pos == 0 && !export {
-            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
-                stored,
-                Arc::clone(&self.blobs),
-            ))))
-        } else {
-            pool::Bytes::Stored(Arc::new(stored))
-        };
-        Ok(Some(Plan::stored(
+        Plan::stored(
             path,
             origin,
             input,
@@ -644,10 +624,46 @@ impl Engine {
             facts,
             state.length,
             parse_pos,
-            source,
+            pool::Bytes::Unloaded {
+                chain: state.chain,
+                length: state.length,
+                decoded: parse_pos == 0 && !export,
+            },
             self.config.chunk,
             tracked,
-        )))
+        )
+    }
+
+    /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).
+    /// False while they are still being written: the plan waits for a later
+    /// pass.
+    fn load_stored(&self, plan: &mut Plan) -> Result<bool, EngineError> {
+        let pool::Bytes::Unloaded {
+            chain,
+            length,
+            decoded,
+        } = plan.source
+        else {
+            return Ok(true);
+        };
+        let stored = match self
+            .reads
+            .reader()?
+            .stored_chain(&plan.input.id, chain, length)
+        {
+            Ok(stored) => stored,
+            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        plan.source = if decoded {
+            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                stored,
+                Arc::clone(&self.blobs),
+            ))))
+        } else {
+            pool::Bytes::Stored(Arc::new(stored))
+        };
+        Ok(true)
     }
 
     /// Runs plans on the parse pool, one job per input at a time, until
@@ -667,6 +683,9 @@ impl Engine {
                 (plan.origin.open)(&plan.path)
             {
                 self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                if !self.load_stored(&mut plan)? {
+                    continue;
+                }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.execute_export(&mut plan, &mut *parser, pass)
                 }));
@@ -733,6 +752,11 @@ impl Engine {
             {
                 if plan.finished() {
                     self.settle(plan);
+                    continue;
+                }
+                // Stored bytes are loaded as their plan starts, so a pass
+                // over every stored input holds only the running plans'.
+                if !self.load_stored(&mut plan)? {
                     continue;
                 }
                 let job = plan.next_job();
