@@ -303,7 +303,9 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// Packed message facts and parents status, without decoding bodies.
+    /// Message facts, the content hash of each message's shown version and
+    /// parents status. The blocks are written only with a new shown version,
+    /// whose hash names them, so no block or text is read.
     pub fn fingerprint(&self) -> Result<String> {
         let mut hash = blake3::Hasher::new();
         if self.with_parents.is_some() {
@@ -313,12 +315,11 @@ impl MessageSelection<'_, '_> {
             .reader
             .conn()?
             .prepare_cached("SELECT * FROM message WHERE pk=?1")?;
-        let mut blocks = self.reader.conn()?.prepare_cached(
-            "SELECT b.*, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
-             WHERE b.message_pk=?1 ORDER BY b.idx",
+        let mut version = self.reader.conn()?.prepare_cached(
+            "SELECT version_hash FROM message_source WHERE message_pk=?1 AND shown=1",
         )?;
         for pk in self.keys()? {
-            for stmt in [&mut facts, &mut blocks] {
+            for stmt in [&mut facts, &mut version] {
                 let count = stmt.column_count();
                 let mut rows = stmt.query([pk])?;
                 while let Some(row) = rows.next()? {
