@@ -112,13 +112,21 @@ fn profiles_comparison_pace_and_similarity_page_with_the_query_cursor() {
             let rows = if text.ends_with("similar") {
                 &page["data"]["matches"]
             } else if text.ends_with("pace") {
-                &page["data"]["sessions"]
+                &page["data"]["gaps"]
             } else {
                 &page["data"]["profiles"]
             };
             assert!(rows.as_array().unwrap().len() <= 1);
             for row in rows.as_array().unwrap() {
-                assert!(ids.insert(row["session"].as_str().unwrap().to_owned()));
+                let id = if text.ends_with("pace") {
+                    format!(
+                        "{}:{}:{}",
+                        row["session"], row["from_message"], row["to_message"]
+                    )
+                } else {
+                    row["session"].as_str().unwrap().to_owned()
+                };
+                assert!(ids.insert(id));
             }
             match page["next"].as_str() {
                 Some(next) => cursor = Some(next.into()),
@@ -167,7 +175,7 @@ fn paged_measures_preserve_query_order_when_display_fields_omit_the_id() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     let fields = vec!["title".into()];
-    for name in ["profiles", "compare", "pace"] {
+    for name in ["profiles", "compare"] {
         let text = format!("sessions | sort by id desc | measure {name}");
         let mut request = ask(&text);
         request.page_size = Some(2);
@@ -200,4 +208,33 @@ fn similarity_can_take_a_reference_selected_by_near_ranking() {
     request.near = Some(&near);
     let answer = run_q(&archive, request).unwrap();
     assert!(!answer["data"]["matches"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn pace_pages_global_gaps_and_keeps_summaries_for_the_full_selection() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let text = "sessions | measure pace";
+    let mut whole = ask(text);
+    whole.page_size = Some(1000);
+    let expected = run_q(&archive, whole).unwrap();
+    let mut first = ask(text);
+    first.page_size = Some(1);
+    let first = run_q(&archive, first).unwrap();
+    assert_eq!(first["data"]["gaps"].as_array().unwrap().len(), 1);
+    assert_eq!(first["data"]["gaps"][0], expected["data"]["gaps"][0]);
+    assert_eq!(first["data"]["sessions"], expected["data"]["sessions"]);
+    assert_eq!(first["count"], expected["data"]["total_gaps"]);
+    let mut gaps = first["data"]["gaps"].as_array().unwrap().clone();
+    let mut cursor = first["next"].as_str().map(str::to_owned);
+    while let Some(next) = cursor {
+        let mut request = ask(text);
+        request.page_size = Some(2);
+        request.cursor = Some(&next);
+        let page = run_q(&archive, request).unwrap();
+        assert_eq!(page["data"]["sessions"], expected["data"]["sessions"]);
+        gaps.extend(page["data"]["gaps"].as_array().unwrap().iter().cloned());
+        cursor = page["next"].as_str().map(str::to_owned);
+    }
+    assert_eq!(gaps, *expected["data"]["gaps"].as_array().unwrap());
 }

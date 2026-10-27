@@ -325,6 +325,7 @@ impl<'a> Compiler<'a> {
                     measure = Some(Measure {
                         what: what.clone(),
                         population_sql: String::new(),
+                        selection_sql: String::new(),
                         everything: wheres.is_empty(),
                     });
                 }
@@ -643,6 +644,7 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         if let Some(measure) = &mut measure {
+            measure.selection_sql = sql.clone();
             measure.population_sql = format!(
                 "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
                 s = scope.a.s,

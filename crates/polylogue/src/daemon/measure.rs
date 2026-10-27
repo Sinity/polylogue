@@ -17,6 +17,7 @@ use serde_json::Value;
 pub enum Paging {
     Sessions,
     Similar,
+    Pace,
 }
 
 pub struct Measure {
@@ -79,9 +80,9 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "pace",
-        help: "Observed authored turn gaps and burstiness of consecutive user-message gaps (at least 10 gaps); threshold_seconds defaults to 60; query cursor pages sessions",
+        help: "Observed authored turn gaps and burstiness of consecutive user-message gaps (at least 10 gaps); threshold_seconds defaults to 60; query cursor pages gaps across the full selection",
         whole_archive: false,
-        paging: Some(Paging::Sessions),
+        paging: Some(Paging::Pace),
         argument: Some("threshold_seconds"),
         metrics: &[],
         run: |r, x| json(measure::pace::pace(r, &x.selection, x.metric)),

@@ -231,7 +231,7 @@ const MEASURE_ARGS: &[Arg] = &[
         Kind::Words,
         "A sessions query (default: every session)",
     ),
-    opt("limit", Kind::Integer, "Sessions or matches per page"),
+    opt("limit", Kind::Integer, "Rows per page"),
     WHY,
     CURSOR,
     FIELDS,

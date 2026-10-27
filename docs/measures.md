@@ -82,8 +82,9 @@ No spending recommendations are made.
 ## Pacing
 
 `pace:THRESHOLD_SECONDS` defaults to `pace:60`.
-The query cursor pages sessions. Every returned session contributes all its gaps
-and its totals to that page. Gaps are between timestamped
+The query cursor pages gaps across the full selection, 100 per page unless
+`--limit` sets a different size. Session summaries cover
+every selected session on every page. Gaps are between timestamped
 user/assistant messages in source order, excluding harness-written rows. Missing timestamps are counted;
 negative gaps are ignored and counted. A gap at or below the threshold is
 `active`; a longer gap ending with an assistant is `model_work`; a longer gap
@@ -91,10 +92,11 @@ ending with a user is `user_idle`. These names describe observed timing, not
 human attention or model compute time. `active_ms` excludes `model_work_ms`,
 so their sum corresponds to the predecessor's combined active total.
 
-Within each session page, gaps are ordered by decreasing duration, then session
-ID and source position. Each includes both message IDs, source turn positions
-and classification. The response's `count` and `next` refer to selected sessions,
-with `total_gaps` describing the returned sessions. All paged measures use the
+Gaps are ordered by decreasing duration, then session ID and the first
+message's source keys. Each includes both message IDs, source turn positions
+and classification. The response's `count`, `next` and `total_gaps` describe
+the gaps of the full selection. Stable source keys let inserts before a cursor
+leave existing gap pages in order. All paged measures use the
 same query cursor and `--limit`/`--cursor` arguments as ordinary queries.
 
 Burstiness is the Goh–Barabási coefficient `B = (σ − μ) / (σ + μ)` of the gaps

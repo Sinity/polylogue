@@ -52,8 +52,19 @@ fn threshold_boundary_model_work_idle_negative_and_missing() {
     assert_eq!(report.model_work_ms, 60_001);
     assert_eq!(report.user_idle_ms, 79_999);
     assert_eq!(report.ignored_negative_gaps, 1);
-    assert_eq!(x.gaps[0].kind, "user_idle");
-    assert_eq!(x.gaps[0].to_position, 4);
+    let gaps = r
+        .query(
+            &gap_query(
+                "SELECT pk AS _pk FROM session WHERE id='codex:pacing'",
+                "60",
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
+    let idle = gaps.iter().find(|r| r["kind"] == "user_idle").unwrap();
+    assert_eq!(idle["milliseconds"], 79_999);
+    assert_eq!(idle["to_position"], 4);
     assert_eq!(report.user_gaps, 0);
     assert_eq!(report.burstiness, None);
     assert_eq!(
@@ -111,5 +122,12 @@ fn harness_tool_result_does_not_count_as_user_idle() {
     let x = pace(&r, &Selection::default(), "").unwrap();
     assert_eq!(x.sessions[0].turns, 1);
     assert_eq!(x.sessions[0].user_idle_ms, 0);
-    assert!(x.gaps.is_empty());
+    assert!(
+        r.query(
+            &gap_query("SELECT pk AS _pk FROM session", "").unwrap(),
+            &[]
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
