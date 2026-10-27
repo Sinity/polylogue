@@ -53,15 +53,17 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
-                    let mut queue = match InputWriter::new(&archive, &writer, source, notify.clone()) {
-                        Ok(queue) => queue,
-                        Err(error) => {
-                            completed
-                                .errors
-                                .push(format!("read database {}: {error}", source.path.display()));
-                            continue;
-                        }
-                    };
+                    let mut queue =
+                        match InputWriter::new(&archive, &writer, source, notify.clone()) {
+                            Ok(queue) => queue,
+                            Err(error) => {
+                                completed.errors.push(format!(
+                                    "read database {}: {error}",
+                                    source.path.display()
+                                ));
+                                continue;
+                            }
+                        };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         exporter.export(
                             &source.path,
@@ -104,7 +106,11 @@ impl Databases {
                 }
                 let _ = tx.send((exporter, completed));
             })?;
-        self.worker = Some(Worker { thread, result, progress });
+        self.worker = Some(Worker {
+            thread,
+            result,
+            progress,
+        });
         Ok(())
     }
     pub fn completed(&mut self, wait: bool) -> Completed {
@@ -124,11 +130,14 @@ impl Databases {
                 self.exporter = Some(exporter);
                 Completed {
                     finished: true,
-                    changed:changed || completed.changed,
+                    changed: changed || completed.changed,
                     ..completed
                 }
             }
-            Err(TryRecvError::Empty) => Completed {changed,..Completed::default()},
+            Err(TryRecvError::Empty) => Completed {
+                changed,
+                ..Completed::default()
+            },
             Err(TryRecvError::Disconnected) => {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
@@ -181,7 +190,9 @@ impl<'a> InputWriter<'a> {
             notify,
         };
         if let Some(progress) = progress {
-            let from = reader.tool_database_length(&source.input.id)?.unwrap_or(if progress.parsed { progress.length } else { 0 });
+            let from = reader
+                .tool_database_length(&source.input.id)?
+                .unwrap_or(if progress.parsed { progress.length } else { 0 });
             if from < progress.length {
                 // Only a stop between the byte commit and the comparison
                 // commit leaves this suffix. An ordinary restart reads none.
@@ -279,29 +290,39 @@ impl<'a> InputWriter<'a> {
         self.acknowledge_ready()?;
         Ok(())
     }
-    fn accepted(&mut self, size:u64, results:Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>) -> Result<(),ExportError> {
+    fn accepted(
+        &mut self,
+        size: u64,
+        results: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
+    ) -> Result<(), ExportError> {
         self.bytes -= size;
         let _ = self.notify.try_send(());
-        for result in results { result?; }
+        for result in results {
+            result?;
+        }
         Ok(())
     }
-    fn acknowledge_ready(&mut self) -> Result<(),ExportError> {
-        while let Some((_,ack)) = self.waiting.front() {
+    fn acknowledge_ready(&mut self) -> Result<(), ExportError> {
+        while let Some((_, ack)) = self.waiting.front() {
             match ack.try_recv() {
                 Ok(results) => {
-                    let (size,_) = self.waiting.pop_front().expect("waiting group");
-                    self.accepted(size,results)?;
+                    let (size, _) = self.waiting.pop_front().expect("waiting group");
+                    self.accepted(size, results)?;
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Err(polylogue_store::StoreError::WriterGone.into()),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(polylogue_store::StoreError::WriterGone.into());
+                }
             }
         }
         Ok(())
     }
-    fn acknowledge(&mut self) -> Result<(),ExportError> {
-        if let Some((size,ack)) = self.waiting.pop_front() {
-            let results=ack.recv().map_err(|_|polylogue_store::StoreError::WriterGone)?;
-            self.accepted(size,results)?;
+    fn acknowledge(&mut self) -> Result<(), ExportError> {
+        if let Some((size, ack)) = self.waiting.pop_front() {
+            let results = ack
+                .recv()
+                .map_err(|_| polylogue_store::StoreError::WriterGone)?;
+            self.accepted(size, results)?;
         }
         Ok(())
     }

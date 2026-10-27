@@ -20,6 +20,7 @@ pub struct Cursor {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Comparison {
     rows: Vec<(String, String, Option<Vec<u8>>)>,
+    schema: Option<Value>,
     pub saved: Option<SavedDatabase>,
     pub length: u64,
 }
@@ -33,9 +34,7 @@ impl Comparison {
             let value: Value = serde_json::from_slice(line)
                 .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
             if let Some(schema) = value.get("schema") {
-                // Recovery deliberately forgets cursors, so a stopped scan
-                // verifies every row before advancing one again.
-                out.saved.get_or_insert_with(SavedDatabase::default).schema = Some(schema.clone());
+                out.schema = Some(schema.clone());
                 continue;
             }
             let table = value
@@ -59,6 +58,10 @@ impl Comparison {
         Ok(out)
     }
     pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
+        let previous: Option<u64> = conn.query_row("SELECT length FROM tool_database WHERE input_pk=?1",[input_pk],|r|r.get(0)).optional()?;
+        // Domain parsing may finish after newer row-dump bytes. Its older
+        // values must not move the comparison state backwards.
+        if previous.is_some_and(|length|length > self.length || (length==self.length && self.saved.is_none())) { return Ok(()); }
         for (table, key, hash) in &self.rows {
             if let Some(hash) = hash {
                 conn.prepare_cached("INSERT INTO tool_row(input_pk,tbl,key,hash) VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,tbl,key) DO UPDATE SET hash=excluded.hash")?.execute(params![input_pk,table,key,hash])?;
@@ -69,12 +72,9 @@ impl Comparison {
                 .execute(params![input_pk, table, key])?;
             }
         }
-        let saved = self
-            .saved
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
+        let saved = if let Some(saved) = &self.saved { Some(saved.clone()) }
+            else { self.schema.as_ref().map(|schema|SavedDatabase { schema:Some(schema.clone()), ..SavedDatabase::default() }) };
+        let saved = saved.as_ref().map(serde_json::to_string).transpose().map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
         conn.execute("INSERT INTO tool_database(input_pk,length,state) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,state=COALESCE(?3,tool_database.state)", params![input_pk,self.length,saved])?;
         Ok(())
     }
