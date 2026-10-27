@@ -8,6 +8,7 @@ const pause = document.getElementById("pause-updates");
 let pending;
 let paused = false;
 let refreshing = false;
+let refreshAgain = false;
 let focusedSession;
 let previous;
 let updated = 0;
@@ -54,7 +55,11 @@ function content(root) {
 }
 
 async function refresh() {
-  if (refreshing || paused || blocked || document.hidden) return;
+  if (paused || blocked || document.hidden) return;
+  if (refreshing) {
+    refreshAgain = true;
+    return;
+  }
   refreshing = true;
   try {
     const response = await fetch(location.href, { credentials: "same-origin" });
@@ -81,12 +86,21 @@ async function refresh() {
       announcement.textContent = updated ? updated + " sessions updated. Apply updates when ready." : "List pages changed. Apply updates when ready.";
     } else commit();
   } catch (error) { announcement.textContent = error.message; }
-  finally { refreshing = false; }
+  finally {
+    refreshing = false;
+    if (refreshAgain) {
+      refreshAgain = false;
+      refresh();
+    }
+  }
 }
 watchChanges({
   async complete(line) { if (previous !== line.position) await refresh(); previous = line.position; },
   refresh,
   error(error) { announcement.textContent = error.message; },
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh();
 });
 const load = document.getElementById("load-notices");
 load.hidden = false;
