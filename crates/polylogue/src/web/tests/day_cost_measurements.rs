@@ -33,8 +33,13 @@ fn day_and_cost_measurements() {
         value["message"]["usage"]=serde_json::json!({"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0});
         format!("{value}\n")
     }).collect::<String>();
-    std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
-    r.w.wait_for(|s| s["store"]["messages"] == 1000 && s["store"]["search_pending"] == 0);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(r.w.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap()
+        .write_all(source.as_bytes())
+        .unwrap();
+    r.w.wait_for(|s| s["store"]["messages"] == 1001 && s["store"]["search_pending"] == 0);
     let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
     let baseline = || Request::Query {
         text: "sessions | measure usage".into(),
@@ -68,7 +73,7 @@ fn day_and_cost_measurements() {
         let elapsed = start.elapsed().as_secs_f64() * 1000.;
         (elapsed, serde_json::to_vec(&answer).unwrap().len())
     };
-    let report = serde_json::json!({"population":{"sessions":1,"known_response_records":1000,"page_size":50},"host_load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; ")),"ingestion":"caught up before samples; watcher remains running","baseline_daemon_usage":samples(||daemon(baseline())),"after_daemon_cost":samples(||daemon(cost())),"after_daemon_day":samples(||daemon(day())),"baseline_http_usage":samples(||http(&server,"/api/v1/query?query=sessions%20%7C%20measure%20usage")),"after_http_cost":samples(||http(&server,"/api/v1/cost?query=sessions")),"after_http_day":samples(||http(&server,"/api/v1/timeline?date=2026-03-01")),"after_html_cost":samples(||http(&server,"/cost")),"after_html_day":samples(||http(&server,"/day/2026-03-01"))});
+    let report = serde_json::json!({"population":{"sessions":1,"known_response_records":1000,"messages":1001,"page_size":50},"host_load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; ")),"ingestion":"caught up before samples; watcher remains running","baseline_daemon_usage":samples(||daemon(baseline())),"after_daemon_cost":samples(||daemon(cost())),"after_daemon_day":samples(||daemon(day())),"baseline_http_usage":samples(||http(&server,"/api/v1/query?query=sessions%20%7C%20measure%20usage")),"after_http_cost":samples(||http(&server,"/api/v1/cost?query=sessions")),"after_http_day":samples(||http(&server,"/api/v1/timeline?date=2026-03-01")),"after_html_cost":samples(||http(&server,"/cost")),"after_html_day":samples(||http(&server,"/day/2026-03-01"))});
     eprintln!("DAY_COST_MEASUREMENTS={report}");
     server.shutdown().unwrap();
 }

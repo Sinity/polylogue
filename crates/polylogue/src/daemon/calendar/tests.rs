@@ -66,7 +66,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     );
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:b");
     let next = result["responses"]["next"].as_str().unwrap();
-    let second = cost(&r, options(Some("2024-03-30"), Some(next)), 0).unwrap();
+    let second = cost(&r, options(Some("2024-03-30"), Some(next)), 10_000_000).unwrap();
     assert_eq!(second["responses"]["rows"][0]["id"], "codex:c");
     assert!(second["responses"]["next"].is_null());
     assert!(cost(&r, options(Some("2024-03-31"), Some(next)), 0).is_err());
