@@ -101,8 +101,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
             r.get(0)
         })?;
-        let id = id
-            .parse()
+        let id = polylogue_model::SessionId::parse(&id)
             .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
         crate::session_row::write(
             tx,

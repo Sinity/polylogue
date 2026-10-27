@@ -49,14 +49,14 @@ fn fixture(changed: bool) -> Vec<Batch> {
     child.parse[0].output.sessions[0].kind = SessionKind::Subagent;
     let browser_message = || {
         let mut m = message("browser-shared", "page reading");
-        m.id = "chatgpt:shared".parse().unwrap();
-        m.session = "chatgpt:conversation".parse().unwrap();
+        m.id = MessageId::parse("chatgpt:shared").unwrap();
+        m.session = SessionId::parse("chatgpt:conversation").unwrap();
         m
     };
     let mut browser = batch("browser", 1, 0, vec![row(9, browser_message())], &[]);
     browser.input.format = "browser-capture".into();
     browser.parse[0].output.sessions.push(Session::new(
-        "chatgpt:conversation".parse().unwrap(),
+        SessionId::parse("chatgpt:conversation").unwrap(),
         SessionKind::Main,
     ));
     let mut export = browser.clone();
@@ -99,7 +99,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
             data: json!({"notification_type":"permission_prompt"}),
         });
     }
-    main.parse[0].output.links[0].at = Some("claude-code:shared".parse().unwrap());
+    main.parse[0].output.links[0].at = Some(MessageId::parse("claude-code:shared").unwrap());
     child.parse[0].output.links[0].call_id = Some("spawn-call".into());
     let mut doc = Document::new(
         DocumentId::parse("claude-ai:instructions").unwrap(),
@@ -162,7 +162,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         "claude-code:child",
         "chatgpt:conversation",
     ] {
-        let id: SessionId = id.parse().unwrap();
+        let id = SessionId::parse(id).unwrap();
         result.insert(
             id.to_string(),
             json!({"session":r.session(&id).unwrap(),"messages":r.messages(&id,false).unwrap()}),

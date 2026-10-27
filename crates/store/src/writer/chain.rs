@@ -38,7 +38,7 @@ impl ChainReading {
 }
 
 impl Inner {
-    fn replace_chain(
+    pub(super) fn replace_chain(
         &mut self,
         input: InputKey,
         chain: i64,

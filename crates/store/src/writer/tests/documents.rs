@@ -299,7 +299,7 @@ fn a_same_chain_document_cannot_override_a_newer_source_time() {
         reads
             .reader()
             .unwrap()
-            .document(&"claude-ai:ordered".parse().unwrap())
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
             .unwrap()
             .unwrap()
             .blocks,
