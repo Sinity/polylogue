@@ -6,6 +6,7 @@ let controller;
 let timer;
 let stopped = false;
 const ready = new Set();
+const initializing = new Map();
 
 function report(error) {
   for (const subscriber of subscribers) subscriber.error?.(error);
@@ -67,7 +68,7 @@ async function batch() {
   } finally {
     controller = undefined;
     if (!stopped && !document.hidden && subscribers.size) {
-      timer = setTimeout(batch, 2000);
+      timer = setTimeout(resume, 2000);
     }
   }
 }
@@ -78,9 +79,11 @@ let clock;
 function visibility() {
   clearTimeout(timer);
   clearInterval(clock);
-  if (document.hidden || stopped || !subscribers.size) controller?.abort();
-  else {
-    batch();
+  if (document.hidden || stopped || !subscribers.size) {
+    controller?.abort();
+    for (const request of initializing.values()) request.abort();
+  } else {
+    resume();
     clock = setInterval(() => {
       for (const subscriber of ready) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
     }, 30000);
@@ -91,18 +94,19 @@ window.addEventListener("pagehide", () => {
   clearTimeout(timer);
   clearInterval(clock);
   controller?.abort();
+  for (const request of initializing.values()) request.abort();
 });
 window.addEventListener("pageshow", visibility);
 
 // Each joining view reads current references in pages. Joining never resets
 // the position that existing views have already completed.
-async function snapshot(subscriber) {
+async function snapshot(subscriber, signal) {
   let cursor;
   let initial;
   do {
-    const query = new URLSearchParams({ query: subscriber.query || "changes where kind:session", limit: "50" });
+    const query = new URLSearchParams({ query: subscriber.query || "changes where (kind:session OR kind:note OR kind:excision)", limit: "50" });
     if (cursor) query.set("cursor", cursor);
-    const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin" });
+    const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
     if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
     if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
     const page = await response.json();
@@ -113,21 +117,43 @@ async function snapshot(subscriber) {
       await subscriber.begin?.({ type: "begin", replacement: true, generation_changed: false });
     }
     if (subscriber.snapshot) await subscriber.snapshot(page);
-    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: "index", change: row });
+    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
     cursor = page.next;
   } while (cursor && subscribers.has(subscriber));
   if (!subscribers.has(subscriber)) return;
   await subscriber.complete?.({ type: "complete", position: initial, replacement: true });
   ready.add(subscriber);
+  initializing.delete(subscriber);
   visibility();
+}
+
+function resume() {
+  if (document.hidden || stopped || !subscribers.size) return;
+  for (const subscriber of subscribers) {
+    if (ready.has(subscriber) || initializing.has(subscriber)) continue;
+    const request = new AbortController();
+    initializing.set(subscriber, request);
+    snapshot(subscriber, request.signal).catch(error => {
+      initializing.delete(subscriber);
+      if (error.name !== "AbortError") subscriber.error?.(error);
+      if (stopped) visibility();
+      else if (!document.hidden && subscribers.has(subscriber)) {
+        clearTimeout(timer);
+        timer = setTimeout(resume, 2000);
+      }
+    });
+  }
+  batch();
 }
 
 export function watchChanges(subscriber) {
   subscribers.add(subscriber);
-  snapshot(subscriber).catch(error => subscriber.error?.(error));
+  resume();
   return () => {
     subscribers.delete(subscriber);
     ready.delete(subscriber);
-    if (!subscribers.size) visibility();
+    initializing.get(subscriber)?.abort();
+    initializing.delete(subscriber);
+    visibility();
   };
 }
