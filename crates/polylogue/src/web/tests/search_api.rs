@@ -151,3 +151,59 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
     });
     provider.join().unwrap();
 }
+
+#[test]
+fn filtered_search_has_the_same_rows_on_every_surface() {
+    let r = reader();
+    rt().block_on(async {
+        for text in [
+            "messages where (parser OR absent) -role:assistant",
+            "sessions where origin:claude-code parser",
+            "messages where origin:claude-code near:\"parser\"",
+            "messages where origin:claude-code parser near:\"parser\"",
+        ] {
+            let request = Request::Query {
+                text: text.into(),
+                cursor: None,
+                page_size: Some(50),
+                why: true,
+                session: None,
+                fields: vec![],
+            };
+            let socket = crate::cli::send(&r.web.daemon.archive.socket(), &request).unwrap();
+            let (status, _, raw) = send(
+                &r,
+                authed(get(&format!(
+                    "/api/v1/query?query={}&limit=50&why=true",
+                    enc(text)
+                )))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await;
+            let api: Value = serde_json::from_str(&raw).unwrap();
+            match socket {
+                Response::Ok { data: answer } => {
+                    assert_eq!(status, StatusCode::OK, "{raw}");
+                    assert_eq!(api["rows"], answer["rows"], "{text}");
+                    let args = json!({"query":text,"limit":50,"why":true})
+                        .as_object()
+                        .unwrap()
+                        .clone();
+                    let mcp = crate::mcp::call(
+                        &polylogue_store::Archive::at(&r.web.daemon.archive.root),
+                        "query",
+                        args,
+                    )
+                    .unwrap();
+                    let mcp: Value = serde_json::from_str(&mcp).unwrap();
+                    assert_eq!(api["rows"], mcp["rows"]);
+                }
+                Response::Error { kind, .. } => {
+                    assert_ne!(status, StatusCode::OK, "{raw}");
+                    assert_eq!(api["error"], kind);
+                }
+            }
+        }
+    });
+}
