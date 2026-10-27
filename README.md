@@ -281,7 +281,8 @@ terminal, Markdown, HTML and JSON. CSV quotes multiline values and encodes
 nested values as JSON cells. Query CSV sends continuation cursors and
 incompleteness notices to stderr; budgeted read CSV keeps the cursor in a field. Org uses transcript headings for
 complete reads and escaped tables with page metadata for queries and budgeted
-reads; YAML preserves typed values and page metadata. None of these
+reads. Org preserves source indentation and literal commas; YAML preserves typed
+values and page metadata. None of these
 formats shorten cell content. `--json` retains the typed response.
 For example:
 
