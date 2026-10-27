@@ -93,8 +93,9 @@ impl Engine {
                                     )
                                 }))
                                 .unwrap_or_else(|_| {
-                                    Err(std::io::Error::other("the replacement parser panicked")
-                                        .into())
+                                    Err(EngineError::Parse(
+                                        "the replacement parser panicked".into(),
+                                    ))
                                 });
                             polylogue_store::timing::reading_queue(0, 1);
                             if finished
@@ -155,8 +156,10 @@ impl Engine {
                         pass.errors
                             .push(format!("re-parse {}: {error}", plan.path.display()));
                         release_path(&mut busy, &plan.path);
-                        plan.failed = true;
-                        self.finish_plan(plan);
+                        if matches!(error, EngineError::Parse(_)) {
+                            plan.failed = true;
+                            self.finish_plan(plan);
+                        }
                     }
                 }
             }
@@ -237,6 +240,7 @@ fn prepare(
             pool::Bytes::Stored(Arc::new(stored))
         };
     }
+    polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
     let mut reading = ChainReading::new()?;
     if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
         let _charge = memory.take(plan.size.min(plan.chunk));
@@ -279,7 +283,11 @@ fn prepare(
             *bytes_read += bytes;
             let (batch, done) = pool::run(job, archive, blobs, false);
             if let Some(error) = &done.error {
-                return Err(std::io::Error::other(error.clone()).into());
+                return Err(if error.starts_with("parse ") {
+                    EngineError::Parse(error.clone())
+                } else {
+                    std::io::Error::other(error.clone()).into()
+                });
             }
             let Some(mut batch) = batch else {
                 return Err(std::io::Error::other("a replacement returned no rows").into());

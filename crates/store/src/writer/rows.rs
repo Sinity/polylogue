@@ -202,6 +202,7 @@ pub(super) fn write_rows(
 struct StoredBlock<'a> {
     body: &'a [u8],
     data: Option<&'a [u8]>,
+    text_id: Option<i64>,
 }
 
 pub(super) struct RowWriter<'a, 't> {
@@ -736,10 +737,6 @@ impl RowWriter<'_, '_> {
             .zip(&prepared.data)
             .enumerate()
         {
-            let stored = StoredBlock {
-                body,
-                data: data.as_deref(),
-            };
             let text_id = self
                 .tx
                 .prepare_cached(
@@ -749,15 +746,12 @@ impl RowWriter<'_, '_> {
                     r.get::<_, i64>(0)
                 })
                 .optional()?;
-            self.insert_block(
-                message_pk,
-                session_pk,
-                idx as i64,
-                block,
-                stored,
-                ms(m.at),
+            let stored = StoredBlock {
+                body,
+                data: data.as_deref(),
                 text_id,
-            )?;
+            };
+            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
         }
         Ok(())
     }
@@ -768,9 +762,12 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        StoredBlock { body, data }: StoredBlock<'_>,
+        StoredBlock {
+            body,
+            data,
+            text_id,
+        }: StoredBlock<'_>,
         at: Option<i64>,
-        text_id: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
             2

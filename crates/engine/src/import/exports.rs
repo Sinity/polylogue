@@ -305,7 +305,7 @@ pub(crate) fn parse_export(
             plan.size,
             next.as_ref().map(|record| record.bytes.as_slice()),
         )
-        .map_err(std::io::Error::other)?
+        .map_err(EngineError::Parse)?
     {
         repeats_whole_conversations = step.repeats_whole_conversations;
         order_from = (step.output.messages.len() as u64).max(1);
@@ -327,7 +327,7 @@ pub(crate) fn parse_export(
             range.clone(),
             &mut StateLookup(&mut scratch),
         )
-        .map_err(std::io::Error::other)?;
+        .map_err(EngineError::Parse)?;
         let count = step.output.messages.len() as u64;
         emit(ExportStep {
             output: step.output,

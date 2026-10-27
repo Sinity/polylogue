@@ -43,6 +43,8 @@ mod writes;
 pub enum EngineError {
     #[error(transparent)]
     Store(#[from] polylogue_store::StoreError),
+    #[error("parser: {0}")]
+    Parse(String),
     #[error(transparent)]
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]

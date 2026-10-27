@@ -644,6 +644,7 @@ impl Inner {
                     Err(_) => break,
                 }
             };
+            let _busy = crate::timing::writer_started();
             self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
