@@ -72,6 +72,13 @@ pub enum Request {
         ids: Vec<String>,
     },
     Status,
+    ScanSecrets {
+        session: Option<String>,
+        all: bool,
+        status: bool,
+        origin: Option<String>,
+        limit: Option<u64>,
+    },
     /// Completions for one word of a query being typed.
     Complete {
         word: String,
@@ -272,6 +279,7 @@ impl Request {
             | Self::ChatAttachment { .. }
             | Self::BackfillJobs
             | Self::Conversations { .. } => true,
+            Self::ScanSecrets { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),

@@ -529,3 +529,26 @@ pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
         id: v.text("id").unwrap_or_default(),
     })
 }
+
+pub fn scan_secrets(_: &Command, v: &Values, _: &Caller) -> Built {
+    let session = v.text("session");
+    let all = v.flag("all");
+    let status = v.flag("status");
+    let origin = v.text("origin");
+    let limit = v.integer("limit");
+    polylogue_store::secret_scan::validate(
+        session.as_deref(),
+        all,
+        status,
+        origin.as_deref(),
+        limit,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Request::ScanSecrets {
+        session,
+        all,
+        status,
+        origin,
+        limit,
+    })
+}

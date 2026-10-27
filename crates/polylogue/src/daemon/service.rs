@@ -206,6 +206,16 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::ScanSecrets {
+        session,
+        all,
+        status,
+        origin,
+        limit,
+    } = request
+    {
+        return secret_scan::handle(d, session, all, status, origin, limit);
+    }
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
@@ -254,6 +264,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "stream_required",
             "the change feed uses the finite socket stream",
         ),
+        Request::ScanSecrets { .. } => unreachable!("scan handled before acquiring reader"),
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),
@@ -1133,6 +1144,7 @@ pub fn start(
 
 mod browser;
 mod read;
+mod secret_scan;
 
 #[cfg(test)]
 mod tests;

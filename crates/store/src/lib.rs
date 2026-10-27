@@ -34,6 +34,7 @@ pub mod read;
 mod repo_lookup;
 pub mod schema;
 pub mod search;
+pub mod secret_scan;
 pub mod session_export;
 mod session_row;
 pub mod sql_functions;

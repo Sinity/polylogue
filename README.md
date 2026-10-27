@@ -140,6 +140,25 @@ vectors of recent `near:` texts, recent answers by read position, and
 completion data, each dropped when a write changes what it was read from.
 `status` shows what it holds under `warm`.
 
+## Secret scan
+
+`polylogue scan-secrets --session ID` scans one session. `--all` scans every
+session pending at the current detector version; `--limit N` limits that
+invocation to N sessions and `--origin ORIGIN` selects one origin. `--status`
+reports pending coverage without scanning. Exactly one mode is required.
+The same command is available as the `scan-secrets` MCP tool and HTTP API.
+
+Results name the session, message or event target, block and decoded string field, with the
+pattern, UTF-8 byte offsets, byte length and SHA-256 fingerprint. They contain
+no matched text. Arrays use indices; object fields use sorted member numbers
+followed by `key` or `value`, so a credential used as a key cannot leak through
+the field path. Scans include session events holding instructions and context.
+Findings and coverage live in the rebuildable index; changed
+sessions and changed scanner rules become pending again. Each session commits
+separately, so a new invocation resumes after an interruption. A clean session
+is covered even when it has no findings. Findings do not create notes or enter
+a brief, and do not request excision. A suspected credential needs review.
+
 ## Reading
 
 Credentials in session text (API keys, tokens, private keys) are masked in

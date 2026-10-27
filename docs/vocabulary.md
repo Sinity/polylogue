@@ -220,6 +220,7 @@ the same change.
 - **parent row**: in `| matches`, the row a matching child belongs to
   (`parent_id`).
 - **budget**: the size a page for a model, or a brief, may take.
+- **secret scan**: credential-shaped spans reported as byte positions and fingerprints; its coverage and findings are rebuildable index output.
 - **masking**: hiding credentials in output; stored bytes never change.
 - **change feed** and **position**: `changes --since POSITION`.
 
