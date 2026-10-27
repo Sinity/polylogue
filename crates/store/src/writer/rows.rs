@@ -40,9 +40,11 @@ pub(super) fn write_rows(
         rows.retract()?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
+    let mut main_sessions = HashMap::new();
     for s in &p.output.sessions {
-        let pk = rows.upsert_session(s)?;
+        let (pk, main) = rows.upsert_session(s)?;
         sessions.insert(s.id.to_string(), pk);
+        main_sessions.insert(s.id.clone(), main);
     }
     let source = crate::documents::Source {
         input_pk,
@@ -88,13 +90,8 @@ pub(super) fn write_rows(
             }
         };
         // A kind this step states needs no lookup.
-        let main = match p
-            .output
-            .sessions
-            .iter()
-            .find(|s| s.id == row.message.session)
-        {
-            Some(session) => session.kind == polylogue_model::SessionKind::Main,
+        let main = match main_sessions.get(&row.message.session) {
+            Some(main) => *main,
             None => rows.session_kind(session_pk)? == "main",
         };
         written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
@@ -300,7 +297,7 @@ impl RowWriter<'_, '_> {
     /// session's own columns are derived from every input's facts
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
-    fn upsert_session(&self, s: &Session) -> Result<i64> {
+    fn upsert_session(&self, s: &Session) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
         let stored: Option<String> = self
             .tx
@@ -318,7 +315,7 @@ impl RowWriter<'_, '_> {
                 let before = cur.clone();
                 cur.merge(s);
                 if cur == before {
-                    return Ok(pk);
+                    return Ok((pk, cur.kind == polylogue_model::SessionKind::Main));
                 }
                 cur
             }
@@ -341,7 +338,7 @@ impl RowWriter<'_, '_> {
         self.tx
             .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
             .execute(params![pk, self.counter])?;
-        Ok(pk)
+        Ok((pk, main))
     }
 
     /// The session's row, created on first sight (`stub` when no record of
@@ -471,10 +468,7 @@ impl RowWriter<'_, '_> {
         )?.query_row([pk],|r|Ok((Version { input_pk:r.get(0)?,chain:r.get(1)?,start:r.get(2)?,end:r.get(3)?,complete:r.get(5)?,rank:r.get(6)?,hash:r.get(7)?,pem:0 },r.get::<_,i64>(8)?))).optional()?;
         let Some((mut v, session_pk)) = winner else {
             self.clear_blocks(pk)?;
-            self.tx.execute(
-                "UPDATE event SET after_message_pk=NULL WHERE after_message_pk=?1",
-                [pk],
-            )?;
+            self.update_event_anchors(pk, false)?;
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
@@ -500,6 +494,7 @@ impl RowWriter<'_, '_> {
                 params![session_pk, self.counter],
             )?;
             self.mark_shown(pk, &v)?;
+            self.update_event_anchors(pk, true)?;
             return Ok(false);
         }
         let restored;
@@ -664,7 +659,35 @@ impl RowWriter<'_, '_> {
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
         ])?;
-        Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
+        let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
+        self.update_event_anchors(pk, true)?;
+        Ok(pk)
+    }
+
+    /// Events can precede their message, or survive its replacement.
+    fn update_event_anchors(&self, message_pk: i64, present: bool) -> Result<()> {
+        let (id, seq): (String, i64) = self
+            .tx
+            .prepare_cached("SELECT id,seq FROM message WHERE pk=?1")?
+            .query_row([message_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let pk = present.then_some(message_pk);
+        let seq = if present { seq } else { 0 };
+        let sessions = self
+            .tx
+            .prepare_cached(
+                "UPDATE event SET after_message_pk=?2,
+             seq=CASE WHEN seq_from_message=1 THEN ?3 ELSE seq END
+             WHERE after_message_id=?1 AND (after_message_pk IS NOT ?2
+                OR (seq_from_message=1 AND seq IS NOT ?3)) RETURNING session_pk",
+            )?
+            .query_map(params![id, pk, seq], |r| r.get::<_, Option<i64>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions.into_iter().flatten() {
+            self.tx
+                .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
+                .execute(params![session, self.counter])?;
+        }
+        Ok(())
     }
 
     /// Removes a message's blocks, keeping search entries and tool-call

@@ -298,6 +298,7 @@ CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
+CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
 

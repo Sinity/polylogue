@@ -767,3 +767,154 @@ fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
     write(&separate_passes, [copy, main]);
     assert_eq!(natural_rows(&separate_passes), natural_rows(&fresh));
 }
+
+#[test]
+fn repeated_kind_facts_use_the_same_first_kind_in_whole_and_appended_steps() {
+    let mut facts = batch("copy", 0, 0, vec![], &["copy"]);
+    facts.parse[0].output.sessions[0].kind = SessionKind::Subagent;
+    let mut whole = facts.clone();
+    whole.length = 200;
+    whole.parse[0].parsed_upto = 200;
+    whole.parse[0].counts = counts(1);
+    whole.parse[0].output.messages.push(row(
+        101,
+        text_message(
+            "shared",
+            "copy",
+            Role::Assistant,
+            "copied reading",
+            Some("end_turn"),
+        ),
+    ));
+    let appended = batch(
+        "copy",
+        0,
+        100,
+        whole.parse[0].output.messages.clone(),
+        &["copy"],
+    );
+    let main = batch(
+        "main",
+        1,
+        0,
+        vec![row(
+            1,
+            text_message(
+                "shared",
+                "main",
+                Role::Assistant,
+                "originating reading",
+                Some("end_turn"),
+            ),
+        )],
+        &["main"],
+    );
+    let fresh = test_archive();
+    write(&fresh, [whole, main.clone()]);
+    let parts = test_archive();
+    write(&parts, [facts]);
+    write(&parts, [appended, main]);
+    assert_eq!(natural_rows(&parts), natural_rows(&fresh));
+}
+
+#[test]
+fn events_follow_late_moved_and_removed_messages_without_changing_their_own_positions() {
+    let w = test_archive();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let positions = || {
+        pool.reader().unwrap().query(
+        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.pk=e.after_message_pk ORDER BY e.kind", &[]).unwrap()
+    };
+    let changed = || {
+        pool.reader()
+            .unwrap()
+            .query(
+                "SELECT changed FROM session WHERE id='claude-code:events'",
+                &[],
+            )
+            .unwrap()[0]["changed"]
+            .as_i64()
+            .unwrap()
+    };
+    let mut events = batch("events", 0, 0, vec![], &["events"]);
+    for (kind, range) in [("message_position", None), ("own_position", Some((7, 8)))] {
+        events.parse[0].output.events.push(Event {
+            session: Some(sid("events")),
+            kind: kind.into(),
+            at: Timestamp::from_unix_ms(1000),
+            after: Some(MessageId::parse("claude-code:anchor").unwrap()),
+            range,
+            data: json!({}),
+        });
+    }
+    write(&w, [events]);
+    assert_eq!(
+        json!(positions()),
+        json!([
+            {"kind":"message_position","after":null,"seq":0},
+            {"kind":"own_position","after":null,"seq":7},
+        ])
+    );
+    let before = changed();
+    let mut messages = batch(
+        "messages",
+        0,
+        0,
+        vec![row(
+            10,
+            text_message("anchor", "main", Role::User, "anchor text", None),
+        )],
+        &["main"],
+    );
+    write(&w, [messages.clone()]);
+    assert_eq!(
+        json!(positions()),
+        json!([
+            {"kind":"message_position","after":"claude-code:anchor","seq":10},
+            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+        ])
+    );
+    assert!(changed() > before);
+    messages.parse[0].output.messages[0].offset = 50;
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut messages.parse[0]).unwrap();
+    let before = changed();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(messages.input.clone(), 1, 100, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(
+        json!(positions()),
+        json!([
+            {"kind":"message_position","after":"claude-code:anchor","seq":50},
+            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+        ])
+    );
+    assert!(changed() > before);
+    let mut reading = ChainReading::new().unwrap();
+    reading
+        .push(&mut ParseStep::new(
+            Output::default(),
+            RecordCounts::default(),
+            0..100,
+            true,
+        ))
+        .unwrap();
+    let before = changed();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(messages.input, 1, 100, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(
+        json!(positions()),
+        json!([
+            {"kind":"message_position","after":null,"seq":0},
+            {"kind":"own_position","after":null,"seq":7},
+        ])
+    );
+    assert!(changed() > before);
+}

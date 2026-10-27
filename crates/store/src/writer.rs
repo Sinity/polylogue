@@ -823,10 +823,6 @@ impl Inner {
             crate::text_rows::index_pending(&self.index, || ())?;
         }
         crate::versions::remove_unused(&self.index, self.first_build.is_some())?;
-        self.index.execute("UPDATE event SET after_message_pk=(SELECT pk FROM message WHERE id=event.after_message_id),
-            seq=CASE WHEN seq_from_message=1 THEN COALESCE((SELECT seq FROM message WHERE id=event.after_message_id),0) ELSE seq END
-            WHERE after_message_id IS NOT NULL AND (after_message_pk IS NOT (SELECT pk FROM message WHERE id=event.after_message_id)
-            OR (seq_from_message=1 AND seq IS NOT COALESCE((SELECT seq FROM message WHERE id=event.after_message_id),0)))",[])?;
         // A full search batch's deletions get one merge at the end of a round.
         let deleted:i64=self.index.query_row("SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='reparse_deletions'),0)",[],|r|r.get(0))?;
         if self.first_build.is_none() && deleted >= 2_000 {
