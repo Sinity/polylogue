@@ -7,13 +7,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-atomicwrites.workspace = true
+tempfile.workspace = true
 polylogue-model.workspace = true
 polylogue-sources.workspace = true
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
 blake3.workspace = true
-gix.workspace = true
+gix-config.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,7 +29,6 @@ faults = ["polylogue-store/faults"]
 mimalloc.workspace = true
 polylogue-store = { workspace = true, features = ["fixture"] }
 proptest.workspace = true
-tempfile.workspace = true
 polylogue-testkit.workspace = true
 rusqlite.workspace = true
 

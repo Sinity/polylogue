@@ -67,3 +67,163 @@ fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
         assert!(!remote.contains('@') || !remote.contains("://"), "{remote}");
     }
 }
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "user.name=Example",
+            "-c",
+            "user.email=example@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn repository(path: &Path) -> String {
+    fs::create_dir_all(path).unwrap();
+    git(path, &["init", "--initial-branch=main"]);
+    git(path, &["commit", "--allow-empty", "-m", "root"]);
+    git(path, &["rev-parse", "HEAD"])
+}
+
+#[test]
+fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let root = repository(&repo);
+    fs::write(
+        repo.join(".git/remote-config"),
+        "[remote \"origin\"]\nurl = https://user:secret@example.invalid/team/project.git\n",
+    )
+    .unwrap();
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(repo.join(".git/config"))
+        .unwrap();
+    writeln!(
+        config,
+        "[includeIf \"onbranch:main\"]\npath = remote-config"
+    )
+    .unwrap();
+    let mut cache = Cache::default();
+    assert_eq!(
+        read(&repo, &mut cache),
+        Lookup {
+            remote: Some("https://example.invalid/team/project.git".into()),
+            root_commit: Some(root.clone())
+        }
+    );
+    git(&repo, &["pack-refs", "--all"]);
+    assert_eq!(read(&repo, &mut cache).root_commit, Some(root.clone()));
+    let linked = temp.path().join("linked");
+    git(
+        &repo,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    let (git_dir, _) = git_directories(&linked).unwrap();
+    fs::write(
+        repo.join(".git/worktree-config"),
+        "[remote \"origin\"]\nurl = git@example.invalid:team/project.git\n",
+    )
+    .unwrap();
+    writeln!(
+        config,
+        "[includeIf \"gitdir:{}\"]\npath = worktree-config",
+        git_dir.display()
+    )
+    .unwrap();
+    assert_eq!(
+        read(&linked, &mut cache),
+        Lookup {
+            remote: Some("git@example.invalid:team/project.git".into()),
+            root_commit: Some(root)
+        }
+    );
+}
+
+#[test]
+fn roots_follow_first_parents_and_change_with_head() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let root = repository(&repo);
+    let mut cache = Cache::default();
+    assert_eq!(read(&repo, &mut cache).root_commit, Some(root.clone()));
+    git(&repo, &["checkout", "--orphan", "other"]);
+    git(&repo, &["commit", "--allow-empty", "-m", "other root"]);
+    let other = git(&repo, &["rev-parse", "HEAD"]);
+    assert_eq!(read(&repo, &mut cache).root_commit, Some(other));
+    git(&repo, &["checkout", "main"]);
+    git(
+        &repo,
+        &["merge", "--allow-unrelated-histories", "--no-edit", "other"],
+    );
+    assert_eq!(read(&repo, &mut cache).root_commit, Some(root));
+}
+
+#[test]
+fn missing_shallow_history_stays_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let root = repository(&repo);
+    git(&repo, &["commit", "--allow-empty", "-m", "later"]);
+    let clone = temp.path().join("shallow");
+    git(
+        &repo,
+        &[
+            "clone",
+            "--depth=1",
+            &format!("file://{}", repo.display()),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let mut cache = Cache::default();
+    assert_eq!(read(&clone, &mut cache).root_commit, None);
+    git(&clone, &["fetch", "--unshallow"]);
+    assert_eq!(read(&clone, &mut cache).root_commit, Some(root));
+}
+
+#[test]
+fn the_first_fetch_url_uses_the_longest_rewrite_and_masks_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    repository(&repo);
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(repo.join(".git/config"))
+        .unwrap();
+    writeln!(config, "[remote \"origin\"]\nurl = short:team/project.git\nurl = https://other.invalid/ignored.git\n[url \"https://example.invalid/\"]\ninsteadOf = short:\n[url \"https://user:secret@example.invalid/selected/\"]\ninsteadOf = short:team/").unwrap();
+    assert_eq!(
+        read(&repo, &mut Cache::default()).remote.as_deref(),
+        Some("https://example.invalid/selected/project.git")
+    );
+}
+
+#[test]
+fn malformed_head_values_and_reference_paths_stay_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    let root = repository(&repo);
+    let dir = repo.join(".git");
+    fs::write(repo.join("outside"), &root).unwrap();
+    for head in [
+        "--all",
+        "not-a-commit",
+        "ref: ../outside",
+        "ref: refs/../../outside",
+    ] {
+        fs::write(dir.join("HEAD"), head).unwrap();
+        assert_eq!(head_id(&dir, &dir), None, "{head}");
+    }
+}
