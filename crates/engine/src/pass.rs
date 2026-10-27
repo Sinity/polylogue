@@ -430,7 +430,9 @@ impl Engine {
         let databases: Vec<_> = self
             .inputs
             .iter()
-            .filter(|(path, state)| state.origin.is_row_dump(path) && !busy.contains(path.as_path()))
+            .filter(|(path, state)| {
+                state.origin.is_row_dump(path) && !busy.contains(path.as_path())
+            })
             .map(|(path, _)| path.clone())
             .collect();
         for path in databases {
@@ -845,7 +847,11 @@ impl Engine {
         loop {
             if checked.elapsed() >= every {
                 checked = Instant::now();
-                let busy = running.keys().map(PathBuf::as_path).chain(waiting.iter().map(|plan| plan.path.as_path())).collect();
+                let busy = running
+                    .keys()
+                    .map(PathBuf::as_path)
+                    .chain(waiting.iter().map(|plan| plan.path.as_path()))
+                    .collect();
                 match self.live_plans(&busy, pass) {
                     Ok(live) => {
                         for plan in live.into_iter().rev() {
