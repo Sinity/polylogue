@@ -4,8 +4,8 @@
 //! so a note never waits behind a first build for longer than one group.
 //!
 //! Every write carries a client request ID. The same ID with the same
-//! content writes nothing and returns what the first write created; the
-//! same ID with other content is refused as a conflict.
+//! intent writes nothing and returns what the first write created; the
+//! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};

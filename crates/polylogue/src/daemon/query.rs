@@ -248,7 +248,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             "now": program.now,
             "definitions": program.definitions,
         });
-        if !ask.text.contains('|')
+        if polylogue_query::parse(ask.text)?.stages.is_empty()
             && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
         {
             validate(reader, &m)?;

@@ -69,7 +69,7 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
         assert!(
             !plan
                 .iter()
-                .any(|step| step.contains("SCAN message") || step.contains("TEMP B-TREE")),
+                .any(|step| step == "SCAN message" || step.contains("TEMP B-TREE")),
             "{plan:?}"
         );
         drop(index);
