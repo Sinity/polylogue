@@ -90,6 +90,14 @@ impl ParseStep {
         step
     }
 
+    /// The comparison hashes of the row-dump records parsed in this step.
+    pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::records(bytes,None)?;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
     /// An unprepared parse over this byte range. A range beginning at zero
     /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(

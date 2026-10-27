@@ -21,6 +21,7 @@ pub(super) struct Completed {
 struct Worker {
     thread: JoinHandle<()>,
     result: Receiver<(Exporter, Completed)>,
+    progress: Receiver<()>,
 }
 #[derive(Default)]
 pub(super) struct Databases {
@@ -45,55 +46,72 @@ impl Databases {
             .take()
             .unwrap_or_else(|| Exporter::with_cursor(polylogue_sources::origin::table_cursor));
         let (tx, result) = sync_channel(1);
+        let (notify, progress) = sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("polylogue-databases".into())
             .spawn(move || {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
-                    let mut queue = match InputWriter::new(&archive, &writer, source) {
+                    let mut queue = match InputWriter::new(&archive, &writer, source, notify.clone()) {
                         Ok(queue) => queue,
                         Err(error) => {
-                            completed.errors.push(format!("read database {}: {error}",source.path.display()));
+                            completed
+                                .errors
+                                .push(format!("read database {}: {error}", source.path.display()));
                             continue;
                         }
                     };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        exporter.export(&source.path, &archive, &source.input, &source.observation,
-                            |bytes,update|queue.append(bytes,update))
+                        exporter.export(
+                            &source.path,
+                            &archive,
+                            &source.input,
+                            &source.observation,
+                            |bytes, update| queue.append(bytes, update),
+                        )
                     }));
                     match outcome {
                         Ok(Ok(done)) => completed.changed |= done.is_some(),
                         Ok(Err(error)) => {
                             exporter.forget(&source.path);
                             completed.changed = true;
-                            completed.errors.push(format!("read database {}: {error}",source.path.display()));
+                            completed
+                                .errors
+                                .push(format!("read database {}: {error}", source.path.display()));
                         }
                         Err(_) => {
                             completed.changed = true;
-                            completed.errors.push(format!("read database {}: worker panicked",source.path.display()));
-                            exporter = Exporter::with_cursor(polylogue_sources::origin::table_cursor);
+                            completed.errors.push(format!(
+                                "read database {}: worker panicked",
+                                source.path.display()
+                            ));
+                            exporter =
+                                Exporter::with_cursor(polylogue_sources::origin::table_cursor);
                         }
                     }
                     // Another source can be read while these groups commit.
-                    pending.push((source,queue));
+                    pending.push((source, queue));
                 }
                 for (source, mut queue) in pending {
                     if let Err(error) = queue.finish() {
                         exporter.forget(&source.path);
                         completed.changed = true;
-                        completed.errors.push(format!("write database {}: {error}",source.path.display()));
+                        completed
+                            .errors
+                            .push(format!("write database {}: {error}", source.path.display()));
                     }
                 }
                 let _ = tx.send((exporter, completed));
             })?;
-        self.worker = Some(Worker { thread, result });
+        self.worker = Some(Worker { thread, result, progress });
         Ok(())
     }
     pub fn completed(&mut self, wait: bool) -> Completed {
         let Some(worker) = &self.worker else {
             return Completed::default();
         };
+        let changed = worker.progress.try_recv().is_ok();
         let result = if wait {
             worker.result.recv().map_err(|_| TryRecvError::Disconnected)
         } else {
@@ -106,10 +124,11 @@ impl Databases {
                 self.exporter = Some(exporter);
                 Completed {
                     finished: true,
+                    changed:changed || completed.changed,
                     ..completed
                 }
             }
-            Err(TryRecvError::Empty) => Completed::default(),
+            Err(TryRecvError::Empty) => Completed {changed,..Completed::default()},
             Err(TryRecvError::Disconnected) => {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
@@ -138,12 +157,14 @@ struct InputWriter<'a> {
     exists: bool,
     waiting: VecDeque<(u64, Acknowledgment)>,
     bytes: u64,
+    notify: SyncSender<()>,
 }
 impl<'a> InputWriter<'a> {
     fn new(
         archive: &'a Archive,
         writer: &'a polylogue_store::WriterSender,
         source: &'a DatabaseInput,
+        notify: SyncSender<()>,
     ) -> Result<Self, ExportError> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
@@ -157,9 +178,10 @@ impl<'a> InputWriter<'a> {
             exists: progress.is_some(),
             waiting: VecDeque::new(),
             bytes: 0,
+            notify,
         };
         if let Some(progress) = progress {
-            let from = reader.tool_database_length(&source.input.id)?.unwrap_or(0);
+            let from = reader.tool_database_length(&source.input.id)?.unwrap_or(if progress.parsed { progress.length } else { 0 });
             if from < progress.length {
                 // Only a stop between the byte commit and the comparison
                 // commit leaves this suffix. An ordinary restart reads none.
@@ -254,17 +276,32 @@ impl<'a> InputWriter<'a> {
         while self.bytes >= 128 << 20 {
             self.acknowledge()?;
         }
+        self.acknowledge_ready()?;
         Ok(())
     }
-    fn acknowledge(&mut self) -> Result<(), ExportError> {
-        if let Some((size, ack)) = self.waiting.pop_front() {
-            for result in ack
-                .recv()
-                .map_err(|_| polylogue_store::StoreError::WriterGone)?
-            {
-                result?;
+    fn accepted(&mut self, size:u64, results:Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>) -> Result<(),ExportError> {
+        self.bytes -= size;
+        let _ = self.notify.try_send(());
+        for result in results { result?; }
+        Ok(())
+    }
+    fn acknowledge_ready(&mut self) -> Result<(),ExportError> {
+        while let Some((_,ack)) = self.waiting.front() {
+            match ack.try_recv() {
+                Ok(results) => {
+                    let (size,_) = self.waiting.pop_front().expect("waiting group");
+                    self.accepted(size,results)?;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Err(polylogue_store::StoreError::WriterGone.into()),
             }
-            self.bytes -= size;
+        }
+        Ok(())
+    }
+    fn acknowledge(&mut self) -> Result<(),ExportError> {
+        if let Some((size,ack)) = self.waiting.pop_front() {
+            let results=ack.recv().map_err(|_|polylogue_store::StoreError::WriterGone)?;
+            self.accepted(size,results)?;
         }
         Ok(())
     }
