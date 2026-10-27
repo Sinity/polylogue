@@ -19,7 +19,9 @@ pub struct Measure {
     pub help: &'static str,
     /// Covers every session: refused after conditions.
     pub whole_archive: bool,
-    /// The series it takes after `:` (`daily:tokens`); empty when none.
+    /// Optional colon-separated arguments, also exposed as --metric.
+    pub argument: Option<&'static str>,
+    /// Closed series choices, for measures such as daily:tokens.
     pub metrics: &'static [&'static str],
     pub run: fn(&Reader<'_>, &Run<'_>) -> polylogue_store::Result<Value>,
     /// The answer as text for a person.
@@ -41,9 +43,81 @@ fn json<T: Serialize>(r: polylogue_store::Result<T>) -> polylogue_store::Result<
 
 pub static MEASURES: &[Measure] = &[
     Measure {
+        name: "facets",
+        help: "Selected and global session frequencies with IDF; optional basic, deep, no-idf or deep-no-idf",
+        whole_archive: false,
+        argument: Some("options"),
+        metrics: &[],
+        run: |r, x| json(measure::facets::facets(r, &x.selection, x.metric)),
+        text: text::json,
+    },
+    Measure {
+        name: "outlook",
+        help: "Billing estimate from cost.plans: plan_name:method (linear, trailing-7d-mean, eom-naive); no configured plan means no outlook",
+        whole_archive: false,
+        argument: Some("plan_name:method"),
+        metrics: &[],
+        run: |r, x| {
+            json(measure::outlook::outlook(
+                r,
+                &x.selection,
+                x.now,
+                x.metric,
+                &polylogue_store::user_writes::machine_id(),
+            ))
+        },
+        text: text::outlook,
+    },
+    Measure {
+        name: "pace",
+        help: "Observed turn gaps and Goh–Barabási coefficient B = (σ − μ) / (σ + μ) of consecutive user-message gaps (at least 10 gaps); threshold_seconds:offset:page_size defaults to 60:0:100",
+        whole_archive: false,
+        argument: Some("threshold_seconds:offset:page_size"),
+        metrics: &[],
+        run: |r, x| json(measure::pace::pace(r, &x.selection, x.metric)),
+        text: text::json,
+    },
+    Measure {
+        name: "profiles",
+        help: "Session facts, timing sources, workflow shape, final observed state and own/with-parents usage",
+        whole_archive: false,
+        argument: None,
+        metrics: &[],
+        run: |r, x| json(measure::profiles::profiles(r, &x.selection)),
+        text: text::json,
+    },
+    Measure {
+        name: "compare",
+        help: "Selected profiles, varying fields and pairwise metadata similarity",
+        whole_archive: false,
+        argument: None,
+        metrics: &[],
+        run: |r, x| json(measure::comparison::compare(r, &x.selection)),
+        text: text::json,
+    },
+    Measure {
+        name: "correlation",
+        help: "Pearson correlation of profile metric_x:metric_y, with measured and missing pair counts",
+        whole_archive: false,
+        argument: Some("metric_x:metric_y"),
+        metrics: &[],
+        run: |r, x| json(measure::comparison::correlation(r, &x.selection, x.metric)),
+        text: text::json,
+    },
+    Measure {
+        name: "distribution",
+        help: "Profile metric distribution, with selected and measured session counts",
+        whole_archive: false,
+        argument: Some("metric"),
+        metrics: &[],
+        run: |r, x| json(measure::comparison::distribution(r, &x.selection, x.metric)),
+        text: text::json,
+    },
+    Measure {
         name: "usage",
         help: "Tokens by kind and cost by model, over a sessions query or everything",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(measure::usage(r, &x.selection)),
         text: text::usage,
@@ -52,6 +126,7 @@ pub static MEASURES: &[Measure] = &[
         name: "sessions",
         help: "Each session's tokens and cost, own (its own responses) and with_parents (what it shows, inherited responses included)",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(measure::sessions(r, &x.selection)),
         text: text::json,
@@ -60,6 +135,7 @@ pub static MEASURES: &[Measure] = &[
         name: "quota",
         help: "The 5-hour and weekly subscription windows: burn and forecast",
         whole_archive: true,
+        argument: None,
         metrics: &[],
         run: |r, x| {
             let known: Vec<_> = polylogue_sources::ORIGINS
@@ -74,6 +150,7 @@ pub static MEASURES: &[Measure] = &[
         name: "outcomes",
         help: "Tool outcomes: ok, error, no result and unknown, never one rate",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::outcomes(r, &x.selection)),
         text: text::json,
@@ -82,6 +159,7 @@ pub static MEASURES: &[Measure] = &[
         name: "failing",
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::failing_commands(r, &x.selection)),
         text: text::failing,
@@ -90,6 +168,7 @@ pub static MEASURES: &[Measure] = &[
         name: "drift",
         help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
         whole_archive: true,
+        argument: None,
         metrics: &[],
         run: |r, _| json(drift::drift(r)),
         text: text::drift,
@@ -98,6 +177,7 @@ pub static MEASURES: &[Measure] = &[
         name: "unanswered",
         help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(survival::unanswered_end(r, &x.selection, x.now)),
         text: text::json,
@@ -106,6 +186,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival",
         help: "Time to a session's first failed tool call, in minutes (Kaplan-Meier)",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, false)),
         text: text::json,
@@ -114,6 +195,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival-turns",
         help: "Time to a session's first failed tool call, in human prompts (Kaplan-Meier)",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, true)),
         text: text::json,
@@ -122,6 +204,7 @@ pub static MEASURES: &[Measure] = &[
         name: "daily",
         help: "A daily series with its 7-day baseline and level changes",
         whole_archive: false,
+        argument: None,
         metrics: daily::DAILY_METRICS,
         run: |r, x| json(daily::daily(r, &x.selection, x.metric, x.day)),
         text: text::json,
@@ -130,6 +213,7 @@ pub static MEASURES: &[Measure] = &[
         name: "process",
         help: "Which tool call follows which, and what follows a failure",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::process(r, &x.selection, 20)),
         text: text::json,
@@ -138,6 +222,7 @@ pub static MEASURES: &[Measure] = &[
         name: "rhythm",
         help: "Prompts by weekday and hour",
         whole_archive: false,
+        argument: None,
         metrics: &[],
         run: |r, x| json(daily::rhythm(r, &x.selection, x.day)),
         text: text::json,
@@ -157,9 +242,10 @@ pub fn find(what: &str) -> Option<(&'static Measure, &str)> {
 pub fn names() -> String {
     MEASURES
         .iter()
-        .map(|m| match m.metrics {
-            [] => m.name.to_owned(),
-            metrics => format!("{}:<{}>", m.name, metrics.join("|")),
+        .map(|m| match (m.argument, m.metrics) {
+            (Some(argument), _) => format!("{}[:{}]", m.name, argument),
+            (None, []) => m.name.to_owned(),
+            (None, metrics) => format!("{}:<{}>", m.name, metrics.join("|")),
         })
         .collect::<Vec<_>>()
         .join(", ")

@@ -331,3 +331,8 @@ excision refuses what it removed from then on. When step 1 already collected
 something an excision removed (its provider file was still there), the
 import stops at that excision and names it: excise it in the primary
 archive and import the file again.
+
+Session [measures](measures.md) include selected/global IDF facets, configured
+billing outlooks, pacing, and profile comparisons. The versioned `profile`
+derivation stores timing and classification facts in `session_profile`; usage
+and cost remain owned by their existing rows and are joined at read time.

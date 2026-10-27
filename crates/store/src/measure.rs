@@ -6,8 +6,13 @@
 //! Hidden sessions stay in every figure: hiding changes what is listed, not
 //! what was used.
 
+pub mod comparison;
 pub mod daily;
 pub mod drift;
+pub mod facets;
+pub mod outlook;
+pub mod pace;
+pub mod profiles;
 pub mod quota;
 mod reports;
 pub mod survival;
