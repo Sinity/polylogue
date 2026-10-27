@@ -128,7 +128,7 @@ fn watch(dir: &Path, seconds: u64) {
             .query("SELECT count(*) AS n FROM message", &[])
             .unwrap();
         let count = rows[0]["n"].as_u64().unwrap();
-        let value = json!({"body":format!("{:0128000}",1),"id":1,"n":seconds});
+        let value = json!({"body":format!("{}1","0".repeat(127999)),"id":1,"n":seconds});
         let hash = blake3::hash(value.to_string().as_bytes())
             .to_hex()
             .to_string()

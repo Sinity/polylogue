@@ -193,7 +193,7 @@ impl<'a> InputWriter<'a> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
         let progress = reader.input_progress(&source.input.id)?;
-        let mut out = Self {
+        let out = Self {
             archive,
             writer,
             source,
