@@ -407,17 +407,23 @@ impl Response {
     }
 }
 
-/// Values whose meaning is declared by the constructor, never inferred from JSON shape.
+/// Typed identifiers and declared command continuations excluded from text cleaning.
 #[derive(Debug, Clone, Default)]
 pub struct References(Vec<String>);
 
 impl References {
     pub(crate) fn response(mut self, data: impl Serialize) -> Response {
         match references::value(&mut self, "", &data) {
-            Ok(data) => Response::Ok {
-                data,
-                references: self,
-            },
+            Ok(data) => {
+                // These root fields belong to the command response, not its authored values.
+                for field in ["cursor", "next", "previous"] {
+                    self.opaque_field(&data, format!("/{field}"));
+                }
+                Response::Ok {
+                    data,
+                    references: self,
+                }
+            }
             Err(error) => crate::daemon::service::error("internal", error),
         }
     }

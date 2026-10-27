@@ -67,3 +67,21 @@ fn only_declared_references_survive_cleaning() {
     assert_ne!(data["session"]["id"], id.to_string());
     assert_ne!(data["authored"], token);
 }
+
+#[test]
+fn command_continuations_keep_bytes_while_authored_nested_fields_are_masked() {
+    let token = "AKIAIOSFODNN7EXAMPLE";
+    let response = References::default()
+        .response(serde_json::json!({
+            "cursor":token,"next":token,"previous":token,
+            "authored":{"cursor":token,"next":token,"previous":token}
+        }))
+        .masked();
+    let Response::Ok { data, .. } = response else {
+        panic!()
+    };
+    for field in ["cursor", "next", "previous"] {
+        assert_eq!(data[field], token);
+        assert_ne!(data["authored"][field], token);
+    }
+}
