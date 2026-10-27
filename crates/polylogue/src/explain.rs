@@ -15,7 +15,7 @@ pub const SUBJECTS: &[&str] = &[
     "capabilities",
 ];
 
-const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * means known and unknown means missing. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe stages sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit stage selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
+const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe stages sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit stage selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
 
 #[derive(Serialize)]
 struct Page {
