@@ -160,5 +160,5 @@ exec = ["codex-worker"]
 arguments = "required"
 pool = "codex"
 result = "exit"
-timeout_seconds = 14400
+timeout_seconds = 28800
 cache = "none"
