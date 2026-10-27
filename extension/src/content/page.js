@@ -37,6 +37,7 @@
       }
       return;
     }
+    if (body.body === null) return;
     const reader = body.body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
