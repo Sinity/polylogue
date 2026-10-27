@@ -78,7 +78,7 @@ it.
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work (words and, with vectors, similarity, ranked together, by pages) with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
 | `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
-| `timeline [--date DATE]` | Recorded activity, logical-day calendar counts, this day across years and undated records ([day pages](docs/web-calendar.md)). |
+| `timeline [--date DATE]` | Recorded activity, logical-day calendar counts, this day across years and undated records ([logical days](docs/web-calendar.md)). |
 | `cost [--query QUERY] [--date DATE]` | Selected-session usage and paged physical responses, optionally in one logical day, with model/day drill-downs and explicit unknown source times ([cost](docs/web-calendar.md)). |
 | `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. `status` also shows the last day's notices. |
 | `changes [--since POSITION]` | The change feed: JSON lines naming changed sessions, notes, removals and excisions since a position, ending with the next position. |
