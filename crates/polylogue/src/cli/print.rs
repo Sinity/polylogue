@@ -27,7 +27,14 @@ pub fn query(data: &Value) -> String {
             .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
                 m.text
             });
-        return text(&data["data"]);
+        let mut out = text(&data["data"]);
+        if let Some(next) = polylogue_render::results::next_page(data) {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            let _ = writeln!(out, "{next}");
+        }
+        return out;
     }
     let mut out = Vec::new();
     let _ = polylogue_render::results::render(data, polylogue_render::Format::Terminal, &mut out);
