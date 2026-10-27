@@ -40,9 +40,9 @@ fn million_message_measurements() {
         &format!(
             "WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<99999)
         INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data)
-        SELECT printf('event:%07d',i),{session},i,'synthetic',?1+(i%5844)*86400000,1,x'' FROM n"
+        SELECT printf('event:%07d',i),{session},i,'synthetic',?1+(i%5844)*86400000,1,?2 FROM n"
         ),
-        [start],
+        rusqlite::params![start, crate::encoding::pack_json(&json!({})).unwrap()],
     )
     .unwrap();
     let setup_ms = setup.elapsed().as_secs_f64() * 1000.0;
