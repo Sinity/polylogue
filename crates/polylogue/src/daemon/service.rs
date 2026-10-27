@@ -20,6 +20,7 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     page_ends: read::page_ends::Cache,
+    feeds: Mutex<feeds::Cache>,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
@@ -179,18 +180,16 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 
 /// Prepares a complete finite feed through the same checks and read pool.
 /// The returned unnamed file holds the bytes to send, never a live Reader.
-pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::File, Response> {
+pub(crate) fn change_feed(
+    d: &Daemon,
+    since: Option<&str>,
+    web: bool,
+) -> Result<std::fs::File, Response> {
     accepting(d)?;
-    let reader = d.reads.reader().map_err(|e| store_error(&e))?;
-    let file = tempfile::tempfile_in(&d.archive.root).map_err(|e| error("io", e))?;
-    super::query::feed::prepare(&reader, since, now_ms(), file).map_err(|f| {
-        Response::Error {
-            kind: f.kind,
-            message: f.message,
-            detail: f.detail,
-        }
-        .masked()
-    })
+    d.feeds
+        .lock()
+        .map_err(|e| error("internal", e))?
+        .read(d, since, web)
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
@@ -427,6 +426,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             cursor.as_deref(),
         ),
         Request::Read {
+            slices,
             target,
             view,
             format,
@@ -436,6 +436,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             start,
         } => {
             let options = read::Options {
+                slices,
                 view: &view,
                 format: &format,
                 with_parents,
@@ -1134,6 +1135,7 @@ pub fn start(
         archive,
         reads,
         page_ends: read::page_ends::Cache::default(),
+        feeds: Mutex::new(feeds::Cache::default()),
         warm: super::warm::Warm::default(),
         writes,
         mode,
@@ -1255,3 +1257,5 @@ fn saved_revision(
         )),
     }
 }
+
+mod feeds;

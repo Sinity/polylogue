@@ -183,7 +183,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let values = values(cmd, m);
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
-        Action::Request(build) => build,
+        Action::Request(build) | Action::Stream(build) => build,
     };
     let caller = Caller {
         surface: Surface::Cli,
@@ -194,7 +194,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Ok(r) => r,
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
-    if matches!(request, Request::Changes { .. }) {
+    if matches!(cmd.action, Action::Stream(_)) {
         return changes::run(&request);
     }
     let root = Archive::default_root();

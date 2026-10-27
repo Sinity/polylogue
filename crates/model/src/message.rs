@@ -233,5 +233,10 @@ impl Message {
     }
 }
 
+/// A user message written by neither the harness nor another model.
+pub fn is_prompt(role: Role, kind: Option<PromptKind>) -> bool {
+    role == Role::User && !matches!(kind, Some(PromptKind::Harness | PromptKind::Model))
+}
+
 #[cfg(test)]
 mod tests;

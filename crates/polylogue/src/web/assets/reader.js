@@ -113,9 +113,3 @@ function copyCli() {
 }
 
 document.querySelector("button.copy-cli")?.addEventListener("click", copyCli);
-
-for (const button of document.querySelectorAll("[data-previous]")) {
-  button.hidden = false;
-  button.disabled = history.length < 2;
-  button.addEventListener("click", () => history.back());
-}

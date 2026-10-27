@@ -1,6 +1,6 @@
 //! HTTP selections and navigation for the shared paged reader.
 use super::*;
-use crate::daemon::{ReadStart, ReadTarget};
+use crate::daemon::{ReadSelection, ReadTarget};
 use polylogue_render::{View, html::encode_path_segment as encode};
 
 const DEFAULT_BUDGET: usize = 8192;
@@ -13,6 +13,7 @@ pub(crate) struct ReadQuery {
     pub latest: Option<bool>,
     pub with_parents: Option<bool>,
     pub budget: Option<usize>,
+    pub outline: Option<bool>,
     pub outline_cursor: Option<String>,
     pub links_cursor: Option<String>,
 }
@@ -67,18 +68,16 @@ impl ReadQuery {
                 url.push_str(&format!("&{name}={}", encode(value)));
             }
         }
+        if self.outline == Some(true) {
+            url.push_str("&outline=true");
+        }
         url
     }
 }
 
 fn failure(web: &Web, kind: &str, message: &str) -> HttpResponse {
     failed(
-        match kind {
-            "not_found" => StatusCode::NOT_FOUND,
-            "bad_request" => StatusCode::BAD_REQUEST,
-            "stale_cursor" | "resync_required" => StatusCode::CONFLICT,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        },
+        error_status(kind),
         kind,
         &access::scrub(message, &web.daemon.archive.root),
     )
@@ -99,15 +98,16 @@ pub(super) async fn session(
         None
     } else if let Some(message) = &p.message {
         match polylogue_model::MessageId::parse(message) {
-            Ok(message) => Some(ReadStart::Message(message)),
+            Ok(message) => Some(ReadSelection::Message(message)),
             Err(_) => return failed(StatusCode::BAD_REQUEST, "bad_request", "not a message ID"),
         }
     } else {
-        p.latest.unwrap_or(false).then_some(ReadStart::Latest)
+        p.latest.unwrap_or(false).then_some(ReadSelection::Latest)
     };
     let response = ask(
         &web,
         Request::Read {
+            slices: true,
             target: ReadTarget::Session(session.clone()),
             view: p.view().into(),
             format: "json".into(),
@@ -122,21 +122,7 @@ pub(super) async fn session(
         Response::Ok { data } => scrubbed(&web, data),
         Response::Error { kind, message, .. } => {
             if kind == "stale_cursor" {
-                let mut shown = p.clone();
-                for value in [
-                    &mut shown.message,
-                    &mut shown.outline_cursor,
-                    &mut shown.links_cursor,
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    *value =
-                        polylogue_render::mask(&access::scrub(value, &web.daemon.archive.root));
-                }
-                let shown_id =
-                    polylogue_render::mask(&access::scrub(&id, &web.daemon.archive.root));
-                let refresh = shown.url(&format!("/s/{}", encode(&shown_id)), None);
+                let refresh = p.url(&format!("/s/{}", encode(&id)), None);
                 return (StatusCode::CONFLICT,Html(pages::layout("Read changed","","polylogue web",&format!("<h1>Read changed</h1><p>{}</p><p><a href=\"{}\">Refresh from this message</a></p>",polylogue_render::html::escape(&access::scrub(&message,&web.daemon.archive.root)),polylogue_render::html::escape(&refresh))))).into_response();
             }
             return failure(&web, &kind, &message);
@@ -153,16 +139,22 @@ pub(super) async fn session(
     if let Some(cursor) = data["cursor"].as_str() {
         p.cursor = Some(cursor.into());
     }
-    let outline = ask(
-        &web,
-        Request::Outline {
-            session,
-            with_parents: p.parents(),
-            page_size: 50,
-            cursor: p.outline_cursor.clone(),
-        },
-    )
-    .await;
+    let outline = if p.outline == Some(true) || p.outline_cursor.is_some() {
+        ask(
+            &web,
+            Request::Outline {
+                session,
+                with_parents: p.parents(),
+                page_size: 50,
+                cursor: p.outline_cursor.clone(),
+            },
+        )
+        .await
+    } else {
+        Response::Ok {
+            data: serde_json::Value::Null,
+        }
+    };
     let links = ask(
         &web,
         Request::Query {
@@ -192,12 +184,6 @@ pub(super) async fn session(
             serde_json::json!({"error":kind,"message":access::scrub(&message,&web.daemon.archive.root)})
         }
     };
-    for value in [&mut p.message, &mut p.outline_cursor, &mut p.links_cursor]
-        .into_iter()
-        .flatten()
-    {
-        *value = polylogue_render::mask(&access::scrub(value, &web.daemon.archive.root));
-    }
     let shown_id = data["session"]["id"].as_str().unwrap_or("Session unknown");
     page(pages::reader::session(
         shown_id,
@@ -234,6 +220,7 @@ pub(super) async fn document(
     match ask(
         &web,
         Request::Read {
+            slices: true,
             target: ReadTarget::Document(document),
             view: p.view().into(),
             format: "json".into(),
@@ -261,9 +248,12 @@ pub(super) async fn message(
     State(web): State<Arc<Web>>,
     UrlPath(id): UrlPath<String>,
 ) -> HttpResponse {
+    let Ok(message_id) = polylogue_model::MessageId::parse(&id) else {
+        return failed(StatusCode::BAD_REQUEST, "bad_request", "not a message ID");
+    };
     let text = format!(
         "messages where message:{}",
-        serde_json::to_string(&id).expect("string")
+        polylogue_query::quoted(&message_id.to_string())
     );
     match ask(
         &web,
@@ -283,14 +273,15 @@ pub(super) async fn message(
             data["rows"][0]["id"].as_str(),
         ) {
             (Some(session), Some(message)) => {
-                let session =
-                    polylogue_render::mask(&access::scrub(session, &web.daemon.archive.root));
-                let message =
-                    polylogue_render::mask(&access::scrub(message, &web.daemon.archive.root));
+                if polylogue_model::SessionId::parse(session).is_err()
+                    || polylogue_model::MessageId::parse(message).is_err()
+                {
+                    return failure(&web, "internal", "invalid message reference");
+                }
                 Redirect::to(&format!(
                     "/s/{}?message={}",
-                    encode(&session),
-                    encode(&message)
+                    encode(session),
+                    encode(message)
                 ))
                 .into_response()
             }

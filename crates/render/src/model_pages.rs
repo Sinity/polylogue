@@ -87,6 +87,7 @@ pub struct Pager {
     header: Option<MessageHeader>,
     first: Option<Position>,
     latest: bool,
+    last_block: bool,
     next: Option<Position>,
     attachments: Vec<crate::AttachmentRef>,
     seen_attachments: std::collections::HashSet<crate::AttachmentRef>,
@@ -110,6 +111,7 @@ impl Pager {
             header: None,
             first: None,
             latest: false,
+            last_block: false,
             next: None,
             attachments: Vec::new(),
             seen_attachments: std::collections::HashSet::new(),
@@ -133,6 +135,7 @@ impl Pager {
     }
 
     pub fn at_latest(mut self) -> Self {
+        self.last_block = true;
         self.latest = true;
         self.at_anchor()
     }
@@ -178,15 +181,16 @@ impl Pager {
             model: message.model.clone(),
             written_by: polylogue_model::WrittenBy::of(message.role, message.prompt_kind),
         });
-        self.source_blocks = message
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, block)| self.view.keeps(&message, block))
-            .map(|(index, _)| index)
-            .collect();
         let blocks = rendered_blocks(&message, self.view);
+        self.source_blocks = blocks.iter().map(|block| block.source_index).collect();
         self.push_blocks(blocks, header(&message), annotations)
+    }
+
+    /// Begin at the final budget-sized part of the selected block.
+    pub fn at_block_end(mut self, last_block: bool) -> Self {
+        self.latest = true;
+        self.last_block = last_block;
+        self
     }
 
     pub fn visible_attachments(&self) -> &[crate::AttachmentRef] {
@@ -208,26 +212,9 @@ impl Pager {
         if self.resumed && !self.validated && self.at.block >= blocks.len() {
             return Err("the read cursor block is outside the selected record");
         }
-        if self.latest && !blocks.is_empty() {
-            self.latest = false;
+        if self.last_block && !blocks.is_empty() {
             self.at.block = blocks.len() - 1;
-            let last = &blocks[self.at.block];
-            let label = last
-                .label
-                .as_deref()
-                .map_or(0, |label| label.chars().count());
-            let prefix = match (last.kind, &last.label) {
-                ("tool_call", Some(_)) => label + 4,
-                ("tool_result", Some(_)) => label + 3,
-                _ => 0,
-            };
-            let heading = if self.at.block == 0 {
-                heading.chars().count() + usize::from(self.at.message > 0)
-            } else {
-                0
-            };
-            self.at.character =
-                (heading + prefix + last.text.chars().count() + 1).saturating_sub(self.budget);
+            self.last_block = false;
         }
         while self.at.block < blocks.len() {
             let p = &blocks[self.at.block];
@@ -245,6 +232,10 @@ impl Pager {
                 .count()
                 .saturating_sub(p.text.chars().count() + 1);
             let length = body.chars().count();
+            if self.latest {
+                self.latest = false;
+                self.at.character = length.saturating_sub(self.budget);
+            }
             if self.at.character >= length {
                 return Err("the read cursor character is outside the block");
             }

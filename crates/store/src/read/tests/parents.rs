@@ -333,7 +333,7 @@ fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
         "claude-code:c-0",
         "claude-code:d-0",
     ];
-    let entries = selected.outline(0, 100).unwrap();
+    let entries = selected.outline(None, 100).unwrap();
     assert_eq!(
         entries
             .iter()
@@ -343,7 +343,7 @@ fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
     );
     assert_eq!(
         selected
-            .outline(2, 2)
+            .outline(Some(entries[1].key), 2)
             .unwrap()
             .iter()
             .map(|entry| entry.message.as_str())

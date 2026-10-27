@@ -184,7 +184,8 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         assert_eq!(s, StatusCode::OK);
         let api: serde_json::Value = serde_json::from_str(&body).unwrap();
         let Response::Ok { data } = handle(
-            Request::Read { start: None,
+            Request::Read {
+            slices: true, start: None,
                 target: crate::daemon::ReadTarget::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 ),
@@ -496,7 +497,8 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
     drop(file);
     r.w.wait_for(|status| {
         if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read { start: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
+        let response = handle(Request::Read {
+            slices: true, start: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
         matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
     });
     rt().block_on(async {
@@ -753,3 +755,5 @@ mod attachments;
 mod pages;
 
 mod benchmark;
+
+mod measurement;

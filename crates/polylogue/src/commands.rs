@@ -104,6 +104,7 @@ pub enum Cli {
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
+    Stream(fn(&Command, &Values, &Caller) -> Result<Request, String>),
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -558,17 +559,14 @@ const WRITTEN: &[Command] = &[
                 Kind::Choice(FORMATS),
                 "Default: typed JSON for programs (`--json`, MCP, HTTP), else terminal text",
             ),
-            opt(
-                "budget",
-                Kind::Integer,
-                "Page budget in estimated tokens; JSON also returns masked block slices",
-            ),
+            opt("budget", Kind::Integer, "Page budget in estimated tokens"),
             CURSOR,
             opt(
                 "message",
                 Kind::Text,
                 "Start at this message in the selected session",
             ),
+            opt("slices", Kind::Bool, "Include masked block slices"),
             opt("latest", Kind::Bool, "Start at the latest message"),
             opt(
                 "with_parents",
@@ -902,7 +900,7 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Request(requests::changes),
+        action: Action::Stream(requests::changes),
         http: true,
         ..CLI
     },
