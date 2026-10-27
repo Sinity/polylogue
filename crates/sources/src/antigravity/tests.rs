@@ -102,3 +102,34 @@ fn an_unclosed_command_does_not_swallow_later_activity() {
         matches!(&result.output.messages[1].message.blocks[0],Block::ToolCall {tool:Some(t),..} if t=="edited_file")
     );
 }
+
+#[test]
+fn source_update_time_belongs_to_metadata_without_inventing_message_times() {
+    let parsed = parse("### User Input\nQuestion\n");
+    let event = parsed
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "antigravity_session")
+        .unwrap();
+    assert_eq!(
+        event.at,
+        crate::time::rfc3339(&json!("2026-03-05T04:21:34Z"))
+    );
+    assert_eq!(event.data["workspaceName"], "example");
+    assert!(event.data.get("markdown").is_none());
+    assert!(
+        parsed
+            .output
+            .messages
+            .iter()
+            .all(|row| row.message.at.is_none())
+    );
+    let value = json!({"source":"antigravity_language_server","cascadeId":"one","markdown":"### User Input\nQuestion","lastModifiedTime":"unreadable"});
+    let parsed = run_document(&Antigravity, &serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(parsed.output.events[0].at.is_none());
+    assert_eq!(
+        parsed.output.events[0].data["lastModifiedTime"],
+        "unreadable"
+    );
+}

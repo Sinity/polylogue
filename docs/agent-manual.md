@@ -6,7 +6,8 @@ repository files and live checks for facts they answer directly.
 
 1. Check `status` before claiming coverage or freshness. Missing sources and
    incomplete ingestion limit what a search can establish.
-2. Use `brief` with a working directory (`cwd`) or session, `recall` for relevant past
+2. Use `brief` with an absolute `cwd` pointing to your working directory
+   (`session` names the receiving session), `recall` for relevant past
    work, and `takeover` for another session. Each names what it included and
    left out. Use the returned references to read the underlying evidence.
 3. Discover with `query`. For example, `sessions where repo:example since:7d`,
