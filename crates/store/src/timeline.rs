@@ -70,13 +70,13 @@ pub fn page(
     {
         if selection.across_years {
             conditions.push(format!(
-                "substr(date,6) = {} AND date <= {}",
+                "substr(date,-5) = {} AND at < {}",
                 bind(SqlValue::Text(format!(
                     "{:02}-{:02}",
                     date.month(),
                     date.day()
                 ))),
-                bind(SqlValue::Text(date.to_string()))
+                bind(SqlValue::Int(day.day(date).1))
             ));
         } else {
             let (since, until) = day.day(date);
@@ -152,6 +152,11 @@ pub fn calendar(
         unknown_model: false,
     });
     let (since, until) = day.month(date);
+    if until <= since {
+        return Err(crate::StoreError::Invalid(
+            "calendar month has no representable interval".into(),
+        ));
+    }
     reader.query(&format!("WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date, count(*) AS records FROM activity WHERE at >= ?1 AND at < ?2 GROUP BY date ORDER BY date"), &[SqlValue::Int(since),SqlValue::Int(until)])
 }
 
@@ -190,6 +195,11 @@ pub fn costs_by_day(
         unknown_model: false,
     });
     let (since, until) = day.month(month);
+    if until <= since {
+        return Err(crate::StoreError::Invalid(
+            "calendar month has no representable interval".into(),
+        ));
+    }
     params.push(SqlValue::Int(since));
     let first = params.len();
     params.push(SqlValue::Int(until));
