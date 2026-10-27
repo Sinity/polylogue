@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
+    pub undated: bool,
     pub at: Option<i64>,
     pub kind: String,
     pub id: String,
@@ -45,6 +46,7 @@ fn source(selection: &Selection<'_>) -> (String, Vec<SqlValue>) {
 }
 
 /// One page across all activity kinds, ordered by recorded time, kind and ID.
+/// Cost responses without a period continue through undated records afterwards.
 /// Unknown and unrepresentable timestamps remain in the undated population.
 pub fn page(
     reader: &Reader<'_>,
@@ -60,11 +62,12 @@ pub fn page(
         format!("?{}", params.len())
     };
     let date_expr = "pl_timeline_date(at)";
-    let mut conditions = vec![if selection.undated {
-        "date IS NULL".to_owned()
-    } else {
-        "date IS NOT NULL".to_owned()
-    }];
+    let mut conditions = vec!["1".to_owned()];
+    if selection.undated {
+        conditions.push("date IS NULL".into());
+    } else if selection.responses.is_none() {
+        conditions.push("date IS NOT NULL".into());
+    }
     if !selection.undated
         && let Some(date) = selection.date
     {
@@ -97,39 +100,32 @@ pub fn page(
             bind(SqlValue::Text(model.to_owned()))
         ));
     }
+    let time_key = "CASE WHEN date IS NULL THEN 0 ELSE at END";
     if let Some(after) = after {
-        if selection.undated {
-            conditions.push(format!(
-                "(kind,id) > ({},{})",
-                bind(SqlValue::Text(after.kind.clone())),
-                bind(SqlValue::Text(after.id.clone()))
-            ));
-        } else {
-            conditions.push(format!(
-                "(at,kind,id) > ({},{},{})",
-                bind(after.at.map_or(SqlValue::Null, SqlValue::Int)),
-                bind(SqlValue::Text(after.kind.clone())),
-                bind(SqlValue::Text(after.id.clone()))
-            ));
-        }
+        conditions.push(format!(
+            "(date IS NULL,{time_key},kind,id) > ({},{},{},{})",
+            bind(SqlValue::Int(i64::from(after.undated))),
+            bind(if after.undated {
+                SqlValue::Int(0)
+            } else {
+                after.at.map_or(SqlValue::Null, SqlValue::Int)
+            }),
+            bind(SqlValue::Text(after.kind.clone())),
+            bind(SqlValue::Text(after.id.clone()))
+        ));
     }
     let limit = bind(SqlValue::Int(
         i64::try_from(size.saturating_add(1))
             .map_err(|_| crate::StoreError::Invalid("page size exceeds i64".into()))?,
     ));
-    let order = if selection.undated {
-        "kind,id"
-    } else {
-        "at,kind,id"
-    };
-    let mut rows = reader.query(&format!("WITH activity AS ({source}), dated AS (SELECT *, {date_expr} AS date FROM activity) SELECT * FROM dated WHERE {} ORDER BY {order} LIMIT {limit}",conditions.join(" AND ")), &params)?;
+    let mut rows = reader.query(&format!("WITH activity AS ({source}), dated AS (SELECT *, {date_expr} AS date FROM activity) SELECT * FROM dated WHERE {} ORDER BY date IS NULL,{time_key},kind,id LIMIT {limit}",conditions.join(" AND ")), &params)?;
     let more = rows.len() as u64 > size;
     if more {
         rows.pop();
     }
     let next = if more {
         rows.last()
-            .map(|row| json!({"at":row["at"],"kind":row["kind"],"id":row["id"]}))
+            .map(|row| json!({"undated":row["date"].is_null(),"at":row["at"],"kind":row["kind"],"id":row["id"]}))
     } else {
         None
     };
@@ -205,6 +201,37 @@ pub fn costs_by_day(
     params.push(SqlValue::Int(until));
     let last = params.len();
     reader.query(&format!("WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records,sum(cost)/1e9 AS known_usd,sum(cost IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params)
+}
+
+/// Known responses with unrepresentable source times in the selected sessions,
+/// counted apart because no date interval can include them.
+pub fn undated_responses(
+    reader: &Reader<'_>,
+    selection: &crate::measure::Selection,
+) -> Result<u64> {
+    let selection = crate::measure::Selection {
+        since: None,
+        until: None,
+        undated: true,
+        ..selection.clone()
+    };
+    let (source, params) = source(&Selection {
+        date: None,
+        across_years: false,
+        undated: true,
+        responses: Some(&selection),
+        model: None,
+        unknown_model: false,
+    });
+    let rows = reader.query(
+        &format!("SELECT count(*) AS records FROM ({source})"),
+        &params,
+    )?;
+    rows.first()
+        .and_then(|row| row["records"].as_u64())
+        .ok_or_else(|| {
+            crate::StoreError::Invalid("response count is not an unsigned integer".into())
+        })
 }
 
 #[cfg(test)]
