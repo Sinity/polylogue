@@ -37,7 +37,7 @@ fn outlook_escapes_controls_in_plan_names_units_and_reasons() {
         "plan_name": "sample\u{1b}[2J",
         "projection_method": "linear",
         "units": {"unit\u{85}": {"used": 1}},
-        "quota_pressure": {"unit": "quota\u{202e}", "reason": "reason\u{7}"}
+        "quota_pressure": {"unit": "quota\u{202e}", "reason": "reason\u{7}", "used": 1, "projected": 2, "quota": 3, "projected_overage_cost_usd": null}
     });
     let text = outlook(&data);
     assert!(text.contains("sample\\x1b[2J"));
