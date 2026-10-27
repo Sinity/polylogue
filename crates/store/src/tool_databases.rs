@@ -60,6 +60,7 @@ struct DbState {
     exported: Option<DbFacts>,
     exported_at: Option<Instant>,
     cursor_at: Option<Instant>,
+    has_cursor: bool,
     missing: bool,
 }
 #[derive(Default)]
@@ -73,6 +74,7 @@ pub struct Exported {
     pub rows: u64,
     pub gone: u64,
     pub visited: u64,
+    has_cursor: bool,
 }
 impl Exporter {
     pub fn with_cursor(cursor: TableCursor) -> Self {
@@ -103,7 +105,8 @@ impl Exporter {
         let compare = st.exported.is_none()
             || (st.exported != Some(facts)
                 && (quiet || st.exported_at.is_some_and(|at| at.elapsed() >= BUSY_EXPORT)));
-        let cursor = st.cursor_at.is_none_or(|at| at.elapsed() >= CURSOR_EXPORT);
+        let cursor = st.exported.is_none()
+            || (st.has_cursor && st.cursor_at.is_none_or(|at| at.elapsed() >= CURSOR_EXPORT));
         (compare || cursor).then_some(DatabaseRead {
             facts,
             compare,
@@ -150,6 +153,7 @@ impl Exporter {
         )?;
         let st = self.dbs.entry(db.to_owned()).or_default();
         st.missing = false;
+        st.has_cursor = done.has_cursor;
         if due.compare {
             st.exported = Some(due.facts);
             st.exported_at = Some(Instant::now());
@@ -484,6 +488,7 @@ fn write_export(
     saved
         .cursors
         .retain(|table, _| tables.iter().any(|t| &t.name == table));
+    done.has_cursor = !saved.cursors.is_empty();
     if !bytes.is_empty() || saved != catalog.saved {
         send(bytes, Some(saved))?;
     }

@@ -368,3 +368,13 @@ fn a_stopped_read_needs_no_archive_and_can_be_retried() {
     stop.store(false, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(t.export(&mut exporter).unwrap().unwrap().rows, 1);
 }
+
+
+#[test]
+fn unchanged_compare_tables_do_not_wake_for_a_cursor_interval() {
+    let mut t = Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');");
+    let mut exporter = Exporter::default();
+    t.export(&mut exporter).unwrap();
+    exporter.dbs.get_mut(&t.db).unwrap().cursor_at = Some(Instant::now() - CURSOR_EXPORT);
+    assert!(exporter.observe(&t.db).is_none());
+}
