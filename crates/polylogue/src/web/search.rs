@@ -76,16 +76,17 @@ pub(super) fn filtered(text: &str, field: &str, value: &str) -> Result<String, S
             &text[cond.span.end..]
         )
     } else {
-        let start = text.find(unit.name()).unwrap_or(0);
-        let end = if text.trim().is_empty() {
-            0
+        let start = text.len() - text.trim_start().len();
+        let end = start
+            + text[start..]
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(text.len() - start);
+        let source = if text.trim().is_empty() {
+            unit.name()
         } else {
-            start
-                + text[start..]
-                    .find(char::is_whitespace)
-                    .unwrap_or(text.len() - start)
+            &text[..end]
         };
-        format!("{} where {condition}{}", unit.name(), &text[end..])
+        format!("{source} where {condition}{}", &text[end..])
     };
     polylogue_query::parse(&result).map_err(|e| e.to_string())?;
     Ok(result)

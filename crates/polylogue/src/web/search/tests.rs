@@ -21,6 +21,9 @@ fn facets_preserve_source_expressions_and_pipeline_text() {
         "sessions",
         "session",
         " sessions ",
+        " SESSIONS ",
+        " session ",
+        "sessions|sort by last_active desc",
         "",
         "sessions | sort by last_active desc",
     ] {
