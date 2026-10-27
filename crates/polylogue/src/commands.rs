@@ -982,6 +982,8 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::keep),
+        mcp: true,
+        http: true,
         writes: true,
         ..CLI
     },

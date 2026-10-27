@@ -16,13 +16,17 @@ pub fn search(
     );
     match crate::web::search::fields(query) {
         Ok(fields) => {
-            let unit = polylogue_query::parse(query)
+            let parsed_unit = polylogue_query::parse(query)
                 .ok()
                 .map(|q| match q.source {
                     polylogue_query::ast::Source::Unit { unit, .. } => unit.name(),
                     _ => "sessions",
                 })
                 .unwrap_or("sessions");
+            let unit = data
+                .and_then(|data| data["unit"].as_str())
+                .unwrap_or(parsed_unit);
+            let unit = esc(unit);
             let _ = write!(
                 body,
                 "<p>Selected unit: {unit}. Filters apply before ranking.</p><form action=\"/search\" method=\"get\" aria-label=\"Add a facet\"><input type=\"hidden\" name=\"q\" value=\"{}\"><label for=\"facet-field\">Facet</label><select id=\"facet-field\" name=\"field\">",

@@ -1,7 +1,7 @@
 //! Search and facet requests use the daemon's query operation.
 use super::*;
 use polylogue_query::ast::{Query as Parsed, Source, StageKind, Unit};
-use polylogue_query::fields::{FIELDS, Field};
+use polylogue_query::fields::Field;
 
 #[derive(Default, Deserialize)]
 pub(super) struct Search {
@@ -45,9 +45,15 @@ pub(super) fn fields(text: &str) -> Result<Vec<&'static Field>, String> {
     let names = [
         "origin", "repo", "harness", "model", "since", "until", "live", "tag",
     ];
-    Ok(FIELDS
-        .iter()
-        .filter(|f| f.unit == unit && names.contains(&f.name))
+    Ok(names
+        .into_iter()
+        .filter_map(|name| {
+            polylogue_query::fields::lookup(unit, name).or_else(|| {
+                polylogue_query::fields::has_session(unit)
+                    .then(|| polylogue_query::fields::lookup(Unit::Sessions, name))
+                    .flatten()
+            })
+        })
         .collect())
 }
 
