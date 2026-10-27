@@ -345,5 +345,8 @@ fn remote_paths_keep_their_spaces_and_newlines() {
     repository(&repo);
     let remote = " local repository \n";
     git(&repo, &["remote", "add", "origin", remote]);
-    assert_eq!(read(&repo, &mut Cache::default()).remote.as_deref(), Some(remote));
+    assert_eq!(
+        read(&repo, &mut Cache::default()).remote.as_deref(),
+        Some(remote)
+    );
 }
