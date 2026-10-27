@@ -91,3 +91,28 @@ fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
     };
     assert_eq!(text, "path\\part \"λ\"");
 }
+
+#[test]
+fn completion_reads_declared_values_and_refreshes_observed_models() {
+    let d = crate::test_daemon::start("synthetic prompt");
+    let values = |word: &str| {
+        match crate::daemon::service::handle(
+            crate::daemon::Request::Complete { word: word.into() }, &d.daemon,
+        ) {
+            crate::daemon::Response::Ok { data } => data,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(values("live:").as_array().unwrap().iter().any(|v| v["value"] == "live:waiting"));
+    assert!(values("model:").as_array().unwrap().is_empty());
+    let mut message: serde_json::Value = serde_json::from_str(
+        &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
+    ).unwrap();
+    message["message"]["model"] = json!("model with spaces");
+    std::fs::write(
+        d.home.join(".claude/projects/-p/s1.jsonl"),
+        format!("{}{}\n", polylogue_testkit::claude_user("u1", "s1", "synthetic prompt"), message),
+    ).unwrap();
+    d.wait_for(|s| s["store"]["messages"] == 2);
+    assert!(values("model:model").as_array().unwrap().iter().any(|v| v["value"] == "model:\"model with spaces\""));
+}

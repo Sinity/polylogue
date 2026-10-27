@@ -4,10 +4,17 @@ use polylogue_render::html::encode_path_segment as enc;
 use serde_json::{Value, json};
 
 fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
-    match handle(Request::Query {
-        text: text.into(), cursor, page_size: Some(50), why: true,
-        session: None, fields: vec![],
-    }, &r.web.daemon) {
+    match handle(
+        Request::Query {
+            text: text.into(),
+            cursor,
+            page_size: Some(50),
+            why: true,
+            session: None,
+            fields: vec![],
+        },
+        &r.web.daemon,
+    ) {
         Response::Ok { data } => data,
         other => panic!("{text}: {other:?}"),
     }
@@ -18,9 +25,15 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
     let r = reader();
     for n in 0..120 {
         std::fs::write(
-            r.w.home.join(format!(".claude/projects/-p/extra-{n}.jsonl")),
-            polylogue_testkit::claude_user(&format!("u-{n}"), &format!("extra-{n}"), "synthetic parser prompt"),
-        ).unwrap();
+            r.w.home
+                .join(format!(".claude/projects/-p/extra-{n}.jsonl")),
+            polylogue_testkit::claude_user(
+                &format!("u-{n}"),
+                &format!("extra-{n}"),
+                "synthetic parser prompt",
+            ),
+        )
+        .unwrap();
     }
     r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
     let text = "sessions where (parser OR missing) origin:claude-code";
@@ -35,7 +48,9 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
             assert!(ids.insert(row["id"].as_str().unwrap().to_owned()));
         }
         cursor = answer["next"].as_str().map(str::to_owned);
-        if cursor.is_none() { break; }
+        if cursor.is_none() {
+            break;
+        }
     }
     assert_eq!(ids.len(), 121);
 }
