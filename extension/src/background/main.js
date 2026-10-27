@@ -48,7 +48,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     return instancePromise;
   }
 
-  const capturer = new Capturer({ chrome, host, outbox, seen: local, log });
+  const capturer = new Capturer({ chrome, host, outbox, seen: session, log });
   const backfill = new Backfill({ chrome, host, capturer, instance, log });
   const chatActions = new ChatActions({
     chrome, host, instance, log,

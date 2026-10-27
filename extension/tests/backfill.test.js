@@ -105,3 +105,12 @@ describe("a backfill job held by Polylogue", () => {
     expect(chrome.tabs.list).toHaveLength(0);
   });
 });
+
+it("resumes a current conversation whose attachment bytes are still downloading", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  const { backfill, stored } = setup({ job, held: { ...HELD,
+    "old-same": { ...HELD["old-same"], downloading: true },
+  } });
+  await backfill.step();
+  expect(stored.map((c) => c.session.provider_session_id)).toEqual(["old-same", "changed", "new"]);
+});

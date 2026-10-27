@@ -28,7 +28,7 @@ mod title;
 mod tool_calls;
 mod work;
 
-pub use work::check_title;
+pub use work::verification_title;
 
 /// Sessions derived per transaction, so a long derive never holds the
 /// writer for minutes.

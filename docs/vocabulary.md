@@ -159,6 +159,8 @@ the same change.
   document), with the identities it removed (**excised**); a stop
   part way needs no recovery.
 
+- **verification**: a test, build or lint command in the work graph. A **check run** is a run recorded by the development tooling.
+
 ## The daemon
 
 - **daemon**: owns the archive lock and serves clients over a socket.

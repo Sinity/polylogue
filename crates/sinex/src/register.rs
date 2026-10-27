@@ -94,21 +94,43 @@ pub(crate) async fn send(
     let Some((event_type, payload, reading_order)) = event else {
         return Ok(material.to_string());
     };
+    let mut events = vec![ProducerEvent {
+        event_type: event_type.into(),
+        payload,
+        location: Some(RecordLocation {
+            material,
+            anchor: 0,
+        }),
+        output_index: 0,
+        parents: vec![],
+        reading_order,
+        class: Class::Open,
+    }];
+    if let RegisterChange::Request { request, .. } = change
+        && matches!(request.write, UserWrite::DeliveredAdvice(_))
+    {
+        events.push(ProducerEvent {
+            event_type: "polylogue.delivery_outcome".into(),
+            payload: serde_json::to_value(event::DeliveryOutcome {
+                delivery: request.id.clone(),
+                what: "delivered".into(),
+                at: time(request.at)?,
+                detail: Some("written to the harness hook output".into()),
+            })?,
+            location: Some(RecordLocation {
+                material,
+                anchor: 0,
+            }),
+            output_index: 1,
+            parents: vec![],
+            reading_order,
+            class: Class::Open,
+        });
+    }
     client
         .send(Ingress::Events {
             frame: format!("{name}:event"),
-            events: vec![ProducerEvent {
-                event_type: event_type.into(),
-                payload,
-                location: Some(RecordLocation {
-                    material,
-                    anchor: 0,
-                }),
-                output_index: 0,
-                parents: vec![],
-                reading_order,
-                class: Class::Open,
-            }],
+            events,
             failures: vec![],
         })
         .await?;
@@ -195,7 +217,7 @@ pub(crate) fn request_event(
                 })?,
             )
         }
-        UserWrite::Deliver(d) => (
+        UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => (
             "polylogue.delivery",
             serde_json::to_value(event::Delivery {
                 delivery: r.id.clone(),

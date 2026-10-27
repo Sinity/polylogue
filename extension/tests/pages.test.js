@@ -136,9 +136,9 @@ describe("the shared page script", () => {
     window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
     const received = await exchanged(window);
     expect(received[0]).toEqual({ type: "facts", status: 200, info: { id: "c1" }, has_body: true });
-    const appendedBytes = received.filter((m) => m.type === "appended_bytes");
-    expect(appendedBytes.length).toBe(20);
-    expect(appendedBytes.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+    const chunk = received.filter((m) => m.type === "chunk");
+    expect(chunk.length).toBe(20);
+    expect(chunk.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
   });
 
   it("distinguishes empty bodies from answers without a body", async () => {
@@ -147,7 +147,7 @@ describe("the shared page script", () => {
       window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body });
       const received = await exchanged(window);
       expect(received[0].has_body).toBe(body !== null);
-      expect(received.filter((message) => message.type === "appended_bytes")).toHaveLength(0);
+      expect(received.filter((message) => message.type === "chunk")).toHaveLength(0);
       window.close();
     }
   });
@@ -171,11 +171,11 @@ describe("the shared page script", () => {
     window.chrome.runtime.onConnect.fire(port);
     port.onMessage.fire({ type: "conversation" });
     // The first bytes arrive while the rest of the download is held back.
-    await new Promise((resolve) => { const check = () => (received.some((m) => m.type === "appended_bytes") ? resolve() : setTimeout(check, 5)); check(); });
-    expect(received.at(-1).type).toBe("appended_bytes");
+    await new Promise((resolve) => { const check = () => (received.some((m) => m.type === "chunk") ? resolve() : setTimeout(check, 5)); check(); });
+    expect(received.at(-1).type).toBe("chunk");
     release();
     await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
-    const bytes = Buffer.concat(received.filter((m) => m.type === "appended_bytes").map((p) => Buffer.from(p.data, "base64")));
+    const bytes = Buffer.concat(received.filter((m) => m.type === "chunk").map((p) => Buffer.from(p.data, "base64")));
     expect(bytes.length).toBe(2 * chunk.length);
     expect(bytes.every((b) => b === 7)).toBe(true);
   });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import { start } from "../src/background/main.js";
-import { captureBody } from "../src/background/capture.js";
+import { Capturer, captureBody } from "../src/background/capture.js";
 import { fakeChrome, json, until } from "./support/fake_chrome.js";
 
 const CONVERSATION = {
@@ -21,7 +21,9 @@ function storingHost(files = []) {
       if (!known) stored.push(text);
       return { json: { new: !known } };
     },
-    "POST /v1/conversations": () => ({ json: { daemon: "running", conversations: [{ id: "c1", state: "archived", messages: 1 }] } }),
+    "POST /v1/conversations": () => ({ json: { daemon: "running", conversations: [{ id: "c1", state: "archived", messages: 1,
+      downloading: stored.length > 0 && JSON.parse(stored.at(-1)).session.attachments.some((a) => a.not_fetched === "downloading"),
+    }] } }),
     "GET /v1/status": () => ({ json: { daemon: "running", chat_actions: false } }),
     "GET /v1/backfill": () => ({ json: { jobs: [] } }),
     "GET /v1/chat-actions": () => ({ json: { actions: [] } }),
@@ -232,14 +234,15 @@ describe("a capture", () => {
       .toEqual(["Synthetic", "Newest", "Newest"]);
   });
 
-  it("stores the conversation once when none of its files can be downloaded", async () => {
+  it("records the provider refusal when none of its files can be downloaded", async () => {
     const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
     const page = chatgptPage();
     const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     await extension.capturer.downloads();
-    expect(host.stored).toHaveLength(1);
+    expect(host.stored).toHaveLength(2);
+    expect(JSON.parse(host.stored[1]).session.attachments[0].not_fetched).toBe("gone");
     const { problems } = await chrome.storage.session.get({ problems: [] });
     expect(problems[0].text).toContain("could not be downloaded");
   });
@@ -376,4 +379,30 @@ describe("a capture", () => {
     expect(capture.raw_provider_payload).toBeUndefined();
     expect(capture.session.turns).toEqual(session.turns);
   });
+});
+
+it("starts another download after the loop exits and releases the finished payload", async () => {
+  const captured = [];
+  const capturer = new Capturer({ chrome: {}, host: {}, outbox: {}, seen: {} });
+  const base = { conversation: "one", raw: new Blob(["first payload"]) };
+  const newer = { conversation: "one", raw: new Blob(["new payload"]) };
+  const file = { id: "file" };
+  capturer.fetchFiles = async () => [{ ...file, body: new Blob(["bytes"]) }];
+  capturer.keep = async (value) => {
+    captured.push(value.raw);
+    if (captured.length === 1) {
+      await Promise.resolve();
+      queueMicrotask(() => queueMicrotask(() => capturer.download(1, "one", newer, [file], [file])));
+    }
+    return true;
+  };
+  capturer.download(1, "one", base, [file], [file]);
+  const first = capturer.downloading.get("one");
+  await first.work;
+  await capturer.downloads();
+  expect(captured).toEqual([base.raw, newer.raw]);
+  expect(first.latest).toBeNull();
+  expect(first.next).toBeNull();
+  expect(first.available.size).toBe(0);
+  expect(capturer.downloading.size).toBe(0);
 });

@@ -4,7 +4,7 @@
 // conversation list and its files.
 //
 // The background asks through a port (`chrome.tabs.connect`) and gets the
-// answer's facts first, then any body as base64 parts, so a conversation of
+// answer's facts first, then any body as base64 chunks, so a conversation of
 // any size crosses without one oversized message. The page tells the
 // background when its conversation may have changed; the background decides
 // whether to capture.
@@ -16,7 +16,7 @@
 
   // A body is sent as appended bytes as it arrives, so a slow download keeps
   // talking to the background, which Chrome would otherwise stop as idle.
-  const APPENDED_BYTES = 256 * 1024;
+  const CHUNK_BYTES = 256 * 1024;
   // Announce a change after the messages stop changing for this long.
   const CHANGE_PAUSE_MS = 3000;
 
@@ -31,9 +31,9 @@
   /** Sends a body (a Blob, or a fetch Response read as it arrives). */
   async function sendBody(port, body) {
     if (body instanceof Blob) {
-      for (let at = 0; at < body.size; at += APPENDED_BYTES) {
-        const appendedBytes = new Uint8Array(await body.slice(at, at + APPENDED_BYTES).arrayBuffer());
-        port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+      for (let at = 0; at < body.size; at += CHUNK_BYTES) {
+        const chunk = new Uint8Array(await body.slice(at, at + CHUNK_BYTES).arrayBuffer());
+        port.postMessage({ type: "chunk", data: base64(chunk) });
       }
       return;
     }
@@ -42,9 +42,9 @@
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      for (let at = 0; at < value.length; at += APPENDED_BYTES) {
-        const appendedBytes = value.subarray(at, at + APPENDED_BYTES);
-        port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+      for (let at = 0; at < value.length; at += CHUNK_BYTES) {
+        const chunk = value.subarray(at, at + CHUNK_BYTES);
+        port.postMessage({ type: "chunk", data: base64(chunk) });
       }
     }
   }

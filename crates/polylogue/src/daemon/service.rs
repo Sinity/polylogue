@@ -101,6 +101,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
     let mut delivery = None;
     if let Some(sender) = sender
         && !prepared.empty
+        && !matches!(ask, Ask::ToolUse { .. })
     {
         let write = UserWrite::Deliver(Delivery {
             recipient_kind: if ask.recipient().is_some() {
@@ -126,6 +127,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Err(e) => return store_error(&e),
         }
     }
+    let delivery = prepared.advice_id.as_ref().or(delivery.as_ref());
     ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
 }
 
@@ -662,6 +664,30 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             drop(reader);
             context(d, request_id, &ask, sender)
         }
+        Request::AdviceDelivered {
+            request_id,
+            session,
+            cwd,
+            text,
+        } => write(
+            d,
+            request_id,
+            UserWrite::DeliveredAdvice(Delivery {
+                recipient_kind: if session.is_some() {
+                    "session"
+                } else {
+                    "operator"
+                }
+                .into(),
+                recipient_id: session.map(|s| s.to_string()),
+                sender: "hook".into(),
+                event: "advice".into(),
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                text,
+                refs: vec![],
+                left_out: vec![],
+            }),
+        ),
         Request::DeliveryEvent {
             delivery,
             what,

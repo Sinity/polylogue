@@ -129,8 +129,7 @@ export class Capturer {
   /**
    * `chrome` and `host` are the browser and the host; `outbox`
    * keeps captures until the host has them; `seen` remembers what each
-   * conversation held when it was last captured (a chrome.storage area
-   * that outlives restarts, so a restart does not capture it again).
+   * conversation held when it was last captured (a transient chrome.storage area; the daemon owns pending files).
    */
   constructor({ chrome, host, outbox, seen, log = () => {} }) {
     this.chrome = chrome;
@@ -162,13 +161,13 @@ export class Capturer {
     const raw = page.body;
     const now = await fingerprint(raw, info.session);
     const seenKey = `seen ${key}`;
-    const filesKey = `files ${key}`;
-    const known = await this.seen.get({ [seenKey]: null, [filesKey]: false });
+    const known = await this.seen.get({ [seenKey]: null });
     const unchanged = !force && known[seenKey] === now;
-    // An unchanged conversation is looked at again only while files it
-    // names are still to be downloaded (after a restart cut a download off).
-    if (unchanged && !(known[filesKey] && !this.downloading.has(key))) {
-      return { outcome: "unchanged", provider, conversation };
+    if (unchanged) {
+      const held = (await this.host.conversations(provider, [conversation])).conversations[0];
+      if (!held?.downloading || this.downloading.has(key)) {
+        return { outcome: "unchanged", provider, conversation };
+      }
     }
 
     const version = this.chrome.runtime.getManifest().version;
@@ -186,7 +185,6 @@ export class Capturer {
         // The raw conversation must reach the outbox even when the host
         // cannot list its files. Try discovery again on the next capture.
         const outcome = (await this.keep(base, [])) ? "stored" : "waiting";
-        await this.seen.set({ [seenKey]: now, [filesKey]: true });
         this.log(`Files of ${key} could not be listed: ${error.code || error.message}`);
         return { outcome, provider, conversation };
       }
@@ -205,7 +203,6 @@ export class Capturer {
       outcome = (await this.keep(base, files)) ? "stored" : "waiting";
       await this.seen.set({ [seenKey]: now });
     }
-    await this.seen.set({ [filesKey]: missing.length > 0 });
     if (missing.length || this.downloading.has(key)) this.download(tabId, key, base, files, missing);
     return { outcome, provider, conversation };
   }
@@ -244,19 +241,26 @@ export class Capturer {
           // A newer conversation arrived during the download. Its files
           // can use the bytes just fetched, but its text must stay newest.
           if (job.latest !== current.base) continue;
-          const complete = current.files.map((file) => job.available.get(file.id) || file);
-          if (complete.some((file) => file.body)) {
+          const complete = current.files.map((file) => job.available.get(file.id)
+            || fetched.find((f) => f.id === file.id) || file);
+          if (current.missing.length) {
             await this.keep({ ...current.base, reason: "files" }, complete,
               () => job.latest === current.base);
           }
-          if (job.latest === current.base) {
-            // Provider refusals are tried again when the conversation changes.
-            await this.seen.set({ [`files ${key}`]: false });
+          if (!job.next) {
+            job.available.clear();
+            job.latest = null;
           }
         }
+        this.downloading.delete(key);
       })
-      .catch((error) => this.log(`Files of ${key} were not stored: ${error.code || error.message}`))
-      .finally(() => this.downloading.delete(key));
+      .catch((error) => {
+        this.downloading.delete(key);
+        job.available.clear();
+        job.latest = null;
+        job.next = null;
+        this.log(`Files of ${key} were not stored: ${error.code || error.message}`);
+      });
     job.work = work;
     this.downloading.set(key, job);
     this.lastDownload = work;
