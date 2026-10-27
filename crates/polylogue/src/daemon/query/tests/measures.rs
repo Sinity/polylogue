@@ -242,3 +242,29 @@ fn pace_pages_global_gaps_and_keeps_summaries_for_the_full_selection() {
     }
     assert_eq!(gaps, *expected["data"]["gaps"].as_array().unwrap());
 }
+
+#[test]
+fn measures_over_near_ranked_sessions_keep_page_counts() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let vectors = super::generated::vectors_for(&archive, |_| true);
+    let near = |_: &str| Ok(std::sync::Arc::clone(&vectors));
+    for (name, field) in [("profiles", "profiles"), ("compare", "profiles"), ("pace", "gaps")] {
+        let text = format!("sessions where near:\"synthetic ranking\" | measure {name}");
+        let mut request = ask(&text);
+        request.embeddings = true;
+        request.near = Some(&near);
+        request.page_size = Some(1);
+        let answer = run_q(&archive, request).unwrap();
+        assert!(answer["count"].as_u64().unwrap() > 1, "{name}");
+        assert_eq!(answer["data"][field].as_array().unwrap().len(), 1, "{name}");
+        let mut request = ask(&text);
+        request.embeddings = true;
+        request.near = Some(&near);
+        request.page_size = Some(1);
+        request.cursor = answer["next"].as_str();
+        let next = run_q(&archive, request).unwrap();
+        assert_eq!(next["count"], answer["count"], "{name}");
+        assert_eq!(next["data"][field].as_array().unwrap().len(), 1, "{name}");
+    }
+}
