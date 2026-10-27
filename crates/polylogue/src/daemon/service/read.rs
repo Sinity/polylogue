@@ -309,19 +309,19 @@ pub(super) fn run(
     // remembered at that page end or else the state the selection gives
     // there. The epoch taken when the read began stops a read that overlaps
     // a write from restoring or saving cached state after that write clears it.
+    let from = polylogue_store::read::VisitStart {
+        message: position.map_or(0, |at| at.message),
+        key: message_key,
+    };
     let page_end = match position {
         Some(at) => match cache.get(&key, epoch, at.message) {
             Some(cached) => Some(cached),
-            None => match selected.masking_before(at.message) {
+            None => match selected.masking_before(from) {
                 Ok(masker) => Some(PageEnd::new(at.message, masker.unwrap_or_default())),
                 Err(e) => return store_error(&e),
             },
         },
         None => None,
-    };
-    let from = polylogue_store::read::VisitStart {
-        message: position.map_or(0, |at| at.message),
-        key: message_key,
     };
     let mut pager = match (position, page_end) {
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),

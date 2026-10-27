@@ -399,8 +399,47 @@ impl MessageSelection<'_, '_> {
     /// boundary, and only messages holding a PEM header or END line
     /// (`message.pem`) open or close one. So the state is the masker after
     /// those messages alone, in order from the first that leaves a key open.
-    pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
+    pub fn masking_before(&self, start: VisitStart) -> Result<Option<MessageMasker>> {
+        let marked = self.marked_before(start)?;
+        let Some(first) = marked.iter().position(|(_, pem)| *pem == 2) else {
+            return Ok(None);
+        };
+        let mut masker = MessageMasker::default();
+        for (pk, _) in &marked[first..] {
+            for mut block in self.reader.message_blocks(*pk, false)? {
+                masker.block_text(&mut block);
+            }
+        }
+        Ok(Some(masker))
+    }
+
+    /// Only marked rows before the requested message, in reading order.
+    /// A cursor's key avoids reading the ordinary message keys as well.
+    fn marked_before(&self, start: VisitStart) -> Result<Vec<(i64, i64)>> {
         let conn = self.reader.conn()?;
+        if self.with_parents.is_none()
+            && let (Some((session, _)), Some(key)) = (&self.own, start.key)
+        {
+            let from = self.reader.message_order(key, *session)?.ok_or_else(|| {
+                StoreError::Invalid("the read starts at a message the session does not hold".into())
+            })?;
+            let mut statement = conn.prepare_cached(
+                "SELECT pk, pem, order_input_id, seq, record_position, id
+                 FROM message WHERE session_pk = ?1 AND pem <> 0 AND duplicate_of IS NULL",
+            )?;
+            let mut marked: Vec<(MessageOrder, i64, i64)> = statement
+                .query_map([session], |r| {
+                    Ok((
+                        (r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?),
+                        r.get(0)?,
+                        r.get(1)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            marked.retain(|(order, _, _)| order < &from);
+            marked.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            return Ok(marked.into_iter().map(|(_, pk, pem)| (pk, pem)).collect());
+        }
         let mut marked = HashMap::new();
         let mut statement =
             conn.prepare_cached("SELECT pk, pem FROM message WHERE session_pk = ?1 AND pem <> 0")?;
@@ -411,34 +450,14 @@ impl MessageSelection<'_, '_> {
             }
         }
         if !marked.values().any(|pem| *pem == 2) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        let keys = self.keys()?;
-        let before = &keys[..message.min(keys.len())];
-        let Some(first) = before.iter().position(|pk| marked.get(pk) == Some(&2)) else {
-            return Ok(None);
-        };
-        let replay: HashSet<i64> = before[first..]
-            .iter()
-            .filter(|pk| marked.contains_key(pk))
-            .copied()
-            .collect();
-        let mut masker = MessageMasker::default();
-        let mut left = replay.len();
-        self.visit_kept(
-            None,
-            |pk| replay.contains(&pk),
-            |mut message| {
-                masker.message_text(&mut message);
-                left -= 1;
-                if left == 0 {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            },
-        )?;
-        Ok(Some(masker))
+        Ok(self
+            .keys()?
+            .into_iter()
+            .take(start.message)
+            .filter_map(|pk| marked.get(&pk).map(|pem| (pk, *pem)))
+            .collect())
     }
 
     pub(super) fn keys(&self) -> Result<Vec<i64>> {

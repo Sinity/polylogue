@@ -26,6 +26,8 @@ mod rows;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
 
+type MessageOrder = (String, i64, i64, String);
+
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
     archive: Archive,
@@ -567,6 +569,19 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
+    fn message_order(&self, message: i64, session: i64) -> Result<Option<MessageOrder>> {
+        Ok(self
+            .conn()?
+            .prepare_cached(
+                "SELECT order_input_id, seq, record_position, id FROM message
+                 WHERE pk = ?1 AND session_pk = ?2",
+            )?
+            .query_row(params![message, session], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .optional()?)
+    }
+
     /// A message's blocks; without `structured`, tool results lack their
     /// structured data (`block.data`), which is then neither read nor decoded.
     fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
@@ -615,17 +630,8 @@ impl Reader<'_> {
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
             m.cache_write_1h_tokens, m.speed, m.pem";
         const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";
-        let start: Option<(String, i64, i64, String)> = match from {
-            Some(pk) => self
-                .conn()?
-                .prepare_cached(
-                    "SELECT order_input_id, seq, record_position, id FROM message
-                     WHERE pk = ?1 AND session_pk = ?2",
-                )?
-                .query_row(rusqlite::params![pk, session_pk], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })
-                .optional()?,
+        let start = match from {
+            Some(pk) => self.message_order(pk, session_pk)?,
             None => None,
         };
         if from.is_some() && start.is_none() {
