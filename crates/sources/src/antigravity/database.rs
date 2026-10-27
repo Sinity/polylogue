@@ -36,6 +36,7 @@ pub struct Database {
     meta: BTreeMap<String, Json>,
     aliases: BTreeMap<String, String>,
     valid: bool,
+    has_steps: bool,
     superseded: u64,
     last_call: Option<(SessionId, String, String)>,
     calls: usize,
@@ -91,6 +92,7 @@ impl ExportParser for Database {
         self.meta.clear();
         self.aliases.clear();
         self.valid = false;
+        self.has_steps = false;
         self.superseded = 0;
         self.last_call = None;
         self.calls = 0;
@@ -106,7 +108,11 @@ impl ExportParser for Database {
                         tokens(s, &["idx", "step_type", "step_format", "step_payload"])
                     });
             }
+            if v["t"] == "steps" && v["gone"] != true {
+                self.has_steps = true;
+            }
             if v["gone"] != true
+                && v["r"].is_object()
                 && let Some(key) = key(v)
             {
                 if !seen.insert(key.clone()) {
@@ -176,7 +182,7 @@ impl ExportParser for Database {
             }
         }
         for row in references.values() {
-            if let Some(child) = self.native(row)
+            if let Some(child) = self.named_session(row)
                 && let Some(parent) = parent_id(row)
             {
                 let parent = self
@@ -201,7 +207,7 @@ impl ExportParser for Database {
             }];
             if table == "steps" {
                 let row = &v["r"];
-                let native = self.native(row).unwrap_or_default();
+                let native = self.step_session(row).unwrap_or_default();
                 order.extend_from_slice(&(native.len() as u64).to_be_bytes());
                 order.extend_from_slice(native.as_bytes());
                 order.extend_from_slice(
@@ -234,12 +240,14 @@ impl ExportParser for Database {
             output
                 .sessions
                 .push(Session::new(sid.clone(), SessionKind::Main));
-            event(
-                &mut output,
-                Some(sid),
-                "antigravity_trajectory_empty",
-                Json::Null,
-            );
+            if !self.has_steps {
+                event(
+                    &mut output,
+                    Some(sid),
+                    "antigravity_trajectory_empty",
+                    Json::Null,
+                );
+            }
         }
         Ok(Some(crate::Step {
             output,
@@ -256,7 +264,24 @@ impl ExportParser for Database {
         state: &mut dyn ExportState,
     ) -> Result<(), String> {
         let v: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        let table = v["t"].as_str().unwrap_or("schema");
+        if v.get("schema").is_some() {
+            sink.records.record("schema", &RecordOutcome::Used);
+            return Ok(());
+        }
+        let Some(table) = v["t"].as_str() else {
+            sink.records.record(
+                "row",
+                &RecordOutcome::unreadable("row dump line has no table or schema"),
+            );
+            return Ok(());
+        };
+        if v.get("k").is_none() || (v["gone"] != true && !v["r"].is_object()) {
+            sink.records.record(
+                table,
+                &RecordOutcome::unreadable("row dump line needs a key and row object"),
+            );
+            return Ok(());
+        }
         if v["gone"] == true {
             sink.records.record(
                 table,
@@ -265,9 +290,8 @@ impl ExportParser for Database {
             return Ok(());
         }
         let row = &v["r"];
-        let sid = self.native(row).and_then(|n| session_id(ORIGIN, &n));
+        let sid = self.named_session(row).and_then(|n| session_id(ORIGIN, &n));
         match table {
-            "schema" => {}
             "trajectory_meta" => {
                 let native = str_of(row, "trajectory_id")
                     .or_else(|| str_of(row, "cascade_id"))
@@ -295,7 +319,16 @@ impl ExportParser for Database {
                     }
                     sink.out.sessions.push(session);
                 }
-                event(
+                let at = [
+                    "last_modified_time",
+                    "lastModifiedTime",
+                    "updated_at",
+                    "updatedAt",
+                    "modified_at",
+                ]
+                .iter()
+                .find_map(|key| row.get(*key).and_then(crate::time::rfc3339));
+                event_at(
                     sink.out,
                     sid,
                     if matched.is_some() {
@@ -303,6 +336,7 @@ impl ExportParser for Database {
                     } else {
                         "antigravity_unmatched_summary"
                     },
+                    at,
                     row.clone(),
                 );
             }
@@ -326,7 +360,10 @@ impl ExportParser for Database {
                 event(sink.out, sid, "antigravity_parent_reference", row.clone());
             }
             "steps" => {
-                let Some(sid) = sid else {
+                let Some(sid) = self
+                    .step_session(row)
+                    .and_then(|native| session_id(ORIGIN, &native))
+                else {
                     self.last_call = None;
                     self.calls = 0;
                     event(sink.out, None, "antigravity_unattributed_step", row.clone());
@@ -480,7 +517,12 @@ impl ExportParser for Database {
                 });
             }
             _ => {
-                event(sink.out, sid, "antigravity_database_row", row.clone());
+                event(
+                    sink.out,
+                    sid,
+                    "antigravity_database_row",
+                    serde_json::json!({"table":table,"key":v["k"],"row":row}),
+                );
             }
         }
         sink.records.record(table, &RecordOutcome::Used);
@@ -488,7 +530,11 @@ impl ExportParser for Database {
     }
 }
 impl Database {
-    fn native(&self, row: &Json) -> Option<String> {
+    fn named_session(&self, row: &Json) -> Option<String> {
+        let identity = str_of(row, "trajectory_id").or_else(|| str_of(row, "cascade_id"))?;
+        self.aliases.get(identity).cloned()
+    }
+    fn step_session(&self, row: &Json) -> Option<String> {
         let identity = str_of(row, "trajectory_id").or_else(|| str_of(row, "cascade_id"));
         match identity {
             Some(identity) => self.aliases.get(identity).cloned(),
@@ -622,10 +668,20 @@ fn parent_id(row: &Json) -> Option<&str> {
 }
 
 fn event(out: &mut Output, session: Option<SessionId>, kind: &str, data: Json) {
+    event_at(out, session, kind, None, data);
+}
+
+fn event_at(
+    out: &mut Output,
+    session: Option<SessionId>,
+    kind: &str,
+    at: Option<polylogue_model::Timestamp>,
+    data: Json,
+) {
     out.events.push(Event {
         session,
         kind: kind.into(),
-        at: None,
+        at,
         after: None,
         range: None,
         data,
