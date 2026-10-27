@@ -87,7 +87,7 @@ fn comparisons_and_similarity_read_facts_without_message_usage_or_parent_walks()
         rows.iter()
             .all(|r| r["reference"] == "codex:a" && r["session"] != "codex:a")
     );
-    let x = compare(&reader, &Selection::default()).unwrap();
+    let x = compare(&reader, &Selection::default(), "").unwrap();
     assert!(x.differences.contains_key("word_count"));
     assert!(!x.differences.contains_key("workflow_shape"));
     assert!(!x.differences.contains_key("cost_usd"));
@@ -149,7 +149,7 @@ fn underived_sessions_keep_null_facts_and_do_not_fail_aggregates_or_similarity()
     let reader = pool.reader().unwrap();
     let p = reader.session_profiles(&Selection::default()).unwrap();
     assert!(p.iter().all(|p| p.facts.is_none()));
-    let c = compare(&reader, &Selection::default()).unwrap();
+    let c = compare(&reader, &Selection::default(), "").unwrap();
     assert_eq!(c.underived_sessions, 2);
     let d = distribution(&reader, &Selection::default(), "message_count").unwrap();
     assert_eq!(d.underived_sessions, 2);
@@ -161,4 +161,61 @@ fn underived_sessions_keep_null_facts_and_do_not_fail_aggregates_or_similarity()
     let rows = matches(&reader, "codex:new");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["score"], 1);
+}
+
+#[test]
+fn explicit_cost_comparison_reads_own_usage_without_parent_history() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let pk = f
+        .session(SessionFacts {
+            id: "codex:cost",
+            ..Default::default()
+        })
+        .unwrap();
+    let message = f
+        .message(
+            pk,
+            MessageFacts {
+                id: "reply",
+                role: "assistant",
+                written_by: "model",
+                model: Some("gpt-6.1-sol"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.usage(
+        message,
+        &polylogue_model::Usage {
+            input: Some(100),
+            cached_input: Some(0),
+            cache_write: Some(0),
+            output: Some(10),
+            reasoning: Some(0),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    reader
+        .conn()
+        .unwrap()
+        .authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "link" | "block",
+                ..
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))
+        .unwrap();
+    let compared = compare(&reader, &Selection::default(), "cost_usd").unwrap();
+    let metric = compared.profiles[0].metric.as_ref().unwrap();
+    assert_eq!(metric.name, "cost_usd");
+    assert!(metric.value.unwrap() > 0.0);
+    assert!(compare(&reader, &Selection::default(), "unknown").is_err());
 }
