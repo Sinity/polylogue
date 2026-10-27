@@ -283,3 +283,56 @@ fn parent_aliases_collapse_and_conflicting_parents_stay_unresolved() {
         }
     }
 }
+
+#[test]
+fn unnamed_trajectories_do_not_take_native_or_summary_ids() {
+    for table in ["trajectory_meta", "conversation_summaries"] {
+        let other = if table == "trajectory_meta" {
+            json!({"trajectory_id":"conversation","cascade_id":"native"})
+        } else {
+            json!({"cascade_id":"conversation","title":"Unrelated summary"})
+        };
+        let parsed = parse(vec![
+            header(),
+            row(
+                "trajectory_meta",
+                1,
+                json!({"trajectory_id":null,"cascade_id":null}),
+            ),
+            row(table, 2, other),
+        ])
+        .unwrap();
+        let ids: BTreeSet<_> = parsed
+            .output
+            .sessions
+            .iter()
+            .map(|s| s.id.to_string())
+            .collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(ids.contains("antigravity:conversation"));
+        assert!(ids.contains("antigravity:conversation:trajectory"));
+        if table == "conversation_summaries" {
+            assert!(
+                parsed
+                    .output
+                    .events
+                    .iter()
+                    .any(|e| e.kind == "antigravity_unmatched_summary"
+                        && e.data["title"] == "Unrelated summary")
+            );
+        }
+    }
+}
+
+#[test]
+fn several_unnamed_trajectories_are_refused_instead_of_merged() {
+    let unnamed = json!({"trajectory_id":null,"cascade_id":null});
+    assert!(
+        parse(vec![
+            header(),
+            row("trajectory_meta", 1, unnamed.clone()),
+            row("trajectory_meta", 2, unnamed)
+        ])
+        .is_err()
+    );
+}
