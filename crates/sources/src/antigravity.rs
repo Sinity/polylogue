@@ -12,21 +12,51 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub mod database;
+pub mod server;
 
 pub const ORIGIN: &str = "antigravity";
-pub const LOCATIONS: &[&str] = &[".gemini/antigravity/**/*.json"];
+pub const LOCATIONS: &[&str] = &[
+    ".gemini/antigravity/**/*.json",
+    ".gemini/antigravity/conversations/**/*.pb",
+];
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    path.extension().is_some_and(|e| e == "json")
-        && (String::from_utf8_lossy(head).contains("\"antigravity_language_server\"")
-            || crate::document::first_key(head) == Some("cascadeId"))
+    (path.extension().is_some_and(|e| e == "pb")
+        && path.ancestors().any(|p| {
+            p.file_name().is_some_and(|name| name == "conversations")
+                && p.parent()
+                    .is_some_and(|p| p.ends_with(".gemini/antigravity"))
+        }))
+        || path.extension().is_some_and(|e| e == "json")
+            && (String::from_utf8_lossy(head).contains("\"antigravity_language_server\"")
+                || crate::document::first_key(head) == Some("cascadeId"))
 }
-pub fn open(_: &Path) -> Option<Parse> {
-    Some(Parse::Document(Box::new(Antigravity)))
+pub fn open(path: &Path) -> Option<Parse> {
+    if path.extension().is_some_and(|e| e == "pb") {
+        Some(Parse::Document(Box::new(Trajectory)))
+    } else {
+        Some(Parse::Document(Box::new(Antigravity)))
+    }
+}
+
+struct Trajectory;
+impl DocumentParser for Trajectory {
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        out.events.push(Event {
+            session: None,
+            kind: "antigravity_trajectory_bytes".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: serde_json::json!({"hash":BlobHash::of(bytes).to_string(),"length":bytes.len()}),
+        });
+        records.record("trajectory", &RecordOutcome::Used);
+    }
 }
 pub struct Antigravity;
 static FIELDS: Fields = Fields::new(&[
     ("source", Rule::Read),
+    ("trajectoryHash", Rule::Read),
     ("cascadeId", Rule::Read),
     ("markdown", Rule::Read),
     ("title", Rule::Read),

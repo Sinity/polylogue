@@ -24,14 +24,14 @@ fn antigravity_exports_and_trajectory_databases_are_read_by_the_real_loop_and_re
         let pool = w.reads();
         let reader = pool.reader().unwrap();
         let exported = reader
-            .messages(&SessionId::parse("antigravity:exported").unwrap())
+            .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
             .unwrap();
         assert_eq!(
             exported.iter().map(Message::text).collect::<Vec<_>>(),
             ["Markdown prompt", "Markdown answer"]
         );
         let trajectory = reader
-            .messages(&SessionId::parse("antigravity:trajectory").unwrap())
+            .messages(&SessionId::parse("antigravity:trajectory").unwrap(), false)
             .unwrap();
         assert_eq!(
             trajectory.iter().map(Message::text).collect::<Vec<_>>(),
@@ -48,16 +48,51 @@ fn antigravity_exports_and_trajectory_databases_are_read_by_the_real_loop_and_re
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .messages(&SessionId::parse("antigravity:trajectory").unwrap())
+            .messages(&SessionId::parse("antigravity:trajectory").unwrap(), false)
             .unwrap()[0]
             .text(),
         "Database prompt"
     );
     assert_eq!(
         reader
-            .messages(&SessionId::parse("antigravity:exported").unwrap())
+            .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
             .unwrap()
             .len(),
         2
     );
+}
+
+#[test]
+fn opaque_trajectories_are_stored_and_reported_when_the_server_is_absent() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".gemini/antigravity/conversations");
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("not-converted.pb");
+    fs::write(&path, b"synthetic opaque trajectory").unwrap();
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert_eq!(pass.inputs_changed, 1);
+        assert!(
+            pass.errors
+                .iter()
+                .any(|e| e.contains("not-converted.pb not converted")),
+            "{:?}",
+            pass.errors
+        );
+    }
+    fs::remove_file(path).unwrap();
+    delete_index(&w.root);
+    let (mut engine, _lock) = w.engine(64 << 20);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    let events = reader
+        .query(
+            "SELECT kind FROM event WHERE kind='antigravity_trajectory_bytes'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(events.len(), 1);
 }
