@@ -57,6 +57,26 @@ fn a_chatgpt_capture_reads_the_provider_json_under_the_export_ids() {
 }
 
 #[test]
+fn an_empty_download_is_a_stored_zero_byte_file() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider": "chatgpt", "provider_session_id": "c1", "turns": [],
+               "attachments": [{"provider_attachment_id": "file-Pic", "message_provider_id": "m1",
+                                "content_base64": ""}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    match &step.output.messages[0].message.blocks[0] {
+        Block::Image(a) => {
+            assert_eq!(a.blob, Some(BlobHash::of(b"")));
+            assert_eq!(a.size, Some(0));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(step.output.blobs.len(), 1);
+    assert!(step.output.blobs[0].bytes.is_empty());
+}
+
+#[test]
 fn a_file_named_by_the_hash_of_stored_bytes_links_without_bytes() {
     let hash = BlobHash::of(b"hello");
     let bytes = capture(
