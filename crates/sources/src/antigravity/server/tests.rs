@@ -45,10 +45,10 @@ fn server(replies: Vec<(String, Json, u16, Json)>) -> (Server, thread::JoinHandl
     (Server::new(port, "synthetic-token".into()), task)
 }
 
-fn search() -> (String, Json, u16, Json) {
+fn search(limit: usize) -> (String, Json, u16, Json) {
     (
         "SearchConversations".into(),
-        json!({"query":""}),
+        json!({"query":"","limit":limit}),
         200,
         json!({"results":[{"cascadeId":"one","title":"Synthetic title"}]}),
     )
@@ -69,7 +69,7 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
     fs::write(&path, b"synthetic opaque bytes").unwrap();
     let spool = temp.path().join("spool");
     let (server, task) = server(vec![
-        search(),
+        search(1),
         markdown(
             "one",
             json!({"markdown":"### User Input\nQuestion\n### Planner Response\nAnswer"}),
@@ -115,7 +115,7 @@ fn isolates_failed_and_partial_conversions() {
         })
         .collect();
     let (server, task) = server(vec![
-        search(),
+        search(3),
         (
             "ConvertTrajectoryToMarkdown".into(),
             json!({"conversationId":"bad"}),

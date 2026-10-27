@@ -168,7 +168,10 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
     let paths = &pending;
     let mut selected = None;
     for server in servers {
-        match server.post("SearchConversations", serde_json::json!({"query":""})) {
+        match server.post(
+            "SearchConversations",
+            serde_json::json!({"query":"","limit":paths.len()}),
+        ) {
             Ok(value) if value["results"].is_array() => {
                 selected = Some((server, value));
                 break;
