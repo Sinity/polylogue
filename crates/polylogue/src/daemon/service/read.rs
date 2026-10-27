@@ -9,18 +9,19 @@ use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
-const CURSOR_VERSION: u8 = 4;
+const CURSOR_VERSION: u8 = 5;
 
 mod attachments;
 pub(crate) mod page_ends;
 
 pub(super) struct Options<'a> {
+    pub slices: bool,
     pub view: &'a str,
     pub format: &'a str,
     pub with_parents: bool,
     pub budget: Option<usize>,
     pub cursor: Option<&'a str>,
-    pub start: Option<&'a crate::daemon::ReadStart>,
+    pub start: Option<&'a crate::daemon::ReadSelection>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -38,6 +39,10 @@ struct Cursor {
     message_key: Option<i64>,
     /// A keyed hash of the rest, keyed by the index generation's cursor key
     /// ([`Reader::cursor_key`]): a cursor changed or made up is refused.
+    #[serde(default)]
+    tail: bool,
+    #[serde(default)]
+    last_block: bool,
     seal: String,
 }
 
@@ -93,7 +98,7 @@ pub(super) fn run(
     if options.start.is_some() && (options.cursor.is_some() || options.budget.is_none()) {
         return error(
             "bad_request",
-            "a read start requires a budget and cannot be combined with a cursor",
+            "a message or latest selection requires a budget and cannot be combined with a cursor",
         );
     }
     let Some(view) = polylogue_render::View::parse(options.view) else {
@@ -197,6 +202,8 @@ pub(super) fn run(
         Ok(key) => key,
         Err(e) => return store_error(&e),
     };
+    let mut tail = false;
+    let mut last_block = false;
     let position = if let Some(text) = options.cursor {
         let cursor = match Cursor::open(text, &cursor_key, &generation) {
             Ok(cursor) => cursor,
@@ -214,6 +221,8 @@ pub(super) fn run(
                 "the session read changed; start the read again",
             );
         }
+        tail = cursor.tail;
+        last_block = cursor.last_block;
         Some((
             Position {
                 message: cursor.position[0],
@@ -229,28 +238,13 @@ pub(super) fn run(
         Ok(count) => count,
         Err(e) => return store_error(&e),
     };
-    let latest = matches!(options.start, Some(crate::daemon::ReadStart::Latest));
+    let latest = matches!(options.start, Some(crate::daemon::ReadSelection::Latest));
     let position = match (position, options.start) {
         (None, Some(start)) => {
-            use polylogue_model::BlockKind as Kind;
             let located = match start {
-                crate::daemon::ReadStart::Message(message) => selected.locate(Some(message)),
-                crate::daemon::ReadStart::Latest => {
-                    let kinds: &[Kind] = match view {
-                        polylogue_render::View::Full => &[
-                            Kind::Text,
-                            Kind::Thinking,
-                            Kind::ToolCall,
-                            Kind::ToolResult,
-                            Kind::Image,
-                            Kind::File,
-                            Kind::Other,
-                        ],
-                        polylogue_render::View::Dialogue => &[Kind::Text, Kind::Thinking],
-                        polylogue_render::View::Prompts => &[Kind::Text],
-                        polylogue_render::View::Actions => &[Kind::ToolCall, Kind::ToolResult],
-                    };
-                    selected.latest(kinds, view == polylogue_render::View::Prompts)
+                crate::daemon::ReadSelection::Message(message) => selected.locate(Some(message)),
+                crate::daemon::ReadSelection::Latest => {
+                    selected.latest(view.block_kinds(), view.prompts_only())
                 }
             };
             match located {
@@ -267,6 +261,7 @@ pub(super) fn run(
                     if options.with_parents {
                         value["parents"] = serde_json::json!(selected.parents());
                     }
+                    representation(&mut value, options.slices);
                     return ok(value);
                 }
                 Ok(None) => {
@@ -294,16 +289,10 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
-    use polylogue_model::BlockKind as Kind;
-    let selected = match view {
-        polylogue_render::View::Full => selected.for_text(),
-        polylogue_render::View::Dialogue => {
-            selected.for_blocks(&[Kind::Text, Kind::Thinking], false)
-        }
-        polylogue_render::View::Prompts => selected.for_blocks(&[Kind::Text], true),
-        polylogue_render::View::Actions => {
-            selected.for_blocks(&[Kind::ToolCall, Kind::ToolResult], false)
-        }
+    let selected = if view == polylogue_render::View::Full {
+        selected.for_text()
+    } else {
+        selected.for_blocks(view.block_kinds(), view.prompts_only())
     };
     // A read resumes at its cursor's message, from the masking state
     // remembered at that page end or else the state the selection gives
@@ -327,6 +316,9 @@ pub(super) fn run(
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),
     };
+    if tail {
+        pager = pager.at_block_end(last_block);
+    }
     if latest {
         pager = pager.at_latest();
     } else if options.start.is_some() {
@@ -435,6 +427,8 @@ pub(super) fn run(
                 generation: generation.clone(),
                 position: [at.message, at.block, at.character],
                 message_key,
+                tail: false,
+                last_block: false,
                 seal: String::new(),
             };
             match cursor.seal(&cursor_key) {
@@ -443,6 +437,71 @@ pub(super) fn run(
             }
         }
         _ => None,
+    };
+    let previous = if let (Some(at), Some(message)) = (
+        first,
+        page.slices.first().and_then(|slice| slice.message.as_ref()),
+    ) {
+        let key = match selected.message_key(&message.id) {
+            Ok(key) => key,
+            Err(e) => return store_error(&e),
+        };
+        let before = if at.character > 0 {
+            Some((
+                Position {
+                    character: at.character.saturating_sub(budget.max(1).saturating_mul(4)),
+                    ..at
+                },
+                key,
+                false,
+                false,
+            ))
+        } else if at.block > 0 {
+            Some((
+                Position {
+                    block: at.block - 1,
+                    character: 0,
+                    ..at
+                },
+                key,
+                true,
+                false,
+            ))
+        } else if let Some(key) = key {
+            match selected.previous(key, view.block_kinds(), view.prompts_only()) {
+                Ok(Some(previous)) => Some((
+                    Position {
+                        message: previous.message,
+                        block: 0,
+                        character: 0,
+                    },
+                    previous.key,
+                    true,
+                    true,
+                )),
+                Ok(None) => None,
+                Err(e) => return store_error(&e),
+            }
+        } else {
+            None
+        };
+        before.map(|(at, message_key, tail, last_block)| {
+            Cursor {
+                version: CURSOR_VERSION,
+                binding: binding.clone(),
+                content: content.clone(),
+                generation: generation.clone(),
+                position: [at.message, at.block, at.character],
+                message_key,
+                tail,
+                last_block,
+                seal: String::new(),
+            }
+            .seal(&cursor_key)
+            .expect("cursor")
+        })
+    } else {
+        None
     };
     let next = match page.next {
         Some(position) => {
@@ -454,6 +513,8 @@ pub(super) fn run(
                 generation: generation.clone(),
                 position: [position.message, position.block, position.character],
                 message_key: last_key,
+                tail: false,
+                last_block: false,
                 seal: String::new(),
             };
             match cursor.seal(&cursor_key) {
@@ -463,7 +524,7 @@ pub(super) fn run(
         }
         None => None,
     };
-    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "slices": page.slices, "next": next, "cursor":current,
+    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "slices": page.slices, "next": next, "cursor":current,"previous":previous,
         "position": {"message": first.or(position).map_or(0, |at| at.message), "total_messages": count},
         "content_version": content, "generation": generation});
     if !descriptors.is_empty() {
@@ -473,6 +534,7 @@ pub(super) fn run(
         value["parents"] =
             serde_json::to_value(selected.parents()).expect("parents are serializable");
     }
+    representation(&mut value, options.slices);
     ok(value)
 }
 
@@ -570,9 +632,9 @@ pub(super) fn document(
         Ok(sources) => sources,
         Err(e) => return store_error(&e),
     };
-    ok(
-        serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next}),
-    )
+    let mut value = serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next});
+    representation(&mut value, options.slices);
+    ok(value)
 }
 
 fn content_position(
@@ -619,6 +681,8 @@ fn content_next(
             generation,
             position: [p.message, p.block, p.character],
             message_key: None,
+            tail: false,
+            last_block: false,
             seal: String::new(),
         }
         .seal(key)
@@ -749,17 +813,23 @@ pub(super) fn outline(
     )
     .to_hex()
     .to_string();
-    let options = Options {
-        view: "full",
-        format: "json",
-        with_parents,
-        budget: Some(size),
-        cursor,
-        start: None,
-    };
-    let from = match content_position(&options, &key, &binding, &content, &generation) {
-        Ok(p) => p.map_or(0, |p| p.message),
-        Err(e) => return e,
+    let from = if let Some(token) = cursor {
+        let cursor = match Cursor::open(token, &key, &generation) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        if cursor.binding != binding {
+            return error(
+                "bad_request",
+                "the outline cursor belongs to another selection",
+            );
+        }
+        if cursor.content != content {
+            return error("stale_cursor", "the outline changed; open it again");
+        }
+        cursor.message_key
+    } else {
+        None
     };
     let mut entries = match selected.outline(from, size.saturating_add(1)) {
         Ok(s) => s,
@@ -769,16 +839,32 @@ pub(super) fn outline(
     if more {
         entries.pop();
     }
-    let next = content_next(
-        more.then_some(Position {
-            message: from + entries.len(),
-            block: 0,
-            character: 0,
-        }),
-        &key,
-        binding,
-        content,
-        generation,
-    );
+    let next = if more {
+        Some(
+            Cursor {
+                version: CURSOR_VERSION,
+                binding,
+                content,
+                generation,
+                position: [0; 3],
+                message_key: entries.last().map(|entry| entry.key),
+                seal: String::new(),
+                tail: false,
+                last_block: false,
+            }
+            .seal(&key)
+            .expect("cursor"),
+        )
+    } else {
+        None
+    };
     ok(serde_json::json!({"entries":entries,"next":next,"parents":selected.parents()}))
+}
+
+fn representation(value: &mut serde_json::Value, slices: bool) {
+    if let Some(fields) = value.as_object_mut() {
+        if !slices {
+            fields.remove("slices");
+        }
+    }
 }

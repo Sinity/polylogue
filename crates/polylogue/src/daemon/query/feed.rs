@@ -55,11 +55,10 @@ fn io(error: impl ToString) -> Failure {
     }
 }
 
-fn write(file: &mut File, line: Line) -> Result<(), Failure> {
-    let response = Response::Ok {
-        data: serde_json::to_value(line).map_err(io)?,
-    }
-    .masked();
+fn write(file: &mut File, line: Line, clean: &mut impl FnMut(&mut Value)) -> Result<(), Failure> {
+    let mut data = serde_json::to_value(line).map_err(io)?;
+    clean(&mut data);
+    let response = Response::Ok { data }.masked();
     serde_json::to_writer(&mut *file, &response).map_err(io)?;
     file.write_all(b"\n").map_err(io)
 }
@@ -96,11 +95,22 @@ fn check_change(
 /// passed the query's shape checks and the complete batch is written and validated. Dropping
 /// the Reader before sending this file keeps network backpressure out of the
 /// WAL read transaction. One decoded row and disk ordering are separate costs.
+#[cfg(test)]
 pub(crate) fn prepare(
     reader: &Reader<'_>,
     since: Option<&str>,
     now: i64,
+    file: File,
+) -> Result<File, Failure> {
+    prepare_with(reader, since, now, file, |_| {})
+}
+
+pub(crate) fn prepare_with(
+    reader: &Reader<'_>,
+    since: Option<&str>,
+    now: i64,
     mut file: File,
+    mut clean: impl FnMut(&mut Value),
 ) -> Result<File, Failure> {
     let previous = since
         .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
@@ -126,6 +136,7 @@ pub(crate) fn prepare(
             replacement,
             generation_changed,
         },
+        &mut clean,
     )?;
     // Archive local order is meaningful only within archive.db. Index-side
     // references follow as a separate component, never a combined chronology.
@@ -184,6 +195,7 @@ pub(crate) fn prepare(
                         component,
                         change,
                     },
+                    &mut clean,
                 )
             },
         )?;
@@ -195,6 +207,7 @@ pub(crate) fn prepare(
             count,
             replacement,
         },
+        &mut clean,
     )?;
     file.flush().map_err(io)?;
     file.seek(SeekFrom::Start(0)).map_err(io)?;

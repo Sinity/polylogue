@@ -20,7 +20,7 @@ pub fn mask_json(value: &mut Value) {
     mask_json_values(value, mask);
 }
 
-fn mask_json_values(value: &mut Value, mut string: impl FnMut(&str) -> String) {
+pub fn mask_json_values(value: &mut Value, mut string: impl FnMut(&str) -> String) {
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
         match value {
@@ -29,7 +29,7 @@ fn mask_json_values(value: &mut Value, mut string: impl FnMut(&str) -> String) {
             Value::Object(values) => {
                 let mut renamed = Vec::new();
                 for (key, value) in std::mem::take(values) {
-                    let masked = mask(&key);
+                    let masked = string(&key);
                     if masked == key {
                         values.insert(key, value);
                     } else {
