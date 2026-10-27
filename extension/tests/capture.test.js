@@ -387,18 +387,40 @@ describe("a capture", () => {
   });
 });
 
-it("starts another download after the loop exits and releases the finished payload", async () => {
-  const captured = [];
+it("finishes a pending capture when the daemon already has its file bytes", async () => {
+  const files = [{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }];
+  const host = storingHost(files);
+  const page = chatgptPage();
+  const answer = (request) => request.type === "file" ? new Promise(() => {}) : page.answer(request);
+  const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const before = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
+  expect(JSON.parse(host.stored[0]).session.attachments[0].not_fetched).toBe("downloading");
+
+  const hash = "cd".repeat(32);
+  files[0].stored = { blob: hash, size: 2 };
+  const restarted = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await restarted.captureTab(1, "sweep")).outcome).toBe("stored");
+  expect(host.stored).toHaveLength(2);
+  expect(JSON.parse(host.stored[1]).session.attachments[0]).toMatchObject({ blob: hash, size_bytes: 2 });
+  expect(JSON.parse(host.stored[1]).session.attachments[0].not_fetched).toBeUndefined();
+  expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
+  expect(host.stored).toHaveLength(2);
+});
+
+it.each([false, true])("starts another download after the loop exits (storage error: %s)", async (failed) => {
+  const attempts = [];
   const capturer = new Capturer({ chrome: {}, host: {}, outbox: {}, seen: {} });
   const base = { conversation: "one", raw: new Blob(["first payload"]) };
   const newer = { conversation: "one", raw: new Blob(["new payload"]) };
   const file = { id: "file" };
   capturer.fetchFiles = async () => [{ ...file, body: new Blob(["bytes"]) }];
   capturer.keep = async (value) => {
-    captured.push(value.raw);
-    if (captured.length === 1) {
+    attempts.push(value.raw);
+    if (attempts.length === 1) {
       await Promise.resolve();
       queueMicrotask(() => queueMicrotask(() => capturer.download(1, "one", newer, [file], [file])));
+      if (failed) throw new Error("synthetic storage failure");
     }
     return true;
   };
@@ -406,9 +428,36 @@ it("starts another download after the loop exits and releases the finished paylo
   const first = capturer.downloading.get("one");
   await first.work;
   await capturer.downloads();
-  expect(captured).toEqual([base.raw, newer.raw]);
+  expect(attempts).toEqual([base.raw, newer.raw]);
   expect(first.latest).toBeNull();
   expect(first.next).toBeNull();
   expect(first.available.size).toBe(0);
+  expect(capturer.downloading.size).toBe(0);
+});
+
+it("keeps the next capture when the old page closes during a download", async () => {
+  const capturer = new Capturer({ chrome: {}, host: {}, outbox: {}, seen: {} });
+  const first = { conversation: "one", raw: new Blob(["first payload"]) };
+  const newer = { conversation: "one", raw: new Blob(["new payload"]) };
+  const file = { id: "file" };
+  let fail;
+  const blocked = new Promise((_, reject) => { fail = reject; });
+  let began;
+  const started = new Promise((resolve) => { began = resolve; });
+  let calls = 0;
+  capturer.fetchFiles = async () => {
+    calls += 1;
+    if (calls === 1) { began(); return blocked; }
+    return [{ ...file, body: new Blob(["bytes"]) }];
+  };
+  const stored = [];
+  capturer.keep = async (base) => { stored.push(base.raw); return true; };
+  capturer.download(1, "one", first, [file], [file]);
+  await started;
+  capturer.download(2, "one", newer, [file], [file]);
+  fail(new Error("page closed"));
+  await capturer.downloads();
+  expect(stored).toEqual([newer.raw]);
+  expect(calls).toBe(2);
   expect(capturer.downloading.size).toBe(0);
 });

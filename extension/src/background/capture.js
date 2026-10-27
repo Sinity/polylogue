@@ -199,7 +199,7 @@ export class Capturer {
       }
     }
     let outcome = "unchanged";
-    if (!unchanged) {
+    if (!unchanged || (raw && missing.length === 0)) {
       outcome = (await this.keep(base, files)) ? "stored" : "waiting";
       await this.seen.set({ [seenKey]: now });
     }
@@ -230,35 +230,36 @@ export class Capturer {
       return;
     }
     const job = { latest: base, next, available: new Map() };
-    const work = this.lastDownload
-      .then(async () => {
+    const work = this.lastDownload.then(async () => {
+      try {
         while (job.next) {
           const current = job.next;
           job.next = null;
-          const fetched = await this.fetchFiles(current.tabId, current.base.conversation,
-            current.missing.filter((file) => !job.available.has(file.id)));
-          for (const file of fetched) if (file.body) job.available.set(file.id, file);
-          // A newer conversation arrived during the download. Its files
-          // can use the bytes just fetched, but its text must stay newest.
-          if (job.latest !== current.base) continue;
-          const complete = current.files.map((file) => job.available.get(file.id)
-            || fetched.find((f) => f.id === file.id) || file);
-          if (current.missing.length) {
-            await this.keep({ ...current.base, reason: "files" }, complete,
-              () => job.latest === current.base);
+          try {
+            const fetched = await this.fetchFiles(current.tabId, current.base.conversation,
+              current.missing.filter((file) => !job.available.has(file.id)));
+            for (const file of fetched) if (file.body) job.available.set(file.id, file);
+            // A newer conversation arrived during the download. Its files
+            // can use the bytes just fetched, but its text must stay newest.
+            if (job.latest !== current.base) continue;
+            const complete = current.files.map((file) => job.available.get(file.id)
+              || fetched.find((f) => f.id === file.id) || file);
+            if (current.missing.length) {
+              await this.keep({ ...current.base, reason: "files" }, complete,
+                () => job.latest === current.base);
+            }
+          } catch (error) {
+            // A newer capture already queued still runs if this one fails.
+            this.log(`Files of ${key} were not stored: ${error.code || error.message}`);
           }
         }
-        job.available.clear();
-        job.latest = null;
-        this.downloading.delete(key);
-      })
-      .catch((error) => {
+      } finally {
         this.downloading.delete(key);
         job.available.clear();
         job.latest = null;
         job.next = null;
-        this.log(`Files of ${key} were not stored: ${error.code || error.message}`);
-      });
+      }
+    });
     job.work = work;
     this.downloading.set(key, job);
     this.lastDownload = work;
