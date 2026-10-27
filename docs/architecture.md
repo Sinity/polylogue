@@ -24,9 +24,9 @@ which reads through Store and presents through Query and Render.
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
 The `explain` command reads the command, query-unit, field, read-view and
-format declarations. Grammar explanation uses Query's pure parser and
-compiler before acquiring a Store reader. Catalog continuation names its
-subject, unit and next offset. The local `demo tour` command bundles the
+format declarations. Query explanation uses the same reader-backed options as execution, then
+Query's pure parser and compiler. Declaration pages use a cursor naming
+their subject, unit and next offset. The local `demo tour` command bundles the
 main Morrow files and starts an application runtime against its own home and
 archive; each narrated operation is built through the ordinary command
 table. Its transcript is written under the new tour directory.

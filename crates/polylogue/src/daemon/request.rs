@@ -84,8 +84,9 @@ pub enum Request {
         subject: String,
         expression: Option<String>,
         unit: Option<String>,
-        limit: Option<u64>,
-        continuation: Option<String>,
+        page_size: Option<u64>,
+        cursor: Option<String>,
+        session: Option<String>,
     },
     /// Completions for one word of a query being typed.
     Complete {

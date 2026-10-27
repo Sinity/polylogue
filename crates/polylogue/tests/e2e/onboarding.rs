@@ -101,6 +101,56 @@ fn public_morrow_tour_matches_current_query_examples() {
         std::fs::read_to_string(directory.join("transcript.md")).unwrap(),
         tour["transcript"].as_str().unwrap()
     );
+    // Bundled collected files must exactly match Testkit's Main layout.
+    let main = polylogue_testkit::Morrow::lay_out(polylogue_testkit::Set::Main);
+    let home = directory.join("home");
+    for path in main.provider_files() {
+        let relative = path.strip_prefix(&main.home).unwrap();
+        assert_eq!(
+            std::fs::read(home.join(relative)).unwrap(),
+            std::fs::read(path).unwrap()
+        );
+    }
+    fn files(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut bundled = Vec::new();
+    files(&home, &mut bundled);
+    bundled.retain(|p| !p.starts_with(home.join("exports")));
+    assert_eq!(bundled.len(), main.provider_files().len());
+
+    // The README daemon uses this machine's identity and the same absolute paths.
+    let archive = directory.join("archive");
+    let config = directory.join("config");
+    let env = [
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("POLYLOGUE_HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let before = {
+        let pool =
+            polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
+        let reader = pool.reader().unwrap();
+        reader.status().unwrap()
+    };
+    let daemon = super::cli::start_daemon(&env);
+    let status = super::cli::wait_status(&env, |_| true);
+    assert_eq!(status["store"]["sessions"], 8);
+    assert_eq!(status["store"]["inputs"], before.inputs);
+    assert_eq!(status["store"]["revisions"], before.revisions);
+    assert_eq!(status["store"]["stored_bytes"], before.stored_bytes);
+    let output = super::cli::cli(&env, &["--json", "tool_calls where outcome:error"]);
+    assert!(output.status.success(), "{output:?}");
+    let restarted: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(restarted["rows"], steps[2]["result"]["rows"]);
+    drop(daemon);
     let marker = directory.join("keep.txt");
     std::fs::write(&marker, "keep this file").unwrap();
     let retry = Command::new(crate::BIN)

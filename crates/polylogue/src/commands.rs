@@ -447,25 +447,22 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "explain",
-        help: "Explain query grammar without executing it, or page through current units, fields, operators and capabilities. Archive-dependent references need their stored definitions when executed",
+        help: "Explain a query without executing it, or page through current syntax, units, fields, operators and capabilities",
         args: &[
             pos(
                 "subject",
                 Kind::Choice(crate::explain::SUBJECTS),
-                "query, units, fields, operators or capabilities",
+                "query, syntax, units, fields, operators or capabilities",
             ),
+            opt("session", Kind::Text, "Calling session for self references"),
             opt("expression", Kind::Text, "Required for subject query"),
-            opt("unit", Kind::Text, "Limit a fields catalog to this unit"),
+            opt("unit", Kind::Text, "List fields for this unit"),
             opt(
-                "limit",
+                "page_size",
                 Kind::Integer,
-                "Catalog entries per page (default 20)",
+                "Declarations per page (default 20)",
             ),
-            opt(
-                "continuation",
-                Kind::Text,
-                "Continue the same catalog from its next value",
-            ),
+            CURSOR,
         ],
         action: Action::Request(requests::explain),
         mcp: true,

@@ -4,7 +4,6 @@
 //! answer itself.
 
 use polylogue_render::shell_quote;
-use polylogue_store::Archive;
 use serde_json::Value;
 use std::fmt::Write as _;
 
@@ -20,7 +19,7 @@ pub fn json(data: &Value) -> String {
     )
 }
 
-/// A query's rows as a table, remembered for `@N`, or a measurement in its
+/// A query's rows as a table, or a measurement in its
 /// own text view.
 pub fn query(data: &Value) -> String {
     if data["outcome"] == "measure" {
@@ -29,12 +28,6 @@ pub fn query(data: &Value) -> String {
                 m.text
             });
         return text(&data["data"]);
-    }
-    if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-        crate::row_numbers::remember(
-            &Archive::default_root(),
-            &crate::row_numbers::row_ids(&data["rows"]),
-        );
     }
     let mut out = Vec::new();
     let _ = polylogue_render::results::render(data, polylogue_render::Format::Terminal, &mut out);

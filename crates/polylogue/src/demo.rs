@@ -65,14 +65,15 @@ fn run(directory: &Path) -> Result<Tour, String> {
             .map_err(|e| e.to_string())?;
         fs::write(path, bytes).map_err(|e| e.to_string())?;
     }
+    let environment = Config::from_env();
     let config = Config {
         home,
         tool_dirs: Default::default(),
         workers: 2,
         reader_memory_bytes: 64 << 20,
         bytes_in_flight: 64 << 20,
-        machine: "morrow-machine".into(),
-        host: "morrow".into(),
+        machine: environment.machine,
+        host: environment.host,
         chunk: 64 << 20,
         rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
@@ -123,20 +124,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
             let result = invoke(command, arguments.clone())?;
             let seconds = started.elapsed().as_secs_f64();
             let declaration = commands::command(command).ok_or("missing command")?;
-            // Query CLI printing remembers row positions in the operator's
-            // archive. The tour renders its rows without changing that state.
-            let text = if result.get("shape").is_some() {
-                let mut bytes = Vec::new();
-                polylogue_render::results::render(
-                    &result,
-                    polylogue_render::Format::Terminal,
-                    &mut bytes,
-                )
-                .map_err(|e| e.to_string())?;
-                String::from_utf8(bytes).map_err(|e| e.to_string())?
-            } else {
-                (declaration.print)(&result)
-            };
+            let text = (declaration.print)(&result);
             steps.push(Step {
                 title: title.into(),
                 description: description.into(),
@@ -233,7 +221,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
 }
 
 fn command_line(command: &Command, arguments: &Value) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\"'\"'"));
+    let quote = polylogue_render::shell_quote;
     let mut words = vec!["polylogue".to_owned()];
     if command.name != "query" {
         words.push(command.name.to_owned());

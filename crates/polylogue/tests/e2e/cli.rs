@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-struct Daemon(Child);
+pub(super) struct Daemon(Child);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -17,7 +17,7 @@ impl Drop for Daemon {
     }
 }
 
-fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
+pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
     let mut command = Command::new(crate::BIN);
     command.arg("daemon").stderr(Stdio::piped());
     for (key, value) in env {
@@ -35,7 +35,7 @@ fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
 /// Polls `status` until `ready` holds and the loop is idle, so whatever pass
 /// made `ready` true has also derived from its rows. A state that never comes
 /// is ended by the test runner's timeout.
-fn wait_status(
+pub(super) fn wait_status(
     env: &[(&str, &Path)],
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
@@ -235,7 +235,7 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
     assert_eq!(status["store"]["parse_states"]["done"], 2);
 }
 
-fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
+pub(super) fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
     let mut c = Command::new(crate::BIN);
     for (k, v) in env {
         c.env(k, v);

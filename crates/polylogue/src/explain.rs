@@ -1,18 +1,24 @@
 //! Introspection from the declarations used by commands and query execution.
 
 use crate::commands::{self, COMMANDS};
-use crate::daemon::{Response, service};
-use polylogue_query::{Options, ast::Unit, fields, units};
+use crate::daemon::query::Failure;
+use polylogue_query::{ast::Unit, fields, units};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-pub const SUBJECTS: &[&str] = &["query", "units", "fields", "operators", "capabilities"];
+pub const SUBJECTS: &[&str] = &[
+    "query",
+    "syntax",
+    "units",
+    "fields",
+    "operators",
+    "capabilities",
+];
 
 const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * means known and unknown means missing. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe stages sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit stage selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
 
 #[derive(Serialize)]
 struct Page {
-    syntax: &'static str,
     subject: String,
     unit: Option<String>,
     entries: Vec<Value>,
@@ -24,77 +30,28 @@ pub fn answer(
     subject: &str,
     expression: Option<&str>,
     unit: Option<&str>,
-    limit: Option<u64>,
-    continuation: Option<&str>,
-) -> Response {
-    match explain(subject, expression, unit, limit, continuation) {
-        Ok(value) if value["valid"] == false => Response::Error {
-            kind: value["kind"].as_str().unwrap_or("invalid_query").into(),
-            message: value["message"].as_str().unwrap_or("invalid query").into(),
-            detail: Some(value),
-        },
-        Ok(value) => service::ok(value),
-        Err(message) => service::error("bad_request", message),
-    }
+    page_size: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<Value, Failure> {
+    declarations(subject, expression, unit, page_size, cursor).map_err(|message| Failure {
+        kind: "bad_request".into(),
+        message,
+        detail: None,
+    })
 }
 
-fn explain(
+fn declarations(
     subject: &str,
     expression: Option<&str>,
     unit: Option<&str>,
-    limit: Option<u64>,
-    continuation: Option<&str>,
+    page_size: Option<u64>,
+    cursor: Option<&str>,
 ) -> Result<Value, String> {
     if !SUBJECTS.contains(&subject) {
         return Err(format!(
             "unknown subject {subject:?}; choose {}",
             SUBJECTS.join(", ")
         ));
-    }
-    if subject == "query" {
-        if unit.is_some() || limit.is_some() || continuation.is_some() {
-            return Err("unit, limit and continuation apply to catalogs".into());
-        }
-        let expression = expression
-            .filter(|s| !s.trim().is_empty())
-            .ok_or("expression is required for query")?;
-        let options = Options {
-            clock: polylogue_query::Clock::new(
-                service::now_ms(),
-                polylogue_model::LogicalDay::system(),
-            ),
-            origins: polylogue_sources::origin::ORIGINS
-                .iter()
-                .map(|o| o.name.to_owned())
-                .collect(),
-            command_words: commands::command_words(),
-            page_size: None,
-            random_seed: Some(0),
-            embeddings: false,
-            self_session: None,
-            saved: Default::default(),
-            kept: Default::default(),
-            fields: Vec::new(),
-            chat_pages: crate::daemon::query::chat_pages(),
-        };
-        return match polylogue_query::explain::query(expression, &options) {
-            Ok(explanation) => Ok(json!({
-                "subject": subject,
-                "valid": true,
-                "explanation": explanation,
-                "execution": "Compile to one ordered SQL statement with bound parameters; no query was executed. The clock uses the machine zone and default logical day, without archive settings or stored definitions.",
-            })),
-            Err(error) => Ok(json!({
-                "subject": subject,
-                "expression": expression,
-                "valid": false,
-                "kind": error.kind(),
-                "suggestion": error.suggestion(),
-                "error": error,
-                "message": error.to_string(),
-                "parsed": polylogue_query::parse(expression).ok(),
-            })),
-        };
     }
     if expression.is_some() {
         return Err("expression applies to query".into());
@@ -105,26 +62,25 @@ fn explain(
     let unit = unit
         .map(|name| Unit::from_name(name).ok_or_else(|| format!("unknown unit {name:?}")))
         .transpose()?;
-    let entries = catalog(subject, unit);
+    let entries = entries(subject, unit)?;
     let prefix = format!("{subject}/{}/", unit.map_or("", Unit::name));
-    let offset = match continuation {
+    let offset = match cursor {
         None => 0,
         Some(text) => text
             .strip_prefix(&prefix)
             .and_then(|s| s.parse::<usize>().ok())
-            .ok_or("continuation belongs to another catalog or is invalid")?,
+            .ok_or("cursor belongs to another subject or is invalid")?,
     };
     if offset > entries.len() {
-        return Err("continuation is past the catalog".into());
+        return Err("cursor is past the declarations".into());
     }
-    let limit = usize::try_from(limit.unwrap_or(20)).unwrap_or(usize::MAX);
-    if limit == 0 {
-        return Err("limit must be positive so the catalog can advance".into());
+    let page_size = usize::try_from(page_size.unwrap_or(20)).unwrap_or(usize::MAX);
+    if page_size == 0 {
+        return Err("page_size must be positive so the declarations can advance".into());
     }
     let total = entries.len();
-    let end = offset.saturating_add(limit).min(total);
+    let end = offset.saturating_add(page_size).min(total);
     Ok(json!(Page {
-        syntax: SYNTAX,
         subject: subject.into(),
         unit: unit.map(|u| u.name().into()),
         total,
@@ -137,8 +93,9 @@ fn explain(
     }))
 }
 
-fn catalog(subject: &str, unit: Option<Unit>) -> Vec<Value> {
-    match subject {
+fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
+    Ok(match subject {
+        "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::syntax::STAGES, "aggregates": polylogue_query::syntax::AGGREGATES, "keywords": polylogue_query::syntax::KEYWORDS})],
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
             "columns": u.columns.iter().map(|c| c.0).collect::<Vec<_>>(),
@@ -148,7 +105,7 @@ fn catalog(subject: &str, unit: Option<Unit>) -> Vec<Value> {
         "fields" => fields::FIELDS.iter().filter(|f| unit.is_none_or(|u| u == f.unit)).map(|f| json!({
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
         })).collect(),
-        "operators" => polylogue_query::ast::Op::ALL.iter().map(|op| json!({"name": op.name(), "operation": op})).collect(),
+        "operators" => polylogue_query::ast::Op::TABLE.iter().map(|(op, _)| json!({"name": op.name(), "operation": op})).collect(),
         "capabilities" => {
             let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
                 "kind": "command", "name": c.name, "help": c.help,
@@ -159,8 +116,8 @@ fn catalog(subject: &str, unit: Option<Unit>) -> Vec<Value> {
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));
             entries
         }
-        _ => Vec::new(),
-    }
+        _ => return Err(format!("unknown declaration subject {subject:?}")),
+    })
 }
 
 #[cfg(test)]

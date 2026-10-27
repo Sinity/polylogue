@@ -204,7 +204,7 @@ fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Op
 }
 
 /// Every origin's web chat pages, for pasted conversation URLs.
-pub(crate) fn chat_pages() -> Vec<polylogue_query::ChatPage> {
+fn chat_pages() -> Vec<polylogue_query::ChatPage> {
     polylogue_sources::origin::ORIGINS
         .iter()
         .filter_map(|o| {
@@ -628,3 +628,11 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+
+/// Compile with the same archive settings and calling session as execution.
+pub fn explain(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let options = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    Ok(
+        json!({"subject": "query", "explanation": polylogue_query::explain::query(ask.text, &options)?}),
+    )
+}

@@ -105,25 +105,28 @@ work, inspecting unknown costs, and adding notes for takeover context.
 The example files are bundled in the binary. Preparation time and first
 query time are reported separately. Use `--json` for the steps and results.
 Run the displayed commands against the example archive by starting
-`POLYLOGUE_ARCHIVE=./morrow-tour/archive POLYLOGUE_HOME=./morrow-tour/home XDG_CONFIG_HOME=./morrow-tour/config polylogue daemon`
+
+```sh
+export POLYLOGUE_ARCHIVE="$PWD/morrow-tour/archive"
+export POLYLOGUE_HOME="$PWD/morrow-tour/home"
+export XDG_CONFIG_HOME="$PWD/morrow-tour/config"
+polylogue daemon
+```
 in another terminal, and setting the same variables for each command.
 
 `polylogue explain query --expression 'tool_calls where outcome:error'`
 parses and compiles the expression without running it. The answer includes
 the parsed conditions and stages, output unit and columns, ordering,
-parameters and SQL. Its clock uses the machine zone and default logical day;
-archive settings, saved queries, kept results and the calling session are
-not loaded. Archive-dependent references can therefore require definitions
-before they can be compiled. This differs from `--why`, which executes a
+parameters and SQL in the full compiled `program`. It uses the archive's
+logical day, saved queries, kept results and embedding availability. Supply
+`--session ID` for `self` references. This differs from `--why`, which executes a
 query and counts how many rows its conditions keep.
 
 The MCP `explain` tool uses the same arguments. Subjects `units`, `fields`,
-`operators` and `capabilities` describe current declarations. For example,
-`polylogue explain fields --unit tool_calls --limit 10` returns entries and
-`next`; pass that value as `--continuation` with the same subject and unit.
-`limit` controls page size, with no maximum on catalog retrieval. The units
-catalog lists session-field inheritance and relation prefixes; the fields
-catalog lists each unit's own fields. Capabilities include command schemas,
+`syntax`, `operators` and `capabilities` describe current declarations. For example,
+`polylogue explain fields --unit tool_calls --page-size 10` returns entries and
+`next`; pass that value as `--cursor` with the same subject and unit.
+`page_size` controls page size. The units subject lists session-field inheritance and relation prefixes; the fields subject lists each unit's own fields. Capabilities include command schemas,
 read views and output formats from their registries.
 
 ## Context for agents

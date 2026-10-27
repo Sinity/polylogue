@@ -5,48 +5,19 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct Explanation {
-    pub expression: String,
     pub parsed: ast::Query,
-    pub selected_units: Vec<ast::Unit>,
-    pub unit: ast::Unit,
-    pub shape: crate::Shape,
-    pub columns: Vec<crate::Column>,
-    pub ranked: bool,
-    pub page_size: u64,
-    pub order: Vec<crate::OrderKey>,
-    pub measure: Option<crate::Measure>,
-    pub notes: Vec<String>,
-    pub unsupported: Vec<String>,
-    pub sql: String,
-    pub parameters: Vec<crate::Param>,
-    pub now: i64,
-    pub zone: String,
-    pub day_start_minutes: u16,
+    pub units: Vec<ast::Unit>,
+    pub program: crate::Program,
 }
 
-/// Uses the same validation and compilation as execution. Options supply
-/// the clock and declarations; this function performs no I/O.
+/// Uses the same validation and compilation as execution.
 pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryError> {
     let parsed = crate::parse(expression)?;
     let program = compile(expression, options)?;
     Ok(Explanation {
-        expression: expression.to_owned(),
-        selected_units: selected_units(&parsed, ast::Unit::Sessions),
+        units: selected_units(&parsed, ast::Unit::Sessions),
         parsed,
-        unit: program.unit,
-        shape: program.shape,
-        columns: program.columns,
-        ranked: program.ranked,
-        page_size: program.page_size,
-        order: program.order,
-        measure: program.measure,
-        notes: program.notes,
-        unsupported: program.incomplete,
-        sql: program.sql,
-        parameters: program.params,
-        now: program.now,
-        zone: program.zone,
-        day_start_minutes: program.day_start_minutes,
+        program,
     })
 }
 
@@ -91,13 +62,19 @@ fn selected_units(query: &ast::Query, implicit_unit: ast::Unit) -> Vec<ast::Unit
                     condition(c, out);
                 }
             }
-            _ => {}
+            CondKind::Match { .. }
+            | CondKind::Compare { .. }
+            | CondKind::Between { .. }
+            | CondKind::Text { .. }
+            | CondKind::Url { .. }
+            | CondKind::Position { .. }
+            | CondKind::Saved { .. } => {}
         }
     }
     let mut out = Vec::new();
     let mut current_unit = match &query.source {
         ast::Source::Unit { unit, .. } => *unit,
-        _ => implicit_unit,
+        ast::Source::Sessions { .. } | ast::Source::Empty => implicit_unit,
     };
     match &query.source {
         ast::Source::Unit { unit, cond } => {
@@ -135,7 +112,15 @@ fn selected_units(query: &ast::Query, implicit_unit: ast::Unit) -> Vec<ast::Unit
                     add(&mut out, u);
                 }
             }
-            _ => {}
+            ast::StageKind::SortBy { .. }
+            | ast::StageKind::GroupBy { .. }
+            | ast::StageKind::Agg { .. }
+            | ast::StageKind::Count
+            | ast::StageKind::Limit { .. }
+            | ast::StageKind::Offset { .. }
+            | ast::StageKind::Distinct
+            | ast::StageKind::Matches
+            | ast::StageKind::Measure { .. } => {}
         }
     }
     out

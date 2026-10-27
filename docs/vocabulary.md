@@ -217,8 +217,6 @@ the same change.
   **field**, **condition**, **measure**.
 - **explanation**: a query's parsed conditions, units and compiled shape,
   without executing it; `--why` instead counts rows for its conditions.
-- **catalog** and **continuation**: declarations listed by `explain`, paged
-  with a continuation naming the subject, unit and next offset.
 - **tour**: ordinary commands over a separate synthetic Morrow archive,
   with their explanations and output in a transcript.
 - **saved query** (`query:NAME`) and its **parameters** (`$word` in its
