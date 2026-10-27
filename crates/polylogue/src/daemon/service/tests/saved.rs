@@ -96,10 +96,11 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
 
 #[test]
 fn search_retries_keep_the_original_population_and_do_not_revise_newer_saved_queries() {
-    let d = test_daemon::start("first prompt");
+    let mut d = test_daemon::start("first prompt");
     let original = ok(&d, save("first", "example", "sessions"));
     let newer = ok(&d, save("second", "example", "sessions where title:absent"));
     assert_ne!(original["id"], newer["id"]);
+    d.restart();
     let repeat = ok(&d, save("first", "example", "sessions"));
     assert_eq!(repeat["repeat"], true);
     assert_eq!(ok(&d, query("query:example"))["count"], 0);
