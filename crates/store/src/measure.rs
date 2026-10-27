@@ -12,7 +12,8 @@ pub mod quota;
 mod reports;
 pub mod survival;
 pub mod tool_calls;
-pub(crate) mod usage;
+mod usage;
+pub(crate) use usage::RESPONSE_ROWS;
 
 pub use usage::{
     ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,
