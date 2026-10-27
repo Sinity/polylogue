@@ -144,7 +144,7 @@ fn unsupported_note_metadata_returns_an_error_instead_of_an_empty_or_invented_no
                 note: note(
                     NoteKind::Note,
                     Author::Operator,
-                    "work:synthetic",
+                    "repo:morrow",
                     "synthetic body",
                 ),
             },

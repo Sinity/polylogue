@@ -13,7 +13,9 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         .await;
         assert_eq!(status, StatusCode::OK, "{first}");
         assert!(first.contains("Next</a>"));
-        assert!(!first.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; the parser"));
+        let (_, text) = first.split_once("<div class=\"text\">").unwrap();
+        let (text, _) = text.split_once("</div>").unwrap();
+        assert!(!text.contains("alert(1)"), "content must be paged: {text}");
         let (status, headers, _) = send(
             &r,
             authed(get("/m/claude-code:u1"))
