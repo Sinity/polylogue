@@ -300,8 +300,12 @@ Trajectory SQLite stores under `~/.gemini/antigravity` are captured through the
 ordinary row-dump reader. Their declared trajectory schema is checked before
 parsing; steps are read in source `idx` order, with summaries, parent references
 and unsupported steps kept as events. Multiple trajectories never receive an
-unattributed step by guesswork. Native `.pb` files need the vendor's conversion
-to an export; Polylogue's parser does not decode that binary format.
+unattributed step by guesswork. Native `.pb` conversations are converted through the running Antigravity
+language server's loopback RPC with its CSRF token, bypassing proxies.
+Original trajectory bytes and converted exports are stored; exports can rebuild
+the index without the server.
+Unreachable servers and failed or partial conversions are reported per trajectory;
+Polylogue does not decode protobufs or start a language server.
 
 The standing [agent manual](docs/agent-manual.md) is shared by `manual` and MCP
 server instructions, with its command reference generated from the command
