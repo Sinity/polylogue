@@ -100,7 +100,7 @@ window.addEventListener("pageshow", visibility);
 
 // Each joining view reads current references in pages. Joining never resets
 // the position that existing views have already completed.
-async function snapshot(subscriber, signal) {
+async function readCurrent(subscriber, signal) {
   let cursor;
   let initial;
   let count = 0;
@@ -117,7 +117,7 @@ async function snapshot(subscriber, signal) {
       position ??= initial;
       await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
     }
-    if (subscriber.snapshot) await subscriber.snapshot(page);
+    if (subscriber.page) await subscriber.page(page);
     else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
     count += page.rows.length;
     cursor = page.next;
@@ -135,7 +135,7 @@ function resume() {
     if (ready.has(subscriber) || initializing.has(subscriber)) continue;
     const request = new AbortController();
     initializing.set(subscriber, request);
-    snapshot(subscriber, request.signal).catch(error => {
+    readCurrent(subscriber, request.signal).catch(error => {
       initializing.delete(subscriber);
       if (error.name !== "AbortError") subscriber.error?.(error);
       if (stopped) visibility();
