@@ -67,9 +67,20 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         );
     }
     let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
-    let mut engine = Engine::new(w.config(64 << 20), archive).unwrap();
+    let config = Config {
+        home: w.home.clone(),
+        tool_dirs: Default::default(),
+        workers: 2,
+        reader_memory_bytes: 128 << 20,
+        bytes_in_flight: 1 << 20,
+        machine: "test-machine".into(),
+        host: "test".into(),
+        chunk: 64 << 20,
+        rescan_every: Duration::from_secs(60),
+        live_every: Duration::from_secs(2),
+    };
+    let mut engine = Engine::new(config, archive).unwrap();
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    engine.config.workers = 2;
     let behind = engine
         .reads
         .reader()
