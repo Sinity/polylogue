@@ -565,7 +565,7 @@ fn cost_uses_public_accounting_and_session_scope() {
             assert!(html.contains("API-equivalent unknown"), "{html}");
             assert!(html.contains("Browse selected sessions"));
             assert!(
-                html.contains("data-cli=\"polylogue measure usage "),
+                html.contains("data-cli=\"polylogue cost --query "),
                 "{html}"
             );
         }
@@ -753,3 +753,7 @@ mod attachments;
 mod pages;
 
 mod benchmark;
+
+mod timeline;
+
+mod day_cost_measurements;

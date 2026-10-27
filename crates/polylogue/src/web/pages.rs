@@ -6,11 +6,9 @@
 
 use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
 use polylogue_render::{results, shell_quote};
-mod cost;
 mod live;
 pub(crate) mod reader;
 mod search;
-pub use cost::cost;
 pub use live::home;
 pub use search::search;
 use serde_json::Value;
@@ -29,6 +27,7 @@ pub fn layout(title: &str, query: &str, cli: &str, body: &str) -> String {
 </head><body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top"><a class="home" href="/">Polylogue</a>
+<a href="/timeline">Timeline</a>
 <a href="/cost">Cost and usage</a>
 <form class="search" action="/search" method="get" role="search">
 <label for="q" class="visually-hidden">Query</label>
@@ -45,6 +44,24 @@ pub fn layout(title: &str, query: &str, cli: &str, body: &str) -> String {
         title = esc(title),
         query = esc(query),
         cli = esc(cli),
+    )
+}
+
+/// A view may add one same-origin stylesheet without changing shared assets.
+pub(crate) fn layout_with_styles(
+    stylesheet: &str,
+    title: &str,
+    query: &str,
+    cli: &str,
+    body: &str,
+) -> String {
+    layout(title, query, cli, body).replacen(
+        "</head>",
+        &format!(
+            "<link rel=\"stylesheet\" href=\"{}\"></head>",
+            esc(stylesheet)
+        ),
+        1,
     )
 }
 
