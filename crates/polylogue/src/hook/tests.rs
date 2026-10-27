@@ -27,6 +27,8 @@ fn hook_spool_files_get_one_line_per_event() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(lines.len(), 2);
+    assert!(lines[0]["event_id"].is_string());
+    assert_ne!(lines[0]["event_id"], lines[1]["event_id"]);
     assert_eq!(lines[0]["provider"], "claude-code");
     assert_eq!(lines[0]["session_id"], "a");
     assert_eq!(lines[1]["event"], "SessionEnd");

@@ -422,9 +422,7 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
                         && x.blob.is_none()
                     {
                         x.blob = Some(hash);
-                        if x.size.is_none() {
-                            x.size = size;
-                        }
+                        x.size = size.or(x.size);
                     }
                 }
             }

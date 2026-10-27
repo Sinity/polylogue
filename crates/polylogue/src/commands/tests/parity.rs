@@ -90,7 +90,12 @@ fn encoded(text: &str) -> String {
 
 fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answer {
     let mut pairs: Vec<String> = Vec::new();
-    for (name, value) in &values.0 {
+    let names: Vec<&str> = c.args_for(Surface::Http).map(|a| a.name).collect();
+    for (name, value) in values
+        .0
+        .iter()
+        .filter(|(name, _)| names.contains(&name.as_str()))
+    {
         let texts = match value {
             Value::Array(items) => items
                 .iter()
