@@ -33,3 +33,21 @@ fn row_visit_preserves_query_values_and_stops_at_callback_failure() {
         7
     );
 }
+
+#[test]
+fn counts_read_aggregate_columns_by_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .query_counts(
+                "SELECT ?1 AS arbitrary, 2 AS other",
+                &[SqlValue::Int(3), SqlValue::Int(8)]
+            )
+            .unwrap(),
+        (3, 2)
+    );
+    assert_eq!(reader.query_counts("SELECT count(*), count(*) FILTER (WHERE x IS NULL) FROM (SELECT NULL AS x WHERE 0)", &[]).unwrap(), (0, 0));
+}

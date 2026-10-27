@@ -223,9 +223,6 @@ pub struct Program {
     /// The saved queries it ran, each at the revision its name resolved
     /// to when it was compiled.
     pub definitions: Vec<Definition>,
-    /// With `near:`, counts the matching rows that have no vector: they
-    /// follow the ranked rows, unranked.
-    pub count_without_vectors: Option<String>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
     pub zone: String,
@@ -345,7 +342,15 @@ impl Program {
     }
 
     pub fn count_sql(&self) -> String {
-        format!("SELECT count(*) FROM ({})", self.sql)
+        format!(
+            "SELECT count(*), {} FROM ({})",
+            if self.shape == Shape::Rows && self.near.is_some() {
+                "count(*) FILTER (WHERE _near IS NULL)"
+            } else {
+                "0"
+            },
+            self.sql
+        )
     }
 }
 
@@ -478,16 +483,11 @@ pub(crate) struct Compiler<'a> {
     fusion: Option<Fusion>,
     near: Option<Near>,
     definitions: Vec<Definition>,
-    /// The common table expressions `near:` added, removed again when the
-    /// answer needs no ranking.
-    near_ctes: std::ops::Range<usize>,
-    /// Where `incomplete` says `near:` could not rank, for the same reason.
-    near_disabled: Option<usize>,
-    /// A selection (`| limit`) chose rows by the ranking, so the ranking
-    /// is part of the answer even when only counts are returned.
-    ranking_chose_rows: bool,
-    /// Compiling a `| where` stage, where `near:` cannot appear.
-    in_stage: bool,
+    /// A semantic ranking requested by the source conditions, built only
+    /// when rows must be ordered.
+    near_request: Option<(Near, RowContext)>,
+    /// Conditions at or after this position belong to a stage.
+    stages_start: usize,
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -496,6 +496,7 @@ pub(crate) struct Compiler<'a> {
 struct Fusion {
     join: String,
     rank: String,
+    near: Option<String>,
 }
 
 impl<'a> Compiler<'a> {
@@ -520,10 +521,8 @@ impl<'a> Compiler<'a> {
             fusion: None,
             near: None,
             definitions: vec![],
-            near_ctes: 0..0,
-            near_disabled: None,
-            ranking_chose_rows: false,
-            in_stage: false,
+            near_request: None,
+            stages_start: usize::MAX,
         }
     }
 

@@ -1106,7 +1106,6 @@ mod modes;
 mod morrow_examples;
 mod references;
 mod sequences;
-mod surfaces;
 mod unknowns;
 
 #[test]

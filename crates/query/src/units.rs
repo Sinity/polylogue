@@ -134,12 +134,10 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          JOIN message xm ON xm.pk = xb.message_pk \
-         WHERE {}{} AND xm.duplicate_of IS NULL \
-         AND COALESCE(xm.on_active_path, 1) = 1 \
-         AND xm.session_pk IN ({})",
+         WHERE {}{} AND {}",
         h.block_kind("xb"),
         h.writer("xm"),
-        fields::subtree(&a.s),
+        fields::own_messages("xm", Some(&format!("IN ({})", fields::subtree(&a.s)))),
         cte = h.cte
     );
     Some((
@@ -315,7 +313,8 @@ fn work_goal(a: &Aliases) -> String {
 
 fn turns_from(a: &Aliases) -> String {
     format!(
-        "{TURNS} {r} JOIN session {s} ON {s}.pk = {r}.session_pk",
+        "{} {r} JOIN session {s} ON {s}.pk = {r}.session_pk",
+        turns(),
         r = a.row,
         s = a.s
     )
@@ -940,7 +939,9 @@ pub static UNITS: &[UnitSpec] = &[
 /// follow another prompt, or at a typed command, and runs until the next
 /// such start; a session with no prompt is one turn. Duplicates are left out.
 /// Every turn of every session, as a subquery: the `turns` unit's rows.
-pub const TURNS: &str = "(SELECT g.*, \
+pub fn turns() -> String {
+    format!(
+        "(SELECT g.*, \
      (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
         AND ax.written_by = 'model') AS attempts, \
      (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
@@ -976,9 +977,12 @@ pub const TURNS: &str = "(SELECT g.*, \
                WHERE cb.message_pk = m.pk) AS tc, \
              (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
                WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
-           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.duplicate_of IS NULL \
+           FROM message m WHERE {own_messages} \
              AND m.written_by IN ('human', 'model')) o) tm \
-     GROUP BY tm.session_pk, tm.turn) g)";
+     GROUP BY tm.session_pk, tm.turn) g)",
+        own_messages = fields::own_messages("m", None)
+    )
+}
 
 #[cfg(test)]
 mod tests;
