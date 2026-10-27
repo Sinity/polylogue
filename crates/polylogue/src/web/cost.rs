@@ -19,6 +19,7 @@ pub struct Options {
 }
 
 pub async fn cost(State(web): State<Arc<Web>>, Query(mut options): Query<Options>) -> HttpResponse {
+    options.month = options.month.filter(|s| !s.is_empty());
     options.date = options.date.filter(|s| !s.is_empty());
     options.model = options.model.filter(|s| !s.is_empty());
     let scope = if options.q.trim().is_empty() {
@@ -118,15 +119,16 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
         let link = model
             .map(|m| {
                 format!(
-                    "<a href=\"/cost?q={}&amp;date={}&amp;undated={}&amp;model={}\">{}</a>",
+                    "<a href=\"/cost?q={}&amp;date={}&amp;undated={}&amp;month={}&amp;model={}\">{}</a>",
                     encode(scope),
                     encode(date),
                     options.undated,
+                    encode(options.month.as_deref().unwrap_or("")),
                     encode(m),
                     esc(shown)
                 )
             })
-            .unwrap_or_else(||format!("<a href=\"/cost?q={}&amp;date={}&amp;undated={}&amp;unknown_model=true\">Unknown model</a>",encode(scope),encode(date),options.undated));
+            .unwrap_or_else(||format!("<a href=\"/cost?q={}&amp;date={}&amp;undated={}&amp;month={}&amp;unknown_model=true\">Unknown model</a>",encode(scope),encode(date),options.undated,encode(options.month.as_deref().unwrap_or(""))));
         let _ = write!(
             body,
             "<tr><th scope=\"row\">{link}</th><td>{}</td><td>{amount}</td><td>{}</td></tr>",
@@ -142,13 +144,17 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
         body.push_str("<p>Response details without a recorded model name.</p>");
     }
     if let Some(model) = &options.model {
-        let _ = write!(body, "<p>Response details for model: {}</p>", esc(model));
+        let _ = write!(
+            body,
+            "<p>Response details for model: {}</p>",
+            esc(&polylogue_render::mask(model))
+        );
     }
     body.push_str(&super::timeline::activity(&data["responses"]));
     if let Some(next) = data["responses"]["next"].as_str() {
         let _ = write!(
             body,
-            "<nav aria-label=\"Response pages\"><a rel=\"next\" data-next href=\"/cost?q={}&amp;date={}&amp;model={}&amp;undated={}&amp;unknown_model={}&amp;cursor={}\">Next response page</a></nav>",
+            "<nav aria-label=\"Response pages\"><a rel=\"next\" data-next href=\"/cost?q={}&amp;date={}&amp;model={}&amp;undated={}&amp;unknown_model={}&amp;month={}&amp;cursor={}\">Next response page</a></nav>",
             encode(scope),
             encode(date),
             encode(&polylogue_render::mask(
@@ -156,6 +162,7 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
             )),
             options.undated,
             options.unknown_model,
+            encode(options.month.as_deref().unwrap_or("")),
             encode(next)
         );
     }
@@ -175,20 +182,31 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
         );
     }
     body.push_str("</details>");
-    pages::layout(
-        "Cost and usage",
-        "",
-        &format!(
-            "polylogue cost --query {}{}",
-            polylogue_render::shell_quote(scope),
-            options
-                .date
-                .as_ref()
-                .map(|d| format!(" --date {}", polylogue_render::shell_quote(d)))
-                .unwrap_or_default()
-        ),
-        &body,
-    )
+    let mut cli = format!(
+        "polylogue cost --query {}",
+        polylogue_render::shell_quote(scope)
+    );
+    for (name, value) in [
+        ("date", options.date.as_deref()),
+        ("month", options.month.as_deref()),
+        ("model", options.model.as_deref()),
+        ("cursor", options.cursor.as_deref()),
+    ] {
+        if let Some(value) = value {
+            let _ = write!(
+                cli,
+                " --{name} {}",
+                polylogue_render::shell_quote(&polylogue_render::mask(value))
+            );
+        }
+    }
+    if options.undated {
+        cli.push_str(" --undated");
+    }
+    if options.unknown_model {
+        cli.push_str(" --unknown-model");
+    }
+    pages::layout_with_styles("/assets/timeline.css", "Cost and usage", "", &cli, &body)
 }
 
 fn daily(scope: &str, options: &Options, data: &Value) -> String {
