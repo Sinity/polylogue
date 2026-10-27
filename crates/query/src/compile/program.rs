@@ -370,7 +370,7 @@ impl<'a> Compiler<'a> {
         let rows_answer =
             matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
         if rows_answer {
-            self.setup_near();
+            self.setup_near(true);
         }
 
         self.fuse_pending(
@@ -637,6 +637,12 @@ impl<'a> Compiler<'a> {
                 } else {
                     50
                 });
+        if self.near_unavailable {
+            let note = "semantic search is not enabled; rows are ordered by time and unranked";
+            if !self.incomplete.iter().any(|n| n == note) {
+                self.incomplete.push(note.into());
+            }
+        }
         Ok(Program {
             query: self.text.to_owned(),
             unit,
@@ -717,7 +723,7 @@ impl<'a> Compiler<'a> {
         };
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         if order.is_none() {
-            self.setup_near();
+            self.setup_near(true);
         }
         let order = order.clone().unwrap_or_else(|| self.default_order(scope));
         let from = self.from(scope).unwrap_or_default();

@@ -200,7 +200,7 @@ impl<'a> Compiler<'a> {
         if pending.is_empty() {
             return Ok(());
         }
-        self.setup_near();
+        self.setup_near(false);
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
         if pending.fuses.is_empty() && !any_ranked {

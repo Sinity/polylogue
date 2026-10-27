@@ -382,6 +382,9 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         }
         if embeddings {
             assert!(compile("near:dates | union (near:times)", &options).is_err());
+        } else {
+            let counted = compile("near:dates | union (origin:codex) | count", &options).unwrap();
+            assert!(counted.incomplete.is_empty());
         }
     }
     let text = "sessions | messages where near:dates";

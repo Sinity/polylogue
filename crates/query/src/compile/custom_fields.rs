@@ -104,16 +104,14 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
 impl Compiler<'_> {
     /// Build similarities once, when the answer or an earlier selection
     /// needs an order. Counts and groups need membership only.
-    pub(super) fn setup_near(&mut self) {
+    pub(super) fn setup_near(&mut self, required: bool) {
+        if !self.opts.embeddings {
+            self.near_unavailable |= required && self.near_request.is_some();
+            return;
+        }
         let Some((near, scope)) = self.near_request.take() else {
             return;
         };
-        if !self.opts.embeddings {
-            self.incomplete.push(
-                "semantic search is not enabled; rows are ordered by time and unranked".into(),
-            );
-            return;
-        }
         let a = &scope.a;
         let messages = format!("n{}", self.ctes.len() + 1);
         self.ctes.push(format!(
