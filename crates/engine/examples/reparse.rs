@@ -51,6 +51,14 @@ fn main() {
         config.workers = workers.parse().unwrap();
     }
     let workers = config.workers;
+    let bytes_in_flight = config.bytes_in_flight;
+    let clock_ticks_per_second = std::process::Command::new("getconf")
+        .arg("CLK_TCK")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|out| out.trim().parse::<u64>().ok());
     let setup = Instant::now();
     let mut engine = Engine::new(config, archive.clone()).unwrap();
     let setup_seconds = setup.elapsed().as_secs_f64();
@@ -138,7 +146,7 @@ fn main() {
     };
     println!(
         "{}",
-        json!({"mode":mode,"workers":workers,"peak_rss_mb":peak_rss_mb,"load_before":load_before,"load_after":fs::read_to_string("/proc/loadavg").ok(),"setup_seconds":setup_seconds,"seconds":seconds,"selected":selected,
+        json!({"mode":mode,"workers":workers,"bytes_in_flight":bytes_in_flight,"clock_ticks_per_second":clock_ticks_per_second,"peak_rss_mb":peak_rss_mb,"load_before":load_before,"load_after":fs::read_to_string("/proc/loadavg").ok(),"setup_seconds":setup_seconds,"seconds":seconds,"selected":selected,
         "read_bytes":after.get("read_bytes").zip(before.get("read_bytes")).map(|(a,b)|a-b),
         "write_bytes":after.get("write_bytes").zip(before.get("write_bytes")).map(|(a,b)|a-b),
         "pass":pass,"stages":stages,"pipeline":pipeline,"reading_pipeline":polylogue_store::timing::reading_pipeline(),"storage":storage,"storage_error":storage_error})

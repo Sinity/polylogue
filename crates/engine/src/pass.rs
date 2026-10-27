@@ -377,7 +377,7 @@ impl Engine {
     /// in the spools, and the known files of live origins written in the
     /// last minutes (a session being written). They run ahead of the
     /// pass's bulk work. Paths with work in flight are left to it.
-    fn live_plans(&mut self, busy: &HashMap<PathBuf, Plan>) -> Result<Vec<Plan>, EngineError> {
+    pub(crate) fn live_plans(&mut self, busy: &HashSet<PathBuf>) -> Result<Vec<Plan>, EngineError> {
         let now_ns = i128::from(now_ms()) * 1_000_000;
         let mut found = collect::scan_spools(&self.config);
         found.extend(
@@ -392,7 +392,7 @@ impl Engine {
         );
         let mut plans = Vec::new();
         for f in found {
-            if self.refused.contains(&f.path) || busy.contains_key(&f.path) {
+            if self.refused.contains(&f.path) || busy.contains(&f.path) {
                 continue;
             }
             let Ok(meta) = std::fs::metadata(&f.path) else {
@@ -857,7 +857,7 @@ impl Engine {
         loop {
             if checked.elapsed() >= every {
                 checked = Instant::now();
-                match self.live_plans(&running) {
+                match self.live_plans(&running.keys().cloned().collect()) {
                     Ok(live) => {
                         for plan in live.into_iter().rev() {
                             waiting.retain(|w| w.path != plan.path);

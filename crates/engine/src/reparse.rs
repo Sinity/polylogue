@@ -39,7 +39,7 @@ struct Prepared {
 impl Engine {
     pub(crate) fn replace_readings(
         &mut self,
-        plans: Vec<Plan>,
+        mut plans: Vec<Plan>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if plans.is_empty() {
@@ -50,7 +50,13 @@ impl Engine {
             room: Condvar::new(),
             limit: self.config.bytes_in_flight.max(1),
         };
-        let count = plans.len();
+        plans.sort_by_key(|plan| plan.priority == Priority::Bulk);
+        let mut busy = HashMap::<PathBuf, usize>::new();
+        for plan in &plans {
+            *busy.entry(plan.path.clone()).or_default() += 1;
+        }
+        let mut remaining = plans.len();
+        let count = remaining;
         let waiting = Mutex::new(VecDeque::from(plans));
         let (finished, results) = channel();
         let workers = self.config.workers.max(1).min(count);
@@ -107,12 +113,25 @@ impl Engine {
             }
             drop(finished);
             let mut commits = Vec::new();
-            for Prepared {
-                mut plan,
-                reading,
-                bytes_read,
-            } in results
-            {
+            let mut checked = Instant::now();
+            let every = self.config.live_every.max(Duration::from_millis(10));
+            while remaining > 0 {
+                self.reparse_live(&busy, &mut checked, pass)?;
+                let Prepared {
+                    mut plan,
+                    reading,
+                    bytes_read,
+                } = match results.recv_timeout(every) {
+                    Ok(prepared) => prepared,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        return Err(std::io::Error::other(
+                            "a reading worker stopped before returning its input",
+                        )
+                        .into());
+                    }
+                };
+                remaining -= 1;
                 polylogue_store::timing::reading_queue(0, -1);
                 pass.bytes_read += bytes_read;
                 match reading {
@@ -125,23 +144,35 @@ impl Engine {
                         };
                         match writer.queue_chain(plan.input.clone(), chain, plan.size, reading) {
                             Ok(reply) => commits.push((plan, reply)),
-                            Err(error) => pass.errors.push(format!("re-parse: {error}")),
+                            Err(error) => {
+                                release_path(&mut busy, &plan.path);
+                                pass.errors.push(format!("re-parse: {error}"));
+                            }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => release_path(&mut busy, &plan.path),
                     Err(error) => {
                         pass.errors
                             .push(format!("re-parse {}: {error}", plan.path.display()));
+                        release_path(&mut busy, &plan.path);
                         plan.failed = true;
                         self.finish_plan(plan);
                     }
                 }
             }
             for (plan, reply) in commits {
-                match reply
-                    .recv()
-                    .map_err(|_| polylogue_store::StoreError::WriterGone)?
-                {
+                let written = loop {
+                    self.reparse_live(&busy, &mut checked, pass)?;
+                    match reply.recv_timeout(every) {
+                        Ok(written) => break written,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            return Err(polylogue_store::StoreError::WriterGone.into());
+                        }
+                    }
+                };
+                release_path(&mut busy, &plan.path);
+                match written {
                     Ok(written) => {
                         pass.messages_written += written;
                         self.finish_plan(plan);
@@ -152,6 +183,28 @@ impl Engine {
             }
             Ok(())
         })
+    }
+
+    fn reparse_live(
+        &mut self,
+        busy: &HashMap<PathBuf, usize>,
+        checked: &mut Instant,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if checked.elapsed() >= self.config.live_every {
+            *checked = Instant::now();
+            let live = self.live_plans(&busy.keys().cloned().collect())?;
+            self.execute(live, pass)?;
+        }
+        Ok(())
+    }
+}
+
+fn release_path(busy: &mut HashMap<PathBuf, usize>, path: &Path) {
+    let count = busy.get_mut(path).expect("reading path");
+    *count -= 1;
+    if *count == 0 {
+        busy.remove(path);
     }
 }
 
