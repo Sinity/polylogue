@@ -33,6 +33,7 @@ pub mod primary;
 pub mod read;
 mod repo_lookup;
 pub mod schema;
+pub mod schema_inputs;
 pub mod search;
 pub mod session_export;
 mod session_row;

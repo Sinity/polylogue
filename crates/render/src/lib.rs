@@ -12,6 +12,7 @@ pub mod measures;
 pub use polylogue_model::masking::{mask, mask_json};
 pub mod model_pages;
 pub mod results;
+pub mod schema;
 pub mod session_summary;
 
 use polylogue_model::{Block, Event, Message, PromptKind, Role, Session, ToolOutcome};
