@@ -105,6 +105,13 @@ checkout builds every test binary; a new checkout's target starts as a
 reflink copy of the master baseline's warm target, so that build compiles
 only what differs from master.
 
+Incremental compilation is disabled, with 256 codegen units for each workspace
+package. The measured cold and edited check pair wrote 3,876,593,664 bytes
+versus 7,222,145,024 bytes with the previous profile (46.3% fewer); peak
+child RSS fell from 1,339,899,904 to 1,210,421,248 bytes. Optimization and
+debug settings stay unchanged. The edited check took 215.09 s versus
+174.49 s; changing host load means these runs do not establish a speedup.
+
 Repository lookups read Git configuration directly and run `git rev-list` when
 HEAD changes. Git is included in the dev shell and the packaged binary's path.
 
