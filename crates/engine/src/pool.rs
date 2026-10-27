@@ -231,7 +231,7 @@ fn work(
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store);
+        let (batch, result) = run(job, archive, store, true);
         group.waiting.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
@@ -308,10 +308,11 @@ fn flush(
         .all(|(_, result, _)| done.send(result).is_ok())
 }
 
-fn run(
+pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
     store: &hashed_blobs::Store,
+    prepare: bool,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
@@ -414,7 +415,8 @@ fn run(
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
-                        p.prepare();
+                        p.reading_version = job.origin.reading_version();
+                        if prepare { p.prepare(); }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }

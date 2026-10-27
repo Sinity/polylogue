@@ -149,6 +149,13 @@ under whatever load the host has: a run records its load, and a change is
 judged by a paired run (`bench pair`), both builds at once over one sample.
 Record the pool and resource limits with the timings.
 
+`POLYLOGUE_BENCH_HOME` chooses where samples and archives go;
+`POLYLOGUE_BENCH_MANIFEST_DIR` chooses the manifest directory. Both can point
+into a task's output directory for an isolated measurement. The
+`polylogue-engine` example `reparse` compares a fresh build (`--mode fresh`)
+with a re-parse of the largest stored origin (`--mode reparse`), using the
+same `--home` and `--archive` in separate processes.
+
 A first-build report gives wall time, time per stage (pool time in
 thread-seconds, which do not add up to wall time), input bytes, physical I/O,
 peak memory and final storage sizes. A reading the runner could not take stays

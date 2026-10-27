@@ -57,6 +57,7 @@ pub(crate) struct Plan {
     /// A location the loop keeps watching (not a one-off import).
     pub(crate) tracked: bool,
     pub(crate) failed: bool,
+    pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
     /// Where the input's bytes come from.
@@ -98,6 +99,7 @@ impl Plan {
             priority: Priority::Bulk,
             tracked,
             failed: false,
+            replace: false,
             waiting: false,
             source,
         }

@@ -15,6 +15,9 @@
 //! the harness's own, so the events land on the same session as its
 //! transcript.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;

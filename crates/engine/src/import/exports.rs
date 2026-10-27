@@ -101,7 +101,7 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if matches!(plan.source, pool::Bytes::File) {
-            self.store_export(plan, pass)?;
+            self.store_plan(plan, pass)?;
         }
         let mut scratch = ExportItems::new()?;
         let pool::Bytes::Stored(chain) = &plan.source else {
@@ -186,10 +186,14 @@ impl Engine {
         Ok(())
     }
 
-    /// A watched export's new bytes are stored before it is parsed: an
+    /// A watched file's new bytes are stored before it is parsed: an
     /// append extends the chain, a rewrite starts a new one. Parsing then
     /// reads the stored chain.
-    fn store_export(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+    pub(crate) fn store_plan(
+        &mut self,
+        plan: &mut Plan,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
@@ -238,8 +242,20 @@ impl Engine {
             .input_progress(&plan.input.id)?
             .ok_or_else(|| std::io::Error::other("a stored export has no revision"))?;
         let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
-        plan.source = pool::Bytes::Stored(Arc::new(chain));
-        plan.change = Change::Unchanged;
+        plan.source = if matches!(
+            (plan.origin.open)(&plan.path),
+            Some(polylogue_sources::Parse::Export(_))
+        ) {
+            pool::Bytes::Stored(Arc::new(chain))
+        } else {
+            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                chain,
+                Arc::clone(&self.blobs),
+            ))))
+        };
+        plan.change = Change::Reparse {
+            chain: progress.chain,
+        };
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;
@@ -278,7 +294,15 @@ impl Engine {
         parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;
-        parse.prepare();
+        parse.reading_version = plan.origin.reading_version();
+        if let Some(reading) = &mut self.replacement {
+            reading.push(&mut parse)?;
+            if blobs.is_empty() {
+                return Ok(());
+            }
+        } else {
+            parse.prepare();
+        }
         let batch = Batch {
             input: plan.input.clone(),
             change: plan.change.clone(),
@@ -287,7 +311,11 @@ impl Engine {
             new_blob: None,
             blobs,
             length: plan.size,
-            parse: vec![parse],
+            parse: if self.replacement.is_some() {
+                Vec::new()
+            } else {
+                vec![parse]
+            },
             release: Default::default(),
         };
         if files.is_empty() {

@@ -4,7 +4,7 @@ use super::*;
 
 impl Engine {
     pub(super) fn flush_writes(&mut self) -> Result<WriteReport, EngineError> {
-        let report = self.writer.flush()?;
+        let report = self.writer.flush_rows()?;
         self.failed_writes
             .extend(report.failed_inputs.iter().cloned());
         Ok(report)

@@ -51,6 +51,7 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
@@ -85,6 +86,7 @@ pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
     /// The document without its blocks, packed JSON.
     pub(crate) fields: Vec<u8>,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
@@ -151,6 +153,7 @@ impl RowPacker {
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
+            body: self.pack_version(message, &message.blocks)?,
             content: self.pack_content(message, &message.blocks, None)?,
         })
     }
@@ -167,6 +170,7 @@ impl RowPacker {
         };
         Ok(PreparedDocument {
             id: document.id.clone(),
+            body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
             content: self.pack_content(
                 document,
@@ -174,6 +178,26 @@ impl RowPacker {
                 Some(b"polylogue-document-v1\0"),
             )?,
         })
+    }
+
+    fn pack_version(&mut self, value: &impl Serialize, blocks: &[Block]) -> Result<Vec<u8>> {
+        let mut value = serde_json::to_value(value)?;
+        for (stored, block) in value["blocks"]
+            .as_array_mut()
+            .expect("blocks are an array")
+            .iter_mut()
+            .zip(blocks)
+        {
+            if block_text(block).is_some() {
+                let field = if matches!(block, Block::ToolResult { .. }) {
+                    "output"
+                } else {
+                    "text"
+                };
+                stored[field] = serde_json::Value::String(String::new());
+            }
+        }
+        self.pack_json(&value)
     }
 
     fn pack_content(
@@ -311,14 +335,6 @@ fn reading_id(e: &Event) -> Option<String> {
         h.update(part.as_bytes());
     }
     Some(h.finalize().to_hex().to_string())
-}
-
-/// Whether a reading's payload reports a measured completion, which wins
-/// over a copy that does not.
-pub(crate) fn reading_confirmed(data: &serde_json::Value) -> bool {
-    data.get("measured_completion")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
 }
 
 /// Reads a block back from `block.body`.

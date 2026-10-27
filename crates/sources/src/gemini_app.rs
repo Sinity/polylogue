@@ -9,6 +9,9 @@
 //! Takeout repeats; a cell with no conversation link is a session of its
 //! own. Responses are HTML in the export and are kept as text.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::RecordOutcome;
 use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState};

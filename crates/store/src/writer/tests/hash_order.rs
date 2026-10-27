@@ -1,6 +1,6 @@
 use super::*;
 
-fn structured_message(reverse: bool) -> Message {
+pub(super) fn structured_message(reverse: bool) -> Message {
     let entries = if reverse {
         [("z", Json::String("λ🙂".into())), ("a", Json::from(7))]
     } else {

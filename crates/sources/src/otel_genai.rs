@@ -9,6 +9,9 @@
 //! `gen_ai.output.messages` follow it, with the call's token usage. Spans
 //! that are not GenAI spans are counted and set aside.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState};

@@ -127,3 +127,76 @@ fn sorted(v: serde_json::Value) -> serde_json::Value {
         other => other,
     }
 }
+
+#[test]
+fn every_declaration_checks_its_reading_version() {
+    use std::collections::BTreeMap;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/formats/reading_versions.json");
+    let saved: BTreeMap<String, (String, String)> =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut current = BTreeMap::new();
+    for origin in polylogue_sources::ORIGINS
+        .iter()
+        .filter(|o| o.support == polylogue_sources::Support::Parsed)
+    {
+        assert!(
+            !origin.modules.is_empty(),
+            "{} declares no modules",
+            origin.name
+        );
+        let dir = examples().join(origin.name);
+        let mut cases: Vec<_> = fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} needs synthetic fixtures: {e}", origin.name))
+            .map(|e| e.unwrap().path())
+            .collect();
+        cases.sort();
+        assert!(
+            !cases.is_empty(),
+            "{} has no synthetic fixtures",
+            origin.name
+        );
+        let mut hash = blake3::Hasher::new();
+        let mut parsed_rows = 0;
+        for case in cases {
+            let recorded = fs::read_to_string(case.join("path")).unwrap();
+            let input = fs::read_dir(&case)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.file_stem().is_some_and(|s| s == "input"))
+                .unwrap();
+            let bytes = fs::read(input).unwrap();
+            let mut parser = (origin.open)(Path::new(recorded.trim())).unwrap();
+            let step = super::support::array_fixture::parse(&mut parser, &bytes).unwrap();
+            parsed_rows += step.output.sessions.len()
+                + step.output.messages.len()
+                + step.output.documents.len()
+                + step.output.events.len()
+                + step.output.links.len()
+                + step.output.repo_lookups.len();
+            let output = serde_json::to_vec(&sorted(serde_json::to_value(step).unwrap())).unwrap();
+            hash.update(&(output.len() as u64).to_le_bytes());
+            hash.update(&output);
+        }
+        assert!(parsed_rows > 0, "{} fixtures produce no rows", origin.name);
+        let tuple = (
+            origin.reading_version(),
+            hash.finalize().to_hex().to_string(),
+        );
+        if let Some(previous) = saved.get(origin.name) {
+            assert!(
+                previous.1 == tuple.1 || previous.0 != tuple.0,
+                "{} output changed without a parser module version bump",
+                origin.name
+            );
+        }
+        current.insert(origin.name.to_owned(), tuple);
+    }
+    if std::env::var_os("POLYLOGUE_BLESS_VERSIONS").is_some() {
+        fs::write(path, serde_json::to_string_pretty(&current).unwrap() + "\n").unwrap();
+    } else {
+        assert_eq!(
+            current, saved,
+            "record a bumped reading version with POLYLOGUE_BLESS_VERSIONS=1"
+        );
+    }
+}

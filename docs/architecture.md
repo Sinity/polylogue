@@ -63,10 +63,15 @@ are gone; notes live in `archive.db` and survive it. A
 message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
 keeps one `message_source` row per input chain that holds it and shows one
 version: within an input the newest chain; within a chain the earliest record,
-or the latest for inputs whose records repeat whole conversations; across
-inputs the session it started in, then a complete version, then the more
-faithful arrival, then the smaller content hash. Messages are ordered by source
-position, with message IDs breaking ties; no time is invented.
+or the latest for inputs whose records repeat whole conversations. Across
+inputs, the shown version comes from the session it started in, then a complete
+version, then the more faithful arrival, then the smaller content hash, then
+the input ID. The choice compares each input's newest chain first. Packed
+message and document readings are shared by version hash, with shared text
+and blob references. Events and links have per-chain source membership rows
+and shared asserted values. Removing a chain's readings restores the winners
+from the sources that remain. Messages are ordered by source position, with
+message IDs breaking ties; no time is invented.
 [Import rebuild tests](../crates/engine/src/import/tests/replay.rs) cover
 rebuilds from stored imports.
 
@@ -113,6 +118,15 @@ A ZIP import stores the ZIP itself and each file in it as inputs, linked by
 `observation_zip`. Export [attachments](attachments.md) are found
 through those links and the [asset lookup](../crates/store/src/assets.rs).
 
+Each origin declares the parser modules it uses and their versions. Their
+ordered tuple is the chain's reading version, stored with its parse progress.
+A changed tuple re-parses that chain from its stored bytes. Parsing waits in
+private scratch until complete, then retraction and replacement commit in one
+index transaction. Other chains and readers keep their committed rows while
+it is parsed. Derivation runs after the round; a round with many deletions
+merges the full-text indexes once. The index still rebuilds on an
+`INDEX_VERSION` or schema change.
+
 Parsers count every record and field they were given, keep what they could
 not read as diagnostics, and keep unknown values apart from zero or empty.
 Each origin's rules and exceptions live with its
@@ -157,7 +171,8 @@ same roles; the capture's messages then name the export message
 
 Text that is not a conversation is a [Document](../crates/model/src/document.rs)
 in Store's [document rows](../crates/store/src/documents.rs), with one shown
-version chosen by source time. `read document:ID` and `export` read it; the
+version chosen by known/newest source time, arrival rank, larger content hash,
+input ID and newer chain. `read document:ID` and `export` read it; the
 `documents` unit searches it. A later export with an empty list removes
 nothing.
 

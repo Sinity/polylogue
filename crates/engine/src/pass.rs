@@ -190,7 +190,7 @@ impl Engine {
                 input: InputKey {
                     id: st.input_id.clone(),
                     format: st.origin.name.into(),
-                    arrival_rank: 0,
+                    arrival_rank: st.origin.arrival.rank(),
                 },
                 change: Change::Disappeared,
                 observation: Some(Observation {
@@ -508,7 +508,7 @@ impl Engine {
             input: InputKey {
                 id: st.input_id.clone(),
                 format: st.origin.name.into(),
-                arrival_rank: 0,
+                arrival_rank: st.origin.arrival.rank(),
             },
             change,
             observation: Some(obs),
@@ -524,6 +524,7 @@ impl Engine {
             priority,
             tracked: true,
             failed: false,
+            replace: false,
             waiting: false,
             source: pool::Bytes::File,
         }))
@@ -543,7 +544,13 @@ impl Engine {
         selected: Option<&[String]>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        let behind = self.reads.reader()?.chains_behind_index()?;
+        let behind = self.reads.reader()?.chains_behind_index(
+            &ORIGINS
+                .iter()
+                .filter(|o| o.support == Support::Parsed)
+                .map(|o| (o.name.to_owned(), o.reading_version()))
+                .collect::<Vec<_>>(),
+        )?;
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
         let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
         let watched: HashMap<String, PathBuf> = self
@@ -583,37 +590,47 @@ impl Engine {
                         continue;
                     };
                     let st = &self.inputs[path];
-                    // A whole-document input's older chain is replaced by its
-                    // current one; a chain that failed waits for new bytes.
-                    let lines = matches!(
-                        (st.origin.open)(path),
-                        Some(
-                            polylogue_sources::Parse::Lines(_)
-                                | polylogue_sources::Parse::CaptureLog(_)
-                        )
-                    );
                     let failed = st.failed_history.get(&state.chain)
                         == Some(&FailedChain {
                             length: state.length,
                         });
-                    if c.current || !lines || failed {
+                    if (c.current && !c.reading_changed) || failed {
                         continue;
                     }
                     (path.clone(), st.origin)
                 }
             };
+            let tracked = c.current && c.imported.is_none() && watched.get(&c.input) == Some(&path);
+            let facts = tracked
+                .then(|| self.inputs.get(&path).and_then(|st| st.facts))
+                .flatten();
+            let mut reading_state = state.clone();
+            if c.reading_changed {
+                reading_state.parsed = false;
+                reading_state.parsed_upto = 0;
+            }
             let plan = self.reparse_plan(
                 path,
                 origin,
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    arrival_rank: state.arrival_rank,
+                    arrival_rank: if c.imported.is_some() {
+                        2
+                    } else {
+                        origin.arrival.rank()
+                    },
                 },
-                &state,
-                None,
-                false,
+                &reading_state,
+                facts,
+                tracked,
             );
+            if state.parsed && c.reading_changed {
+                if let Err(error) = self.replace_reading(plan, pass) {
+                    pass.errors.push(format!("re-parse: {error}"));
+                }
+                continue;
+            }
             let round = chains_per_path.entry(plan.path.clone()).or_default();
             if *round == rounds.len() {
                 rounds.push(Vec::new());
@@ -656,7 +673,8 @@ impl Engine {
             .ok_or_else(|| {
                 polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
             })?
-            .arrival_rank;
+            .arrival_rank
+            .max(origin.arrival.rank());
         Ok(Some(self.reparse_plan(
             path.to_path_buf(),
             origin,
@@ -691,7 +709,7 @@ impl Engine {
             0
         };
         let export = matches!(parser, Some(polylogue_sources::Parse::Export(_)));
-        Plan::stored(
+        let mut plan = Plan::stored(
             path,
             origin,
             input,
@@ -706,7 +724,9 @@ impl Engine {
             },
             self.config.chunk,
             tracked,
-        )
+        );
+        plan.replace = state.parsed && parse_pos == 0;
+        plan
     }
 
     /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).
@@ -754,6 +774,23 @@ impl Engine {
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
         for mut plan in plans {
+            let store_first = matches!(plan.source, pool::Bytes::File)
+                && plan.parse_pos == 0
+                && plan.stored_upto > 0
+                && !matches!(plan.change, Change::First | Change::Rewritten);
+            if plan.replace || store_first {
+                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                if store_first && let Err(error) = self.store_plan(&mut plan, pass) {
+                    plan.failed = true;
+                    self.finish_plan(plan);
+                    pass.errors.push(format!("store before re-parse: {error}"));
+                    continue;
+                }
+                if let Err(error) = self.replace_reading(plan, pass) {
+                    pass.errors.push(format!("re-parse: {error}"));
+                }
+                continue;
+            }
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
@@ -876,18 +913,18 @@ impl Engine {
     /// is kept in memory only for files written recently; an older file's
     /// state is rebuilt by parsing it again if it ever grows.
     fn finish_plan(&mut self, plan: Plan) {
-        if !plan.tracked {
-            if let Change::Reparse { chain } = plan.change
-                && let Some(st) = self.inputs.get_mut(&plan.path)
-                && st.input_id == plan.input.id
-            {
-                if plan.failed {
-                    st.failed_history
-                        .insert(chain, FailedChain { length: plan.size });
-                } else {
-                    st.failed_history.remove(&chain);
-                }
+        if let Change::Reparse { chain } = plan.change
+            && let Some(st) = self.inputs.get_mut(&plan.path)
+            && st.input_id == plan.input.id
+        {
+            if plan.failed {
+                st.failed_history
+                    .insert(chain, FailedChain { length: plan.size });
+            } else {
+                st.failed_history.remove(&chain);
             }
+        }
+        if !plan.tracked {
             return;
         }
         if let Some(st) = self.inputs.get_mut(&plan.path) {

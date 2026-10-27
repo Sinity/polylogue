@@ -1,6 +1,9 @@
 //! Reading the times sources write. Each origin says which encoding a field
 //! uses; nothing here guesses between seconds and milliseconds.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use polylogue_model::{Json, Timestamp};
 
 /// An RFC 3339 string with an offset.

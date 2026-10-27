@@ -3,6 +3,9 @@
 //! input cite the local export record; sender identity and source claims stay
 //! in the raw bytes.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::document::Sink;
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::parse::{MessageRow, Output, Parse, Step};

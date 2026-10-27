@@ -277,3 +277,34 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
     let pool = ReadPool::open(&w.archive).unwrap();
     assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_none());
 }
+
+#[test]
+fn a_same_chain_document_cannot_override_a_newer_source_time() {
+    let w = test_archive();
+    w.writer
+        .send(doc_batch(
+            "a",
+            document("ordered", "newer source", 2000),
+            true,
+        ))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut older = doc_batch("a", document("ordered", "older source", 1000), true);
+    older.change = Change::Reparse { chain: 1 };
+    older.parse[0].reset = false;
+    w.writer.send(older).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&"claude-ai:ordered".parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer source".into()
+        }]
+    );
+}

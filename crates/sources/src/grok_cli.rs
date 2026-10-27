@@ -8,6 +8,9 @@
 //! unknown times stay unknown. A `reasoning` line belongs to the assistant
 //! message after it.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::document::{first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;

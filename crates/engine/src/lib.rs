@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 mod import;
 mod pass;
 mod plan;
+mod reparse;
 mod writes;
 
 #[derive(Debug, thiserror::Error)]
@@ -268,6 +269,7 @@ pub struct Engine {
     sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
     /// No pass has run since the engine started.
     first_pass: bool,
+    replacement: Option<polylogue_store::writer::ChainReading>,
 }
 
 fn now_ms() -> i64 {
@@ -324,6 +326,7 @@ impl Engine {
             lookups_at: None,
             sinex,
             first_pass: true,
+            replacement: None,
         })
     }
 

@@ -178,6 +178,11 @@ the same change.
   change to the register that is not input bytes: a look at an input that
   found no new bytes, a request, or an excision.
 
+- **reading version**: the ordered tuple of the parser modules and versions
+  an origin uses, stored with each chain's parse progress.
+- **stored version**: a complete packed reading of a message or document,
+  shared by its version hash. Its source rows identify the chains stating it.
+
 ## The browser extension
 
 - **host**: the native messaging host, `polylogue browser-host`, which Chrome

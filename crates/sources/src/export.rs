@@ -1,5 +1,8 @@
 //! Export records and conversation scan state, with a Serde reader that splits
 //! JSON arrays into records.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;

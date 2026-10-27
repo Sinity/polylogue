@@ -51,10 +51,11 @@ pub struct InZip {
 }
 
 /// One parse step's rows and where they sit in the input's chain.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParseStep {
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
+    pub reading_version: String,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -71,6 +72,7 @@ pub struct ParseStep {
     pub at_end: bool,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
+    #[serde(skip)]
     pub(crate) prepared: PreparedRows,
 }
 
@@ -88,6 +90,7 @@ impl ParseStep {
     ) -> Self {
         Self {
             order_from: None,
+            reading_version: String::new(),
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
