@@ -195,3 +195,122 @@ fn parser_failures_are_not_skipped_records_or_source_diagnostics() {
             .contains("PRIVATE_BODY_MARKER")
     );
 }
+
+fn command_output(args: &[String]) -> (ExitCode, serde_json::Value) {
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let status = command(args.iter().cloned(), &mut output, &mut errors);
+    for bytes in [&output, &errors] {
+        assert!(!String::from_utf8_lossy(bytes).contains("PRIVATE_BODY_MARKER"));
+    }
+    let report = if output.is_empty() {
+        assert!(!errors.is_empty());
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&output).unwrap()
+    };
+    (status, report)
+}
+
+#[test]
+fn command_rejects_invalid_arguments_and_path_lists() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.txt");
+    std::fs::write(&empty, "\n").unwrap();
+    let missing = format!("@{}", dir.path().join("absent.txt").display());
+    let empty = format!("@{}", empty.display());
+    for args in [
+        vec!["claude-code"],
+        vec!["claude-code", "--threads", "0", "synthetic.jsonl"],
+        vec!["claude-code", "--threads", "no", "synthetic.jsonl"],
+        vec!["unknown-origin", "synthetic.jsonl"],
+        vec!["claude-code", &empty],
+        vec!["claude-code", &missing],
+    ] {
+        let (status, report) =
+            command_output(&args.into_iter().map(str::to_owned).collect::<Vec<_>>());
+        assert_eq!(status, ExitCode::from(2));
+        assert!(report.is_null());
+    }
+}
+
+#[test]
+fn command_preserves_list_order_duplicates_and_failed_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("synthetic.jsonl");
+    let missing = dir.path().join("absent.jsonl");
+    let listing = dir.path().join("inputs.txt");
+    std::fs::write(&valid, UNKNOWN).unwrap();
+    std::fs::write(
+        &listing,
+        format!(
+            "{} {}\n{}\n{}\n",
+            UNKNOWN.len(),
+            valid.display(),
+            missing.display(),
+            valid.display()
+        ),
+    )
+    .unwrap();
+    for threads in [1, 3] {
+        let (status, report) = command_output(&[
+            "claude-code".into(),
+            "--threads".into(),
+            threads.to_string(),
+            format!("@{}", listing.display()),
+        ]);
+        assert_eq!(status, ExitCode::FAILURE);
+        assert_eq!(report["selected_inputs"], 3);
+        let inputs = report["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 3);
+        for (index, input) in inputs.iter().enumerate() {
+            assert_eq!(input["input"], index);
+        }
+        assert_eq!(report["files"], 2);
+        assert_eq!(report["failed_inputs"], 1);
+        assert_eq!(report["bytes_read"], UNKNOWN.len() * 2);
+        assert_eq!(inputs[1]["outcome"]["stage"], "open");
+    }
+}
+
+#[test]
+fn command_reports_read_errors_incomplete_unreadable_and_skipped_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let directory = dir.path().join("directory.jsonl");
+    std::fs::create_dir(&directory).unwrap();
+    let (status, report) = command_output(&["claude-code".into(), directory.display().to_string()]);
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(report["inputs"][0]["outcome"]["stage"], "read");
+    assert_eq!(report["inputs"][0]["outcome"]["error"]["type"], "io");
+    assert_eq!(report["inputs"][0]["bytes_read"], 0);
+
+    let tail = dir.path().join("tail.jsonl");
+    let mut bytes = UNKNOWN.to_vec();
+    bytes.extend_from_slice(b"{\"type\":");
+    std::fs::write(&tail, bytes).unwrap();
+    let (status, report) = command_output(&["claude-code".into(), tail.display().to_string()]);
+    assert_eq!(status, ExitCode::FAILURE);
+    assert_eq!(report["incomplete_inputs"], 1);
+    assert_eq!(report["records"], 1);
+    assert_eq!(report["skipped"], 1);
+    assert_eq!(report["inputs"][0]["unconsumed_bytes"], 8);
+
+    let unreadable = dir.path().join("unreadable.jsonl");
+    std::fs::write(&unreadable, "PRIVATE_BODY_MARKER\n").unwrap();
+    let (status, report) =
+        command_output(&["claude-code".into(), unreadable.display().to_string()]);
+    assert_eq!(status, ExitCode::SUCCESS);
+    assert_eq!(report["unreadable"], 1);
+    assert_eq!(report["skipped"], 0);
+    assert_eq!(report["failed_inputs"], 0);
+
+    let valid = dir.path().join("synthetic.jsonl");
+    std::fs::write(&valid, UNKNOWN).unwrap();
+    let (status, report) = command_output(&["claude-code".into(), valid.display().to_string()]);
+    assert_eq!(status, ExitCode::SUCCESS);
+    assert_eq!(report["files"], 1);
+    assert_eq!(report["records"], 1);
+    assert_eq!(report["skipped"], 1);
+    assert_eq!(report["failed_inputs"], 0);
+    assert_eq!(report["incomplete_inputs"], 0);
+}

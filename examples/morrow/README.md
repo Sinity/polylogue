@@ -16,14 +16,6 @@ The `polylogue-testkit` crate lays them out in a temporary home where each
 tool writes, runs the engine over it and imports the exports, so
 tests read an archive built by the real parsers and writer.
 
-## Differences from the generated files
-
-- Session #6's first user message had the item ID `msg_01a20000u2`, the
-  same as #5's first user message with different text. Codex item IDs are
-  unique API IDs, and Polylogue treats one ID in two files as one message
-  stored once (a fork copies items with their IDs), so the collision hid
-  #5's prompt. #6's copy is now `msg_01a20006u2`.
-
 ## Tour
 
 Run `polylogue demo tour ./morrow-tour` from an installed binary or this
@@ -33,26 +25,9 @@ answer. The public CLI test checks the search matches, two tool failures,
 two children of #2, four unknown session costs and the note/context workflow.
 Preparation and first-query times are separate measurements.
 
-## Counting rules
+## Counting and cost evidence
 
-A subagent's session ID is `claude-code:agent-<agentId>`. A Codex rollout
-stores one message per item as it arrives, including tool calls and results;
-commands recorded separately from their script calls also become messages.
-Usage observations do not combine items into model-response messages.
-The source story's prompts, calls and outcomes remain unchanged.
-
-Hook spool lines put `event_id`, `event_type` and `observed_at_ms` first,
-as current hook spool files do. Every field from the generated example is
-kept.
-
-## Cost evidence
-
-Codex token totals in `FACTS.md` are a recorded known subset from independent
-usage observations. They do not establish complete request or session costs;
-#5 and #6 therefore match `cost:unknown`. The complete-session known total is
-5.8626 USD under the example prices, with four sessions' total cost unknown.
-The separately priced observation subset is 0.333 USD; its record times do
-not establish daily spend. The expected examples keep these units separate.
-Current query answers use
-the shipped price catalog, rather than `prices.toml`; the tour presents
-those answers and does not assert the historical example total.
+[FACTS.md](FACTS.md) owns message identities, counting rules and cost
+interpretation. Current query answers use the shipped price catalog, rather
+than `prices.toml`; the tour presents those answers and does not assert the
+historical example total.

@@ -223,7 +223,7 @@ fn a_subagent_has_one_parent() {
 }
 
 /// compaction keeps the tree connected. Every message of #4 (its
-/// inherited prefix and its own, across the compaction) has a parent chain
+/// parent messages and its own, across the compaction) has a parent chain
 /// that reaches a root inside the session's read with its parents.
 #[test]
 fn compaction_keeps_the_tree_connected() {
