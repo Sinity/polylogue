@@ -256,7 +256,7 @@ fn nextest(args: Vec<String>) -> Nextest {
 /// `cargo nextest run` arguments for the shared test build that run the
 /// tests `args` select. `-p` packages and `-E` filtersets become one
 /// filterset, intersected with `required` (a changed-package selection, or
-/// the scenarios' own). Feature flags are refused: there is one feature set.
+/// the scenarios' own). Feature flags are refused: each mode shares one build.
 fn test_arguments(
     args: &[String],
     required: Option<String>,
