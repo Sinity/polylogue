@@ -54,10 +54,11 @@ fn stopped_comparison_commit_reads_only_the_unacknowledged_suffix() {
     let db = database(&w);
     // Fail both attempts to write this group's index rows; its bytes already
     // committed. The next reader reconstructs only their comparison hashes.
-    fault::arm("write.index_commit", "", Action::Fail, 0, 2);
+    fault::arm("tool_database.comparison_commit", "kept_rows", Action::Fail, 0, 2);
     {
         let (mut engine, _lock) = w.engine();
-        let _ = engine.run_pass();
+        let result = engine.run_pass().unwrap();
+        assert!(!result.errors.is_empty(), "comparison failure must be reported");
     }
     fault::clear();
     w.run_pass();
