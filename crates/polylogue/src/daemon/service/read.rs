@@ -473,7 +473,7 @@ pub(super) fn run(
         value["parents"] =
             serde_json::to_value(selected.parents()).expect("parents are serializable");
     }
-    ok(value)
+    page_output(value, options.format)
 }
 
 /// A document page holds only metadata, one decoded block and the output
@@ -570,8 +570,9 @@ pub(super) fn document(
         Ok(sources) => sources,
         Err(e) => return store_error(&e),
     };
-    ok(
+    page_output(
         serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next}),
+        options.format,
     )
 }
 
@@ -706,7 +707,31 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
         Err(e) => return error("bad_request", e),
     };
     let next = content_next(page.next, &cursor_key, binding, content, generation);
-    ok(serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}))
+    page_output(
+        serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}),
+        options.format,
+    )
+}
+
+/// A formatted model page keeps its cursor and metadata in the typed response.
+fn page_output(mut value: serde_json::Value, format: &str) -> Response {
+    let Some(format) = polylogue_render::Format::parse(format) else {
+        return error("bad_request", "unknown read format");
+    };
+    if matches!(
+        format,
+        polylogue_render::Format::Csv
+            | polylogue_render::Format::Org
+            | polylogue_render::Format::Yaml
+    ) {
+        let content = match polylogue_render::data::text(&value, format) {
+            Ok(content) => content,
+            Err(e) => return error("internal", e),
+        };
+        value["format"] = serde_json::json!(format.name());
+        value["content"] = serde_json::json!(content);
+    }
+    ok(value)
 }
 
 /// The outline's cursor binds its metadata continuation to the same selected
