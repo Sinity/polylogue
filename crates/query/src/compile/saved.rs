@@ -23,16 +23,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let (unit, cond) = self.saved_relation(name, arguments, span)?;
-        if unit != scope.unit {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} selects {}, not {}",
-                    unit.name(),
-                    scope.unit.name()
-                ),
-                position: span.start,
-            });
-        }
+        same_unit(name, unit, scope.unit, span)?;
         let Some(cond) = cond else {
             return Ok("1".into());
         };
@@ -104,16 +95,7 @@ impl<'a> Compiler<'a> {
                 continue;
             };
             let (unit, cond) = self.saved_relation(name, arguments, condition.span)?;
-            if unit != scope.unit {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "query:{name} selects {}, not {}",
-                        unit.name(),
-                        scope.unit.name()
-                    ),
-                    position: condition.span.start,
-                });
-            }
+            same_unit(name, unit, scope.unit, condition.span)?;
             if let Some(cond) = cond {
                 self.saved_stack.push(name.clone());
                 let defaults = self.saved_defaults(scope, &top_level(&cond));
@@ -134,6 +116,20 @@ impl<'a> Compiler<'a> {
             self.definitions.push(used);
         }
     }
+}
+
+fn same_unit(name: &str, selected: Unit, expected: Unit, span: Span) -> Result<(), QueryError> {
+    if selected != expected {
+        return Err(QueryError::Invalid {
+            message: format!(
+                "query:{name} selects {}, not {}",
+                selected.name(),
+                expected.name()
+            ),
+            position: span.start,
+        });
+    }
+    Ok(())
 }
 
 /// A query whose source is a kept result (`result:<id>`, `.rows` or

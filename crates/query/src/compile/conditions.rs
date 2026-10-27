@@ -185,14 +185,14 @@ impl<'a> Compiler<'a> {
                 let p = self.text_param(&me);
                 format!("{s}.id = {p}")
             }
-            id => self.one_session(&s, "native_id", id),
+            id => self.session_reference(&format!("{s}.native_id"), "native_id", id),
         })
     }
 
     /// The one session whose `column` is `id`, or else starts with it: the
     /// caller checks that exactly one does before the query runs, so a
     /// prefix two sessions share is refused rather than answered with both.
-    pub(super) fn one_session(&mut self, s: &str, column: &str, id: &str) -> String {
+    pub(super) fn session_reference(&mut self, expr: &str, column: &str, id: &str) -> String {
         let exact = self.text_param(id);
         let prefix = self.text_param(&like_prefix(id));
         self.id_checks.push(IdCheck {
@@ -205,8 +205,8 @@ impl<'a> Compiler<'a> {
             params: vec![Param::Text(id.to_owned()), Param::Text(like_prefix(id))],
         });
         format!(
-            "({s}.{column} = {exact} OR (NOT EXISTS (SELECT 1 FROM session WHERE {column} = {exact}) \
-             AND {s}.{column} LIKE {prefix} ESCAPE '\\'))"
+            "({expr} = {exact} OR (NOT EXISTS (SELECT 1 FROM session WHERE {column} = {exact}) \
+             AND {expr} LIKE {prefix} ESCAPE '\\'))"
         )
     }
 
@@ -295,7 +295,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
-        Ok(self.one_session(&s, "id", id))
+        Ok(self.session_reference(&format!("{s}.id"), "id", id))
     }
 
     /// The alias of the session a row of this unit belongs to.
@@ -574,12 +574,10 @@ impl<'a> Compiler<'a> {
             position: span.start,
             message,
         };
-        // A closed set naming `unknown` stores the word for a value nobody
-        // knows: it is matched as unknown, never as one more value.
-        let stores_unknown = def.values.is_some_and(|set| set.contains(&"unknown"));
+        let stores_unknown = def.stored_unknown.is_some();
         let known;
-        let expr = if stores_unknown {
-            known = format!("NULLIF(lower({expr}), 'unknown')");
+        let expr = if let Some(word) = def.stored_unknown {
+            known = format!("NULLIF(lower({expr}), '{word}')");
             known.as_str()
         } else {
             expr
@@ -628,6 +626,10 @@ impl<'a> Compiler<'a> {
                 let values = alternatives(v);
                 let mut parts = vec![];
                 for x in values {
+                    if def.sql.and_then(|e| e.reference()) == Some(ColumnReference::Session) {
+                        parts.push(self.session_reference(expr, "id", &x));
+                        continue;
+                    }
                     let exact = self.text_param(&x);
                     let prefix = self.text_param(&like_prefix(&x));
                     parts.push(format!(

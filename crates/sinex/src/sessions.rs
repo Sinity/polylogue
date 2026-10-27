@@ -457,7 +457,7 @@ fn turns(
                     i.id AS input, m.source_chain AS chain, m.source_start AS start
              FROM {} t JOIN message m ON m.id = t.id JOIN input_ref i ON i.pk = m.input_pk
              WHERE t.session_pk = ?1 ORDER BY t.start, t.id",
-            polylogue_query::units::TURNS
+            polylogue_query::units::turns()
         ),
         &[SqlValue::Int(pk)],
     )?;

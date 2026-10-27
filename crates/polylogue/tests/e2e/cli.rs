@@ -468,3 +468,5 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     assert!(!stderr.contains("serving"), "{stderr}");
     assert!(!archive.join("daemon.sock").exists());
 }
+
+mod query_surfaces;

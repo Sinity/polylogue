@@ -147,3 +147,131 @@ fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
         "{answer}"
     );
 }
+
+#[test]
+fn distinct_near_counts_the_answer_rows_without_vectors() {
+    let w = morrow();
+    let similarity = super::generated::vectors_for(&w, |_| false);
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let fields = ["origin".into()];
+    let mut request = ask("kind:* near:dates | distinct");
+    request.fields = &fields;
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["count"], 4, "{answer}");
+    assert_eq!(answer["unknown"]["near"], answer["count"], "{answer}");
+    assert!(
+        answer["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("_near").is_none())
+    );
+}
+
+#[test]
+fn near_selects_sessions_before_a_measurement() {
+    let w = morrow();
+    let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let mut request = ask("near:dates | limit 1 | measure sessions");
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["outcome"], "measure", "{answer}");
+    assert_eq!(answer["data"].as_array().unwrap().len(), 1, "{answer}");
+    assert_eq!(
+        answer["data"][0]["session"], "claude-code:7f3a2c10-0002-4000-8000-000000000002",
+        "{answer}"
+    );
+}
+
+#[test]
+fn session_has_calls_and_errors_reads_only_its_own_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fx
+        .session(SessionFacts {
+            id: "claude-code:branches",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    let abandoned = fx
+        .message(
+            session,
+            MessageFacts {
+                on_active_path: Some(false),
+                ..msg("abandoned", "assistant", "model", "discarded", None)
+            },
+        )
+        .unwrap();
+    fx.tool_call(
+        session,
+        abandoned,
+        CallFacts {
+            outcome: "error",
+            ..CallFacts::default()
+        },
+    )
+    .unwrap();
+    fx.message(
+        session,
+        msg("active", "user", "human", "keep this path", None),
+    )
+    .unwrap();
+    let mut w = TestArchive { _dir: dir, fx };
+    for condition in ["has:errors", "has:tool_calls"] {
+        assert_eq!(q(&w, condition)["count"], 0, "{condition}");
+        assert_eq!(
+            q(&w, &format!("NOT {condition}"))["count"],
+            1,
+            "{condition}"
+        );
+    }
+    let active =
+        w.fx.message(
+            session,
+            msg("active-call", "assistant", "model", "continue", None),
+        )
+        .unwrap();
+    w.fx.tool_call(
+        session,
+        active,
+        CallFacts {
+            outcome: "error",
+            ..CallFacts::default()
+        },
+    )
+    .unwrap();
+    for condition in ["has:errors", "has:tool_calls"] {
+        assert_eq!(q(&w, condition)["count"], 1, "{condition}");
+    }
+}
+
+#[test]
+fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
+    let w = morrow();
+    let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let mut request = ask("messages where chrono near:dates | union (messages where chrono)");
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["count"], 4, "{answer}");
+    assert_eq!(answer["unknown"]["near"], 2, "{answer}");
+
+    let similarity = super::generated::vectors_for(&w, |_| true);
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    for text in [
+        "messages where chrono | union (messages where chrono near:dates)",
+        "messages where chrono | union (messages where id:m2p0 near:dates)",
+        "near:dates | limit 2 | messages where chrono",
+    ] {
+        let mut request = ask(text);
+        request.embeddings = true;
+        request.near = Some(&near);
+        let answer = run_q(&w, request).unwrap();
+        assert!(answer["unknown"]["near"].is_null(), "{text}: {answer}");
+    }
+}

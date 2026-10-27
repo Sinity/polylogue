@@ -397,7 +397,7 @@ impl Leaf {
                 Truth::of(session.own_calls().filter(|c| c.outcome == "error").count() >= *n)
             }
             Leaf::Has(what) => {
-                let mut calls = session.messages.iter().flat_map(|m| m.calls.iter());
+                let mut calls = session.own().flat_map(|m| m.calls.iter());
                 Truth::of(match *what {
                     "errors" => calls.any(|c| c.outcome == "error"),
                     "tool_calls" => calls.next().is_some(),
