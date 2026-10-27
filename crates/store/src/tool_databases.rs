@@ -415,7 +415,8 @@ fn write_export(
             }
             let encoded = Value::Object(values);
             if catalog.changed(&table.name, &key, &encoded, full)? {
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"r":encoded})).map_err(std::io::Error::from)?;
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"r":encoded}))
+                    .map_err(std::io::Error::from)?;
                 bytes.push(b'\n');
                 done.rows += 1;
                 crate::fault::check("tool_export.after_row", &table.name)?;
@@ -427,10 +428,14 @@ fn write_export(
         if full {
             catalog.gone(&table.name, &mut |key| {
                 stopped()?;
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"gone":true})).map_err(std::io::Error::from)?;
-                bytes.push(b'\n'); done.gone += 1;
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"gone":true}))
+                    .map_err(std::io::Error::from)?;
+                bytes.push(b'\n');
+                done.gone += 1;
                 crate::fault::check("tool_export.after_gone", &table.name)?;
-                if bytes.len() >= APPEND_BYTES { send(std::mem::take(&mut bytes), None)?; }
+                if bytes.len() >= APPEND_BYTES {
+                    send(std::mem::take(&mut bytes), None)?;
+                }
                 Ok(())
             })?;
         }
@@ -455,11 +460,8 @@ fn write_export(
         &tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         &mut |table, key| {
             stopped()?;
-            serde_json::to_writer(
-                &mut bytes,
-                &json!({"t":table,"k":key,"gone":true}),
-            )
-            .map_err(std::io::Error::from)?;
+            serde_json::to_writer(&mut bytes, &json!({"t":table,"k":key,"gone":true}))
+                .map_err(std::io::Error::from)?;
             bytes.push(b'\n');
             done.gone += 1;
             if bytes.len() >= APPEND_BYTES {
