@@ -182,7 +182,7 @@ fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
         search(1),
         markdown("one", json!({"markdown":"### User Input\nQuestion"})),
     ]);
-    assert!(sync_paths(&[path.clone()], &spool, &[client]).is_empty());
+    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     let status: Json = serde_json::from_slice(
         &fs::read(destination(&path, &spool).with_extension("status.json")).unwrap(),
@@ -321,7 +321,7 @@ fn an_unresponsive_server_has_a_short_request_timeout() {
     });
     let mut client = Server::new(port, "synthetic-token".into());
     assert_eq!(
-        client.agent.config().timeout_global(),
+        client.agent.config().timeouts().global,
         Some(Duration::from_secs(5))
     );
     client.agent = ureq::Agent::config_builder()
