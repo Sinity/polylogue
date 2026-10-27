@@ -1,11 +1,11 @@
-//! Opt-in HTTP and browser measurements over a synthetic real daemon.
+//! Opt-in daemon measurements over a synthetic archive.
 use super::*;
 use std::time::Instant;
 
 #[test]
-#[ignore = "run in the measure queue with POLYLOGUE_WORKBENCH_DRIVER"]
-fn workbench_measurements() {
-    let mut r = reader();
+#[ignore = "run through the AgentCTL measure operation"]
+fn search_measurements() {
+    let r = reader();
     let now = polylogue_model::Timestamp::from_unix_ms(crate::daemon::service::now_ms())
         .unwrap()
         .to_string();
@@ -28,7 +28,6 @@ fn workbench_measurements() {
     }
     r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
     let provider = r.w.local_embeddings();
-    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
     for (name, text) in [
         (
             "live",
@@ -72,58 +71,10 @@ fn workbench_measurements() {
             samples.push(started.elapsed().as_secs_f64() * 1000.0);
         }
         eprintln!(
-            "WORKBENCH_DAEMON={}",
+            "SEARCH_DAEMON={}",
             serde_json::json!({"name":name,"query":text,"page_size":50,"first_ms":first_ms,"samples_ms":samples})
         );
     }
-    let output = std::process::Command::new("python3")
-        .arg(
-            std::env::var("POLYLOGUE_WORKBENCH_DRIVER")
-                .expect("set POLYLOGUE_WORKBENCH_DRIVER to the browser measurement driver"),
-        )
-        .arg(format!(
-            "http://127.0.0.1:{}/auth#{}",
-            server.port, server.token
-        ))
-        .arg(&r.w.home)
-        .output()
-        .unwrap();
-    eprintln!(
-        "WORKBENCH_BROWSER={}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let provider_ms = provider.join().unwrap();
-    eprintln!("WORKBENCH_SYNTHETIC_PROVIDER_RESPONSE_MS={provider_ms}");
-    server.shutdown().unwrap();
-    for _ in 0..5 {
-        let started = Instant::now();
-        r.w.restart();
-        let startup = started.elapsed().as_secs_f64() * 1000.0;
-        let mut server = start_on(Arc::clone(&r.w.daemon), 0).unwrap();
-        let output = std::process::Command::new("python3")
-            .arg(std::env::var("POLYLOGUE_WORKBENCH_DRIVER").unwrap())
-            .arg(format!(
-                "http://127.0.0.1:{}/auth#{}",
-                server.port, server.token
-            ))
-            .arg(&r.w.home)
-            .arg("restart")
-            .output()
-            .unwrap();
-        eprintln!(
-            "WORKBENCH_RESTART startup_ms={startup} {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        server.shutdown().unwrap();
-    }
+    eprintln!("SEARCH_SYNTHETIC_PROVIDER_RESPONSE_MS={provider_ms}");
 }

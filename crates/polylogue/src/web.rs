@@ -6,10 +6,8 @@
 
 pub mod access;
 mod api;
-mod live;
 pub mod pages;
 mod reader;
-mod search;
 
 use crate::daemon::service::{Daemon, handle};
 use crate::daemon::{Request, Response};
@@ -157,13 +155,8 @@ impl axum::serve::Listener for OwnerListener {
 
 pub fn router(web: Arc<Web>) -> Router {
     Router::new()
-        .route("/", get(live::home))
-        .route("/search", get(search::search))
-        .route("/search/facets", get(search::facets))
-        .route("/assets/sessions.js", get(live::script))
-        .route("/assets/search.js", get(search::script))
-        .route("/assets/sessions.css", get(live::style))
-        .route("/assets/search.css", get(search::style))
+        .route("/", get(home))
+        .route("/search", get(search))
         .route("/cost", get(cost))
         .route("/s/{id}", get(reader::session))
         .route("/d/{id}", get(reader::document))
@@ -313,10 +306,67 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
     (status, Html(pages::error_page(kind, message))).into_response()
 }
 
+async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
+    let status = match ask(&web, Request::Status).await {
+        Response::Ok { data } => scrubbed(&web, data),
+        Response::Error { kind, message, .. } => {
+            return failed(StatusCode::INTERNAL_SERVER_ERROR, &kind, &message);
+        }
+    };
+    let sessions = match ask(
+        &web,
+        Request::Query {
+            text: "sessions".into(),
+            cursor: None,
+            page_size: Some(30),
+            why: false,
+            session: None,
+            fields: vec![],
+        },
+    )
+    .await
+    {
+        Response::Ok { data } => scrubbed(&web, data),
+        _ => serde_json::Value::Null,
+    };
+    page(pages::home(&status, &sessions))
+}
+
 #[derive(Deserialize)]
 struct SearchQuery {
     #[serde(default)]
     q: String,
+    cursor: Option<String>,
+}
+
+async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
+    if p.q.trim().is_empty() {
+        return Redirect::to("/").into_response();
+    }
+    let request = Request::Query {
+        text: p.q.clone(),
+        cursor: p.cursor.clone(),
+        page_size: None,
+        why: true,
+        session: None,
+        fields: vec![],
+    };
+    match ask(&web, request).await {
+        Response::Ok { data } => page(pages::search(
+            &p.q,
+            Some(&scrubbed(&web, data)),
+            None,
+            p.cursor.as_deref(),
+        )),
+        Response::Error {
+            kind,
+            message,
+            detail,
+        } => {
+            let e = serde_json::json!({ "kind": kind, "message": access::scrub(&message, &web.daemon.archive.root), "detail": detail });
+            page(pages::search(&p.q, None, Some(&e), p.cursor.as_deref()))
+        }
+    }
 }
 
 /// Cost uses the cost measure and its session selection, as the CLI does.

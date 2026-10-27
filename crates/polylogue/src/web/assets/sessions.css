@@ -1,6 +1,0 @@
-#session-list { overflow-x: auto; }
-#session-list table { font-variant-numeric: tabular-nums; }
-#session-list td { overflow-wrap: anywhere; min-width: 6em; }
-#session-list td:nth-child(2) { min-width: 14em; }
-#session-list td:nth-child(3) { max-width: 16em; }
-#session-list details { max-width: 16em; }
