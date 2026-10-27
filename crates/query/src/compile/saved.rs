@@ -138,30 +138,28 @@ fn same_unit(name: &str, selected: Unit, expected: Unit, span: Span) -> Result<(
 pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>, QueryError> {
     let lead = text.len() - text.trim_start().len();
     let trimmed = text.trim_start();
-    let Some(after) = trimmed
+    if !trimmed
         .get(..7)
-        .filter(|p| p.eq_ignore_ascii_case("result:"))
-        .map(|_| &trimmed[7..])
-    else {
+        .is_some_and(|p| p.eq_ignore_ascii_case("result:"))
+    {
         return Ok(None);
-    };
-    let end = after
-        .find(|c: char| c.is_whitespace() || c == '|')
-        .unwrap_or(after.len());
-    let word = &after[..end];
-    let (id, part) = match word.rsplit_once('.') {
-        Some((id, p @ ("rows" | "matches"))) => (id, p),
-        _ => (word, "rows"),
-    };
-    let rest = after[end..].trim();
-    if !rest.is_empty() && !rest.starts_with('|') {
-        return Err(QueryError::Invalid {
-            message: format!(
-                "result:{id} is a kept result: read it with stages (`result:{id} | group by …`), not conditions"
-            ),
-            position: lead,
-        });
     }
+    let mut query = parse(text)?;
+    let (value, quoted) = match &query.source {
+        Source::Sessions { cond: Cond { kind: CondKind::Match { field, value: Value::One { text, quoted } }, .. } } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => (text.clone(), *quoted),
+        _ => return Err(QueryError::Invalid {
+            message: "A kept result takes stages, not conditions or attached rows. Use `result:ID | group by …`.".into(),
+            position: lead,
+        }),
+    };
+    let (id, part) = if quoted {
+        (value.as_str(), "rows")
+    } else {
+        match value.rsplit_once('.') {
+            Some((id, p @ ("rows" | "matches"))) => (id, p),
+            _ => (value.as_str(), "rows"),
+        }
+    };
     let kept = opts.kept.get(id).ok_or_else(|| {
         QueryError::syntax(
             text,
@@ -181,8 +179,10 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     } else {
         &kept.columns
     };
-    let stages = format!("sessions {rest}");
-    let query = parse(&stages)?;
+    query.source = Source::Unit {
+        unit: Unit::Sessions,
+        cond: None,
+    };
     let unit = Unit::all()
         .find(|u| u.name() == kept.unit)
         .unwrap_or(Unit::Sessions);
