@@ -5,7 +5,7 @@ CLI. The client needs only Python's standard library at runtime. It invokes
 CLI JSON with an argument list and uses the same daemon as other clients.
 
 ```python
-from polylogue.sdk import Client, Refused
+from polylogue.client import Client, Refused
 
 client = Client()  # Or Client("/path/to/archive", executable="/path/to/polylogue")
 page = client.query("messages where parser", page_size=100)

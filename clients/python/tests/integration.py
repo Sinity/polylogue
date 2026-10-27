@@ -7,7 +7,7 @@ import unittest
 from dataclasses import FrozenInstanceError
 
 from polylogue.models import Answer
-from polylogue.sdk import Client, Refused
+from polylogue.client import Client, Refused
 
 
 class ClientTests(unittest.TestCase):
@@ -43,6 +43,16 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(copy["large"], 2**62)
         copy["rows"].clear()
         self.assertEqual(len(answer.data["rows"]), 1)
+
+    def test_resent_write_is_idempotent(self):
+        arguments = ("note", "add", "repo:synthetic", "--body", "one note", "--request-id", "python-write")
+        first = self.client.call(*arguments).json()
+        again = self.client.call(*arguments).json()
+        self.assertEqual(first["id"], again["id"])
+        self.assertFalse(first["repeat"])
+        self.assertTrue(again["repeat"])
+        notes = self.client.call("note", "list", "repo:synthetic").json()
+        self.assertEqual(len(notes["notes"]), 1)
 
     def test_change_feed_can_continue_from_its_completion(self):
         first = [line.json() for line in self.client.changes()]

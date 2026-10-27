@@ -14,7 +14,7 @@
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   pasted into it brings that session's takeover context.
 //! - a shell command about to run (`PreToolUse`, Claude Code and Codex):
-//!   advice, only when the command is a check that failed here repeatedly
+//!   advice, only when the command is a verification that failed here repeatedly
 //!   since it last passed. The daemon has [`ADVICE_BUDGET`] to answer; a
 //!   tool call never waits longer.
 //!
@@ -41,9 +41,10 @@ use std::time::{Duration, Instant};
 /// harnesses' hook timeouts are longer.
 const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
 
-/// How long a hook before a tool runs waits for advice, and then for the
-/// record that it was delivered: the tool call waits on it.
+/// How long a hook waits for read-only advice preparation.
 const ADVICE_BUDGET: Duration = Duration::from_millis(20);
+/// Recording printed advice has an independent short budget.
+const ADVICE_DELIVERY_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,11 +231,13 @@ fn is_uuid(w: &str) -> bool {
 fn context(ask: Ask) -> Option<(String, String)> {
     let budget = budget_for(&ask);
     let request_id = polylogue_store::user_writes::new_request_id();
+    let sender = (!matches!(ask, Ask::ToolUse { .. }))
+        .then(|| polylogue_model::DeliverySender::Hook.as_str().into());
     let reply = ask_daemon(
         &Request::Context {
             request_id,
             ask,
-            sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
+            sender,
         },
         budget,
     )?;
@@ -373,6 +376,52 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
     }
 }
 
+/// Prepares read-only advice, prints it, then records the delivered text.
+fn tool_advice(
+    harness: Harness,
+    payload: &Value,
+    mut send: impl FnMut(&Request, Duration) -> Option<Response>,
+    output: impl FnOnce(Harness, &str, &str) -> bool,
+) {
+    let Some(cwd) = payload["cwd"].as_str().map(PathBuf::from) else {
+        return;
+    };
+    let Some(command) = shell_command(payload) else {
+        return;
+    };
+    let session = session_of(harness, payload);
+    let request = Request::Context {
+        request_id: polylogue_store::user_writes::new_request_id(),
+        ask: Ask::ToolUse {
+            cwd: cwd.clone(),
+            session: session.clone(),
+            command,
+        },
+        sender: None,
+    };
+    let Some(Response::Ok { data }) = send(&request, ADVICE_BUDGET) else {
+        return;
+    };
+    if data["prepared"]["empty"].as_bool() != Some(false) {
+        return;
+    }
+    let (Some(id), Some(text)) = (data["delivery"].as_str(), data["prepared"]["text"].as_str())
+    else {
+        return;
+    };
+    if output(harness, "PreToolUse", text) {
+        let _ = send(
+            &Request::AdviceDelivered {
+                request_id: id.to_owned(),
+                session,
+                cwd,
+                text: text.to_owned(),
+            },
+            ADVICE_DELIVERY_BUDGET,
+        );
+    }
+}
+
 pub fn run(harness: Harness, event: &str) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -381,17 +430,13 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
         // The harness must not fail because the spool cannot be written.
         eprintln!("polylogue hook: could not record {event}: {e}");
     }
-    let started = Instant::now();
-    if let Some((deliveries, text)) = respond(harness, event, &payload)
+    if event == "PreToolUse" {
+        tool_advice(harness, &payload, ask_daemon, emit);
+    } else if let Some((deliveries, text)) = respond(harness, event, &payload)
         && emit(harness, event, &text)
     {
-        let budget = if event == "PreToolUse" {
-            ADVICE_BUDGET.saturating_sub(started.elapsed())
-        } else {
-            CONTEXT_BUDGET
-        };
         for d in deliveries.split(',') {
-            delivered(d, budget);
+            delivered(d, CONTEXT_BUDGET);
         }
     }
     ExitCode::SUCCESS

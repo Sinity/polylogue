@@ -57,11 +57,11 @@ fn advise(f: &Fixture, command: &str) -> Prepared {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    advice(&reader, Path::new("/home/op/proj"), command, "d1", now).unwrap()
+    advice(&reader, Path::new("/home/op/proj"), command, None, now).unwrap()
 }
 
 #[test]
-fn a_check_that_failed_repeatedly_since_its_last_pass_gets_a_hint() {
+fn a_verification_that_failed_repeatedly_since_its_last_pass_gets_a_hint() {
     let (_dir, f) = ran(&[
         ("claude-code:s1", "cargo test", "ok", 1),
         ("claude-code:s1", "cargo test", "error", 2),
@@ -82,7 +82,7 @@ fn a_check_that_failed_repeatedly_since_its_last_pass_gets_a_hint() {
             p.text
         );
     }
-    assert_eq!(p.refs, ["session:claude-code:s2"]);
+    assert!(p.refs.is_empty());
 }
 
 #[test]
@@ -97,7 +97,27 @@ fn anything_less_certain_says_nothing() {
     assert!(advise(&f, "cargo test").empty);
     // A later pass clears the failures before it.
     assert!(advise(&f, "cargo fmt").empty);
-    // A command that runs no check, and a check never run here.
+    // A command that runs no verification, and a verification never run here.
     assert!(advise(&f, "ls -la").empty);
     assert!(advise(&f, "cargo clippy").empty);
+}
+
+#[test]
+fn the_brief_and_advice_count_only_failures_after_the_last_pass() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo test", "error", 2),
+        ("claude-code:s1", "cargo test", "ok", 3),
+        ("claude-code:s2", "cargo test", "error", 4),
+    ]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let failures = reader
+        .failing_commands(&["/home/op/proj".into()], T0)
+        .unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].times, 1);
+    assert_eq!(failures[0].sessions, 1);
+    assert_eq!(failures[0].session, "claude-code:s2");
+    assert!(advise(&f, "cargo test").empty);
 }

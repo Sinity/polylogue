@@ -1,4 +1,4 @@
-//! The Python SDK consumes the same public answers as the CLI.
+//! The Python client consumes the same public answers as the CLI.
 use super::*;
 
 #[test]

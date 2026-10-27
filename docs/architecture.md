@@ -135,7 +135,10 @@ different one refused. Each capture repeats the whole conversation, so the lates
 capture's version of a message is shown, and a message missing from a later
 capture stays.
 
-The extension keeps nothing but captures the host has not yet acknowledged.
+The extension keeps captures the host has not yet acknowledged in its outbox.
+The daemon reports attachments marked `not_fetched: "downloading"` in the latest
+capture, so backfill and unchanged page captures resume their downloads after a
+browser restart. Conversation fingerprints are temporary browser-session state.
 [Chat actions](../crates/store/src/chat_actions.rs) and
 [backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
 writer changes: the operator queues or starts them through the CLI, MCP or the
@@ -349,6 +352,14 @@ something an excision removed (its provider file was still there), the
 import stops at that excision and names it: excise it in the primary
 archive and import the file again.
 
+## Hook advice
+
+Hook advice is prepared read-only within 20 milliseconds. After printing it,
+the hook has another 20 milliseconds to record one delivery with its delivered
+outcome. A session receives advice about a verification once until its failures
+change. Advice names sessions in its text; its references contain no session
+text that would prevent excision.
+
 ## Offline schema tools
 
 [Schema tools](schema-tools.md) use a pure Sources observer and recursive diff,
@@ -360,7 +371,7 @@ map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
 ## Python client
 
-The standard-library client in `clients/python/polylogue/sdk.py` invokes the
+The standard-library client in `clients/python/polylogue/client.py` invokes the
 installed CLI with an argument list, so command validation, daemon access,
 masking and feed validation have the same implementation as other clients.
 `polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`

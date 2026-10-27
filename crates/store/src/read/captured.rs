@@ -8,6 +8,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedSession {
     pub messages: u64,
+    pub downloading: bool,
     /// When the latest stored capture of it was taken (ms): the provider's
     /// conversation at that moment is in the archive.
     pub last_captured_at: Option<i64>,
@@ -38,16 +39,44 @@ impl Reader<'_> {
         sessions
             .iter()
             .map(|id| {
-                Ok(stmt
+                let mut held = stmt
                     .query_row([id.to_string()], |r| {
                         Ok(CapturedSession {
                             messages: u64::try_from(r.get::<_, i64>(0)?).unwrap_or(0),
                             last_captured_at: r.get(1)?,
+                            downloading: false,
                         })
                     })
-                    .optional()?)
+                    .optional()?;
+                if let Some(held) = &mut held {
+                    held.downloading = self.downloading_files(id)?;
+                }
+                Ok(held)
             })
             .collect()
+    }
+
+    /// Whether the newest capture is still waiting for attachment bytes.
+    pub fn downloading_files(&self, session: &polylogue_model::SessionId) -> Result<bool> {
+        let data: Option<Vec<u8>> = self
+            .conn()?
+            .query_row(
+                "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
+             WHERE s.id = ?1 AND e.kind = 'browser_capture'
+             ORDER BY e.at DESC, e.pk DESC LIMIT 1",
+                [session.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(data) = data else {
+            return Ok(false);
+        };
+        let data: polylogue_model::Json = crate::encoding::unpack_json(&data)?;
+        Ok(data["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|a| a["not_fetched"].as_str() == Some("downloading")))
     }
 
     /// The files of `session` whose bytes are stored, by the provider's

@@ -144,3 +144,23 @@ fn an_open_read_delays_emptying_the_logs_but_not_the_excision() {
     }
     assert_eq!(w.texts("other"), ["another kept message"]);
 }
+
+#[test]
+fn advice_naming_a_session_does_not_prevent_excision() {
+    let w = ClaudeHome::new();
+    w.append("advised.jsonl", &user("u1", "advised", "session text"));
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    engine.writer().unwrap().user(UserRequest::now("advice".into(), UserWrite::DeliveredAdvice(Delivery {
+        recipient_kind: "session".into(), recipient_id: Some("claude-code:next".into()),
+        sender: "hook".into(), event: "advice".into(), cwd: None,
+        text: "cargo test failed in claude-code:advised; polylogue read claude-code:advised shows it".into(),
+        refs: vec![], left_out: vec![],
+    }))).unwrap();
+    excise(&mut engine, "session:claude-code:advised", false);
+    assert!(w.texts("advised").is_empty());
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.delivery_event WHERE what = 'delivered'"),
+        1
+    );
+}

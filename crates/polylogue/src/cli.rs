@@ -42,7 +42,7 @@ pub fn command() -> clap::Command {
     for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
-                for a in c.args.iter().filter(|a| !a.global) {
+                for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
                     root = root.arg(clap_arg(a));
                 }
             }
@@ -83,7 +83,7 @@ fn subcommand(c: &Command) -> clap::Command {
     let mut sub = clap::Command::new(word)
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
-    for a in c.args.iter().filter(|a| !a.global) {
+    for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
         sub = sub.arg(clap_arg(a));
     }
     sub
@@ -140,7 +140,7 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
 /// A command's values from its matches.
 fn values(c: &Command, m: &ArgMatches) -> Values {
     let mut out = serde_json::Map::new();
-    for a in c.args {
+    for a in c.args_for(Surface::Cli) {
         let value = match a.kind {
             Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
             Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),

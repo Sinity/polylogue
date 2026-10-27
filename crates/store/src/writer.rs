@@ -1207,6 +1207,35 @@ impl Inner {
                     "a ZIP member is stored with its ZIP's group".into(),
                 ));
             }
+            if b.input.format == "browser-capture" {
+                for p in &b.parse {
+                    for row in &p.output.messages {
+                        for block in &row.message.blocks {
+                            let attachments = match block {
+                                polylogue_model::Block::Image(a)
+                                | polylogue_model::Block::File(a) => std::slice::from_ref(a),
+                                polylogue_model::Block::ToolResult { attachments, .. } => {
+                                    attachments.as_slice()
+                                }
+                                _ => &[],
+                            };
+                            for a in attachments {
+                                if let Some(hash) = a.blob {
+                                    let inline = b.blobs.iter().any(|b| b.hash == hash);
+                                    let present = self.archive.query_row(
+                                        "SELECT EXISTS(SELECT 1 FROM blob WHERE hash = ?1 AND state = 'present')",
+                                        [&hash.0[..]], |r| r.get::<_, bool>(0))?;
+                                    if !inline && !present {
+                                        return Err(StoreError::Invalid(format!(
+                                            "capture names unknown blob {hash}; attachment bytes must be fetched"
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             crate::fault::check("write.input", &b.input.id)?;
             for p in &b.parse {
                 p.counts.check()?;

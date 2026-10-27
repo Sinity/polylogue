@@ -31,7 +31,7 @@ function once(chrome, tabId, request) {
     const port = chrome.tabs.connect(tabId, { name: "polylogue" });
     let facts = null;
     let hasBody = false;
-    const appendedBytes = [];
+    const chunk = [];
     port.onMessage.addListener((message) => {
       if (message.type === "facts") {
         const { type: _type, has_body: present, ...rest } = message;
@@ -42,11 +42,11 @@ function once(chrome, tabId, request) {
         }
         hasBody = present;
         facts = rest;
-      } else if (message.type === "appended_bytes") {
-        appendedBytes.push(decode(message.data));
+      } else if (message.type === "chunk") {
+        chunk.push(decode(message.data));
       } else if (message.type === "end") {
         port.disconnect();
-        resolve({ ...facts, body: hasBody ? new Blob(appendedBytes) : null });
+        resolve({ ...facts, body: hasBody ? new Blob(chunk) : null });
       } else if (message.type === "failed") {
         port.disconnect();
         reject(new PageError(message.error));
