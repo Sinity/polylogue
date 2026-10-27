@@ -46,6 +46,8 @@ pub struct Field {
     pub kind: Kind,
     /// The closed set of values, when there is one.
     pub values: Option<&'static [&'static str]>,
+    /// The stored word representing an unknown value, when present.
+    pub stored_unknown: Option<&'static str>,
     pub help: &'static str,
     /// The SQL of the field's value. A `Special` field matches by its own
     /// rule but may still have a value to group, sort and show by.
@@ -85,6 +87,11 @@ impl Expr {
 }
 
 impl Field {
+    const fn stored_unknown(mut self, word: &'static str) -> Self {
+        self.stored_unknown = Some(word);
+        self
+    }
+
     const fn sql(mut self, template: &'static str) -> Self {
         self.sql = Some(Expr::Template(template));
         self
@@ -148,6 +155,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         name,
         kind,
         values: None,
+        stored_unknown: None,
         help,
         sql: None,
         value_kind: None,
@@ -162,6 +170,7 @@ const fn sp(unit: Unit, name: &'static str, help: &'static str, compile: Custom)
         name,
         kind: Kind::Special,
         values: None,
+        stored_unknown: None,
         help,
         sql: None,
         value_kind: None,
@@ -180,6 +189,7 @@ const fn v(
         name,
         kind: Kind::Match,
         values: Some(values),
+        stored_unknown: None,
         help,
         sql: None,
         value_kind: None,
@@ -227,19 +237,25 @@ pub const SESSION_HAS: [Has; 8] = [
         sql: |s| {
             format!(
                 "EXISTS (SELECT 1 FROM block xb JOIN message xm ON xm.pk = xb.message_pk WHERE {} AND xb.kind = 'thinking')",
-                own_messages(s, "xm")
+                own_messages("xm", Some(&format!("= {s}.pk")))
             )
         },
     },
     Has {
         name: "tool_calls",
-        sql: |s| format!("EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk)"),
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM tool_call xt JOIN block xb ON xb.pk = xt.call_block_pk JOIN message xm ON xm.pk = xb.message_pk WHERE {})",
+                own_messages("xm", Some(&format!("= {s}.pk")))
+            )
+        },
     },
     Has {
         name: "errors",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk AND xt.outcome = 'error')"
+                "EXISTS (SELECT 1 FROM tool_call xt JOIN block xb ON xb.pk = xt.call_block_pk JOIN message xm ON xm.pk = xb.message_pk WHERE {} AND xt.outcome = 'error')",
+                own_messages("xm", Some(&format!("= {s}.pk")))
             )
         },
     },
@@ -336,7 +352,7 @@ pub static FIELDS: &[Field] = &[
     f(Documents,"id",Prefix,"document ID or a unique prefix").sql_ref("{r}.id", ColumnReference::Document),
     f(Documents,"origin",Match,"the provider export family").sql("{r}.origin"),
     v(Documents,"purpose",DocumentPurpose::NAMES,"instruction, context, memory or transcript").sql("{r}.purpose"),
-    v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").sql("{r}.authorship"),
+    v(Documents,"authorship",DocumentAuthorship::NAMES,"who wrote the text, unknown without source evidence").stored_unknown("unknown").sql("{r}.authorship"),
     f(Documents,"title",Substring,"the supplied source title").sql("{r}.title"),
     f(Documents,"source_time",Time,"the provider's source-record time").sql("{r}.source_time"),
     f(Documents,"versions",Number,"the number of distinct versions its sources hold").sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
@@ -505,7 +521,7 @@ pub static FIELDS: &[Field] = &[
         "written_by",
         WrittenBy::NAMES,
         "who wrote it",
-    ).sql("{m}.written_by"),
+    ).stored_unknown("unknown").sql("{m}.written_by"),
     v(
         Messages,
         "prompt_kind",
@@ -601,7 +617,7 @@ pub static FIELDS: &[Field] = &[
         "outcome",
         CallOutcome::NAMES,
         "ok, error, pending or unknown",
-    ).sql(
+    ).stored_unknown("unknown").sql(
         "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_open_tool_pk = {t}.pk \
              THEN 'pending' ELSE {t}.outcome END",
     ),
@@ -817,7 +833,7 @@ pub static FIELDS: &[Field] = &[
         "path",
         &["active", "unknown"],
         "unknown when the session's active path is unknown",
-    ).sql("{r}.path"),
+    ).stored_unknown("unknown").sql("{r}.path"),
     f(
         Turns,
         "latency",
@@ -974,12 +990,12 @@ impl Aliases {
     }
 }
 
-/// Own messages of session `s`: not a duplicate, on the active path.
-pub fn own_messages(s: &str, x: &str) -> String {
-    format!(
-        "{x}.session_pk = {s}.pk AND {x}.duplicate_of IS NULL \
-         AND COALESCE({x}.on_active_path, 1) = 1"
-    )
+/// Messages shown on the active path, optionally joined to selected sessions.
+pub fn own_messages(x: &str, join: Option<&str>) -> String {
+    let session = join
+        .map(|join| format!(" AND {x}.session_pk {join}"))
+        .unwrap_or_default();
+    format!("{x}.duplicate_of IS NULL AND COALESCE({x}.on_active_path, 1) = 1{session}")
 }
 
 /// A script call whose commands are recorded is counted through them; a
@@ -994,8 +1010,8 @@ fn own_calls(s: &str, x: &str, extra: &str) -> String {
     format!(
         "(SELECT count(*) FROM tool_call {x} JOIN block {x}b ON {x}b.pk = {x}.call_block_pk \
          JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
-         WHERE {x}.session_pk = {s}.pk AND {x}m.duplicate_of IS NULL \
-         AND COALESCE({x}m.on_active_path, 1) = 1 AND {}{extra})",
+         WHERE {} AND {}{extra})",
+        own_messages(&format!("{x}m"), Some(&format!("= {s}.pk"))),
         counts_as_action(x)
     )
 }
@@ -1074,7 +1090,7 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
 fn own_sum(s: &str, col: &str) -> String {
     format!(
         "(SELECT sum(x.{col}) FROM message x WHERE {})",
-        own_messages(s, "x")
+        own_messages("x", Some(&format!("= {s}.pk")))
     )
 }
 
@@ -1082,7 +1098,7 @@ fn own_sum(s: &str, col: &str) -> String {
 fn own_count(s: &str, extra: &str) -> String {
     format!(
         "(SELECT count(*) FROM message x WHERE {}{extra})",
-        own_messages(s, "x")
+        own_messages("x", Some(&format!("= {s}.pk")))
     )
 }
 
@@ -1120,7 +1136,7 @@ fn sessions_human_commands(a: &Aliases) -> String {
 fn sessions_words(a: &Aliases) -> String {
     format!(
         "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
-        own_messages(&a.s, "x")
+        own_messages("x", Some(&format!("= {}.pk", a.s)))
     )
 }
 
@@ -1183,9 +1199,8 @@ fn sessions_cost(a: &Aliases) -> String {
 
 fn sessions_tree_cost(a: &Aliases) -> String {
     format!(
-        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.duplicate_of IS NULL \
-         AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
-        subtree(&a.s)
+        "(SELECT sum(x.cost_nusd) FROM message x WHERE {})",
+        own_messages("x", Some(&format!("IN ({})", subtree(&a.s))))
     )
 }
 
