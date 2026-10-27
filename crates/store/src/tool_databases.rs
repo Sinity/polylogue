@@ -411,8 +411,10 @@ fn write_export(
     saved
         .cursors
         .retain(|table, _| tables.iter().any(|t| &t.name == table));
-    let update = Comparison::records(&bytes, Some(saved))?;
-    send(bytes, update)?;
+    if !bytes.is_empty() || saved != catalog.saved {
+        let update = Comparison::records(&bytes, Some(saved))?;
+        send(bytes, update)?;
+    }
     Ok(done)
 }
 

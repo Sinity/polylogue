@@ -266,23 +266,53 @@ fn smallest_cursor_and_empty_table_have_no_synthetic_zero() {
 
 #[test]
 fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
-    let mut t=Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES('first');");
+    let mut t = Test::new(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES('first');",
+    );
     t.export(&mut Exporter::with_cursor(cursor)).unwrap();
-    let old:Vec<u8>=t.lines().iter().flat_map(|r|format!("{r}\n").into_bytes()).collect();
-    let earlier=t.length;
+    let old: Vec<u8> = t
+        .lines()
+        .iter()
+        .flat_map(|r| format!("{r}\n").into_bytes())
+        .collect();
+    let earlier = t.length;
     t.sql("UPDATE items SET body='newer'; INSERT INTO items(body) VALUES('second');");
     // A new schema forces verification below the cursor too.
     t.sql("ALTER TABLE items ADD COLUMN n INTEGER DEFAULT 42;");
     t.export(&mut Exporter::with_cursor(cursor)).unwrap();
-    let conn=Connection::open(t.archive.index_db()).unwrap();
-    let before:String=conn.query_row("SELECT state FROM tool_database",[],|r|r.get(0)).unwrap();
-    let pk:i64=conn.query_row("SELECT pk FROM input_ref WHERE id=?1",[&t.input.id],|r|r.get(0)).unwrap();
-    let mut update=Comparison::records(&old,None).unwrap();update.length=earlier;
-    update.write(&conn,pk).unwrap();
-    assert_eq!(conn.query_row("SELECT state FROM tool_database",[],|r|r.get::<_,String>(0)).unwrap(),before);
-    let hash:Vec<u8>=conn.query_row("SELECT hash FROM tool_row WHERE key='[1]'",[],|r|r.get(0)).unwrap();
-    assert_eq!(hash,blake3::hash(json!({"id":1,"body":"newer","n":42}).to_string().as_bytes()).as_bytes());
-    update.length=t.length;
-    update.write(&conn,pk).unwrap();
-    assert_eq!(conn.query_row("SELECT state FROM tool_database",[],|r|r.get::<_,String>(0)).unwrap(),before);
+    let conn = Connection::open(t.archive.index_db()).unwrap();
+    let before: String = conn
+        .query_row("SELECT state FROM tool_database", [], |r| r.get(0))
+        .unwrap();
+    let pk: i64 = conn
+        .query_row("SELECT pk FROM input_ref WHERE id=?1", [&t.input.id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut update = Comparison::records(&old, None).unwrap();
+    update.length = earlier;
+    update.write(&conn, pk).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT state FROM tool_database", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        before
+    );
+    let hash: Vec<u8> = conn
+        .query_row("SELECT hash FROM tool_row WHERE key='[1]'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        hash,
+        blake3::hash(json!({"id":1,"body":"newer","n":42}).to_string().as_bytes()).as_bytes()
+    );
+    update.length = t.length;
+    update.write(&conn, pk).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT state FROM tool_database", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        before
+    );
 }
