@@ -22,7 +22,7 @@ fn chatgpt_payload() -> Json {
            "mapping": {"n1": {"id": "n1", "parent": null, "children": [], "message": {
                "id": "m1", "author": {"role": "user"}, "create_time": 1.0,
                "content": {"content_type": "multimodal_text", "parts": [
-                   {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Pic"},
+                   {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Pic", "size_bytes": 99},
                    "see"]},
                "status": "finished_successfully", "recipient": "all", "metadata": {}}}}})
 }
