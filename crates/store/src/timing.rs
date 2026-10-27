@@ -169,7 +169,10 @@ pub struct WorkerTimeGuard(Option<WorkerStart>);
 pub fn worker() -> WorkerTimeGuard {
     WorkerTimeGuard(std::env::var_os("POLYLOGUE_TIMING_WORKERS").map(|_| {
         WorkerStart {
-            name: std::thread::current().name().unwrap_or("unnamed").to_owned(),
+            name: std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_owned(),
             started: clock_seconds(),
             scheduled: scheduled(),
         }
@@ -177,7 +180,12 @@ pub fn worker() -> WorkerTimeGuard {
 }
 impl Drop for WorkerTimeGuard {
     fn drop(&mut self) {
-        if let Some(WorkerStart { name, started, scheduled: before }) = self.0.take() {
+        if let Some(WorkerStart {
+            name,
+            started,
+            scheduled: before,
+        }) = self.0.take()
+        {
             let elapsed = scheduled().zip(before);
             let cpu_seconds =
                 elapsed.map(|(after, before)| after.0.saturating_sub(before.0) as f64 / 1e9);

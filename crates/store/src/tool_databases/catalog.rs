@@ -81,7 +81,8 @@ impl Comparison {
         if self.from > previous.unwrap_or(0) as u64 {
             return Err(crate::StoreError::Invalid(format!(
                 "database comparison starts at {} after acknowledged {}",
-                self.from, previous.unwrap_or(0)
+                self.from,
+                previous.unwrap_or(0)
             )));
         }
         for (table, key, hash) in &self.rows {

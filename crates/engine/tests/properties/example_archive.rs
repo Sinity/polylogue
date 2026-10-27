@@ -48,8 +48,7 @@ fn raw_bytes_survive_the_source() {
         let file = w.home.join(rel);
         let bytes = w.stored_bytes(&file).unwrap();
         if !polylogue_sources::ORIGINS.iter().any(|origin| {
-            origin.capture == polylogue_sources::Capture::RowDump
-                && (origin.open)(&file).is_some()
+            origin.capture == polylogue_sources::Capture::RowDump && (origin.open)(&file).is_some()
         }) {
             assert_eq!(bytes, fs::read(&file).unwrap(), "{}", file.display());
         }
