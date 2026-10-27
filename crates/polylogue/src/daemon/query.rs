@@ -628,3 +628,11 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+
+/// Compile with the same archive settings and calling session as execution.
+pub fn explain(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let options = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    Ok(
+        json!({"subject": "query", "explanation": polylogue_query::explain::query(ask.text, &options)?}),
+    )
+}

@@ -215,6 +215,10 @@ the same change.
 
 - **query**, **unit** (what a query lists: sessions, messages, ...),
   **field**, **condition**, **measure**.
+- **explanation**: a query's parsed conditions, units and compiled shape,
+  without executing it; `--why` instead counts rows for its conditions.
+- **tour**: ordinary commands over a separate synthetic Morrow archive,
+  with their explanations and output in a transcript.
 - **saved query** (`query:NAME`) and its **parameters** (`$word` in its
   text, given as `query:NAME(word=VALUE)`); the note revision a name
   resolved to is its **definition**.

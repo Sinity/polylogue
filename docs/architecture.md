@@ -23,6 +23,14 @@ which reads through Store and presents through Query and Render.
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
+The `explain` command reads the command, query-unit, field, read-view and
+format declarations. Query explanation uses the same reader-backed options as execution, then
+Query's pure parser and compiler. Declaration pages use a cursor naming
+their subject, unit and next offset. The local `demo tour` command bundles the
+main Morrow files and starts an application runtime against its own home and
+archive; each narrated operation is built through the ordinary command
+table. Its transcript is written under the new tour directory.
+
 A new origin is an origin declaration and a parser, a new command is a
 command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency

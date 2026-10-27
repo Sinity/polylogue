@@ -293,6 +293,10 @@ pub const GROUPS: &[Group] = &[
         help: "Offline structure and counts over explicitly selected stored revisions",
     },
     Group {
+        name: "demo",
+        help: "Explore the synthetic Morrow archive",
+    },
+    Group {
         name: "note",
         help: "Notes and tags on sessions, messages and tool calls",
     },
@@ -428,6 +432,41 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Local(crate::cli::schema::diff),
+        ..CLI
+    },
+    Command {
+        name: "demo tour",
+        help: "Prepare a separate Morrow archive and walk through search, tool outcomes, parents, costs and notes",
+        args: &[pos(
+            "directory",
+            Kind::Text,
+            "A new directory for the example home, archive and transcript",
+        )],
+        action: Action::Local(crate::demo::tour),
+        ..CLI
+    },
+    Command {
+        name: "explain",
+        help: "Explain a query without executing it, or page through current syntax, units, fields, operators and capabilities",
+        args: &[
+            pos(
+                "subject",
+                Kind::Choice(crate::explain::SUBJECTS),
+                "query, syntax, units, fields, operators or capabilities",
+            ),
+            opt("session", Kind::Text, "Calling session for self references"),
+            opt("expression", Kind::Text, "Required for subject query"),
+            opt("unit", Kind::Text, "List fields for this unit"),
+            opt(
+                "page_size",
+                Kind::Integer,
+                "Declarations per page (default 20)",
+            ),
+            CURSOR,
+        ],
+        action: Action::Request(requests::explain),
+        mcp: true,
+        http: true,
         ..CLI
     },
     Command {

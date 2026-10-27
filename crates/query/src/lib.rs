@@ -5,8 +5,10 @@
 
 pub mod ast;
 pub mod compile;
+pub mod explain;
 pub mod fields;
 pub mod parse;
+pub mod syntax;
 pub mod time;
 pub mod units;
 

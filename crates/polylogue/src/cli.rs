@@ -214,17 +214,22 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
-        Response::Ok { data } => match cmd.output {
-            Some(output) => output(&values, &data, json),
-            None => {
-                if json {
-                    println!("{data}");
-                } else {
-                    print!("{}", (cmd.print)(&data));
-                }
-                ExitCode::SUCCESS
+        Response::Ok { data } => {
+            if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
+                crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
-        },
+            match cmd.output {
+                Some(output) => output(&values, &data, json),
+                None => {
+                    if json {
+                        println!("{data}");
+                    } else {
+                        print!("{}", (cmd.print)(&data));
+                    }
+                    ExitCode::SUCCESS
+                }
+            }
+        }
         Response::Error {
             kind,
             message,
@@ -395,7 +400,7 @@ pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Resp
     serde_json::from_str(&reply).map_err(std::io::Error::other)
 }
 
-fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
+pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
     if json {
         println!(
             "{}",

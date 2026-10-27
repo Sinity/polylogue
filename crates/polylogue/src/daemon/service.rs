@@ -254,6 +254,62 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "stream_required",
             "the change feed uses the finite socket stream",
         ),
+        Request::Explain {
+            subject,
+            expression,
+            unit,
+            page_size,
+            cursor,
+            session,
+        } => {
+            let result = if subject == "query" {
+                if unit.is_some() || page_size.is_some() || cursor.is_some() {
+                    return error(
+                        "bad_request",
+                        "unit, page_size and cursor apply to declaration pages",
+                    );
+                }
+                let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
+                    return error("bad_request", "expression is required for query");
+                };
+                let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+                    .ok()
+                    .flatten();
+                let embeddings =
+                    crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+                super::query::explain(
+                    &reader,
+                    super::query::Ask {
+                        text,
+                        cursor: None,
+                        page_size: None,
+                        why: false,
+                        session,
+                        now: now_ms(),
+                        day: None,
+                        embeddings,
+                        near: None,
+                        fields: &[],
+                    },
+                )
+            } else {
+                crate::explain::answer(
+                    &subject,
+                    expression.as_deref(),
+                    unit.as_deref(),
+                    page_size,
+                    cursor.as_deref(),
+                )
+            };
+            match result {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),
