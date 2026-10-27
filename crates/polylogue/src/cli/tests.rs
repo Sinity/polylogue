@@ -35,3 +35,15 @@ fn a_starting_daemon_is_waited_for() {
     assert!(matches!(response, Response::Ok { .. }));
     server.join().unwrap();
 }
+
+#[test]
+fn manual_is_an_offline_topic_and_query_formats_are_declared() {
+    let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
+    assert!(matches!(manual.action, Action::Local(_)));
+    for format in ["csv", "org", "yaml"] {
+        let matches = command()
+            .try_get_matches_from(["polylogue", "--format", format, "text:hello"])
+            .unwrap();
+        assert_eq!(matches.get_one::<String>("format").unwrap(), format);
+    }
+}

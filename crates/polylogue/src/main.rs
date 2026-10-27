@@ -10,6 +10,7 @@ mod commands;
 mod daemon;
 mod embeddings;
 mod hook;
+mod manual;
 mod mcp;
 mod resume;
 mod row_numbers;

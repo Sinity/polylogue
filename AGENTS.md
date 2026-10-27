@@ -16,7 +16,7 @@ is kept for reference; the rewrite uses its own archive.
 - `crates/store`: every SQLite connection and write; the blob store.
 - `crates/engine`: the loop and the parse pool.
 - `crates/query`: the query language and its compiler to SQL.
-- `crates/render`: one block stream in four formats.
+- `crates/render`: one block stream and shared output formats.
 - `crates/polylogue`: application operations (`daemon/service.rs`), socket
   framing (`daemon/server.rs`), CLI, MCP, web reader and browser host.
   Clients get typed store handles, never raw connections.

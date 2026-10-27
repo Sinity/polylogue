@@ -298,6 +298,7 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
                 .iter()
                 .map(|link| event::SessionLink {
                     kind: match link.kind {
+                        polylogue_model::LinkKind::Parent => "parent",
                         polylogue_model::LinkKind::Fork => "fork",
                         polylogue_model::LinkKind::Spawn => "spawn",
                         polylogue_model::LinkKind::Continuation => "continuation",
