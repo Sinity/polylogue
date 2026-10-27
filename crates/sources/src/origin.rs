@@ -174,7 +174,9 @@ pub struct WebChat {
 
 impl OriginSpec {
     pub fn is_row_dump(&self, path: &Path) -> bool {
-        self.database.as_ref().is_some_and(|database| (database.is_input)(path))
+        self.database
+            .as_ref()
+            .is_some_and(|database| (database.is_input)(path))
     }
 
     /// Where Polylogue's own writer puts a spool origin's files, relative
@@ -317,7 +319,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
         capture: Capture::RowDump,
-        database: Some(Database { is_input: crate::codex::database::is_row_dump, cursor: None }),
+        database: Some(Database {
+            is_input: crate::codex::database::is_row_dump,
+            cursor: None,
+        }),
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
         resume: None,
@@ -354,7 +359,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::hermes::LOCATIONS,
         capture: Capture::RowDump,
-        database: Some(Database { is_input: crate::hermes::is_database, cursor: None }),
+        database: Some(Database {
+            is_input: crate::hermes::is_database,
+            cursor: None,
+        }),
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
         resume: None,
@@ -700,7 +708,12 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
 pub fn table_cursor(db: &Path, table: &str) -> Option<&'static str> {
     ORIGINS
         .iter()
-        .filter_map(|origin| origin.database.as_ref().and_then(|database| database.cursor))
+        .filter_map(|origin| {
+            origin
+                .database
+                .as_ref()
+                .and_then(|database| database.cursor)
+        })
         .find_map(|cursor| cursor(db, table))
 }
 

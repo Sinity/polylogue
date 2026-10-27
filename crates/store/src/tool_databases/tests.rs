@@ -382,16 +382,35 @@ fn unchanged_compare_tables_do_not_wake_for_a_cursor_interval() {
 
 #[test]
 fn an_invalid_comparison_position_does_not_change_row_hashes() {
-    let mut t = Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');");
+    let mut t = Test::new(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');",
+    );
     t.export(&mut Exporter::default()).unwrap();
     let conn = Connection::open(t.archive.index_db()).unwrap();
-    let (pk, before): (i64, Vec<u8>) = conn.query_row("SELECT input_pk,hash FROM tool_row WHERE tbl='items'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
-    conn.execute("UPDATE tool_database SET length=-1", []).unwrap();
-    let mut update = Comparison::records(br#"{"t":"items","k":[1],"r":{"id":1,"body":"changed"}}
-"#,None).unwrap();
+    let (pk, before): (i64, Vec<u8>) = conn
+        .query_row(
+            "SELECT input_pk,hash FROM tool_row WHERE tbl='items'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    conn.execute("UPDATE tool_database SET length=-1", [])
+        .unwrap();
+    let mut update = Comparison::records(
+        br#"{"t":"items","k":[1],"r":{"id":1,"body":"changed"}}
+"#,
+        None,
+    )
+    .unwrap();
     update.from = t.length;
     update.length = t.length + 1;
-    assert!(matches!(update.write(&conn,pk), Err(crate::StoreError::Invalid(message)) if message.contains("negative")));
-    let after: Vec<u8> = conn.query_row("SELECT hash FROM tool_row WHERE tbl='items'", [], |r| r.get(0)).unwrap();
-    assert_eq!(before,after);
+    assert!(
+        matches!(update.write(&conn,pk), Err(crate::StoreError::Invalid(message)) if message.contains("negative"))
+    );
+    let after: Vec<u8> = conn
+        .query_row("SELECT hash FROM tool_row WHERE tbl='items'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(before, after);
 }

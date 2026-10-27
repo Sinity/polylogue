@@ -47,9 +47,10 @@ fn raw_bytes_survive_the_source() {
         let w = Morrow::build(Set::Main);
         let file = w.home.join(rel);
         let bytes = w.stored_bytes(&file).unwrap();
-        if !polylogue_sources::ORIGINS.iter().any(|origin| {
-            origin.is_row_dump(&file)
-        }) {
+        if !polylogue_sources::ORIGINS
+            .iter()
+            .any(|origin| origin.is_row_dump(&file))
+        {
             assert_eq!(bytes, fs::read(&file).unwrap(), "{}", file.display());
         }
         let before = w.view();

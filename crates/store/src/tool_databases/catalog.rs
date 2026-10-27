@@ -82,7 +82,9 @@ impl Comparison {
                 |r| r.get(0),
             )
             .optional()?;
-        let previous = previous.map(u64::try_from).transpose().map_err(|_| crate::StoreError::Invalid("negative database comparison length".into()))?;
+        let previous = previous.map(u64::try_from).transpose().map_err(|_| {
+            crate::StoreError::Invalid("negative database comparison length".into())
+        })?;
         // Domain parsing may finish after newer row-dump bytes. Its older
         // values must not move the comparison state backwards.
         if previous.is_some_and(|previous| {
