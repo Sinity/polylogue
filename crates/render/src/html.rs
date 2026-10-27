@@ -41,6 +41,12 @@ pub fn page_slices(
     slices: &[crate::model_pages::BlockSlice],
     out: &mut dyn io::Write,
 ) -> io::Result<()> {
+    if slices.first().is_some_and(|slice| slice.from > 0) {
+        write!(
+            out,
+            "<p class=\"meta\">This page starts within a source block.</p>"
+        )?;
+    }
     let mut current = None;
     for slice in slices {
         let id = slice.message.as_ref().map(|m| &m.id);
@@ -90,8 +96,9 @@ pub fn page_slices(
             let outcome = slice.outcome.map_or("unknown", |outcome| outcome.as_str());
             write!(
                 out,
-                "<details class=\"tool\"><summary><span class=\"outcome {outcome}\">{outcome}</span> <b>{}</b></summary><pre>{}</pre></details>",
+                "<details class=\"tool\"><summary><span class=\"outcome {outcome}\">{outcome}</span> <b>{}</b> <code>{}</code></summary><pre>{}</pre></details>",
                 escape(label),
+                escape(&first_line(&slice.text)),
                 escape(&slice.text)
             )?;
         } else if matches!(slice.kind.as_str(), "tool_result" | "thinking") {
