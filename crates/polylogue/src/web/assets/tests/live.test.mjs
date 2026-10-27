@@ -21,7 +21,7 @@ async function environment(t, fetch) {
   globalThis.clearTimeout = id => timers.delete(id);
   globalThis.setInterval = fn => { intervals.set(++next, fn); return next; };
   globalThis.clearInterval = id => intervals.delete(id);
-  t.after(() => { for (const [key, value] of saved) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
+  t.after(async () => { await flush(); for (const [key, value] of saved) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
   const module = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + serial++);
   return { ...module, events, timers, intervals, async tick() {
     assert.equal(timers.size, 1);

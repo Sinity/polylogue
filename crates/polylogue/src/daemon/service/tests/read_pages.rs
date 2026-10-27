@@ -119,8 +119,8 @@ fn read_pages_refuse_positions_from_the_previous_rendering_version() {
         .decode(token)
         .unwrap();
     let mut cursor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(cursor["version"], 4);
-    cursor["version"] = serde_json::json!(3);
+    assert_eq!(cursor["version"], 6);
+    cursor["version"] = serde_json::json!(5);
     let old = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&cursor).unwrap());
     assert!(
@@ -767,7 +767,11 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
     let source = (0..12)
         .map(|n| {
             polylogue_testkit::claude_user(
-                &format!("reverse-{n}"),
+                &if n == 0 {
+                    "u1".to_owned()
+                } else {
+                    format!("reverse-{n}")
+                },
                 "s1",
                 &format!("prompt number {n} λ🙂"),
             )

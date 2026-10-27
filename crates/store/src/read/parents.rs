@@ -432,15 +432,18 @@ impl MessageSelection<'_, '_> {
     /// Recover the ordered states at PEM markers once for a backward page.
     pub fn masking_states(&self) -> Result<MaskingStates> {
         let conn = self.reader.conn()?;
-        let mut marked = HashSet::new();
+        let mut marked = HashMap::new();
         let mut statement =
-            conn.prepare_cached("SELECT pk FROM message WHERE session_pk=?1 AND pem<>0")?;
+            conn.prepare_cached("SELECT pk,pem FROM message WHERE session_pk=?1 AND pem<>0")?;
         for (session, _) in self.sessions() {
-            for row in statement.query_map([session], |r| r.get::<_, i64>(0))? {
-                marked.insert(row?);
+            for row in statement.query_map([session], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })? {
+                let (key, pem) = row?;
+                marked.insert(key, pem);
             }
         }
-        if marked.is_empty() {
+        if !marked.values().any(|pem| *pem == 2) {
             return Ok(MaskingStates(Vec::new()));
         }
         let positions: HashMap<_, _> = self
@@ -451,17 +454,21 @@ impl MessageSelection<'_, '_> {
             .collect();
         let mut states = Vec::new();
         let mut masker = MessageMasker::default();
+        let mut started = false;
         let current = std::cell::Cell::new(0);
         self.visit_kept(
             None,
             0,
             |pk| {
                 current.set(pk);
-                marked.contains(&pk)
+                marked.contains_key(&pk)
             },
             |mut message| {
                 masker.message_text(&mut message);
-                states.push((positions[&current.get()] + 1, masker.clone()));
+                started |= marked[&current.get()] == 2;
+                if started {
+                    states.push((positions[&current.get()] + 1, masker.clone()));
+                }
                 ControlFlow::Continue(())
             },
         )?;
