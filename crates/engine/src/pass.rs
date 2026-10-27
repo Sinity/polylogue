@@ -952,6 +952,7 @@ impl Engine {
             }
         };
         let mut watcher = watch::Roots::new(&self.config, tx.clone())?;
+        self.wake = Some(tx.clone());
         drop(tx);
         ready();
         let mut discover = true;
@@ -1025,6 +1026,7 @@ impl Engine {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
                         self.exporter = Databases::default();
+                        self.wake = None;
                         self.pass_open = false;
                         return Ok(());
                     }

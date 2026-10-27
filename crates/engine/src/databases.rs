@@ -37,6 +37,7 @@ impl Databases {
         inputs: Vec<DatabaseInput>,
         archive: Archive,
         writer: polylogue_store::WriterSender,
+        wake: Option<Sender<LoopMsg>>,
     ) -> Result<(), EngineError> {
         if self.pending() || inputs.is_empty() {
             return Ok(());
@@ -55,7 +56,7 @@ impl Databases {
                 let mut pending = Vec::new();
                 for source in &inputs {
                     let mut queue =
-                        match InputWriter::new(&archive, &writer, source, notify.clone()) {
+                        match InputWriter::new(&archive, &writer, source, notify.clone(), wake.clone()) {
                             Ok(queue) => queue,
                             Err(error) => {
                                 completed.errors.push(format!(
@@ -106,6 +107,7 @@ impl Databases {
                     }
                 }
                 let _ = tx.send((exporter, completed));
+                if let Some(wake) = wake { let _ = wake.send(LoopMsg::Changed); }
             })?;
         self.worker = Some(Worker {
             thread,
@@ -168,6 +170,7 @@ struct InputWriter<'a> {
     waiting: VecDeque<(u64, Acknowledgment)>,
     bytes: u64,
     notify: SyncSender<()>,
+    wake: Option<Sender<LoopMsg>>,
 }
 impl<'a> InputWriter<'a> {
     fn new(
@@ -175,6 +178,7 @@ impl<'a> InputWriter<'a> {
         writer: &'a polylogue_store::WriterSender,
         source: &'a DatabaseInput,
         notify: SyncSender<()>,
+        wake: Option<Sender<LoopMsg>>,
     ) -> Result<Self, ExportError> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
@@ -189,6 +193,7 @@ impl<'a> InputWriter<'a> {
             waiting: VecDeque::new(),
             bytes: 0,
             notify,
+            wake,
         };
         if let Some(progress) = progress {
             let from = reader
@@ -297,7 +302,9 @@ impl<'a> InputWriter<'a> {
         results: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
     ) -> Result<(), ExportError> {
         self.bytes -= size;
-        let _ = self.notify.try_send(());
+        if self.notify.try_send(()).is_ok() && let Some(wake) = &self.wake {
+            let _ = wake.send(LoopMsg::Changed);
+        }
         for result in results {
             result?;
         }
