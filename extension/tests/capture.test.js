@@ -81,6 +81,20 @@ describe("a capture", () => {
     expect(capture.session.attachments[0].not_fetched).toBeUndefined();
   });
 
+  it("downloads and stores an empty file through the page port", async () => {
+    const host = storingHost([{ id: "empty", message: "m1", inline: false }]);
+    const page = chatgptPage({ fileBytes: new Uint8Array([]) });
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    await extension.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+    const file = JSON.parse(host.stored[1]).session.attachments[0];
+    expect(file.content_base64).toBe("");
+    expect(file.not_fetched).toBeUndefined();
+    expect(await extension.outbox.count()).toBe(0);
+  });
+
   it("holds a file larger than one base64 part byte for byte", async () => {
     const bytes = new Uint8Array(2 * 1024 * 1024 + 5).map((_, i) => (i * 31) % 251);
     const body = await captureBody({
