@@ -17,12 +17,15 @@ pub(super) struct Completed {
     pub finished: bool,
     pub errors: Vec<String>,
     pub changed: bool,
+    pub inputs_seen: u64,
+    pub bytes_stored: u64,
 }
 struct Worker {
     thread: JoinHandle<()>,
     result: Receiver<(Exporter, Completed)>,
     progress: Receiver<()>,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    bytes: Arc<std::sync::atomic::AtomicU64>,
 }
 #[derive(Default)]
 pub(super) struct Databases {
@@ -52,6 +55,8 @@ impl Databases {
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         exporter.stop_when(Arc::clone(&stop));
         let cancelled = Arc::clone(&stop);
+        let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let captured = Arc::clone(&bytes);
         let thread = std::thread::Builder::new()
             .name("polylogue-databases".into())
             .spawn(move || {
@@ -65,12 +70,14 @@ impl Databases {
                     let Some(due) = exporter.observe(&source.path) else {
                         continue;
                     };
+                    completed.inputs_seen += 1;
                     let mut queue = match InputWriter::new(
                         &archive,
                         &writer,
                         source,
                         notify.clone(),
                         wake.clone(),
+                        Arc::clone(&captured),
                     ) {
                         Ok(queue) => queue,
                         Err(error) => {
@@ -131,6 +138,7 @@ impl Databases {
             result,
             progress,
             stop,
+            bytes,
         });
         Ok(())
     }
@@ -144,6 +152,7 @@ impl Databases {
         } else {
             worker.result.try_recv()
         };
+        let bytes_stored = worker.bytes.swap(0,std::sync::atomic::Ordering::Relaxed);
         match result {
             Ok((exporter, completed)) => {
                 let worker = self.worker.take().expect("active worker");
@@ -152,11 +161,13 @@ impl Databases {
                 Completed {
                     finished: true,
                     changed: changed || completed.changed,
+                    bytes_stored,
                     ..completed
                 }
             }
             Err(TryRecvError::Empty) => Completed {
                 changed,
+                bytes_stored,
                 ..Completed::default()
             },
             Err(TryRecvError::Disconnected) => {
@@ -166,6 +177,8 @@ impl Databases {
                     finished: true,
                     errors: vec!["database worker stopped".into()],
                     changed: true,
+                    bytes_stored,
+                    ..Completed::default()
                 }
             }
         }
@@ -194,6 +207,7 @@ struct InputWriter<'a> {
     bytes: u64,
     notify: SyncSender<()>,
     wake: Option<Sender<LoopMsg>>,
+    captured: Arc<std::sync::atomic::AtomicU64>,
 }
 impl<'a> InputWriter<'a> {
     fn new(
@@ -202,6 +216,7 @@ impl<'a> InputWriter<'a> {
         source: &'a DatabaseInput,
         notify: SyncSender<()>,
         wake: Option<Sender<LoopMsg>>,
+        captured: Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<Self, ExportError> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
@@ -217,6 +232,7 @@ impl<'a> InputWriter<'a> {
             bytes: 0,
             notify,
             wake,
+            captured,
         };
         if let Some(progress) = progress {
             let from = reader
@@ -333,6 +349,7 @@ impl<'a> InputWriter<'a> {
         for result in results {
             result?;
         }
+        self.captured.fetch_add(size,std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
     fn acknowledge_ready(&mut self) -> Result<(), ExportError> {

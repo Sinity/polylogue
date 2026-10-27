@@ -87,9 +87,12 @@ impl Engine {
 
     /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
+        let started = Instant::now();
         let mut total = self.run_turn()?;
         while total.capture_pending {
             let completed = self.exporter.completed(true);
+            total.inputs_seen += completed.inputs_seen;
+            total.bytes_stored += completed.bytes_stored;
             total.errors.extend(completed.errors);
             self.loaded = false;
             self.load()?;
@@ -108,6 +111,7 @@ impl Engine {
             total.errors.extend(next.errors);
             total.capture_pending = next.capture_pending;
         }
+        total.seconds = started.elapsed().as_secs_f64();
         Ok(total)
     }
 
@@ -160,6 +164,8 @@ impl Engine {
                 .is_none();
         }
         let completed = self.exporter.completed(false);
+        pass.inputs_seen += completed.inputs_seen;
+        pass.bytes_stored += completed.bytes_stored;
         pass.errors.extend(completed.errors);
         if completed.finished {
             self.capture_checked = Some(Instant::now());
