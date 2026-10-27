@@ -1,5 +1,5 @@
 {
-  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs cover sessions with known totals in exact USD. Codex token columns are recorded observation subsets, not complete session usage. check_facts.py recomputes every value in this file from the raw files and fails on any difference; edit build.py, never this file by hand, and re-record with: python3 check_facts.py --record-main",
+  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs cover sessions with known totals in exact USD. Codex token columns are recorded observation subsets, not complete session usage. The real-loop Morrow query tests check these examples against current parsers and list remaining gaps. Edit the checked expectations with their source story and tests.",
   "queries": {
     "1 origin:claude-code": [
       "#4",
@@ -53,6 +53,8 @@
       "#1"
     ],
     "11 sessions where messages >= 10": [
+      "#6",
+      "#5",
       "#4",
       "#2",
       "#1"

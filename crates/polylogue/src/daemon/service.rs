@@ -206,6 +206,22 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::Explain {
+        subject,
+        expression,
+        unit,
+        limit,
+        continuation,
+    } = &request
+    {
+        return crate::explain::answer(
+            subject,
+            expression.as_deref(),
+            unit.as_deref(),
+            *limit,
+            continuation.as_deref(),
+        );
+    }
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
@@ -254,6 +270,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "stream_required",
             "the change feed uses the finite socket stream",
         ),
+        Request::Explain { .. } => unreachable!("explanations do not acquire a reader"),
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),

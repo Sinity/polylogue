@@ -570,3 +570,13 @@ pub fn note_read(_: &Command, v: &Values, _: &Caller) -> Built {
         id: v.text("id").ok_or("id is required")?,
     })
 }
+
+pub fn explain(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Explain {
+        subject: v.text("subject").ok_or("`subject` is required")?,
+        expression: v.text("expression"),
+        unit: v.text("unit"),
+        limit: v.integer("limit"),
+        continuation: v.text("continuation"),
+    })
+}

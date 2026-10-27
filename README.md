@@ -60,6 +60,8 @@ it.
 | Command | What it does |
 |---|---|
 | `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, deliveries, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. Queries combine: `\| union (…)`, `\| intersect (…)`, `\| except (…)`, `\| fuse (…)`, `count(UNIT where …) >= N` and `FIELD in (… \| group by FIELD)`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `demo tour DIRECTORY` | Walk through ordinary commands over a separate synthetic Morrow archive. |
+| `explain SUBJECT` | Explain query grammar or page through current units, fields, operators and capabilities. |
 | `status` | What the archive holds and what the daemon is doing; during a long pass the counts come from memory, with the read position they are from. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
@@ -93,6 +95,36 @@ it.
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
 invalid request, 6 no daemon running.
+
+## Try Morrow and discover the grammar
+
+`polylogue demo tour ./morrow-tour` creates a new directory containing a
+synthetic home, a separate archive and `transcript.md`. It walks through
+searching and reading a session, checking tool failures, following parent
+work, inspecting unknown costs, and adding notes for takeover context.
+The example files are bundled in the binary. Preparation time and first
+query time are reported separately. Use `--json` for the steps and results.
+Run the displayed commands against the example archive by starting
+`POLYLOGUE_ARCHIVE=./morrow-tour/archive POLYLOGUE_HOME=./morrow-tour/home XDG_CONFIG_HOME=./morrow-tour/config polylogue daemon`
+in another terminal, and setting the same variables for each command.
+
+`polylogue explain query --expression 'tool_calls where outcome:error'`
+parses and compiles the expression without running it. The answer includes
+the parsed conditions and stages, output unit and columns, ordering,
+parameters and SQL. Its clock uses the machine zone and default logical day;
+archive settings, saved queries, kept results and the calling session are
+not loaded. Archive-dependent references can therefore require definitions
+before they can be compiled. This differs from `--why`, which executes a
+query and counts how many rows its conditions keep.
+
+The MCP `explain` tool uses the same arguments. Subjects `units`, `fields`,
+`operators` and `capabilities` describe current declarations. For example,
+`polylogue explain fields --unit tool_calls --limit 10` returns entries and
+`next`; pass that value as `--continuation` with the same subject and unit.
+`limit` controls page size, with no maximum on catalog retrieval. The units
+catalog lists session-field inheritance and relation prefixes; the fields
+catalog lists each unit's own fields. Capabilities include command schemas,
+read views and output formats from their registries.
 
 ## Context for agents
 

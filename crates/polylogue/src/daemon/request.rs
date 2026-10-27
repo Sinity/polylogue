@@ -80,6 +80,13 @@ pub enum Request {
         ids: Vec<String>,
     },
     Status,
+    Explain {
+        subject: String,
+        expression: Option<String>,
+        unit: Option<String>,
+        limit: Option<u64>,
+        continuation: Option<String>,
+    },
     /// Completions for one word of a query being typed.
     Complete {
         word: String,
@@ -280,6 +287,7 @@ impl Request {
         match self {
             Self::Status
             | Self::Complete { .. }
+            | Self::Explain { .. }
             | Self::Attachment { .. }
             | Self::Query { .. }
             | Self::Changes { .. }

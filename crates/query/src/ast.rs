@@ -177,6 +177,12 @@ pub enum Op {
 }
 
 impl Op {
+    pub const ALL: &[Op] = &[Self::Eq, Self::Ne, Self::Lt, Self::Le, Self::Gt, Self::Ge];
+
+    pub fn name(self) -> &'static str {
+        if self == Self::Ne { "!=" } else { self.sql() }
+    }
+
     pub fn parse(text: &str) -> Option<Op> {
         Some(match text {
             "=" => Op::Eq,
