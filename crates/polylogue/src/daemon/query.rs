@@ -267,7 +267,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     )?;
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    let reference = prepare_measure(&mut program)?;
+    let reference = prepare_measure(&mut program, ask.page_size)?;
     let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
@@ -348,6 +348,30 @@ fn answer(
                     }
                     json!({"matches":matches,"underived_sessions":reader.underived_profiles(&Default::default())?})
                 }
+                super::measure::Paging::Pace => {
+                    let selected =
+                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let keys = selected.iter().filter_map(|r| r["_pk"].as_i64()).collect();
+                    let mut data =
+                        super::measure::run(reader, &m.what, Some(keys), program.now, day, None)?;
+                    let mut gaps = rows;
+                    for gap in &mut gaps {
+                        gap.as_object_mut().unwrap().retain(|k, _| {
+                            matches!(
+                                k.as_str(),
+                                "session"
+                                    | "from_position"
+                                    | "to_position"
+                                    | "from_message"
+                                    | "to_message"
+                                    | "milliseconds"
+                                    | "kind"
+                            )
+                        });
+                    }
+                    data["gaps"] = json!(gaps);
+                    data
+                }
                 super::measure::Paging::Sessions => {
                     let mut data = super::measure::run(
                         reader,
@@ -360,12 +384,7 @@ fn answer(
                     let sessions = if data.is_array() {
                         data.as_array_mut()
                     } else {
-                        data[if definition.name == "pace" {
-                            "sessions"
-                        } else {
-                            "profiles"
-                        }]
-                        .as_array_mut()
+                        data["profiles"].as_array_mut()
                     };
                     if let Some(sessions) = sessions {
                         sessions.sort_by_key(|p| {
@@ -467,7 +486,10 @@ fn answer(
     Ok(out)
 }
 
-fn prepare_measure(program: &mut Program) -> Result<Option<String>, Failure> {
+fn prepare_measure(
+    program: &mut Program,
+    page_size: Option<u64>,
+) -> Result<Option<String>, Failure> {
     let Some(m) = &program.measure else {
         return Ok(None);
     };
@@ -475,6 +497,25 @@ fn prepare_measure(program: &mut Program) -> Result<Option<String>, Failure> {
     let mut reference = None;
     if matches!(definition.paging, Some(super::measure::Paging::Sessions)) {
         program.sql = polylogue_store::measure::profiles::page_query(&program.sql);
+    }
+    if matches!(definition.paging, Some(super::measure::Paging::Pace)) {
+        program.page_size = page_size.unwrap_or(100);
+        let (_, options) = super::measure::find_checked(&m.what)?;
+        program.sql = polylogue_store::measure::pace::gap_query(&program.sql, options)?;
+        program.order = [
+            ("milliseconds", true),
+            ("session", false),
+            ("_from_input", false),
+            ("_from_seq", false),
+            ("_from_record", false),
+            ("from_message", false),
+        ]
+        .into_iter()
+        .map(|(column, descending)| polylogue_query::OrderKey {
+            column: column.into(),
+            descending,
+        })
+        .collect();
     }
     if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
         reference = Some(program.sql.clone());
