@@ -127,7 +127,7 @@ cap = "cargo"
 [operations.fmt]
 description = "Format the workspace"
 exec = ["nix", "develop", "--command", "cargo", "fmt", "--all"]
-pool = "normal"
+pool = "interactive"
 result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
@@ -137,7 +137,7 @@ cache = "none"
 description = "Update selected Cargo.lock entries, e.g. -- -p serde"
 exec = ["nix", "develop", "--command", "cargo", "update"]
 arguments = "required"
-pool = "normal"
+pool = "interactive"
 result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
