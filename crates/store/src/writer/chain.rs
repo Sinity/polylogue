@@ -1,18 +1,21 @@
 //! A chain's parsed output waits on disk before its one replacement transaction.
 use super::*;
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 /// Private scratch, deleted on drop. Only one parsed step is decoded at a time.
 pub struct ChainReading {
-    file: zstd::stream::write::Encoder<'static, BufWriter<std::fs::File>>,
+    file: Option<zstd::stream::write::Encoder<'static, BufWriter<std::fs::File>>>,
+    path: tempfile::TempPath,
     first: bool,
     decoded: Vec<crate::staging::PreparedBatch>,
 }
 
 impl ChainReading {
     pub fn new() -> Result<Self> {
+        let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         Ok(Self {
-            file: zstd::stream::write::Encoder::new(BufWriter::new(tempfile::tempfile()?), 1)?,
+            file: Some(zstd::stream::write::Encoder::new(BufWriter::new(file), 1)?),
+            path,
             first: true,
             decoded: Vec::new(),
         })
@@ -34,8 +37,12 @@ impl ChainReading {
         step.reset = self.first;
         step.prepare();
         let texts: Vec<_> = step.prepared.texts.iter().collect();
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| StoreError::Invalid("a completed reading cannot be extended".into()))?;
         serde_json::to_writer(
-            &mut self.file,
+            &mut *file,
             &(
                 &*step,
                 &step.prepared.messages,
@@ -45,13 +52,23 @@ impl ChainReading {
                 step.prepared.released,
             ),
         )?;
-        self.file.write_all(b"\n")?;
+        file.write_all(b"\n")?;
         self.first = false;
         Ok(())
     }
-}
 
-impl ChainReading {
+    /// Finish compression and close the file before waiting for the writer.
+    pub fn finish(&mut self) -> Result<()> {
+        if let Some(file) = self.file.take() {
+            let file = file
+                .finish()?
+                .into_inner()
+                .map_err(|error| error.into_error())?;
+            drop(file);
+        }
+        Ok(())
+    }
+
     /// Decoded bytes stay private until this chain is ready to commit.
     pub fn decoded(&mut self, batch: crate::staging::PreparedBatch) {
         self.decoded.push(batch);
@@ -92,12 +109,8 @@ impl Inner {
                 result?;
             }
         }
-        let mut file = reading
-            .file
-            .finish()?
-            .into_inner()
-            .map_err(|e| e.into_error())?;
-        file.seek(SeekFrom::Start(0))?;
+        reading.finish()?;
+        let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(zstd::stream::read::Decoder::new(file)?);
         let tx = self
             .index

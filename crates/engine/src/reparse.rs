@@ -36,6 +36,14 @@ struct Prepared {
     bytes_read: u64,
 }
 
+type CommitReply = Receiver<polylogue_store::Result<u64>>;
+
+struct QueuedReading {
+    plan: Plan,
+    reply: Result<Option<CommitReply>, EngineError>,
+    bytes_read: u64,
+}
+
 impl Engine {
     pub(crate) fn replace_readings(
         &mut self,
@@ -44,6 +52,12 @@ impl Engine {
     ) -> Result<(), EngineError> {
         if plans.is_empty() {
             return Ok(());
+        }
+        if plans
+            .iter()
+            .any(|plan| !matches!(plan.change, Change::Reparse { .. }))
+        {
+            return Err(std::io::Error::other("a replacement needs a stored chain").into());
         }
         let memory = Memory {
             used: Mutex::new(0),
@@ -58,14 +72,18 @@ impl Engine {
         let mut remaining = plans.len();
         let count = remaining;
         let waiting = Mutex::new(VecDeque::from(plans));
-        let (finished, results) = channel();
+        let (finished, prepared) = channel();
+        let (queued, results) = channel();
         let workers = self.config.workers.max(1).min(count);
         let read_memory = self.config.reader_memory_per_connection()?;
         let archive = self.archive.clone();
         let blobs = Arc::clone(&self.blobs);
         let writer = self.writer.sender()?;
+        for (path, count) in &busy {
+            *self.reparsing.entry(path.clone()).or_default() += *count;
+        }
         polylogue_store::timing::reading_queue(count as i64, 0);
-        std::thread::scope(|scope| -> Result<(), EngineError> {
+        let result = std::thread::scope(|scope| -> Result<(), EngineError> {
             for worker in 0..workers {
                 let finished = finished.clone();
                 let waiting = &waiting;
@@ -97,6 +115,23 @@ impl Engine {
                                         "the replacement parser panicked".into(),
                                     ))
                                 });
+                            let reading = reading.and_then(|reading| {
+                                reading
+                                    .map(|mut reading| {
+                                        polylogue_store::timing::time(
+                                            polylogue_store::timing::Stage::Store,
+                                            || reading.finish(),
+                                        )?;
+                                        Ok(reading)
+                                    })
+                                    .transpose()
+                            });
+                            // Commit replies need progress and state, not open input buffers.
+                            plan.source = pool::Bytes::File;
+                            if !plan.tracked {
+                                plan.parser_state = None;
+                                plan.tail = None;
+                            }
                             polylogue_store::timing::reading_queue(0, 1);
                             if finished
                                 .send(Prepared {
@@ -113,14 +148,66 @@ impl Engine {
                     .expect("spawn a reading worker");
             }
             drop(finished);
-            let mut commits = Vec::new();
+            std::thread::Builder::new()
+                .name("pl-reading-send".into())
+                .spawn_scoped(scope, move || {
+                    for Prepared {
+                        plan,
+                        reading,
+                        bytes_read,
+                    } in prepared
+                    {
+                        polylogue_store::timing::reading_queue(0, -1);
+                        let reply = reading.and_then(|reading| {
+                            let Some(reading) = reading else {
+                                return Ok(None);
+                            };
+                            let Change::Reparse { chain } = plan.change else {
+                                unreachable!("validated chain plan")
+                            };
+                            writer
+                                .queue_chain(plan.input.clone(), chain, plan.size, reading)
+                                .map(Some)
+                                .map_err(EngineError::from)
+                        });
+                        if queued
+                            .send(QueuedReading {
+                                plan,
+                                reply,
+                                bytes_read,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                })
+                .expect("spawn a reading sender");
+            let mut commits: VecDeque<(Plan, CommitReply)> = VecDeque::new();
             let mut checked = Instant::now();
             let every = self.config.live_every.max(Duration::from_millis(10));
             while remaining > 0 {
-                self.reparse_live(&busy, &mut checked, pass)?;
-                let Prepared {
+                while let Some((plan, reply)) = commits.pop_front() {
+                    match reply.try_recv() {
+                        Ok(written) => self.reading_committed(&mut busy, plan, written, pass),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            commits.push_front((plan, reply));
+                            break;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.reading_committed(
+                                &mut busy,
+                                plan,
+                                Err(polylogue_store::StoreError::WriterGone),
+                                pass,
+                            );
+                        }
+                    }
+                }
+                self.reparse_live(&busy, &mut checked, pass);
+                let QueuedReading {
                     mut plan,
-                    reading,
+                    reply,
                     bytes_read,
                 } = match results.recv_timeout(every) {
                     Ok(prepared) => prepared,
@@ -133,29 +220,14 @@ impl Engine {
                     }
                 };
                 remaining -= 1;
-                polylogue_store::timing::reading_queue(0, -1);
                 pass.bytes_read += bytes_read;
-                match reading {
-                    Ok(Some(reading)) => {
-                        let Change::Reparse { chain } = plan.change else {
-                            return Err(std::io::Error::other(
-                                "a replacement needs a stored chain",
-                            )
-                            .into());
-                        };
-                        match writer.queue_chain(plan.input.clone(), chain, plan.size, reading) {
-                            Ok(reply) => commits.push((plan, reply)),
-                            Err(error) => {
-                                release_path(&mut busy, &plan.path);
-                                pass.errors.push(format!("re-parse: {error}"));
-                            }
-                        }
-                    }
-                    Ok(None) => release_path(&mut busy, &plan.path),
+                match reply {
+                    Ok(Some(reply)) => commits.push_back((plan, reply)),
+                    Ok(None) => self.release_reading(&mut busy, &plan.path),
                     Err(error) => {
                         pass.errors
                             .push(format!("re-parse {}: {error}", plan.path.display()));
-                        release_path(&mut busy, &plan.path);
+                        self.release_reading(&mut busy, &plan.path);
                         if matches!(error, EngineError::Parse(_)) {
                             plan.failed = true;
                             self.finish_plan(plan);
@@ -165,7 +237,7 @@ impl Engine {
             }
             for (plan, reply) in commits {
                 let written = loop {
-                    self.reparse_live(&busy, &mut checked, pass)?;
+                    self.reparse_live(&busy, &mut checked, pass);
                     match reply.recv_timeout(every) {
                         Ok(written) => break written,
                         Err(RecvTimeoutError::Timeout) => continue,
@@ -174,18 +246,39 @@ impl Engine {
                         }
                     }
                 };
-                release_path(&mut busy, &plan.path);
-                match written {
-                    Ok(written) => {
-                        pass.messages_written += written;
-                        self.finish_plan(plan);
-                    }
-                    // The old reading remains committed and the next pass retries.
-                    Err(error) => pass.errors.push(format!("re-parse: {error}")),
-                }
+                self.reading_committed(&mut busy, plan, written, pass);
             }
             Ok(())
-        })
+        });
+        for (path, count) in busy {
+            for _ in 0..count {
+                release_path(&mut self.reparsing, &path);
+            }
+        }
+        result
+    }
+
+    fn reading_committed(
+        &mut self,
+        busy: &mut HashMap<PathBuf, usize>,
+        plan: Plan,
+        written: polylogue_store::Result<u64>,
+        pass: &mut Pass,
+    ) {
+        self.release_reading(busy, &plan.path);
+        match written {
+            Ok(written) => {
+                pass.messages_written += written;
+                self.finish_plan(plan);
+            }
+            // The old reading remains committed and the next pass retries.
+            Err(error) => pass.errors.push(format!("re-parse: {error}")),
+        }
+    }
+
+    fn release_reading(&mut self, busy: &mut HashMap<PathBuf, usize>, path: &Path) {
+        release_path(busy, path);
+        release_path(&mut self.reparsing, path);
     }
 
     fn reparse_live(
@@ -193,13 +286,16 @@ impl Engine {
         busy: &HashMap<PathBuf, usize>,
         checked: &mut Instant,
         pass: &mut Pass,
-    ) -> Result<(), EngineError> {
+    ) {
         if checked.elapsed() >= self.config.live_every {
             *checked = Instant::now();
-            let live = self.live_plans(&busy.keys().cloned().collect())?;
-            self.execute(live, pass)?;
+            let result = self
+                .live_plans(&busy.keys().cloned().collect())
+                .and_then(|live| self.execute(live, pass));
+            if let Err(error) = result {
+                pass.errors.push(format!("live inputs: {error}"));
+            }
         }
-        Ok(())
     }
 }
 

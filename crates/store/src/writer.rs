@@ -519,8 +519,9 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainReading,
+        mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
+        reading.finish()?;
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);
         if self

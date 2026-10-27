@@ -392,7 +392,10 @@ impl Engine {
         );
         let mut plans = Vec::new();
         for f in found {
-            if self.refused.contains(&f.path) || busy.contains(&f.path) {
+            if self.refused.contains(&f.path)
+                || busy.contains(&f.path)
+                || self.reparsing.contains_key(&f.path)
+            {
                 continue;
             }
             let Ok(meta) = std::fs::metadata(&f.path) else {

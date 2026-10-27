@@ -259,6 +259,8 @@ pub struct Engine {
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     failed_writes: HashSet<String>,
+    /// Paths excluded from every nested live scan until their readings commit.
+    reparsing: HashMap<PathBuf, usize>,
     loaded: bool,
     exporter: Captures,
     /// Paths on this machine an excision removed: never collected again.
@@ -320,6 +322,7 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             failed_writes: HashSet::new(),
+            reparsing: HashMap::new(),
             loaded: false,
             exporter: Captures::default(),
             refused: HashSet::new(),
