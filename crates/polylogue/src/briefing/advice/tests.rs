@@ -153,3 +153,21 @@ fn one_verification_has_the_same_failures_as_in_the_full_list() {
             .is_empty()
     );
 }
+
+#[test]
+fn unrelated_calls_leave_advice_identity_unchanged() {
+    let (_dir, first) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s2", "cargo test", "error", 1),
+    ]);
+    let (_other_dir, reordered) = ran(&[
+        ("claude-code:other", "cargo fmt", "error", 0),
+        ("claude-code:s2", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo test", "error", 1),
+    ]);
+    let first = advise(&first, "cargo test");
+    let reordered = advise(&reordered, "cargo test");
+    assert!(!first.empty);
+    assert_eq!(first.advice_id, reordered.advice_id);
+    assert_eq!(first.text, reordered.text);
+}

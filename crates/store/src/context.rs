@@ -89,7 +89,7 @@ pub struct FailingCommand {
     pub times: u64,
     pub sessions: u64,
     pub first: Option<Timestamp>,
-    /// The latest failure's work node key.
+    /// The latest failure's source location and time.
     pub state: String,
 }
 
@@ -449,14 +449,17 @@ impl Reader<'_> {
             ""
         };
         let sql = format!(
-            "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state, v.key
+            "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state,
+                    json_array(s.id, m.id, b.idx, v.at)
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
+               LEFT JOIN block b ON b.pk = t.call_block_pk
+               LEFT JOIN message m ON m.pk = b.message_pk
               WHERE v.kind = 'verification' AND v.at >= ?2
                 {title_condition}
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
-              ORDER BY v.at DESC, v.pk DESC",
+              ORDER BY v.at DESC, s.id DESC, m.seq DESC, m.id DESC, b.idx DESC",
         );
         let mut stmt = conn.prepare_cached(&sql)?;
         let mut passed = std::collections::HashSet::new();
