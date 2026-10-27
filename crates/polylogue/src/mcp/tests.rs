@@ -165,3 +165,17 @@ fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
         .unwrap();
     assert_eq!(ping["error"]["code"], -32601);
 }
+
+#[test]
+fn malformed_request_ids_are_not_echoed_in_error_responses() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = Archive::at(temp.path());
+    for id in [json!({"wrong":1}), json!([1]), json!(true)] {
+        let reply = Session::default()
+            .prepare(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}))
+            .answer(&archive)
+            .unwrap();
+        assert_eq!(reply["id"], Value::Null);
+        assert_eq!(reply["error"]["code"], -32600);
+    }
+}
