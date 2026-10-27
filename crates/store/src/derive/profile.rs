@@ -74,41 +74,43 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         &times
     });
     let authors: BTreeMap<i64, &Message> = messages.iter().map(|m| (m.pk, m)).collect();
-    let block_messages: BTreeMap<i64, i64> = tx
-        .prepare_cached("SELECT pk,message_pk FROM block WHERE session_pk=?1")?
-        .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
     let mut prompt_text = BTreeMap::<i64, String>::new();
     let mut tool_messages = BTreeSet::new();
+    let mut thinking_messages = BTreeSet::new();
+    let mut kinds = tx.prepare_cached("SELECT DISTINCT b.message_pk,b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.session_pk=?1 AND m.duplicate_of IS NULL")?;
+    for row in kinds.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+        let (message, kind) = row?;
+        if kind == "thinking" {
+            thinking_messages.insert(message);
+        }
+        if matches!(kind.as_str(), "tool_call" | "tool_result") {
+            tool_messages.insert(message);
+        }
+    }
     let mut topic = None;
     let mut last_text = None;
-    let mut thinking_messages = BTreeSet::new();
     let mut masker = polylogue_model::masking::MessageMasker::default();
-    crate::ordered_blocks::visit(tx, pk, |mut item| {
-        masker.block(&mut item.block);
-        let message_pk = block_messages[&item.pk];
-        if matches!(
-            &item.block,
-            polylogue_model::Block::ToolCall { .. } | polylogue_model::Block::ToolResult { .. }
-        ) {
-            tool_messages.insert(message_pk);
-        }
-        if matches!(&item.block, polylogue_model::Block::Thinking { .. }) {
-            thinking_messages.insert(message_pk);
-        }
-        if let polylogue_model::Block::Text { text } = &item.block
+    // Unmarked tool output cannot change masking state. Read only authored
+    // prose and messages whose PEM markers can affect the following prose.
+    let mut text_blocks=tx.prepare_cached("SELECT b.pk,b.message_pk FROM message m JOIN block b ON b.message_pk=m.pk
+        WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND
+          (m.pem<>0 OR (b.kind='text' AND m.role IN ('user','assistant') AND m.written_by<>'harness'))
+        ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx")?;
+    let mut text_rows = text_blocks.query([pk])?;
+    while let Some(row) = text_rows.next()? {
+        let message_pk: i64 = row.get(1)?;
+        let mut block = crate::ordered_blocks::one(tx, row.get(0)?)?;
+        masker.block(&mut block);
+        if let polylogue_model::Block::Text { text } = &block
             && let Some(m) = authors.get(&message_pk)
             && !text.trim().is_empty()
         {
             if m.eligible() {
                 last_text = Some(*m);
-            }
-            if m.eligible() {
                 prompt_text.entry(message_pk).or_default().push_str(text);
             }
         }
-        Ok(std::ops::ControlFlow::Continue(()))
-    })?;
+    }
     let substantive = |m: &&Message| {
         m.eligible()
             && !tool_messages.contains(&m.pk)
@@ -190,7 +192,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
             }
         } else {
             pending += 1;
-            if a.zip(last_at).is_some_and(|(a, b)| b - a >= CLUSTER_GAP_MS) {
+            if a.zip(last_at).is_some_and(|(a, b)| b - a > CLUSTER_GAP_MS) {
                 stuck += 1;
             }
         }
@@ -261,6 +263,11 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     } else {
         ("unknown", "no_signal")
     };
+    let compaction_count: u64 = tx.query_row(
+        "SELECT count(*) FROM event WHERE session_pk=?1 AND kind='compaction'",
+        [pk],
+        |r| r.get(0),
+    )?;
     let tool_active = durations.iter().sum();
     let facts = Facts {
         rule_version: RULE_VERSION,
@@ -274,6 +281,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         message_count: n as u64,
         word_count: messages.iter().map(|m| m.words).sum(),
         substantive_count,
+        compaction_count,
         total_duration_ms: messages
             .iter()
             .filter_map(|m| m.duration)
@@ -292,6 +300,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         workflow_shape: shape.into(),
         workflow_features: [
             ("message_count", n as f64),
+            ("compaction_count", compaction_count as f64),
             ("tool_call_count", call_count as f64),
             ("tool_ratio", ratio),
             ("read_count", reads as f64),
