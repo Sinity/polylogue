@@ -35,7 +35,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:1abc#matrix-user",
+          "id": "ai-studio:4:1abc#id:11:matrix-user",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:1abc"
@@ -51,8 +51,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:1abc#matrix-assistant",
-          "parent": "ai-studio:1abc#matrix-user",
+          "id": "ai-studio:4:1abc#id:16:matrix-assistant",
+          "parent": "ai-studio:4:1abc#id:11:matrix-user",
           "role": "assistant",
           "session": "ai-studio:1abc"
         },
