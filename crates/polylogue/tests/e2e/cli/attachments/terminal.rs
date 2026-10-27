@@ -14,7 +14,7 @@ pub(super) fn cli(
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
     let slave = ioctl_tiocgptpeer(&master, flags).unwrap();
-    let mut command = Command::new(crate::BIN);
+    let mut command = super::super::command(env);
     for (key, value) in env {
         command.env(key, value);
     }

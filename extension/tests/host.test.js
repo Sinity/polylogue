@@ -4,7 +4,7 @@ import { notePayload } from "../src/background/notes.js";
 import { fakeChrome } from "./support/fake_chrome.js";
 
 describe("the native messaging host", () => {
-  it("receives a body of any size in acknowledged appended bytes and answers in appended bytes", async () => {
+  it("receives a body of any size in acknowledged chunks and answers in chunks", async () => {
     const chrome = fakeChrome({ routes: { "POST /v1/captures": (body) => ({ bytes: body }) } });
     const big = new Uint8Array(200 * 1024).map((_, i) => i % 251);
     const answer = await exchange(chrome.runtime, "POST", "/v1/captures", new Blob([big]));

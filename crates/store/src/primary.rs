@@ -155,9 +155,8 @@ pub(crate) fn next_part(
         .optional()?;
     Ok(match last {
         Some((part, id)) => (
-            u32::try_from(part + 1).map_err(|_| {
-                StoreError::Invalid("too many appended byte ranges for one input history".into())
-            })?,
+            u32::try_from(part + 1)
+                .map_err(|_| StoreError::Invalid("too many parts for one chain".into()))?,
             Some(id),
         ),
         None => (0, None),

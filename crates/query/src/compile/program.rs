@@ -9,6 +9,7 @@ impl<'a> Compiler<'a> {
         q: &Query,
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
+        self.stages_start = q.stages.first().map_or(usize::MAX, |s| s.span.start);
         let (mut scope, wheres, top) = match &q.source {
             Source::Empty => (RowContext::plain(Unit::Sessions), vec![], vec![]),
             Source::Sessions { cond } => {
@@ -153,6 +154,7 @@ impl<'a> Compiler<'a> {
                         and_all(&where_sql)
                     );
                     // The session ranking selects sessions; children have their own order.
+                    self.near_request = None;
                     self.rank = None;
                     self.near_rank = None;
                     self.near_join = None;
@@ -211,9 +213,7 @@ impl<'a> Compiler<'a> {
                     // A later filter is one more condition on the same rows:
                     // its words rank them as they would in the `where`,
                     // unless a sort already ordered them.
-                    self.in_stage = true;
                     let sql = self.cond(cond, &scope, order.is_none());
-                    self.in_stage = false;
                     where_sql.push(sql?);
                 }
                 StageKind::Where { cond } => {
@@ -322,6 +322,9 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     }
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
                     measure = Some(Measure {
                         what: what.clone(),
                         everything: wheres.is_empty(),
@@ -367,27 +370,10 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        // An answer of groups, a summary, match rows or a measurement uses
-        // only which rows match, so `near:` computes no similarity for it,
-        // unless a selection already chose rows by the ranking.
         let rows_answer =
             matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
-        // A fused ranking already read the similarities.
-        if self.near_rank.is_some()
-            && !rows_answer
-            && !self.ranking_chose_rows
-            && self.fusion.is_none()
-        {
-            self.ctes.drain(self.near_ctes.clone());
-            self.near_rank = None;
-            self.near_join = None;
-            self.near = None;
-        }
-        if let Some(note) = self.near_disabled.take()
-            && !rows_answer
-            && !self.ranking_chose_rows
-        {
-            self.incomplete.remove(note);
+        if rows_answer {
+            self.setup_near(true);
         }
 
         self.fuse_pending(
@@ -409,7 +395,6 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
-        let mut count_without_vectors = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
@@ -546,9 +531,6 @@ impl<'a> Compiler<'a> {
                 self.apply_selection(&scope, &mut where_sql, &order, selection.take());
             }
             let wh = and_all(&where_sql);
-            count_without_vectors = self.near_rank.as_ref().map(|near| {
-                format!("{ctes}SELECT count(*) FROM {from} WHERE {wh} AND ({near}) IS NULL")
-            });
             let order = order.unwrap_or_else(|| self.default_order(&scope));
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
             if !self.opts.fields.is_empty() {
@@ -588,6 +570,10 @@ impl<'a> Compiler<'a> {
             }
             let mut select: Vec<String> = vec![format!("{pk} AS _pk")];
             select.extend(cols.iter().map(|(n, e, _, _)| format!("{e} AS {n}")));
+            select.push(format!(
+                "{} AS _near",
+                self.near_rank.as_deref().unwrap_or("1")
+            ));
             let (sql, keys) = if distinct {
                 // Distinct rows are identified by their values alone.
                 let keys: Vec<OrderKey> = columns
@@ -600,7 +586,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let sql = format!(
-                    "{ctes}SELECT min(_pk) AS _pk, {names} FROM (SELECT {} FROM {from} WHERE {wh}) GROUP BY {names} ORDER BY {}",
+                    "{ctes}SELECT min(_pk) AS _pk, {names}, max(_near) AS _near FROM (SELECT {} FROM {from} WHERE {wh}) GROUP BY {names} ORDER BY {}",
                     select.join(", "),
                     order_by(&keys)
                 );
@@ -654,6 +640,12 @@ impl<'a> Compiler<'a> {
                 } else {
                     50
                 });
+        if self.near_unavailable {
+            let note = "semantic search is not enabled; rows are ordered by time and unranked";
+            if !self.incomplete.iter().any(|n| n == note) {
+                self.incomplete.push(note.into());
+            }
+        }
         Ok(Program {
             query: self.text.to_owned(),
             unit,
@@ -671,9 +663,9 @@ impl<'a> Compiler<'a> {
             why,
             why_of,
             page_size,
+            counts_near: shape == Shape::Rows && self.near_rank.is_some(),
             near: self.near,
             definitions: self.definitions,
-            count_without_vectors,
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
@@ -733,8 +725,8 @@ impl<'a> Compiler<'a> {
             return;
         };
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
-        if order.is_none() && (self.ranking().is_some() || self.near_disabled.is_some()) {
-            self.ranking_chose_rows = true;
+        if order.is_none() {
+            self.setup_near(true);
         }
         let order = order.clone().unwrap_or_else(|| self.default_order(scope));
         let from = self.from(scope).unwrap_or_default();

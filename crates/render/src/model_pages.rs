@@ -184,9 +184,9 @@ impl Pager {
             model: message.model.clone(),
             written_by: polylogue_model::WrittenBy::of(message.role, message.prompt_kind),
         });
-        let ps = rendered_blocks(&message, self.view);
-        self.source_blocks = ps.iter().map(|block| block.source_index).collect();
-        self.push_blocks(ps, header(&message), annotations)
+        let blocks = rendered_blocks(&message, self.view);
+        self.source_blocks = blocks.iter().map(|block| block.source_index).collect();
+        self.push_blocks(blocks, header(&message), annotations)
     }
 
     /// Stop at an exclusive position, used for a page read backwards.
@@ -201,7 +201,7 @@ impl Pager {
 
     fn push_blocks(
         &mut self,
-        ps: Vec<crate::RenderedBlock>,
+        blocks: Vec<crate::RenderedBlock>,
         heading: String,
         annotations: Vec<crate::attachments::Annotation>,
     ) -> Result<ControlFlow<()>, &'static str> {
@@ -211,14 +211,14 @@ impl Pager {
             return Ok(ControlFlow::Continue(()));
         }
 
-        if self.resumed && !self.validated && self.at.block >= ps.len() {
+        if self.resumed && !self.validated && self.at.block >= blocks.len() {
             return Err("the read cursor block is outside the selected record");
         }
-        if self.latest && !ps.is_empty() {
-            self.at.block = ps.len() - 1;
+        if self.latest && !blocks.is_empty() {
+            self.at.block = blocks.len() - 1;
         }
-        while self.at.block < ps.len() {
-            let p = &ps[self.at.block];
+        while self.at.block < blocks.len() {
+            let p = &blocks[self.at.block];
             let body = block_body(p, &heading, self.at.message, self.at.block);
             let prefix = body
                 .chars()
@@ -425,18 +425,18 @@ impl BlockPager {
     ) -> Result<ControlFlow<()>, &'static str> {
         self.stream.masker.block(&mut block);
         self.stream.source_blocks = vec![self.stream.message];
-        let ps = if self.stream.view.keeps_block(false, &block) {
+        let blocks = if self.stream.view.keeps_block(false, &block) {
             crate::block(&block).into_iter().collect()
         } else {
             Vec::new()
         };
-        let heading = if !self.heading_emitted && !ps.is_empty() {
+        let heading = if !self.heading_emitted && !blocks.is_empty() {
             self.heading_emitted = true;
             self.heading.clone()
         } else {
             String::new()
         };
-        self.stream.push_blocks(ps, heading, Vec::new())
+        self.stream.push_blocks(blocks, heading, Vec::new())
     }
     pub fn finish(self) -> Result<Page, &'static str> {
         self.stream.finish()

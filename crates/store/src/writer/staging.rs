@@ -321,9 +321,8 @@ impl Inner {
                 b.new_blob = None;
             }
             let (chain, rows) = write_bytes(&tx, b, seq)?;
-            let chain = chain.ok_or_else(|| {
-                StoreError::Invalid("stored bytes produced no input history".into())
-            })?;
+            let chain = chain
+                .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
             if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
                 let new_blob = b.new_blob.as_ref().map(|new_blob| new_blob.hash);
                 let file = new_blob.and_then(|hash| files.iter().find(|f| f.hash() == hash));

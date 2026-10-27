@@ -123,9 +123,7 @@ const ARCHIVE_EXCLUDE_FILES = new Set([
 ]);
 
 function makeArchive(srcDir, archivePath, kind) {
-  // Try zip(1) first (CI runners ship it). Fall back to Python's
-  // zipfile so the build still runs inside the Nix devshell, which
-  // ships Python but not unzip/zip.
+  // Use zip when available, otherwise Python's zipfile module.
   const which = (bin) => {
     try {
       execFileSync("sh", ["-c", `command -v ${bin}`], { stdio: "pipe" });
@@ -161,7 +159,6 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
 }
 
 function main() {
-  execFileSync(process.execPath, [join(EXT_ROOT, "scripts/sync-sha256.mjs")], { stdio: "inherit" });
   const args = parseArgs(process.argv.slice(2));
   const rawVersion = args.version ?? readPackageVersion();
   const version = normalizeChromeVersion(rawVersion);

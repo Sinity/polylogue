@@ -23,6 +23,14 @@ which reads through Store and presents through Query and Render.
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
+The `explain` command reads the command, query-unit, field, read-view and
+format declarations. Query explanation uses the same reader-backed options as execution, then
+Query's pure parser and compiler. Declaration pages use a cursor naming
+their subject, unit and next offset. The local `demo tour` command bundles the
+main Morrow files and starts an application runtime against its own home and
+archive; each narrated operation is built through the ordinary command
+table. Its transcript is written under the new tour directory.
+
 A new origin is an origin declaration and a parser, a new command is a
 command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
@@ -168,7 +176,14 @@ query ranked by `near:` pages the same way: its similarities come from the
 vectors held in memory, through `pl_similarity(text_hash)` while the query
 runs, so its other conditions choose the rows before any ranking; with
 words in the same query the two orders are fused (reciprocal rank fusion).
-Its cursor is refused once vectors were stored or removed. A query inside a
+Its cursor is refused once vectors were stored or removed. Semantic setup runs
+only when the answer needs ranking, including a limit that selects rows before
+a count or measurement. A row answer's own semantic ranking keeps each row's similarity in a hidden column,
+so one statement counts both the answer and its rows without a vector, after
+stages such as `distinct`. Session `has:errors` and `has:tool_calls` inspect
+its own messages: duplicates and abandoned branches are excluded. Every field
+that names a session resolves an exact ID before a unique prefix and refuses
+an ambiguous prefix. A query inside a
 query (a combining stage, `FIELD in (…)`) is compiled on its own over the
 outer query's parameters and read as a subquery of the one statement; a
 union with a ranked side ranks by fusing every list's order, computed once

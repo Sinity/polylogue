@@ -288,19 +288,21 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
     )
 }
 
-fn main() -> ExitCode {
-    let selection = match input::selection(std::env::args().skip(1)) {
+fn command(
+    args: impl Iterator<Item = String>,
+    mut output: impl Write,
+    mut errors: impl Write,
+) -> ExitCode {
+    let selection = match input::selection(args) {
         Ok(selection) => selection,
         Err(error) => {
-            eprintln!("scan: {error}");
+            let _ = writeln!(errors, "scan: {error}");
             return ExitCode::from(2);
         }
     };
-    // A parser panic must not print captured content from its panic payload.
-    std::panic::set_hook(Box::new(|_| eprintln!("scan: worker failed")));
     let (report, complete) = run(selection);
     let written = writeln!(
-        std::io::stdout().lock(),
+        output,
         "{}",
         serde_json::to_string_pretty(&report).expect("counts serialize")
     )
@@ -310,6 +312,16 @@ fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn main() -> ExitCode {
+    // A parser panic must not print captured content from its panic payload.
+    std::panic::set_hook(Box::new(|_| eprintln!("scan: worker failed")));
+    command(
+        std::env::args().skip(1),
+        std::io::stdout().lock(),
+        std::io::stderr(),
+    )
 }
 
 #[cfg(test)]

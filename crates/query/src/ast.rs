@@ -177,16 +177,28 @@ pub enum Op {
 }
 
 impl Op {
+    pub const TABLE: &[(Op, &str)] = &[
+        (Self::Ge, ">="),
+        (Self::Le, "<="),
+        (Self::Ne, "!="),
+        (Self::Gt, ">"),
+        (Self::Lt, "<"),
+        (Self::Eq, "="),
+    ];
+
+    pub fn name(self) -> &'static str {
+        Self::TABLE
+            .iter()
+            .find(|(op, _)| *op == self)
+            .expect("every operator")
+            .1
+    }
+
     pub fn parse(text: &str) -> Option<Op> {
-        Some(match text {
-            "=" => Op::Eq,
-            "!=" => Op::Ne,
-            "<" => Op::Lt,
-            "<=" => Op::Le,
-            ">" => Op::Gt,
-            ">=" => Op::Ge,
-            _ => return None,
-        })
+        Self::TABLE
+            .iter()
+            .find(|(_, name)| *name == text)
+            .map(|(op, _)| *op)
     }
 
     pub fn sql(self) -> &'static str {

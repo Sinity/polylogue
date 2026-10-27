@@ -59,7 +59,13 @@ impl<'a> Compiler<'a> {
             &mut program.change_generations,
         );
         join(&mut self.definitions, &mut program.definitions);
-        match (&self.near, &program.near) {
+        match (
+            self.near_request
+                .as_ref()
+                .map(|(near, _)| near)
+                .or(self.near.as_ref()),
+            &program.near,
+        ) {
             (Some(mine), Some(theirs)) if mine != theirs => {
                 return Err(QueryError::Invalid {
                     message: "one query ranks by one near: text; this one has two".into(),
@@ -194,6 +200,7 @@ impl<'a> Compiler<'a> {
         if pending.is_empty() {
             return Ok(());
         }
+        self.setup_near(false);
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
         if pending.fuses.is_empty() && !any_ranked {

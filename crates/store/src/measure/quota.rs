@@ -12,7 +12,9 @@ use serde::Serialize;
 
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
+#[cfg(test)]
 pub const FIVE_HOURS: i64 = 300;
+#[cfg(test)]
 pub const WEEK: i64 = 10_080;
 
 /// The subscription a window belongs to: the tool's limit name.

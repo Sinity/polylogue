@@ -161,19 +161,6 @@ impl Reader<'_> {
         read(self.conn()?, "a.", id)
     }
 
-    /// The size of a stored blob, when it is present.
-    pub fn blob_size(&self, blob: &BlobHash) -> Result<Option<u64>> {
-        Ok(self
-            .conn()?
-            .query_row(
-                "SELECT size FROM a.blob WHERE hash = ?1 AND state = 'present'",
-                [&blob.0[..]],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?
-            .map(|size| u64::try_from(size).unwrap_or(0)))
-    }
-
     /// A chat action attachment's bytes, checked against their hash.
     pub fn chat_attachment(
         &self,

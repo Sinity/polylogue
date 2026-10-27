@@ -3,6 +3,27 @@ use super::{Reader, SqlValue};
 use crate::{Result, StoreError};
 
 impl Reader<'_> {
+    /// Two aggregate counts from one statement, read by column position.
+    pub fn query_counts(&self, sql: &str, params: &[SqlValue]) -> Result<(u64, u64)> {
+        crate::fault::check("read.query", sql)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(sql)?;
+        for (i, p) in params.iter().take(stmt.parameter_count()).enumerate() {
+            stmt.raw_bind_parameter(i + 1, p)?;
+        }
+        let (total, without) = stmt
+            .raw_query()
+            .next()?
+            .map(|row| Ok::<_, rusqlite::Error>((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+            .transpose()?
+            .unwrap_or_default();
+        let count = |value| {
+            u64::try_from(value)
+                .map_err(|_| StoreError::Invalid("query returned a negative count".into()))
+        };
+        Ok((count(total)?, count(without)?))
+    }
+
     /// Collect a read-only query. Parameters past the statement's highest
     /// number are ignored, so one list serves several compiled statements.
     pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {

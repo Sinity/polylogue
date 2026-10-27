@@ -80,7 +80,7 @@ fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
 }
 
 pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    if !x.top || c.in_stage {
+    if !x.top || x.span.start >= c.stages_start || c.near_request.is_some() {
         return Err(QueryError::Invalid {
             message:
                 "near: ranks the whole query, so it appears once among the top-level conditions"
@@ -88,73 +88,74 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             position: x.span.start,
         });
     }
-    if !c.opts.embeddings {
-        c.near_disabled = Some(c.incomplete.len());
-        c.incomplete
-            .push("semantic search is not enabled; rows are ordered by time and unranked".into());
-        return Ok("1".into());
+    if !matches!(x.unit, Unit::Sessions | Unit::Messages | Unit::Blocks) {
+        return Err(QueryError::Invalid {
+            message: format!(
+                "near: ranks sessions, messages and blocks, not {}",
+                x.unit.name()
+            ),
+            position: x.span.start,
+        });
     }
-    let text = x.value()?;
-    let first_cte = c.ctes.len();
-    // `pl_similarity` answers from the similarities the caller computed for
-    // this text. Each message's best text is found once, in one pass over
-    // the texts; a session ranks by the best message in it and its
-    // subagents; a row with no vector has no rank. The similarities join
-    // the unit's rows, so ranking and fusion read them as columns.
-    let a = &x.scope.a;
-    let messages = format!("n{}", c.ctes.len() + 1);
-    c.ctes.push(format!(
-        "{messages} AS MATERIALIZED (SELECT xb.message_pk AS m, max(xs.s) AS s \
+    c.near_request = Some((Near { text: x.value()? }, x.scope.clone()));
+    Ok("1".into())
+}
+
+impl Compiler<'_> {
+    /// Build similarities once, when the answer or an earlier selection
+    /// needs an order. Counts and groups need membership only.
+    pub(super) fn setup_near(&mut self, required: bool) {
+        if !self.opts.embeddings {
+            self.near_unavailable |= required && self.near_request.is_some();
+            return;
+        }
+        let Some((near, scope)) = self.near_request.take() else {
+            return;
+        };
+        let a = &scope.a;
+        let messages = format!("n{}", self.ctes.len() + 1);
+        self.ctes.push(format!(
+            "{messages} AS MATERIALIZED (SELECT xb.message_pk AS m, max(xs.s) AS s \
          FROM (SELECT xt.id AS t, pl_similarity(xt.hash) AS s FROM text xt) xs \
          JOIN block xb ON xb.text_id = xs.t WHERE xs.s IS NOT NULL GROUP BY xb.message_pk)"
-    ));
-    let rank = match x.unit {
-        Unit::Sessions => {
-            // Each session's best message, carried up to the sessions that
-            // spawned it, once per query.
-            let tree = format!("n{}", c.ctes.len() + 1);
-            c.ctes.push(format!(
-                "{tree}(p, s) AS (SELECT xm.session_pk, max(nm.s) FROM {messages} nm \
+        ));
+        let rank = match scope.unit {
+            Unit::Sessions => {
+                // Each session's best message, carried up to the sessions that
+                // spawned it, once per query.
+                let tree = format!("n{}", self.ctes.len() + 1);
+                self.ctes.push(format!(
+                    "{tree}(p, s) AS (SELECT xm.session_pk, max(nm.s) FROM {messages} nm \
                  JOIN message xm ON xm.pk = nm.m GROUP BY xm.session_pk \
                  UNION SELECT lp.pk, nt.s FROM {tree} nt JOIN link l ON l.child_pk = nt.p \
                  AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id)"
-            ));
-            let sessions = format!("n{}", c.ctes.len() + 1);
-            c.ctes.push(format!(
-                "{sessions} AS MATERIALIZED (SELECT p, max(s) AS s FROM {tree} GROUP BY p)"
-            ));
-            c.near_join = Some(format!(
-                "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
-                a.s
-            ));
-            "-near_s.s".to_owned()
-        }
-        Unit::Messages => {
-            c.near_join = Some(format!(
-                "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
-                a.m
-            ));
-            "-near_m.s".to_owned()
-        }
-        Unit::Blocks => format!(
-            "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
-            a.b
-        ),
-        other => {
-            c.ctes.pop();
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "near: ranks sessions, messages and blocks, not {}",
-                    other.name()
-                ),
-                position: x.span.start,
-            });
-        }
-    };
-    c.near_rank = Some(rank);
-    c.near_ctes = first_cte..c.ctes.len();
-    c.near = Some(Near { text });
-    Ok("1".into())
+                ));
+                let sessions = format!("n{}", self.ctes.len() + 1);
+                self.ctes.push(format!(
+                    "{sessions} AS MATERIALIZED (SELECT p, max(s) AS s FROM {tree} GROUP BY p)"
+                ));
+                self.near_join = Some(format!(
+                    "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
+                    a.s
+                ));
+                "-near_s.s".to_owned()
+            }
+            Unit::Messages => {
+                self.near_join = Some(format!(
+                    "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
+                    a.m
+                ));
+                "-near_m.s".to_owned()
+            }
+            Unit::Blocks => format!(
+                "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
+                a.b
+            ),
+            _ => unreachable!("near units are checked when requested"),
+        };
+        self.near_rank = Some(rank);
+        self.near = Some(near);
+    }
 }
 
 pub(crate) fn output(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -453,16 +454,16 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
             "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
         ));
     }
-    let (e, p) = c.id_params(&v);
+    let reference = c.session_reference("l.parent_id", "id", &v);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))"
+        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND {reference})"
     ))
 }
 
 pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
+    let reference = c.session_reference("rs.id", "id", &x.value()?);
     Ok(format!(
-        "{}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT pk FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
+        "{}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT rs.pk FROM session rs WHERE {reference} \
          UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
         x.s()
@@ -481,6 +482,7 @@ pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         name: "depth",
         kind: Kind::Number,
         values: None,
+        stored_unknown: None,
         help: "",
         sql: None,
         value_kind: None,
@@ -517,26 +519,26 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
 }
 
 pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
+    let reference = c.session_reference("l.parent_id", "id", &x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {}.pk AND l.kind = 'continuation' AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))",
+        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {}.pk AND l.kind = 'continuation' AND {reference})",
         x.s()
     ))
 }
 
 pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
+    let reference = c.session_reference("lc.id", "id", &x.value()?);
     Ok(format!(
         "EXISTS (SELECT 1 FROM link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {}.id \
-         AND l.kind = 'continuation' AND (lc.id = {e} OR lc.id LIKE {p} ESCAPE '\\'))",
+         AND l.kind = 'continuation' AND {reference})",
         x.s()
     ))
 }
 
 pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
+    let reference = c.session_reference("rs.id", "id", &x.value()?);
     Ok(format!(
-        "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT id FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
+        "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT rs.id FROM session rs WHERE {reference} \
          UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
          FROM link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
          SELECT id FROM comp)",
@@ -616,12 +618,12 @@ pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
 }
 
 pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
+    let reference = c.session_reference("lcs.id", "id", &x.value()?);
     let a = &x.scope.a;
     Ok(format!(
         "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'subagent' \
          AND lc.parent_id = {s}.id AND lc.spawning_call = {t}.call_id \
-         AND (lcs.id = {e} OR lcs.id LIKE {p} ESCAPE '\\'))",
+         AND {reference})",
         s = a.s,
         t = a.t,
     ))
@@ -640,9 +642,8 @@ fn session_id_in(
     x: &Call<'_, '_>,
     column: &str,
 ) -> Result<String, QueryError> {
-    let (e, p) = c.id_params(&x.value()?);
     let column = x.scope.a.expand(column);
-    Ok(format!("({column} = {e} OR {column} LIKE {p} ESCAPE '\\')"))
+    Ok(c.session_reference(&column, "id", &x.value()?))
 }
 
 pub(crate) fn link_parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -684,14 +685,6 @@ fn delivery_ref(
         "EXISTS (SELECT 1 FROM json_each({r}.{column}) dj WHERE instr(COALESCE(json_extract(dj.value, '$.ref'), dj.value), {p}) > 0)",
         r = x.row()
     ))
-}
-
-impl Compiler<'_> {
-    pub(super) fn id_params(&mut self, v: &str) -> (String, String) {
-        let e = self.text_param(v);
-        let p = self.text_param(&like_prefix(v));
-        (e, p)
-    }
 }
 
 /// Stored selections are output data, not scalar query operands.

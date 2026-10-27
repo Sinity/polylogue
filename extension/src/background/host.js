@@ -6,7 +6,7 @@
 // per `response_next` until `response_end`. A refusal is an `error` frame.
 
 export const HOST_NAME = "com.polylogue.browser_capture";
-const APPENDED_BYTES = 64 * 1024;
+const CHUNK_BYTES = 64 * 1024;
 
 export class HostError extends Error {
   constructor(code, status = null, message = code) {
@@ -54,9 +54,9 @@ export function exchange(runtime, method, path, body = null) {
         port.postMessage({ type: "body_end" });
         return;
       }
-      const appendedBytes = new Uint8Array(await content.slice(sent, sent + APPENDED_BYTES).arrayBuffer());
-      port.postMessage({ type: "body", sequence: Math.floor(sent / APPENDED_BYTES), data: encode(appendedBytes) });
-      sent += appendedBytes.length;
+      const chunk = new Uint8Array(await content.slice(sent, sent + CHUNK_BYTES).arrayBuffer());
+      port.postMessage({ type: "body", sequence: Math.floor(sent / CHUNK_BYTES), data: encode(chunk) });
+      sent += chunk.length;
     };
     const onMessage = (frame) => {
       if (frame?.type === "error") return finish(new HostError(frame.error));

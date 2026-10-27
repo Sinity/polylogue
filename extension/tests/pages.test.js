@@ -119,7 +119,7 @@ describe("the Gemini page script", () => {
 });
 
 describe("the shared page script", () => {
-  it("answers through a port with the facts, then the body in appended bytes", async () => {
+  it("answers through a port with the facts, then the body in chunks", async () => {
     const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
     const big = "x".repeat(5 * 1024 * 1024);
     window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
@@ -129,9 +129,9 @@ describe("the shared page script", () => {
     port.onMessage.fire({ type: "conversation" });
     await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
     expect(received[0]).toMatchObject({ type: "facts", status: 200, info: { id: "c1" }, size: big.length });
-    const appendedBytes = received.filter((m) => m.type === "appended_bytes");
-    expect(appendedBytes.length).toBe(2);
-    expect(appendedBytes.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+    const chunks = received.filter((m) => m.type === "chunk");
+    expect(chunks.length).toBe(2);
+    expect(chunks.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
   });
 
   it("tells the background when the conversation's text changes, not when the markup does", async () => {

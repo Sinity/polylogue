@@ -6,7 +6,7 @@
 import { attachmentInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
 import { loaded } from "./tabs.js";
 
-const APPENDED_BYTES = 256 * 1024;
+const CHUNK_BYTES = 256 * 1024;
 const RENEW_MS = 60_000;
 
 function base64(bytes) {
@@ -62,8 +62,8 @@ export class ChatActions {
       await this.inPage(tabId, attachmentInPage, [action.id, runId, "start", item]);
       const bytes = new Uint8Array(await (await this.host.chatAttachment(action.id, item.id)).arrayBuffer());
       if (bytes.length !== item.size) throw new Error("protocol_attachment_size_mismatch");
-      for (let at = 0; at < bytes.length; at += APPENDED_BYTES) {
-        await this.inPage(tabId, attachmentInPage, [action.id, runId, "append", item, at, base64(bytes.subarray(at, at + APPENDED_BYTES))]);
+      for (let at = 0; at < bytes.length; at += CHUNK_BYTES) {
+        await this.inPage(tabId, attachmentInPage, [action.id, runId, "append", item, at, base64(bytes.subarray(at, at + CHUNK_BYTES))]);
       }
       await this.inPage(tabId, attachmentInPage, [action.id, runId, "finish", item]);
     }
