@@ -265,8 +265,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         cursor.as_ref().map_or(ask.now, |c| c.now),
         seed,
     )?;
-    let program = polylogue_query::compile(ask.text, &opts)?;
+    let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
+    prepare_measure(reader, &mut program)?;
     let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
@@ -302,37 +303,99 @@ fn answer(
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
-        let sessions = if m.everything {
+        let (definition, _) = super::measure::find_checked(&m.what)?;
+        if let Some(paging) = definition.paging {
+            let (rows, count, next, _) = read_page(reader, program, &after, seed, question)?;
+            let session_order: std::collections::BTreeMap<_, _> = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r["id"].as_str().map(|id| (id.to_owned(), i)))
+                .collect();
+            let keys = rows.iter().filter_map(|r| r["_pk"].as_i64()).collect();
+            let selection = polylogue_store::measure::Selection {
+                sessions: Some(keys),
+                ..Default::default()
+            };
+            let data = match paging {
+                super::measure::Paging::Similar => {
+                    let mut matches = rows;
+                    for row in &mut matches {
+                        let reasons = row["reasons"].as_str().unwrap_or("[]");
+                        row["reasons"] = serde_json::from_str(reasons).map_err(|e| Failure {
+                            kind: "store".into(),
+                            message: format!("similarity reasons: {e}"),
+                            detail: None,
+                        })?;
+                        row.as_object_mut().unwrap().retain(|k, _| {
+                            matches!(k.as_str(), "session" | "reference" | "score" | "reasons")
+                        });
+                    }
+                    json!({"matches":matches,"underived_sessions":reader.underived_profiles(&Default::default())?})
+                }
+                super::measure::Paging::Sessions => {
+                    let mut data = super::measure::run(
+                        reader,
+                        &m.what,
+                        selection.sessions,
+                        program.now,
+                        day,
+                        None,
+                    )?;
+                    let sessions = if data.is_array() {
+                        data.as_array_mut()
+                    } else {
+                        data[if definition.name == "pace" {
+                            "sessions"
+                        } else {
+                            "profiles"
+                        }]
+                        .as_array_mut()
+                    };
+                    if let Some(sessions) = sessions {
+                        sessions.sort_by_key(|p| {
+                            session_order
+                                .get(p["session"].as_str().unwrap_or(""))
+                                .copied()
+                        });
+                    }
+                    if definition.name == "profiles" {
+                        let underived = data.as_array().map_or(0, |rows| {
+                            rows.iter().filter(|p| p["facts"].is_null()).count()
+                        });
+                        data = json!({"profiles":data,"underived_sessions":underived});
+                    }
+                    data
+                }
+            };
+            return Ok(
+                json!({"outcome":"measure","measure":m.what,"data":data,"count":count,"next":next,"read_at":read_at}),
+            );
+        }
+        let sessions = if m.everything
+            && !matches!(definition.name, "facets" | "correlation" | "distribution")
+        {
             None
         } else {
             let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
             Some(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
         };
-        let data = super::measure::run(reader, &m.what, sessions, program.now, day)?;
-        return Ok(json!({
-            "outcome": "measure",
-            "measure": m.what,
-            "data": data,
-            "read_at": read_at,
-        }));
+        let population = if definition.name == "facets" {
+            Some(
+                reader
+                    .query(&m.population_sql, &params)?
+                    .iter()
+                    .filter_map(|r| r["_pk"].as_i64())
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let data = super::measure::run(reader, &m.what, sessions, program.now, day, population)?;
+        return Ok(
+            json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
+        );
     }
-    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
-    let page_size = program.page_size.max(1);
-    let mut page_params = params.clone();
-    if let Some(after) = &after {
-        page_params.extend(after.iter().map(key_value));
-    }
-    // One row past the page says whether another page follows.
-    page_params.push(SqlValue::Int(
-        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
-    ));
-    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
-    let more = rows.len() as u64 > page_size;
-    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
-    let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
-        _ => None,
-    };
+    let (mut rows, count, next, without) = read_page(reader, program, &after, seed, question)?;
 
     if program.shape == Shape::Rows {
         snippets(reader, program, &mut rows)?;
@@ -386,6 +449,66 @@ fn answer(
         out["why"] = why(reader, program, &params)?;
     }
     Ok(out)
+}
+
+fn prepare_measure(reader: &Reader<'_>, program: &mut Program) -> Result<(), Failure> {
+    let Some(m) = &program.measure else {
+        return Ok(());
+    };
+    let (definition, _) = super::measure::find_checked(&m.what)?;
+    if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
+        let count = reader.query(&program.count_sql(), &values(&program.params))?;
+        if count[0]["count(*)"] != 1 {
+            return Err(Failure {
+                kind: "bad_request".into(),
+                message: "similar needs one reference session; select it with a sessions query"
+                    .into(),
+                detail: None,
+            });
+        }
+        program.sql = polylogue_store::measure::comparison::similarity_query(&program.sql);
+        program.order = vec![
+            polylogue_query::OrderKey {
+                column: "score".into(),
+                descending: true,
+            },
+            polylogue_query::OrderKey {
+                column: "session".into(),
+                descending: false,
+            },
+        ];
+    }
+    Ok(())
+}
+
+/// Row selection for ordinary queries and paged measures uses the same SQL and cursor.
+fn read_page(
+    reader: &Reader<'_>,
+    program: &Program,
+    after: &Option<Vec<Value>>,
+    seed: u64,
+    question: String,
+) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
+    let params = values(&program.params);
+    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
+    let page_size = program.page_size.max(1);
+    let mut page_params = params;
+    if let Some(after) = after {
+        page_params.extend(after.iter().map(key_value));
+    }
+    // One row past the page says whether another page follows.
+    page_params.push(SqlValue::Int(
+        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
+    ));
+    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
+    let more = rows.len() as u64 > page_size;
+    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
+    let next = match rows.last() {
+        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
+        _ => None,
+    };
+
+    Ok((rows, count, next, without))
 }
 
 /// What one read transaction read: the index generation and the

@@ -327,6 +327,7 @@ impl<'a> Compiler<'a> {
                     }
                     measure = Some(Measure {
                         what: what.clone(),
+                        population_sql: String::new(),
                         everything: wheres.is_empty(),
                     });
                 }
@@ -627,6 +628,18 @@ impl<'a> Compiler<'a> {
                 clause,
             })
             .collect();
+        if let Some(measure) = &mut measure {
+            measure.population_sql = format!(
+                "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
+                s = scope.a.s,
+                defaults = and_all(&defaults_only),
+                parameters = if self.params.is_empty() {
+                    String::new()
+                } else {
+                    format!(" AND (?{0} IS ?{0})", self.params.len())
+                }
+            );
+        }
         let why_of = format!(
             "{ctes}SELECT count(*) FROM {from} WHERE {}",
             and_all(&defaults_only)

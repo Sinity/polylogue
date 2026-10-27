@@ -345,7 +345,8 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
     for u in polylogue_query::ast::Unit::all() {
         assert!(query.help.contains(u.name()), "{}", u.name());
     }
-    let (c, v) = crate::cli::parse(&["polylogue", "measure", "daily", "tokens"]).unwrap();
+    let (c, v) =
+        crate::cli::parse(&["polylogue", "measure", "daily", "--metric", "tokens"]).unwrap();
     let r = request_json(c, &v, &cli_caller());
     assert_eq!(r["text"], "sessions | measure daily:tokens");
 }
@@ -400,7 +401,7 @@ fn chat_send_reads_attached_files_on_the_command_line() {
 fn measure_options_build_the_same_query_as_the_query_surface() {
     for (name, metric) in [
         ("facets", "deep"),
-        ("pace", "60:100:50"),
+        ("pace", "60"),
         ("outlook", "sample:linear"),
         ("correlation", "message_count:word_count"),
         ("distribution", "median_tool_call_ms"),
@@ -409,7 +410,11 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
             "polylogue",
             "measure",
             name,
-            "--metric",
+            if matches!(name, "correlation" | "distribution") {
+                "--metric"
+            } else {
+                "--option"
+            },
             metric,
             "sessions where origin:codex",
         ])
@@ -420,4 +425,21 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
             format!("sessions where origin:codex | measure {name}:{metric}")
         );
     }
+}
+
+#[test]
+fn daily_series_is_a_metric_option() {
+    let (command, values) = crate::cli::parse(&[
+        "polylogue",
+        "measure",
+        "daily",
+        "--metric",
+        "tokens",
+        "sessions where origin:codex",
+    ])
+    .unwrap();
+    assert_eq!(
+        request_json(command, &values, &cli_caller())["text"],
+        "sessions where origin:codex | measure daily:tokens"
+    );
 }

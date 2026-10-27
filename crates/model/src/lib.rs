@@ -43,6 +43,8 @@ pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
+pub mod note_sql;
+pub mod session_sql;
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};

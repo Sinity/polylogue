@@ -1,9 +1,8 @@
 //! Gaps in source message order. These describe recorded timing, not attention.
 use super::Selection;
 use crate::{Reader, Result, StoreError};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Turn {
     pub position: u64,
     pub id: String,
@@ -15,7 +14,7 @@ pub(crate) struct Turn {
 pub(crate) fn turns(conn: &rusqlite::Connection, pk: i64) -> Result<Vec<Turn>> {
     let mut statement = conn.prepare_cached(
         "SELECT id,role,at,written_by FROM message WHERE session_pk=?1 AND duplicate_of IS NULL
-        AND role IN ('user','assistant') ORDER BY order_input_id,seq,record_position,id",
+        AND written_by<>'harness' AND role IN ('user','assistant') ORDER BY order_input_id,seq,record_position,id",
     )?;
     Ok(statement
         .query_map([pk], |r| {
@@ -69,7 +68,6 @@ pub struct Pace {
     pub sessions: Vec<SessionPace>,
     pub total_gaps: usize,
     pub gaps: Vec<Gap>,
-    pub next_offset: Option<usize>,
 }
 
 /// Population standard deviation of nonnegative gaps. Ten gaps are required.
@@ -82,33 +80,20 @@ pub fn burstiness(gaps: &[f64]) -> Option<f64> {
     (sigma + mean > 0.0).then(|| (sigma - mean) / (sigma + mean))
 }
 
-/// `threshold_seconds:offset:page_size`; defaults are 60:0:100.
+/// The query cursor pages sessions; every gap of each returned session is shown.
 pub fn pace(reader: &Reader<'_>, selection: &Selection, options: &str) -> Result<Pace> {
-    let values = if options.is_empty() {
-        vec![]
+    let threshold_ms = if options.is_empty() {
+        60_000
     } else {
-        options.split(':').collect::<Vec<_>>()
+        options
+            .parse::<i64>()
+            .ok()
+            .filter(|n| *n >= 0)
+            .and_then(|n| n.checked_mul(1000))
+            .ok_or_else(|| {
+                StoreError::Invalid("pace takes a nonnegative threshold in seconds".into())
+            })?
     };
-    let invalid = || {
-        StoreError::Invalid("pace takes threshold_seconds:offset:page_size (nonnegative threshold, positive page size)".into())
-    };
-    if values.len() > 3 {
-        return Err(invalid());
-    }
-    let number = |i: usize, default: usize| {
-        values
-            .get(i)
-            .map_or(Ok(default), |v| v.parse::<usize>().map_err(|_| invalid()))
-    };
-    let threshold_ms = i64::try_from(number(0, 60)?)
-        .ok()
-        .and_then(|x| x.checked_mul(1000))
-        .ok_or_else(invalid)?;
-    let offset = number(1, 0)?;
-    let size = number(2, 100)?;
-    if size == 0 {
-        return Err(invalid());
-    }
     let (condition, params) = selection.session_condition("s.pk")?;
     let conn = reader.conn()?;
     let mut statement = conn.prepare(&format!(
@@ -184,15 +169,11 @@ pub fn pace(reader: &Reader<'_>, selection: &Selection, options: &str) -> Result
             .then(a.from_position.cmp(&b.from_position))
     });
     let total_gaps = gaps.len();
-    let end = offset.saturating_add(size).min(total_gaps);
-    let next_offset = (end < total_gaps).then_some(end);
-    let gaps = gaps.into_iter().skip(offset).take(size).collect();
     Ok(Pace {
         threshold_ms,
         sessions: reports,
         total_gaps,
         gaps,
-        next_offset,
     })
 }
 

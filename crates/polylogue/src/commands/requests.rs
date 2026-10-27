@@ -363,7 +363,7 @@ pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
 /// `measure WHAT` as the query `QUERY | measure WHAT`.
 pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
     let name = c.name.trim_start_matches("measure ");
-    let what = match v.text("metric") {
+    let what = match v.text("metric").or_else(|| v.text("option")) {
         Some(metric) => format!("{name}:{metric}"),
         None => name.to_owned(),
     };
@@ -371,7 +371,7 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
         Some(q) => format!("{q} | measure {what}"),
         None => format!("sessions | measure {what}"),
     };
-    Ok(query_request(text, None, v))
+    Ok(query_request(text, v.integer("limit"), v))
 }
 
 pub fn work(_: &Command, v: &Values, _: &Caller) -> Built {

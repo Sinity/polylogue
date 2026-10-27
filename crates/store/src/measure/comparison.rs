@@ -1,7 +1,7 @@
 //! Comparisons of explicit profile metrics and a named metadata similarity rule.
 use super::{
     Selection,
-    profiles::{self, Profile},
+    profiles::{self, Facts},
 };
 use crate::{Reader, Result, StoreError};
 use serde::Serialize;
@@ -15,6 +15,7 @@ pub struct Correlation {
     pub total_sessions: usize,
     pub sample_count: usize,
     pub missing_pairs: usize,
+    pub underived_sessions: usize,
     pub pearson_r: Option<f64>,
     pub reason: Option<&'static str>,
 }
@@ -34,10 +35,10 @@ pub fn correlation(
             profiles::METRICS.join(", ")
         )));
     }
-    let rows = reader.session_profiles(selection)?;
+    let rows = metrics(reader, selection, &[x, y])?;
     let mut pairs = vec![];
     for row in &rows {
-        if let (Some(x), Some(y)) = (profiles::metric(row, x)?, profiles::metric(row, y)?) {
+        if let (Some(x), Some(y)) = (row.values[0], row.values[1]) {
             pairs.push((x, y));
         }
     }
@@ -48,6 +49,7 @@ pub fn correlation(
         total_sessions: rows.len(),
         sample_count: pairs.len(),
         missing_pairs: rows.len() - pairs.len(),
+        underived_sessions: rows.iter().filter(|r| !r.derived).count(),
         pearson_r,
         reason,
     })
@@ -88,95 +90,100 @@ pub fn pearson(pairs: &[(f64, f64)]) -> (Option<f64>, Option<&'static str>) {
     )
 }
 
+/// Metadata similarity reads no message bodies, usage or parent histories.
+/// The application pages this statement using Program's existing order keys.
+pub fn similarity_query(reference_sql: &str) -> String {
+    let tags = super::facets::tags_sql();
+    let first = polylogue_model::session_sql::first("s");
+    format!("WITH reference AS (SELECT _pk FROM ({reference_sql})),
+        tags AS MATERIALIZED ({tags}),
+        metadata AS MATERIALIZED (
+            SELECT s.pk,s.id,s.origin,p.workflow_shape,
+              {first} AS first_at,
+              p.session_pk IS NULL AS underived,
+              sum(p.session_pk IS NULL) OVER() AS underived_sessions
+            FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk
+            ),
+        scores AS (
+            SELECT m.pk AS _pk,m.id AS session,r.id AS reference,m.underived_sessions AS _underived,
+              CASE WHEN r.workflow_shape<>'unknown' AND r.workflow_shape=m.workflow_shape THEN 3 ELSE 0 END AS shape_points,
+              (r.origin=m.origin) AS origin_points,
+              CASE WHEN abs((r.first_at/86400000-(r.first_at<0 AND r.first_at%86400000<>0))-(m.first_at/86400000-(m.first_at<0 AND m.first_at%86400000<>0)))<=3 THEN 2
+                   WHEN abs((r.first_at/86400000-(r.first_at<0 AND r.first_at%86400000<>0))-(m.first_at/86400000-(m.first_at<0 AND m.first_at%86400000<>0)))<=14 THEN 1 ELSE 0 END AS time_points,
+              (SELECT count(*) FROM tags a JOIN tags b ON a.value=b.value WHERE a.pk=r.pk AND b.pk=m.pk) AS tag_points
+            FROM metadata m CROSS JOIN metadata r WHERE r.pk IN (SELECT _pk FROM reference) AND m.pk<>r.pk)
+        SELECT *,shape_points+origin_points+time_points+tag_points AS score,
+          (SELECT json_group_array(value) FROM json_each(json_array(
+            CASE WHEN shape_points>0 THEN 'same workflow shape (+3)' END,
+            CASE WHEN origin_points>0 THEN 'same origin (+1)' END,
+            CASE WHEN time_points=2 THEN 'within 3 UTC days (+2)' WHEN time_points=1 THEN 'within 14 UTC days (+1)' END,
+            CASE WHEN tag_points>0 THEN tag_points || ' shared tags (+' || tag_points || ')' END)) WHERE value IS NOT NULL) AS reasons
+        FROM scores WHERE score>0")
+}
+
 #[derive(Debug, Serialize)]
-pub struct Similarity {
-    pub reference: String,
+pub struct ComparedSession {
     pub session: String,
-    pub score: u64,
-    pub reasons: Vec<String>,
-}
-
-pub fn similarity(reference: &Profile, other: &Profile) -> Option<Similarity> {
-    if reference.session == other.session {
-        return None;
-    }
-    let mut score = 0;
-    let mut reasons = vec![];
-    if reference.facts.workflow_shape != "unknown"
-        && reference.facts.workflow_shape == other.facts.workflow_shape
-    {
-        score += 3;
-        reasons.push("same workflow shape (+3)".into());
-    }
-    if reference.origin == other.origin {
-        score += 1;
-        reasons.push("same origin (+1)".into());
-    }
-    if let (Some(a), Some(b)) = (reference.facts.first_at, other.facts.first_at) {
-        let days = a.div_euclid(86_400_000).abs_diff(b.div_euclid(86_400_000));
-        if days <= 14 {
-            let points = if days <= 3 { 2 } else { 1 };
-            score += points;
-            reasons.push(format!(
-                "within {} UTC days (+{points})",
-                if days <= 3 { 3 } else { 14 }
-            ));
-        }
-    }
-    let common: std::collections::BTreeSet<_> = reference
-        .tags
-        .iter()
-        .filter(|tag| other.tags.contains(tag))
-        .collect();
-    if !common.is_empty() {
-        score += common.len() as u64;
-        reasons.push(format!("{} shared tags (+{})", common.len(), common.len()));
-    }
-    (score > 0).then(|| Similarity {
-        reference: reference.session.clone(),
-        session: other.session.clone(),
-        score,
-        reasons,
-    })
-}
-
-/// One reference session compared with every other profile in the archive.
-pub fn similar(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<Similarity>> {
-    let references = reader.session_profiles(selection)?;
-    if references.len() != 1 {
-        return Err(StoreError::Invalid(
-            "similar needs one reference session; select it with a sessions query".into(),
-        ));
-    }
-    let mut matches: Vec<_> = reader
-        .session_profiles(&Selection::default())?
-        .iter()
-        .filter_map(|other| similarity(&references[0], other))
-        .collect();
-    matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.session.cmp(&b.session)));
-    Ok(matches)
+    pub origin: String,
+    pub facts: Option<Facts>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Comparison {
-    pub profiles: Vec<Profile>,
+    pub profiles: Vec<ComparedSession>,
     pub differences: BTreeMap<String, Vec<Value>>,
+    pub underived_sessions: usize,
 }
 
 pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison> {
-    let profiles = reader.session_profiles(selection)?;
+    let (condition, params) = selection.session_condition("s.pk")?;
+    let conn = reader.conn()?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT s.pk,s.id,s.origin FROM session s WHERE {condition} ORDER BY s.id"
+    ))?;
+    let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut profiles = vec![];
+    for row in rows {
+        let (pk, session, origin) = row?;
+        profiles.push(ComparedSession {
+            session,
+            origin,
+            facts: profiles::facts(conn, pk)?,
+        });
+    }
     let mut differences = BTreeMap::new();
-    for field in ["origin", "workflow_shape", "terminal_state"]
+    // Costs are read only when explicitly selected as a metric. A comparison
+    // of structural facts needs neither pricing nor parent message history.
+    for field in ["origin", "workflow_shape", "final_observed_state"]
         .into_iter()
-        .chain(profiles::METRICS.iter().copied())
+        .chain(
+            profiles::METRICS
+                .iter()
+                .copied()
+                .filter(|m| *m != "cost_usd"),
+        )
     {
         let mut values = BTreeMap::new();
         for profile in &profiles {
             let value = match field {
                 "origin" => Value::String(profile.origin.clone()),
-                "workflow_shape" => Value::String(profile.facts.workflow_shape.clone()),
-                "terminal_state" => Value::String(profile.facts.terminal_state.clone()),
-                _ => serde_json::to_value(profiles::metric(profile, field)?)?,
+                "workflow_shape" => profile
+                    .facts
+                    .as_ref()
+                    .map(|p| Value::String(p.workflow_shape.clone()))
+                    .unwrap_or(Value::Null),
+                "final_observed_state" => profile
+                    .facts
+                    .as_ref()
+                    .map(|p| Value::String(p.final_observed_state.clone()))
+                    .unwrap_or(Value::Null),
+                _ => serde_json::to_value(profiles::metric(profile.facts.as_ref(), None, field)?)?,
             };
             values.entry(value.to_string()).or_insert(value);
         }
@@ -184,9 +191,69 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
             differences.insert(field.into(), values.into_values().collect());
         }
     }
+    let underived_sessions = profiles.iter().filter(|p| p.facts.is_none()).count();
     Ok(Comparison {
         profiles,
         differences,
+        underived_sessions,
+    })
+}
+
+struct Metrics {
+    derived: bool,
+    values: Vec<Option<f64>>,
+}
+
+fn metrics(reader: &Reader<'_>, selection: &Selection, names: &[&str]) -> Result<Vec<Metrics>> {
+    let (condition, params) = selection.session_condition("s.pk")?;
+    let columns: Vec<_> = names
+        .iter()
+        .map(|name| metric_sql(name))
+        .collect::<Result<_>>()?;
+    let sql = format!(
+        "SELECT s.pk,p.session_pk IS NOT NULL,{} FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk LEFT JOIN session_survival ss ON ss.session_pk=s.pk WHERE {condition}",
+        columns.join(",")
+    );
+    let conn = reader.conn()?;
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+    let mut result = vec![];
+    while let Some(row) = rows.next()? {
+        let mut values = vec![];
+        for (i, name) in names.iter().enumerate() {
+            values.push(if *name == "cost_usd" {
+                let own = super::usage::own_session(reader, row.get(0)?)?;
+                (own.api_cost.unpriced_messages == 0 && !own.api_cost.response_total_unknown)
+                    .then_some(own.api_cost.known_usd)
+                    .flatten()
+            } else {
+                row.get(i + 2)?
+            });
+        }
+        result.push(Metrics {
+            derived: row.get(1)?,
+            values,
+        });
+    }
+    Ok(result)
+}
+
+fn metric_sql(name: &str) -> Result<String> {
+    if !profiles::METRICS.contains(&name) {
+        return Err(StoreError::Invalid(format!(
+            "unknown profile metric `{name}`"
+        )));
+    }
+    Ok(match name {
+        "cost_usd" => "NULL".into(),
+        "median_tool_call_ms" => "p.tool_latency_median_ms".into(),
+        "median_agent_response_ms" => "p.agent_response_latency_median_ms".into(),
+        "median_user_response_ms" => "p.user_response_latency_median_ms".into(),
+        "wall_duration_ms" => format!(
+            "CASE WHEN p.session_pk IS NOT NULL THEN {} END",
+            polylogue_model::session_sql::wall_duration("s")
+        ),
+        _ => format!("p.{name}"),
     })
 }
 
@@ -196,6 +263,7 @@ pub struct Distribution {
     pub total_sessions: usize,
     pub measured_sessions: usize,
     pub missing_sessions: usize,
+    pub underived_sessions: usize,
     pub median: Option<f64>,
     pub p90: Option<f64>,
     pub max: Option<f64>,
@@ -211,10 +279,10 @@ pub fn distribution(
             "unknown profile metric `{name}`"
         )));
     }
-    let rows = reader.session_profiles(selection)?;
+    let rows = metrics(reader, selection, &[name])?;
     let mut values = vec![];
     for row in &rows {
-        if let Some(value) = profiles::metric(row, name)? {
+        if let Some(value) = row.values[0] {
             values.push(value);
         }
     }
@@ -232,6 +300,7 @@ pub fn distribution(
         total_sessions: rows.len(),
         measured_sessions: n,
         missing_sessions: rows.len() - n,
+        underived_sessions: rows.iter().filter(|r| !r.derived).count(),
         median,
         p90: if n == 0 {
             None

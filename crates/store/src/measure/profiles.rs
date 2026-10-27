@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const CLUSTER_GAP_MS: i64 = 300_000;
-pub const RULE_VERSION: i64 = 1;
+pub const RULE_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Latency {
@@ -39,8 +39,6 @@ pub(crate) fn latency(mut values: Vec<i64>) -> Latency {
 pub struct Facts {
     pub rule_version: i64,
     pub cluster_gap_ms: i64,
-    pub topic: Option<String>,
-    pub topic_source: String,
     pub first_at: Option<i64>,
     pub last_at: Option<i64>,
     pub timestamp_source: String,
@@ -52,20 +50,20 @@ pub struct Facts {
     pub total_duration_ms: Option<i64>,
     pub thinking_count: u64,
     pub wall_duration_ms: Option<i64>,
-    pub engaged_duration_ms: i64,
+    pub message_clustered_duration_ms: i64,
     pub tool_active_duration_ms: i64,
     pub tool_latency: Latency,
     pub agent_response_latency: Latency,
     pub user_response_latency: Latency,
-    pub stuck_tool_count: u64,
+    pub unpaired_tools_past_gap: u64,
     pub tools: Vec<String>,
     pub tool_call_count: u64,
     pub actions: BTreeMap<String, u64>,
     pub workflow_shape: String,
     pub workflow_features: BTreeMap<String, f64>,
-    pub terminal_state: String,
-    pub terminal_state_method: String,
-    pub terminal_message: Option<String>,
+    pub final_observed_state: String,
+    pub final_observed_state_method: String,
+    pub final_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,8 +144,8 @@ pub struct Profile {
     pub repositories: Vec<Repository>,
     pub working_directories: Vec<String>,
     pub tags: Vec<String>,
-    pub facts: Facts,
-    pub usage: Option<Usage>,
+    pub facts: Option<Facts>,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,9 +159,10 @@ fn usage(reader: &Reader<'_>, pk: i64, session: &str) -> Result<Usage> {
     let id = polylogue_model::SessionId::parse(session)
         .map_err(|e| StoreError::Invalid(e.to_string()))?;
     let own = super::usage::own_session(reader, pk)?;
-    let parents = reader.select_messages(&id, true)?.parents().clone();
+    let selected = reader.select_messages(&id, true)?;
+    let parents = selected.parents().clone();
     let with_parents = if parents.complete {
-        Some(super::usage::with_parents(reader, &id, &own)?)
+        Some(super::usage::with_keys(reader, &selected.keys()?, &own)?)
     } else {
         None
     };
@@ -175,37 +174,34 @@ fn usage(reader: &Reader<'_>, pk: i64, session: &str) -> Result<Usage> {
 }
 
 impl Reader<'_> {
+    pub fn underived_profiles(&self, selection: &Selection) -> Result<u64> {
+        let (condition, params) = selection.session_condition("s.pk")?;
+        Ok(self.conn()?.query_row(&format!("SELECT count(*) FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} AND p.session_pk IS NULL"),rusqlite::params_from_iter(params.iter()),|r|r.get(0))?)
+    }
+
     pub fn session_profiles(&self, selection: &Selection) -> Result<Vec<Profile>> {
         let (condition, params) = selection.session_condition("s.pk")?;
         let conn = self.conn()?;
         let mut statement = conn.prepare(&format!(
-            "SELECT s.pk,s.id,s.title,s.origin,s.harness,p.facts FROM session s
-            LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} ORDER BY s.id"
+            "SELECT s.pk,s.id,coalesce(s.title,s.derived_title),s.origin,s.harness FROM session s
+            WHERE {condition} ORDER BY s.id"
         ))?;
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         let mut result = vec![];
         while let Some(row) = rows.next()? {
             let session: String = row.get(1)?;
-            let encoded: Option<String> = row.get(5)?;
-            let encoded = encoded.ok_or_else(|| {
-                StoreError::Invalid(format!("session profile not derived for {session}"))
-            })?;
-            let mut tags = conn.prepare(&format!(
+            let mut tags = conn.prepare_cached(&format!(
                 "SELECT value FROM ({}) WHERE pk=?1 AND value IS NOT NULL ORDER BY value",
-                super::facets::TAGS
+                super::facets::tags_sql()
             ))?;
             let (repositories, working_directories) = repositories(conn, row.get(0)?)?;
             result.push(Profile {session:session.clone(),title:row.get(2)?,origin:row.get(3)?,harness:row.get(4)?,repositories,working_directories,
                 tags:tags.query_map([row.get::<_,i64>(0)?],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?,
                 primary_model:conn.query_row("SELECT model FROM message WHERE session_pk=?1 AND role='assistant' AND written_by='model' AND model IS NOT NULL GROUP BY model ORDER BY sum(output_tokens) DESC NULLS LAST,count(*) DESC,model LIMIT 1",[row.get::<_,i64>(0)?],|r|r.get(0)).optional()?,
-                facts:serde_json::from_str(&encoded)?,usage:Some(usage(self, row.get(0)?, &session)?)});
+                facts:facts(conn,row.get(0)?)?,usage:usage(self, row.get(0)?, &session)?});
         }
         Ok(result)
     }
-}
-
-pub fn profiles(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<Profile>> {
-    reader.session_profiles(selection)
 }
 
 /// Every numeric metric the comparison calculations accept.
@@ -217,7 +213,7 @@ pub const METRICS: &[&str] = &[
     "total_duration_ms",
     "tool_call_count",
     "wall_duration_ms",
-    "engaged_duration_ms",
+    "message_clustered_duration_ms",
     "tool_active_duration_ms",
     "median_tool_call_ms",
     "median_agent_response_ms",
@@ -225,8 +221,19 @@ pub const METRICS: &[&str] = &[
     "cost_usd",
 ];
 
-pub fn metric(profile: &Profile, name: &str) -> Result<Option<f64>> {
-    let p = &profile.facts;
+pub fn metric(p: Option<&Facts>, cost: Option<f64>, name: &str) -> Result<Option<f64>> {
+    if !METRICS.contains(&name) {
+        return Err(StoreError::Invalid(format!(
+            "unknown profile metric `{name}`: {}",
+            METRICS.join(", ")
+        )));
+    }
+    if name == "cost_usd" {
+        return Ok(cost);
+    }
+    let Some(p) = p else {
+        return Ok(None);
+    };
     Ok(match name {
         "message_count" => Some(p.message_count as f64),
         "word_count" => Some(p.word_count as f64),
@@ -235,17 +242,11 @@ pub fn metric(profile: &Profile, name: &str) -> Result<Option<f64>> {
         "thinking_count" => Some(p.thinking_count as f64),
         "tool_call_count" => Some(p.tool_call_count as f64),
         "wall_duration_ms" => p.wall_duration_ms.map(|x| x as f64),
-        "engaged_duration_ms" => Some(p.engaged_duration_ms as f64),
+        "message_clustered_duration_ms" => Some(p.message_clustered_duration_ms as f64),
         "tool_active_duration_ms" => Some(p.tool_active_duration_ms as f64),
         "median_tool_call_ms" => p.tool_latency.median_ms.map(|x| x as f64),
         "median_agent_response_ms" => p.agent_response_latency.median_ms.map(|x| x as f64),
         "median_user_response_ms" => p.user_response_latency.median_ms.map(|x| x as f64),
-        "cost_usd" => profile.usage.as_ref().and_then(|u| {
-            let m = &u.own.api_cost;
-            (m.unpriced_messages == 0 && !m.response_total_unknown)
-                .then_some(m.known_usd)
-                .flatten()
-        }),
         _ => {
             return Err(StoreError::Invalid(format!(
                 "unknown profile metric `{name}`: {}",
@@ -253,6 +254,120 @@ pub fn metric(profile: &Profile, name: &str) -> Result<Option<f64>> {
             )));
         }
     })
+}
+
+pub(crate) fn bounds(
+    conn: &rusqlite::Connection,
+    pk: i64,
+) -> Result<(Option<i64>, Option<i64>, String)> {
+    Ok(conn.query_row(
+        &format!(
+            "SELECT {},{},{} FROM session s WHERE s.pk=?1",
+            polylogue_model::session_sql::first("s"),
+            polylogue_model::session_sql::last("s"),
+            polylogue_model::session_sql::source("s")
+        ),
+        [pk],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?)
+}
+
+pub(crate) fn write_facts(conn: &rusqlite::Connection, pk: i64, facts: &Facts) -> Result<()> {
+    conn.prepare_cached("INSERT OR REPLACE INTO session_profile(session_pk,rule_version,cluster_gap_ms,timestamped_messages,message_count,word_count,substantive_count,compaction_count,total_duration_ms,thinking_count,message_clustered_duration_ms,tool_active_duration_ms,tool_latency_measured_pairs,tool_latency_median_ms,tool_latency_p90_ms,tool_latency_max_ms,agent_response_latency_measured_pairs,agent_response_latency_median_ms,agent_response_latency_p90_ms,agent_response_latency_max_ms,user_response_latency_measured_pairs,user_response_latency_median_ms,user_response_latency_p90_ms,user_response_latency_max_ms,unpaired_tools_past_gap,tools,tool_call_count,actions,workflow_shape,workflow_features,final_observed_state,final_observed_state_method,final_message) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)")?.execute(rusqlite::params![pk,
+        facts.rule_version,
+        facts.cluster_gap_ms,
+        facts.timestamped_messages,
+        facts.message_count,
+        facts.word_count,
+        facts.substantive_count,
+        facts.compaction_count,
+        facts.total_duration_ms,
+        facts.thinking_count,
+        facts.message_clustered_duration_ms,
+        facts.tool_active_duration_ms,
+        facts.tool_latency.measured_pairs,
+        facts.tool_latency.median_ms,
+        facts.tool_latency.p90_ms,
+        facts.tool_latency.max_ms,
+        facts.agent_response_latency.measured_pairs,
+        facts.agent_response_latency.median_ms,
+        facts.agent_response_latency.p90_ms,
+        facts.agent_response_latency.max_ms,
+        facts.user_response_latency.measured_pairs,
+        facts.user_response_latency.median_ms,
+        facts.user_response_latency.p90_ms,
+        facts.user_response_latency.max_ms,
+        facts.unpaired_tools_past_gap,
+        serde_json::to_string(&facts.tools)?,
+        facts.tool_call_count,
+        serde_json::to_string(&facts.actions)?,
+        facts.workflow_shape,
+        serde_json::to_string(&facts.workflow_features)?,
+        facts.final_observed_state,
+        facts.final_observed_state_method,
+        facts.final_message,
+    ])?;
+    Ok(())
+}
+
+pub(crate) fn facts(conn: &rusqlite::Connection, pk: i64) -> Result<Option<Facts>> {
+    let raw = conn.prepare_cached("SELECT rule_version,cluster_gap_ms,timestamped_messages,message_count,word_count,substantive_count,compaction_count,total_duration_ms,thinking_count,message_clustered_duration_ms,tool_active_duration_ms,tool_latency_measured_pairs,tool_latency_median_ms,tool_latency_p90_ms,tool_latency_max_ms,agent_response_latency_measured_pairs,agent_response_latency_median_ms,agent_response_latency_p90_ms,agent_response_latency_max_ms,user_response_latency_measured_pairs,user_response_latency_median_ms,user_response_latency_p90_ms,user_response_latency_max_ms,unpaired_tools_past_gap,tools,tool_call_count,actions,workflow_shape,workflow_features,final_observed_state,final_observed_state_method,final_message FROM session_profile WHERE session_pk=?1")?
+        .query_row([pk], |r| Ok((Facts {
+            rule_version: r.get(0)?,
+            cluster_gap_ms: r.get(1)?,
+            first_at: None,
+            last_at: None,
+            timestamp_source: String::new(),
+            timestamped_messages: r.get(2)?,
+            message_count: r.get(3)?,
+            word_count: r.get(4)?,
+            substantive_count: r.get(5)?,
+            compaction_count: r.get(6)?,
+            total_duration_ms: r.get(7)?,
+            thinking_count: r.get(8)?,
+            wall_duration_ms: None,
+            message_clustered_duration_ms: r.get(9)?,
+            tool_active_duration_ms: r.get(10)?,
+            tool_latency: Latency {
+                measured_pairs: r.get(11)?,
+                median_ms: r.get(12)?,
+                p90_ms: r.get(13)?,
+                max_ms: r.get(14)?,
+            },
+            agent_response_latency: Latency {
+                measured_pairs: r.get(15)?,
+                median_ms: r.get(16)?,
+                p90_ms: r.get(17)?,
+                max_ms: r.get(18)?,
+            },
+            user_response_latency: Latency {
+                measured_pairs: r.get(19)?,
+                median_ms: r.get(20)?,
+                p90_ms: r.get(21)?,
+                max_ms: r.get(22)?,
+            },
+            unpaired_tools_past_gap: r.get(23)?,
+            tools: Default::default(),
+            tool_call_count: r.get(25)?,
+            actions: Default::default(),
+            workflow_shape: r.get(27)?,
+            workflow_features: Default::default(),
+            final_observed_state: r.get(29)?,
+            final_observed_state_method: r.get(30)?,
+            final_message: r.get(31)?,
+        }, r.get::<_,String>(24)?,r.get::<_,String>(26)?,r.get::<_,String>(28)?))).optional()?;
+    let Some((mut facts, tools, actions, features)) = raw else {
+        return Ok(None);
+    };
+    facts.tools = serde_json::from_str(&tools)?;
+    facts.actions = serde_json::from_str(&actions)?;
+    facts.workflow_features = serde_json::from_str(&features)?;
+    let (first, last, source) = bounds(conn, pk)?;
+    facts.first_at = first;
+    facts.last_at = last;
+    facts.timestamp_source = source;
+    facts.wall_duration_ms = first.zip(last).map(|(a, b)| (b - a).max(0));
+    Ok(Some(facts))
 }
 
 #[cfg(test)]

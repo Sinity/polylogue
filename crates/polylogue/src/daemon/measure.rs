@@ -13,13 +13,20 @@ use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, t
 use serde::Serialize;
 use serde_json::Value;
 
+#[derive(Clone, Copy)]
+pub enum Paging {
+    Sessions,
+    Similar,
+}
+
 pub struct Measure {
     /// The name after `| measure` and `polylogue measure`.
     pub name: &'static str,
     pub help: &'static str,
     /// Covers every session: refused after conditions.
     pub whole_archive: bool,
-    /// Optional colon-separated arguments, also exposed as --metric.
+    pub paging: Option<Paging>,
+    /// Optional colon-separated arguments, also exposed as --option.
     pub argument: Option<&'static str>,
     /// Closed series choices, for measures such as daily:tokens.
     pub metrics: &'static [&'static str],
@@ -33,7 +40,7 @@ pub struct Run<'a> {
     pub selection: Selection,
     pub now: i64,
     pub day: &'a LogicalDay,
-    /// The series, for a measure that takes one.
+    /// The measure's series or named options.
     pub metric: &'a str,
 }
 
@@ -46,6 +53,7 @@ pub static MEASURES: &[Measure] = &[
         name: "facets",
         help: "Selected and global session frequencies with IDF; optional basic, deep, no-idf or deep-no-idf",
         whole_archive: false,
+        paging: None,
         argument: Some("options"),
         metrics: &[],
         run: |r, x| json(measure::facets::facets(r, &x.selection, x.metric)),
@@ -53,8 +61,9 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "outlook",
-        help: "Billing estimate from cost.plans: plan_name:method (linear, trailing-7d-mean, eom-naive); no configured plan means no outlook",
+        help: "Billing estimate from cost.plans: plan_name:method (linear, trailing-7d-mean); no configured plan means no outlook",
         whole_archive: false,
+        paging: None,
         argument: Some("plan_name:method"),
         metrics: &[],
         run: |r, x| {
@@ -70,9 +79,10 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "pace",
-        help: "Observed turn gaps and Goh–Barabási coefficient B = (σ − μ) / (σ + μ) of consecutive user-message gaps (at least 10 gaps); threshold_seconds:offset:page_size defaults to 60:0:100",
+        help: "Observed authored turn gaps and burstiness of consecutive user-message gaps (at least 10 gaps); threshold_seconds defaults to 60; query cursor pages sessions",
         whole_archive: false,
-        argument: Some("threshold_seconds:offset:page_size"),
+        paging: Some(Paging::Sessions),
+        argument: Some("threshold_seconds"),
         metrics: &[],
         run: |r, x| json(measure::pace::pace(r, &x.selection, x.metric)),
         text: text::json,
@@ -81,15 +91,17 @@ pub static MEASURES: &[Measure] = &[
         name: "profiles",
         help: "Session facts, timing sources, workflow shape, final observed state and own/with-parents usage",
         whole_archive: false,
+        paging: Some(Paging::Sessions),
         argument: None,
         metrics: &[],
-        run: |r, x| json(measure::profiles::profiles(r, &x.selection)),
+        run: |r, x| json(r.session_profiles(&x.selection)),
         text: text::json,
     },
     Measure {
         name: "compare",
         help: "Selected profiles and their varying fields",
         whole_archive: false,
+        paging: Some(Paging::Sessions),
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::comparison::compare(r, &x.selection)),
@@ -99,15 +111,21 @@ pub static MEASURES: &[Measure] = &[
         name: "similar",
         help: "One selected reference session compared by metadata with every other session in the archive",
         whole_archive: false,
+        paging: Some(Paging::Similar),
         argument: None,
         metrics: &[],
-        run: |r, x| json(measure::comparison::similar(r, &x.selection)),
+        run: |_, _| {
+            Err(polylogue_store::StoreError::Invalid(
+                "similar requires query paging".into(),
+            ))
+        },
         text: text::json,
     },
     Measure {
         name: "correlation",
         help: "Pearson correlation of profile metric_x:metric_y, with measured and missing pair counts",
         whole_archive: false,
+        paging: None,
         argument: Some("metric_x:metric_y"),
         metrics: &[],
         run: |r, x| json(measure::comparison::correlation(r, &x.selection, x.metric)),
@@ -117,6 +135,7 @@ pub static MEASURES: &[Measure] = &[
         name: "distribution",
         help: "Profile metric distribution, with selected and measured session counts",
         whole_archive: false,
+        paging: None,
         argument: Some("metric"),
         metrics: &[],
         run: |r, x| json(measure::comparison::distribution(r, &x.selection, x.metric)),
@@ -126,6 +145,7 @@ pub static MEASURES: &[Measure] = &[
         name: "usage",
         help: "Tokens by kind and cost by model, over a sessions query or everything",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::usage(r, &x.selection)),
@@ -135,6 +155,7 @@ pub static MEASURES: &[Measure] = &[
         name: "sessions",
         help: "Each session's tokens and cost, own (its own responses) and with_parents (what it shows, inherited responses included)",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::sessions(r, &x.selection)),
@@ -144,6 +165,7 @@ pub static MEASURES: &[Measure] = &[
         name: "quota",
         help: "The 5-hour and weekly subscription windows: burn and forecast",
         whole_archive: true,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| {
@@ -159,6 +181,7 @@ pub static MEASURES: &[Measure] = &[
         name: "outcomes",
         help: "Tool outcomes: ok, error, no result and unknown, never one rate",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::outcomes(r, &x.selection)),
@@ -168,6 +191,7 @@ pub static MEASURES: &[Measure] = &[
         name: "failing",
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::failing_commands(r, &x.selection)),
@@ -177,6 +201,7 @@ pub static MEASURES: &[Measure] = &[
         name: "drift",
         help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
         whole_archive: true,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, _| json(drift::drift(r)),
@@ -186,6 +211,7 @@ pub static MEASURES: &[Measure] = &[
         name: "unanswered",
         help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::unanswered_end(r, &x.selection, x.now)),
@@ -195,6 +221,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival",
         help: "Time to a session's first failed tool call, in minutes (Kaplan-Meier)",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, false)),
@@ -204,6 +231,7 @@ pub static MEASURES: &[Measure] = &[
         name: "survival-turns",
         help: "Time to a session's first failed tool call, in human prompts (Kaplan-Meier)",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, true)),
@@ -213,6 +241,7 @@ pub static MEASURES: &[Measure] = &[
         name: "daily",
         help: "A daily series with its 7-day baseline and level changes",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: daily::DAILY_METRICS,
         run: |r, x| json(daily::daily(r, &x.selection, x.metric, x.day)),
@@ -222,6 +251,7 @@ pub static MEASURES: &[Measure] = &[
         name: "process",
         help: "Which tool call follows which, and what follows a failure",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::process(r, &x.selection, 20)),
@@ -231,6 +261,7 @@ pub static MEASURES: &[Measure] = &[
         name: "rhythm",
         help: "Prompts by weekday and hour",
         whole_archive: false,
+        paging: None,
         argument: None,
         metrics: &[],
         run: |r, x| json(daily::rhythm(r, &x.selection, x.day)),
@@ -266,13 +297,9 @@ pub fn run(
     sessions: Option<Vec<i64>>,
     now: i64,
     day: &LogicalDay,
+    population: Option<Vec<i64>>,
 ) -> Result<Value, Failure> {
-    let Some((m, metric)) = find(what) else {
-        return Err(bad_request(format!("no measurement `{what}`: {}", names())));
-    };
-    if m.argument.is_none() && m.metrics.is_empty() && !metric.is_empty() {
-        return Err(bad_request(format!("{} takes no arguments", m.name)));
-    }
+    let (m, metric) = find_checked(what)?;
     if m.whole_archive && sessions.is_some() {
         return Err(bad_request(format!(
             "{0} covers every session; measure it without conditions (`sessions | measure {0}`)",
@@ -282,6 +309,7 @@ pub fn run(
     let run = Run {
         selection: Selection {
             sessions,
+            population,
             ..Selection::default()
         },
         now,
@@ -297,4 +325,14 @@ fn bad_request(message: String) -> Failure {
         message,
         detail: None,
     }
+}
+
+pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {
+    let Some((m, metric)) = find(what) else {
+        return Err(bad_request(format!("no measurement `{what}`: {}", names())));
+    };
+    if m.argument.is_none() && m.metrics.is_empty() && !metric.is_empty() {
+        return Err(bad_request(format!("{} takes no arguments", m.name)));
+    }
+    Ok((m, metric))
 }

@@ -4,78 +4,54 @@ use crate::{
     Result,
     measure::profiles::{CLUSTER_GAP_MS, Facts, RULE_VERSION, latency},
 };
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "profile",
     version: Version::Rules(RULE_VERSION),
-    after: &["duplicates", "session", "repository", "tool_calls"],
+    after: &[
+        "duplicates",
+        "session",
+        "repository",
+        "tool_calls",
+        "title",
+        "session_survival",
+    ],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
 };
 
 fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
-    let mut statement=tx.prepare_cached("SELECT pk,id,role,written_by,prompt_kind,at,words,stop_reason,duration_ms FROM message
+    let mut statement=tx.prepare_cached("SELECT pk,id,role,written_by,at,words,stop_reason,duration_ms FROM message
         WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY order_input_id,seq,record_position,id")?;
     let messages = statement
         .query_map([pk], |r| {
             Ok(Message {
-                pk: r.get(0)?,
-                id: r.get(1)?,
                 role: r.get(2)?,
                 author: r.get(3)?,
-                prompt: r.get(4)?,
-                at: r.get(5)?,
-                words: r.get::<_, i64>(6)? as u64,
-                stop: r.get(7)?,
-                duration: r.get(8)?,
+                at: r.get(4)?,
+                words: r.get::<_, i64>(5)? as u64,
+                duration: r.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let times: Vec<i64> = messages.iter().filter_map(|m| m.at).collect();
-    let (start, last, title, origin, repo): (
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-        String,
-        Option<String>,
-    ) = tx.query_row(
-        "SELECT started_at,last_activity_at,title,origin,repo FROM session WHERE pk=?1",
-        [pk],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    )?;
-    let event_times = tx
-        .prepare_cached(
+    let (first_at, last_at, source) = crate::measure::profiles::bounds(tx, pk)?;
+    let event_times = if times.is_empty() {
+        tx.prepare_cached(
             "SELECT at FROM event WHERE session_pk=?1 AND at IS NOT NULL ORDER BY at,id",
         )?
         .query_map([pk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let (first_at, last_at, source) = if !times.is_empty() {
-        (
-            times.iter().min().copied(),
-            times.iter().max().copied(),
-            "provider_supplied",
-        )
-    } else if !event_times.is_empty() {
-        (
-            event_times.first().copied(),
-            event_times.last().copied(),
-            "session_events_fallback",
-        )
-    } else if start.is_some() || last.is_some() {
-        (start.or(last), last.or(start), "session_timestamp_fallback")
+        .collect::<rusqlite::Result<Vec<_>>>()?
     } else {
-        (None, None, "absent")
+        vec![]
     };
     let clustered = clustered(if times.is_empty() {
         &event_times
     } else {
         &times
     });
-    let authors: BTreeMap<i64, &Message> = messages.iter().map(|m| (m.pk, m)).collect();
-    let mut prompt_text = BTreeMap::<i64, String>::new();
-    let mut tool_messages = BTreeSet::new();
     let mut thinking_messages = BTreeSet::new();
     let mut kinds = tx.prepare_cached("SELECT DISTINCT b.message_pk,b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.session_pk=?1 AND m.duplicate_of IS NULL")?;
     for row in kinds.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
@@ -83,95 +59,20 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         if kind == "thinking" {
             thinking_messages.insert(message);
         }
-        if matches!(kind.as_str(), "tool_call" | "tool_result") {
-            tool_messages.insert(message);
-        }
     }
-    let mut topic = None;
-    let mut last_text = None;
-    let mut masker = polylogue_model::masking::MessageMasker::default();
-    // Unmarked tool output cannot change masking state. Read only authored
-    // prose and messages whose PEM markers can affect the following prose.
-    let mut text_blocks=tx.prepare_cached("SELECT b.pk,b.message_pk FROM message m JOIN block b ON b.message_pk=m.pk
-        WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND
-          (m.pem<>0 OR (b.kind='text' AND m.role IN ('user','assistant') AND m.written_by<>'harness'))
-        ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx")?;
-    let mut text_rows = text_blocks.query([pk])?;
-    while let Some(row) = text_rows.next()? {
-        let message_pk: i64 = row.get(1)?;
-        let mut block = crate::ordered_blocks::one(tx, row.get(0)?)?;
-        masker.block(&mut block);
-        if let polylogue_model::Block::Text { text } = &block
-            && let Some(m) = authors.get(&message_pk)
-            && !text.trim().is_empty()
-            && m.eligible()
-        {
-            last_text = Some(*m);
-            prompt_text.entry(message_pk).or_default().push_str(text);
-        }
-    }
-    let substantive = |m: &&Message| {
-        m.eligible()
-            && !tool_messages.contains(&m.pk)
-            && !thinking_messages.contains(&m.pk)
-            && prompt_text
-                .get(&m.pk)
-                .is_some_and(|s| s.trim().chars().count() > 10)
-    };
-    let substantive_count = messages.iter().filter(substantive).count() as u64;
-    let prompts = || {
-        messages
-            .iter()
-            .filter(|m| m.role == "user" && m.eligible() && m.prompt.as_deref() != Some("command"))
-    };
-    for m in prompts().filter(substantive).chain(prompts()) {
-        if let Some(text) = prompt_text.get(&m.pk)
-            && let Some(label) = clean_topic(text, 120)
-        {
-            topic = Some(label);
-            break;
-        }
-    }
-    let cleaned_title = title
-        .as_deref()
-        .and_then(|s| clean_topic(&polylogue_model::masking::mask(s), 120));
-    let topic_source = if topic.is_some() {
-        "first_substantive_user_turn"
-    } else if cleaned_title.is_some() {
-        "cleaned_title"
-    } else {
-        "absent"
-    };
-    if topic.is_none() {
-        topic = cleaned_title;
-    }
-    let repo = crate::measure::profiles::repositories(tx, pk)?
-        .0
-        .into_iter()
-        .find_map(|r| r.label)
-        .or(repo);
-    let mut topic_source = topic_source.to_owned();
-    if origin == "codex"
-        && topic_source == "first_substantive_user_turn"
-        && let (Some(text), Some(repo)) = (&topic, &repo)
-    {
-        let repo = repo
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or(repo)
-            .trim_end_matches(".git");
-        topic = Some(format!(
-            "{repo}: {}",
-            text.chars().take(60).collect::<String>().trim_end()
-        ));
-        topic_source = "repo_plus_first_user_turn".into();
-    }
+    // Authored prose has stored word counts; no block body is needed here.
+    let substantive_count: u64 = tx.query_row("SELECT count(*) FROM message m
+        WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND m.role IN ('user','assistant')
+        AND m.written_by<>'harness' AND m.words>2
+        AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ('tool_call','tool_result','thinking'))", [pk], |r| r.get(0))?;
+    let last_text: Option<(String,String,Option<String>)> = tx.prepare_cached("SELECT id,role,stop_reason FROM message
+        WHERE session_pk=?1 AND duplicate_of IS NULL AND role IN ('user','assistant') AND written_by<>'harness' AND words>0
+        ORDER BY order_input_id DESC,seq DESC,record_position DESC,id DESC LIMIT 1")?.query_row([pk],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
     let mut actions = BTreeMap::<String, u64>::new();
     let mut tools = BTreeSet::new();
     let mut durations = vec![];
     let mut pending = 0;
-    let mut stuck = 0;
+    let mut unpaired_past_gap = 0;
     let mut final_error = false;
     let mut calls=tx.prepare_cached("SELECT t.tool,t.action,t.outcome,t.result_block_pk,coalesce(t.at,cm.at),rm.at
         FROM tool_call t JOIN block cb ON cb.pk=t.call_block_pk JOIN message cm ON cm.pk=cb.message_pk
@@ -200,7 +101,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         } else {
             pending += 1;
             if a.zip(last_at).is_some_and(|(a, b)| b - a > CLUSTER_GAP_MS) {
-                stuck += 1;
+                unpaired_past_gap += 1;
             }
         }
     }
@@ -255,16 +156,18 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     };
     let (state, method) = if pending > 0 {
         ("tool_left", "pending_tool_blocks")
-    } else if last_text.is_some_and(|m| m.role == "user") {
+    } else if last_text.as_ref().is_some_and(|m| m.1 == "user") {
         ("question_left", "last_message_role")
     } else if final_error {
         ("error_left", "action_outcome")
     } else if last_text
-        .is_some_and(|m| m.role == "assistant" && m.stop.as_deref() == Some("refusal"))
+        .as_ref()
+        .is_some_and(|m| m.1 == "assistant" && m.2.as_deref() == Some("refusal"))
     {
         ("refused", "stop_reason")
     } else if last_text
-        .is_some_and(|m| m.role == "assistant" && m.stop.as_deref() == Some("max_tokens"))
+        .as_ref()
+        .is_some_and(|m| m.1 == "assistant" && m.2.as_deref() == Some("max_tokens"))
     {
         ("truncated", "stop_reason")
     } else {
@@ -279,11 +182,9 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     let facts = Facts {
         rule_version: RULE_VERSION,
         cluster_gap_ms: CLUSTER_GAP_MS,
-        topic,
-        topic_source,
         first_at,
         last_at,
-        timestamp_source: source.into(),
+        timestamp_source: source,
         timestamped_messages: times.len() as u64,
         message_count: n as u64,
         word_count: messages.iter().map(|m| m.words).sum(),
@@ -295,12 +196,12 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
             .reduce(|a, b| a.saturating_add(b)),
         thinking_count: thinking_messages.len() as u64,
         wall_duration_ms: first_at.zip(last_at).map(|(a, b)| (b - a).max(0)),
-        engaged_duration_ms: clustered,
+        message_clustered_duration_ms: clustered,
         tool_active_duration_ms: tool_active,
         tool_latency: latency(durations),
         agent_response_latency: latency(agent_gaps),
         user_response_latency: latency(user_gaps),
-        stuck_tool_count: stuck,
+        unpaired_tools_past_gap: unpaired_past_gap,
         tools: tools.into_iter().collect(),
         tool_call_count: call_count,
         actions,
@@ -325,48 +226,51 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         .into_iter()
         .map(|(k, v)| (k.into(), v))
         .collect(),
-        terminal_state: state.into(),
-        terminal_state_method: method.into(),
-        terminal_message: last_text.map(|m| m.id.clone()),
+        final_observed_state: state.into(),
+        final_observed_state_method: method.into(),
+        final_message: last_text.map(|m| m.0),
     };
-    tx.execute("INSERT INTO session_profile(session_pk,facts) VALUES (?1,?2) ON CONFLICT(session_pk) DO UPDATE SET facts=?2",
-        params![pk,serde_json::to_string(&facts)?])?;
+    crate::measure::profiles::write_facts(tx, pk, &facts)?;
+    tx.prepare_cached("DELETE FROM session_facet WHERE session_pk=?1")?
+        .execute([pk])?;
+    for (family, sql) in [
+        (
+            "roles",
+            "SELECT DISTINCT role FROM message WHERE session_pk=?1 AND duplicate_of IS NULL",
+        ),
+        (
+            "written_by",
+            "SELECT DISTINCT written_by FROM message WHERE session_pk=?1 AND duplicate_of IS NULL",
+        ),
+        (
+            "block_kinds",
+            "SELECT DISTINCT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.session_pk=?1 AND m.duplicate_of IS NULL",
+        ),
+        (
+            "actions",
+            "SELECT DISTINCT t.action FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE t.session_pk=?1 AND m.duplicate_of IS NULL AND t.action IS NOT NULL",
+        ),
+        (
+            "flags",
+            "SELECT DISTINCT CASE WHEN b.kind='thinking' THEN 'thinking' WHEN b.kind='tool_call' THEN 'tool_call' ELSE 'attachment' END FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.session_pk=?1 AND m.duplicate_of IS NULL AND b.kind IN ('thinking','tool_call','image','file')",
+        ),
+    ] {
+        tx.prepare_cached(&format!("WITH values_for_session(value) AS ({sql}) INSERT INTO session_facet SELECT ?1,?2,value FROM values_for_session"))?.execute(rusqlite::params![pk,family])?;
+    }
     Ok(())
 }
 
 struct Message {
-    pk: i64,
-    id: String,
     role: String,
     author: String,
-    prompt: Option<String>,
     at: Option<i64>,
     words: u64,
-    stop: Option<String>,
     duration: Option<i64>,
 }
 impl Message {
     fn eligible(&self) -> bool {
         matches!(self.role.as_str(), "user" | "assistant") && self.author != "harness"
     }
-}
-
-fn clean_topic(text: &str, width: usize) -> Option<String> {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let prefixes = [
-        "Caveat: The messages below were generated by the user while running local commands.",
-        "Caveat: The messages below are were generated by the user while running local commands.",
-        "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.",
-        "This session is being continued from a previous session that ran out of context.",
-        "Base directory for this skill:",
-    ];
-    let stripped = prefixes
-        .iter()
-        .find_map(|p| text.strip_prefix(p))
-        .unwrap_or(&text)
-        .trim_start_matches([' ', ':', '-']);
-    let value = stripped.chars().take(width).collect::<String>();
-    (!value.is_empty()).then_some(value)
 }
 
 fn clustered(times: &[i64]) -> i64 {

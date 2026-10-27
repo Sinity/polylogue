@@ -10,6 +10,7 @@ type Counts = BTreeMap<String, u64>;
 pub struct Buckets {
     pub total_sessions: u64,
     pub total_messages: u64,
+    pub underived_sessions: u64,
     pub families: BTreeMap<String, Counts>,
     pub omitted: Vec<&'static str>,
 }
@@ -35,7 +36,14 @@ pub fn facets(reader: &Reader<'_>, selection: &Selection, options: &str) -> Resu
         }
     };
     let selected = buckets(reader, selection, deep)?;
-    let global = buckets(reader, &Selection::default(), deep)?;
+    let global = buckets(
+        reader,
+        &Selection {
+            sessions: selection.population.clone(),
+            ..Selection::default()
+        },
+        deep,
+    )?;
     let idf = if weights && global.total_sessions > 0 {
         global
             .families
@@ -67,21 +75,25 @@ pub fn facets(reader: &Reader<'_>, selection: &Selection, options: &str) -> Resu
     })
 }
 
-pub(super) const TAGS: &str = "SELECT DISTINCT s.pk, CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key || ':' || n.value END AS value
- FROM session s JOIN a.note_target nt ON nt.ref='session:' || s.id JOIN a.note n ON n.id=nt.note_id
- WHERE n.kind='tag'
- AND NOT EXISTS(SELECT 1 FROM a.note newer WHERE newer.first_note=n.first_note AND newer.commit_seq>n.commit_seq)
- AND NOT EXISTS(SELECT 1 FROM a.note_relation w WHERE w.kind='withdraws' AND w.other='note:' || n.first_note)";
+pub(super) fn tags_sql() -> String {
+    format!("SELECT DISTINCT s.pk, lower(CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key || ':' || n.value END) AS value
+    FROM session s JOIN a.note_target nt ON nt.ref='session:' || s.id JOIN a.note n ON n.id=nt.note_id
+    WHERE n.kind='tag' AND {}",polylogue_model::note_sql::live_note("n"))
+}
 
 fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buckets> {
-    let (condition, params) = selection.session_condition("s.pk")?;
+    let (mut condition, params) = selection.session_condition("s.pk")?;
+    if selection.sessions.is_none() {
+        condition.push_str(&format!(" AND s.kind='main' AND s.stub=0 AND NOT EXISTS(SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id=hn.id WHERE ht.ref='session:'||s.id AND hn.kind='hidden' AND {}) AND NOT EXISTS(SELECT 1 FROM a.excision ex WHERE ex.target='session:'||s.id)",polylogue_model::note_sql::live_note("hn")));
+    }
     let conn = reader.conn()?;
-    let (total_sessions, total_messages) = conn.query_row(&format!(
-        "SELECT count(*), coalesce(sum((SELECT count(*) FROM message m WHERE m.session_pk=s.pk AND m.duplicate_of IS NULL)),0) FROM session s WHERE {condition}"),
-        rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)))?;
+    let (total_sessions, total_messages, underived_sessions) = conn.query_row(&format!(
+        "SELECT count(*), coalesce(sum(coalesce(p.message_count,(SELECT count(*) FROM message m WHERE m.session_pk=s.pk AND m.duplicate_of IS NULL))),0),coalesce(sum(p.session_pk IS NULL),0) FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition}"),
+        rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get::<_,i64>(2)? as u64)))?;
     let mut result = Buckets {
         total_sessions,
         total_messages,
+        underived_sessions,
         ..Buckets::default()
     };
     let mut families = vec![
@@ -89,7 +101,7 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
             "origins",
             "SELECT pk, origin AS value FROM session".to_owned(),
         ),
-        ("tags", TAGS.to_owned()),
+        ("tags", tags_sql()),
     ];
     let deeper = [
         "repositories",
@@ -100,13 +112,12 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
         "flags",
     ];
     if deep {
-        families.extend([
-            ("roles", "SELECT session_pk AS pk,role AS value FROM message WHERE duplicate_of IS NULL".into()),
-            ("written_by", "SELECT session_pk AS pk,written_by AS value FROM message WHERE duplicate_of IS NULL".into()),
-            ("block_kinds", "SELECT b.session_pk AS pk,b.kind AS value FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL".into()),
-            ("actions", "SELECT t.session_pk AS pk,t.action AS value FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL".into()),
-            ("flags", "SELECT b.session_pk AS pk, CASE WHEN b.kind='thinking' THEN 'thinking' WHEN b.kind='tool_call' THEN 'tool_call' ELSE 'attachment' END AS value FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL AND b.kind IN ('thinking','tool_call','image','file')".into()),
-        ]);
+        for family in ["roles", "written_by", "block_kinds", "actions", "flags"] {
+            families.push((
+                family,
+                format!("SELECT session_pk AS pk,value FROM session_facet WHERE family='{family}'"),
+            ));
+        }
     } else {
         result.omitted = deeper.to_vec();
     }
