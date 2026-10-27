@@ -141,12 +141,11 @@ impl Pool {
                 let shared = Arc::clone(&shared);
                 let writer = writer.clone();
                 let blobs = Arc::clone(&blobs);
-                let done = done.clone();
                 let archive = archive.clone();
                 let acknowledge = acknowledge.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &archive, &done, &acknowledge))
+                    .spawn(move || work(&shared, &writer, &blobs, &archive, &acknowledge))
                     .expect("spawn a parse worker")
             })
             .collect();
@@ -216,7 +215,6 @@ fn work(
     writer: &WriterSender,
     store: &Arc<hashed_blobs::Store>,
     archive: &polylogue_store::Archive,
-    done: &Sender<Done>,
     acknowledge: &Sender<PendingGroup>,
 ) {
     let _worker = polylogue_store::timing::worker();
@@ -244,7 +242,7 @@ fn work(
             }
         };
         let Some(job) = job else {
-            if !flush(&mut group, shared, writer, store, done, acknowledge) {
+            if !flush(&mut group, shared, writer, store, acknowledge) {
                 return;
             }
             continue;
@@ -255,7 +253,7 @@ fn work(
         group.waiting.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES)
-            && !flush(&mut group, shared, writer, store, done, acknowledge)
+            && !flush(&mut group, shared, writer, store, acknowledge)
         {
             return;
         }
@@ -309,57 +307,25 @@ fn flush(
     shared: &Arc<Shared>,
     writer: &WriterSender,
     store: &Arc<hashed_blobs::Store>,
-    done: &Sender<Done>,
     acknowledge: &Sender<PendingGroup>,
 ) -> bool {
     let mut waiting = std::mem::take(&mut group.waiting);
-    let durable = waiting
-        .iter()
-        .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
-    if durable {
-        let queued: Vec<bool> = waiting
-            .iter()
-            .map(|(batch, _, _)| batch.is_some())
-            .collect();
-        let mut batches = Vec::new();
-        for (batch, _, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                batches.push(batch);
-            } else {
-                release(shared, *size);
-            }
-        }
-        let results = writer.enqueue_group(batches, Arc::clone(store));
-        group.bytes = 0;
-        let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
-        return acknowledge
-            .send(PendingGroup {
-                results,
-                waiting,
-                queued,
-            })
-            .is_ok();
-    } else {
-        for (batch, result, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                if let Err(error) = writer.send(batch.batch) {
-                    result.error = Some(error.to_string());
-                }
-            } else {
-                release(shared, *size);
-            }
+    let queued: Vec<bool> = waiting.iter().map(|(batch, _, _)| batch.is_some()).collect();
+    let mut batches = Vec::new();
+    for (batch, _, size) in &mut waiting {
+        if let Some(mut batch) = batch.take() {
+            let owner = Arc::clone(shared);
+            let bytes = *size;
+            batch.batch.release = InFlight::new(move || release(&owner, bytes));
+            batches.push(batch);
+        } else {
+            release(shared, *size);
         }
     }
+    let results = writer.enqueue_group(batches, Arc::clone(store));
     group.bytes = 0;
-    waiting
-        .into_iter()
-        .all(|(_, result, _)| done.send(result).is_ok())
+    let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
+    acknowledge.send(PendingGroup { results, waiting, queued }).is_ok()
 }
 
 fn run(
