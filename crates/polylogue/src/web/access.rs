@@ -11,7 +11,7 @@ use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// The default port of an archive's daemon.
@@ -53,11 +53,23 @@ pub fn write_access_files(dir: &Path, token: &str, port: u16) -> io::Result<()> 
 }
 
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write_with_options(|file| file.write_all(text.as_bytes()), options)
-        .map_err(Into::into)
+    let mut file = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    file.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(text.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    std::fs::File::open(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?
+    .sync_all()?;
+    Ok(())
 }
 
 /// The running reader's authenticated entry point, as written by that
