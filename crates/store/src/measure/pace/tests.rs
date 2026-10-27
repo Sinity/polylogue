@@ -104,6 +104,7 @@ fn harness_tool_result_does_not_count_as_user_idle() {
     let mut f = crate::fixture::writer::WriterArchive::new();
     let mut calls = crate::fixture::writer::bash("long", 1, 0, "synthetic", true, "ok");
     calls[1].at = polylogue_model::Timestamp::from_unix_ms(720_000);
+    calls[1].prompt_kind = Some(polylogue_model::PromptKind::Harness);
     f.write("long", calls);
     let pool = crate::ReadPool::open(&f.archive).unwrap();
     let r = pool.reader().unwrap();
