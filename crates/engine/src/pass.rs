@@ -231,7 +231,17 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         if let Some(databases) = whole_capture {
-            let captures: Vec<PathBuf> = databases.iter().map(|(_, out, _)| out.clone()).collect();
+            let captures: Vec<_> = databases
+                .iter()
+                .map(|(_, out, _)| {
+                    (
+                        out.clone(),
+                        polylogue_store::tool_databases::completed_facts(out)
+                            .ok()
+                            .flatten(),
+                    )
+                })
+                .collect();
             let mut exporter = std::mem::take(&mut self.exporter);
             let turn = std::thread::scope(|scope| {
                 let capture = scope.spawn(move || {
@@ -244,8 +254,13 @@ impl Engine {
                 while executed.is_ok() && !capture.is_finished() {
                     let parts = captures
                         .iter()
-                        .filter(|out| out.exists())
-                        .filter_map(|out| self.capture_found(out))
+                        .filter(|(out, previous)| {
+                            polylogue_store::tool_databases::completed_facts(out)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|current| Some(current) != *previous)
+                        })
+                        .filter_map(|(out, _)| self.capture_found(out))
                         .collect();
                     executed = self
                         .plan_found(parts, &mut pass, &mut seen)
@@ -328,7 +343,16 @@ impl Engine {
                 continue;
             };
             pass.inputs_seen += 1;
-            let now = FileFacts::of(&meta);
+            // A capture appends concurrently during a first build. Only its
+            // completed prefix is input, even while the next part is written.
+            let now = if f.origin.capture == Capture::RowDump {
+                let Some(facts) = polylogue_store::tool_databases::completed_facts(&f.path)? else {
+                    continue;
+                };
+                facts
+            } else {
+                FileFacts::of(&meta)
+            };
             if !self.track(&f) {
                 continue;
             }
