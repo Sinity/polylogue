@@ -47,6 +47,7 @@ rusqlite.workspace = true
 
 polylogue-store = { workspace = true, features = ["fixture"] }
 polylogue-testkit.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

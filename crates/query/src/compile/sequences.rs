@@ -11,8 +11,16 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let related = self.related_rows(unit, Some(cond), scope, span)?;
-        Ok(format!("EXISTS (SELECT 1 FROM {related})"))
+        let (from, rows, child) = self.related_rows(unit, Some(cond), scope, span)?;
+        let inner = self.cond(cond, &child, false)?;
+        // True when some child satisfies the condition, false when every
+        // child fails it, unknown otherwise, so `NOT exists` leaves out a
+        // row whose children are all unknown for it.
+        Ok(format!(
+            "(CASE WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND {inner}) THEN 1 \
+             WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND ({inner}) IS NULL) THEN NULL \
+             ELSE 0 END)"
+        ))
     }
 
     /// `count(UNIT where COND) OP N`: how many related rows match. A count
@@ -26,20 +34,27 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let related = self.related_rows(unit, cond, scope, span)?;
+        let (from, mut rows, child) = self.related_rows(unit, cond, scope, span)?;
+        if let Some(cond) = cond {
+            rows = format!("{rows} AND {}", self.cond(cond, &child, false)?);
+        }
         let n = i64::try_from(n).unwrap_or(i64::MAX);
-        Ok(format!("(SELECT count(*) FROM {related}) {} {n}", op.sql()))
+        Ok(format!(
+            "(SELECT count(*) FROM {from} WHERE {rows}) {} {n}",
+            op.sql()
+        ))
     }
 
-    /// `FROM … WHERE …` of the rows of `unit` related to one row of
-    /// `scope` that match `cond`, by `unit`'s defaults.
+    /// The rows of `unit` related to one row of `scope`, by `unit`'s
+    /// defaults (which `cond` may name): their FROM, their WHERE, and the
+    /// aliases a condition on them is compiled over.
     fn related_rows(
         &mut self,
         unit: Unit,
         cond: Option<&Cond>,
         scope: &RowContext,
         span: Span,
-    ) -> Result<String, QueryError> {
+    ) -> Result<(String, String, RowContext), QueryError> {
         let child = RowContext {
             unit,
             a: self.fresh(),
@@ -50,14 +65,7 @@ impl<'a> Compiler<'a> {
         let top = cond.map(top_level).unwrap_or_default();
         let mut w = self.defaults(&child, &top);
         w.push(link);
-        if let Some(cond) = cond {
-            w.push(self.cond(cond, &child, false)?);
-        }
-        Ok(format!(
-            "{} WHERE {}",
-            base_from(unit, &child.a),
-            and_all(&w)
-        ))
+        Ok((base_from(unit, &child.a), and_all(&w), child))
     }
 
     /// `seq(a -> b -> c)`: tool calls of one session in session order,
@@ -107,8 +115,11 @@ impl<'a> Compiler<'a> {
                 match gaps[i - 1] {
                     Gap::Later => w.push(format!("{o}.n > {prev}.n")),
                     Gap::Next => w.push(format!("{o}.n = {prev}.n + 1")),
+                    // Both times known, the later strictly later: a missing
+                    // or reversed time does not satisfy a window.
                     Gap::Within { ms } => {
                         w.push(format!("{o}.n > {prev}.n"));
+                        w.push(format!("{o}.at > {prev}.at"));
                         w.push(format!("{o}.at - {prev}.at <= {ms}"));
                     }
                 }

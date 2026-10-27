@@ -2,14 +2,14 @@ use super::*;
 use extents::Extent;
 use std::io::{Read, Seek};
 
-pub struct ChainReader {
+pub struct ChainReader<S = hashed_blobs::Store> {
     cursor: Cursor,
     chain: StoredChain,
-    store: Arc<hashed_blobs::Store>,
+    store: Arc<S>,
 }
 
-impl ChainReader {
-    pub(super) fn new(chain: StoredChain, store: Arc<hashed_blobs::Store>) -> Self {
+impl<S: super::super::PlainBlobs> ChainReader<S> {
+    pub(super) fn new(chain: StoredChain, store: Arc<S>) -> Self {
         let cursor = Cursor::forward(chain.length);
         Self {
             chain,
@@ -19,10 +19,10 @@ impl ChainReader {
     }
 }
 
-impl Read for ChainReader {
+impl<S: super::super::PlainBlobs> Read for ChainReader<S> {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         self.cursor
-            .read(out, self.chain.extents.as_deref(), &self.store)
+            .read(out, self.chain.extents.as_deref(), self.store.as_ref())
             .map_err(std::io::Error::other)
     }
 }
@@ -67,7 +67,7 @@ impl Cursor {
         &mut self,
         out: &mut [u8],
         extents: Option<&ExtentList>,
-        store: &hashed_blobs::Store,
+        store: &impl super::super::PlainBlobs,
     ) -> Result<usize> {
         if out.is_empty() || self.position == self.end {
             return Ok(0);
@@ -86,11 +86,9 @@ impl Cursor {
             }
             let mut reader: Box<dyn Read + Send> = match inline {
                 Some(reader) => reader,
-                None => Box::new(store.read_plain(
-                    &hashed_blobs::Hash(extent.hash.0),
-                    Some(extent.size),
-                    || Ok(()),
-                )?),
+                None => {
+                    Box::new(store.open_plain(&hashed_blobs::Hash(extent.hash.0), extent.size)?)
+                }
             };
             let skip = extent.blob_offset + self.position - extent.offset;
             let skipped = std::io::copy(&mut reader.by_ref().take(skip), &mut std::io::sink())?;
@@ -116,7 +114,7 @@ impl Cursor {
 
 pub(super) fn inline(
     conn: &Connection,
-    store: &hashed_blobs::Store,
+    store: &impl super::super::PlainBlobs,
     extent: &Extent,
 ) -> Result<Box<dyn Read + Send>> {
     if extent.size < super::super::INLINE_LIMIT as u64 {
@@ -134,7 +132,7 @@ pub(super) fn inline(
 // The whole-name verification pass also supplies the requested bytes; do not
 // decode the preceding file prefix a second time just to reach the range.
 pub(super) fn file_range(
-    store: &hashed_blobs::Store,
+    store: &impl super::super::PlainBlobs,
     extent: &Extent,
     position: u64,
     out: &mut [u8],

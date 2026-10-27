@@ -48,6 +48,14 @@ enum Cli {
     },
     /// Crate dependency boundaries only.
     Boundaries,
+    /// Offline schema commands from the application's command table.
+    Schema {
+        /// The Polylogue binary to run, built by the normal compile operation.
+        #[arg(long, default_value = "target/debug/polylogue")]
+        binary: std::path::PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Corpus builds and native interactive read measurements.
     #[command(subcommand)]
     Bench(bench::Bench),
@@ -321,6 +329,24 @@ fn main() -> ExitCode {
             run("test", &args, |run| {
                 run.nextest("test", &nextest(arguments))
             })
+        }
+        Cli::Schema { binary, args } => {
+            match std::process::Command::new(binary)
+                .arg("schema")
+                .args(args)
+                .status()
+            {
+                Ok(status) => ExitCode::from(
+                    status
+                        .code()
+                        .and_then(|n| u8::try_from(n).ok())
+                        .unwrap_or(1),
+                ),
+                Err(error) => {
+                    eprintln!("schema command: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Cli::Bench(command) => bench::execute(command),
         Cli::Shared(command) => devkit::cli::execute("polylogue", command),

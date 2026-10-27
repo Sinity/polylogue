@@ -72,6 +72,12 @@ impl Archive {
         })
     }
 
+    /// Read existing bytes without creating directories or opening a writer.
+    pub fn blob_reader(&self) -> hashed_blobs::Reader {
+        let root = self.sinex_store.as_ref().unwrap_or(&self.root);
+        hashed_blobs::Reader::new(root.clone(), vec![])
+    }
+
     pub fn index_db(&self) -> PathBuf {
         self.root.join("index.db")
     }

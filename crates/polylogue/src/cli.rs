@@ -6,6 +6,7 @@ pub(crate) mod attachment;
 pub mod changes;
 pub mod local;
 pub mod print;
+pub(crate) mod schema;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};

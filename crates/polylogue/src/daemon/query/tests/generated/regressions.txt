@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 552a14bcaa5290fb639de563b045e6e2fc4df41f68d3db69182feaa7b2fa3490 # shrinks to rows = Rows { sessions: [SessionRow { origin: "claude-code", subagent: false, repo: Some("op/morrow"), messages: [] }] }, (unit, c) = (Sessions, And(Or(Not(Leaf(Repo("kestrel"))), Leaf(CostAbove(5))), Leaf(CostUnknown)))
+cc 084ccdb58cd7e057def407993edd2aa058b2a094297f5e3f19dc491ceed29ae0 # shrinks to payload = "\0¡0"
+cc 7e3f53d0c5860f2b5856b4d3ed677ef2ff192075464cd1c85e5d793b7bb74d81 # shrinks to rows = Rows { sessions: [SessionRow { origin: "claude-code", subagent: false, repo: None, messages: [] }] }, (unit, a) = (Sessions, Leaf(Origin("claude-code"))), s = And(Or(Leaf(ModelUnknown), Leaf(CostAbove(5))), Not(Leaf(Model("model-a")))), c = Leaf(CallSessionOrigin("claude-code"))
+cc 7686d36f3aa517a8bd630ec587644cbd0721cc08ae3515029bc7331053d557a9 # shrinks to rows = Rows { sessions: [SessionRow { origin: "claude-code", subagent: false, repo: None, messages: [] }] }, a = Or(Leaf(Tool("Bash")), And(And(Leaf(Action("file_edit")), Leaf(ExitNonzero)), Leaf(CallSessionOrigin("claude-code")))), b = Not(And(Leaf(ExitUnknown), Leaf(CallAtBefore(3)))), shuffles = [18194989477858179537, 3055566013233338213, 14044444558062677480]

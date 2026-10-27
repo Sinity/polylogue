@@ -31,7 +31,8 @@ polylogue measure usage since:30d    # tokens and cost
 The daemon owns the archive: it holds the archive lock, runs the loop that
 collects and parses every input, runs the only writer, and serves clients
 over a Unix socket. Commands that read or write the archive go through a
-running daemon; without one they exit with code 6.
+running daemon; without one they exit with code 6. Offline `schema` commands
+read explicitly selected stored revisions directly.
 
 The daemon reads each tool's files where the tool writes them
 (`$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`, and so on);
@@ -85,6 +86,7 @@ it.
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
+| `schema infer ORIGIN --input ID`, `schema diff BEFORE AFTER` | Offline structure/count inference over explicit stored revisions and recursive schema comparison ([schema tools](docs/schema-tools.md)). |
 | `completions SHELL` | Completion for bash, elvish, fish, PowerShell or zsh: commands and options, and while you type a query, its units, fields, values seen and recent session IDs, which the shell asks of the daemon through `complete WORD`. |
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
@@ -132,12 +134,16 @@ Words in a query match full text and rank the rows by relevance. With
 embeddings built, `near:TEXT` ranks rows by similarity to TEXT: the query's
 other conditions choose the rows first and every row they keep is ranked,
 and with words in the same query both orders are fused (reciprocal rank
-fusion). `| union (…)` adds another query's rows; when either side is
-ranked, the rows rank by fusing every list's order, and `found_in` names
-the lists that ranked each row. `| fuse (…)` ranks the rows also by another
-query's order without adding any. Ranked answers page by cursor like any
-other. `recall` is one such query: every word in prose, every word in tool
-output and similarity to the whole text, with the current directory's
+fusion). The answer counts rows without a vector (`unknown.near`); with
+`near:` alone they follow the ranked rows, and in hybrid search they still
+rank by full text. A count or grouping after `near:` computes no similarity
+unless an earlier selection used the ranking. `| union (…)` adds another
+query's rows; when either side is ranked, the rows rank by fusing every
+list's order, and `found_in`
+names the lists that ranked each row. `| fuse (…)` ranks the rows also by
+another query's order without adding any. Ranked answers page by cursor like
+any other. `recall` is one such query: every word in prose, every word in
+tool output and similarity to the whole text, with the current directory's
 sessions ranked in one more list.
 
 The daemon keeps warm what common answers need: the vectors in memory, the

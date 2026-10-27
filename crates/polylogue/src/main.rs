@@ -1,6 +1,7 @@
 //! The `polylogue` binary: daemon, CLI, MCP server, hook command and
-//! browser-extension host. Every read and write goes through the daemon;
-//! when it is not running, commands exit with code 6 (`daemon_required`).
+//! browser-extension host. Interactive reads and writes go through the daemon;
+//! offline schema commands read explicit stored revisions directly. Commands
+//! requiring a stopped daemon exit with code 6 (`daemon_required`).
 
 mod briefing;
 mod browser;

@@ -228,8 +228,9 @@ object keys. Stored bytes never change.
 [Masking tests](../crates/model/src/masking/tests.rs) and
 [CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
 
-The daemon owns the archive; CLI commands that touch it need a running
-daemon in either mode. It keeps [warm state](../crates/polylogue/src/daemon/warm.rs)
+The daemon owns archive writes and interactive reads. Offline schema tools
+read explicit stored revisions directly; other CLI archive commands need a
+running daemon in either mode. It keeps [warm state](../crates/polylogue/src/daemon/warm.rs)
 between requests: the vectors `near:` ranks by (reloaded after a commit
 stores or removes vectors), the provider's vectors of recent `near:` texts,
 recent query answers by read position, completion data, and the archive
@@ -352,3 +353,13 @@ masking and feed validation have the same implementation as other clients.
 `polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`
 returns an independent ordinary JSON value. No query or read is redirected to a
 local database. A write is submitted once; the caller owns its retry ID.
+
+## Offline schema tools
+
+[Schema tools](schema-tools.md) use a pure Sources observer and recursive diff,
+called by local commands in the application's command table. Store selects
+exact revisions and provides streaming byte reads in either mode. These
+commands run independently of the engine, parsing jobs and the daemon.
+The observer reports field names, structural paths and counts, grouping dynamic
+map keys under `*`. Observed values stay out. Reads use read-only database
+and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
