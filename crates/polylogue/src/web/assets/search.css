@@ -2,3 +2,5 @@ form[aria-label="Add a facet"], #save-search { display: flex; flex-wrap: wrap; a
 #facet-field { max-width: min(30em, 100%); }
 #facet-value, #search-name { max-width: 100%; font: inherit; }
 main:has(#save-search) { overflow-x: auto; }
+
+#save-search[hidden] { display: none; }

@@ -73,7 +73,7 @@ pub fn search(
         body.push_str(&next_results(query, data));
         let _ = write!(
             body,
-            r#"<section aria-label="Save search"><h2>Keep this work</h2><p>A saved query runs current data. A kept result records all rows when applied.</p><form id="save-search" data-query="{}"><label for="search-name">Name</label><input id="search-name" name="name" required><button name="operation" value="save" type="submit">Save query</button><button name="operation" value="keep" type="submit" formnovalidate>Keep results</button></form><p id="save-status" role="status" aria-live="polite"></p><noscript><p>Use copy as CLI, then <code>polylogue save NAME QUERY</code> or <code>polylogue keep QUERY</code>.</p></noscript></section>"#,
+            r#"<section aria-label="Save search"><h2>Keep this work</h2><p>A saved query runs current data. A kept result records all rows when applied.</p><form id="save-search" hidden data-query="{}"><label for="search-name">Name</label><input id="search-name" name="name" required><button name="operation" value="save" type="submit">Save query</button><button name="operation" value="keep" type="submit" formnovalidate>Keep results</button></form><p id="save-status" role="status" aria-live="polite"></p><noscript><p>Use copy as CLI, then <code>polylogue save NAME QUERY</code> or <code>polylogue keep QUERY</code>.</p></noscript></section>"#,
             esc(query)
         );
     }

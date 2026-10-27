@@ -1,3 +1,4 @@
+import "/assets/search.js";
 import { watchChanges } from "/assets/live.js";
 
 const list = document.getElementById("session-list");

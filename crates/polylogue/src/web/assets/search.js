@@ -36,6 +36,7 @@ value?.addEventListener("input", complete);
 field?.addEventListener("change", complete);
 
 const form = document.getElementById("save-search");
+if (form) form.hidden = false;
 let attempt;
 let writing = false;
 form?.addEventListener("submit", async event => {
@@ -60,3 +61,48 @@ form?.addEventListener("submit", async event => {
   } catch (error) { output.textContent = error.message + ". Submit again to retry the same request."; }
   finally { writing = false; }
 });
+
+// Completion changes only the word at the caret after an explicit choice.
+const queryInput = document.getElementById("q");
+if (queryInput) {
+  const choices = document.createElement("datalist");
+  choices.id = "query-suggestions";
+  queryInput.setAttribute("list", choices.id);
+  queryInput.after(choices);
+  let queryTimer;
+  let queryController;
+  let queryVersion = 0;
+  queryInput.addEventListener("input", () => {
+    clearTimeout(queryTimer);
+    queryController?.abort();
+    const version = ++queryVersion;
+    const text = queryInput.value;
+    const caret = queryInput.selectionStart ?? text.length;
+    let start = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let i = 0; i < caret; i++) {
+      const char = text[i];
+      if (escaped) escaped = false;
+      else if (char === "\\" && quoted) escaped = true;
+      else if (char === '"') quoted = !quoted;
+      else if (!quoted && /[\s|()]/u.test(char)) start = i + 1;
+    }
+    choices.replaceChildren();
+    queryTimer = setTimeout(async () => {
+      queryController = new AbortController();
+      try {
+        const response = await fetch("/api/v1/complete?word=" + encodeURIComponent(text.slice(start, caret)), { credentials: "same-origin", signal: queryController.signal });
+        if (!response.ok) return;
+        const values = await response.json();
+        if (version !== queryVersion) return;
+        for (const entry of values) {
+          const option = document.createElement("option");
+          option.value = text.slice(0, start) + entry.value + text.slice(caret);
+          if (entry.help) option.label = entry.help;
+          choices.append(option);
+        }
+      } catch (error) { if (error.name !== "AbortError" && status) status.textContent = "Query suggestions unavailable. " + error.message; }
+    }, 200);
+  });
+}
