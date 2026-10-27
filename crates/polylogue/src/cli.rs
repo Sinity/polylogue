@@ -426,5 +426,41 @@ fn fail_detail(
     ExitCode::from(code)
 }
 
+/// Query formatting belongs to the client; the daemon returns typed rows.
+pub fn query_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+    if json {
+        println!("{data}");
+        return ExitCode::SUCCESS;
+    }
+    let Some(format) = values.text("format") else {
+        print!("{}", print::query(data));
+        return ExitCode::SUCCESS;
+    };
+    let Some(format) = polylogue_render::Format::parse(&format) else {
+        return fail(false, "bad_request", "unknown output format", 2);
+    };
+    if format == polylogue_render::Format::Terminal {
+        print!("{}", print::query(data));
+        return ExitCode::SUCCESS;
+    }
+    if format == polylogue_render::Format::Csv {
+        if let Some(next) = data["next"].as_str() {
+            eprintln!("next page: --cursor {next}");
+        }
+        for note in data["incomplete"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(data["notes"].as_array().into_iter().flatten())
+        {
+            eprintln!("{}", note.as_str().unwrap_or("incomplete result"));
+        }
+    }
+    match polylogue_render::results::render(data, format, &mut std::io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => fail(false, "io", &e.to_string(), 1),
+    }
+}
+
 #[cfg(test)]
 mod tests;

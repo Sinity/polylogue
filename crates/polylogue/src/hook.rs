@@ -1,6 +1,6 @@
 //! The hook command a harness calls on its events (`polylogue hook
 //! <Event> [--harness NAME]`, the event's JSON on stdin), for Claude Code
-//! (the default), Codex and Hermes.
+//! (the default), Codex, Gemini CLI and Hermes.
 //!
 //! Every event is appended as one line to the hook spool file of the calling
 //! harness process, with `O_APPEND` and no fsync, naming the harness's
@@ -12,7 +12,7 @@
 //!   `briefing.session_start` setting turns it off. After compaction it
 //!   carries every prompt the operator typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
-//!   pasted into it brings that session's takeover context.
+//!   or supported web link pasted into it brings that session's takeover context.
 //!
 //! Claude Code and Codex take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -44,16 +44,18 @@ pub enum Harness {
     ClaudeCode,
     Codex,
     Hermes,
+    GeminiCli,
 }
 
 impl Harness {
-    pub const NAMES: &[&str] = &["claude-code", "codex", "hermes"];
+    pub const NAMES: &[&str] = &["claude-code", "codex", "hermes", "gemini-cli"];
 
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "claude-code" => Some(Self::ClaudeCode),
             "codex" => Some(Self::Codex),
             "hermes" => Some(Self::Hermes),
+            "gemini-cli" => Some(Self::GeminiCli),
             _ => None,
         }
     }
@@ -63,6 +65,7 @@ impl Harness {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
+            Self::GeminiCli => "gemini-cli",
             Self::Hermes => polylogue_sources::hermes::ORIGIN,
         }
     }
@@ -173,7 +176,9 @@ pub fn pasted_session_ids(prompt: &str) -> Vec<SessionId> {
     };
     for word in prompt.split(|c: char| c.is_whitespace() || "`'\"()[]<>,;".contains(c)) {
         let word = word.trim_end_matches(['.', ':']);
-        if let Some((origin, native)) = word.split_once(':')
+        if let Some(id) = session_link(word) {
+            push(id);
+        } else if let Some((origin, native)) = word.split_once(':')
             && by_name(origin).is_some_and(|o| o.support == Support::Parsed)
             && let Ok(id) = SessionId::parse(word)
             && !native.is_empty()
@@ -188,6 +193,43 @@ pub fn pasted_session_ids(prompt: &str) -> Vec<SessionId> {
         }
     }
     out
+}
+
+/// Resolve only conversation pages declared by the supported web origins.
+fn session_link(word: &str) -> Option<SessionId> {
+    let url = word.split('#').next()?.parse::<axum::http::Uri>().ok()?;
+    if url.scheme_str() != Some("https") {
+        return None;
+    }
+    let host = url.authority()?.as_str();
+    let mut parts: Vec<_> = url
+        .path()
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let origin = ORIGINS.iter().find(|o| {
+        o.web
+            .as_ref()
+            .is_some_and(|web| web.hosts.iter().any(|h| h.eq_ignore_ascii_case(host)))
+    })?;
+    let web = origin.web.as_ref()?;
+    // Google links may include the signed-in account; ChatGPT links may
+    // include the GPT or project that holds the conversation.
+    if matches!(origin.name, "gemini-app" | "ai-studio")
+        && parts.len() == 4
+        && parts[0] == "u"
+        && parts[1].bytes().all(|b| b.is_ascii_digit())
+    {
+        parts.drain(..2);
+    }
+    if origin.name == "chatgpt" && parts.len() == 4 && parts[0] == "g" {
+        parts.drain(..2);
+    }
+    if parts.len() != 2 || parts[0] != web.path {
+        return None;
+    }
+    polylogue_sources::browser_capture::session_for(origin.name, parts[1])
 }
 
 fn is_uuid(w: &str) -> bool {
@@ -234,16 +276,21 @@ fn delivered(delivery: &str) {
 }
 
 /// The hook output carrying context for the model.
-fn emit(harness: Harness, event: &str, text: &str) -> bool {
-    let out = match harness {
+fn output_for(harness: Harness, event: &str, text: &str) -> Value {
+    match harness {
         Harness::Hermes => json!({ "context": text }),
+        Harness::GeminiCli => json!({"hookSpecificOutput": {"additionalContext": text}}),
         Harness::ClaudeCode | Harness::Codex => json!({
             "hookSpecificOutput": {
                 "hookEventName": event,
                 "additionalContext": text,
             }
         }),
-    };
+    }
+}
+
+fn emit(harness: Harness, event: &str, text: &str) -> bool {
+    let out = output_for(harness, event, text);
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{out}").is_ok() && stdout.flush().is_ok()
 }
@@ -285,12 +332,13 @@ fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String,
 /// deliveries and the context to emit, if any.
 pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String, String)> {
     match (harness, event) {
-        (Harness::ClaudeCode | Harness::Codex, "SessionStart") => start(
+        (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => start(
             harness,
             payload,
             StartSource::parse(payload["source"].as_str().unwrap_or("startup")),
         ),
-        (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit") => {
+        (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
+        | (Harness::GeminiCli, "BeforeAgent") => {
             takeovers(harness, payload, payload["prompt"].as_str()?)
         }
         // Hermes injects context only into a turn's prompt: the first

@@ -35,3 +35,18 @@ fn link_parts_merge_from_either_side() {
     assert_eq!(from_child.call_id.as_deref(), Some("toolu_1"));
     assert_eq!(from_child.evidence, "agentId");
 }
+
+#[test]
+fn unspecified_parent_links_do_not_claim_compaction_or_forking() {
+    assert_eq!(LinkKind::Parent.columns(), ("continuation", "parent"));
+    assert_eq!(
+        LinkKind::from_columns("continuation", "parent"),
+        Some(LinkKind::Parent)
+    );
+    let encoded = serde_json::to_string(&LinkKind::Parent).unwrap();
+    assert_eq!(encoded, "\"parent\"");
+    assert_eq!(
+        serde_json::from_str::<LinkKind>(&encoded).unwrap(),
+        LinkKind::Parent
+    );
+}

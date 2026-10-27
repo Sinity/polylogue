@@ -157,3 +157,5 @@ fn json_keeps_typed_action_blocks() {
 }
 
 mod structured;
+
+mod data;

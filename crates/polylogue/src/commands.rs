@@ -222,8 +222,17 @@ const FORMATS: &[&str] = polylogue_render::Format::NAMES;
 const VIEWS: &[&str] = polylogue_render::View::NAMES;
 const SHELLS: &[&str] = &["bash", "elvish", "fish", "powershell", "zsh"];
 
+/// The calling client chooses how to print a query answer.
+const OUTPUT_FORMAT: Arg = Arg {
+    cli_only: true,
+    ..opt(
+        "format",
+        Kind::Choice(FORMATS),
+        "Output format (default: terminal)",
+    )
+};
 /// A query over a unit with the page, cursor, explanation and columns.
-const QUERY_ARGS: &[Arg] = &[QUERY_WORDS, LIMIT, WHY, CURSOR, FIELDS];
+const QUERY_ARGS: &[Arg] = &[QUERY_WORDS, LIMIT, WHY, CURSOR, FIELDS, OUTPUT_FORMAT];
 /// A measurement over the sessions a query selects.
 const MEASURE_ARGS: &[Arg] = &[
     pos_opt(
@@ -302,7 +311,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
     },
     Group {
         name: "chat",
@@ -370,6 +379,12 @@ fn query_help() -> &'static str {
 
 const WRITTEN: &[Command] = &[
     Command {
+        name: "manual",
+        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        action: Action::Local(local::manual),
+        ..CLI
+    },
+    Command {
         name: "query",
         help: "Run a query",
         args: &[
@@ -378,9 +393,11 @@ const WRITTEN: &[Command] = &[
             WHY,
             CURSOR,
             FIELDS,
+            OUTPUT_FORMAT,
         ],
         action: Action::Request(requests::query),
         print: print::query,
+        output: Some(crate::cli::query_output),
         cli: Cli::NoSubcommand,
         mcp: true,
         http: true,
@@ -414,6 +431,7 @@ const WRITTEN: &[Command] = &[
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
         print: print::query,
+        output: Some(crate::cli::query_output),
         mcp: true,
         http: true,
         ..CLI
@@ -742,6 +760,7 @@ const WRITTEN: &[Command] = &[
         args: QUERY_ARGS,
         action: Action::Request(requests::work),
         print: print::query,
+        output: Some(crate::cli::query_output),
         ..CLI
     },
     Command {
@@ -1036,7 +1055,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {

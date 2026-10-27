@@ -10,6 +10,7 @@
 extern crate self as polylogue_sources;
 
 pub mod ai_studio;
+pub mod antigravity;
 pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;
