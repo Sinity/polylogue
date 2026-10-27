@@ -49,8 +49,9 @@ pub fn home(sessions: &Value, recent: bool, cursor: Option<&str>) -> String {
         };
         let _ = write!(
             body,
-            "<tr class=\"hit\" data-session=\"{}\"><td>{}</td><td><a href=\"/s/{}?latest=true\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td><details><summary>{}</summary><p>Last event: {}. State changes at: {}.</p></details></td></tr>",
+            "<tr class=\"hit\" data-session=\"{}\" data-content=\"{}\"><td>{}</td><td><a href=\"/s/{}?latest=true\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td><details><summary>{}</summary><p>Last event: {}. State changes at: {}.</p></details></td></tr>",
             esc(id),
+            blake3::hash(row.to_string().as_bytes()).to_hex(),
             esc(&text("live")),
             encode_id(id),
             esc(row["title"].as_str().unwrap_or(id)),

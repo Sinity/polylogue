@@ -49,6 +49,10 @@ function commit() {
 }
 apply.addEventListener("click", commit);
 
+function content(root) {
+  return JSON.stringify([...root.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.dataset.content])) + Boolean(root.querySelector("[data-next]"));
+}
+
 async function refresh() {
   if (refreshing || paused || blocked || document.hidden) return;
   refreshing = true;
@@ -62,19 +66,19 @@ async function refresh() {
     const next = new DOMParser().parseFromString(await response.text(), "text/html").getElementById("session-list");
     if (!next) throw new Error("Session list unavailable");
     refreshNotices();
-    if (next.innerHTML === list.innerHTML) {
+    if (content(next) === content(list)) {
       if (pending) announcement.textContent = "Sessions are current.";
       pending = undefined;
       apply.hidden = true;
       return;
     }
-    const oldRows = new Map([...list.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.innerHTML]));
-    const newRows = new Map([...next.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.innerHTML]));
+    const oldRows = new Map([...list.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.dataset.content]));
+    const newRows = new Map([...next.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.dataset.content]));
     updated = [...new Set([...oldRows.keys(), ...newRows.keys()])].filter(id => oldRows.get(id) !== newRows.get(id)).length;
     pending = next;
     if (list.contains(document.activeElement) || document.activeElement === apply) {
       apply.hidden = false;
-      announcement.textContent = updated + " sessions updated. Apply updates when ready.";
+      announcement.textContent = updated ? updated + " sessions updated. Apply updates when ready." : "List pages changed. Apply updates when ready.";
     } else commit();
   } catch (error) { announcement.textContent = error.message; }
   finally { refreshing = false; }
