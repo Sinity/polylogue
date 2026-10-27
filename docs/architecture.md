@@ -346,3 +346,8 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+Session [measures](measures.md) include selected/global IDF facets, configured
+billing outlooks, pacing, and profile comparisons. The versioned `profile`
+derivation stores timing and classification facts in `session_profile`; usage
+and cost remain owned by their existing rows and are joined at read time.

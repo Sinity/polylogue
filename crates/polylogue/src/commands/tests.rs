@@ -395,3 +395,29 @@ fn chat_send_reads_attached_files_on_the_command_line() {
             .all(|a| a.name != "attach")
     );
 }
+
+#[test]
+fn measure_options_build_the_same_query_as_the_query_surface() {
+    for (name, metric) in [
+        ("facets", "deep"),
+        ("pace", "60:100:50"),
+        ("outlook", "sample:linear"),
+        ("correlation", "message_count:word_count"),
+        ("distribution", "median_tool_call_ms"),
+    ] {
+        let (command, values) = crate::cli::parse(&[
+            "polylogue",
+            "measure",
+            name,
+            "--metric",
+            metric,
+            "sessions where origin:codex",
+        ])
+        .unwrap();
+        let request = request_json(command, &values, &cli_caller());
+        assert_eq!(
+            request["text"],
+            format!("sessions where origin:codex | measure {name}:{metric}")
+        );
+    }
+}
