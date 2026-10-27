@@ -63,3 +63,19 @@ mod events;
 mod attachments;
 
 mod explain;
+
+#[test]
+fn errors_show_archived_controls_as_text() {
+    let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
+    let text = super::error_text(
+        hostile,
+        hostile,
+        Some(&serde_json::json!({"suggestion":hostile})),
+    );
+    assert!(
+        !text
+            .chars()
+            .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{202e}')
+    );
+    assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
+}

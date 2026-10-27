@@ -30,16 +30,18 @@ fn rendered_blocks(doc: &Document, view: View) -> impl Iterator<Item = crate::Re
         .filter_map(crate::block)
 }
 pub(crate) fn terminal(doc: &Document, view: View, out: &mut dyn Write) -> io::Result<()> {
-    writeln!(
+    crate::terminal::line(
         out,
-        "{}\ndocument:{} · {} · authorship {}\n",
-        heading(doc),
-        doc.id,
-        doc.purpose.as_str(),
-        doc.authorship.as_str()
+        format_args!(
+            "{}\ndocument:{} · {} · authorship {}\n",
+            heading(doc),
+            doc.id,
+            doc.purpose.as_str(),
+            doc.authorship.as_str()
+        ),
     )?;
     for p in rendered_blocks(doc, view) {
-        writeln!(out, "{}", p.text)?;
+        crate::terminal::line(out, format_args!("{}", p.text))?;
     }
     Ok(())
 }

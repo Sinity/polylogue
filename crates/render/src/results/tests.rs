@@ -48,7 +48,8 @@ fn html_escapes_and_marks() {
 #[test]
 fn terminal_bolds_matches_and_explains_empty_results() {
     let t = text(Format::Terminal);
-    assert!(t.contains("\x1b[1mchrono\x1b[0m"));
+    assert!(t.contains("chrono"));
+    assert!(!t.contains("\x1b"));
     let empty = json!({
         "outcome": "empty", "columns": [], "rows": [], "count": 0, "next": null,
         "notes": [], "incomplete": [],

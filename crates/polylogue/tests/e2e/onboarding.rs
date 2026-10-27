@@ -3,11 +3,11 @@ use serde_json::Value;
 #[test]
 fn public_morrow_tour_matches_current_query_examples() {
     let temp = tempfile::tempdir().unwrap();
-    let actual = temp.path().join("actual");
-    let alias = temp.path().join("alias");
+    let actual = temp.path().join("a");
+    let alias = temp.path().join("b");
     std::fs::create_dir(&actual).unwrap();
     std::os::unix::fs::symlink(&actual, &alias).unwrap();
-    let directory = alias.join("tour");
+    let directory = alias.join("t\u{9b}\x7f\u{202e}");
     let operator_archive = temp.path().join("operator-archive");
     let output = crate::command(temp.path())
         .args(["--json", "demo", "tour"])
@@ -17,6 +17,8 @@ fn public_morrow_tour_matches_current_query_examples() {
         .unwrap();
     assert!(!operator_archive.exists());
     assert!(output.status.success(), "{output:?}");
+    let text = std::str::from_utf8(&output.stdout).unwrap();
+    assert!(!text.contains(['\u{9b}', '\x7f', '\u{202e}']));
     let tour: Value = serde_json::from_slice(&output.stdout).unwrap();
     let directory = directory.canonicalize().unwrap();
     let steps = tour["steps"].as_array().unwrap();
