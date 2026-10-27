@@ -22,6 +22,7 @@ struct Worker {
     thread: JoinHandle<()>,
     result: Receiver<(Exporter, Completed)>,
     progress: Receiver<()>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
 #[derive(Default)]
 pub(super) struct Databases {
@@ -48,6 +49,9 @@ impl Databases {
             .unwrap_or_else(|| Exporter::with_cursor(polylogue_sources::origin::table_cursor));
         let (tx, result) = sync_channel(1);
         let (notify, progress) = sync_channel(1);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        exporter.stop_when(Arc::clone(&stop));
+        let cancelled = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("polylogue-databases".into())
             .spawn(move || {
@@ -55,6 +59,7 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
+                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
                     let Some(due) = exporter.observe(&source.path) else {
                         continue;
                     };
@@ -123,6 +128,7 @@ impl Databases {
             thread,
             result,
             progress,
+            stop,
         });
         Ok(())
     }
@@ -165,6 +171,9 @@ impl Databases {
 }
 impl Drop for Databases {
     fn drop(&mut self) {
+        if let Some(worker) = &self.worker {
+            worker.stop.store(true,std::sync::atomic::Ordering::Relaxed);
+        }
         self.completed(true);
     }
 }

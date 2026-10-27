@@ -33,6 +33,8 @@ pub enum ExportError {
     Sqlite(PathBuf, rusqlite::Error),
     #[error("{0}")]
     Invalid(String),
+    #[error("database read stopped")]
+    Stopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,7 @@ struct DbState {
 pub struct Exporter {
     dbs: HashMap<PathBuf, DbState>,
     cursor: Option<TableCursor>,
+    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Exported {
@@ -79,6 +82,9 @@ impl Exporter {
     }
     pub fn forget(&mut self, path: &Path) {
         self.dbs.remove(path);
+    }
+    pub fn stop_when(&mut self, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.stop = Some(stop);
     }
     /// File facts decide whether any source or archive read is needed.
     pub fn observe(&mut self, db: &Path) -> Option<DatabaseRead> {
@@ -138,6 +144,7 @@ impl Exporter {
             due.compare,
             due.cursor,
             due.verify,
+            self.stop.as_deref(),
             &mut send,
         )?;
         let st = self.dbs.entry(db.to_owned()).or_default();
@@ -284,8 +291,15 @@ fn write_export(
     compare: bool,
     cursor_due: bool,
     verify: bool,
+    stop: Option<&std::sync::atomic::AtomicBool>,
     send: &mut dyn FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
+    let stopped = || {
+        if stop.is_some_and(|stop|stop.load(std::sync::atomic::Ordering::Relaxed)) {
+            Err(ExportError::Stopped)
+        } else { Ok(()) }
+    };
+    stopped()?;
     let _busy = crate::timing::enter(crate::timing::Stage::Database);
     let sql_err = |e| ExportError::Sqlite(db.to_owned(), e);
     let facts = DbFacts::of(db).db.ok_or_else(|| {
@@ -380,6 +394,7 @@ fn write_export(
         let mut statement = source.prepare(&select).map_err(sql_err)?;
         let mut rows = statement.query([]).map_err(sql_err)?;
         while let Some(row) = rows.next().map_err(sql_err)? {
+            stopped()?;
             done.visited += 1;
             let mut values = Map::new();
             for (i, column) in table.columns.iter().enumerate() {
@@ -419,6 +434,7 @@ fn write_export(
         }
         if full {
             catalog.gone(&table.name, &mut |key| {
+                stopped()?;
                 serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"kh":format!("{:016x}", row_key(&table.name, &key)),"gone":true})).map_err(std::io::Error::from)?;
                 bytes.push(b'\n'); done.gone += 1;
                 crate::fault::check("tool_export.after_gone", &table.name)?;
@@ -446,6 +462,7 @@ fn write_export(
     catalog.dropped(
         &tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         &mut |table, key| {
+            stopped()?;
             serde_json::to_writer(
                 &mut bytes,
                 &json!({"t":table,"k":key,"kh":format!("{:016x}",row_key(table,&key)),"gone":true}),
@@ -461,6 +478,7 @@ fn write_export(
         },
     )?;
     saved.schema = Some(schema);
+    stopped()?;
     let unchanged_file = source_file.is_some()
         && file_identity(db) == source_file
         && DbFacts::of(db)

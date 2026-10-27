@@ -346,3 +346,15 @@ fn a_returned_database_verifies_rows_below_its_cursor() {
     let done = t.export(&mut exporter).unwrap().unwrap();
     assert_eq!((done.rows, done.gone), (1, 1));
 }
+
+#[test]
+fn a_stopped_read_needs_no_archive_and_can_be_retried() {
+    let mut t=Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'kept');");
+    let stop=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut exporter=Exporter::default();
+    exporter.stop_when(std::sync::Arc::clone(&stop));
+    let result=exporter.export(&t.db,&Archive::at(&t.dir.path().join("absent")),&t.input,&t.observation,|_,_|panic!("stopped read sent bytes"));
+    assert!(matches!(result,Err(ExportError::Stopped)));
+    stop.store(false,std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(t.export(&mut exporter).unwrap().unwrap().rows,1);
+}
