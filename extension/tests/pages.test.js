@@ -143,7 +143,7 @@ describe("the shared page script", () => {
 
   it("sends a download as appended bytes as it arrives, before it has finished", async () => {
     const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
-    const chunk = new Uint8Array(300 * 1024).fill(7);
+    const chunk = new Uint8Array(1024).fill(7);
     let release;
     const held = new Promise((resolve) => { release = resolve; });
     const stream = new ReadableStream({
