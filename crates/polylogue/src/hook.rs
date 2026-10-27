@@ -14,7 +14,7 @@
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   or supported web link pasted into it brings that session's takeover context.
 //!
-//! Claude Code and Codex take context as `hookSpecificOutput.additionalContext`,
+//! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
 //! open: when the daemon is down or slow, the harness gets no context and
 //! carries on.
@@ -279,8 +279,7 @@ fn delivered(delivery: &str) {
 fn output_for(harness: Harness, event: &str, text: &str) -> Value {
     match harness {
         Harness::Hermes => json!({ "context": text }),
-        Harness::GeminiCli => json!({"hookSpecificOutput": {"additionalContext": text}}),
-        Harness::ClaudeCode | Harness::Codex => json!({
+        Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli => json!({
             "hookSpecificOutput": {
                 "hookEventName": event,
                 "additionalContext": text,

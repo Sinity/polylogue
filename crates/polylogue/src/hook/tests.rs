@@ -232,10 +232,10 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
 fn gemini_context_output_matches_the_native_protocol() {
     assert_eq!(
         output_for(Harness::GeminiCli, "SessionStart", "brief"),
-        json!({"hookSpecificOutput":{"additionalContext":"brief"}})
+        json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"brief"}})
     );
     assert_eq!(
         output_for(Harness::GeminiCli, "BeforeAgent", "takeover"),
-        json!({"hookSpecificOutput":{"additionalContext":"takeover"}})
+        json!({"hookSpecificOutput":{"hookEventName":"BeforeAgent","additionalContext":"takeover"}})
     );
 }
