@@ -361,3 +361,13 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+The Sinex producer owns its ten `polylogue.*` payload types and declares their
+exact version, schema, keys, times and class minima on connection. Registration
+must be acknowledged before material or event publication. Content-named event
+frames include declaration hashes. `Sinex::replay_scope` obtains a metadata
+snapshot; `Sinex::replay_sequence` checks the stored raw bytes, saves a complete
+replacement frame in Sinex's frame storage and waits for atomic acknowledgment.
+The caller updates its index after that acknowledgment.
+A different parse or build uses a new operation, including after a refused
+replacement.

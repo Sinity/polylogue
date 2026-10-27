@@ -9,6 +9,7 @@
 //! tail, and a changed parser re-sends what it reads differently, which
 //! replaces the older readings. Where the last send stopped is kept beside
 //! the index (`sinex-sent.json`): the index file and its write counter.
+use crate::kinds as event;
 use crate::parts::content_name;
 use crate::register::time;
 use crate::{Error, Result, Sinex};
@@ -16,7 +17,6 @@ use polylogue_model::{AttachmentDirection, Block, MessageId, SessionId, Timestam
 use polylogue_store::{ReadPool, Reader, SqlValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sinex_model::event_types::polylogue as event;
 use sinex_model::{Class, MaterialId, RecordLocation};
 use sinex_protocol::{Ingress, ProducerEvent};
 use std::collections::HashMap;
@@ -63,12 +63,15 @@ pub(crate) fn send(sinex: &Sinex, reads: &ReadPool) -> Result<()> {
 
 /// Sends the chunks of one session's events Sinex does not hold yet.
 fn send_chunks(sinex: &Sinex, events: Vec<ProducerEvent>) -> Result<()> {
+    let declaration_hash =
+        sinex.with(async |client| Ok(crate::kinds::definition_hash(client.producer())))?;
     let chunks: Vec<(String, Vec<ProducerEvent>)> = events
         .chunks(CHUNK)
         .map(|chunk| {
             let mut hash = blake3::Hasher::new();
+            hash.update(declaration_hash.as_bytes());
             for e in chunk {
-                hash.update(e.event_type.as_bytes());
+                hash.update(e.kind.name.as_bytes());
                 hash.update(&[0]);
                 hash.update(e.payload.to_string().as_bytes());
                 hash.update(&[0]);
@@ -185,7 +188,10 @@ fn producer_event(
     location: RecordLocation,
 ) -> Result<ProducerEvent> {
     Ok(ProducerEvent {
-        event_type: event_type.into(),
+        kind: sinex_model::KindRef {
+            name: event_type.into(),
+            version: 2,
+        },
         payload: serde_json::to_value(payload)?,
         location: Some(location),
         output_index: 0,

@@ -41,6 +41,29 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn producer(&self) -> &str {
+        &self.producer
+    }
+
+    pub(crate) async fn replay_scope(
+        &self,
+        query: &sinex_protocol::ReplayScopeQuery,
+    ) -> Result<Vec<sinex_protocol::ReplaySelection>> {
+        let reply = self
+            .client
+            .request(
+                self.subjects.replay_scope(&self.producer),
+                serde_json::to_vec(query)?.into(),
+            )
+            .await
+            .map_err(|e| Error::Unreachable(e.to_string()))?;
+        let value: serde_json::Value = serde_json::from_slice(&reply.payload)?;
+        if let Some(reason) = value.get("refusal").and_then(serde_json::Value::as_str) {
+            return Err(Error::Invalid(reason.into()));
+        }
+        serde_json::from_value(value).map_err(Error::Json)
+    }
+
     pub(crate) async fn connect(config: &Config) -> Result<Self> {
         let options = match config.credentials()? {
             Some((user, password)) => {
@@ -62,14 +85,37 @@ impl Client {
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
         let max_message = client.server_info().max_payload;
-        Ok(Self {
+        let mut connected = Self {
             client,
             subjects,
             producer: config.producer.clone(),
             max_message,
             store_root: config.store.clone(),
             acknowledgments,
-        })
+        };
+        let declarations = crate::kinds::declarations(&config.producer);
+        let hashes: Vec<_> = declarations
+            .iter()
+            .map(|d| (d.kind.clone(), d.definition_hash()))
+            .collect();
+        let body = serde_json::to_vec(&hashes)?;
+        let name = format!("kinds:{}", blake3::hash(&body).to_hex());
+        let registration = Ingress::RegisterKinds {
+            frame: name.clone(),
+            declarations,
+        };
+        let bytes = serde_json::to_vec(&registration)?;
+        let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+        connected.write_bytes(&name, &blob, bytes.len() as u64, bytes.as_slice())?;
+        let ack = connected.send(registration).await?;
+        let registered: Vec<(sinex_model::KindRef, String)> =
+            serde_json::from_value(ack.outcome["registered_kinds"].clone())?;
+        if registered != hashes {
+            return Err(Error::Invalid(
+                "Sinex acknowledged different kind definitions".into(),
+            ));
+        }
+        Ok(connected)
     }
 
     /// What Sinex recorded under these frame names.
