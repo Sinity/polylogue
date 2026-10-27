@@ -142,7 +142,7 @@ fn receive(
                 true
             }
         };
-        serde_json::to_writer(&mut *output, &value)?;
+        output.write_all(polylogue_render::terminal::json(&value, false).as_bytes())?;
         output.write_all(b"\n")?;
         if complete {
             output.flush()?;

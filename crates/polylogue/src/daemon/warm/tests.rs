@@ -65,3 +65,32 @@ fn values_with_spaces_are_quoted() {
     assert_eq!(quoted("polylogue"), "polylogue");
     assert_eq!(quoted("two words"), "\"two words\"");
 }
+
+#[test]
+fn completions_escape_help_and_omit_values_with_controls() {
+    let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
+    let mut values = vec!["tag:ordinary".into(), format!("query:{hostile}")];
+    for code in 0..=159 {
+        let c = char::from_u32(code).unwrap();
+        if c.is_control() {
+            values.push(format!("tag:{c}"));
+        }
+    }
+    let data = Completion {
+        values,
+        sessions: vec![("claude-code:abc".into(), hostile.into())],
+        ..Completion::default()
+    };
+    assert_eq!(
+        completions(&data, "tag:"),
+        vec![("tag:ordinary".into(), "".into())]
+    );
+    assert!(completions(&data, "query:").is_empty());
+    assert_eq!(
+        completions(&data, "claude-code:"),
+        vec![(
+            "claude-code:abc".into(),
+            polylogue_render::terminal::escape(hostile)
+        )]
+    );
+}

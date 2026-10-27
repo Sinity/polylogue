@@ -14,6 +14,7 @@ pub mod model_pages;
 pub mod results;
 pub mod schema;
 pub mod session_summary;
+pub mod terminal;
 
 use polylogue_model::{Block, Event, Message, PromptKind, Role, Session, ToolOutcome};
 use serde_json::{Value, json};
@@ -340,18 +341,17 @@ fn title(s: &Session, selected: Option<&str>) -> String {
 }
 
 fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
+    use terminal::line;
     for item in items {
         match item {
             Rendered::SessionHeader {
                 session: s,
                 title: selected,
             } => {
-                writeln!(out, "\x1b[1m{}\x1b[0m", title(s, *selected))?;
-                writeln!(
+                line(out, format_args!("{}", title(s, *selected)))?;
+                line(
                     out,
-                    "\x1b[2m{}  {}\x1b[0m",
-                    s.id,
-                    s.cwd.last().map_or("", String::as_str)
+                    format_args!("{}  {}", s.id, s.cwd.last().map_or("", String::as_str)),
                 )?;
                 writeln!(out)?;
             }
@@ -360,28 +360,29 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 if ps.is_empty() {
                     continue;
                 }
-                writeln!(out, "\x1b[2m── {} {}\x1b[0m", who(m), when(m))?;
+                line(out, format_args!("── {} {}", who(m), when(m)))?;
                 for p in ps {
                     match p.kind {
-                        "tool_call" => writeln!(
+                        "tool_call" => line(
                             out,
-                            "\x1b[36m→ {}\x1b[0m {}",
-                            p.label.unwrap_or_default(),
-                            p.text
+                            format_args!("→ {} {}", p.label.unwrap_or_default(), p.text),
                         )?,
                         "tool_result" => {
-                            writeln!(out, "\x1b[36m← {}\x1b[0m", p.label.unwrap_or_default())?;
-                            for line in p.text.lines().take(20) {
-                                writeln!(out, "  {line}")?;
+                            line(out, format_args!("← {}", p.label.unwrap_or_default()))?;
+                            // Escape before splitting: CR and C1 line separators must stay visible.
+                            for text in terminal::escape(&p.text).split('\n') {
+                                writeln!(out, "  {text}")?;
                             }
                         }
-                        "thinking" => writeln!(out, "\x1b[2;3m{}\x1b[0m", p.text)?,
-                        "text" => writeln!(out, "{}", p.text)?,
-                        kind => writeln!(
+                        "thinking" => line(out, format_args!("{}", p.text))?,
+                        "text" => line(out, format_args!("{}", p.text))?,
+                        kind => line(
                             out,
-                            "[{kind}{}] {}",
-                            p.label.map(|l| format!(" {l}")).unwrap_or_default(),
-                            p.text
+                            format_args!(
+                                "[{kind}{}] {}",
+                                p.label.map(|l| format!(" {l}")).unwrap_or_default(),
+                                p.text
+                            ),
                         )?,
                     }
                 }
@@ -390,7 +391,7 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
             Rendered::Document(doc) => documents::terminal(doc, view, out)?,
             Rendered::Event(e) if view == View::Full => events::terminal(e, out)?,
             Rendered::Event(_) => {}
-            Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
+            Rendered::Notice(notice) => line(out, format_args!("{notice}\n"))?,
         }
     }
     Ok(())

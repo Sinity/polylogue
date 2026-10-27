@@ -222,7 +222,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 Some(output) => output(&values, &data, json),
                 None => {
                     if json {
-                        println!("{data}");
+                        println!("{}", polylogue_render::terminal::json(&data, false));
                     } else {
                         print!("{}", (cmd.print)(&data));
                     }
@@ -244,10 +244,7 @@ pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
     let out = out.as_deref();
     let text = match data.get("content").and_then(|c| c.as_str()) {
         Some(content) => content.to_owned(),
-        None => match serde_json::to_string_pretty(data) {
-            Ok(t) => t,
-            Err(e) => return fail(json, "internal", &e.to_string(), 1),
-        },
+        None => polylogue_render::terminal::json(data, true),
     };
     match out {
         Some(path) => match std::fs::write(path, text.as_bytes()) {
@@ -255,7 +252,7 @@ pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
             Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
         },
         None => {
-            print!("{text}");
+            print!("{}", polylogue_render::terminal::stdout_text(&text));
             ExitCode::SUCCESS
         }
     }
@@ -270,7 +267,7 @@ fn current_dir() -> PathBuf {
 pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
     if !values.flag("exec") {
         if json {
-            println!("{data}");
+            println!("{}", polylogue_render::terminal::json(data, false));
         } else {
             print!("{}", print::resume(data));
         }
@@ -283,13 +280,16 @@ fn exec_plan(data: &Value) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let Some(native) = data.get("harness_command").filter(|n| !n.is_null()) else {
         eprintln!(
-            "polylogue: this session has no native resume; continue with context instead: {}",
-            data["context_assisted"]["program"]
-                .as_str()
-                .map_or_else(String::new, |_| format!(
-                    "polylogue takeover {}",
-                    data["session"].as_str().unwrap_or("")
-                ))
+            "{}",
+            polylogue_render::terminal::escape(&format!(
+                "polylogue: this session has no native resume; continue with context instead: {}",
+                data["context_assisted"]["program"]
+                    .as_str()
+                    .map_or_else(String::new, |_| format!(
+                        "polylogue takeover {}",
+                        data["session"].as_str().unwrap_or("")
+                    ))
+            ))
         );
         return ExitCode::from(1);
     };
@@ -306,7 +306,10 @@ fn exec_plan(data: &Value) -> ExitCode {
         cmd.current_dir(dir);
     }
     let err = cmd.exec();
-    eprintln!("polylogue: could not run {program}: {err}");
+    eprintln!(
+        "{}",
+        polylogue_render::terminal::escape(&format!("polylogue: could not run {program}: {err}"))
+    );
     ExitCode::FAILURE
 }
 
@@ -375,15 +378,24 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
     let Ok(Response::Ok { data }) = serde_json::from_str::<Response>(&reply) else {
         return Vec::new();
     };
+    completion_candidates(&data)
+}
+
+fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate> {
     data.as_array()
         .into_iter()
         .flatten()
         .filter_map(|c| {
             let value = c["value"].as_str()?;
+            if value.chars().any(char::is_control)
+                || polylogue_render::terminal::escape(value) != value
+            {
+                return None;
+            }
             let help = c["help"].as_str().filter(|h| !h.is_empty());
             Some(
                 clap_complete::CompletionCandidate::new(value)
-                    .help(help.map(|h| h.to_owned().into())),
+                    .help(help.map(|h| polylogue_render::terminal::escape(h).into())),
             )
         })
         .collect()
@@ -404,10 +416,16 @@ pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode 
     if json {
         println!(
             "{}",
-            serde_json::json!({ "error": { "kind": kind, "message": message } })
+            polylogue_render::terminal::json(
+                &serde_json::json!({ "error": { "kind": kind, "message": message } }),
+                false
+            )
         );
     } else {
-        eprintln!("polylogue: {kind}: {message}");
+        eprintln!(
+            "{}",
+            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
+        );
     }
     ExitCode::from(code)
 }
@@ -424,12 +442,21 @@ fn fail_detail(
     if json {
         println!(
             "{}",
-            serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } })
+            polylogue_render::terminal::json(
+                &serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } }),
+                false
+            )
         );
     } else {
-        eprintln!("polylogue: {kind}: {message}");
+        eprintln!(
+            "{}",
+            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
+        );
         if let Some(s) = detail.as_ref().and_then(|d| d["suggestion"].as_str()) {
-            eprintln!("polylogue: try: {s}");
+            eprintln!(
+                "{}",
+                polylogue_render::terminal::escape(&format!("polylogue: try: {s}"))
+            );
         }
     }
     ExitCode::from(code)
