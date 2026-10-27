@@ -184,7 +184,7 @@ export class Capturer {
       } catch (error) {
         // The raw conversation must reach the outbox even when the host
         // cannot list its files. Try discovery again on the next capture.
-        const outcome = (await this.keep(base, [])) ? "stored" : "waiting";
+        const outcome = unchanged ? "unchanged" : (await this.keep(base, [])) ? "stored" : "waiting";
         this.log(`Files of ${key} could not be listed: ${error.code || error.message}`);
         return { outcome, provider, conversation };
       }
