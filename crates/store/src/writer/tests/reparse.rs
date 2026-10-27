@@ -619,3 +619,106 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
         "claude-code:b"
     );
 }
+
+fn link_only(input: &str) -> Batch {
+    let mut b = batch(input, 0, 0, vec![], &[]);
+    b.parse[0].output.links.push(Link {
+        parent: sid("parent"),
+        child: sid("child"),
+        kind: LinkKind::Spawn,
+        at: None,
+        call_id: None,
+        evidence: input.into(),
+    });
+    b
+}
+
+#[test]
+fn retracting_a_link_only_chain_recomputes_the_childs_work() {
+    let w = test_archive();
+    write(
+        &w,
+        [batch(
+            "sessions",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message("prompt", "child", Role::User, "Implement the parser", None),
+            )],
+            &["parent", "child"],
+        )],
+    );
+    write(&w, [link_only("link")]);
+    let goals = || {
+        ReadPool::open(&w.archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .query("SELECT title FROM work_node WHERE kind='goal'", &[])
+            .unwrap()
+    };
+    assert_eq!(goals(), [json!({"title":"Implement the parser"})]);
+    let mut reading = ChainReading::new().unwrap();
+    reading
+        .push(&mut ParseStep::new(
+            Output::default(),
+            RecordCounts::default(),
+            0..100,
+            true,
+        ))
+        .unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(link_only("link").input, 1, 100, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert!(goals().is_empty());
+}
+
+#[test]
+fn excising_a_link_only_input_keeps_the_other_inputs_statement() {
+    let w = test_archive();
+    write(
+        &w,
+        [
+            batch("sessions", 0, 0, vec![], &["parent", "child"]),
+            link_only("a"),
+            link_only("b"),
+        ],
+    );
+    let blobs = Arc::new(w.archive.blobs().unwrap());
+    for (input, links) in [("a", 1), ("b", 0)] {
+        w.writer
+            .excise(
+                crate::excise::ExciseRequest {
+                    id: format!("remove-{input}"),
+                    target: crate::excise::ExciseTarget::Input(input.into()),
+                    reason: None,
+                    dry_run: false,
+                },
+                Arc::clone(&blobs),
+            )
+            .unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let r = pool.reader().unwrap();
+        for table in ["link", "link_source", "link_value"] {
+            assert_eq!(
+                r.query(&format!("SELECT count(*) AS n FROM {table}"), &[])
+                    .unwrap()[0]["n"],
+                links
+            );
+        }
+        assert_eq!(
+            r.query("SELECT count(*) AS n FROM session", &[]).unwrap()[0]["n"],
+            2
+        );
+        if links > 0 {
+            assert_eq!(
+                r.query("SELECT evidence FROM link", &[]).unwrap()[0]["evidence"],
+                "b"
+            );
+        }
+    }
+}

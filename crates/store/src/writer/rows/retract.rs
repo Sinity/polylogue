@@ -91,3 +91,33 @@ pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> R
     tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
     Ok(())
 }
+
+/// Remove an input's statements before excision removes its remaining index rows.
+pub(crate) fn retract_input(
+    tx: &Transaction<'_>,
+    input_pk: i64,
+    input_id: &str,
+    counter: i64,
+) -> Result<()> {
+    let chains = tx
+        .prepare("SELECT chain FROM parse_state WHERE input_pk=?1 ORDER BY chain")?
+        .query_map([input_pk], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let packed = HashMap::new();
+    for chain in chains {
+        RowWriter {
+            tx,
+            input_pk,
+            input_id,
+            chain,
+            repeats_whole_conversations: false,
+            rank: 0,
+            counter,
+            packed: &packed,
+            first_build: None,
+        }
+        .retract()?;
+        prune_sessions(tx, input_id, chain)?;
+    }
+    Ok(())
+}

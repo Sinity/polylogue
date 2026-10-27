@@ -60,6 +60,7 @@ impl RowWriter<'_, '_> {
     }
 
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
+        self.mark_link_sessions(pk)?;
         let winner = self.tx.prepare_cached(
             "SELECT s.input_pk,s.chain,v.body FROM link_source s JOIN input_ref i ON i.pk=s.input_pk
              JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1
@@ -84,6 +85,17 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
+    fn mark_link_sessions(&self, pk: i64) -> Result<()> {
+        self.tx
+            .prepare_cached(
+                "UPDATE session SET changed=?2 WHERE id IN
+            (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)
+            AND changed IS NOT ?2",
+            )?
+            .execute(params![pk, self.counter])?;
+        Ok(())
+    }
+
     pub(super) fn store_link(&self, link: &Link) -> Result<()> {
         let (kind, how) = link.kind.columns();
         let child = link.child.to_string();
@@ -98,6 +110,7 @@ impl RowWriter<'_, '_> {
             .query_row(params![link.parent.to_string(), child, kind, how], |r| {
                 r.get::<_, i64>(0)
             })?;
+        self.mark_link_sessions(pk)?;
         let previous: Option<Vec<u8>> = self.tx.prepare_cached("SELECT v.body FROM link_source s JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1 AND s.input_pk=?2 AND s.chain=?3")?
             .query_row(params![pk,self.input_pk,self.chain], |r| r.get(0)).optional()?;
         let mut merged = link.clone();

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 mod assertions;
 mod retract;
 pub(super) use retract::prune_sessions;
+pub(crate) use retract::retract_input;
 
 /// Writes a parse step's rows; returns the number of message rows written.
 pub(super) fn write_rows(
