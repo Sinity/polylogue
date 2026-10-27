@@ -261,7 +261,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     use std::io::Read;
     let daemon = crate::test_daemon::start("synthetic finite delivery");
-    let mut file = crate::daemon::service::change_feed(&daemon.daemon, None).unwrap();
+    let mut file = crate::daemon::service::change_feed(&daemon.daemon, None, false).unwrap();
     drop(daemon);
     let mut wire = Vec::new();
     file.read_to_end(&mut wire).unwrap();

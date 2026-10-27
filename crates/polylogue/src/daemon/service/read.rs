@@ -990,9 +990,7 @@ pub(super) fn outline(
 }
 
 fn representation(value: &mut serde_json::Value, slices: bool) {
-    if let Some(fields) = value.as_object_mut() {
-        if !slices {
-            fields.remove("slices");
-        }
+    if !slices && let Some(fields) = value.as_object_mut() {
+        fields.remove("slices");
     }
 }
