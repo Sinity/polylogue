@@ -226,7 +226,7 @@ pub fn handle_with_limit(
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(limit.clone());
     }
-    super::execution::run(request, limit, |request| handle_inner(request, d)).masked()
+    super::execution::run(request, limit, |request| handle_inner(request, d).masked())
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {

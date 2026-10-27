@@ -123,7 +123,7 @@ pub fn refusal(
             "hint": "restrict the query to a shorter time range or one session",
             "retryable": true,
         })),
-    }
+    }.masked()
 }
 
 /// Timeout follows the operations exit table; cancellation is a refusal.
