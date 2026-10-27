@@ -214,7 +214,7 @@ fn capture_logs_check_digest_and_do_not_accept_a_partial_prefix_as_complete() {
 }
 
 #[test]
-fn recursive_diff_distinguishes_add_remove_types_and_requiredness() {
+fn schema_differences_distinguish_add_remove_types_and_requiredness() {
     let before = infer(
         br#"{"message":{"text":"x","count":1},"id":"a"}
 {"message":{"text":"y","count":2},"id":"b"}"#,
@@ -245,7 +245,7 @@ fn recursive_diff_distinguishes_add_remove_types_and_requiredness() {
 }
 
 #[test]
-fn diff_labels_different_sample_populations_and_refuses_incompatible_rules() {
+fn diff_labels_different_samples_and_refuses_incompatible_rules() {
     let before = infer(b"{}", Framing::Json);
     let mut after = before.clone();
     after.origin = "another".into();
@@ -314,9 +314,11 @@ fn array_element_changes_and_null_widening_are_type_findings() {
 
 #[test]
 fn large_numbers_and_numeric_marker_keys_keep_their_json_types() {
-    let schema = infer(br#"{"id":184467440737095516160,"count":1e400,"message":{"$serde_json::private::Number":"1"}}"#,Framing::Json);
+    let schema = infer(br#"{"id":184467440737095516160,"count":1e400,"zero":-0,"decimal":-0.0,"message":{"$serde_json::private::Number":"1"}}"#,Framing::Json);
     assert_eq!(schema.fields["/id"].types["integer"], 1);
     assert_eq!(schema.fields["/count"].types["number"], 1);
+    assert_eq!(schema.fields["/zero"].types["integer"], 1);
+    assert_eq!(schema.fields["/decimal"].types["number"], 1);
     assert_eq!(schema.fields["/message"].types["object"], 1);
     assert_eq!(
         schema.fields["/message/$serde_json::private::Number"].types["string"],
@@ -331,3 +333,7 @@ fn nested_json_has_no_fixed_depth_cutoff() {
     assert_eq!(schema.records, 1);
     assert_eq!(schema.fields.len(), 161);
 }
+
+mod memory;
+
+mod streaming;
