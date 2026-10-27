@@ -129,16 +129,19 @@ pub struct LeftOut {
 impl UserWrite {
     /// Hashes client intent without the data resolved when the write runs.
     pub fn intent_hash(&self) -> Result<blake3::Hash> {
-        let mut intent = self.clone();
-        match &mut intent {
+        let mut intent = match self {
             Self::KeepResult {
-                rows_json, read_at, ..
-            } => {
-                rows_json.clear();
-                read_at.clear();
-            }
-            Self::SaveQuery { note } => note.revises = None,
-            _ => {}
+                name, query, ..
+            } => Self::KeepResult {
+                name: name.clone(),
+                query: query.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+            },
+            _ => self.clone(),
+        };
+        if let Self::SaveQuery { note } = &mut intent {
+            note.revises = None;
         }
         Ok(blake3::hash(&serde_json::to_vec(&intent)?))
     }
