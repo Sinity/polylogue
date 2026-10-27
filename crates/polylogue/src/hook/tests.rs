@@ -161,3 +161,21 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
 }
 
 mod settings;
+
+#[test]
+fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Stay silent until the hook closes its end. Only its deadline
+        // can finish the exchange while this connection is open.
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).unwrap();
+        assert!(!request.is_empty());
+    });
+    assert!(exchange(&socket, &Request::Status, ADVICE_BUDGET).is_none());
+    peer.join().unwrap();
+}
