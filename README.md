@@ -31,7 +31,8 @@ polylogue measure usage since:30d    # tokens and cost
 The daemon owns the archive: it holds the archive lock, runs the loop that
 collects and parses every input, runs the only writer, and serves clients
 over a Unix socket. Commands that read or write the archive go through a
-running daemon; without one they exit with code 6.
+running daemon; without one they exit with code 6. Offline `schema` commands
+read explicitly selected stored revisions directly.
 
 The daemon reads each tool's files where the tool writes them
 (`$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`, and so on);
@@ -85,6 +86,7 @@ it.
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
+| `schema infer ORIGIN --input ID`, `schema diff BEFORE AFTER` | Offline structure/count inference over explicit stored revisions and recursive schema comparison ([schema tools](docs/schema-tools.md)). |
 | `completions SHELL` | Completion for bash, elvish, fish, PowerShell or zsh: commands and options, and while you type a query, its units, fields, values seen and recent session IDs, which the shell asks of the daemon through `complete WORD`. |
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an

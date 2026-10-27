@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 /// [`copy_verified`].
 pub(crate) fn copy_plain(
     archive: &Connection,
-    store: &hashed_blobs::Store,
+    store: &impl super::PlainBlobs,
     hash: BlobHash,
     output: impl Write,
 ) -> Result<()> {
@@ -35,8 +35,7 @@ pub(crate) fn copy_plain(
             Ok(())
         }
         "file" => {
-            let mut reader =
-                store.read_plain(&hashed_blobs::Hash(hash.0), Some(size), || Ok(()))?;
+            let mut reader = store.open_plain(&hashed_blobs::Hash(hash.0), size)?;
             copy_verified(&mut reader, output, hash, Some(size))?;
             Ok(())
         }

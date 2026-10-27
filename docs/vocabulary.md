@@ -194,6 +194,19 @@ the same change.
 - **in-page button**: the Polylogue button on a chat page, with its panel.
 - **extension instance**: one browser profile's extension, as claims name it.
 
+## Offline schemas
+
+- **schema artifact**: an offline report of observed field paths, types,
+  presence and counts for an explicit input/revision selection.
+- **schema observer**: the pure Sources reader that counts structure without
+  storing observed values; dynamic map keys share the `*` path.
+- **schema diff**: added and removed paths, changed types and changed
+  requiredness between explicit schema artifacts.
+- **named field**: a field name forced into schema paths even when the dynamic-key
+  heuristic would group it under `*`.
+- **sample**: explicit inputs and revisions selected for schema observation,
+  with no claim of full coverage of an origin.
+
 ## Queries and output
 
 - **logical day**: the day in `day.zone` (the machine's time zone unless
