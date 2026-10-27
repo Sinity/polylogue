@@ -380,7 +380,9 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
         .into_iter()
         .flatten()
     {
-        let stored = str_of(a, "content_base64")
+        let stored = a
+            .get("content_base64")
+            .and_then(Json::as_str)
             .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
             .map(|bytes| {
                 let hash = BlobHash::of(&bytes);
