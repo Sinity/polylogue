@@ -182,8 +182,14 @@ describe("a capture", () => {
     expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
     expect(host.stored).toHaveLength(1);
 
-    hang = false;
     const restarted = start(chrome, { indexedDB: new IDBFactory() });
+    const listFiles = host.routes["POST /v1/captures/files"];
+    host.routes["POST /v1/captures/files"] = () => ({ status: 503, json: { error: "temporarily_unavailable" } });
+    expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
+    expect(host.stored).toHaveLength(1);
+    expect(JSON.parse(host.stored[0]).session.attachments[0].not_fetched).toBe("downloading");
+    host.routes["POST /v1/captures/files"] = listFiles;
+    hang = false;
     expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
     await restarted.capturer.downloads();
     expect(host.stored).toHaveLength(2);
