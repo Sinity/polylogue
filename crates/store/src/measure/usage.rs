@@ -81,7 +81,7 @@ pub struct UsageReport {
 
 pub(crate) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
  AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
- AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')";
+ AND m.session_pk NOT IN (SELECT e.session_pk FROM event e WHERE e.kind='response_boundaries_unknown' AND e.session_pk IS NOT NULL)";
 
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),

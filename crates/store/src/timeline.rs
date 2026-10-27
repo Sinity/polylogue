@@ -28,7 +28,9 @@ fn bind(params: &mut Vec<SqlValue>, value: SqlValue) -> String {
 
 fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
     if let Some(responses) = selection.responses {
-        let (condition, values) = responses.condition();
+        // A page walks the time index and tests session membership on each
+        // row. A session-index scan would sort the whole selection first.
+        let (condition, values) = responses.condition_with_session_column("+m.session_pk");
         let mut params = values
             .into_iter()
             .map(|value| match value {
@@ -49,7 +51,7 @@ fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
         }
         return (
             vec![format!(
-                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m JOIN session s ON s.pk=m.session_pk WHERE {condition}"
+                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE {condition}"
             )],
             params,
         );

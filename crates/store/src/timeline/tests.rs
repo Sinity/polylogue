@@ -262,3 +262,51 @@ fn mixed_kinds_and_models_page_once_across_equal_times_and_undated_records() {
     };
     assert_eq!(collect(&unknown), ["codex:no-model"]);
 }
+
+#[test]
+fn response_pages_exclude_only_sessions_with_unknown_boundaries() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(temp.path()).unwrap();
+    let mut sessions = Vec::new();
+    for id in ["codex:known", "codex:unknown", "codex:unscoped"] {
+        sessions.push(
+            f.session(SessionFacts {
+                id,
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+    }
+    let time = at("2024-03-31T12:00:00Z");
+    add(&mut f, sessions[0], "codex:known-response", Some(time));
+    add(&mut f, sessions[1], "codex:unknown-response", Some(time));
+    for session in &sessions[1..] {
+        f.event(*session, "response_boundaries_unknown", Some(time))
+            .unwrap();
+    }
+    let conn =
+        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    conn.execute(
+        "UPDATE event SET session_pk=NULL WHERE session_pk=?1",
+        [sessions[2]],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let usage = crate::measure::Selection::default();
+    let selection = Selection {
+        responses: Some(&usage),
+        ..all(None, false, false)
+    };
+    let result = page(
+        &r,
+        &LogicalDay::named("UTC", 240).unwrap(),
+        &selection,
+        None,
+        50,
+    )
+    .unwrap();
+    assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(result["rows"][0]["id"], "codex:known-response");
+}

@@ -12,7 +12,7 @@ Lists default to 50 metadata records with continuation. Rows carry record and se
 
 The ignored `day_and_cost_measurements` test records 30 samples per daemon and authenticated HTTP action in `target/day-cost-measurements.json`, or the path in `POLYLOGUE_DAY_COST_REPORT`. Run it through the AgentCTL `measure` operation with `cargo run --locked --quiet -p xtask -- test -p polylogue --run-ignored only -E 'test(day_and_cost_measurements)'`. Its baseline is the existing usage-query API, not an earlier timeline UI. Browser and restart timings are separate measurements.
 
-The ignored `million_message_measurements` Store test compares the reviewed SQL without time indexes to the current Store reads over the same synthetic archive of 1,000,000 messages and 100,000 events across sixteen years. It records five samples per action, setup and index-creation times, query plans and host load in `target/timeline-million.json` (or `POLYLOGUE_TIMELINE_REPORT`). Run it through AgentCTL with `cargo run --locked --quiet -p xtask -- test -p polylogue-store --run-ignored only -E 'test(million_message_measurements)'`.
+The ignored `million_message_measurements` Store test compares the reviewed SQL without time indexes to the current Store reads over the same synthetic archive of 1,000,000 messages and 100,000 events in 1,000 sessions across sixteen years. It records five samples per action, setup and index-creation times, query plans and host load in `target/timeline-million.json` (or `POLYLOGUE_TIMELINE_REPORT`). Run it through AgentCTL with `cargo run --locked --quiet -p xtask -- test -p polylogue-store --run-ignored only -E 'test(million_message_measurements)'`.
 
 ## Workbench rebuild requirements
 
