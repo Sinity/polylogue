@@ -378,8 +378,9 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     let before = natural_rows(&w);
     let mut b = fixture(true).remove(0);
     let mut reading = ChainReading::new().unwrap();
+    let mut later = b.parse[0].clone();
     reading.push(&mut b.parse[0]).unwrap();
-    b.parse[0].output.events.push(Event {
+    later.output.events.push(Event {
         session: None,
         kind: "unbound".into(),
         at: None,
@@ -388,7 +389,7 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
         data: Json::Null,
     });
 
-    reading.push(&mut b.parse[0]).unwrap();
+    reading.push(&mut later).unwrap();
     assert!(
         w.writer
             .sender()
@@ -721,4 +722,48 @@ fn excising_a_link_only_input_keeps_the_other_inputs_statement() {
             );
         }
     }
+}
+
+#[test]
+fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
+    let mut facts = batch("kind-facts", 0, 0, vec![], &["copy"]);
+    facts.parse[0].output.sessions[0].kind = SessionKind::Subagent;
+    let copy = batch(
+        "copy",
+        0,
+        0,
+        vec![row(
+            1,
+            text_message(
+                "shared",
+                "copy",
+                Role::Assistant,
+                "unclassified reading",
+                Some("end_turn"),
+            ),
+        )],
+        &[],
+    );
+    let main = batch(
+        "main",
+        1,
+        0,
+        vec![row(
+            1,
+            text_message(
+                "shared",
+                "main",
+                Role::Assistant,
+                "declared main reading",
+                Some("end_turn"),
+            ),
+        )],
+        &["main"],
+    );
+    let fresh = test_archive();
+    write(&fresh, [copy.clone(), facts.clone(), main.clone()]);
+    let separate_passes = test_archive();
+    write(&separate_passes, [facts]);
+    write(&separate_passes, [copy, main]);
+    assert_eq!(natural_rows(&separate_passes), natural_rows(&fresh));
 }

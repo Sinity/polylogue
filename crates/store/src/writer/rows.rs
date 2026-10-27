@@ -529,15 +529,14 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    // Placement uses this input's declared kind before the merged session
-    // is derived; another input's kind cannot classify these rows.
+    // Placement uses this input's kind, or a fresh session's main default.
+    // Another input's facts or an earlier derive cannot classify these rows.
     fn session_kind(&self, session_pk: i64) -> Result<String> {
         Ok(self
             .tx
             .prepare_cached(
                 "SELECT COALESCE((SELECT json_extract(facts,'$.kind') FROM session_record
-                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),kind)
-                 FROM session WHERE pk=?1",
+                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),'main')",
             )?
             .query_row(params![session_pk, self.input_pk, self.chain], |r| r.get(0))?)
     }

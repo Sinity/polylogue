@@ -26,8 +26,8 @@ fn session_kind_reads(supplied: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "session",
-                column_name: "kind"
+                table_name: "session_record",
+                column_name: "facts"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);
