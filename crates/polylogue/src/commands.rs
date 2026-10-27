@@ -1218,6 +1218,71 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "timeline",
+        help: "Paged recorded activity, calendar counts and usage in the configured logical day",
+        args: &[
+            opt(
+                "date",
+                Kind::Text,
+                "Logical date YYYY-MM-DD (default today)",
+            ),
+            opt(
+                "across_years",
+                Kind::Bool,
+                "This month and day in recorded years through the chosen date",
+            ),
+            opt(
+                "undated",
+                Kind::Bool,
+                "Records with unknown or unrepresentable time",
+            ),
+            CURSOR,
+            LIMIT,
+        ],
+        action: Action::Request(requests::timeline),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "cost",
+        help: "Usage of selected sessions, optionally during one logical day, and paged physical response records",
+        args: &[
+            opt("query", Kind::Text, "Session query (default sessions)"),
+            opt(
+                "date",
+                Kind::Text,
+                "Restrict source record times to this logical date",
+            ),
+            opt(
+                "model",
+                Kind::Text,
+                "Show response details for this model; totals retain all selected models",
+            ),
+            opt(
+                "undated",
+                Kind::Bool,
+                "Only source records with unknown or unrepresentable times",
+            ),
+            opt(
+                "unknown_model",
+                Kind::Bool,
+                "Response details with no recorded model name",
+            ),
+            opt(
+                "month",
+                Kind::Text,
+                "Calendar month for daily response subtotals, as YYYY-MM-DD (default selected day or today)",
+            ),
+            CURSOR,
+            LIMIT,
+        ],
+        action: Action::Request(requests::cost),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
         name: "complete",
         help: "Completions for one word of a query: field names, values seen, unit names and recent session IDs",
         args: &[pos_opt("word", Kind::Text, "The word being typed")],

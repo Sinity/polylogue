@@ -617,6 +617,83 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
     Ok(Value::Array(out))
 }
 
+/// Session keys for usage and its response drill-down, from the same compiler
+/// path as a session measure. Presentation limits never limit the population.
+pub(crate) fn usage_selection(
+    reader: &Reader<'_>,
+    text: &str,
+    now: i64,
+    embeddings: bool,
+    near: Option<&NearFn<'_>>,
+) -> Result<(polylogue_store::measure::Selection, Option<u64>), Failure> {
+    let text = format!("{text} | measure usage");
+    let ask = Ask {
+        text: &text,
+        cursor: None,
+        page_size: None,
+        why: false,
+        session: None,
+        now,
+        day: None,
+        embeddings,
+        near,
+        fields: &[],
+    };
+    let opts = options(reader, &ask, now, 0)?;
+    let program = polylogue_query::compile(&text, &opts)?;
+    validate(reader, &program)?;
+    let m = program.measure.as_ref().ok_or_else(|| Failure {
+        kind: "bad_request".into(),
+        message: "cost requires a sessions query".into(),
+        detail: None,
+    })?;
+    let similarity = match (&program.near, near) {
+        (Some(request), Some(near)) => Some(near(&request.text).map_err(|message| Failure {
+            kind: "embed".into(),
+            message,
+            detail: None,
+        })?),
+        (Some(_), None) => {
+            return Err(Failure {
+                kind: "embed".into(),
+                message: "semantic search unavailable".into(),
+                detail: None,
+            });
+        }
+        _ => None,
+    };
+    let select = || -> Result<Option<Vec<i64>>, Failure> {
+        if m.everything {
+            Ok(None)
+        } else {
+            Ok(Some(
+                reader
+                    .query(
+                        &format!("SELECT _pk FROM ({})", program.sql),
+                        &values(&program.params),
+                    )?
+                    .iter()
+                    .filter_map(|r| r["_pk"].as_i64())
+                    .collect(),
+            ))
+        }
+    };
+    let sessions = match similarity {
+        Some(similarity) => reader.with_similarity(similarity, select)?,
+        None => select()?,
+    };
+    Ok((
+        polylogue_store::measure::Selection {
+            sessions,
+            ..Default::default()
+        },
+        program
+            .near
+            .as_ref()
+            .map(|_| polylogue_store::vectors::writes()),
+    ))
+}
+
 #[cfg(test)]
 mod tests;
 
