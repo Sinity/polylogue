@@ -359,7 +359,10 @@ impl Reader<'_> {
                 let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else {
                     return Ok(None);
                 };
-                if !header.get("schema").is_some_and(serde_json::Value::is_object) {
+                if !header
+                    .get("schema")
+                    .is_some_and(serde_json::Value::is_object)
+                {
                     return Ok(None);
                 }
                 return Ok(header.get("source").and_then(|source| {

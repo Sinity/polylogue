@@ -737,8 +737,8 @@ impl Engine {
         tracked: bool,
     ) -> Plan {
         let parser = (origin.open)(&path);
-        let independent_rows = origin.is_row_dump(&path)
-            && matches!(parser, Some(polylogue_sources::Parse::Lines(_)));
+        let independent_rows =
+            origin.is_row_dump(&path) && matches!(parser, Some(polylogue_sources::Parse::Lines(_)));
         let parse_pos = if state.parsed
             && (independent_rows || parser.as_ref().is_some_and(|p| p.is_capture_log()))
         {

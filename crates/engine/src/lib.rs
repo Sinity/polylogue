@@ -432,7 +432,9 @@ impl Engine {
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
-            if !origin.is_row_dump(Path::new(&k.path)) && self.inputs.contains_key(Path::new(&k.path)) {
+            if !origin.is_row_dump(Path::new(&k.path))
+                && self.inputs.contains_key(Path::new(&k.path))
+            {
                 continue;
             }
             self.inputs.insert(
