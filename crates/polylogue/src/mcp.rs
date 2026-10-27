@@ -113,6 +113,8 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 impl Session {
     fn prepare(&mut self, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let valid_id = id.is_null() || id.is_string() || id.is_number();
+        let id = if valid_id { id } else { Value::Null };
         let invalid = |code, message| Reply::Message(error(id.clone(), code, message));
         let Some(method) = request["method"].as_str() else {
             // Client responses to server requests have no method.
@@ -122,7 +124,7 @@ impl Session {
                 invalid(-32600, "Invalid request")
             };
         };
-        if request["jsonrpc"] != "2.0" || !(id.is_null() || id.is_string() || id.is_number()) {
+        if request["jsonrpc"] != "2.0" || !valid_id {
             return invalid(-32600, "Invalid request");
         }
         if request.get("id").is_none() {

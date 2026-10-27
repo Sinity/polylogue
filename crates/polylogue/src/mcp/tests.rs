@@ -169,6 +169,20 @@ fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
 }
 
 #[test]
+fn malformed_request_ids_are_not_echoed_in_error_responses() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = Archive::at(temp.path());
+    for id in [json!({"wrong":1}), json!([1]), json!(true)] {
+        let reply = Session::default()
+            .prepare(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}))
+            .answer(&archive)
+            .unwrap();
+        assert_eq!(reply["id"], Value::Null);
+        assert_eq!(reply["error"]["code"], -32600);
+    }
+}
+
+#[test]
 fn errors_show_archived_controls_as_text() {
     let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
     let text = super::error_text(
