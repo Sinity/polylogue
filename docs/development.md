@@ -9,6 +9,7 @@ work and keeps its log.
 | Compile | `agentctl job start polylogue compile --workspace <worktree> -- -p <crate>` | while editing |
 | Formatting | `agentctl job start polylogue fmt --workspace <worktree>` | before committing |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing |
+| Changed tests | `agentctl job start polylogue focused --workspace <worktree> -- --changed` | tests affected by the current diff |
 | Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing |
 | Full suite | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
 | End-to-end scenarios | `agentctl job start polylogue scenarios --workspace <worktree>` | after daemon, CLI or MCP changes |
@@ -134,9 +135,12 @@ Every run is recorded in `$XDG_STATE_HOME/devkit/history.db`: its stages and
 times, each test's outcome with output for failures, and compiler
 diagnostics. `cargo run -p xtask -- status` shows what failed in this
 checkout's last run; `history failures [RUN]`, `history diagnostics [RUN]`
-and `history runs` show more, each with `--json`. `test --changed` runs the
-tests of packages changed since the merge base with `origin/master` and of
-everything that depends on them.
+and `history runs` show more, each with `--json`. `test --changed` uses devkit to select tests affected by committed, staged,
+unstaged and untracked changes since the merge base with `origin/master`.
+Production changes select packages and their reverse dependencies; changes
+confined to test functions or integration-test files can select those tests
+or binaries. Explicit package and test filters intersect this selection.
+`--changed-base=<ref>` chooses another base.
 
 ## Benchmarks
 

@@ -1,7 +1,7 @@
 mod bench;
 
 use clap::Parser;
-use devkit::{Nextest, Run, select::Selection};
+use devkit::{Nextest, Run};
 use serde_json::Value;
 use std::{path::Path, process::ExitCode};
 
@@ -37,8 +37,7 @@ enum Cli {
     Scenarios,
     /// Tests only: everything, or what changed since the merge base.
     Test {
-        /// Only packages changed since the merge base with origin/master, and
-        /// what depends on them.
+        /// Tests affected by changes since the merge base with origin/master.
         #[arg(long)]
         changed: bool,
         /// Further `cargo nextest run` arguments: `-p` packages and `-E`
@@ -296,22 +295,11 @@ fn main() -> ExitCode {
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { changed, args } => {
-            let mut required = None;
+            let mut args = args;
             if changed {
-                let root = Path::new(".");
-                match devkit::select::changed(root, "origin/master") {
-                    Ok(Selection::Nothing) => {
-                        eprintln!("no package changed since the merge base; nothing to test");
-                        return ExitCode::SUCCESS;
-                    }
-                    Ok(selection) => required = selection.filterset(),
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::FAILURE;
-                    }
-                }
+                args.push("--changed".to_owned());
             }
-            let arguments = match test_arguments(&args, required) {
+            let arguments = match test_arguments(&args, None) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     eprintln!("{error}");

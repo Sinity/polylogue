@@ -104,3 +104,26 @@ fn feature_flags_are_refused_rather_than_building_a_second_feature_set() {
             .contains("needs a value")
     );
 }
+
+#[test]
+fn changed_selection_reaches_devkit_with_explicit_filters() {
+    let selected = arguments(
+        &[
+            "--changed",
+            "--changed-base=HEAD~1",
+            "-p",
+            "polylogue-store",
+        ],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        selected[4..],
+        [
+            "-E",
+            "((package(=polylogue-store)))",
+            "--changed",
+            "--changed-base=HEAD~1"
+        ]
+    );
+}
