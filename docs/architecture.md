@@ -146,8 +146,8 @@ commits the records' comparison hashes and byte position in `index.db`.
 Domain parsing reads the stored input through the ordinary parse path. Each row records its capture time (`at_ms`) and SQLite value encoding. Null,
 integers, finite reals and UTF-8 text use JSON scalars; blobs use `base64`,
 other text uses `text_base64`, and non-finite reals use their 16-digit IEEE-754
-`real_bits`. Generated columns are stored as read. Nullable primary keys use
-the SQLite rowid. When every rowid alias is shadowed, the key explicitly names
+`real_bits`. Generated columns are stored as read. Rows whose primary key contains NULL use a tagged SQLite rowid; complete
+keys keep their declared values. When every rowid alias is shadowed, the key explicitly names
 the row's observed position, preserving identical rows separately.
 
 An ordinary restart reads this comparison state directly. The ordinary

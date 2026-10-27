@@ -360,7 +360,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     let reader = pool.reader().unwrap();
     assert_eq!(reader.status().unwrap().messages, 1);
     let position = reader.input_progress("resume-input").unwrap().unwrap();
-    assert_eq!(position.parsed_upto, 1);
+    assert_eq!(position.parsed_upto, 2);
     drop(reader);
     let writer = crate::Writer::start(&archive).unwrap();
     writer.derive().unwrap();

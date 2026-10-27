@@ -218,6 +218,7 @@ struct Table {
     /// Primary-key column positions; empty when the rowid is the key.
     key: Vec<usize>,
     rowid: Option<String>,
+    position_key: bool,
 }
 
 fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
@@ -266,11 +267,6 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
             [&name],
             |r| r.get(0),
         )?;
-        // SQLite permits duplicate NULL primary keys in ordinary rowid
-        // tables. Only enforced non-null keys identify every row uniquely.
-        if !without_rowid && key.iter().any(|(_, i)| !cols[*i].2) {
-            key.clear();
-        }
         let rowid = (!without_rowid)
             .then(|| {
                 ["rowid", "_rowid_", "oid"]
@@ -279,12 +275,15 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
                     .map(str::to_owned)
             })
             .flatten();
+        let position_key = rowid.is_none()
+            && (key.is_empty() || (!without_rowid && key.iter().any(|(_, i)| !cols[*i].2)));
         out.push(Table {
             name,
             sql,
             columns: cols.into_iter().map(|(c, _, _)| c).collect(),
             key: key.into_iter().map(|(_, i)| i).collect(),
             rowid,
+            position_key,
         });
     }
     Ok(out)
@@ -351,7 +350,7 @@ fn write_export(
         let full = replaced
             || changed_schema
             || declared.is_none()
-            || (table.key.is_empty() && table.rowid.is_none())
+            || table.position_key
             || previous.as_ref().is_none_or(|p| {
                 Some(p.column.as_str()) != declared
                     || p.value.is_none()
@@ -407,20 +406,17 @@ fn write_export(
             for (i, column) in table.columns.iter().enumerate() {
                 values.insert(column.clone(), value(row.get_ref(i + 1).map_err(sql_err)?));
             }
-            let key = if table.key.is_empty() {
-                if table.rowid.is_some() {
-                    json!([value(row.get_ref(0).map_err(sql_err)?)])
-                } else {
-                    json!({"position":position})
-                }
+            // Non-null primary keys keep their declared identities. A NULL
+            // key is not unique in SQLite, so that row names its rowid.
+            let key = if !table.key.is_empty()
+                && table.key.iter().all(|&i| !values[&table.columns[i]].is_null())
+            {
+                Value::Array(table.key.iter().map(|&i| values[&table.columns[i]].clone()).collect())
+            } else if table.rowid.is_some() {
+                let rowid = value(row.get_ref(0).map_err(sql_err)?);
+                if table.key.is_empty() { json!([rowid]) } else { json!({"rowid":rowid}) }
             } else {
-                Value::Array(
-                    table
-                        .key
-                        .iter()
-                        .map(|&i| values[&table.columns[i]].clone())
-                        .collect(),
-                )
+                json!({"position":position})
             };
             if let Some(column) = declared {
                 let value = values.get(column).and_then(Value::as_i64).ok_or_else(|| {

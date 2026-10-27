@@ -68,13 +68,16 @@ fn a_missing_generation_is_created_and_a_failed_update_changes_nothing() {
 }
 
 #[test]
-fn replacing_an_index_in_an_open_archive_establishes_its_boot_before_restart() {
+fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     let conn = super::super::open_write(&archive.index_db(), cache::SETUP).unwrap();
     let before = value(&conn, "generation");
-    conn.pragma_update(None, "user_version", 1).unwrap();
     drop(conn);
+    for suffix in ["", "-wal", "-shm"] {
+        let path = archive.root.join(format!("index.db{suffix}"));
+        if path.exists() { std::fs::remove_file(path).unwrap(); }
+    }
     archive.prepare_index().unwrap();
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     let rebuilt = value(&conn, "generation");

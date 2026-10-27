@@ -168,7 +168,7 @@ fn nullable_keys_and_every_sqlite_storage_class_keep_their_values() {
     let rows: Vec<_> = t.lines().into_iter().filter(|r| r["t"] == "t").collect();
     assert_eq!(rows.len(), 7);
     for (i, row) in rows.iter().enumerate() {
-        assert_eq!(row["k"], json!([i + 1]));
+        assert_eq!(row["k"], json!({"rowid":i + 1}));
         assert_eq!(row["r"]["body"], row["r"]["acquired"]);
         assert!(row["at_ms"].as_i64().is_some());
         assert_eq!(row["encoding"], "sqlite");

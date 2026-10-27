@@ -892,6 +892,11 @@ impl Engine {
             let Some(mut plan) = running.remove(&d.path) else {
                 continue;
             };
+            if d.refused {
+                self.inputs.remove(&d.path);
+                self.refused.insert(d.path);
+                continue;
+            }
             pass.bytes_stored += d.stored;
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
