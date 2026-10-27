@@ -74,3 +74,14 @@ details.thinking > summary { color: var(--muted); cursor: pointer; }
 .parents-table { overflow-x: auto; }
 .parents-table caption { text-align: left; }
 .parents-table td { overflow-wrap: anywhere; min-width: 7em; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.skip { position: absolute; left: -10000px; }
+.skip:focus { left: 1em; top: 1em; z-index: 3; background: var(--bg); }
+.paging { display: flex; flex-wrap: wrap; gap: 1em; margin: .8em 0; }
+.block .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+#key-help { margin: .4em 1.2em; }
+@media (max-width: 600px) {
+  header.top { position: static; flex-wrap: wrap; }
+  header.top form { flex-basis: 100%; order: 1; }
+}

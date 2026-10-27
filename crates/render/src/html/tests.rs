@@ -44,6 +44,59 @@ fn calls_show_their_outcome_and_result_once() {
 }
 
 #[test]
+fn paged_calls_show_the_recorded_outcome_name_and_command_preview() {
+    let slice = crate::model_pages::BlockSlice {
+        message: None,
+        block: 0,
+        kind: "tool_call".into(),
+        label: Some("shell <tool>".into()),
+        outcome: Some(polylogue_model::CallOutcome::Error),
+        text: "printf '<value>'\nsecond line".into(),
+        from: 0,
+        until: "printf '<value>'\nsecond line".chars().count(),
+        more: true,
+    };
+    let mut out = Vec::new();
+    page_slices(&[slice], &mut out).unwrap();
+    let body = String::from_utf8(out).unwrap();
+    let summary = body.split("</summary>").next().unwrap();
+    assert!(summary.contains("outcome error\">error</span> <b>shell &lt;tool&gt;</b> <code>printf &#39;&lt;value&gt;&#39;</code>"));
+    assert!(!summary.contains("second line"));
+    assert!(body.contains("<pre>printf &#39;&lt;value&gt;&#39;\nsecond line</pre>"));
+    assert!(body.contains("Continues on the next page"));
+}
+
+#[test]
+fn a_page_starting_inside_a_block_says_so() {
+    let mut slice = crate::model_pages::BlockSlice {
+        message: None,
+        block: 0,
+        kind: "text".into(),
+        label: None,
+        outcome: None,
+        text: "tail".into(),
+        from: 8,
+        until: 12,
+        more: false,
+    };
+    let mut out = Vec::new();
+    page_slices(std::slice::from_ref(&slice), &mut out).unwrap();
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("starts within a source block")
+    );
+    slice.from = 0;
+    let mut out = Vec::new();
+    page_slices(&[slice], &mut out).unwrap();
+    assert!(
+        !String::from_utf8(out)
+            .unwrap()
+            .contains("starts within a source block")
+    );
+}
+
+#[test]
 fn attribute_text_and_ids_are_encoded_as_text_not_markup() {
     assert_eq!(escape("<&\"'"), "&lt;&amp;&quot;&#39;");
     assert_eq!(

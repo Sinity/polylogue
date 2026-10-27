@@ -35,6 +35,106 @@ pub fn encode_path_segment(id: &str) -> String {
     out
 }
 
+/// Render a structured page already masked by the shared pager. A page never
+/// hydrates hidden tool output; continuation is an ordinary reader link.
+pub fn page_slices(
+    slices: &[crate::model_pages::BlockSlice],
+    out: &mut dyn io::Write,
+) -> io::Result<()> {
+    if slices.first().is_some_and(|slice| slice.from > 0) {
+        write!(
+            out,
+            "<p class=\"meta\">This page starts within a source block.</p>"
+        )?;
+    }
+    let mut current = None;
+    for slice in slices {
+        let id = slice.message.as_ref().map(|m| &m.id);
+        if id != current {
+            if current.is_some() {
+                write!(out, "</section>")?;
+            }
+            if let Some(message) = &slice.message {
+                let encoded = encode_path_segment(&message.id.to_string());
+                write!(
+                    out,
+                    "<section class=\"message {}\" id=\"m-{encoded}\" tabindex=\"-1\" data-reference=\"message:{}\"><h2><a href=\"/m/{encoded}\">{}</a> <span class=\"meta\">{}</span></h2>",
+                    message.role.as_str(),
+                    escape(&message.id.to_string()),
+                    message.role.as_str(),
+                    escape(
+                        &message
+                            .at
+                            .map_or_else(|| "Time unknown".into(), |at| at.to_string())
+                    )
+                )?;
+                write!(
+                    out,
+                    "<p class=\"meta\">Written by {}{}</p>",
+                    message.written_by.as_str(),
+                    message
+                        .model
+                        .as_deref()
+                        .map(|model| format!(" · {}", escape(model)))
+                        .unwrap_or_default()
+                )?;
+            }
+            current = id;
+        }
+        let label = slice.label.as_deref().unwrap_or(&slice.kind);
+        write!(
+            out,
+            "<div class=\"block {}\" data-block=\"{}\" data-from=\"{}\" data-until=\"{}\">",
+            escape(&slice.kind),
+            slice.block,
+            slice.from,
+            slice.until
+        )?;
+        if slice.kind == "text" {
+            write!(out, "<div class=\"text\">{}</div>", escape(&slice.text))?;
+        } else if slice.kind == "tool_call" {
+            let outcome = slice.outcome.map_or("unknown", |outcome| outcome.as_str());
+            write!(
+                out,
+                "<details class=\"tool\"><summary><span class=\"outcome {outcome}\">{outcome}</span> <b>{}</b> <code>{}</code></summary><pre>{}</pre></details>",
+                escape(label),
+                escape(&first_line(&slice.text)),
+                escape(&slice.text)
+            )?;
+        } else if matches!(slice.kind.as_str(), "tool_result" | "thinking") {
+            write!(
+                out,
+                "<details class=\"{}\"><summary>{}</summary><pre>{}</pre></details>",
+                if slice.kind == "thinking" {
+                    "thinking"
+                } else {
+                    "tool result"
+                },
+                escape(label),
+                escape(&slice.text)
+            )?;
+        } else {
+            write!(
+                out,
+                "<p class=\"meta\">{}</p><pre>{}</pre>",
+                escape(label),
+                escape(&slice.text)
+            )?;
+        }
+        if slice.more {
+            write!(
+                out,
+                "<span class=\"meta\">Continues on the next page</span>"
+            )?;
+        }
+        write!(out, "</div>")?;
+    }
+    if current.is_some() {
+        write!(out, "</section>")?;
+    }
+    Ok(())
+}
+
 /// Render content without a document frame. Tool calls and their results
 /// share one rendering policy on the command line and in the web reader.
 /// Source content is masked before this function filters and pairs messages.

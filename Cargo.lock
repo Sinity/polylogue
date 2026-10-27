@@ -2541,6 +2541,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tower",
  "unicode-normalization",
  "ureq",
@@ -2604,6 +2605,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "polylogue-model",
+ "serde",
  "serde_json",
 ]
 

@@ -7,6 +7,7 @@
 pub mod access;
 mod api;
 pub mod pages;
+mod reader;
 
 use crate::daemon::service::{Daemon, handle};
 use crate::daemon::{Request, Response};
@@ -16,7 +17,6 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response as HttpResponse};
 use axum::routing::get;
-use polylogue_render::View;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,11 +158,14 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/", get(home))
         .route("/search", get(search))
         .route("/cost", get(cost))
-        .route("/s/{id}", get(session))
-        .route("/d/{id}", get(document))
+        .route("/s/{id}", get(reader::session))
+        .route("/d/{id}", get(reader::document))
+        .route("/m/{id}", get(reader::message))
+        .route("/n/{id}", get(reader::note))
         .route("/auth", get(auth_page).post(auth_exchange))
         .route("/assets/reader.css", get(css))
         .route("/assets/reader.js", get(js))
+        .route("/assets/live.js", get(live_js))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
         .with_state(web)
@@ -190,7 +193,7 @@ pub(crate) fn has_token(web: &Web, headers: &HeaderMap) -> bool {
 
 /// Host check, credentials, POST origin check, and the headers every
 /// response carries. No CORS headers are ever sent.
-async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
+async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     let headers = req.headers();
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     if !access::host_allowed(host, web.port) {
@@ -224,7 +227,11 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
                 .into_response();
         }
     }
-    let mut response = next.run(req).await;
+    next.run(req).await
+}
+
+async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
+    let mut response = guarded(web, req, next).await;
     let h = response.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -257,13 +264,38 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    let text = value.to_string();
-    let clean = access::scrub(&text, &web.daemon.archive.root);
-    if clean == text {
-        value
-    } else {
-        serde_json::from_str(&clean).unwrap_or(value)
+    let mut pending = vec![&mut value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::String(text) => {
+                *text = access::scrub(text, &web.daemon.archive.root)
+            }
+            serde_json::Value::Array(values) => pending.extend(values.iter_mut()),
+            serde_json::Value::Object(fields) => {
+                let mut renamed = Vec::new();
+                for (name, field) in std::mem::take(fields) {
+                    let clean = access::scrub(&name, &web.daemon.archive.root);
+                    if clean == name {
+                        fields.insert(name, field);
+                    } else {
+                        renamed.push((clean, field));
+                    }
+                }
+                for (label, field) in renamed {
+                    let mut name = label.clone();
+                    let mut suffix = 2;
+                    while fields.contains_key(&name) {
+                        name = format!("{label} #{suffix}");
+                        suffix += 1;
+                    }
+                    fields.insert(name, field);
+                }
+                pending.extend(fields.values_mut());
+            }
+            _ => {}
+        }
     }
+    value
 }
 
 fn page(html: String) -> HttpResponse {
@@ -313,21 +345,26 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     }
     let request = Request::Query {
         text: p.q.clone(),
-        cursor: p.cursor,
+        cursor: p.cursor.clone(),
         page_size: None,
         why: true,
         session: None,
         fields: vec![],
     };
     match ask(&web, request).await {
-        Response::Ok { data } => page(pages::search(&p.q, Some(&scrubbed(&web, data)), None)),
+        Response::Ok { data } => page(pages::search(
+            &p.q,
+            Some(&scrubbed(&web, data)),
+            None,
+            p.cursor.as_deref(),
+        )),
         Response::Error {
             kind,
             message,
             detail,
         } => {
             let e = serde_json::json!({ "kind": kind, "message": access::scrub(&message, &web.daemon.archive.root), "detail": detail });
-            page(pages::search(&p.q, None, Some(&e)))
+            page(pages::search(&p.q, None, Some(&e), p.cursor.as_deref()))
         }
     }
 }
@@ -374,159 +411,24 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
     }
 }
 
-#[derive(Deserialize)]
-struct ReadQuery {
-    view: Option<String>,
-}
-
-async fn session(
-    State(web): State<Arc<Web>>,
-    UrlPath(id): UrlPath<String>,
-    Query(p): Query<ReadQuery>,
-) -> HttpResponse {
-    let view_name = p.view.unwrap_or_else(|| "full".into());
-    let Some(view) = View::parse(&view_name) else {
-        return failed(StatusCode::BAD_REQUEST, "bad_request", "unknown view");
-    };
-    let Ok(session_id) = polylogue_model::SessionId::parse(&id) else {
-        return failed(StatusCode::BAD_REQUEST, "bad_request", "not a session ID");
-    };
-    let request = Request::Read {
-        target: crate::daemon::ReadTarget::Session(session_id),
-        view: view_name.clone(),
-        format: "json".into(),
-        with_parents: true,
-        budget: None,
-        cursor: None,
-    };
-    match ask(&web, request).await {
-        Response::Ok { data } => {
-            let data = scrubbed(&web, data);
-            let session = serde_json::from_value(data["session"].clone());
-            let messages = serde_json::from_value(data["messages"].clone());
-            match (session, messages) {
-                (Ok(s), Ok(m)) => {
-                    let m: Vec<polylogue_model::Message> = m;
-                    let links = ask(
-                        &web,
-                        Request::Query {
-                            text: "self | links".into(),
-                            cursor: None,
-                            page_size: Some(100),
-                            why: false,
-                            session: Some(id.clone()),
-                            fields: [
-                                "parent",
-                                "child",
-                                "kind",
-                                "how",
-                                "evidence",
-                                "pending",
-                                "branch_point",
-                            ]
-                            .into_iter()
-                            .map(str::to_owned)
-                            .collect(),
-                        },
-                    )
-                    .await;
-                    let links = match links {
-                        Response::Ok { data } => scrubbed(&web, data),
-                        Response::Error { message, .. } => {
-                            serde_json::json!({"error": access::scrub(&message, &web.daemon.archive.root)})
-                        }
-                    };
-                    page(pages::session(&s, &m, view, &view_name, &data, &links))
-                }
-                _ => failed(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "the session could not be read",
-                ),
-            }
-        }
-        Response::Error { kind, message, .. } => {
-            let status = if kind == "not_found" {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            failed(
-                status,
-                &kind,
-                &access::scrub(&message, &web.daemon.archive.root),
-            )
-        }
-    }
-}
-
-async fn document(
-    State(web): State<Arc<Web>>,
-    UrlPath(id): UrlPath<String>,
-    Query(p): Query<ReadQuery>,
-) -> HttpResponse {
-    let view_name = p.view.unwrap_or_else(|| "full".into());
-    let Some(view) = View::parse(&view_name).filter(|v| matches!(v, View::Full | View::Dialogue))
-    else {
-        return failed(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            "documents support the full and dialogue views",
-        );
-    };
-    let Ok(id) = polylogue_model::DocumentId::parse(&id) else {
-        return failed(StatusCode::BAD_REQUEST, "bad_request", "not a document ID");
-    };
-    match ask(
-        &web,
-        Request::Read {
-            target: crate::daemon::ReadTarget::Document(id),
-            with_parents: false,
-            view: view_name.clone(),
-            format: "json".into(),
-            budget: None,
-            cursor: None,
-        },
-    )
-    .await
-    {
-        Response::Ok { data } => {
-            let data = scrubbed(&web, data);
-            match serde_json::from_value(data["document"].clone()) {
-                Ok(document) => page(pages::document(
-                    &document,
-                    &data["sources"],
-                    view,
-                    &view_name,
-                )),
-                Err(_) => failed(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    "the document could not be read",
-                ),
-            }
-        }
-        Response::Error { kind, message, .. } => failed(
-            if kind == "not_found" {
-                StatusCode::NOT_FOUND
-            } else if kind == "bad_request" {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
-            &kind,
-            &access::scrub(&message, &web.daemon.archive.root),
-        ),
-    }
-}
-
 async fn auth_page() -> HttpResponse {
     page(pages::auth())
 }
 
 /// Exchanges the token for the archive's cookie. The page posts the token
 /// from its URL fragment; the cookie is `SameSite=Strict` and `HttpOnly`.
-async fn auth_exchange(State(web): State<Arc<Web>>, body: String) -> HttpResponse {
+async fn auth_exchange(
+    State(web): State<Arc<Web>>,
+    headers: HeaderMap,
+    body: String,
+) -> HttpResponse {
+    if !access::content_type(&headers, "application/x-www-form-urlencoded") {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "sign-in requires application/x-www-form-urlencoded",
+        )
+            .into_response();
+    }
     let form: HashMap<String, String> = serde_urlencoded_pairs(&body);
     let token = form.get("token").map_or("", String::as_str);
     if !access::same_secret(token, &web.token) {
@@ -597,6 +499,14 @@ async fn js() -> HttpResponse {
         .into_response()
 }
 
+async fn live_js() -> HttpResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("web/assets/live.js"),
+    )
+        .into_response()
+}
+
 /// The body of a JSON answer: the data as the socket gives it, the error
 /// as a typed kind with a status code.
 pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
@@ -622,9 +532,10 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
             let message = access::scrub(&message, &web.daemon.archive.root);
             (
                 status,
-                axum::Json(
+                axum::Json(scrubbed(
+                    web,
                     serde_json::json!({ "error": kind, "message": message, "detail": detail }),
-                ),
+                )),
             )
                 .into_response()
         }

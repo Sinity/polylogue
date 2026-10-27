@@ -10,6 +10,7 @@ fn read(
 ) -> Response {
     handle(
         Request::Read {
+            start: None,
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
             ),

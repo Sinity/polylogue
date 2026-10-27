@@ -10,6 +10,7 @@ fn page(
 ) -> Response {
     handle(
         Request::Read {
+            start: None,
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse(session).unwrap(),
             ),
@@ -168,6 +169,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 &pool.reader().unwrap(),
                 &id,
                 super::super::read::Options {
+                    start: None,
                     view: "full",
                     format: "json",
                     with_parents,
@@ -361,6 +363,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
                     &pool.reader().unwrap(),
                     &id,
                     super::super::read::Options {
+                        start: None,
                         view: "full",
                         format: "json",
                         with_parents,
@@ -395,4 +398,356 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
         }
     }
     assert!(cache.test_counts().1 > 0);
+}
+
+#[test]
+fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
+    let daemon = test_daemon::start("temporary prompt");
+    let text = [
+        "before -----BEGIN PRIVATE KEY-----private-first",
+        "private-tail-----END PRIVATE KEY----- visible λ🙂",
+        "last visible prompt",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, text)| {
+        polylogue_testkit::claude_user(
+            &if i == 0 {
+                "u1".into()
+            } else {
+                format!("anchor-{i}")
+            },
+            "s1",
+            text,
+        )
+    })
+    .collect::<String>();
+    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 3);
+    let request = |start, view: &str| Request::Read {
+        target: crate::daemon::ReadTarget::Session(
+            polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        ),
+        view: view.into(),
+        format: "json".into(),
+        with_parents: true,
+        budget: Some(8192),
+        cursor: None,
+        start: Some(start),
+    };
+    let response = handle(
+        request(
+            crate::daemon::ReadStart::Message(
+                polylogue_model::MessageId::parse("claude-code:anchor-1").unwrap(),
+            ),
+            "full",
+        ),
+        &daemon.daemon,
+    );
+    let Response::Ok { data } = response else {
+        panic!("{response:?}")
+    };
+    assert_eq!(data["slices"][0]["message"]["id"], "claude-code:anchor-1");
+    assert!(data["text"].as_str().unwrap().contains("visible λ🙂"));
+    assert!(!data.to_string().contains("private-tail"));
+    assert_eq!(data["position"]["message"], 1);
+    let Response::Ok { data } = handle(
+        request(crate::daemon::ReadStart::Latest, "full"),
+        &daemon.daemon,
+    ) else {
+        panic!("latest failed")
+    };
+    assert_eq!(data["slices"][0]["message"]["id"], "claude-code:anchor-2");
+    assert_eq!(data["position"]["message"], 2);
+    // An anchor whose message is hidden by this view is a valid empty read.
+    assert!(matches!(
+        handle(
+            request(crate::daemon::ReadStart::Latest, "actions"),
+            &daemon.daemon
+        ),
+        Response::Ok { .. }
+    ));
+    assert!(
+        matches!(handle(request(crate::daemon::ReadStart::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
+    );
+}
+
+#[test]
+fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:large",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    let sources = [
+        "synthetic zero λ🙂 <text> ",
+        "synthetic one λ🙂 <text> ",
+        "synthetic two λ🙂 <text> ",
+    ];
+    for (n, text) in sources.iter().enumerate() {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: &format!("claude-code:large-{n}"),
+                    role: "user",
+                    written_by: "human",
+                    text: Some(text),
+                    seq: Some(n as i64),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
+    conn.execute_batch("WITH RECURSIVE n(i) AS (SELECT 3 UNION ALL SELECT i+1 FROM n WHERE i<99999)
+        INSERT INTO message(id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk)
+        SELECT 'claude-code:large-'||i,m.session_pk,m.order_input_pk,m.order_input_id,i,m.role,m.written_by,m.input_pk FROM n CROSS JOIN message m WHERE m.id='claude-code:large-0';
+        INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body)
+        SELECT m.pk,m.session_pk,b.idx,b.kind,b.text_id,b.body FROM message m JOIN block b ON b.message_pk=(SELECT pk FROM message WHERE id='claude-code:large-'||(m.seq%3)) WHERE m.seq>=3;").unwrap();
+    let pool = fixture.reads().unwrap();
+    let id = polylogue_model::SessionId::parse("claude-code:large").unwrap();
+    let cache = super::super::read::page_ends::Cache::default();
+    let render = |cursor: Option<&str>, start: Option<&crate::daemon::ReadStart>| {
+        super::super::read::run(
+            &pool.reader().unwrap(),
+            &id,
+            super::super::read::Options {
+                view: "full",
+                format: "json",
+                with_parents: true,
+                budget: Some(8192),
+                cursor,
+                start,
+            },
+            &cache,
+            cache.epoch(),
+        )
+    };
+    let mut cursor = None;
+    let mut texts = std::collections::HashMap::<String, String>::new();
+    let mut page_count = 0;
+    let mut last_message = None;
+    loop {
+        let response = render(cursor.as_deref(), None);
+        let Response::Ok { data } = response else {
+            panic!("{response:?}")
+        };
+        assert_eq!(data["position"]["total_messages"], 100000);
+        assert!(data["text"].as_str().unwrap().chars().count() <= 32768);
+        for slice in data["slices"].as_array().unwrap() {
+            let message = slice["message"]["id"].as_str().unwrap();
+            let number = message
+                .rsplit_once('-')
+                .unwrap()
+                .1
+                .parse::<usize>()
+                .unwrap();
+            if last_message != Some(number) {
+                assert_eq!(number, last_message.map_or(0, |last| last + 1));
+                last_message = Some(number);
+            }
+            texts
+                .entry(slice["message"]["id"].as_str().unwrap().into())
+                .or_default()
+                .push_str(slice["text"].as_str().unwrap());
+        }
+        cursor = data["next"].as_str().map(str::to_owned);
+        page_count += 1;
+        if cursor.is_none() {
+            break;
+        }
+        assert!(page_count < 1000, "pages must advance");
+    }
+    assert_eq!(texts.len(), 100000);
+    for (id, text) in &texts {
+        let number = id.rsplit_once('-').unwrap().1.parse::<usize>().unwrap();
+        assert_eq!(text, sources[number % 3]);
+    }
+    for (start, expected) in [
+        (
+            crate::daemon::ReadStart::Message(
+                polylogue_model::MessageId::parse("claude-code:large-50000").unwrap(),
+            ),
+            "claude-code:large-50000",
+        ),
+        (crate::daemon::ReadStart::Latest, "claude-code:large-99999"),
+    ] {
+        let Response::Ok { data } = render(None, Some(&start)) else {
+            panic!("jump failed")
+        };
+        assert_eq!(data["slices"][0]["message"]["id"], expected);
+        let number = expected
+            .rsplit_once('-')
+            .unwrap()
+            .1
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(data["slices"][0]["text"], sources[number % 3]);
+    }
+}
+
+#[test]
+fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
+    let daemon = test_daemon::start("placeholder");
+    let text = (0..125)
+        .map(|i| {
+            polylogue_testkit::claude_user(
+                &if i == 0 {
+                    "u1".into()
+                } else {
+                    format!("outline-{i}")
+                },
+                "s1",
+                "synthetic prompt",
+            )
+        })
+        .collect::<String>();
+    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 125);
+    let request = |cursor| Request::Outline {
+        session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        with_parents: true,
+        page_size: 17,
+        cursor,
+    };
+    let mut cursor = None;
+    let mut references = Vec::new();
+    let mut first_cursor = None;
+    loop {
+        let Response::Ok { data } = handle(request(cursor), &daemon.daemon) else {
+            panic!("outline failed")
+        };
+        references.extend(
+            data["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["message"].as_str().unwrap().to_owned()),
+        );
+        cursor = data["next"].as_str().map(str::to_owned);
+        if first_cursor.is_none() {
+            first_cursor = cursor.clone();
+        }
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        references,
+        (0..125)
+            .map(|i| if i == 0 {
+                "claude-code:u1".into()
+            } else {
+                format!("claude-code:outline-{i}")
+            })
+            .collect::<Vec<_>>()
+    );
+    daemon.set("day_start", "06:00");
+    assert!(matches!(
+        handle(request(first_cursor.clone()), &daemon.daemon),
+        Response::Ok { .. }
+    ));
+    let mut text = std::fs::OpenOptions::new()
+        .append(true)
+        .open(daemon.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(
+        &mut text,
+        polylogue_testkit::claude_user("outline-new", "s1", "new prompt").as_bytes(),
+    )
+    .unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 126);
+    assert!(
+        matches!(handle(request(first_cursor),&daemon.daemon),Response::Error {kind,..} if kind=="stale_cursor")
+    );
+}
+
+#[test]
+fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:visible",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "claude-code:visible-user",
+                role: "user",
+                written_by: "human",
+                text: Some("last human prompt"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let assistant = fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "claude-code:visible-assistant",
+                role: "assistant",
+                written_by: "model",
+                text: Some("hidden assistant response"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
+    conn.execute(
+        "UPDATE block SET body=x'0011' WHERE message_pk=?1",
+        [assistant],
+    )
+    .unwrap();
+    let pool = fixture.reads().unwrap();
+    let id = polylogue_model::SessionId::parse("claude-code:visible").unwrap();
+    let cache = super::super::read::page_ends::Cache::default();
+    let read = |view, start, cursor| {
+        super::super::read::run(
+            &pool.reader().unwrap(),
+            &id,
+            super::super::read::Options {
+                view,
+                format: "json",
+                with_parents: true,
+                budget: Some(8192),
+                start,
+                cursor,
+            },
+            &cache,
+            cache.epoch(),
+        )
+    };
+    let latest = crate::daemon::ReadStart::Latest;
+    let Response::Ok { data } = read("prompts", Some(&latest), None) else {
+        panic!("latest prompt decoded a hidden body")
+    };
+    assert_eq!(
+        data["slices"][0]["message"]["id"],
+        "claude-code:visible-user"
+    );
+    let cursor = data["cursor"].as_str().unwrap();
+    let Response::Ok { data: reopened } = read("prompts", None, Some(cursor)) else {
+        panic!("current page cursor decoded a hidden body")
+    };
+    assert_eq!(data, reopened);
+    let Response::Ok { data } = read("actions", Some(&latest), None) else {
+        panic!("empty view decoded a hidden body")
+    };
+    assert_eq!(data["slices"], serde_json::json!([]));
+    assert!(matches!(
+        read("full", Some(&latest), None),
+        Response::Error { .. }
+    ));
 }

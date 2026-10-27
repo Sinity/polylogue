@@ -63,10 +63,12 @@ it.
 | `status` | What the archive holds and what the daemon is doing; during a long pass the counts come from memory, with the read position they are from. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
+| `outline SESSION` | Page references to human prompts, recorded tool failures, compactions and parent branch points without reading message bodies. |
 | `import PATH` | Store files or the files inside an export ZIP, and parse the ones in a recognized format. |
 | `attachment MESSAGE BLOCK` | Describe a message attachment and the stored export files that match it. In a terminal, `--reveal --out FILE` writes the verified bytes to FILE ([attachments](docs/attachments.md)). |
 | `export SESSION…` | Write sessions, documents or events as JSON (read back by `import`), Markdown, HTML or terminal text. |
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions; `--query QUERY` notes every row a query returns. |
+| `note read NOTE` | Read one exact note revision, including superseded and withdrawn revisions. |
 | `note accept\|reject NOTE` | Judge a note an agent wrote: an accepted note reaches briefs as the operator's own. `note list --agents --judged none` lists the notes waiting. |
 | `save NAME QUERY` | Save a query to run as `query:NAME`; a `$word` in it is a parameter, given as `query:NAME(word=VALUE)`. |
 | `watch QUERY` | Report each row that starts matching as a notice (`--for 20m` holds it first, `--notify` also shows it on the desktop). |
@@ -176,6 +178,9 @@ says. Hermes activity records are events, read with `read event:ID`.
 
 The web reader shows sessions, documents, a usage and cost page (`/cost`,
 the same report as `measure usage`) and the links between related sessions.
+Sessions and documents page their content. Message links open at the selected
+message, and the session outline pages prompt, failure and branch references.
+See [the shared reader contract](docs/web-reader.md) for API and access details.
 
 ## Repository layout
 

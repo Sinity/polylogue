@@ -129,7 +129,7 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
 fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
     let daemon = crate::test_daemon::start("synthetic feed source");
     let (_, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
-    let request = super::request(&values).unwrap();
+    let request = request(&values).unwrap();
     assert!(matches!(request, Request::Changes { since: None }));
     let mut output = Vec::new();
     assert!(send(&daemon.daemon.archive, &request, &mut output).unwrap());
@@ -302,6 +302,22 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
         let mut argv = vec!["polylogue", "changes"];
         argv.extend(suffix);
         let (_, values) = crate::cli::parse(&argv).unwrap();
-        assert!(super::request(&values).is_err(), "{argv:?}");
+        assert!(request(&values).is_err(), "{argv:?}");
     }
+}
+
+fn request(v: &crate::commands::Values) -> Result<Request, String> {
+    let command = crate::commands::command("changes").unwrap();
+    let crate::commands::Action::Request(build) = command.action else {
+        panic!("shared request")
+    };
+    build(
+        command,
+        v,
+        &crate::commands::Caller {
+            surface: crate::commands::Surface::Cli,
+            cwd: None,
+            json: true,
+        },
+    )
 }

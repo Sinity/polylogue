@@ -1,5 +1,7 @@
 //! Message selection in one pinned read, with incomplete parents kept explicit.
 use super::*;
+mod navigation;
+pub use navigation::OutlineEntry;
 use polylogue_model::masking::MessageMasker;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
@@ -58,6 +60,11 @@ pub struct VisitStart {
     pub key: Option<i64>,
 }
 
+pub(super) struct Visibility {
+    pub(super) kinds: String,
+    pub(super) prompts: bool,
+}
+
 /// A message selection belongs to the reader that made it. Bodies are read
 /// lazily; the parents' history keeps keys for ordering, anchors and deduplication.
 pub struct MessageSelection<'r, 'a> {
@@ -68,6 +75,7 @@ pub struct MessageSelection<'r, 'a> {
     /// Whether tool results carry their structured data; a text read leaves
     /// it unread ([`Self::for_text`]).
     structured: bool,
+    visibility: Option<Visibility>,
 }
 
 impl<'a> Reader<'a> {
@@ -77,19 +85,23 @@ impl<'a> Reader<'a> {
         with_parents: bool,
     ) -> Result<MessageSelection<'r, 'a>> {
         let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
-        let (keys, issues) = match own.as_ref().filter(|_| with_parents) {
+        let has_parents = with_parents && self.conn()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM link WHERE child_id=?1 AND kind='continuation' AND how IN ('fork','resume'))",
+            [id.to_string()], |r| r.get::<_, bool>(0))?;
+        let (keys, issues) = match own.as_ref().filter(|_| has_parents) {
             Some((pk, _)) => self.parent_keys(*pk, id)?,
             None => (Vec::new(), Vec::new()),
         };
         Ok(MessageSelection {
             reader: self,
             own,
-            with_parents: with_parents.then_some(keys),
+            with_parents: has_parents.then_some(keys),
             parents: Parents {
                 complete: issues.is_empty(),
                 issues,
             },
             structured: true,
+            visibility: None,
         })
     }
 
@@ -243,6 +255,22 @@ impl MessageSelection<'_, '_> {
     /// nothing to page past.
     pub fn for_text(mut self) -> Self {
         self.structured = false;
+        self.visibility = None;
+        self
+    }
+
+    /// Hidden messages without PEM markers cannot change ordered masking
+    /// state. Keep their metadata positions while leaving their bodies unread.
+    pub fn for_blocks(mut self, kinds: &[polylogue_model::BlockKind], prompts: bool) -> Self {
+        self.structured = false;
+        self.visibility = Some(Visibility {
+            kinds: kinds
+                .iter()
+                .map(|kind| format!("'{}'", kind.as_str()))
+                .collect::<Vec<_>>()
+                .join(","),
+            prompts,
+        });
         self
     }
 
@@ -315,7 +343,10 @@ impl MessageSelection<'_, '_> {
                         key.session_pk,
                         &key.session,
                         None,
-                        self.structured,
+                        MessageContent {
+                            structured: self.structured,
+                            visibility: self.visibility.as_ref(),
+                        },
                         |m| set.contains(&m) && keep(m),
                         &mut visit,
                     )?
@@ -330,7 +361,10 @@ impl MessageSelection<'_, '_> {
                 *pk,
                 id,
                 from,
-                self.structured,
+                MessageContent {
+                    structured: self.structured,
+                    visibility: self.visibility.as_ref(),
+                },
                 keep,
                 &mut visit,
             )?;

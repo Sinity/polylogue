@@ -353,6 +353,23 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             Ok(rows) => ok(rows),
             Err(e) => error("sql", e),
         },
+        Request::Note { id } => match reader.note(&id) {
+            Ok(Some(note)) => ok(note),
+            Ok(None) => error("not_found", "the note revision is not available"),
+            Err(e) => store_error(&e),
+        },
+        Request::Outline {
+            session,
+            with_parents,
+            page_size,
+            cursor,
+        } => read::outline(
+            &reader,
+            &session,
+            with_parents,
+            page_size,
+            cursor.as_deref(),
+        ),
         Request::Read {
             target,
             view,
@@ -360,6 +377,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             with_parents,
             budget,
             cursor,
+            start,
         } => {
             let options = read::Options {
                 view: &view,
@@ -367,6 +385,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 with_parents,
                 budget,
                 cursor: cursor.as_deref(),
+                start: start.as_ref(),
             };
             match &target {
                 ReadTarget::Session(session) => {

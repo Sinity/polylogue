@@ -28,7 +28,7 @@ fn incomplete_parents_keep_issues_evidence_and_session_navigation() {
     assert!(page.contains("href=\"/s/codex%3Ap\""), "{page}");
     assert!(page.contains("href=\"/s/codex%3Ac\""), "{page}");
     assert!(page.contains("native.&lt;field&gt;"), "{page}");
-    assert!(page.contains("Only the first 100 links"));
+    assert!(!page.contains("Only the first 100 links"));
     assert!(!page.contains("<unknown>"));
 }
 
@@ -45,8 +45,10 @@ fn identical_cell_text_links_only_by_its_column_reference() {
     let page = results_table(&data);
     assert_eq!(page.matches("href=\"/s/same%3Aopaque\"").count(), 1);
     assert_eq!(page.matches("href=\"/d/same%3Aopaque\"").count(), 1);
-    assert_eq!(page.matches("<td>same:opaque</td>").count(), 3);
-    assert!(page.contains("dedicated readers are unavailable"));
+    assert_eq!(page.matches("<td>same:opaque</td>").count(), 1);
+    assert_eq!(page.matches("href=\"/m/same%3Aopaque\"").count(), 1);
+    assert_eq!(page.matches("href=\"/n/same%3Aopaque\"").count(), 1);
+    assert!(!page.contains("dedicated readers are unavailable"));
     let old = json!({"unit":"sessions","shape":"rows","columns":[{"name":"id","kind":"text"}],"rows":[{"id":id}],"count":1});
     assert!(
         !results_table(&old).contains("href="),

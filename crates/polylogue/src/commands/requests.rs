@@ -119,7 +119,20 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
         }
         _ => {}
     }
+    let message = v.text("message");
+    if message.is_some() && v.flag("latest") {
+        return Err("choose either message or latest".into());
+    }
+    let start = if let Some(message) = message {
+        Some(crate::daemon::ReadStart::Message(
+            polylogue_model::MessageId::parse(message.strip_prefix("message:").unwrap_or(&message))
+                .map_err(|e| e.to_string())?,
+        ))
+    } else {
+        v.flag("latest").then_some(crate::daemon::ReadStart::Latest)
+    };
     Ok(Request::Read {
+        start,
         target,
         view: v.text("view").unwrap_or_else(|| "full".into()),
         format: v
@@ -527,5 +540,33 @@ pub fn backfill_list(_: &Command, _: &Values, _: &Caller) -> Built {
 pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::BackfillCancel {
         id: v.text("id").unwrap_or_default(),
+    })
+}
+
+pub fn outline(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Outline {
+        session: polylogue_model::SessionId::parse(
+            &v.text("session").ok_or("session is required")?,
+        )
+        .map_err(|e| e.to_string())?,
+        with_parents: v.flag("with_parents"),
+        page_size: usize::try_from(v.integer("page_size").unwrap_or(50))
+            .map_err(|_| "page_size exceeds address space")?,
+        cursor: v.text("cursor"),
+    })
+}
+
+pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
+    if v.text("cursor").is_some() || v.0.contains_key("fields") || v.0.contains_key("why") {
+        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
+    }
+    Ok(Request::Changes {
+        since: v.text("since"),
+    })
+}
+
+pub fn note_read(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Note {
+        id: v.text("id").ok_or("id is required")?,
     })
 }

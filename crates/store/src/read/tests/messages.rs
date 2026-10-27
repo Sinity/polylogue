@@ -155,3 +155,61 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
     let reader = pool.reader().unwrap();
     assert_ne!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
 }
+
+#[test]
+fn visible_tool_outcomes_use_original_source_block_indices() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:outcome",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    let message = fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "claude-code:outcome-0",
+                role: "assistant",
+                text: Some("before tool"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture
+        .tool_call(
+            session,
+            message,
+            crate::fixture::CallFacts {
+                tool: "Bash",
+                command: Some("synthetic-check"),
+                outcome: "error",
+                output: Some("synthetic failure"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture.event(session, "compaction", None).unwrap();
+    let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
+    conn.execute(
+        "UPDATE event SET after_message_pk=?1 WHERE session_pk=?2",
+        params![message, session],
+    )
+    .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let id = MessageId::parse("claude-code:outcome-0").unwrap();
+    assert_eq!(
+        reader.tool_outcomes(&id).unwrap(),
+        vec![(1, polylogue_model::CallOutcome::Error)]
+    );
+    let selected = reader
+        .select_messages(&SessionId::parse("claude-code:outcome").unwrap(), false)
+        .unwrap();
+    let outline = selected.outline(0, 10).unwrap();
+    assert_eq!(outline.len(), 1);
+    assert_eq!(outline[0].kinds, vec!["tool failure", "compaction"]);
+    assert_eq!(outline[0].events.len(), 1);
+}

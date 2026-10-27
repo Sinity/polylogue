@@ -8,6 +8,14 @@ use polylogue_model::{Author, DocumentId, NewNote, SessionId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Selects the first page at a message reference or at the latest message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadStart {
+    Message(polylogue_model::MessageId),
+    Latest,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -120,6 +128,19 @@ pub enum Request {
         #[serde(default)]
         with_parents: bool,
         budget: Option<usize>,
+        cursor: Option<String>,
+        #[serde(default)]
+        start: Option<ReadStart>,
+    },
+    /// One exact note revision, including a superseded or withdrawn revision.
+    Note {
+        id: String,
+    },
+    Outline {
+        session: SessionId,
+        #[serde(default)]
+        with_parents: bool,
+        page_size: usize,
         cursor: Option<String>,
     },
     Import {
@@ -263,6 +284,8 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
+            | Self::Outline { .. }
+            | Self::Note { .. }
             | Self::Export { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
