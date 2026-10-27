@@ -5,17 +5,16 @@ let position;
 let controller;
 let timer;
 let stopped = false;
-let revision = 0;
+const ready = new Set();
 
 function report(error) {
   for (const subscriber of subscribers) subscriber.error?.(error);
 }
 
 async function batch() {
-  if (controller || stopped || document.hidden || !subscribers.size) return;
+  if (controller || stopped || document.hidden || !ready.size || ready.size !== subscribers.size) return;
   controller = new AbortController();
-  const audience = [...subscribers];
-  const version = revision;
+  const audience = [...ready];
   try {
     const query = position ? "?since=" + encodeURIComponent(position) : "";
     const response = await fetch("/api/v1/changes" + query, {
@@ -59,7 +58,7 @@ async function batch() {
       }
       if (pending || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
       for (const subscriber of audience) await subscriber.complete?.(complete);
-      position = version === revision ? complete.position : undefined;
+      if (ready.size === subscribers.size) position = complete.position;
     } finally {
       await reader.cancel();
     }
@@ -83,7 +82,7 @@ function visibility() {
   else {
     batch();
     clock = setInterval(() => {
-      for (const subscriber of subscribers) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
+      for (const subscriber of ready) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
     }, 30000);
   }
 }
@@ -95,14 +94,40 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("pageshow", visibility);
 
+// Each joining view reads current references in pages. Joining never resets
+// the position that existing views have already completed.
+async function snapshot(subscriber) {
+  let cursor;
+  let initial;
+  do {
+    const query = new URLSearchParams({ query: subscriber.query || "changes where kind:session", limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin" });
+    if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
+    if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
+    const page = await response.json();
+    if (!subscribers.has(subscriber)) return;
+    if (!initial) {
+      initial = page.read_at.cursor;
+      position ??= initial;
+      await subscriber.begin?.({ type: "begin", replacement: true, generation_changed: false });
+    }
+    if (subscriber.snapshot) await subscriber.snapshot(page);
+    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: "index", change: row });
+    cursor = page.next;
+  } while (cursor && subscribers.has(subscriber));
+  if (!subscribers.has(subscriber)) return;
+  await subscriber.complete?.({ type: "complete", position: initial, replacement: true });
+  ready.add(subscriber);
+  visibility();
+}
+
 export function watchChanges(subscriber) {
   subscribers.add(subscriber);
-  revision++;
-  // A joining view needs the full reference set, not another view's checkpoint.
-  position = undefined;
-  visibility();
+  snapshot(subscriber).catch(error => subscriber.error?.(error));
   return () => {
     subscribers.delete(subscriber);
+    ready.delete(subscriber);
     if (!subscribers.size) visibility();
   };
 }

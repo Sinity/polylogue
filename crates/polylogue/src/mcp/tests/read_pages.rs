@@ -28,3 +28,29 @@ fn mcp_read_pages_use_bound_continuations() {
     .unwrap_err();
     assert!(error.starts_with("error (bad_request)"), "{error}");
 }
+
+#[test]
+fn budgeted_mcp_output_includes_content_once() {
+    let daemon = test_daemon::start(&"synthetic word ".repeat(10000));
+    let archive = Archive::at(&daemon.daemon.archive.root);
+    let budget = 2048;
+    let output = call(
+        &archive,
+        "read",
+        args(json!({"session":"claude-code:s1","budget":budget})),
+    )
+    .unwrap();
+    let data: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(data.get("slices").is_none());
+    assert_eq!(data["text"].as_str().unwrap().chars().count(), budget * 4);
+    // Metadata and sealed cursors add a fixed cost, independent of page size.
+    assert!(output.len() < budget * 4 + 5000, "{}", output.len());
+    let sliced = call(
+        &archive,
+        "read",
+        args(json!({"session":"claude-code:s1","budget":budget,"slices":true})),
+    )
+    .unwrap();
+    let sliced: serde_json::Value = serde_json::from_str(&sliced).unwrap();
+    assert!(sliced["slices"].is_array());
+}

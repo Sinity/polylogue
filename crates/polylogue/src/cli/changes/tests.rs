@@ -308,7 +308,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
 
 fn request(v: &crate::commands::Values) -> Result<Request, String> {
     let command = crate::commands::command("changes").unwrap();
-    let crate::commands::Action::Request(build) = command.action else {
+    let crate::commands::Action::Stream(build) = command.action else {
         panic!("shared request")
     };
     build(

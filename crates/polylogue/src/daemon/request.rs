@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// Selects the first page at a message reference or at the latest message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReadStart {
+pub enum ReadSelection {
     Message(polylogue_model::MessageId),
     Latest,
 }
@@ -123,6 +123,8 @@ pub enum Request {
     /// `with_parents` (sessions only): the parent sessions' messages first.
     Read {
         target: ReadTarget,
+        #[serde(default)]
+        slices: bool,
         view: String,
         format: String,
         #[serde(default)]
@@ -130,7 +132,7 @@ pub enum Request {
         budget: Option<usize>,
         cursor: Option<String>,
         #[serde(default)]
-        start: Option<ReadStart>,
+        start: Option<ReadSelection>,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
@@ -374,7 +376,7 @@ impl Response {
     /// Mask decoded strings before JSON escaping, keeping every structured field.
     pub(crate) fn masked(mut self) -> Self {
         match &mut self {
-            Self::Ok { data } => polylogue_render::mask_json(data),
+            Self::Ok { data } => output_values(data, polylogue_render::mask),
             Self::Error {
                 kind,
                 message,
@@ -388,6 +390,46 @@ impl Response {
             }
         }
         self
+    }
+}
+
+/// Mask authored strings while keeping parsed references and opaque root cursors.
+pub(crate) fn output_values(value: &mut serde_json::Value, string: impl FnMut(&str) -> String) {
+    let mut references = Vec::new();
+    let mut pending = vec![(String::new(), &*value)];
+    while let Some((path, value)) = pending.pop() {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (name, value) in fields {
+                    let child = format!("{path}/{}", name.replace('~', "~0").replace('/', "~1"));
+                    let reference = matches!(
+                        name.as_str(),
+                        "id" | "session" | "parent" | "child" | "message" | "ref" | "branch_point"
+                    ) && value
+                        .as_str()
+                        .is_some_and(|text| polylogue_model::SessionId::parse(text).is_ok());
+                    let cursor =
+                        path.is_empty() && matches!(name.as_str(), "next" | "previous" | "cursor");
+                    if reference || cursor {
+                        references.push((child, value.clone()));
+                    } else {
+                        pending.push((child, value));
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (index, value) in items.iter().enumerate() {
+                    pending.push((format!("{path}/{index}"), value));
+                }
+            }
+            _ => {}
+        }
+    }
+    polylogue_model::masking::mask_json_values(value, string);
+    for (path, original) in references {
+        if let Some(value) = value.pointer_mut(&path) {
+            *value = original;
+        }
     }
 }
 

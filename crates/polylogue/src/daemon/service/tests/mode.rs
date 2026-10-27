@@ -153,6 +153,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
         blocked(&runtime, &w.dir.path().join("sinex.toml"));
         let shown = data(
             Request::Read {
+                slices: true,
                 start: None,
                 target: crate::daemon::ReadTarget::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
