@@ -9,6 +9,7 @@ fn hook_line(at_ns: u64, event: &str, session: &str, payload: serde_json::Value)
     let mut payload = payload;
     payload["session_id"] = session.into();
     let line = serde_json::json!({
+        "event_id": uuid::Uuid::now_v7().to_string(),
         "at_ns": at_ns.to_string(), "event": event, "harness_pid": 4242,
         "provider": "claude-code", "session_id": session, "payload": payload,
     });
@@ -77,14 +78,14 @@ fn a_stored_hook_line_is_one_event_however_often_it_is_stored() {
     let w = ClaudeHome::new();
     let spool = hook_spool(&w);
     w.append("h2.jsonl", &user("u1", "h2", "run it"));
-    // Two invocations with the same payload in the same millisecond.
+    // Two invocations with exactly the same payload and timestamp.
     let payload = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
     let lines = hook_line(
         1_790_856_000_000_000_001,
         "PreToolUse",
         "h2",
         payload.clone(),
-    ) + &hook_line(1_790_856_000_000_000_002, "PreToolUse", "h2", payload);
+    ) + &hook_line(1_790_856_000_000_000_001, "PreToolUse", "h2", payload);
     fs::write(spool.join("4242.ndjson"), &lines).unwrap();
     let (mut e, _lock) = w.engine(64 << 20);
     e.run_pass().unwrap();
