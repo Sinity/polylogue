@@ -2,13 +2,18 @@
 use super::*;
 use std::time::Instant;
 
-fn sample(mut read: impl FnMut() -> usize) -> Value {
+fn sample(name: &str, mut read: impl FnMut() -> usize) -> Value {
     let mut times = Vec::new();
     let mut count = 0;
     for _ in 0..5 {
         let start = Instant::now();
         count = read();
         times.push(start.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "{name}: sample {} took {:.1} ms",
+            times.len(),
+            times.last().unwrap()
+        );
     }
     let raw = times.clone();
     times.sort_by(f64::total_cmp);
@@ -46,6 +51,7 @@ fn million_message_measurements() {
     )
     .unwrap();
     let setup_ms = setup.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("synthetic archive: {setup_ms:.1} ms");
     let day = LogicalDay::named("Europe/Warsaw", 240).unwrap();
     let date = "2024-03-31".parse().unwrap();
     let baseline = {
@@ -69,11 +75,12 @@ fn million_message_measurements() {
             "WITH activity AS (SELECT m.at,'message' AS kind,m.id FROM message m WHERE {}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51",
             crate::measure::RESPONSE_ROWS
         );
-        json!({"day":sample(||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample(||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample(||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample(||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}})
+        json!({"day":sample("before day",||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample("before across years",||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample("before calendar",||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample("before cost page",||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}})
     };
     let index_clock = Instant::now();
     crate::schema::ensure_index(&conn).unwrap();
     let index_ms = index_clock.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("time indexes: {index_ms:.1} ms");
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let usage = crate::measure::Selection::default();
@@ -98,7 +105,7 @@ fn million_message_measurements() {
     let response_plan = r
         .query(&format!("EXPLAIN QUERY PLAN {response_sql}"), &params)
         .unwrap();
-    let after = json!({"day":sample(||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample(||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample(||calendar(&r,&day,date).unwrap().len()),"cost_page":sample(||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample(||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_cost_page":response_plan,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
+    let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_cost_page":response_plan,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
     let report = json!({"messages":1000000,"events":100000,"years":16,"page_size":50,"samples_per_action":5,"setup_ms":setup_ms,"index_ms":index_ms,"before":baseline,"after":after,"load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; "))});
     let path = std::env::var_os("POLYLOGUE_TIMELINE_REPORT")
         .map(std::path::PathBuf::from)
