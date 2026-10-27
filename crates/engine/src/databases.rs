@@ -14,6 +14,7 @@ pub(super) struct DatabaseInput {
 }
 #[derive(Default)]
 pub(super) struct Completed {
+    pub finished: bool,
     pub errors: Vec<String>,
     pub changed: bool,
 }
@@ -72,7 +73,7 @@ impl Databases {
                         Ok(Err(error)) => {
                             exporter.forget(&source.path);
                             completed.changed = true;
-                            completed
+                            Completed { finished:true, ..completed }
                                 .errors
                                 .push(format!("read database {}: {error}", source.path.display()));
                         }
@@ -112,6 +113,7 @@ impl Databases {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
                 Completed {
+                    finished: true,
                     errors: vec!["database worker stopped".into()],
                     changed: true,
                 }
