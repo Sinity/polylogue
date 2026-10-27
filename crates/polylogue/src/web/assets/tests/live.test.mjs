@@ -9,7 +9,7 @@ const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(envelope(begin) + envelope(change) + envelope(complete(position)));
-const snapshot = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next });
+const currentPage = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
   const timers = new Map(), intervals = new Map(), events = new Map();
@@ -31,7 +31,7 @@ async function environment(t, fetch) {
 test("an interrupted batch repeats references from the last completed position", async t => {
   const requests = [], applied = [], errors = [];
   const env = await environment(t, async url => {
-    if (url.startsWith("/api/v1/query")) return snapshot();
+    if (url.startsWith("/api/v1/query")) return currentPage();
     requests.push(url);
     return requests.length === 2 ? new Response(envelope(begin) + envelope(change)) : batch("synthetic:1:0");
   });
@@ -42,14 +42,14 @@ test("an interrupted batch repeats references from the last completed position",
 });
 test("joining reads every current page without resetting the shared position", async t => {
   const requests = [], pages = [], beginnings = [], completions = [];
-  let snapshots = 0;
+  let loaded = 0;
   const env = await environment(t, async url => {
     requests.push(url);
-    if (url.startsWith("/api/v1/query")) return snapshot(++snapshots % 2 ? "next-page" : null);
+    if (url.startsWith("/api/v1/query")) return currentPage(++loaded % 2 ? "next-page" : null);
     return batch("synthetic:5:0");
   });
   const stopA = env.watchChanges({}); await flush();
-  const stopB = env.watchChanges({ snapshot: page => pages.push(page), begin: line => beginnings.push(line), complete: line => completions.push(line) }); await flush();
+  const stopB = env.watchChanges({ page: page => pages.push(page), begin: line => beginnings.push(line), complete: line => completions.push(line) }); await flush();
   assert.equal(pages.length, 2);
   assert.equal(beginnings[0].generation, "synthetic");
   assert.equal(completions[0].count, 2);
@@ -62,7 +62,7 @@ test("joining reads every current page without resetting the shared position", a
 test("one active change request serves the tab and hidden tabs abort it", async t => {
   let calls = 0;
   const env = await environment(t, async (url, { signal }) => {
-    if (url.startsWith("/api/v1/query")) return snapshot();
+    if (url.startsWith("/api/v1/query")) return currentPage();
     calls++;
     return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("hidden", "AbortError"))));
   });
@@ -76,7 +76,7 @@ test("one active change request serves the tab and hidden tabs abort it", async 
 test("expired authentication stops requests and clock refreshes", async t => {
   let calls = 0; const errors = [];
   const env = await environment(t, async url => {
-    if (url.startsWith("/api/v1/query")) return snapshot();
+    if (url.startsWith("/api/v1/query")) return currentPage();
     calls++; return new Response("expired", { status: 401 });
   });
   const stop = env.watchChanges({ error: error => errors.push(error.message) }); await flush();
@@ -86,7 +86,7 @@ test("expired authentication stops requests and clock refreshes", async t => {
 });
 test("a generation change reaches views before replacement references", async t => {
   const seen = [];
-  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? snapshot() : new Response(envelope({ ...begin, replacement: true, generation_changed: true }) + envelope(change) + envelope(complete("new:1:0"))));
+  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? currentPage() : new Response(envelope({ ...begin, replacement: true, generation_changed: true }) + envelope(change) + envelope(complete("new:1:0"))));
   const stop = env.watchChanges({ begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
   await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });
@@ -96,7 +96,7 @@ test("an initial query failure retries without requesting a replacement feed", a
   const env = await environment(t, async url => {
     requests.push(url);
     if (requests.length === 1) return new Response("temporarily unavailable", { status: 503 });
-    if (url.startsWith("/api/v1/query")) return snapshot();
+    if (url.startsWith("/api/v1/query")) return currentPage();
     return batch("synthetic:1:0");
   });
   const stop = env.watchChanges({ error: error => errors.push(error.message) });

@@ -87,7 +87,7 @@ references. `begin.generation_changed` and `begin.replacement` tell the view
 to refresh its reference population after an index replacement.
 
 `/assets/live.js` exports `watchChanges(subscriber)`, returning an unsubscribe
-function. New subscribers receive current references through a paged query, without resetting the shared position. The optional `query` selects that population (by default current session, note and excision references); `snapshot(page)` receives each initial page, or `apply` receives its rows. Other optional callbacks are `begin`, `apply`, `complete`, `refresh` and `error`. Apply references idempotently; a failed or incomplete batch leaves
+function. New subscribers receive current references through a paged query, without resetting the shared position. The optional `query` selects that population (by default current session, note and excision references); `page(data)` receives each initial page, or `apply` receives its rows. Other optional callbacks are `begin`, `apply`, `complete`, `refresh` and `error`. Apply references idempotently; a failed or incomplete batch leaves
 its last complete position unchanged. One finite request runs per visible tab.
 Hidden tabs abort the request and timers. A 30-second refresh callback asks
 the shared API about clock-driven state changes. A 401 stops requests and
