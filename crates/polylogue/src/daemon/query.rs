@@ -343,7 +343,7 @@ fn answer(
     }
     let mut notes = program.notes.clone();
     let mut unknown = serde_json::Map::new();
-    if program.shape == Shape::Rows && program.near.is_some() {
+    if program.counts_near {
         if without > 0 {
             notes.push(format!(
                 "{without} of {count} rows have no vector; their semantic similarity is unknown"
