@@ -193,6 +193,11 @@ fn web_links_resolve_to_the_same_sessions_as_captures() {
         "https://u@chatgpt.com/c/demo",
         "https://chatgpt.com/c/demo/extra",
         "https://chatgpt.com/share/demo",
+        "https://claude.ai/g/project/chat/demo",
+        "https://grok.com/u/0/c/demo",
+        "https://gemini.google.com/u/account/app/demo",
+        "https://aistudio.google.com/g/project/prompts/demo",
+        "https://chatgpt.com/u/0/c/demo",
     ] {
         assert!(pasted_session_ids(url).is_empty(), "{url}");
     }

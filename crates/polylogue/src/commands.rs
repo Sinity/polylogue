@@ -261,14 +261,14 @@ const HOOKS_ARGS: &[Arg] = &[
         default: Some("claude-code"),
         ..opt(
             "harness",
-            Kind::Choice(&["claude-code", "codex"]),
+            Kind::Choice(crate::hook::Harness::NAMES),
             "Whose settings",
         )
     },
     opt(
         "settings",
         Kind::Text,
-        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
 

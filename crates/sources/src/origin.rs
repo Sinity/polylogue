@@ -118,7 +118,8 @@ pub struct Collector {
     /// Run outside the loop thread when requests can wait on another process.
     pub background: bool,
     /// Writes new inputs into the spool and returns the errors for the pass.
-    pub sync: fn(&CollectorPaths<'_>) -> Vec<String>,
+    /// Background collectors check the stop flag between files.
+    pub sync: fn(&CollectorPaths<'_>, &std::sync::atomic::AtomicBool) -> Vec<String>,
 }
 
 /// Configured directories a collector reads from and writes to.
@@ -156,18 +157,26 @@ pub struct AssetMetadata {
 }
 
 /// A web chat: the page that shows one conversation is
-/// `https://<host>/<path>/<conversation id>`.
+/// `https://<host>/<path>/<conversation id>`, with an optional declared prefix.
 pub struct WebChat {
     /// The names the browser extension gives this provider.
     pub extension_names: &'static [&'static str],
     /// The hosts that serve conversation pages, the current one first.
     pub hosts: &'static [&'static str],
     pub path: &'static str,
+    /// Optional two-segment prefixes before the conversation path.
+    pub prefixes: &'static [LinkPrefix],
     /// Whether the extension can draft and submit turns on its pages.
     pub actions: bool,
     /// Whether the extension can page through the provider's conversation
     /// list to capture older conversations.
     pub backfill: bool,
+}
+
+/// A provider's optional account or project prefix on a conversation link.
+pub struct LinkPrefix {
+    pub path: &'static str,
+    pub numeric: bool,
 }
 
 impl OriginSpec {
@@ -478,6 +487,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["chatgpt"],
             hosts: &["chatgpt.com", "chat.openai.com"],
             path: "c",
+            prefixes: &[LinkPrefix { path: "g", numeric: false }],
             actions: true,
             backfill: true,
         }),
@@ -501,6 +511,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["claude-ai", "claude"],
             hosts: &["claude.ai"],
             path: "chat",
+            prefixes: &[],
             actions: false,
             backfill: true,
         }),
@@ -541,6 +552,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &[],
             hosts: &["aistudio.google.com"],
             path: "prompts",
+            prefixes: &[LinkPrefix { path: "u", numeric: true }],
             actions: false,
             backfill: false,
         }),
@@ -564,6 +576,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["gemini"],
             hosts: &["gemini.google.com"],
             path: "app",
+            prefixes: &[LinkPrefix { path: "u", numeric: true }],
             actions: false,
             backfill: false,
         }),
@@ -587,6 +600,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["grok"],
             hosts: &["grok.com"],
             path: "c",
+            prefixes: &[],
             actions: false,
             backfill: true,
         }),

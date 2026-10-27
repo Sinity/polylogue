@@ -64,6 +64,9 @@ the same change.
   submit in one.
 - **collector**: code that fetches an origin's files into its spool (the AI
   Studio Drive and Antigravity language-server collectors).
+- **conversation file**: Antigravity's opaque `.pb` file for one conversation.
+- **conversion state**: the small JSON file recording a conversation file's
+  size, mtime, conversion outcome and language-server PID.
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
 - **tool database**: a tool's own SQLite file. Polylogue stores its rows as a

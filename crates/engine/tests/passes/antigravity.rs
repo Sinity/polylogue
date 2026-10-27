@@ -4,15 +4,20 @@ use serde_json::json;
 #[test]
 fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
     let w = ClaudeHome::new();
-    let dir = w.home.join(".gemini/antigravity/conversations");
+    let dir = w.config(64 << 20).spool_dir("antigravity-exports");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("export.json"),serde_json::to_vec(&json!({"source":"antigravity_language_server","cascadeId":"exported", "markdown":"### User Input\nMarkdown prompt\n### Planner Response\nMarkdown answer"})).unwrap()).unwrap();
+    let home_dir = w.home.join(".gemini/antigravity/conversations");
+    fs::create_dir_all(&home_dir).unwrap();
+    let home_only = serde_json::to_vec(&json!({"source":"antigravity_language_server","cascadeId":"home-only","markdown":"### User Input\nIgnore this file"})).unwrap();
+    fs::write(home_dir.join("export.json"), &home_only).unwrap();
     {
         let (mut engine, _lock) = w.engine(64 << 20);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         let pool = w.reads();
         let reader = pool.reader().unwrap();
+        assert!(reader.query("SELECT id FROM session WHERE id='antigravity:home-only'", &[]).unwrap().is_empty());
         let exported = reader
             .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
             .unwrap();
@@ -38,17 +43,21 @@ fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
 }
 
 #[test]
-fn opaque_trajectories_and_conversion_events_share_a_session_and_rebuild() {
+fn opaque_conversation_files_and_conversion_events_share_a_session_and_rebuild() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".gemini/antigravity/conversations");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("not-converted.pb");
-    fs::write(&path, b"synthetic opaque trajectory").unwrap();
+    fs::write(&path, b"synthetic opaque conversation file").unwrap();
     {
         let (mut engine, _lock) = w.engine(64 << 20);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-        // Dropping the engine joins its collector before the next opens.
+        let spool = engine.config.spool_dir("antigravity-exports");
+        // Wait for this fixture's worker before shutdown asks it to stop.
+        while !fs::read_dir(&spool).is_ok_and(|entries| entries.filter_map(Result::ok).any(|e| e.path().extension().is_some_and(|e| e == "json"))) {
+            std::thread::yield_now();
+        }
     }
     let spool;
     {
@@ -77,7 +86,7 @@ fn opaque_trajectories_and_conversion_events_share_a_session_and_rebuild() {
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(events[0].kind, "antigravity_conversion");
     assert_eq!(events[0].data["status"], "server_unavailable");
-    assert_eq!(events[1].kind, "antigravity_trajectory_bytes");
+    assert_eq!(events[1].kind, "antigravity_conversation_bytes");
     let sessions = reader
         .query(
             "SELECT id FROM session WHERE id='antigravity:not-converted'",

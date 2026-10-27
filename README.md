@@ -280,10 +280,13 @@ Antigravity language-server JSON exports (`source: antigravity_language_server`,
 `cascadeId`, `markdown`) parse as sessions with user and planner turns. Known
 activity markers become assistant tool calls, including markers placed inside
 user sections. Unknown Markdown stays prose; missing times stay unknown.
-Native `.pb` conversations under `~/.gemini/antigravity/conversations/` are
+Conversation files (`.pb`) under `~/.gemini/antigravity/conversations/` are
 stored as bytes and converted through the running language server's loopback
 RPC with its CSRF token, bypassing proxies and redirects. Conversion runs in a
-worker with a five-second timeout per request, keyed by file size and mtime.
+worker with a five-second connection timeout and a sixty-second request timeout.
+Conversion state records file size, mtime and server PID. An unchanged failed
+conversion retries when the file or server process changes. A connection failure
+or timeout ends conversion for the pass; shutdown stops between files.
 The original bytes and conversion status belong to the same session as its
 export. An unavailable server produces a session event; unchanged status is
 written once. Converted exports rebuild the index without the server.

@@ -1,10 +1,12 @@
 //! Collector workers belong to the engine and finish before it closes.
 use polylogue_sources::origin::{Collector, CollectorPaths};
 use std::collections::HashMap;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::thread::{JoinHandle, spawn};
 
 #[derive(Default)]
 pub(crate) struct Collectors {
+    stop: Arc<AtomicBool>,
     tasks: HashMap<&'static str, JoinHandle<Vec<String>>>,
 }
 
@@ -30,6 +32,7 @@ impl Collectors {
             let home = paths.home.to_path_buf();
             let state_dir = paths.state_dir.to_path_buf();
             let spool = paths.spool.to_path_buf();
+            let stop = Arc::clone(&self.stop);
             self.tasks.insert(
                 name,
                 spawn(move || {
@@ -37,11 +40,11 @@ impl Collectors {
                         home: &home,
                         state_dir: &state_dir,
                         spool: &spool,
-                    })
+                    }, &stop)
                 }),
             );
         } else {
-            errors.extend((collector.sync)(paths));
+            errors.extend((collector.sync)(paths, &self.stop));
         }
         errors
             .into_iter()
@@ -52,6 +55,7 @@ impl Collectors {
 
 impl Drop for Collectors {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         for (_, task) in self.tasks.drain() {
             let _ = task.join();
         }

@@ -5,12 +5,13 @@ use std::net::TcpListener;
 use std::thread;
 
 fn server(replies: Vec<(String, Json, u16, Json)>) -> (Server, thread::JoinHandle<()>) {
-    server_with_change(replies, None)
+    server_with_change(replies, None, None)
 }
 
 fn server_with_change(
     replies: Vec<(String, Json, u16, Json)>,
     change: Option<PathBuf>,
+    stop: Option<std::sync::Arc<AtomicBool>>,
 ) -> (Server, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -49,12 +50,15 @@ fn server_with_change(
             {
                 fs::write(path, b"changed during conversion").unwrap();
             }
+            if method == "ConvertTrajectoryToMarkdown" && let Some(stop) = &stop {
+                stop.store(true, Ordering::Relaxed);
+            }
             let body = serde_json::to_vec(&reply).unwrap();
             write!(socket,"HTTP/1.1 {status} Reply\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n",body.len()).unwrap();
             socket.write_all(&body).unwrap();
         }
     });
-    (Server::new(port, "synthetic-token".into()), task)
+    (Server::new(42, port, "synthetic-token".into()), task)
 }
 
 fn search(limit: usize) -> (String, Json, u16, Json) {
@@ -89,7 +93,7 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
     ]);
     assert!(client.agent.config().proxy().is_none());
     assert_eq!(client.agent.config().max_redirects(), 0);
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     let bytes = fs::read(destination(&path, &spool)).unwrap();
     let parsed = crate::parse::run_document(&super::super::Antigravity, &bytes).unwrap();
@@ -106,9 +110,9 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
             .unwrap()
             .contains("synthetic-token")
     );
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[]).is_empty());
     let second = temp.path().join("two.pb");
-    fs::write(&second, b"another trajectory").unwrap();
+    fs::write(&second, b"another conversation file").unwrap();
     let (client, task) = server(vec![
         search(2),
         markdown(
@@ -116,7 +120,7 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
             json!({"markdown":"### User Input\nAnother question"}),
         ),
     ]);
-    assert!(sync_paths(&[path, second], &spool, &[client]).is_empty());
+    assert!(collect(&[path, second], &spool, &[client]).is_empty());
     task.join().unwrap();
 }
 
@@ -143,7 +147,7 @@ fn isolates_failed_and_partial_conversions() {
         markdown("good", json!({"markdown":"### Planner Response\nAnswer"})),
     ]);
     let spool = temp.path().join("spool");
-    let errors = sync_paths(&paths, &spool, &[server]);
+    let errors = collect(&paths, &spool, &[server]);
     task.join().unwrap();
     assert_eq!(errors.len(), 2);
     assert!(errors.iter().all(|e| e.contains("not converted")));
@@ -158,8 +162,8 @@ fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
     let spool = temp.path().join("spool");
     let path = temp.path().join("one.pb");
     fs::write(&path, b"opaque").unwrap();
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
-    let status_path = destination(&path, &spool).with_extension("status.json");
+    assert!(collect(std::slice::from_ref(&path), &spool, &[]).is_empty());
+    let status_path = destination(&path, &spool).with_extension("conversion-state.json");
     let before = fs::metadata(&status_path).unwrap().modified().unwrap();
     let bytes = fs::read(&status_path).unwrap();
     let parsed = crate::parse::run_document(&super::super::Antigravity, &bytes).unwrap();
@@ -173,7 +177,7 @@ fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
             .to_string(),
         "antigravity:one"
     );
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[]).is_empty());
     assert_eq!(
         before,
         fs::metadata(status_path).unwrap().modified().unwrap()
@@ -182,10 +186,10 @@ fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
         search(1),
         markdown("one", json!({"markdown":"### User Input\nQuestion"})),
     ]);
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     let status: Json = serde_json::from_slice(
-        &fs::read(destination(&path, &spool).with_extension("status.json")).unwrap(),
+        &fs::read(destination(&path, &spool).with_extension("conversion-state.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(status["status"], "converted");
@@ -228,7 +232,7 @@ fn duplicate_conversation_ids_are_reported_without_conversion() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"opaque").unwrap();
     }
-    let errors = sync_paths(&paths, &temp.path().join("spool"), &[]);
+    let errors = collect(&paths, &temp.path().join("spool"), &[]);
     assert_eq!(errors.len(), 2);
     assert!(
         errors
@@ -238,10 +242,10 @@ fn duplicate_conversation_ids_are_reported_without_conversion() {
 }
 
 #[test]
-fn refuses_an_export_if_the_trajectory_changes_during_conversion() {
+fn refuses_an_export_if_the_conversation_file_changes_during_conversion() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("one.pb");
-    fs::write(&path, b"original trajectory").unwrap();
+    fs::write(&path, b"original conversation file").unwrap();
     let spool = temp.path().join("spool");
     let (client, task) = server_with_change(
         vec![
@@ -249,11 +253,12 @@ fn refuses_an_export_if_the_trajectory_changes_during_conversion() {
             markdown("one", json!({"markdown":"### Planner Response\nAnswer"})),
         ],
         Some(path.clone()),
+        None,
     );
-    let errors = sync_paths(std::slice::from_ref(&path), &spool, &[client]);
+    let errors = collect(std::slice::from_ref(&path), &spool, &[client]);
     task.join().unwrap();
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].contains("trajectory changed during conversion"));
+    assert!(errors[0].contains("conversation file changed during conversion"));
     assert!(!destination(&path, &spool).exists());
 }
 
@@ -263,16 +268,16 @@ fn conversion_uses_size_and_nanosecond_mtime_without_reading_source_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("one.pb");
     fs::write(&path, b"opaque").unwrap();
-    // Metadata stays accessible while the trajectory content cannot be read.
+    // Metadata stays accessible while the conversation file content cannot be read.
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
     let spool = temp.path().join("spool");
     let (client, task) = server(vec![
         search(1),
         markdown("one", json!({"markdown":"### User Input\nQuestion"})),
     ]);
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[]).is_empty());
     let first = FileState::read(&path).unwrap();
     assert!(converted(&path, &spool, first));
     assert!(!converted(
@@ -305,34 +310,147 @@ fn conversion_uses_size_and_nanosecond_mtime_without_reading_source_bytes() {
             json!({"markdown":"### User Input\nChanged question"}),
         ),
     ]);
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
+    assert!(collect(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     assert!(converted(&path, &spool, FileState::read(&path).unwrap()));
 }
 
+fn collect(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String> {
+    sync_paths(paths, spool, servers, &AtomicBool::new(false))
+}
+
 #[test]
-fn an_unresponsive_server_has_a_short_request_timeout() {
+fn failed_conversions_wait_for_a_file_change_or_a_different_server_process() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("one.pb");
+    let spool = temp.path().join("spool");
+    fs::write(&path, b"opaque").unwrap();
+    let (client, task) = server(vec![
+        search(1), markdown("one", json!({"markdown":"### User Input\n"})),
+        search(1), markdown("one", json!({"markdown":"### User Input\n"})),
+    ]);
+    let servers = std::slice::from_ref(&client);
+    assert_eq!(collect(std::slice::from_ref(&path), &spool, servers).len(), 1);
+    let state_path = destination(&path, &spool).with_extension("conversion-state.json");
+    let before = fs::metadata(&state_path).unwrap().modified().unwrap();
+    assert!(collect(std::slice::from_ref(&path), &spool, servers).is_empty());
+    assert_eq!(fs::metadata(&state_path).unwrap().modified().unwrap(), before);
+    assert_eq!(conversion_state(&path, &spool).unwrap().server_pid, Some(42));
+    fs::write(&path, b"changed opaque bytes").unwrap();
+    assert_eq!(collect(std::slice::from_ref(&path), &spool, servers).len(), 1);
+    task.join().unwrap();
+    let (mut client, task) = server(vec![
+        search(1), markdown("one", json!({"markdown":"### User Input\nQuestion"})),
+    ]);
+    client.pid = 43;
+    assert!(collect(std::slice::from_ref(&path), &spool, &[client]).is_empty());
+    task.join().unwrap();
+    assert!(converted(&path, &spool, FileState::read(&path).unwrap()));
+    assert_eq!(conversion_state(&path, &spool).unwrap().server_pid, Some(43));
+}
+
+#[test]
+fn an_unresponsive_server_times_out_once_for_the_whole_conversion_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = ["one", "two", "three"].iter().map(|id| {
+        let path = temp.path().join(format!("{id}.pb"));
+        fs::write(&path, b"opaque").unwrap();
+        path
+    }).collect();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (stop, wait) = std::sync::mpsc::channel::<()>();
     let task = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = BufReader::new(socket.try_clone().unwrap());
+        let mut line = String::new();
+        let mut length = 0;
+        loop {
+            line.clear();
+            request.read_line(&mut line).unwrap();
+            if line == "\r\n" { break; }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        request.read_exact(&mut vec![0; length]).unwrap();
+        let body = br#"{"results":[]}"#;
+        write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        socket.write_all(body).unwrap();
+        drop(socket);
+        drop(request);
         let (_socket, _) = listener.accept().unwrap();
+        // The production client must end this stalled conversion by its own timeout.
         let _ = wait.recv();
+        listener.set_nonblocking(true).unwrap();
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
     });
-    let mut client = Server::new(port, "synthetic-token".into());
-    assert_eq!(
-        client.agent.config().timeouts().global,
-        Some(Duration::from_secs(5))
-    );
-    client.agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .timeout_global(Some(Duration::from_millis(50)))
-        .build()
-        .into();
+    let client = Server::new(42, port, "synthetic-token".into());
+    assert_eq!(client.agent.config().timeouts().connect, Some(Duration::from_secs(5)));
+    assert_eq!(client.agent.config().timeouts().global, Some(Duration::from_secs(60)));
+    let spool = temp.path().join("spool");
     let started = std::time::Instant::now();
-    assert!(client.post("SearchConversations", json!({})).is_err());
+    let errors = collect(&paths, &spool, &[client]);
+    let elapsed = started.elapsed();
     stop.send(()).unwrap();
     task.join().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    eprintln!("production conversion timeout: {elapsed:?}");
+    assert!(errors[0].to_ascii_lowercase().contains("timeout"), "{errors:?}");
+    for path in &paths {
+        let state = conversion_state(path, &spool).unwrap();
+        assert_eq!(state.status, "server_unavailable");
+        assert_eq!(state.server_pid, Some(42));
+        assert!(!destination(path, &spool).exists());
+    }
+}
+
+#[test]
+fn a_connection_failure_stops_before_trying_other_servers() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("one.pb");
+    fs::write(&path, b"opaque").unwrap();
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    other.set_nonblocking(true).unwrap();
+    let spool = temp.path().join("spool");
+    let clients = [Server::new(42, port, "synthetic-token".into()), Server::new(43, other.local_addr().unwrap().port(), "synthetic-token".into())];
+    assert!(collect(std::slice::from_ref(&path), &spool, &clients).is_empty());
+    assert!(matches!(other.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    assert_eq!(conversion_state(&path, &spool).unwrap().status, "server_unavailable");
+}
+
+#[test]
+fn a_stopped_collector_leaves_pending_files_for_the_next_pass() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("one.pb");
+    fs::write(&path, b"opaque").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let client = Server::new(42, listener.local_addr().unwrap().port(), "synthetic-token".into());
+    let spool = temp.path().join("spool");
+    assert!(sync_paths(&[path], &spool, &[client], &AtomicBool::new(true)).is_empty());
+    assert!(!spool.exists());
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+}
+
+#[test]
+fn shutdown_between_files_leaves_the_rest_unattempted() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths: Vec<_> = ["one", "two"].iter().map(|id| {
+        let path = temp.path().join(format!("{id}.pb"));
+        fs::write(&path, b"opaque").unwrap();
+        path
+    }).collect();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let (client, task) = server_with_change(vec![
+        search(2), markdown("one", json!({"markdown":"### User Input\nQuestion"})),
+    ], None, Some(std::sync::Arc::clone(&stop)));
+    let spool = temp.path().join("spool");
+    assert!(sync_paths(&paths, &spool, &[client], &stop).is_empty());
+    task.join().unwrap();
+    assert!(converted(&paths[0], &spool, FileState::read(&paths[0]).unwrap()));
+    assert!(conversion_state(&paths[1], &spool).is_none());
 }

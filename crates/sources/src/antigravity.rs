@@ -14,10 +14,7 @@ use std::path::Path;
 pub mod server;
 
 pub const ORIGIN: &str = "antigravity";
-pub const LOCATIONS: &[&str] = &[
-    ".gemini/antigravity/**/*.json",
-    ".gemini/antigravity/conversations/**/*.pb",
-];
+pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb"];
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     (path.extension().is_some_and(|e| e == "pb")
@@ -36,34 +33,34 @@ pub fn open(path: &Path) -> Option<Parse> {
         path.file_stem()
             .and_then(|name| name.to_str())
             .and_then(|name| session_id(ORIGIN, name))
-            .map(|session| Parse::Document(Box::new(Trajectory { session })))
+            .map(|session| Parse::Document(Box::new(ConversationFile { session })))
     } else {
         Some(Parse::Document(Box::new(Antigravity)))
     }
 }
 
-struct Trajectory {
+struct ConversationFile {
     session: polylogue_model::SessionId,
 }
-impl DocumentParser for Trajectory {
+impl DocumentParser for ConversationFile {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
         out.sessions
             .push(Session::new(self.session.clone(), SessionKind::Main));
         out.events.push(Event {
             session: Some(self.session.clone()),
-            kind: "antigravity_trajectory_bytes".into(),
+            kind: "antigravity_conversation_bytes".into(),
             at: None,
             after: None,
             range: None,
             data: serde_json::json!({"hash":BlobHash::of(bytes).to_string(),"length":bytes.len()}),
         });
-        records.record("trajectory", &RecordOutcome::Used);
+        records.record("conversation_file", &RecordOutcome::Used);
     }
 }
 pub struct Antigravity;
 static FIELDS: Fields = Fields::new(&[
     ("source", Rule::Read),
-    ("trajectoryFile", Rule::Read),
+    ("conversationFile", Rule::Read),
     ("cascadeId", Rule::Read),
     ("markdown", Rule::Read),
     ("title", Rule::Read),
@@ -94,8 +91,9 @@ impl DocumentParser for Antigravity {
                 &Fields::new(&[
                     ("source", Rule::Read),
                     ("cascadeId", Rule::Read),
-                    ("trajectoryFile", Rule::Read),
+                    ("conversationFile", Rule::Read),
                     ("status", Rule::Read),
+                    ("server_pid", Rule::Read),
                     ("error", Rule::Read),
                 ]),
             );

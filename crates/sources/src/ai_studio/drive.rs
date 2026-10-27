@@ -248,7 +248,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     background: false,
     setting: Some(SETTING),
-    sync: |paths| {
+    sync: |paths, _stop| {
         Drive {
             endpoints: Endpoints::default(),
             token_path: paths.state_dir.join("token.json"),

@@ -1,4 +1,4 @@
-//! Imports the running vendor server's Markdown without decoding trajectories.
+//! Imports the running vendor server's Markdown without decoding conversation files.
 use polylogue_model::{BlobHash, Json};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -6,47 +6,51 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const SERVICE: &str = "exa.language_server_pb.LanguageServerService";
 
 struct Server {
+    pid: u64,
     port: u16,
     token: String,
     agent: ureq::Agent,
 }
 
 impl Server {
-    fn new(port: u16, token: String) -> Self {
+    fn new(pid: u64, port: u16, token: String) -> Self {
         Self {
+            pid,
             port,
             token,
             agent: ureq::Agent::config_builder()
                 .proxy(None)
                 .max_redirects(0)
-                .timeout_global(Some(Duration::from_secs(5)))
+                .timeout_connect(Some(Duration::from_secs(5)))
+                .timeout_global(Some(Duration::from_secs(60)))
                 .build()
                 .into(),
         }
     }
 
-    fn post(&self, method: &str, value: Json) -> Result<Json, String> {
-        let body = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    fn post(&self, method: &str, value: Json) -> Result<Json, ConversionError> {
+        let body = serde_json::to_vec(&value).map_err(|e| ConversionError::NotConverted(e.to_string()))?;
         let mut response = self
             .agent
             .post(format!("http://127.0.0.1:{}/{SERVICE}/{method}", self.port))
             .header("content-type", "application/json")
             .header("x-codeium-csrf-token", &self.token)
             .send(body.as_slice())
-            .map_err(|e| format!("{method}: {e}"))?;
+            .map_err(|e| ConversionError::request(method, e))?;
         let bytes = response
             .body_mut()
             .with_config()
             .limit(u64::MAX)
             .read_to_vec()
-            .map_err(|e| format!("{method}: {e}"))?;
+            .map_err(|e| ConversionError::request(method, e))?;
         let value: Json = serde_json::from_slice(&bytes).map_err(|e| format!("{method}: {e}"))?;
         if !value.is_object() {
-            return Err(format!("{method}: expected an object"));
+            return Err(format!("{method}: expected an object").into());
         }
         Ok(value)
     }
@@ -100,7 +104,7 @@ fn discover(root: &Path, processes: &Path) -> Vec<Server> {
             if token.is_empty() {
                 return None;
             }
-            Some(Server::new(port, token))
+            Some(Server::new(pid, port, token))
         })
         .collect()
 }
@@ -108,23 +112,23 @@ fn discover(root: &Path, processes: &Path) -> Vec<Server> {
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     setting: None,
     background: true,
-    sync: |paths| sync(paths.home, paths.spool),
+    sync: |paths, stop| sync(paths.home, paths.spool, stop),
 };
 
-fn sync(home: &Path, spool: &Path) -> Vec<String> {
+fn sync(home: &Path, spool: &Path, stop: &AtomicBool) -> Vec<String> {
     let root = home.join(".gemini/antigravity");
     let mut paths = Vec::new();
-    if let Err(e) = trajectories(&root.join("conversations"), &mut paths) {
-        return vec![format!("Antigravity trajectories not converted: {e}")];
+    if let Err(e) = conversation_files(&root.join("conversations"), &mut paths) {
+        return vec![format!("Antigravity conversation files not converted: {e}")];
     }
     if paths.is_empty() {
         return Vec::new();
     }
     let servers = discover(&root, Path::new("/proc"));
-    sync_paths(&paths, spool, &servers)
+    sync_paths(&paths, spool, &servers, stop)
 }
 
-fn trajectories(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn conversation_files(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -133,7 +137,7 @@ fn trajectories(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in entries {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            trajectories(&entry.path(), paths)?;
+            conversation_files(&entry.path(), paths)?;
         } else if entry.path().extension().is_some_and(|e| e == "pb") {
             paths.push(entry.path());
         }
@@ -160,7 +164,63 @@ impl FileState {
     }
 }
 
-fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String> {
+#[derive(Debug)]
+enum ConversionError {
+    ServerUnavailable(String),
+    NotConverted(String),
+}
+
+impl ConversionError {
+    fn request(method: &str, error: ureq::Error) -> Self {
+        let text = format!("{method}: {error}");
+        match error {
+            ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed =>
+                Self::ServerUnavailable(text),
+            _ => Self::NotConverted(text),
+        }
+    }
+
+    fn text(&self) -> &str {
+        match self {
+            Self::ServerUnavailable(text) | Self::NotConverted(text) => text,
+        }
+    }
+}
+
+impl From<String> for ConversionError {
+    fn from(text: String) -> Self {
+        Self::NotConverted(text)
+    }
+}
+
+impl From<&str> for ConversionError {
+    fn from(text: &str) -> Self {
+        Self::NotConverted(text.into())
+    }
+}
+
+#[derive(Deserialize)]
+struct ConversionState {
+    #[serde(rename = "conversationFile")]
+    file: FileState,
+    status: String,
+    server_pid: Option<u64>,
+}
+
+fn conversion_state(path: &Path, spool: &Path) -> Option<ConversionState> {
+    fs::read(destination(path, spool).with_extension("conversion-state.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn failed_for(path: &Path, spool: &Path, state: FileState, pid: u64) -> bool {
+    conversion_state(path, spool).is_some_and(|previous| {
+        previous.file == state && previous.status == "not_converted"
+            && previous.server_pid == Some(pid)
+    })
+}
+
+fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &AtomicBool) -> Vec<String> {
     let mut errors = Vec::new();
     let mut pending = Vec::new();
     let mut counts = std::collections::HashMap::new();
@@ -168,31 +228,21 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
         *counts.entry(path.file_stem()).or_insert(0) += 1;
     }
     for path in paths {
+        if stop.load(Ordering::Relaxed) {
+            return errors;
+        }
         let state = match FileState::read(path) {
             Ok(state) => state,
             Err(e) => {
-                errors.push(format!(
-                    "Antigravity trajectory {} not converted: {e}",
-                    path.display()
-                ));
+                errors.push(format!("Antigravity conversation file {} not converted: {e}", path.display()));
                 continue;
             }
         };
         if counts[&path.file_stem()] > 1 {
-            errors.push(format!(
-                "Antigravity trajectory {} not converted: duplicate conversation identity",
-                path.display()
-            ));
+            errors.push(format!("Antigravity conversation file {} not converted: duplicate conversation identity", path.display()));
             continue;
         }
-        if converted(path, spool, state) {
-            if let Err(e) = conversion_status(path, spool, state, "converted", None) {
-                errors.push(format!(
-                    "Antigravity conversion status {}: {e}",
-                    path.display()
-                ));
-            }
-        } else {
+        if !converted(path, spool, state) {
             pending.push((path, state));
         }
     }
@@ -201,41 +251,68 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
     }
     let mut selected = None;
     for server in servers {
-        match server.post(
-            "SearchConversations",
-            serde_json::json!({"query":"","limit":paths.len()}),
-        ) {
+        if stop.load(Ordering::Relaxed) {
+            return errors;
+        }
+        if pending.iter().all(|(path, state)| failed_for(path, spool, *state, server.pid)) {
+            continue;
+        }
+        match server.post("SearchConversations", serde_json::json!({"query":"","limit":paths.len()})) {
             Ok(value) if value["results"].is_array() => {
                 selected = Some((server, value));
                 break;
             }
+            Err(ConversionError::ServerUnavailable(error)) => {
+                for (path, state) in pending {
+                    record_status(path, spool, state, Some(server.pid), "server_unavailable", Some(&error), &mut errors);
+                }
+                return errors;
+            }
             _ => continue,
         }
     }
-    for (path, state) in pending {
-        let result = match &selected {
-            Some((server, listing)) => convert(server, listing, path, spool, state),
-            None => Ok(()),
-        };
-        let status = match (&selected, &result) {
-            (None, _) => "server_unavailable",
-            (Some(_), Ok(())) => "converted",
-            (Some(_), Err(_)) => "not_converted",
-        };
-        if let Err(e) = conversion_status(path, spool, state, status, result.as_ref().err()) {
-            errors.push(format!(
-                "Antigravity conversion status {}: {e}",
-                path.display()
-            ));
+    let Some((server, listing)) = selected else {
+        // A refusal remains useful while the same server process is present.
+        for (path, state) in pending {
+            if !servers.iter().any(|server| failed_for(path, spool, state, server.pid)) {
+                record_status(path, spool, state, None, "server_unavailable", None, &mut errors);
+            }
         }
-        if let Err(e) = result {
-            errors.push(format!(
-                "Antigravity trajectory {} not converted: {e}",
-                path.display()
-            ));
+        return errors;
+    };
+    let mut unavailable = None;
+    for (path, state) in pending {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(error) = &unavailable {
+            record_status(path, spool, state, Some(server.pid), "server_unavailable", Some(error), &mut errors);
+            continue;
+        }
+        if failed_for(path, spool, state, server.pid) {
+            continue;
+        }
+        let result = convert(server, &listing, path, spool, state);
+        let status = match &result {
+            Ok(()) => "converted",
+            Err(ConversionError::ServerUnavailable(_)) => "server_unavailable",
+            Err(ConversionError::NotConverted(_)) => "not_converted",
+        };
+        record_status(path, spool, state, Some(server.pid), status, result.as_ref().err().map(|e| e.text()), &mut errors);
+        if let Err(error) = result {
+            errors.push(format!("Antigravity conversation file {} not converted: {}", path.display(), error.text()));
+            if let ConversionError::ServerUnavailable(error) = error {
+                unavailable = Some(error);
+            }
         }
     }
     errors
+}
+
+fn record_status(path: &Path, spool: &Path, state: FileState, pid: Option<u64>, status: &str, error: Option<&str>, errors: &mut Vec<String>) {
+    if let Err(e) = write_conversion_state(path, spool, state, pid, status, error) {
+        errors.push(format!("Antigravity conversion state {}: {e}", path.display()));
+    }
 }
 
 fn destination(path: &Path, spool: &Path) -> PathBuf {
@@ -246,12 +323,11 @@ fn destination(path: &Path, spool: &Path) -> PathBuf {
 }
 
 fn converted(path: &Path, spool: &Path, state: FileState) -> bool {
-    // Checkpoints stay small even when the Markdown export is large.
+    // Conversion state stays small even when the Markdown export is large.
     destination(path, spool).exists()
-        && fs::read(destination(path, spool).with_extension("checkpoint"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<FileState>(&bytes).ok())
-            == Some(state)
+        && conversion_state(path, spool).is_some_and(|previous| {
+            previous.file == state && previous.status == "converted"
+        })
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
@@ -266,23 +342,24 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn conversion_status(
+fn write_conversion_state(
     path: &Path,
     spool: &Path,
     state: FileState,
+    pid: Option<u64>,
     status: &str,
-    error: Option<&String>,
+    error: Option<&str>,
 ) -> Result<(), String> {
     let id = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or("invalid trajectory name")?;
+        .ok_or("invalid conversation file name")?;
     let value = serde_json::json!({
         "source":"antigravity_conversion", "cascadeId":id,
-        "trajectoryFile":state, "status":status, "error":error,
+        "conversationFile":state, "server_pid":pid, "status":status, "error":error,
     });
     write_json(
-        &destination(path, spool).with_extension("status.json"),
+        &destination(path, spool).with_extension("conversion-state.json"),
         &value,
     )
 }
@@ -293,11 +370,11 @@ fn convert(
     path: &Path,
     spool: &Path,
     state: FileState,
-) -> Result<(), String> {
+) -> Result<(), ConversionError> {
     let id = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or("invalid trajectory name")?;
+        .ok_or("invalid conversation file name")?;
     let value = server.post(
         "ConvertTrajectoryToMarkdown",
         serde_json::json!({"conversationId":id}),
@@ -316,9 +393,9 @@ fn convert(
         return Err("empty or partial conversation export".into());
     }
     if state != FileState::read(path)? {
-        return Err("trajectory changed during conversion".into());
+        return Err("conversation file changed during conversion".into());
     }
-    let mut export = serde_json::json!({"source":"antigravity_language_server","cascadeId":id,"markdown":markdown,"trajectoryFile":state});
+    let mut export = serde_json::json!({"source":"antigravity_language_server","cascadeId":id,"markdown":markdown,"conversationFile":state});
     if let Some(summary) = listing["results"]
         .as_array()
         .and_then(|rows| rows.iter().find(|v| v["cascadeId"] == id))
@@ -329,10 +406,9 @@ fn convert(
             }
         }
     }
-    // Write the export before its checkpoint, so an interrupted write retries.
-    let destination = destination(path, spool);
-    write_json(&destination, &export)?;
-    write_json(&destination.with_extension("checkpoint"), &state)
+    // The conversion state is written only after the export, so an interrupted write retries.
+    write_json(&destination(path, spool), &export)?;
+    Ok(())
 }
 
 #[cfg(test)]
