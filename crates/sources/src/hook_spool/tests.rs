@@ -36,7 +36,10 @@ fn each_line_is_an_event_on_the_harness_session() {
         let second_len = input[first_len..].iter().position(|&b| b == b'\n').unwrap();
         &input[first_len..first_len + second_len]
     });
-    assert_eq!(step.output.sessions[0].cwd, ["/repo"]);
+    assert!(
+        step.output.sessions.is_empty(),
+        "a hook line made a session"
+    );
     assert_eq!(step.counts.skipped["Stop: event names no session"], 1);
     assert_eq!(step.counts.records, 3);
 }
@@ -87,4 +90,25 @@ fn the_hook_commands_carrier_lines_are_read() {
         step.counts.unread_fields
     );
     assert!(LOCATIONS.contains(&"polylogue/hooks/*.ndjson"));
+}
+
+/// Two invocations of the hook with the same payload are two events; the
+/// line's own time and process tell them apart.
+#[test]
+fn each_invocation_carries_its_own_time_and_process() {
+    let line = |at_ns: &str| {
+        json!({"at_ns": at_ns, "event": "PreToolUse", "harness_pid": 4242, "provider": "claude-code",
+               "session_id": "s9", "payload": {"session_id": "s9", "tool_name": "Bash"}})
+    };
+    let input = lines(&[line("1792400000123456789"), line("1792400000123456790")]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let [first, second] = &step.output.events[..] else {
+        panic!("{:?}", step.output.events)
+    };
+    assert_eq!(first.at, second.at, "both fall in one millisecond");
+    assert_eq!(first.data["at_ns"], "1792400000123456789");
+    assert_eq!(second.data["at_ns"], "1792400000123456790");
+    assert_eq!(first.data["harness_pid"], 4242);
+    assert_eq!(first.data["tool_name"], "Bash");
+    assert_ne!(first.data, second.data);
 }

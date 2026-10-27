@@ -242,6 +242,20 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
                 .collect();
             ok(json!({ "provider": provider, "conversations": conversations }))
         }
+        Request::StoredFiles {
+            provider,
+            conversation,
+        } => {
+            let Some(session) =
+                polylogue_sources::browser_capture::session_for(&provider, &conversation)
+            else {
+                return ok(json!({ "files": [] }));
+            };
+            match reader.stored_files(&session) {
+                Ok(files) => ok(json!({ "files": files })),
+                Err(e) => store_error(&e),
+            }
+        }
         other => error("bad_request", format!("{other:?} is not a browser request")),
     }
 }
