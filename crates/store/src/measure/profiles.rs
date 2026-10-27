@@ -1,5 +1,5 @@
 //! Session profile reads and calculations, with costs read from the usage owner.
-use super::{Selection, SessionUsage};
+use super::{Selection, Totals};
 use crate::{Reader, Result, StoreError};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -147,17 +147,37 @@ pub struct Profile {
     pub working_directories: Vec<String>,
     pub tags: Vec<String>,
     pub facts: Facts,
-    pub usage: Option<SessionUsage>,
+    pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Usage {
+    pub own: Totals,
+    pub with_parents: Option<Totals>,
+    pub parents: crate::read::Parents,
+}
+
+fn usage(reader: &Reader<'_>, pk: i64, session: &str) -> Result<Usage> {
+    let id = polylogue_model::SessionId::parse(session)
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    let own = super::usage::own_session(reader, pk)?;
+    let parents = reader.select_messages(&id, true)?.parents().clone();
+    let with_parents = if parents.complete {
+        Some(super::usage::with_parents(reader, &id, &own)?)
+    } else {
+        None
+    };
+    Ok(Usage {
+        own,
+        with_parents,
+        parents,
+    })
 }
 
 impl Reader<'_> {
     pub fn session_profiles(&self, selection: &Selection) -> Result<Vec<Profile>> {
         let (condition, params) = selection.session_condition("s.pk")?;
         let conn = self.conn()?;
-        let mut usage: BTreeMap<_, _> = super::sessions(self, selection)?
-            .into_iter()
-            .map(|u| (u.session.clone(), u))
-            .collect();
         let mut statement = conn.prepare(&format!(
             "SELECT s.pk,s.id,s.title,s.origin,s.harness,p.facts FROM session s
             LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} ORDER BY s.id"
@@ -178,7 +198,7 @@ impl Reader<'_> {
             result.push(Profile {session:session.clone(),title:row.get(2)?,origin:row.get(3)?,harness:row.get(4)?,repositories,working_directories,
                 tags:tags.query_map([row.get::<_,i64>(0)?],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?,
                 primary_model:conn.query_row("SELECT model FROM message WHERE session_pk=?1 AND role='assistant' AND written_by='model' AND model IS NOT NULL GROUP BY model ORDER BY sum(output_tokens) DESC NULLS LAST,count(*) DESC,model LIMIT 1",[row.get::<_,i64>(0)?],|r|r.get(0)).optional()?,
-                facts:serde_json::from_str(&encoded)?,usage:usage.remove(&session)});
+                facts:serde_json::from_str(&encoded)?,usage:Some(usage(self, row.get(0)?, &session)?)});
         }
         Ok(result)
     }

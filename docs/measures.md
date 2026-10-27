@@ -101,7 +101,9 @@ of zero-length gaps has an undefined coefficient and stays unknown.
 working directories and their known repository labels/identities, tools, current tag notes, message/word/thinking
 counts (including substantive dialogue over ten characters, excluding tool,
 thinking and harness messages), dominant model by output tokens, timing facts, workflow shape, final observed state, and existing own and
-with-parents usage/cost totals. Usage fields retain their existing units and
+with-parents usage/cost totals. When parent history is incomplete, `usage.own`
+remains available, `usage.with_parents` is null, and `usage.parents` names the
+missing history. Usage fields retain their existing units and
 missing-cost rules; they are not copied into profile storage. Profile facts are
 versioned derivations. Each result stores `rule_version` and `cluster_gap_ms`.
 
