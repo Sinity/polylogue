@@ -294,7 +294,7 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
     assert_eq!(counted(&f), (2, 4));
 }
 
-mod read_start;
+mod selection;
 
 mod messages;
 
