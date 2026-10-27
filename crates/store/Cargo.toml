@@ -10,7 +10,7 @@ publish.workspace = true
 atomicwrites.workspace = true
 polylogue-model.workspace = true
 hashed-blobs.workspace = true
-rusqlite = { workspace = true, features = ["blob"] }
+rusqlite = { workspace = true, features = ["blob", "hooks"] }
 blake3.workspace = true
 memchr.workspace = true
 zstd.workspace = true

@@ -354,3 +354,25 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+## Read deadlines
+
+Every daemon reader has a 30-second default time limit, including time waiting
+for a reader slot. `POLYLOGUE_READ_TIMEOUT_MS` configures the default in
+milliseconds. A socket request can supply `deadline_ms` as absolute Unix
+milliseconds; HTTP accepts the same value in `X-Polylogue-Deadline-Ms`, and MCP
+accepts it in the call's `_meta.deadline_ms`. The daemon converts that value to
+a monotonic deadline when the request arrives. Completion sends a 500 ms
+deadline. Continuation pages start new requests.
+
+A request shares one deadline across every reader it opens. SQLite progress
+handlers stop long statements, and slot and write-lock waits check the same
+deadline and cancellation signal. Socket and HTTP disconnects cancel the
+request; MCP cancellation and EOF close its daemon socket. Progress handlers
+are removed before a connection returns to the pool. Requests cancelled while
+waiting for a slot never acquire one.
+
+A read that runs out of time returns `deadline_exceeded` (CLI exit 7); one its
+caller cancels returns `cancelled` (exit 3). Refusals name the running stage and
+report SQLite execution steps. An unfinished count and an unavailable scanned
+row count are `null`. A timed-out read never returns a successful partial page.

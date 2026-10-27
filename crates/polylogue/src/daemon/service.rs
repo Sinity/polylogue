@@ -30,6 +30,8 @@ pub struct Daemon {
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
     stopping: AtomicBool,
+    #[cfg(test)]
+    pub(crate) read_limits: Mutex<Option<Sender<polylogue_store::read::limit::ReadLimit>>>,
 }
 
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
@@ -44,6 +46,8 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
 pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
         StoreError::Conflict(_) => error("conflict", e),
+        StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
+        StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
@@ -93,11 +97,24 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        match briefing::prepare(&reader, ask, &request_id, user_writes::now(), near) {
+        let result = briefing::prepare(&reader, ask, &request_id, user_writes::now(), near);
+        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+            && let Err(error) = limit.check()
+        {
+            let info = serde_json::to_value(ask).unwrap_or_default();
+            let info = serde_json::json!({"op": "context", "text": info["text"]});
+            return super::execution::refusal(&error, &info, &limit);
+        }
+        match result {
             Ok(p) => p,
             Err(e) => return store_error(&e),
         }
     };
+    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+        && let Err(error) = limit.check()
+    {
+        return store_error(&error);
+    }
     let mut delivery = None;
     if let Some(sender) = sender
         && !prepared.empty
@@ -196,7 +213,20 @@ pub(crate) fn change_feed(d: &Daemon, since: Option<&str>) -> Result<std::fs::Fi
 /// Answers one request. Reads use the read pool; imports go to the loop
 /// thread, which owns the writer.
 pub fn handle(request: Request, d: &Daemon) -> Response {
-    handle_inner(request, d).masked()
+    let limit = super::execution::limit(None, Default::default());
+    handle_with_limit(request, d, &limit)
+}
+
+pub fn handle_with_limit(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+) -> Response {
+    #[cfg(test)]
+    if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
+        let _ = sender.send(limit.clone());
+    }
+    super::execution::run(request, limit, |request| handle_inner(request, d)).masked()
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {
@@ -1123,7 +1153,8 @@ pub fn start(
         settings.workers,
         per_reader * settings.workers as u64,
     )
-    .map_err(|e| to_io(&e))?;
+    .map_err(|e| to_io(&e))?
+    .with_timeout(super::execution::timeout());
     let (tx, rx) = channel();
     // The loop's first pass starts as soon as it runs.
     let status = Arc::new(Mutex::new(LoopStatus {
@@ -1142,6 +1173,8 @@ pub fn start(
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         stopping: AtomicBool::new(false),
+        #[cfg(test)]
+        read_limits: Mutex::new(None),
     });
     let mut runtime = Runtime {
         daemon,

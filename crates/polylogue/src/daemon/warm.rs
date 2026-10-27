@@ -147,6 +147,22 @@ impl Default for Warm {
     }
 }
 
+fn read_lock<'a, T>(
+    lock: &'a Mutex<T>,
+    reader: &Reader<'_>,
+) -> Result<std::sync::MutexGuard<'a, T>, String> {
+    loop {
+        reader.check().map_err(|error| error.to_string())?;
+        match lock.try_lock() {
+            Ok(held) => return Ok(held),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err("read cache poisoned".into()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
+        }
+    }
+}
+
 impl Warm {
     /// The loaded vectors of the embedding key `near:` ranks by, loading
     /// them when absent or stale. `None`: no vectors for this provider.
@@ -156,7 +172,7 @@ impl Warm {
         provider: &Provider,
     ) -> Result<Option<Arc<Loaded>>, String> {
         let prefix = provider.key_prefix();
-        let mut held = self.vectors.lock().map_err(|_| "vector cache poisoned")?;
+        let mut held = read_lock(&self.vectors, reader)?;
         if let Some(loaded) = held.as_ref()
             && loaded.key.starts_with(&prefix)
             && loaded.writes == vectors::writes()
@@ -249,7 +265,7 @@ impl Warm {
         reader: &Reader<'_>,
         position: &str,
     ) -> Result<Arc<Completion>, String> {
-        let mut held = self.completion.lock().map_err(|_| "completion poisoned")?;
+        let mut held = read_lock(&self.completion, reader)?;
         if let Some((at, data)) = held.as_ref()
             && at == position
         {

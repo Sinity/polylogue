@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 pub struct Polylogue {
     archive: PathBuf,
+    disconnected: tokio_util::sync::CancellationToken,
 }
 
 /// The commands offered as tools.
@@ -43,12 +44,25 @@ fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> 
     }
 }
 
-/// One tool call: the answer's text, or the refusal.
-pub fn call(
+/// In-process tests use the production async socket proxy.
+#[cfg(test)]
+pub(crate) fn call(
     archive: &Archive,
     name: &str,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> Result<String, String> {
+    let request = build_request(name, arguments)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    format_answer(&request, runtime.block_on(send(archive, &request, None)))
+}
+
+fn build_request(
+    name: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<Request, String> {
     let command = tool_commands()
         .find(|c| c.mcp_name() == name)
         .ok_or_else(|| format!("error (bad_request): no tool {name}"))?;
@@ -62,8 +76,11 @@ pub fn call(
         cwd: std::env::current_dir().ok(),
         json: true,
     };
-    let request = build(command, &values, &caller).map_err(bad)?;
-    match crate::cli::send_when_ready(archive, &request) {
+    build(command, &values, &caller).map_err(bad)
+}
+
+fn format_answer(request: &Request, response: std::io::Result<Response>) -> Result<String, String> {
+    match response {
         Ok(Response::Ok { data }) if matches!(request, Request::Context { .. }) => {
             Ok(data["prepared"]["text"]
                 .as_str()
@@ -102,20 +119,103 @@ impl ServerHandler for Polylogue {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let archive = Archive::at(&self.archive);
-        let name = request.name.into_owned();
-        let arguments = request.arguments.unwrap_or_default();
-        let answer = tokio::task::spawn_blocking(move || call(&archive, &name, arguments)).await;
-        Ok(match answer {
-            Ok(Ok(text)) => CallToolResult::success(vec![ContentBlock::text(text)]),
-            Ok(Err(text)) => CallToolResult::error(vec![ContentBlock::text(text)]),
-            Err(e) => {
-                CallToolResult::error(vec![ContentBlock::text(format!("error (internal): {e}"))])
+        let answer = match build_request(&request.name, request.arguments.unwrap_or_default()) {
+            Ok(request) => {
+                let archive = Archive::at(&self.archive);
+                tokio::select! {
+                    response = send(&archive, &request, context.meta.get("deadline_ms").and_then(serde_json::Value::as_i64)) => format_answer(&request, response),
+                    _ = context.ct.cancelled() => Err("error (cancelled): the read was cancelled".into()),
+                    _ = self.disconnected.cancelled() => Err("error (cancelled): the MCP client disconnected".into()),
+                }
             }
+            Err(error) => Err(error),
+        };
+        Ok(match answer {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
         }
         .into())
+    }
+}
+
+/// Dropping this future, including on MCP cancellation or EOF, closes the
+/// socket. No blocking proxy worker can outlive the MCP request.
+async fn send(
+    archive: &Archive,
+    request: &Request,
+    deadline_ms: Option<i64>,
+) -> std::io::Result<Response> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let duration = crate::daemon::execution::remaining(deadline_ms);
+    let outgoing = crate::daemon::execution::Outgoing {
+        request,
+        deadline_ms: deadline_ms.unwrap_or_else(|| crate::daemon::execution::deadline(duration)),
+    };
+    let mut bytes = serde_json::to_vec(&outgoing).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    match tokio::time::timeout(duration + std::time::Duration::from_secs(1), async {
+        let mut pause = std::time::Duration::from_millis(50);
+        let mut stream = loop {
+            match tokio::net::UnixStream::connect(archive.socket()).await {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) && archive.lock_held() =>
+                {
+                    tokio::time::sleep(pause).await;
+                    pause = (pause * 2).min(std::time::Duration::from_millis(500));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        stream.write_all(&bytes).await?;
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).await?;
+        serde_json::from_str(&response).map_err(std::io::Error::other)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Ok(crate::daemon::service::error(
+            "deadline_exceeded",
+            "the daemon did not answer before the deadline",
+        )),
+    }
+}
+
+/// EOF must stop read work before the MCP library drains its handlers.
+struct Input<R> {
+    inner: R,
+    disconnected: tokio_util::sync::CancellationToken,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Input<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let has_room = buffer.remaining() > 0;
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buffer);
+        if matches!(&result, std::task::Poll::Ready(Err(_)))
+            || matches!(&result, std::task::Poll::Ready(Ok(())))
+                && has_room
+                && buffer.filled().len() == before
+        {
+            self.disconnected.cancel();
+        }
+        result
+    }
+}
+
+impl<R> Drop for Input<R> {
+    fn drop(&mut self) {
+        self.disconnected.cancel();
     }
 }
 
@@ -124,10 +224,17 @@ pub fn serve_stdio() -> std::io::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
+        let disconnected = tokio_util::sync::CancellationToken::new();
+        let (input, output) = rmcp::transport::stdio();
+        let input = Input {
+            inner: input,
+            disconnected: disconnected.clone(),
+        };
         let service = Polylogue {
             archive: Archive::default_root(),
+            disconnected,
         }
-        .serve(rmcp::transport::stdio())
+        .serve((input, output))
         .await
         .map_err(std::io::Error::other)?;
         service.waiting().await.map_err(std::io::Error::other)?;

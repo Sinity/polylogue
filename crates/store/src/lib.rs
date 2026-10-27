@@ -101,6 +101,10 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    #[error("the read deadline was exceeded")]
+    ReadDeadlineExceeded,
+    #[error("the read was cancelled")]
+    ReadCancelled,
     #[error("the read pool has closed")]
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]

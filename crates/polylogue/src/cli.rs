@@ -211,6 +211,14 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 crate::EXIT_DAEMON_REQUIRED,
             );
         }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return fail(json, "deadline_exceeded", &e.to_string(), 7);
+        }
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
@@ -234,7 +242,10 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
             kind,
             message,
             detail,
-        } => fail_detail(json, &kind, &message, detail, 1),
+        } => {
+            let code = crate::daemon::execution::exit_code(&kind);
+            fail_detail(json, &kind, &message, detail, code)
+        }
     }
 }
 
@@ -331,9 +342,17 @@ fn when_ready<T>(
 ) -> std::io::Result<T> {
     let mut pause = std::time::Duration::from_millis(50);
     let mut told = false;
+    let started = std::time::Instant::now();
+    let duration = crate::daemon::execution::timeout();
     loop {
         match call() {
             Err(e) if is_down(&e) && archive.lock_held() => {
+                if started.elapsed() >= duration {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the daemon did not start before the deadline",
+                    ));
+                }
                 if !told {
                     eprintln!("polylogue: waiting for the daemon to finish opening the archive");
                     told = true;
@@ -362,7 +381,11 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
     let request = Request::Complete {
         word: word.to_owned(),
     };
-    let Ok(mut line) = serde_json::to_string(&request) else {
+    let outgoing = crate::daemon::execution::Outgoing {
+        request: &request,
+        deadline_ms: crate::daemon::execution::deadline(wait.unwrap()),
+    };
+    let Ok(mut line) = serde_json::to_string(&outgoing) else {
         return Vec::new();
     };
     line.push('\n');
@@ -392,7 +415,14 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
 /// Sends one request and reads its response.
 pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
-    let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
+    let duration = crate::daemon::execution::timeout();
+    stream.set_read_timeout(Some(duration + std::time::Duration::from_secs(1)))?;
+    stream.set_write_timeout(Some(duration))?;
+    let outgoing = crate::daemon::execution::Outgoing {
+        request,
+        deadline_ms: crate::daemon::execution::deadline(duration),
+    };
+    let mut line = serde_json::to_string(&outgoing).map_err(std::io::Error::other)?;
     line.push('\n');
     stream.write_all(line.as_bytes())?;
     let mut reply = String::new();

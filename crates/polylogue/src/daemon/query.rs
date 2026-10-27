@@ -255,6 +255,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 }
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let cursor = ask.cursor.map(Cursor::decode).transpose()?;
     let seed = cursor
         .as_ref()
@@ -302,6 +303,7 @@ fn answer(
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
+        polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let sessions = if m.everything {
             None
         } else {
@@ -316,6 +318,7 @@ fn answer(
             "read_at": read_at,
         }));
     }
+    polylogue_store::read::limit::ReadLimit::set_stage("count");
     let count = reader.query(&program.count_sql(), &params)?;
     let count = count
         .first()
@@ -330,6 +333,7 @@ fn answer(
     page_params.push(SqlValue::Int(
         i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
     ));
+    polylogue_store::read::limit::ReadLimit::set_stage("page");
     let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
     let more = rows.len() as u64 > page_size;
     rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
@@ -338,6 +342,7 @@ fn answer(
         _ => None,
     };
 
+    polylogue_store::read::limit::ReadLimit::set_stage("attached rows");
     if program.shape == Shape::Rows {
         snippets(reader, program, &mut rows)?;
         attach(reader, program, &mut rows)?;
@@ -392,6 +397,7 @@ fn answer(
         out["unknown"] = Value::Object(unknown);
     }
     if why_asked && count == 0 {
+        polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
         out["why"] = why(reader, program, &params)?;
     }
     Ok(out)

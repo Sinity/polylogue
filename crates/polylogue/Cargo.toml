@@ -29,9 +29,9 @@ clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rmcp.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "macros", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "macros", "fs", "io-util"] }
 axum.workspace = true
-tokio-util = { version = "0.7", features = ["io"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
 uuid.workspace = true
 tower.workspace = true
 base64.workspace = true

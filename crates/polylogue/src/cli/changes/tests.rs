@@ -38,7 +38,10 @@ fn every_stopped_prefix_keeps_the_previous_position_and_retry_delivers_every_lin
         assert!(receive(&wire(&lines[..prefix])[..], &mut output, Some("g:1:1")).is_err());
         assert!(completed(&output).is_empty(), "prefix {prefix}");
         let mut retry = Vec::new();
-        assert!(receive(&wire(&lines)[..], &mut retry, Some("g:1:1")).unwrap());
+        assert_eq!(
+            receive(&wire(&lines)[..], &mut retry, Some("g:1:1")).unwrap(),
+            0
+        );
         assert_eq!(completed(&retry)[0]["position"], "g:2:2");
         assert_eq!(
             retry
@@ -85,7 +88,7 @@ impl Write for Stops {
 fn stopped_output_never_forwards_a_complete_new_checkpoint() {
     let input = wire(&example());
     let mut full = Vec::new();
-    assert!(receive(&input[..], &mut full, Some("g:1:1")).unwrap());
+    assert_eq!(receive(&input[..], &mut full, Some("g:1:1")).unwrap(), 0);
     for cutoff in 0..full.len() {
         let mut output = Stops {
             bytes: Vec::new(),
@@ -132,7 +135,10 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
     let request = request(&values).unwrap();
     assert!(matches!(request, Request::Changes { since: None }));
     let mut output = Vec::new();
-    assert!(send(&daemon.daemon.archive, &request, &mut output).unwrap());
+    assert_eq!(
+        send(&daemon.daemon.archive, &request, &mut output).unwrap(),
+        0
+    );
     let entries: Vec<Value> = output
         .split(|b| *b == b'\n')
         .filter(|s| !s.is_empty())
@@ -151,7 +157,10 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
         since: Some(checkpoint),
     };
     let mut again = Vec::new();
-    assert!(send(&daemon.daemon.archive, &request, &mut again).unwrap());
+    assert_eq!(
+        send(&daemon.daemon.archive, &request, &mut again).unwrap(),
+        0
+    );
     let end = completed(&again);
     assert_eq!(end.len(), 1);
     assert_eq!(end[0]["count"], 0);
@@ -178,7 +187,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         since: Option<&str>,
     ) -> Option<(BTreeSet<String>, String)> {
         let mut bytes = Vec::new();
-        if !receive(wire, &mut bytes, since).ok()? {
+        if receive(wire, &mut bytes, since).ok()? != 0 {
             return None;
         }
         let lines: Vec<Value> = bytes
@@ -266,7 +275,7 @@ fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     let mut wire = Vec::new();
     file.read_to_end(&mut wire).unwrap();
     let mut output = Vec::new();
-    assert!(receive(&wire[..], &mut output, None).unwrap());
+    assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 0);
     assert_eq!(completed(&output).len(), 1);
 }
 
@@ -288,7 +297,7 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
     // Bytes may have escaped. Failure does not prove the receiver rejected
     // them; replay sends the same IDs and the previous completed position.
     let mut replay = Vec::new();
-    assert!(receive(&input[..], &mut replay, Some("g:1:1")).unwrap());
+    assert_eq!(receive(&input[..], &mut replay, Some("g:1:1")).unwrap(), 0);
     assert_eq!(replay, output.0);
 }
 
@@ -320,4 +329,18 @@ fn request(v: &crate::commands::Values) -> Result<Request, String> {
             json: true,
         },
     )
+}
+
+#[test]
+fn a_change_feed_deadline_uses_timeout_exit_code() {
+    let mut output = Vec::new();
+    let response = serde_json::to_vec(&Response::Error {
+        kind: "deadline_exceeded".into(),
+        message: "read deadline exceeded".into(),
+        detail: None,
+    })
+    .unwrap();
+    let mut wire = response;
+    wire.push(b'\n');
+    assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 7);
 }

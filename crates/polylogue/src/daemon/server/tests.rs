@@ -1,4 +1,6 @@
 use super::*;
+use crate::daemon::Response;
+use crate::daemon::service::handle;
 
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
@@ -145,4 +147,52 @@ fn listener_wait_stops_accepting_requests_before_joining_clients() {
         Err(polylogue_store::StoreError::ReadPoolClosed)
     ));
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+}
+
+#[test]
+fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
+    let daemon = crate::test_daemon::start("socket cancellation");
+    let _held = daemon.daemon.reads.reader().unwrap();
+    let reads = daemon.watch_reads();
+    let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
+    let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
+    serde_json::to_writer(&mut stream, &request).unwrap();
+    stream.write_all(b"\n").unwrap();
+    let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
+    crate::test_daemon::TestDaemon::wait_for_sql(&limit);
+    drop(stream);
+    let elapsed = daemon.assert_slot_freed();
+    assert!(limit.cancellation.is_cancelled());
+    eprintln!("socket disconnect released reader in {elapsed:?}");
+}
+
+#[test]
+fn socket_honours_the_client_deadline_without_closing_the_connection() {
+    let daemon = crate::test_daemon::start("socket deadline");
+    let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
+    let outgoing = crate::daemon::execution::Outgoing {
+        request: &request,
+        deadline_ms: crate::daemon::execution::deadline(Duration::from_millis(50)),
+    };
+    serde_json::to_writer(&mut stream, &outgoing).unwrap();
+    stream.write_all(b"\n").unwrap();
+    let mut input = BufReader::new(stream);
+    let mut line = String::new();
+    input.read_line(&mut line).unwrap();
+    let response: Response = serde_json::from_str(&line).unwrap();
+    assert!(matches!(response, Response::Error { kind, .. } if kind == "deadline_exceeded"));
+    input
+        .get_mut()
+        .write_all(b"{\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
+        .unwrap();
+    line.clear();
+    input.read_line(&mut line).unwrap();
+    assert!(matches!(
+        serde_json::from_str::<Response>(&line).unwrap(),
+        Response::Ok { .. }
+    ));
 }
