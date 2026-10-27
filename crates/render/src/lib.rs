@@ -244,7 +244,7 @@ fn when(m: &Message) -> String {
 }
 
 /// A session read keeps typed message fields; a view only selects blocks.
-/// JSON is structured data, while the other formats display the selected stream.
+/// Data formats preserve selected model fields; prose formats display their blocks.
 pub fn session(
     session: &Session,
     display_title: Option<&str>,
@@ -362,7 +362,12 @@ fn formatted(items: &[Rendered<'_>], format: Format, view: View) -> io::Result<V
                 Rendered::SessionHeader { session, title } => {
                     Some(json!({"kind":"session", "session": session, "title":title}))
                 }
-                Rendered::Message(message) => Some(json!({"kind":"message", "session_id":message.session,"message_id":message.id,"role":who(message),"timestamp":when(message),"text":message.text(),"blocks":message.blocks})),
+                Rendered::Message(message) => {
+                    let mut row = serde_json::to_value(message).expect("messages serialize");
+                    row["kind"] = json!("message");
+                    row["text"] = json!(message.text());
+                    Some(row)
+                }
                 Rendered::Document(document) => {
                     Some(json!({"kind":"document", "document":document}))
                 }
