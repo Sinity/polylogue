@@ -337,3 +337,13 @@ fn repository_discovery_follows_new_and_removed_nested_repositories() {
     assert_eq!(repository_of(&cwd), Some(outer));
     assert_eq!(refresh([cwd], &out, &mut cache, "t4").unwrap(), 0);
 }
+
+#[test]
+fn remote_paths_keep_their_spaces_and_newlines() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    repository(&repo);
+    let remote = " local repository \n";
+    git(&repo, &["remote", "add", "origin", remote]);
+    assert_eq!(read(&repo, &mut Cache::default()).remote.as_deref(), Some(remote));
+}
