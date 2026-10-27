@@ -155,7 +155,7 @@ async fn send(
     };
     let mut bytes = serde_json::to_vec(&outgoing).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
-    match tokio::time::timeout(duration + std::time::Duration::from_secs(1), async {
+    let exchange = async {
         let mut pause = std::time::Duration::from_millis(50);
         let mut stream = loop {
             match tokio::net::UnixStream::connect(archive.socket()).await {
@@ -176,9 +176,11 @@ async fn send(
         let mut response = String::new();
         BufReader::new(stream).read_line(&mut response).await?;
         serde_json::from_str(&response).map_err(std::io::Error::other)
-    })
-    .await
-    {
+    };
+    if !request.read_only() {
+        return exchange.await;
+    }
+    match tokio::time::timeout(duration + std::time::Duration::from_secs(1), exchange).await {
         Ok(result) => result,
         Err(_) => Ok(crate::daemon::service::error(
             "deadline_exceeded",

@@ -416,7 +416,11 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
 pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
     let duration = crate::daemon::execution::timeout();
-    stream.set_read_timeout(Some(duration + std::time::Duration::from_secs(1)))?;
+    stream.set_read_timeout(
+        request
+            .read_only()
+            .then_some(duration + std::time::Duration::from_secs(1)),
+    )?;
     stream.set_write_timeout(Some(duration))?;
     let outgoing = crate::daemon::execution::Outgoing {
         request,
