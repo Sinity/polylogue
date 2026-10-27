@@ -36,7 +36,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:code_execution_session#chunk-user-1",
+          "id": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:code_execution_session"
@@ -53,8 +53,8 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:code_execution_session#chunk-thought-1",
-          "parent": "ai-studio:code_execution_session#chunk-user-1",
+          "id": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
+          "parent": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
           "role": "assistant",
           "session": "ai-studio:code_execution_session"
         },
@@ -71,7 +71,7 @@
             },
             {
               "action": "code",
-              "call_id": "code_execution_session#chunk-code-1:code1",
+              "call_id": "22:code_execution_session#id:12:chunk-code-1:code1",
               "command": "print(sum(range(1, 11)))",
               "input": {
                 "code": "print(sum(range(1, 11)))",
@@ -81,7 +81,7 @@
               "type": "tool_call"
             },
             {
-              "call_id": "code_execution_session#chunk-code-1:code1",
+              "call_id": "22:code_execution_session#id:12:chunk-code-1:code1",
               "data": {
                 "outcome": "OUTCOME_OK",
                 "output": "55"
@@ -93,8 +93,8 @@
               "type": "tool_result"
             }
           ],
-          "id": "ai-studio:code_execution_session#chunk-code-1",
-          "parent": "ai-studio:code_execution_session#chunk-thought-1",
+          "id": "ai-studio:22:code_execution_session#id:12:chunk-code-1",
+          "parent": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
           "role": "assistant",
           "session": "ai-studio:code_execution_session"
         },
@@ -110,8 +110,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:code_execution_session#chunk-model-final",
-          "parent": "ai-studio:code_execution_session#chunk-code-1",
+          "id": "ai-studio:22:code_execution_session#id:17:chunk-model-final",
+          "parent": "ai-studio:22:code_execution_session#id:12:chunk-code-1",
           "role": "assistant",
           "session": "ai-studio:code_execution_session",
           "stop_reason": "STOP",

@@ -255,7 +255,7 @@ impl ExportParser for AiStudio {
                 data: settings,
             });
             if let Some(text) = system_text(doc.get("systemInstruction")) {
-                let id = message_id(ORIGIN, &format!("{}#system", self.native))
+                let id = message_id(ORIGIN, &message_native(&self.native, "system", ""))
                     .ok_or("unusable system id")?;
                 sink.out.messages.push(MessageRow {
                     offset: 0,
@@ -376,8 +376,8 @@ impl AiStudio {
             None => return Err(RecordOutcome::unreadable("no role")),
         };
         let native = match str_of(chunk, "id") {
-            Some(id) => format!("{}#{id}", self.native),
-            None => format!("{}#{position}", self.native),
+            Some(id) => message_native(&self.native, "id", id),
+            None => message_native(&self.native, "position", &position.to_string()),
         };
         let id =
             message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
@@ -488,6 +488,11 @@ impl AiStudio {
         }
         Ok(message)
     }
+}
+
+// Lengths keep file names and native IDs containing separators unambiguous.
+fn message_native(prompt: &str, kind: &str, value: &str) -> String {
+    format!("{}:{prompt}#{kind}:{}:{value}", prompt.len(), value.len())
 }
 
 fn plain(

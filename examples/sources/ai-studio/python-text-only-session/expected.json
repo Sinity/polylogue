@@ -36,7 +36,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:text_only_session#chunk-user-1",
+          "id": "ai-studio:17:text_only_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:text_only_session"
@@ -53,8 +53,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:text_only_session#chunk-model-1",
-          "parent": "ai-studio:text_only_session#chunk-user-1",
+          "id": "ai-studio:17:text_only_session#id:13:chunk-model-1",
+          "parent": "ai-studio:17:text_only_session#id:12:chunk-user-1",
           "role": "assistant",
           "session": "ai-studio:text_only_session",
           "stop_reason": "STOP",
