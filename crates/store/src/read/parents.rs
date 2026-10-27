@@ -302,7 +302,7 @@ impl MessageSelection<'_, '_> {
             let mut last = None;
             for key in keys.iter().skip(start.message) {
                 let mut flow = ControlFlow::Continue(());
-                self.reader.visit_messages_where(
+                let _ = self.reader.visit_messages_where(
                     key.session_pk,
                     &key.session,
                     Some(key.message_pk),
@@ -311,7 +311,7 @@ impl MessageSelection<'_, '_> {
                         visibility: self.visibility.as_ref(),
                     },
                     |pk| pk == key.message_pk,
-                    |pk, message| {
+                    &mut |pk, message| {
                         last = Some(pk);
                         flow = visit(message);
                         ControlFlow::Break(())

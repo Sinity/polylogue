@@ -271,7 +271,7 @@ impl MessageSelection<'_, '_> {
 
     fn visible_key(
         &self,
-        from: VisitStart,
+        key: i64,
         kinds: &[polylogue_model::BlockKind],
         prompts: bool,
     ) -> Result<bool> {
