@@ -140,7 +140,8 @@ precedence (`subagent_dispatch`), then tool density below 0.1 with dialogue
 (`chat`), at least three reads with no edits and at most two user turns
 (`batch_review`), edits or at least three runs with tool density at least 0.2
 and at least ten messages (`agentic_loop`), remaining read/tool activity
-(`exploratory`), otherwise `unknown`. Input counts and ratios accompany the
+(`exploratory`), otherwise `unknown`. Ratios are rounded to four decimals before classification. Input counts and
+ratios accompany the
 label in `workflow_features`. Shape does not measure quality, correctness,
 importance or productivity.
 
@@ -157,12 +158,18 @@ measurement. Existing session query fields keep their existing definitions.
 
 ## Comparison and distributions
 
-`compare` returns selected profiles, varying comparison fields and pairwise
-metadata similarity. Identity and title are excluded from varying-field diffs.
+`compare` returns selected profiles and varying comparison fields. Identity and
+title are excluded from varying-field diffs. `similar` takes a query selecting
+one reference session and compares it with every other profile in the archive:
+
+```
+polylogue query 'sessions where id:"codex:example" | measure similar'
+```
+
 Similarity excludes self and zero scores. Its explicit rule adds 3 for the same
 known workflow shape, 1 for origin, 2 for first timestamps within three UTC days
 (or 1 within fourteen), and 1 per shared tag. Reasons accompany scores, sorted
-by score and IDs. This is metadata-shape similarity, not semantic similarity.
+by descending score and session ID. This is metadata-shape similarity, not semantic similarity.
 
 `correlation:X:Y` returns Pearson r rounded to four decimals, selected total, measured pair count, missing
 pair count and an explicit reason when fewer than three pairs or zero variance
