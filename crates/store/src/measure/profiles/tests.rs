@@ -595,4 +595,8 @@ fn profiles_include_repositories_from_every_recorded_working_directory() {
         Some("root-two")
     );
     assert_eq!(profile.repositories[0].paths, vec!["/synthetic/one"]);
+    let facets = super::super::facets::facets(&reader, &Selection::default(), "deep").unwrap();
+    assert_eq!(facets.global.families["repositories"].len(), 2);
+    assert_eq!(facets.global.families["repositories"]["root-one"], 1);
+    assert_eq!(facets.global.families["repositories"]["root-two"], 1);
 }
