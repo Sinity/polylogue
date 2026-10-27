@@ -144,8 +144,20 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     }
-                    let sessions =
-                        format!("SELECT s.pk FROM session s WHERE {}", and_all(&where_sql));
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
+                    let sessions = format!(
+                        "SELECT s.pk FROM {} WHERE {}",
+                        self.from(&scope)?,
+                        and_all(&where_sql)
+                    );
+                    // The session ranking selects sessions; children have their own order.
+                    self.rank = None;
+                    self.near_rank = None;
+                    self.near_join = None;
+                    self.fusion = None;
+                    self.shown.clear();
                     let next = RowContext::plain(*unit);
                     let ntop = cond.as_ref().map(top_level).unwrap_or_default();
                     let mut w = self.defaults(&next, &ntop);
@@ -196,7 +208,13 @@ impl<'a> Compiler<'a> {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
-                    where_sql.push(self.cond(cond, &scope, false)?);
+                    // A later filter is one more condition on the same rows:
+                    // its words rank them as they would in the `where`,
+                    // unless a sort already ordered them.
+                    self.in_stage = true;
+                    let sql = self.cond(cond, &scope, order.is_none());
+                    self.in_stage = false;
+                    where_sql.push(sql?);
                 }
                 StageKind::Where { cond } => {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
@@ -349,6 +367,29 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        // An answer of groups, a summary, match rows or a measurement uses
+        // only which rows match, so `near:` computes no similarity for it,
+        // unless a selection already chose rows by the ranking.
+        let rows_answer =
+            matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
+        // A fused ranking already read the similarities.
+        if self.near_rank.is_some()
+            && !rows_answer
+            && !self.ranking_chose_rows
+            && self.fusion.is_none()
+        {
+            self.ctes.drain(self.near_ctes.clone());
+            self.near_rank = None;
+            self.near_join = None;
+            self.near = None;
+        }
+        if let Some(note) = self.near_disabled.take()
+            && !rows_answer
+            && !self.ranking_chose_rows
+        {
+            self.incomplete.remove(note);
+        }
+
         self.fuse_pending(
             std::mem::take(&mut pending),
             &scope,
@@ -368,6 +409,7 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
+        let mut count_without_vectors = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
@@ -504,6 +546,9 @@ impl<'a> Compiler<'a> {
                 self.apply_selection(&scope, &mut where_sql, &order, selection.take());
             }
             let wh = and_all(&where_sql);
+            count_without_vectors = self.near_rank.as_ref().map(|near| {
+                format!("{ctes}SELECT count(*) FROM {from} WHERE {wh} AND ({near}) IS NULL")
+            });
             let order = order.unwrap_or_else(|| self.default_order(&scope));
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
             if !self.opts.fields.is_empty() {
@@ -628,6 +673,7 @@ impl<'a> Compiler<'a> {
             page_size,
             near: self.near,
             definitions: self.definitions,
+            count_without_vectors,
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
@@ -687,6 +733,9 @@ impl<'a> Compiler<'a> {
             return;
         };
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        if order.is_none() && (self.ranking().is_some() || self.near_disabled.is_some()) {
+            self.ranking_chose_rows = true;
+        }
         let order = order.clone().unwrap_or_else(|| self.default_order(scope));
         let from = self.from(scope).unwrap_or_default();
         let inner = format!(
@@ -713,8 +762,40 @@ impl<'a> Compiler<'a> {
     /// The default filters a unit binds, dropped by a top-level condition
     /// naming their field.
     pub(super) fn defaults(&mut self, scope: &RowContext, top: &[Cond]) -> Vec<String> {
-        let named = named_fields(top, scope.unit);
-        let reference = top.iter().any(|c| self.is_reference(c));
+        // A saved relation at the top level binds its defaults before
+        // the caller narrows it. Nested OR and NOT do not name defaults.
+        let mut bound = top.to_vec();
+        let mut seen = HashSet::new();
+        let mut next = 0;
+        while next < bound.len() {
+            let condition = bound[next].clone();
+            next += 1;
+            let CondKind::Saved { name, .. } = condition.kind else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some([definition]) = self.opts.saved.get(&name).map(Vec::as_slice) else {
+                continue;
+            };
+            let Ok(query) = parse(&definition.text) else {
+                continue;
+            };
+            if !query.stages.is_empty() || !query.attach.is_empty() {
+                continue;
+            }
+            let condition = match query.source {
+                Source::Unit { unit, cond } if unit == scope.unit => cond,
+                Source::Sessions { cond } if scope.unit == Unit::Sessions => Some(cond),
+                _ => None,
+            };
+            if let Some(condition) = condition {
+                bound.extend(top_level(&condition));
+            }
+        }
+        let named = named_fields(&bound, scope.unit);
+        let reference = bound.iter().any(|c| self.is_reference(c));
         units::spec(scope.unit)
             .defaults
             .iter()
@@ -741,12 +822,20 @@ impl<'a> Compiler<'a> {
         let spec = units::spec(scope.unit);
         let time = a.expand(spec.time);
         if let Some(rank) = self.ranking() {
-            return vec![
+            // Equal ranks at equal times still need one order, or a page
+            // continuing after one of them would skip the others.
+            let mut o = vec![
                 format!("{rank} IS NULL"),
                 rank,
                 format!("{time} IS NULL"),
                 format!("{time} DESC"),
             ];
+            o.extend(
+                spec.identity
+                    .iter()
+                    .map(|term| format!("{} DESC", a.expand(term))),
+            );
+            return o;
         }
         let desc = if spec.newest_first { " DESC" } else { "" };
         let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];

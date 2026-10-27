@@ -256,9 +256,11 @@ fn the_query_examples_match_on_the_real_archive() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// Every example query, paged by cursor at every page size from 1 to one
+/// more than its rows, concatenates to its unpaged rows, and every page
+/// carries the unpaged count.
 #[test]
-fn counts_match_the_rows_paged() {
-    // Every example's `count` equals the rows paged to the end.
+fn pages_of_every_size_concatenate_to_the_whole_answer() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
@@ -267,40 +269,45 @@ fn counts_match_the_rows_paged() {
     )
     .unwrap();
     let mut wrong = Vec::new();
+    let mut paged = 0;
     for key in expected["queries"].as_object().unwrap().keys() {
         let text = key.split_once(' ').unwrap().1;
-        let Ok(first) = run(
-            &r,
-            Ask {
-                page_size: Some(1),
-                ..ask(text)
-            },
-        ) else {
+        let Ok(whole) = run(&r, ask(text)) else {
             continue;
         };
-        if first["shape"] == "summary" {
-            continue;
+        let want = rows(&whole);
+        for size in 1..=want.len() as u64 + 1 {
+            let mut got = Vec::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = run(
+                    &r,
+                    Ask {
+                        page_size: Some(size),
+                        cursor: cursor.as_deref(),
+                        ..ask(text)
+                    },
+                )
+                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.kind, f.message));
+                if page["count"] != whole["count"] {
+                    wrong.push(format!(
+                        "{key} by {size}: count {} of {}",
+                        page["count"], whole["count"]
+                    ));
+                }
+                got.extend(rows(&page).iter().cloned());
+                cursor = page["next"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            if got != want {
+                wrong.push(format!("{key} by {size}: the pages differ from the rows"));
+            }
         }
-        let count = first["count"].as_u64();
-        let mut paged = rows(&first).len() as u64;
-        let mut cursor = first["next"].as_str().map(str::to_owned);
-        while let Some(c) = cursor {
-            let page = run(
-                &r,
-                Ask {
-                    page_size: Some(1),
-                    cursor: Some(&c),
-                    ..ask(text)
-                },
-            )
-            .unwrap();
-            paged += rows(&page).len() as u64;
-            cursor = page["next"].as_str().map(str::to_owned);
-        }
-        if count != Some(paged) {
-            wrong.push(format!("{key}: count {count:?}, paged {paged}"));
-        }
+        paged += 1;
     }
+    assert!(paged > 30, "{paged} examples paged");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
@@ -390,11 +397,21 @@ fn three_valued_filters_partition() {
         .into_iter()
         .collect();
     assert!(has.is_disjoint(&hasnt), "{has:?} {hasnt:?}");
+    // The rest have no failing call but a call whose outcome is unknown:
+    // `exists` is unknown for them, so neither form returns them.
+    let unknown: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:unknown)"))
+        .into_iter()
+        .filter(|s| !has.contains(s))
+        .collect();
     assert_eq!(
-        has.union(&hasnt).cloned().collect::<BTreeSet<_>>(),
+        has.union(&hasnt)
+            .chain(&unknown)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
         top,
-        "{has:?} {hasnt:?}"
+        "{has:?} {hasnt:?} {unknown:?}"
     );
+    assert!(hasnt.is_disjoint(&unknown), "{hasnt:?} {unknown:?}");
 }
 
 /// Defaults are bound once. A condition every row satisfies,
@@ -410,8 +427,31 @@ fn a_nested_condition_does_not_drop_a_default() {
         count("tool_calls where (action:shell OR NOT action:shell) | agg count"),
         37
     );
+    assert_eq!(
+        count("tool_calls where NOT NOT (action:* OR action:shell) | agg count"),
+        37
+    );
+    // The same field at the top level, or `F:*`, drops the default: the
+    // code-mode wrappers whose commands are counted come back.
+    let every_call = count("tool_calls where action:* | agg count");
+    assert!(every_call > 37, "{every_call}");
+    assert_eq!(
+        count("tool_calls where (action:shell OR NOT action:shell) action:* | agg count"),
+        every_call
+    );
+    // A later `| where` narrows the bound rows; it binds no default again.
+    assert_eq!(count("tool_calls | where action:* | agg count"), 37);
     let chrono = |text: &str| rows(&q(&r, text)).len();
-    assert_eq!(chrono(r#"messages where written_by:human "chrono""#), 2);
+    let human = r#"messages where written_by:human "chrono""#;
+    assert_eq!(chrono(human), 2);
+    for nested in [
+        "(duplicate:true OR NOT duplicate:true)",
+        "(active:true OR NOT active:true)",
+        "NOT (kind:subagent AND kind:main)",
+    ] {
+        assert_eq!(chrono(&format!("{human} {nested}")), 2, "{nested}");
+    }
+    assert!(chrono(&format!("{human} duplicate:*")) >= 2);
 }
 
 /// A value outside a field's closed set is refused, never an empty
@@ -421,35 +461,53 @@ fn a_value_outside_a_closed_set_is_refused() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
-    for bad in [
-        "tool_calls where outcome:solved",
-        "messages where role:asistant",
-        "kind:continuation",
-        "kind:mian",
+    // A value of another unit's field of the same name, and the unit that has it.
+    for (bad, elsewhere) in [
+        ("sessions where outcome:error", Some("tool_calls")),
+        ("tool_calls where outcome:solved", Some("sessions")),
+        ("deliveries where outcome:ok", Some("tool_calls")),
+        ("messages where role:asistant", None),
+        ("kind:continuation", Some("links")),
+        ("kind:mian", None),
     ] {
-        match run(&r, ask(bad)) {
-            Err(f) => assert!(
-                f.message.contains(',') || f.detail.is_some(),
-                "{bad}: the refusal does not name the set: {}",
+        let f = run(&r, ask(bad))
+            .map(|v| panic!("{bad} was answered ({}) instead of refused", v["outcome"]))
+            .unwrap_err();
+        assert!(
+            f.message.contains(" is one of ") && f.message.contains(", "),
+            "{bad}: the refusal does not name the set: {}",
+            f.message
+        );
+        if let Some(unit) = elsewhere {
+            assert!(
+                f.message.contains(&format!(" of {unit}")),
+                "{bad}: the refusal does not name {unit}: {}",
                 f.message
-            ),
-            Ok(v) => panic!("{bad} was answered ({}) instead of refused", v["outcome"]),
+            );
         }
     }
-    for good in [
-        "tool_calls where outcome:ok",
-        "tool_calls where outcome:error",
-        "tool_calls where outcome:unknown",
-        "messages where role:assistant",
-        "messages where role:user",
-        "kind:subagent",
-        "kind:main",
-        "kind:*",
-    ] {
-        if let Err(f) = run(&r, ask(good)) {
-            panic!("{good} refused: {} {}", f.kind, f.message);
+    // Every value of every closed set, `*`, and `unknown` where the set
+    // has it, runs as a query.
+    let mut ran = 0;
+    for field in polylogue_query::fields::FIELDS {
+        let Some(values) = field.values else {
+            continue;
+        };
+        let unit = field.unit.name();
+        for value in values.iter().chain(["*"].iter()) {
+            let text = format!("{unit} where {}:{value}", field.name);
+            if let Err(f) = run(&r, ask(&text)) {
+                assert!(
+                    f.kind == "not_built",
+                    "{text} refused: {} {}",
+                    f.kind,
+                    f.message
+                );
+            }
+            ran += 1;
         }
     }
+    assert!(ran > 50, "{ran}");
 }
 
 /// The turns unit on Morrow: every session with a prompt has turns, a

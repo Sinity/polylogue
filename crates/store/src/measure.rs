@@ -94,11 +94,13 @@ impl Selection {
             ));
         }
         if let Some(pks) = &self.sessions {
-            // Session keys are integers the caller read from the index, so
-            // they are written into the statement rather than bound one by
-            // one past SQLite's parameter limit.
-            let list = pks.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            clauses.push(format!("{column} IN ({list})"));
+            // One parameter holds every key, however many sessions the
+            // query selected.
+            params.push(serde_json::Value::from(pks.clone()).to_string().into());
+            clauses.push(format!(
+                "{column} IN (SELECT value FROM json_each(?{}))",
+                params.len()
+            ));
         }
     }
 }
