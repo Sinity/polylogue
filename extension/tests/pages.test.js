@@ -135,10 +135,21 @@ describe("the shared page script", () => {
     const big = "x".repeat(5 * 1024 * 1024);
     window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
     const received = await exchanged(window);
-    expect(received[0]).toEqual({ type: "facts", status: 200, info: { id: "c1" } });
+    expect(received[0]).toEqual({ type: "facts", status: 200, info: { id: "c1" }, has_body: true });
     const appendedBytes = received.filter((m) => m.type === "appended_bytes");
     expect(appendedBytes.length).toBe(20);
     expect(appendedBytes.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+  });
+
+  it("distinguishes empty bodies from answers without a body", async () => {
+    for (const body of [null, new Blob([]), new Response("")]) {
+      const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
+      window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body });
+      const received = await exchanged(window);
+      expect(received[0].has_body).toBe(body !== null);
+      expect(received.filter((message) => message.type === "appended_bytes")).toHaveLength(0);
+      window.close();
+    }
   });
 
   it("sends a download as appended bytes as it arrives, before it has finished", async () => {
