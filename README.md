@@ -107,9 +107,10 @@ query time are reported separately. Use `--json` for the steps and results.
 Run the displayed commands against the example archive by starting
 
 ```sh
-export POLYLOGUE_ARCHIVE="$PWD/morrow-tour/archive"
-export POLYLOGUE_HOME="$PWD/morrow-tour/home"
-export XDG_CONFIG_HOME="$PWD/morrow-tour/config"
+tour_directory="$(realpath ./morrow-tour)"
+export POLYLOGUE_ARCHIVE="$tour_directory/archive"
+export POLYLOGUE_HOME="$tour_directory/home"
+export XDG_CONFIG_HOME="$tour_directory/config"
 polylogue daemon
 ```
 in another terminal, and setting the same variables for each command.

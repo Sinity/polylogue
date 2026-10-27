@@ -4,7 +4,11 @@ use std::process::Command;
 #[test]
 fn public_morrow_tour_matches_current_query_examples() {
     let temp = tempfile::tempdir().unwrap();
-    let directory = temp.path().join("tour");
+    let actual = temp.path().join("actual");
+    let alias = temp.path().join("alias");
+    std::fs::create_dir(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, &alias).unwrap();
+    let directory = alias.join("tour");
     let operator_archive = temp.path().join("operator-archive");
     let output = Command::new(crate::BIN)
         .args(["--json", "demo", "tour"])
@@ -15,6 +19,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     assert!(!operator_archive.exists());
     assert!(output.status.success(), "{output:?}");
     let tour: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let directory = directory.canonicalize().unwrap();
     let steps = tour["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 10);
     assert_eq!(tour["first_query_seconds"], steps[0]["seconds"]);
