@@ -203,3 +203,44 @@ fn all_time_model_drilldown_reaches_every_dated_and_undated_response() {
     ids.dedup();
     assert_eq!(ids.len() as u64, count.unwrap());
 }
+
+#[test]
+fn unrepresentable_price_totals_leave_response_records_readable() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(temp.path()).unwrap();
+    f.setting("day.zone", "UTC").unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "codex:large-cost",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    let at = "2024-03-30T12:00:00Z"
+        .parse::<jiff::Timestamp>()
+        .unwrap()
+        .as_millisecond();
+    for id in ["codex:large-a", "codex:large-b"] {
+        f.message(
+            s,
+            MessageFacts {
+                id,
+                role: "assistant",
+                written_by: "model",
+                at: Some(at),
+                cost_nusd: Some(9_000_000_000_000_000_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut request = options(Some("2024-03-30"), None);
+    request.page_size = Some(50);
+    let result = cost(&reader, request, 0).unwrap();
+    assert_eq!(result["responses"]["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(result["usage"]["error"], "store");
+    assert!(result["days"].is_null());
+    assert_eq!(result["days_error"]["error"], "store");
+}

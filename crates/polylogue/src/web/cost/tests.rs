@@ -20,10 +20,13 @@ fn partial_cost_and_unknown_denominators_match_cli_accounting() {
 
 #[test]
 fn unavailable_usage_keeps_responses_and_has_no_fabricated_totals() {
-    let data = json!({"usage":{"error":"store","message":"synthetic <failure>"},"responses":{"rows":[{"kind":"message","id":"codex:m","label":"assistant","at":null}]},"days":[]});
+    let data = json!({"usage":{"error":"store","message":"synthetic <failure>"},"responses":{"rows":[{"kind":"message","id":"codex:m","label":"assistant","at":null}]},"days":null,"days_error":{"error":"store","message":"synthetic <price failure>"}});
     let page = render("sessions", &Options::default(), &data);
     assert!(page.contains("Cost unavailable: store: synthetic &lt;failure&gt;"));
     assert!(page.contains("Browse selected sessions"));
+    assert!(
+        page.contains("Daily response costs unavailable: store: synthetic &lt;price failure&gt;")
+    );
     assert!(page.contains("/m/codex%3Am"));
     assert!(!page.contains("0 known response records"));
     assert!(!page.contains("unknown responses in 0 sessions"));
