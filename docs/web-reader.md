@@ -35,13 +35,13 @@ whose blocks the view hides.
 A session page reports its starting message position, selected message count,
 content version and index generation. Its `cursor` reopens the resolved current
 page, including the tail selected by Latest; `next` continues after it.
-Document pages return their metadata, source descriptors, slices and `next`. Clients treat cursors as opaque. A cursor binds
+Document pages return their metadata, source descriptors, slices, current cursor, `previous` and `next`. Clients treat cursors as opaque. A cursor binds
 content, view, parent inclusion and generation. Unrelated writes preserve it;
 changed content or an index replacement returns `stale_cursor`. The reader
 keeps an anchor in its continuation URL and offers Refresh from this message.
 There is no automatic joining of pages across a stale cursor.
 
-`/s/{id}` and `/d/{id}` render one content page and explicit First/Next links.
+`/s/{id}` and `/d/{id}` render one content page and explicit First/Previous/Next links.
 Latest is available for sessions; Previous uses a daemon-issued cursor and reverse key seeks to fill the page before the current start. Its Next link reopens the current page.
 Changing parent inclusion opens the first page of the new selection. Changing the view starts a new read at the page's message anchor. `/m/{id}`
 resolves a message's owning session and redirects to its anchor; `/n/{id}`
