@@ -60,3 +60,32 @@ fn a_pair_reports_each_change_from_the_first_build() {
     assert_eq!(diff["stages"]["rows"]["change"], -0.75);
     assert!(diff["stages"]["derive"]["change"].is_null());
 }
+
+#[test]
+fn a_negative_stage_prediction_refuses_an_otherwise_positive_wall_estimate() {
+    let points = [
+        point(1000.0, 110.0, &[("derive", 20.0)]),
+        point(3000.0, 310.0, &[("derive", 10.0)]),
+    ];
+    let error = fit(&points, 10000.0).unwrap_err();
+    assert!(error.contains("derive"), "{error}");
+    assert!(
+        error.contains("do not support a corpus estimate"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_negative_wall_prediction_is_refused_without_clamping_it() {
+    let points = [point(1000.0, 100.0, &[]), point(3000.0, 50.0, &[])];
+    let error = fit(&points, 10000.0).unwrap_err();
+    assert!(error.contains("wall time"), "{error}");
+}
+
+#[test]
+fn an_unknown_or_non_finite_corpus_size_is_not_estimated() {
+    let points = [point(1000.0, 100.0, &[]), point(3000.0, 300.0, &[])];
+    for input in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+        assert!(fit(&points, input).is_err());
+    }
+}
