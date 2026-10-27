@@ -42,14 +42,8 @@ pub(super) fn advice(
     if failures.times < FAILURES_FOR_ADVICE {
         return Ok(prepared);
     }
-    let state = serde_json::to_vec(&(
-        session,
-        &dirs,
-        &verification,
-        &failures.state,
-        failures.times,
-    ))
-    .map_err(StoreError::from)?;
+    let state = serde_json::to_vec(&(session, &verification, &failures.state, failures.times))
+        .map_err(StoreError::from)?;
     let delivery_id = format!("advice:{}", blake3::hash(&state));
     if reader.delivery(&delivery_id)?.is_some() {
         return Ok(prepared);

@@ -247,11 +247,9 @@ export class Capturer {
             await this.keep({ ...current.base, reason: "files" }, complete,
               () => job.latest === current.base);
           }
-          if (!job.next) {
-            job.available.clear();
-            job.latest = null;
-          }
         }
+        job.available.clear();
+        job.latest = null;
         this.downloading.delete(key);
       })
       .catch((error) => {
