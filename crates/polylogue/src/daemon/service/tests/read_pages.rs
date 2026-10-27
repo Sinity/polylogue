@@ -760,3 +760,59 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
         Response::Error { .. }
     ));
 }
+
+#[test]
+fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
+    let daemon = test_daemon::start("placeholder");
+    let source = (0..12)
+        .map(|n| {
+            polylogue_testkit::claude_user(
+                &format!("reverse-{n}"),
+                "s1",
+                &format!("prompt number {n} λ🙂"),
+            )
+        })
+        .collect::<String>();
+    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 12);
+    let read = |cursor, start| {
+        handle(
+            Request::Read {
+                target: crate::daemon::ReadTarget::Session(
+                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                ),
+                slices: true,
+                view: "full".into(),
+                format: "json".into(),
+                with_parents: false,
+                budget: Some(40),
+                cursor,
+                start,
+            },
+            &daemon.daemon,
+        )
+    };
+    let Response::Ok { data: current } = read(None, Some(crate::daemon::ReadSelection::Latest))
+    else {
+        panic!("latest")
+    };
+    let Response::Ok { data: previous } =
+        read(Some(current["previous"].as_str().unwrap().into()), None)
+    else {
+        panic!("previous")
+    };
+    assert_eq!(previous["next"], current["cursor"]);
+    assert!(
+        !previous["text"]
+            .as_str()
+            .unwrap()
+            .contains("prompt number 11")
+    );
+    assert_eq!(previous["text"].as_str().unwrap().chars().count(), 160);
+    let Response::Ok { data: again } = read(Some(previous["next"].as_str().unwrap().into()), None)
+    else {
+        panic!("next")
+    };
+    assert_eq!(again["text"], current["text"]);
+    assert_eq!(again["slices"], current["slices"]);
+}

@@ -421,10 +421,12 @@ fn previous_links_work_for_direct_anchors_and_within_large_blocks() {
         let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("first first"));
+        assert!(!html.contains("second second"));
         let previous = page_link(&html, "Previous");
         let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("first first"));
+        assert!(!html.contains("second second"));
         assert!(!html.contains("history.back"));
     });
 }
