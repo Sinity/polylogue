@@ -19,7 +19,7 @@ which reads through Store and presents through Query and Render.
 | [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
 | [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
 | [Render](../crates/render/src/lib.rs) | Views of typed content as terminal text, Markdown, HTML and JSON, and pages sized for models. |
-| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
+| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. The [socket client](../crates/polylogue/src/client.rs) sends ordinary requests for the CLI, MCP, browser host and hooks, with whole-exchange deadlines for hooks and completion. |
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
@@ -92,7 +92,9 @@ is deleted with its file. The rest are listed in `status` as
 can finish them. A provider file that changed meanwhile starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
 cover imports, watched files and parse-pool groups. Bytes a parser decodes
 from inside a record, such as inline images, are stored as blobs of that
-input.
+input. Attachments name only present blobs. An unknown hash leaves the file
+without stored bytes and keeps its conversation; a known hash supplies its
+stored size. The captured bytes stay unchanged.
 
 A ZIP import stores the ZIP itself and each file in it as inputs, linked by
 `observation_zip`. Export [attachments](attachments.md) are found

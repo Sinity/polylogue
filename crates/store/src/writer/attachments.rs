@@ -61,9 +61,14 @@ fn stored_blocks(blocks: &[Block], archive: &Connection) -> Result<Option<Vec<Bl
                 .query_row(
                     "SELECT size FROM blob WHERE hash = ?1 AND state = 'present'",
                     [&hash.0[..]],
-                    |row| row.get(0),
+                    |row| row.get::<_, i64>(0),
                 )
-                .optional()?;
+                .optional()?
+                .map(|size| {
+                    u64::try_from(size)
+                        .map_err(|_| StoreError::Invalid("negative blob size".into()))
+                })
+                .transpose()?;
             if size.is_some() && attachment.size == size {
                 continue;
             }
