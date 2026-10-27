@@ -140,11 +140,27 @@ pub fn similarity(reference: &Profile, other: &Profile) -> Option<Similarity> {
     })
 }
 
+/// One reference session compared with every other profile in the archive.
+pub fn similar(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<Similarity>> {
+    let references = reader.session_profiles(selection)?;
+    if references.len() != 1 {
+        return Err(StoreError::Invalid(
+            "similar needs one reference session; select it with a sessions query".into(),
+        ));
+    }
+    let mut matches: Vec<_> = reader
+        .session_profiles(&Selection::default())?
+        .iter()
+        .filter_map(|other| similarity(&references[0], other))
+        .collect();
+    matches.sort_by(|a, b| b.score.cmp(&a.score).then(a.session.cmp(&b.session)));
+    Ok(matches)
+}
+
 #[derive(Debug, Serialize)]
 pub struct Comparison {
     pub profiles: Vec<Profile>,
     pub differences: BTreeMap<String, Vec<Value>>,
-    pub similarities: Vec<Similarity>,
 }
 
 pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison> {
@@ -154,7 +170,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
         .into_iter()
         .chain(profiles::METRICS.iter().copied())
     {
-        let mut values = vec![];
+        let mut values = BTreeMap::new();
         for profile in &profiles {
             let value = match field {
                 "origin" => Value::String(profile.origin.clone()),
@@ -162,33 +178,15 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
                 "terminal_state" => Value::String(profile.facts.terminal_state.clone()),
                 _ => serde_json::to_value(profiles::metric(profile, field)?)?,
             };
-            if !values.contains(&value) {
-                values.push(value);
-            }
+            values.entry(value.to_string()).or_insert(value);
         }
-        values.sort_by_key(Value::to_string);
         if values.len() > 1 {
-            differences.insert(field.into(), values);
+            differences.insert(field.into(), values.into_values().collect());
         }
     }
-    let mut similarities = vec![];
-    for (i, a) in profiles.iter().enumerate() {
-        for b in &profiles[i + 1..] {
-            if let Some(s) = similarity(a, b) {
-                similarities.push(s);
-            }
-        }
-    }
-    similarities.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then(a.reference.cmp(&b.reference))
-            .then(a.session.cmp(&b.session))
-    });
     Ok(Comparison {
         profiles,
         differences,
-        similarities,
     })
 }
 
