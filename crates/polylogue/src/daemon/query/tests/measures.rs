@@ -52,6 +52,12 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
     );
     assert!(correlation["data"]["sample_count"].as_u64().unwrap() > 0);
     assert!(q(&archive, "sessions | measure compare")["data"]["profiles"].is_array());
+    let similar = q(
+        &archive,
+        r#"sessions where id:"claude-code:7f3a2c10-0001-4000-8000-000000000001" | measure similar"#,
+    );
+    assert!(!similar["data"].as_array().unwrap().is_empty());
+    assert!(run_q(&archive, ask("sessions | measure similar")).is_err());
     assert_eq!(
         q(&archive, "sessions | measure outlook")["data"]["reason"],
         "plans_not_configured"
