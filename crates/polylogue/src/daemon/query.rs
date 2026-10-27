@@ -309,7 +309,7 @@ fn answer(
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
                 .enumerate()
-                .filter_map(|(i, r)| r["id"].as_str().map(|id| (id.to_owned(), i)))
+                .filter_map(|(i, r)| r["_session_id"].as_str().map(|id| (id.to_owned(), i)))
                 .collect();
             let keys = rows.iter().filter_map(|r| r["_pk"].as_i64()).collect();
             let selection = polylogue_store::measure::Selection {
@@ -461,6 +461,9 @@ fn prepare_measure(reader: &Reader<'_>, program: &mut Program) -> Result<(), Fai
         return Ok(());
     };
     let (definition, _) = super::measure::find_checked(&m.what)?;
+    if matches!(definition.paging, Some(super::measure::Paging::Sessions)) {
+        program.sql = polylogue_store::measure::profiles::page_query(&program.sql);
+    }
     if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
         let count = reader.query(&program.count_sql(), &values(&program.params))?;
         if count[0]["count(*)"] != 1 {

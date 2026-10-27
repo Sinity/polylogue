@@ -53,7 +53,7 @@ fn profile_reads_prose_without_decoding_tool_output() {
         .unwrap();
     let tx = conn.transaction().unwrap();
     run(&tx, session).unwrap();
-    let (calls, messages): (u64, u64) = tx
+    let (calls, messages): (i64, i64) = tx
         .query_row(
             "SELECT tool_call_count,message_count FROM session_profile WHERE session_pk=?1",
             [session],
