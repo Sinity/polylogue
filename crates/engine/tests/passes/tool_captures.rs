@@ -100,7 +100,8 @@ fn daemon_continues_capture_without_a_watcher_event() {
     };
     tx.send(LoopMsg::Stop).unwrap();
     thread.join().unwrap().unwrap();
-    assert!(finished.passes > 1, "{finished:?}");
+    assert!(finished.passes >= 1, "{finished:?}");
+    assert_eq!(finished.full_scans, 1);
     assert_eq!(finished.last_pass.inputs_seen, 1, "{finished:?}");
     assert!(finished.last_pass.errors.is_empty(), "{finished:?}");
     assert!(!finished.last_pass.capture_pending, "{finished:?}");

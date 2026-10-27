@@ -74,7 +74,7 @@ pub struct Config {
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
     /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (a minute).
+    /// even when no change is reported (four hours).
     pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
@@ -169,7 +169,7 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(60),
+            rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
         }
     }
@@ -178,6 +178,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    /// Whole-location scans, excluding changed paths and live-file checks.
+    pub full_scans: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
     /// Input visits, summed across turns by run_pass.
@@ -203,6 +205,7 @@ pub struct Pass {
 /// derived from them.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct LoopStatus {
+    pub full_scans: u64,
     /// A pass, an import or an excision is running, or a capture continues
     /// in the next pass.
     pub busy: bool,
@@ -258,6 +261,10 @@ pub struct Engine {
     failed_writes: HashSet<String>,
     loaded: bool,
     exporter: Captures,
+    databases: BTreeMap<PathBuf, &'static str>,
+    live_checked: Instant,
+    pass_open: bool,
+    collectors_at: Option<Instant>,
     /// Paths on this machine an excision removed: never collected again.
     refused: HashSet<PathBuf>,
     lookups: repo_lookup::Cache,
@@ -318,7 +325,11 @@ impl Engine {
             inputs: HashMap::new(),
             failed_writes: HashSet::new(),
             loaded: false,
-            exporter: Captures::default(),
+            exporter: Captures::with_cursor(polylogue_sources::origin::table_cursor),
+            databases: BTreeMap::new(),
+            live_checked: Instant::now(),
+            pass_open: false,
+            collectors_at: None,
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,

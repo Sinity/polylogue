@@ -4,9 +4,9 @@ use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
 
 #[derive(Deserialize, Serialize)]
-struct Completed {
-    length: u64,
-    hash: String,
+pub(super) struct Completed {
+    pub length: u64,
+    pub hash: String,
 }
 
 /// The synced prefix: only bytes up to the length named by the adjacent
@@ -14,8 +14,29 @@ struct Completed {
 pub(super) struct SyncedPrefix {
     facts: Option<FileFacts>,
     marker_facts: Option<FileFacts>,
-    hash: blake3::Hasher,
+    hash: super::prefix_hash::PrefixHash,
     length: u64,
+}
+
+type SavedFacts = (u64, u64, u64, String, String);
+
+fn saved_facts(facts: Option<FileFacts>) -> Option<SavedFacts> {
+    facts.map(|f| {
+        (
+            f.device,
+            f.inode,
+            f.size,
+            f.mtime_ns.to_string(),
+            f.ctime_ns.to_string(),
+        )
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct SavedPrefix {
+    facts: Option<SavedFacts>,
+    marker_facts: Option<SavedFacts>,
+    hash: super::prefix_hash::PrefixHash,
 }
 
 pub(super) fn checkpoint(out: &Path) -> PathBuf {
@@ -29,6 +50,43 @@ fn invalid(reason: &str) -> ExportError {
 }
 
 impl SyncedPrefix {
+    pub fn saved(&self) -> SavedPrefix {
+        SavedPrefix {
+            facts: saved_facts(self.facts),
+            marker_facts: saved_facts(self.marker_facts),
+            hash: self.hash.clone(),
+        }
+    }
+
+    /// A catalog is reusable only for the same completed bytes and file facts.
+    pub fn resume(out: &Path, saved: SavedPrefix) -> Result<Option<Self>, ExportError> {
+        let facts = fs::metadata(out).ok().map(|m| FileFacts::of(&m));
+        let marker_facts = fs::metadata(checkpoint(out))
+            .ok()
+            .map(|m| FileFacts::of(&m));
+        if !saved.hash.valid()
+            || facts.is_none()
+            || marker_facts.is_none()
+            || saved.facts != saved_facts(facts)
+            || saved.marker_facts != saved_facts(marker_facts)
+        {
+            return Ok(None);
+        }
+        let marker: Completed =
+            serde_json::from_slice(&fs::read(checkpoint(out))?).map_err(std::io::Error::from)?;
+        if marker.length != saved.hash.len()
+            || marker.hash != saved.hash.finalize().to_hex().as_str()
+            || facts.is_none_or(|f| f.size != marker.length)
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            facts,
+            marker_facts,
+            hash: saved.hash,
+            length: marker.length,
+        }))
+    }
     /// Validate before truncating: an altered committed prefix is never repaired
     /// by deleting bytes. An export without a marker is validated by the catalog loader.
     pub fn open(
@@ -42,7 +100,7 @@ impl SyncedPrefix {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let mut hash = blake3::Hasher::new();
+        let mut hash = super::prefix_hash::PrefixHash::default();
         let mut file = match OpenOptions::new().read(true).write(true).open(out) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && mark.is_none() => {
@@ -113,7 +171,12 @@ impl SyncedPrefix {
         Ok(())
     }
 
-    fn mark(&self, out: &Path, length: u64, hash: &blake3::Hasher) -> Result<(), ExportError> {
+    fn mark(
+        &self,
+        out: &Path,
+        length: u64,
+        hash: &super::prefix_hash::PrefixHash,
+    ) -> Result<(), ExportError> {
         let bytes = serde_json::to_vec(&Completed {
             length,
             hash: hash.finalize().to_hex().to_string(),

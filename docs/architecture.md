@@ -126,10 +126,27 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
+The watcher coalesces changed paths. A new or moved directory is scanned as a
+subtree, and a watcher error or overflow requests a full scan. Full scans run
+at startup and every four hours for reconciliation; database sidecars wake the
+capture scheduler. Capture work continues within a time slice, with asset
+refresh and derivation performed once for the pass.
+
 A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
-dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
-checkpoint moves. Its identity is the machine and the file's path. Reading
-is done in turns, so other inputs are served between them.
+dump (JSON lines) from one SQLite read of the tool's file; complete changes
+are synced before their catalog transaction commits. Its identity is the
+machine and the file's path. The SQLite catalog beside the dump keeps row
+hashes, declared table cursors and the synced prefix's BLAKE3 state. A restart
+checks the saved file facts and completed length before reusing it. Changed or
+interrupted exports are verified and the catalog rebuilt from their completed
+bytes. The prefix hash stays the ordinary BLAKE3 of those bytes.
+
+An origin may declare a monotonic integer change column for a table; other
+tables compare their complete rows. Cursor tables are read every three minutes
+and verified in full daily, when their schema changes, and when the source file
+is replaced. Comparison waits for quiet files, with an hourly capture during
+continuous writes. Reading proceeds in time slices so other inputs and client
+requests are served between them.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An

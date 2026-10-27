@@ -19,8 +19,10 @@
 //! the export. Values keep their SQLite types; blobs are base64.
 //!
 //! Exports wait for quiet files, with an hourly capture during continuous
-//! writes. Comparison state is a disposable disk-backed SQLite catalog.
-//! Changed rows are staged privately, then a synced marker naming the
+//! writes. Comparison state persists in a SQLite catalog beside the export.
+//! Declared table cursors read changes every three minutes and verify every
+//! row daily; undeclared tables compare complete rows. Changed rows are staged
+//! privately, then a synced marker naming the
 //! completed prefix commits them, every 64 MB of rows and at the end, so a
 //! large database's capture becomes input while it is read. Bytes beyond
 //! that marker are removed on the next open.
@@ -28,7 +30,7 @@
 use crate::FileFacts;
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs;
@@ -38,9 +40,15 @@ use std::time::{Duration, Instant};
 
 /// While a database keeps changing, it is still exported this often.
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
+const CURSOR_EXPORT: Duration = Duration::from_secs(180);
+const VERIFY_EVERY_MS: i64 = 24 * 3600 * 1000;
+
+/// An origin declares a column to read after, or comparison for the table.
+pub type TableCursor = fn(&Path, &str) -> Option<&'static str>;
 
 mod binding;
 mod catalog;
+mod prefix_hash;
 mod synced_prefix;
 mod turns;
 use catalog::Catalog;
@@ -84,11 +92,13 @@ struct DbState {
     exported_at: Option<Instant>,
     catalog: Option<Catalog>,
     synced: Option<SyncedPrefix>,
+    cursor_at: Option<Instant>,
 }
 
 #[derive(Default)]
 pub struct Exporter {
     dbs: HashMap<PathBuf, DbState>,
+    cursor: Option<TableCursor>,
 }
 
 /// What one export call did.
@@ -99,6 +109,12 @@ pub struct Exported {
 }
 
 impl Exporter {
+    pub fn with_cursor(cursor: TableCursor) -> Self {
+        Self {
+            cursor: Some(cursor),
+            ..Self::default()
+        }
+    }
     /// Exports `db` into `out` when due. Returns `None` when nothing was
     /// due.
     pub fn export(
@@ -126,10 +142,9 @@ impl Exporter {
             st.catalog = None;
             st.synced = None;
             st.exported = None;
-            let mut synced = SyncedPrefix::open(out, checkpoint)?;
-            let mut catalog = Catalog::load(out, checkpoint)?;
+            let (mut catalog, synced) = Catalog::load(out, checkpoint)?;
             catalog.bind(requested.clone())?;
-            synced.establish(out)?;
+            catalog.save(&synced)?;
             st.synced = Some(synced);
             st.catalog = Some(catalog);
         }
@@ -143,10 +158,29 @@ impl Exporter {
         let changed = st.exported != Some(now);
         let first = st.exported.is_none();
         let overdue = st.exported_at.is_none_or(|at| at.elapsed() >= BUSY_EXPORT);
-        if !(changed && (first || quiet || overdue)) {
+        let cursor_due = st.cursor_at.is_none_or(|at| at.elapsed() >= CURSOR_EXPORT);
+        let compare = changed && (first || quiet || overdue);
+        if !compare && !cursor_due {
             return Ok(None);
         }
-        let done = match write_export(db, out, st, checkpoint) {
+        let replaced = first
+            || st
+                .exported
+                .and_then(|f| f.db)
+                .zip(now.db)
+                .is_some_and(|(old, new)| old.device != new.device || old.inode != new.inode);
+        let done = match write_export(
+            db,
+            out,
+            st,
+            self.cursor,
+            Due {
+                compare,
+                cursor: cursor_due,
+                replaced,
+            },
+            checkpoint,
+        ) {
             Ok(done) => done,
             Err(e) => {
                 // The marker may have been written before a local cache failure.
@@ -156,8 +190,11 @@ impl Exporter {
                 return Err(e);
             }
         };
-        st.exported = Some(now);
-        st.exported_at = Some(Instant::now());
+        if compare {
+            st.exported = Some(now);
+            st.exported_at = Some(Instant::now());
+        }
+        st.cursor_at = Some(Instant::now());
         Ok(Some(done))
     }
 }
@@ -241,11 +278,22 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
         .collect::<rusqlite::Result<_>>()?;
     for (name, sql) in names {
         let mut info = conn.prepare(&format!(
-            "PRAGMA table_info(\"{}\")",
+            "PRAGMA table_xinfo(\"{}\")",
             name.replace('"', "\"\"")
         ))?;
         let cols: Vec<(String, i64)> = info
-            .query_map([], |r| Ok((r.get(1)?, r.get(5)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            })?
+            .filter_map(|row| match row {
+                Ok((_, _, 1)) => None,
+                Ok((name, key, _)) => Some(Ok((name, key))),
+                Err(error) => Some(Err(error)),
+            })
             .collect::<rusqlite::Result<_>>()?;
         let mut key: Vec<(i64, usize)> = cols
             .iter()
@@ -264,10 +312,18 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     Ok(out)
 }
 
+struct Due {
+    compare: bool,
+    cursor: bool,
+    replaced: bool,
+}
+
 fn write_export(
     db: &Path,
     out: &Path,
     st: &mut DbState,
+    cursor: Option<TableCursor>,
+    due: Due,
     checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
     let sql_err = |e| ExportError::Sqlite(db.to_path_buf(), e);
@@ -284,9 +340,11 @@ fn write_export(
     let tables = tables(&conn).map_err(sql_err)?;
     let catalog = st.catalog.as_mut().expect("loaded catalog");
     let transaction = catalog.conn.transaction().map_err(sql_err)?;
-    transaction
-        .execute("UPDATE row_state SET seen=0", [])
-        .map_err(sql_err)?;
+    transaction.execute_batch("CREATE TEMP TABLE IF NOT EXISTS present_table(t TEXT PRIMARY KEY); DELETE FROM present_table;
+        CREATE TEMP TABLE IF NOT EXISTS compared_table(t TEXT PRIMARY KEY); DELETE FROM compared_table;").map_err(sql_err)?;
+    let at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
     let mut w = BufWriter::new(tempfile::tempfile()?);
     let schema: Map<String, Value> = tables
         .iter()
@@ -309,6 +367,42 @@ fn write_export(
     let mut done = Exported::default();
     let mut staged_bytes = 0;
     for t in &tables {
+        transaction
+            .execute("INSERT INTO present_table VALUES(?1)", [&t.name])
+            .map_err(sql_err)?;
+        let declared = cursor.and_then(|cursor| cursor(db, &t.name));
+        let previous: Option<(String, Option<i64>, i64)> = transaction
+            .query_row(
+                "SELECT column_name,value,verified_at FROM table_cursor WHERE t=?1",
+                [&t.name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        let full = due.replaced
+            || declared.is_none()
+            || previous.as_ref().is_none_or(|(column, value, verified)| {
+                Some(column.as_str()) != declared
+                    || value.is_none()
+                    || at_ms.saturating_sub(*verified) >= VERIFY_EVERY_MS
+            })
+            || catalog.schema != Some(schema_digest);
+        if (declared.is_none() && !due.compare)
+            || (declared.is_some()
+                && !due.cursor
+                && !due.replaced
+                && catalog.schema == Some(schema_digest))
+        {
+            continue;
+        }
+        if full {
+            transaction
+                .execute("UPDATE row_state SET seen=0 WHERE t=?1", [&t.name])
+                .map_err(sql_err)?;
+            transaction
+                .execute("INSERT INTO compared_table VALUES(?1)", [&t.name])
+                .map_err(sql_err)?;
+        }
         let quoted = t.name.replace('"', "\"\"");
         let select = if t.key.is_empty() {
             let rowid = ["rowid", "_rowid_", "oid"]
@@ -320,6 +414,32 @@ fn write_export(
             format!("SELECT {rowid}, * FROM \"{quoted}\"")
         } else {
             format!("SELECT NULL, * FROM \"{quoted}\"")
+        };
+        if let Some(column) = declared
+            && !t.columns.iter().any(|c| c == column)
+        {
+            return Err(ExportError::Invalid(format!(
+                "declared cursor {column} is missing in {}",
+                t.name
+            )));
+        }
+        let select = if let Some(column) = declared.filter(|_| !full) {
+            format!(
+                "{select} WHERE \"{}\">{}",
+                column.replace('"', "\"\""),
+                previous
+                    .as_ref()
+                    .expect("stored cursor")
+                    .1
+                    .expect("populated cursor")
+            )
+        } else {
+            select
+        };
+        let mut high = if full {
+            None
+        } else {
+            previous.as_ref().and_then(|(_, value, _)| *value)
         };
         let mut stmt = conn.prepare(&select).map_err(sql_err)?;
         let mut q = stmt.query([]).map_err(sql_err)?;
@@ -334,10 +454,19 @@ fn write_export(
                 Value::Array(t.key.iter().map(|&i| row[&t.columns[i]].clone()).collect())
             };
             let row = Value::Object(row);
+            if let Some(column) = declared {
+                let value = row.get(column).and_then(Value::as_i64).ok_or_else(|| {
+                    ExportError::Invalid(format!(
+                        "declared cursor {column} in {} is not an integer",
+                        t.name
+                    ))
+                })?;
+                high = Some(high.map_or(value, |old: i64| old.max(value)));
+            }
             let encoded = row.to_string();
             let hash = blake3::hash(encoded.as_bytes());
             let h = digest(&encoded);
-            if catalog::changed(&transaction, &t.name, &k, &hash).map_err(sql_err)? {
+            if catalog::changed(&transaction, &t.name, &k, &hash, full).map_err(sql_err)? {
                 serde_json::to_writer(
                     &mut w,
                     &json!({ "t": t.name, "k": k, "r": row, "h": format!("{h:016x}") }),
@@ -358,11 +487,19 @@ fn write_export(
             }
             checkpoint()?;
         }
+        if declared.is_some() {
+            let verified = if full {
+                at_ms
+            } else {
+                previous.as_ref().expect("stored cursor").2
+            };
+            transaction.execute("INSERT INTO table_cursor VALUES(?1,?2,?3,?4) ON CONFLICT(t) DO UPDATE SET column_name=excluded.column_name,value=excluded.value,verified_at=excluded.verified_at", rusqlite::params![t.name,declared.expect("declared cursor"),high,verified]).map_err(sql_err)?;
+        }
     }
-    // All tables were scanned successfully. This also finds dropped tables.
+    // Only fully compared tables and dropped tables can have removals.
     {
         let mut query = transaction
-            .prepare("SELECT t,k,kh FROM row_state WHERE seen=0 ORDER BY t,k")
+            .prepare("SELECT t,k,kh FROM row_state WHERE (seen=0 AND t IN compared_table) OR t NOT IN present_table ORDER BY t,k")
             .map_err(sql_err)?;
         let mut gone = query.query([]).map_err(sql_err)?;
         while let Some(row) = gone.next().map_err(sql_err)? {
@@ -379,11 +516,18 @@ fn write_export(
         }
     }
     transaction
-        .execute("DELETE FROM row_state WHERE seen=0", [])
+        .execute("DELETE FROM row_state WHERE (seen=0 AND t IN compared_table) OR t NOT IN present_table", [])
         .map_err(sql_err)?;
     conn.execute_batch("COMMIT").map_err(sql_err)?;
     append_staged(&mut w, st.synced.as_mut(), out)?;
     crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
+    catalog::save(
+        &transaction,
+        Some(schema_digest),
+        &catalog.binding,
+        catalog.binding.is_none(),
+        st.synced.as_ref().expect("verified prefix"),
+    )?;
     transaction.commit().map_err(sql_err)?;
     catalog.schema = Some(schema_digest);
     Ok(done)

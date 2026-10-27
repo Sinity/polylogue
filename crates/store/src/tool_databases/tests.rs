@@ -56,7 +56,7 @@ fn exports_new_changed_and_gone_rows_only() {
 }
 
 #[test]
-fn a_restart_rebuilds_what_was_exported_from_the_file() {
+fn a_restart_reuses_the_catalog_and_exports_only_new_rows() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("goals_1.sqlite");
     let out = dir.path().join("goals_1.sqlite.jsonl");
@@ -240,7 +240,7 @@ fn sqlite_values_are_exact_or_the_capture_is_refused() {
 }
 
 #[test]
-fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows() {
+fn a_large_row_population_restarts_and_compares_without_repeating_unchanged_rows() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.sqlite");
     let out = dir.path().join("state.jsonl");
@@ -291,4 +291,5 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
     );
 }
 
+mod cursors;
 mod source_binding;

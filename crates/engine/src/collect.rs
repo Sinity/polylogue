@@ -43,6 +43,120 @@ pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
     scan_origins(config, collected())
 }
 
+/// Changed files and the contents of newly created or moved directories.
+/// A directory is walked only where an origin's location can match it.
+pub fn scan_paths(
+    config: &Config,
+    paths: &std::collections::BTreeSet<PathBuf>,
+) -> (Vec<Found>, Vec<PathBuf>) {
+    let mut found = Vec::new();
+    let mut unreadable = Vec::new();
+    for origin in collected() {
+        let root = config.root(origin.root);
+        for pattern in origin.locations {
+            let segs: Vec<_> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            let mut matched = Vec::new();
+            walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
+            found.extend(matched.into_iter().map(|path| Found { path, origin }));
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found.dedup_by(|a, b| a.path == b.path);
+    (found, unreadable)
+}
+
+fn walk_paths(
+    dir: &Path,
+    segs: &[&str],
+    paths: &std::collections::BTreeSet<PathBuf>,
+    out: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<PathBuf>,
+) {
+    if paths.iter().any(|path| dir.starts_with(path)) {
+        walk(dir, segs, out, unreadable);
+        return;
+    }
+    if !paths.iter().any(|path| path.starts_with(dir)) {
+        return;
+    }
+    let Some((seg, rest)) = segs.split_first() else {
+        return;
+    };
+    if *seg == "**" {
+        walk_paths(dir, rest, paths, out, unreadable);
+        // Descend only along changed paths, without listing sibling directories.
+        let children: std::collections::BTreeSet<_> = paths
+            .iter()
+            .filter_map(|path| {
+                path.strip_prefix(dir)
+                    .ok()?
+                    .components()
+                    .next()
+                    .map(|part| dir.join(part))
+            })
+            .collect();
+        for child in children {
+            if child.is_dir() {
+                walk_paths(&child, segs, paths, out, unreadable);
+            }
+        }
+    } else if seg.contains('*') {
+        let children: std::collections::BTreeSet<_> = paths
+            .iter()
+            .filter_map(|path| {
+                path.strip_prefix(dir)
+                    .ok()?
+                    .components()
+                    .next()
+                    .map(|part| dir.join(part))
+            })
+            .collect();
+        for child in children {
+            if child
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| wildcard(seg, name))
+            {
+                if rest.is_empty() && child.is_file() {
+                    out.push(child);
+                } else if child.is_dir() {
+                    walk_paths(&child, rest, paths, out, unreadable);
+                }
+            }
+        }
+    } else {
+        let child = dir.join(seg);
+        if rest.is_empty() {
+            if paths.iter().any(|path| child.starts_with(path)) && child.is_file() {
+                out.push(child);
+            }
+        } else {
+            walk_paths(&child, rest, paths, out, unreadable);
+        }
+    }
+}
+
+/// A database sidecar wakes capture of its database, never the file pass.
+pub(crate) fn database_path(config: &Config, path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let name = name
+        .strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+        .or_else(|| name.strip_suffix("-journal"))
+        .unwrap_or(name);
+    let db = path.with_file_name(name);
+    collected()
+        .filter(|o| o.capture == polylogue_sources::Capture::RowDump)
+        .find_map(|origin| {
+            let relative = db.strip_prefix(config.root(origin.root)).ok()?;
+            origin
+                .locations
+                .iter()
+                .any(|pattern| ends_in(relative, pattern))
+                .then(|| db.clone())
+        })
+}
+
 /// Every file in Polylogue's own spools (hook events, browser captures,
 /// collectors' output): small directories, read again while a long pass
 /// runs so what arrives there is not left behind it.

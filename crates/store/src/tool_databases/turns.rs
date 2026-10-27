@@ -1,4 +1,4 @@
-use super::{ExportError, Exporter};
+use super::{ExportError, Exporter, TableCursor};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
@@ -36,9 +36,16 @@ pub struct Captures {
     worker: Option<Worker>,
     pending: bool,
     available: HashMap<PathBuf, PathBuf>,
+    cursor: Option<TableCursor>,
 }
 
 impl Captures {
+    pub fn with_cursor(cursor: TableCursor) -> Self {
+        Self {
+            cursor: Some(cursor),
+            ..Self::default()
+        }
+    }
     pub fn pending(&self) -> bool {
         self.pending
     }
@@ -51,7 +58,7 @@ impl Captures {
             return Ok(CaptureTurn::default());
         }
         if self.worker.is_none() {
-            self.worker = Some(Worker::start()?);
+            self.worker = Some(Worker::start(self.cursor)?);
         }
         let worker = self.worker.as_ref().expect("started capture worker");
         let command = if self.pending {
@@ -115,12 +122,12 @@ struct Worker {
 }
 
 impl Worker {
-    fn start() -> Result<Self, ExportError> {
+    fn start(cursor: Option<TableCursor>) -> Result<Self, ExportError> {
         let (tx, commands) = sync_channel(1);
         let (replies, rx) = sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("polylogue-capture".into())
-            .spawn(move || run(commands, replies))?;
+            .spawn(move || run(commands, replies, cursor))?;
         Ok(Self {
             tx: Some(tx),
             rx,
@@ -170,8 +177,8 @@ impl Budget<'_> {
     }
 }
 
-fn run(commands: Receiver<Command>, replies: SyncSender<Reply>) {
-    let mut exporter = Exporter::default();
+fn run(commands: Receiver<Command>, replies: SyncSender<Reply>, cursor: Option<TableCursor>) {
+    let mut exporter = cursor.map_or_else(Exporter::default, Exporter::with_cursor);
     while let Ok(Command::Start(inputs, limit)) = commands.recv() {
         let mut budget = Budget {
             commands: &commands,

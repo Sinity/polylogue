@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{OptionalExtension, params};
 
-/// Disposable row comparison state. SQLite spills the index and transaction
+/// Persistent row comparison state. SQLite spills the index and transaction
 /// journal to disk; Rust holds one decoded row at a time.
 pub(super) struct Catalog {
     pub conn: Connection,
@@ -18,8 +18,11 @@ impl Catalog {
     pub fn load(
         out: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
-    ) -> Result<Self, ExportError> {
-        let conn = Connection::open("").map_err(|e| ExportError::Sqlite(out.into(), e))?;
+    ) -> Result<(Self, SyncedPrefix), ExportError> {
+        let mut path = out.as_os_str().to_owned();
+        path.push(".catalog.sqlite");
+        let conn =
+            Connection::open(Path::new(&path)).map_err(|e| ExportError::Sqlite(out.into(), e))?;
         let mut catalog = Self {
             conn,
             schema: None,
@@ -31,10 +34,36 @@ impl Catalog {
             .conn
             .execute_batch(
                 "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-             CREATE TABLE row_state(t TEXT NOT NULL, k TEXT NOT NULL, kh TEXT NOT NULL,
+             CREATE TABLE IF NOT EXISTS row_state(t TEXT NOT NULL, k TEXT NOT NULL, kh TEXT NOT NULL,
                h BLOB NOT NULL, seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(t,k)) WITHOUT ROWID;
-             CREATE INDEX row_hash ON row_state(t,kh);
-             BEGIN;",
+             CREATE INDEX IF NOT EXISTS row_hash ON row_state(t,kh);
+             CREATE TABLE IF NOT EXISTS catalog_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS table_cursor(t TEXT PRIMARY KEY, column_name TEXT NOT NULL, value INTEGER, verified_at INTEGER NOT NULL) WITHOUT ROWID;",
+            )
+            .map_err(sql_err)?;
+        let saved: Option<String> = catalog
+            .conn
+            .query_row(
+                "SELECT value FROM catalog_meta WHERE key='state'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        if let Some(saved) = saved {
+            let saved: SavedCatalog = serde_json::from_str(&saved).map_err(std::io::Error::from)?;
+            if let Some(synced) = SyncedPrefix::resume(out, saved.prefix)? {
+                catalog.schema = saved.schema;
+                catalog.binding = saved.binding;
+                catalog.unbound = saved.unbound;
+                return Ok((catalog, synced));
+            }
+        }
+        let mut synced = SyncedPrefix::open(out, checkpoint)?;
+        catalog
+            .conn
+            .execute_batch(
+                "BEGIN; DELETE FROM row_state; DELETE FROM catalog_meta; DELETE FROM table_cursor;",
             )
             .map_err(sql_err)?;
         match fs::File::open(out) {
@@ -58,8 +87,14 @@ impl Catalog {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
+        synced.establish(out)?;
+        catalog.save(&synced)?;
         catalog.conn.execute_batch("COMMIT").map_err(sql_err)?;
-        Ok(catalog)
+        Ok((catalog, synced))
+    }
+
+    pub fn save(&self, synced: &SyncedPrefix) -> Result<(), ExportError> {
+        save(&self.conn, self.schema, &self.binding, self.unbound, synced)
     }
 
     pub(super) fn bind(
@@ -132,19 +167,46 @@ impl Catalog {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedCatalog {
+    prefix: super::synced_prefix::SavedPrefix,
+    schema: Option<u64>,
+    binding: Option<super::binding::Binding>,
+    unbound: bool,
+}
+
+pub(super) fn save(
+    conn: &Connection,
+    schema: Option<u64>,
+    binding: &Option<super::binding::Binding>,
+    unbound: bool,
+    synced: &SyncedPrefix,
+) -> Result<(), ExportError> {
+    let saved = serde_json::to_string(&SavedCatalog {
+        prefix: synced.saved(),
+        schema,
+        binding: binding.clone(),
+        unbound,
+    })
+    .map_err(std::io::Error::from)?;
+    conn.execute("INSERT INTO catalog_meta VALUES('state',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [saved]).map_err(|e| ExportError::Sqlite(PathBuf::from("tool database catalog"), e))?;
+    Ok(())
+}
+
 /// Mark a unique source key and compare its complete content hash.
 pub(super) fn changed(
     conn: &Connection,
     t: &str,
     k: &Value,
     h: &blake3::Hash,
+    check_duplicate: bool,
 ) -> rusqlite::Result<bool> {
     let key = k.to_string();
     let old: Option<(Vec<u8>, bool)> = conn
         .prepare_cached("SELECT h,seen FROM row_state WHERE t=?1 AND k=?2")?
         .query_row(params![t, key], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
-    if old.as_ref().is_some_and(|(_, seen)| *seen) {
+    if check_duplicate && old.as_ref().is_some_and(|(_, seen)| *seen) {
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "non-unique SQLite export key in {t}: {key}"
         )));
