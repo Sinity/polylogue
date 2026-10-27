@@ -20,7 +20,7 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     page_ends: read::page_ends::Cache,
-    feeds: Mutex<feeds::Cache>,
+    feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
@@ -161,10 +161,7 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 pub(crate) fn ok(data: impl serde::Serialize) -> Response {
-    match serde_json::to_value(data) {
-        Ok(data) => Response::Ok { data },
-        Err(e) => error("internal", e),
-    }
+    super::request::References::default().response(data)
 }
 
 /// Refuses new requests once the daemon is stopping.
@@ -178,18 +175,19 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Prepares a complete finite feed through the same checks and read pool.
-/// The returned unnamed file holds the bytes to send, never a live Reader.
+/// Transport-specific string cleaning stays with the transport.
+pub(crate) type Cleaner = fn(&str, &std::path::Path) -> String;
+
+/// Prepare this stream request, or leave a different request for its handler.
 pub(crate) fn change_feed(
+    request: &Request,
     d: &Daemon,
-    since: Option<&str>,
-    web: bool,
-) -> Result<std::fs::File, Response> {
-    accepting(d)?;
-    d.feeds
-        .lock()
-        .map_err(|e| error("internal", e))?
-        .read(d, since, web)
+    clean: Option<Cleaner>,
+) -> Option<Result<std::fs::File, Response>> {
+    let Request::Changes { since } = request else {
+        return None;
+    };
+    Some(accepting(d).and_then(|()| d.feeds.read(d, since.as_deref(), clean)))
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
@@ -300,7 +298,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             let key =
                 serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
             if let Some(data) = d.warm.answer(&key, &position) {
-                return Response::Ok { data };
+                return super::query::answer(data);
             }
             let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
                 .ok()
@@ -325,7 +323,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             match super::query::run(&reader, ask) {
                 Ok(data) => {
                     d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                    Response::Ok { data }
+                    super::query::answer(data)
                 }
                 Err(f) => Response::Error {
                     kind: f.kind,
@@ -377,7 +375,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             with_parents,
             budget,
             cursor,
-            start,
+            selection,
         } => {
             let options = read::Options {
                 slices,
@@ -386,7 +384,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 with_parents,
                 budget,
                 cursor: cursor.as_deref(),
-                start: start.as_ref(),
+                selection: selection.as_ref(),
             };
             match &target {
                 ReadTarget::Session(session) => {
@@ -600,9 +598,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             drop(reader);
             let count = note.targets.len();
             match write(d, request_id, UserWrite::AddNote { note }) {
-                Response::Ok { mut data } => {
+                Response::Ok {
+                    mut data,
+                    references,
+                } => {
                     data["targets"] = serde_json::json!(count);
-                    Response::Ok { data }
+                    Response::Ok { data, references }
                 }
                 other => other,
             }
@@ -1079,7 +1080,7 @@ pub fn start(
         archive,
         reads,
         page_ends: read::page_ends::Cache::default(),
-        feeds: Mutex::new(feeds::Cache::default()),
+        feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
         mode,

@@ -100,11 +100,22 @@ pub enum Cli {
     NoSubcommand,
 }
 
+pub type StreamHandler = fn(
+    &Request,
+    &crate::daemon::service::Daemon,
+    Option<crate::daemon::service::Cleaner>,
+) -> Option<Result<std::fs::File, crate::daemon::Response>>;
+
 #[derive(Clone, Copy)]
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
-    Stream(fn(&Command, &Values, &Caller) -> Result<Request, String>),
+    /// A finite stream with shared preparation and command-line delivery.
+    Stream {
+        build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
+        prepare: StreamHandler,
+        cli: fn(&Request) -> ExitCode,
+    },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -861,7 +872,11 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Stream(requests::changes),
+        action: Action::Stream {
+            build: requests::changes,
+            prepare: crate::daemon::service::change_feed,
+            cli: crate::cli::changes::run,
+        },
         http: true,
         ..CLI
     },

@@ -63,7 +63,7 @@ async fn answer(
     values: Result<Values, String>,
 ) -> HttpResponse {
     let build = match c.action {
-        Action::Request(build) | Action::Stream(build) => build,
+        Action::Request(build) | Action::Stream { build, .. } => build,
         Action::Local(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let caller = Caller {
@@ -72,8 +72,10 @@ async fn answer(
         json: true,
     };
     match values.and_then(|v| build(c, &v, &caller)) {
-        Ok(request) if matches!(c.action, Action::Stream(_)) => changes(web, request).await,
-        Ok(request) => json_answer(web, ask(web, request).await),
+        Ok(request) => match c.action {
+            Action::Stream { prepare, .. } => stream(web, request, prepare).await,
+            _ => json_answer(web, ask(web, request).await),
+        },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
     }
 }
@@ -81,14 +83,16 @@ async fn answer(
 /// Stream a prepared finite batch after its reader has been released. The
 /// spool belongs to the response, so a slow or disconnected client owns no
 /// database transaction, reader slot or detached producer.
-async fn changes(web: &Arc<Web>, request: crate::daemon::Request) -> HttpResponse {
+async fn stream(
+    web: &Arc<Web>,
+    request: crate::daemon::Request,
+    prepare: crate::commands::StreamHandler,
+) -> HttpResponse {
     let web = Arc::clone(web);
     let worker = Arc::clone(&web);
     let result = tokio::task::spawn_blocking(move || {
-        let crate::daemon::Request::Changes { since } = request else {
-            return Err(crate::daemon::service::error("internal", "unknown stream"));
-        };
-        crate::daemon::service::change_feed(&worker.daemon, since.as_deref(), true)
+        prepare(&request, &worker.daemon, Some(super::access::scrub))
+            .expect("command owns its request")
     })
     .await;
     match result {

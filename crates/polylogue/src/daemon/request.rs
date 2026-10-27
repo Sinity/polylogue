@@ -2,6 +2,8 @@
 //! command, the browser host and the web reader. A write carries a request
 //! ID so a resent write is a no-op.
 
+mod references;
+
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::{Author, DocumentId, NewNote, SessionId};
@@ -11,7 +13,7 @@ use std::path::PathBuf;
 /// Selects the first page at a message reference or at the latest message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReadSelection {
+pub enum PageSelection {
     Message(polylogue_model::MessageId),
     Latest,
 }
@@ -132,7 +134,7 @@ pub enum Request {
         budget: Option<usize>,
         cursor: Option<String>,
         #[serde(default)]
-        start: Option<ReadSelection>,
+        selection: Option<PageSelection>,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
@@ -360,6 +362,9 @@ fn attachment_chunk() -> usize {
 pub enum Response {
     Ok {
         data: serde_json::Value,
+        /// References supplied by the response constructor, before transport cleaning.
+        #[serde(skip)]
+        references: References,
     },
     Error {
         kind: String,
@@ -376,7 +381,7 @@ impl Response {
     /// Mask decoded strings before JSON escaping, keeping every structured field.
     pub(crate) fn masked(mut self) -> Self {
         match &mut self {
-            Self::Ok { data } => output_values(data, polylogue_render::mask),
+            Self::Ok { data, references } => references.clean(data, &mut polylogue_render::mask),
             Self::Error {
                 kind,
                 message,
@@ -393,74 +398,80 @@ impl Response {
     }
 }
 
-/// Mask authored strings while keeping parsed references and opaque root cursors.
-pub(crate) fn output_values(value: &mut serde_json::Value, string: impl FnMut(&str) -> String) {
-    let mut references = Vec::new();
-    let mut save = |path: &str, reference: bool| {
-        if let Some(found) = value.pointer(path)
-            && (!reference
-                || found
-                    .as_str()
-                    .is_some_and(|text| polylogue_model::SessionId::parse(text).is_ok()))
-        {
-            references.push((path.to_owned(), found.clone()));
+/// Values whose meaning is declared by the constructor, never inferred from JSON shape.
+#[derive(Debug, Clone, Default)]
+pub struct References(Vec<(String, serde_json::Value)>);
+
+impl References {
+    pub(crate) fn response(mut self, data: impl Serialize) -> Response {
+        match references::value(&mut self, "", &data) {
+            Ok(data) => Response::Ok {
+                data,
+                references: self,
+            },
+            Err(error) => crate::daemon::service::error("internal", error),
         }
-    };
-    for path in ["/cursor", "/next", "/previous"] {
-        save(path, false);
     }
-    for path in ["/session/id", "/document/id"] {
-        save(path, true);
+    pub(crate) fn value(&mut self, path: &str, data: &impl Serialize) -> serde_json::Value {
+        references::value(self, path, data).expect("model serializes")
     }
-    for (array, fields) in [
-        ("messages", &["id", "session", "parent"][..]),
-        ("entries", &["message", "session"][..]),
-        ("attachments", &["message"][..]),
-    ] {
-        for index in 0..value[array].as_array().map_or(0, Vec::len) {
-            for field in fields {
-                save(&format!("/{array}/{index}/{field}"), true);
+
+    pub(crate) fn observe(&mut self, path: &str, data: &impl Serialize) {
+        references::observe(self, path, data);
+    }
+
+    pub(crate) fn add(&mut self, path: impl Into<String>, value: &impl Serialize) {
+        self.0.push((
+            path.into(),
+            serde_json::to_value(value).expect("reference serializes"),
+        ));
+    }
+
+    pub(crate) fn opaque_field(&mut self, value: &serde_json::Value, path: impl Into<String>) {
+        let path = path.into();
+        if let Some(value) = value.pointer(&path).and_then(serde_json::Value::as_str) {
+            self.add(path, &value);
+        }
+    }
+
+    pub(crate) fn field<T: serde::de::DeserializeOwned + Serialize>(
+        &mut self,
+        value: &serde_json::Value,
+        path: impl Into<String>,
+    ) {
+        let path = path.into();
+        if let Some(value) = value
+            .pointer(&path)
+            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
+        {
+            self.value(&path, &value);
+        }
+    }
+
+    fn clean(&self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
+        polylogue_model::masking::mask_json_values(value, string);
+        for (path, original) in &self.0 {
+            if let Some(value) = value.pointer_mut(path) {
+                *value = original.clone();
             }
         }
     }
-    for index in 0..value["slices"].as_array().map_or(0, Vec::len) {
-        for field in ["id", "session"] {
-            save(&format!("/slices/{index}/message/{field}"), true);
-        }
-    }
-    for index in 0..value["parents"]["issues"].as_array().map_or(0, Vec::len) {
-        for field in ["parent", "child", "session"] {
-            save(&format!("/parents/issues/{index}/{field}"), true);
-        }
-    }
-    for column in value["columns"].as_array().into_iter().flatten() {
-        if matches!(
-            column["reference"].as_str(),
-            Some("session" | "message" | "document" | "event" | "input")
-        ) && let Some(name) = column["name"].as_str()
-        {
-            let name = name.replace('~', "~0").replace('/', "~1");
-            for index in 0..value["rows"].as_array().map_or(0, Vec::len) {
-                save(&format!("/rows/{index}/{name}"), true);
+}
+
+impl Response {
+    pub(crate) fn clean(mut self, mut string: impl FnMut(&str) -> String) -> Self {
+        match &mut self {
+            Self::Ok { data, references } => references.clean(data, &mut string),
+            Self::Error {
+                message, detail, ..
+            } => {
+                *message = string(message);
+                if let Some(detail) = detail {
+                    polylogue_model::masking::mask_json_values(detail, string);
+                }
             }
         }
-    }
-    if value["type"] == "change" && matches!(value["component"].as_str(), Some("archive" | "index"))
-    {
-        save("/change/ref", true);
-        save("/change/target", true);
-    }
-    if value["position"]
-        .as_str()
-        .is_some_and(|text| polylogue_model::ChangePosition::parse(text).is_some())
-    {
-        save("/position", false);
-    }
-    polylogue_model::masking::mask_json_values(value, string);
-    for (path, original) in references {
-        if let Some(value) = value.pointer_mut(&path) {
-            *value = original;
-        }
+        self
     }
 }
 

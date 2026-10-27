@@ -45,7 +45,7 @@ fn mcp_caller() -> Caller {
 
 /// The request as JSON without its request ID, which is fresh per call.
 fn request_json(c: &Command, v: &Values, caller: &Caller) -> serde_json::Value {
-    let (Action::Request(build) | Action::Stream(build)) = c.action else {
+    let (Action::Request(build) | Action::Stream { build, .. }) = c.action else {
         panic!("{} is local", c.name)
     };
     let mut r = serde_json::to_value(build(c, v, caller).unwrap()).unwrap();
@@ -106,7 +106,7 @@ fn mcp_offers_exactly_the_table_commands_marked_for_it() {
 fn only_daemon_requests_go_over_mcp_and_http() {
     for c in COMMANDS.iter().filter(|c| c.mcp || c.http) {
         assert!(
-            matches!(c.action, Action::Request(_) | Action::Stream(_)),
+            matches!(c.action, Action::Request(_) | Action::Stream { .. }),
             "{} runs locally",
             c.name
         );

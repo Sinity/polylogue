@@ -55,10 +55,23 @@ fn io(error: impl ToString) -> Failure {
     }
 }
 
-fn write(file: &mut File, line: Line, clean: &mut impl FnMut(&mut Value)) -> Result<(), Failure> {
-    let mut data = serde_json::to_value(line).map_err(io)?;
-    clean(&mut data);
-    let response = Response::Ok { data }.masked();
+fn write(
+    file: &mut File,
+    line: Line,
+    clean: &mut impl FnMut(Response) -> Response,
+) -> Result<(), Failure> {
+    let data = serde_json::to_value(&line).map_err(io)?;
+    let mut references = super::super::request::References::default();
+    match &line {
+        Line::Begin { position, .. } | Line::Change { position, .. } => {
+            references.add("/position", position)
+        }
+        Line::Complete { position, .. } => references.add("/position", position),
+    }
+    if let Line::Change { change, .. } = &line {
+        reference_fields(change, "/change", &data, &mut references);
+    }
+    let response = clean(Response::Ok { data, references }.masked());
     serde_json::to_writer(&mut *file, &response).map_err(io)?;
     file.write_all(b"\n").map_err(io)
 }
@@ -91,26 +104,13 @@ fn check_change(
     Ok(())
 }
 
-/// The caller owns the unnamed file. No bytes escape until every row has
-/// passed the query's shape checks and the complete batch is written and validated. Dropping
-/// the Reader before sending this file keeps network backpressure out of the
-/// WAL read transaction. One decoded row and disk ordering are separate costs.
-#[cfg(test)]
-pub(crate) fn prepare(
-    reader: &Reader<'_>,
-    since: Option<&str>,
-    now: i64,
-    file: File,
-) -> Result<File, Failure> {
-    prepare_with(reader, since, now, file, |_| {})
-}
-
+/// Prepare every row before delivery, releasing the reader before network writes.
 pub(crate) fn prepare_with(
     reader: &Reader<'_>,
     since: Option<&str>,
     now: i64,
     mut file: File,
-    mut clean: impl FnMut(&mut Value),
+    mut clean: impl FnMut(Response) -> Response,
 ) -> Result<File, Failure> {
     let previous = since
         .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
@@ -212,6 +212,36 @@ pub(crate) fn prepare_with(
     file.flush().map_err(io)?;
     file.seek(SeekFrom::Start(0)).map_err(io)?;
     Ok(file)
+}
+
+/// Change rows declare references by their typed kind, on both query and feed answers.
+pub(super) fn reference_fields(
+    change: &Value,
+    prefix: &str,
+    data: &Value,
+    references: &mut super::super::request::References,
+) {
+    let path = format!("{prefix}/ref");
+    match change["kind"].as_str() {
+        Some("session" | "removed") => references.field::<polylogue_model::SessionId>(data, path),
+        Some("note" | "excision") => references.opaque_field(data, path),
+        _ => {}
+    }
+    if let Some(target) = change["target"].as_str()
+        && polylogue_store::excise::ExciseTarget::parse(target).is_ok()
+    {
+        references.add(format!("{prefix}/target"), &target);
+    }
+    for (field, message) in [("sessions", false), ("messages", true)] {
+        for index in 0..change[field].as_array().map_or(0, Vec::len) {
+            let path = format!("{prefix}/{field}/{index}");
+            if message {
+                references.field::<polylogue_model::MessageId>(data, path);
+            } else {
+                references.field::<polylogue_model::SessionId>(data, path);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

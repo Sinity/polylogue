@@ -13,7 +13,7 @@ function report(error) {
 }
 
 async function batch() {
-  if (controller || stopped || document.hidden || !ready.size || ready.size !== subscribers.size) return;
+  if (controller || stopped || document.hidden || !ready.size || initializing.size !== 0) return;
   controller = new AbortController();
   const audience = [...ready];
   try {
@@ -59,7 +59,7 @@ async function batch() {
       }
       if (pending || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
       for (const subscriber of audience) await subscriber.complete?.(complete);
-      if (ready.size === subscribers.size) position = complete.position;
+      if (initializing.size === 0 && [...ready].every(subscriber => audience.includes(subscriber))) position = complete.position;
     } finally {
       await reader.cancel();
     }
@@ -105,7 +105,7 @@ async function readCurrent(subscriber, signal) {
   let initial;
   let count = 0;
   do {
-    const query = new URLSearchParams({ query: subscriber.query || "changes where (kind:session OR kind:note OR kind:excision)", limit: "50" });
+    const query = new URLSearchParams({ query: subscriber.query, limit: "50" });
     if (cursor) query.set("cursor", cursor);
     const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
     if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
@@ -138,6 +138,7 @@ function resume() {
     readCurrent(subscriber, request.signal).catch(error => {
       initializing.delete(subscriber);
       if (error.name !== "AbortError") subscriber.error?.(error);
+      batch();
       if (stopped) visibility();
       else if (!document.hidden && subscribers.has(subscriber)) {
         clearTimeout(timer);
@@ -149,6 +150,7 @@ function resume() {
 }
 
 export function watchChanges(subscriber) {
+  if (!subscriber.query?.trim()) throw new Error("A live view must supply its current query");
   subscribers.add(subscriber);
   resume();
   return () => {

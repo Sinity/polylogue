@@ -113,7 +113,7 @@ CREATE TABLE message (
 -- A first build drops the three unique indexes on natural keys and builds
 -- them once at its end; meanwhile the writer finds rows by key in memory.
 CREATE UNIQUE INDEX message_id ON message(id);
-CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position);   -- reading in order; [last:N]
+CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 CREATE INDEX message_pem     ON message(session_pk) WHERE pem <> 0;   -- the masking state a read starts with
@@ -268,6 +268,7 @@ CREATE TABLE link (
 ) STRICT;
 CREATE INDEX link_child  ON link(child_pk);                    -- parents
 CREATE INDEX link_child_id ON link(child_id) WHERE child_pk IS NULL;   -- late children
+CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
 
 CREATE TABLE event (

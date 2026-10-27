@@ -5,8 +5,8 @@ use super::*;
 pub struct OutlineEntry {
     #[serde(skip)]
     pub key: i64,
-    pub message: String,
-    pub session: String,
+    pub message: polylogue_model::MessageId,
+    pub session: SessionId,
     pub at: Option<Timestamp>,
     pub kinds: Vec<String>,
     pub events: Vec<String>,
@@ -109,7 +109,7 @@ impl MessageSelection<'_, '_> {
             .join(",");
         let sql = format!(
             "SELECT m.pk,m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-            AND (?2=0 OR ({PROMPT_SQL}))
+            AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind)))
             AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ({kinds}))
             ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC"
         );
@@ -169,12 +169,11 @@ impl MessageSelection<'_, '_> {
             };
             let sql = format!("WITH failures AS MATERIALIZED (
                 SELECT DISTINCT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk WHERE t.session_pk=?1 AND t.outcome='error'),
-                branches AS MATERIALIZED (SELECT branch_point FROM link WHERE branch_point IS NOT NULL),
-                compactions AS MATERIALIZED (SELECT after_message_pk FROM event WHERE session_pk=?1 AND kind='compaction')
-                SELECT m.pk,m.id,s.id,m.at,m.written_by='human',m.pk IN failures,m.id IN branches
+                compactions AS MATERIALIZED (SELECT after_message_pk FROM event WHERE session_pk=?1 AND kind IN ('compaction','microcompaction'))
+                SELECT m.pk,m.id,s.id,m.at,pl_is_prompt(m.role,m.prompt_kind),m.pk IN failures,EXISTS(SELECT 1 FROM link WHERE branch_point=m.id)
                 FROM message m JOIN session s ON s.pk=m.session_pk
                 WHERE m.session_pk=?1 AND m.duplicate_of IS NULL {seek} AND
-                (m.written_by='human' OR m.pk IN failures OR m.id IN branches OR m.pk IN compactions)
+                (pl_is_prompt(m.role,m.prompt_kind) OR m.pk IN failures OR EXISTS(SELECT 1 FROM link WHERE branch_point=m.id) OR m.pk IN compactions)
                 ORDER BY m.order_input_id,m.seq,m.record_position,m.id");
             let mut statement = conn.prepare_cached(&sql)?;
             let mut rows = if anchor.is_some() {
@@ -200,14 +199,16 @@ impl MessageSelection<'_, '_> {
                 if row.get::<_, bool>(6)? {
                     kinds.push("branch point".into());
                 }
-                let events=conn.prepare_cached("SELECT id FROM event WHERE after_message_pk=?1 AND kind='compaction' ORDER BY seq,id")?.query_map([pk],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let events=conn.prepare_cached("SELECT id FROM event WHERE after_message_pk=?1 AND kind IN ('compaction','microcompaction') ORDER BY seq,id")?.query_map([pk],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 if !events.is_empty() {
                     kinds.push("compaction".into());
                 }
                 entries.push(OutlineEntry {
                     key: pk,
-                    message: row.get(1)?,
-                    session: row.get(2)?,
+                    message: polylogue_model::MessageId::parse(&row.get::<_, String>(1)?)
+                        .map_err(|e| StoreError::Invalid(e.to_string()))?,
+                    session: SessionId::parse(&row.get::<_, String>(2)?)
+                        .map_err(|e| StoreError::Invalid(e.to_string()))?,
                     at: ts(row.get(3)?),
                     kinds,
                     events,
@@ -223,15 +224,14 @@ impl MessageSelection<'_, '_> {
     /// The closest preceding visible message, seeking backwards in source order.
     pub fn previous(
         &self,
-        key: i64,
+        from: VisitStart,
         kinds: &[polylogue_model::BlockKind],
         prompts: bool,
     ) -> Result<Option<VisitStart>> {
+        let Some(key) = from.key else { return Ok(None) };
         let conn = self.reader.conn()?;
         if let Some(keys) = &self.with_parents {
-            let Some(at) = keys.iter().position(|item| item.message_pk == key) else {
-                return Ok(None);
-            };
+            let at = from.message.min(keys.len());
             for (index, item) in keys[..at].iter().enumerate().rev() {
                 if self.visible_key(item.message_pk, kinds, prompts)? {
                     return Ok(Some(VisitStart {
@@ -250,28 +250,28 @@ impl MessageSelection<'_, '_> {
             .map(|kind| format!("'{}'", kind.as_str()))
             .collect::<Vec<_>>()
             .join(",");
-        let sql=format!("SELECT m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
+        let sql=format!("SELECT m.pk FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
             AND (m.order_input_id,m.seq,m.record_position,m.id)<(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?2)
-            AND (?3=0 OR ({PROMPT_SQL}))
+            AND (?3=0 OR (pl_is_prompt(m.role,m.prompt_kind)))
             AND EXISTS(SELECT 1 FROM block WHERE message_pk=m.pk AND kind IN ({kinds}))
             ORDER BY m.order_input_id DESC,m.seq DESC,m.record_position DESC,m.id DESC LIMIT 1");
-        let id = conn
+        let previous = conn
             .query_row(&sql, params![session, key, prompts], |row| {
-                row.get::<_, String>(0)
+                row.get::<_, i64>(0)
             })
             .optional()?;
-        id.map(|id| {
-            polylogue_model::MessageId::parse(&id)
-                .map_err(|e| StoreError::Invalid(e.to_string()))
-                .and_then(|id| self.locate(Some(&id)))
-        })
-        .transpose()
-        .map(Option::flatten)
+        previous.map(|previous| {
+            let stepped: i64 = conn.query_row("SELECT count(*) FROM message m
+                WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
+                AND (m.order_input_id,m.seq,m.record_position,m.id)>=(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?2)
+                AND (m.order_input_id,m.seq,m.record_position,m.id)<(SELECT order_input_id,seq,record_position,id FROM message WHERE pk=?3)", params![session,previous,key], |row| row.get(0))?;
+            Ok(VisitStart { message: from.message.saturating_sub(message_count(stepped)?), key: Some(previous) })
+        }).transpose()
     }
 
     fn visible_key(
         &self,
-        key: i64,
+        from: VisitStart,
         kinds: &[polylogue_model::BlockKind],
         prompts: bool,
     ) -> Result<bool> {
@@ -280,6 +280,6 @@ impl MessageSelection<'_, '_> {
             .map(|kind| format!("'{}'", kind.as_str()))
             .collect::<Vec<_>>()
             .join(",");
-        Ok(self.reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR ({PROMPT_SQL})))"),params![key,prompts],|row|row.get(0))?)
+        Ok(self.reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind))))"),params![key,prompts],|row|row.get(0))?)
     }
 }

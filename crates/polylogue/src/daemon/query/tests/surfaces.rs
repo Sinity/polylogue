@@ -55,7 +55,7 @@ fn answer(archive: &Archive, surface: &str, text: &str) -> Result<Value, (String
         }
     };
     match response {
-        Response::Ok { data } => Ok(data),
+        Response::Ok { data, .. } => Ok(data),
         Response::Error {
             kind,
             message,

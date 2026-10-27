@@ -81,7 +81,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
         fields: vec!["id".into(), "session".into()],
     };
     let data = match host.ask(&query) {
-        Some(Response::Ok { data }) => data,
+        Some(Response::Ok { data, .. }) => data,
         Some(error) => return error,
         None => {
             return crate::daemon::service::error(

@@ -54,18 +54,16 @@ fn response_boundary_masks_errors_and_nested_details_without_erasing_empty_data(
 }
 
 #[test]
-fn identifiers_and_cursors_survive_output_masking_but_authored_strings_do_not() {
+fn only_declared_references_survive_cleaning() {
     let token = "AKIAIOSFODNN7EXAMPLE";
-    let id = format!("claude-code:{token}");
-    let mut value = serde_json::json!({"session":{"id":id,"title":{"text":token}},"cursor":token,"next":token,"columns":[{"name":"id","reference":"message"},{"name":"text"}],"rows":[{"id":id,"text":token}],"value":{"id":id,"ref":id,"cursor":token}});
-    output_values(&mut value, polylogue_render::mask);
-    assert_eq!(value["session"]["id"], id);
-    assert_eq!(value["rows"][0]["id"], id);
-    assert_eq!(value["cursor"], token);
-    assert_eq!(value["next"], token);
-    assert_ne!(value["session"]["title"]["text"], token);
-    assert_ne!(value["rows"][0]["text"], token);
-    assert_ne!(value["value"]["id"], id);
-    assert_ne!(value["value"]["ref"], id);
-    assert_ne!(value["value"]["cursor"], token);
+    let id = polylogue_model::MessageId::parse(&format!("claude-code:{token}")).unwrap();
+    let data = serde_json::json!({"declared":id,"session":{"id":id},"authored":token});
+    let mut references = References::default();
+    references.add("/declared", &id);
+    let Response::Ok { data, .. } = (Response::Ok { data, references }).masked() else {
+        panic!()
+    };
+    assert_eq!(data["declared"], id.to_string());
+    assert_ne!(data["session"]["id"], id.to_string());
+    assert_ne!(data["authored"], token);
 }

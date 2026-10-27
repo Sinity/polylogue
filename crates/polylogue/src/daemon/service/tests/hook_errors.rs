@@ -24,7 +24,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
             .iter()
             .any(|event| event.data == summary)
     });
-    let Response::Ok { data: typed } = read(&daemon.daemon, "full", "json", None, None) else {
+    let Response::Ok { data: typed, .. } = read(&daemon.daemon, "full", "json", None, None) else {
         panic!("ordinary read failed")
     };
     assert_eq!(typed["messages"].as_array().unwrap().len(), 2);
