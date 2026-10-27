@@ -3,8 +3,8 @@
 //! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
 //! build, or one whose tables match no version this build knows, is refused.
 //! `embeddings.db` has one version and no migrations yet. `index.db` is never
-//! migrated: a new version or a different schema builds a new file and swaps
-//! it in.
+//! migrated: a new version or a different base schema builds a new file and
+//! swaps it in. Read indexes can be added in place.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};

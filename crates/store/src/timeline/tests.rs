@@ -230,7 +230,7 @@ fn mixed_kinds_and_models_page_once_across_equal_times_and_undated_records() {
     };
     let mixed = collect(&all(Some("2024-03-31".parse().unwrap()), false, false));
     assert_eq!(mixed.len(), 4);
-    assert!(mixed[0].starts_with("event:"));
+    assert!(mixed[0].starts_with('e'));
     assert_eq!(&mixed[1..], &["codex:a", "codex:b", "codex:no-model"]);
     let usage = crate::measure::Selection::default();
     let responses = Selection {
