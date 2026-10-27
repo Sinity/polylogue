@@ -103,6 +103,7 @@ window.addEventListener("pageshow", visibility);
 async function snapshot(subscriber, signal) {
   let cursor;
   let initial;
+  let count = 0;
   do {
     const query = new URLSearchParams({ query: subscriber.query || "changes where (kind:session OR kind:note OR kind:excision)", limit: "50" });
     if (cursor) query.set("cursor", cursor);
@@ -114,14 +115,15 @@ async function snapshot(subscriber, signal) {
     if (!initial) {
       initial = page.read_at.cursor;
       position ??= initial;
-      await subscriber.begin?.({ type: "begin", replacement: true, generation_changed: false });
+      await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
     }
     if (subscriber.snapshot) await subscriber.snapshot(page);
     else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
+    count += page.rows.length;
     cursor = page.next;
   } while (cursor && subscribers.has(subscriber));
   if (!subscribers.has(subscriber)) return;
-  await subscriber.complete?.({ type: "complete", position: initial, replacement: true });
+  await subscriber.complete?.({ type: "complete", position: initial, count, replacement: true });
   ready.add(subscriber);
   initializing.delete(subscriber);
   visibility();

@@ -9,7 +9,7 @@ const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(envelope(begin) + envelope(change) + envelope(complete(position)));
-const snapshot = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0" }, next });
+const snapshot = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
   const timers = new Map(), intervals = new Map(), events = new Map();
@@ -41,7 +41,7 @@ test("an interrupted batch repeats references from the last completed position",
   assert.equal(applied.length, 4); assert.match(errors[0], /interrupted/); stop();
 });
 test("joining reads every current page without resetting the shared position", async t => {
-  const requests = [], pages = [];
+  const requests = [], pages = [], beginnings = [], completions = [];
   let snapshots = 0;
   const env = await environment(t, async url => {
     requests.push(url);
@@ -49,8 +49,10 @@ test("joining reads every current page without resetting the shared position", a
     return batch("synthetic:5:0");
   });
   const stopA = env.watchChanges({}); await flush();
-  const stopB = env.watchChanges({ snapshot: page => pages.push(page) }); await flush();
+  const stopB = env.watchChanges({ snapshot: page => pages.push(page), begin: line => beginnings.push(line), complete: line => completions.push(line) }); await flush();
   assert.equal(pages.length, 2);
+  assert.equal(beginnings[0].generation, "synthetic");
+  assert.equal(completions[0].count, 2);
   assert.equal(requests.filter(url => url.startsWith("/api/v1/query")).length, 4);
   const feeds = requests.filter(url => url.startsWith("/api/v1/changes"));
   assert.equal(feeds.length, 2);
