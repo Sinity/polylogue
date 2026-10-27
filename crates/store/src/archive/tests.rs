@@ -287,17 +287,32 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index.execute_batch("DROP INDEX message_at; DROP INDEX event_at;
+    index
+        .execute_batch(
+            "DROP INDEX message_at; DROP INDEX event_at;
         INSERT INTO input_ref(id) VALUES ('synthetic');
-        INSERT INTO meta VALUES ('index-marker','present');").unwrap();
+        INSERT INTO meta VALUES ('index-marker','present');",
+        )
+        .unwrap();
     drop(index);
     drop(lock);
     for _ in 0..2 {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
         assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
-        assert_eq!(index.query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r.get::<_,String>(0)).unwrap(), "present");
-        assert_eq!(index.query_row("SELECT id FROM input_ref", [], |r| r.get::<_,String>(0)).unwrap(), "synthetic");
+        assert_eq!(
+            index
+                .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "present"
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT id FROM input_ref", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "synthetic"
+        );
         drop(index);
         drop(lock);
     }

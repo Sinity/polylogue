@@ -292,7 +292,20 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     let id = "claude-code:7f3a2c10-0002-4000-8000-000000000002";
     assert_eq!(kept["rows"][0]["id"], id);
     let (selection, _) = usage_selection(&reader, text, OCT1, true, Some(&near)).unwrap();
-    let selected = reader.query("SELECT pk FROM session WHERE id=?1", &[SqlValue::Text(id.into())]).unwrap();
-    assert_eq!(selection.sessions, Some(vec![selected[0]["pk"].as_i64().unwrap()]));
-    assert_eq!(usage_selection(&reader, text, OCT1, true, None).unwrap_err().kind, "embed");
+    let selected = reader
+        .query(
+            "SELECT pk FROM session WHERE id=?1",
+            &[SqlValue::Text(id.into())],
+        )
+        .unwrap();
+    assert_eq!(
+        selection.sessions,
+        Some(vec![selected[0]["pk"].as_i64().unwrap()])
+    );
+    assert_eq!(
+        usage_selection(&reader, text, OCT1, true, None)
+            .unwrap_err()
+            .kind,
+        "embed"
+    );
 }

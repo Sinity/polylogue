@@ -134,8 +134,11 @@ fn rows(
                 if after.undated {
                     match kind.cmp(after.kind.as_str()) {
                         std::cmp::Ordering::Less => continue,
-                        std::cmp::Ordering::Equal => conditions.push(format!("id > {}", bind(&mut params, SqlValue::Text(after.id.clone())))),
-                        std::cmp::Ordering::Greater => {},
+                        std::cmp::Ordering::Equal => conditions.push(format!(
+                            "id > {}",
+                            bind(&mut params, SqlValue::Text(after.id.clone()))
+                        )),
+                        std::cmp::Ordering::Greater => {}
                     }
                 }
             } else if after.undated {
@@ -143,7 +146,10 @@ fn rows(
             } else {
                 let at = bind(&mut params, after.at.map_or(SqlValue::Null, SqlValue::Int));
                 conditions.push(match kind.cmp(after.kind.as_str()) {
-                    std::cmp::Ordering::Equal => format!("(at,id) > ({at},{})", bind(&mut params, SqlValue::Text(after.id.clone()))),
+                    std::cmp::Ordering::Equal => format!(
+                        "(at,id) > ({at},{})",
+                        bind(&mut params, SqlValue::Text(after.id.clone()))
+                    ),
                     std::cmp::Ordering::Less => format!("at > {at}"),
                     std::cmp::Ordering::Greater => format!("at >= {at}"),
                 });
