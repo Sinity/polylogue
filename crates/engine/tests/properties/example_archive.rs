@@ -259,7 +259,9 @@ fn compaction_keeps_the_tree_connected() {
 #[test]
 fn appended_steps_reassemble_exactly() {
     let whole = Morrow::build(Set::Main);
-    let new_blobs = Morrow::lay_out(Set::Main);
+    let mut new_blobs = Morrow::lay_out(Set::Main);
+    // Source IDs include paths, so both archives read the same home.
+    new_blobs.home = whole.home.clone();
     let files = jsonl_files(&new_blobs);
     let full: Vec<Vec<u8>> = files.iter().map(|f| fs::read(f).unwrap()).collect();
     // Grow every file in three steps, cut at line ends, running a pass after each.

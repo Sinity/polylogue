@@ -15,6 +15,9 @@
 //! ancestors (the Python rule). Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 pub mod assets;
 
 use crate::RecordOutcome;

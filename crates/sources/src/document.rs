@@ -1,6 +1,9 @@
 //! Helpers shared by the parsers of whole documents (exports, captures):
 //! a running position for the rows they emit, and small JSON readers.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::Records;
 use crate::parse::Output;
 use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};

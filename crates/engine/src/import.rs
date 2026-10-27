@@ -7,7 +7,7 @@ use super::*;
 use polylogue_sources::origin::Arrival;
 
 mod assets;
-mod exports;
+pub(crate) mod exports;
 mod zip_import;
 
 impl Engine {

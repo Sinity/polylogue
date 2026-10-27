@@ -9,6 +9,8 @@ fn session_kind_reads(supplied: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
+    // Count executions rather than cached statement preparations.
+    conn.set_prepared_statement_cache_capacity(0);
     let first_build = crate::first_build::FirstBuild::default();
     let tx = conn.transaction().unwrap();
     let mut seed = batch("input1", 0, 0, vec![], &["main", "child"]);
@@ -26,8 +28,8 @@ fn session_kind_reads(supplied: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "session",
-                column_name: "kind"
+                table_name: "session_record",
+                column_name: "facts"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);

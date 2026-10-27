@@ -1,0 +1,52 @@
+{
+  "counts": {
+    "records": 2,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "room": 1,
+      "user": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "room_models",
+        "range": [
+          0,
+          244
+        ],
+        "session": "openrouter:prompt"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 159,
+        "message": {
+          "blocks": [
+            {
+              "text": "Read the module",
+              "type": "text"
+            }
+          ],
+          "id": "openrouter:prompt",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "openrouter:prompt"
+        },
+        "offset": 59
+      }
+    ],
+    "sessions": [
+      {
+        "id": "openrouter:prompt",
+        "kind": "main"
+      }
+    ]
+  }
+}

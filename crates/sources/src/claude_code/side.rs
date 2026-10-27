@@ -5,6 +5,9 @@
 //! and accounted with the reason; sessions name their plan by `slug`
 //! (a `plan` event from the transcript).
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use super::{ROOT, session_id};
 use crate::lines::Record;
 use crate::origin::Root;

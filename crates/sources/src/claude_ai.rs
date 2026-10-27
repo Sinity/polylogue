@@ -8,6 +8,9 @@
 //! thinking, tool use and results); claude.ai runs some tools itself, so a
 //! tool result can sit in the assistant message that made the call.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 mod fields;
 mod sidecars;
 

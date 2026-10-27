@@ -14,6 +14,9 @@
 //! earlier history) keeps its ID and its original session, so it is stored
 //! once, and the copying session gets a `copy` link.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 mod blocks;
 mod fields;
 pub mod side;

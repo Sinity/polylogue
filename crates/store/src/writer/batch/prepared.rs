@@ -8,7 +8,7 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
-    released: bool,
+    pub(in crate::writer) released: bool,
 }
 
 impl PreparedRows {

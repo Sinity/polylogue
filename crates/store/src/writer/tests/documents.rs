@@ -277,3 +277,63 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
     let pool = ReadPool::open(&w.archive).unwrap();
     assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_none());
 }
+
+#[test]
+fn a_same_chain_document_cannot_override_a_newer_source_time() {
+    let w = test_archive();
+    w.writer
+        .send(doc_batch(
+            "a",
+            document("ordered", "newer source", 2000),
+            true,
+        ))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut older = doc_batch("a", document("ordered", "older source", 1000), true);
+    older.change = Change::Reparse { chain: 1 };
+    older.parse[0].reset = false;
+    w.writer.send(older).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer source".into()
+        }]
+    );
+}
+
+#[test]
+fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
+    let w = test_archive();
+    w.writer
+        .send(doc_batch("a", document("ordered", "older", 1000), true))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut newer = doc_batch("a", document("ordered", "newer", 2000), true);
+    newer.change = Change::Reparse { chain: 1 };
+    newer.parse[0].reset = false;
+    newer.parse[0].output.documents[0].offset = 20;
+    newer.parse[0].output.documents[0].end = 30;
+    w.writer.send(newer).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer".into()
+        }]
+    );
+}

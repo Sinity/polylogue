@@ -12,6 +12,9 @@
 //! Attachment bytes the extension inlined are stored and linked to their
 //! attachment.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};

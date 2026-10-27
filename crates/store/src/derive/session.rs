@@ -28,7 +28,7 @@ use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
-    version: Version::Rules(4),
+    version: Version::Rules(5),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -56,6 +56,14 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 }
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    let reset: bool = tx.query_row(
+        "SELECT live_reparse FROM session WHERE pk=?1",
+        [session_pk],
+        |r| r.get(0),
+    )?;
+    if reset {
+        reset_live(tx, session_pk)?;
+    }
     tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
     let mut statement = tx.prepare_cached(
         "SELECT r.input_pk,r.facts,
@@ -90,7 +98,20 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     drop(rows);
     drop(statement);
     if inputs.is_empty() {
-        // Named only by events so far: a stub keeps its placeholder row.
+        if !reset {
+            return Ok(());
+        }
+        let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
+            r.get(0)
+        })?;
+        let id = polylogue_model::SessionId::parse(&id)
+            .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
+        crate::session_row::write(
+            tx,
+            session_pk,
+            &Session::new(id, polylogue_model::SessionKind::Main),
+        )?;
+        tx.execute("UPDATE session SET stub=1 WHERE pk=?1", [session_pk])?;
         return Ok(());
     }
     // A fixed order for every later choice: time, then content.
@@ -102,6 +123,41 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     let merged = merge(&inputs);
     crate::session_row::write(tx, session_pk, &merged)?;
     tx.execute("UPDATE session SET stub = 0 WHERE pk = ?1", [session_pk])?;
+    Ok(())
+}
+
+fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
+    let counter: i64 = tx.query_row("SELECT changed FROM session WHERE pk=?1", [pk], |r| {
+        r.get(0)
+    })?;
+    tx.execute("UPDATE session SET live_last_event=NULL,live_last_event_at=NULL,live_open_tool_pk=NULL,
+        live_waiting_on=NULL,live_waiting_since=NULL,live_todo=NULL,live_task=NULL,live_task_evidence=NULL,live_reparse=0,live_changed=?2 WHERE pk=?1",rusqlite::params![pk,counter])?;
+    let mut statement = tx.prepare(
+        "SELECT kind,at,data FROM event WHERE session_pk=?1 AND kind LIKE 'hook_%' ORDER BY at,id",
+    )?;
+    let events = statement.query_map([pk], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<i64>>(1)?,
+            r.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    for event in events {
+        let (kind, at, data) = event?;
+        crate::live::apply(
+            tx,
+            pk,
+            &polylogue_model::Event {
+                session: None,
+                kind,
+                at: at.and_then(polylogue_model::Timestamp::from_unix_ms),
+                after: None,
+                range: None,
+                data: crate::encoding::unpack_json(&data)?,
+            },
+            counter,
+        )?;
+    }
     Ok(())
 }
 

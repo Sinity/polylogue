@@ -260,6 +260,7 @@ pub fn step(
         release: Default::default(),
         parse: vec![ParseStep {
             order_from: None,
+            reading_version: "synthetic=1".into(),
             reset: start == 0,
             repeats_whole_conversations: false,
             output,

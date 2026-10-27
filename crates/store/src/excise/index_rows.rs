@@ -36,9 +36,8 @@ pub(super) fn inputs_of_session(index: &Connection, pk: i64) -> Result<Vec<Strin
         index,
         "SELECT id FROM input_ref WHERE pk IN (
             SELECT input_pk FROM parsed WHERE session_pk = ?1
-            UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk = s.message_pk
-                  WHERE m.session_pk = ?1
-            UNION SELECT input_pk FROM event WHERE session_pk = ?1)",
+            UNION SELECT s.input_pk FROM message_source s WHERE s.session_pk = ?1
+            UNION SELECT s.input_pk FROM event_source s WHERE s.session_pk = ?1)",
         pk,
     )
 }
@@ -58,9 +57,8 @@ pub(super) fn sessions_of_input(index: &Connection, pk: i64) -> Result<Vec<(i64,
         index,
         "SELECT pk, id FROM session WHERE pk IN (
             SELECT session_pk FROM parsed WHERE input_pk = ?1
-            UNION SELECT m.session_pk FROM message_source s JOIN message m ON m.pk = s.message_pk
-                  WHERE s.input_pk = ?1
-            UNION SELECT session_pk FROM event WHERE input_pk = ?1)",
+            UNION SELECT s.session_pk FROM message_source s WHERE s.input_pk = ?1
+            UNION SELECT s.session_pk FROM event_source s WHERE s.input_pk = ?1)",
         pk,
     )
 }
@@ -202,7 +200,9 @@ fn remove_text_if_unused(index: &Connection, id: i64) -> Result<Option<Vec<u8>>>
         .query_row(
             "SELECT hash, indexed FROM text WHERE id = ?1
              AND NOT EXISTS(SELECT 1 FROM block WHERE text_id = ?1)
-             AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id = ?1)",
+             AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id = ?1)
+             AND NOT EXISTS(SELECT 1 FROM message_version_text WHERE text_id=?1)
+             AND NOT EXISTS(SELECT 1 FROM document_version_text WHERE text_id=?1)",
             [id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -249,11 +249,14 @@ pub(super) fn remove_document(
 ) -> Result<()> {
     let rows: Vec<(Option<i64>, Option<Vec<u8>>)> = t
         .index
-        .prepare("SELECT text_id, blob_hash FROM document_block WHERE document_pk = ?1")?
+        .prepare("SELECT text_id, blob_hash FROM document_block WHERE document_pk = ?1
+            UNION SELECT v.text_id,NULL FROM document_version_text v JOIN document_source s ON s.version_hash=v.version_hash WHERE s.document_pk=?1
+            UNION SELECT NULL,v.blob_hash FROM document_version_blob v JOIN document_source s ON s.version_hash=v.version_hash WHERE s.document_pk=?1")?
         .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     t.index
         .execute("DELETE FROM document WHERE pk = ?1", [pk])?;
+    crate::versions::remove_readings(t.index)?;
     for (text, media) in rows {
         if let Some(text) = text {
             removed_texts.extend(remove_text_if_unused(t.index, text)?);
@@ -415,6 +418,7 @@ pub(super) fn remove_input(
     t.index
         .execute("DELETE FROM import_member WHERE input = ?1", [input])?;
     if let Some(pk) = input_pk(t.index, input)? {
+        crate::writer::retract_input(t.index, pk, input, t.counter)?;
         // Rows of other kinds the input owns (events without a session,
         // parse progress), after the rows that refer to them.
         let tables = crate::schema::index_columns(t.index)?;
@@ -441,6 +445,7 @@ pub(super) fn remove_input(
         }
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
+        crate::versions::remove_readings(t.index)?;
     }
     Ok(RemovedInput {
         blobs: stored.iter().map(|h| blob_hash(h)).collect::<Result<_>>()?,
@@ -456,7 +461,9 @@ pub(super) fn blob_unused(t: &Transactions<'_, '_>, hash: &BlobHash) -> Result<b
         |r| r.get(0),
     )? || t.index.query_row(
         "SELECT EXISTS(SELECT 1 FROM block WHERE blob_hash = ?1)
-             OR EXISTS(SELECT 1 FROM document_block WHERE blob_hash = ?1)",
+             OR EXISTS(SELECT 1 FROM document_block WHERE blob_hash = ?1)
+             OR EXISTS(SELECT 1 FROM message_version_blob WHERE blob_hash=?1)
+             OR EXISTS(SELECT 1 FROM document_version_blob WHERE blob_hash=?1)",
         [&hash.0[..]],
         |r| r.get(0),
     )?;

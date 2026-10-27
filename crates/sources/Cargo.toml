@@ -16,6 +16,7 @@ atomicwrites.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+blake3.workspace = true
 tempfile.workspace = true
 
 [lints]

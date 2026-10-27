@@ -10,6 +10,8 @@ impl<'a> References<'a> {
         )?;
         i.execute("INSERT INTO temp.session_remove_text SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL", [pk])?;
         i.execute("INSERT INTO temp.session_remove_blob SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL", [pk])?;
+        i.execute("INSERT OR IGNORE INTO temp.session_remove_text SELECT v.text_id FROM message_version_text v JOIN message_source s ON s.version_hash=v.version_hash JOIN message m ON m.pk=s.message_pk WHERE m.session_pk=?1",[pk])?;
+        i.execute("INSERT OR IGNORE INTO temp.session_remove_blob SELECT v.blob_hash FROM message_version_blob v JOIN message_source s ON s.version_hash=v.version_hash JOIN message m ON m.pk=s.message_pk WHERE m.session_pk=?1",[pk])?;
         Ok(Self(i))
     }
 

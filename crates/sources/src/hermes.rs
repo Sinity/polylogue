@@ -1,5 +1,8 @@
 //! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 mod identity;
 mod message;
 mod observer;
