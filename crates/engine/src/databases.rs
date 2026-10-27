@@ -46,10 +46,7 @@ impl Databases {
         if self.pending() || inputs.is_empty() {
             return Ok(());
         }
-        let mut reader = self
-            .reader
-            .take()
-            .unwrap_or_default();
+        let mut reader = self.reader.take().unwrap_or_default();
         let (tx, result) = sync_channel(1);
         let (notify, progress) = sync_channel(1);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));

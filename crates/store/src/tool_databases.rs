@@ -333,19 +333,19 @@ fn read_rows(
             }
         }
         catalog.gone(&table.name, &mut |key| {
-                stopped()?;
-                serde_json::to_writer(
-                    &mut bytes,
-                    &json!({"t":table.name,"k":key,"gone":true,"at_ms":at_ms}),
-                )
-                .map_err(std::io::Error::from)?;
-                bytes.push(b'\n');
-                done.gone += 1;
-                crate::fault::check("database.after_gone", &table.name)?;
-                if bytes.len() >= APPEND_BYTES {
-                    send(std::mem::take(&mut bytes))?;
-                }
-                Ok(())
+            stopped()?;
+            serde_json::to_writer(
+                &mut bytes,
+                &json!({"t":table.name,"k":key,"gone":true,"at_ms":at_ms}),
+            )
+            .map_err(std::io::Error::from)?;
+            bytes.push(b'\n');
+            done.gone += 1;
+            crate::fault::check("database.after_gone", &table.name)?;
+            if bytes.len() >= APPEND_BYTES {
+                send(std::mem::take(&mut bytes))?;
+            }
+            Ok(())
         })?;
     }
     catalog.dropped(

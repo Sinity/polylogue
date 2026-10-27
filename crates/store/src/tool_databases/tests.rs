@@ -40,7 +40,10 @@ impl Test {
             length: 0,
         }
     }
-    fn capture(&mut self, reader: &mut DatabaseReader) -> Result<Option<ReadReport>, DatabaseError> {
+    fn capture(
+        &mut self,
+        reader: &mut DatabaseReader,
+    ) -> Result<Option<ReadReport>, DatabaseError> {
         let archive = &self.archive;
         let blobs = std::sync::Arc::new(archive.blobs().unwrap());
         let input = &self.input;
@@ -150,8 +153,14 @@ fn comparison_uses_complete_keys_and_generated_columns() {
             let rows = t.lines();
             assert!(rows.iter().any(|r| r["k"] == json!(["x", 2])));
             assert!(rows.iter().any(|r| r["r"]["twice"] == 6));
-            assert!(rows.iter().any(|r| r["t"] == "shadow" && r["k"] == json!([1])));
-            assert!(rows.iter().any(|r| r["t"] == "sqlitex_kept" && r["r"]["value"] == "captured"));
+            assert!(
+                rows.iter()
+                    .any(|r| r["t"] == "shadow" && r["k"] == json!([1]))
+            );
+            assert!(
+                rows.iter()
+                    .any(|r| r["t"] == "sqlitex_kept" && r["r"]["value"] == "captured")
+            );
         }
     }
 }
@@ -206,16 +215,10 @@ fn restart_compares_source_rows_without_reading_stored_history() {
     t.capture(&mut DatabaseReader::default()).unwrap();
     let length = t.length;
     t.sql("INSERT INTO items(body) VALUES('new');");
-    let done = t
-        .capture(&mut DatabaseReader::default())
-        .unwrap()
-        .unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.visited), (1, 2));
     assert!(t.length - length < 200);
-    let done = t
-        .capture(&mut DatabaseReader::default())
-        .unwrap()
-        .unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.visited), (0, 2));
 }
 
@@ -246,10 +249,7 @@ fn replacement_schema_change_and_missing_source_compare_every_row() {
     let replacement = t.dir.path().join("replacement");
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'replacement');").unwrap();
     fs::rename(replacement, &t.db).unwrap();
-    let done = t
-        .capture(&mut DatabaseReader::default())
-        .unwrap()
-        .unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.gone), (1, 1));
     t.sql("ALTER TABLE items ADD COLUMN tail INTEGER DEFAULT 42;");
     assert_eq!(

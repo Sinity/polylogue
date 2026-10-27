@@ -92,7 +92,9 @@ fn an_incompatible_index_is_refused_without_removing_its_rows() {
         "CREATE TABLE synthetic_older(value)".to_owned(),
         format!(
             "INSERT INTO meta VALUES ('unsynced','1'),('build_boot_id','{}'); CREATE TABLE synthetic_older(value)",
-            std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),
+            std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim(),
         ),
     ] {
         refused_index_keeps_the_archive(&change);

@@ -92,7 +92,11 @@ impl Comparison {
         if let Some((table, _, _)) = self.rows.first() {
             crate::fault::check("tool_database.comparison_commit", table)?;
         }
-        let schema = self.schema.as_ref().map(serde_json::to_string).transpose()?;
+        let schema = self
+            .schema
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         conn.execute("INSERT INTO tool_database(input_pk,length,schema) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,schema=COALESCE(?3,tool_database.schema)", params![input_pk,length,schema])?;
         Ok(())
     }
@@ -126,12 +130,7 @@ impl Catalog {
         let schema = schema.map(|s| serde_json::from_str(&s)).transpose()?;
         Ok(Self { conn, pk, schema })
     }
-    pub fn changed(
-        &self,
-        table: &str,
-        key: &Value,
-        row: &Value,
-    ) -> crate::Result<bool> {
+    pub fn changed(&self, table: &str, key: &Value, row: &Value) -> crate::Result<bool> {
         let key = key.to_string();
         self.conn
             .prepare_cached("INSERT INTO temp.seen VALUES(?1,?2)")?
