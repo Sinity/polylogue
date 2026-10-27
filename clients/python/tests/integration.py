@@ -52,7 +52,7 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(first["repeat"])
         self.assertTrue(again["repeat"])
         notes = self.client.call("note", "list", "repo:synthetic").json()
-        self.assertEqual(len(notes["notes"]), 1)
+        self.assertEqual(len(notes["rows"]), 1)
 
     def test_change_feed_can_continue_from_its_completion(self):
         first = [line.json() for line in self.client.changes()]
