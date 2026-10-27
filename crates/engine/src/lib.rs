@@ -396,7 +396,7 @@ impl Engine {
         let mut database_paths: HashMap<String, String> = self
             .inputs
             .iter()
-            .filter(|(_, state)| state.origin.capture == Capture::RowDump)
+            .filter(|(path, state)| state.origin.is_row_dump(path))
             .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
             .collect();
         for input in &mut known {
@@ -424,7 +424,7 @@ impl Engine {
         }
         drop(reader);
         self.inputs
-            .retain(|_, state| state.origin.capture != Capture::RowDump);
+            .retain(|path, state| !state.origin.is_row_dump(path));
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {
                 continue;
@@ -432,7 +432,7 @@ impl Engine {
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
-            if origin.capture != Capture::RowDump && self.inputs.contains_key(Path::new(&k.path)) {
+            if !origin.is_row_dump(Path::new(&k.path)) && self.inputs.contains_key(Path::new(&k.path)) {
                 continue;
             }
             self.inputs.insert(

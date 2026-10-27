@@ -46,6 +46,10 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|byte| *byte == b'{')
 }
 
+pub fn is_database(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| matches!(name.to_str(), Some("state.db" | "state.db.jsonl" | "verification_evidence.db" | "verification_evidence.db.jsonl")))
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
     if path
         .file_name()

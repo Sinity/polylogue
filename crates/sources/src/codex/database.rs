@@ -57,8 +57,12 @@ pub fn is_database(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "sqlite") && database(path).is_some()
 }
 
+pub fn is_row_dump(path: &Path) -> bool {
+    is_database(path) || recognize(path, b"{")
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
-    (is_database(path) || recognize(path, b"{")).then(|| Parse::Lines(Box::new(Database)))
+    is_row_dump(path).then(|| Parse::Lines(Box::new(Database)))
 }
 
 pub struct Database;

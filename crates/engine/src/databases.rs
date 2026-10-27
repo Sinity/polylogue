@@ -114,6 +114,7 @@ impl Databases {
                             ));
                             exporter =
                                 Exporter::with_cursor(polylogue_sources::origin::table_cursor);
+                            exporter.stop_when(Arc::clone(&cancelled));
                         }
                     }
                     // Another source can be read while these groups commit.

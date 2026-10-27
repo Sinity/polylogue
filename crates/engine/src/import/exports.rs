@@ -278,7 +278,7 @@ impl Engine {
         parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;
-        if done && plan.origin.capture == polylogue_sources::Capture::RowDump {
+        if done && plan.origin.is_row_dump(&plan.path) {
             let pool::Bytes::Stored(chain) = &plan.source else {
                 return Err(
                     std::io::Error::other("a row dump must be stored before comparison").into(),

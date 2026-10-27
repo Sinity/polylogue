@@ -132,14 +132,9 @@ impl WriterQueue {
         if counted {
             crate::timing::queue(crate::timing::Queue::Writer, 1);
         }
-        let result = self
-            .bulk
-            .lock()
-            .map_err(|_| ())?
-            .as_ref()
-            .ok_or(())?
-            .send(message)
-            .map_err(|_| ());
+        let result = (|| {
+            self.bulk.lock().map_err(|_| ())?.as_ref().ok_or(())?.send(message).map_err(|_| ())
+        })();
         if result.is_err() && counted {
             crate::timing::queue(crate::timing::Queue::Writer, -1);
         }

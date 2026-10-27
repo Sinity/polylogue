@@ -466,7 +466,7 @@ fn run(
                         );
                         p.order_from = parser.is_document().then_some(0);
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
-                        if job.origin.capture == polylogue_sources::Capture::RowDump {
+                        if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
                             let end = step.consumed as usize;
                             if let Err(error) = p.compare_records(&bytes[start..end]) { out.error=Some(error.to_string()); return Vec::new(); }

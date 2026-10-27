@@ -82,16 +82,17 @@ impl Comparison {
                 |r| r.get(0),
             )
             .optional()?;
+        let previous = previous.map(u64::try_from).transpose().map_err(|_| crate::StoreError::Invalid("negative database comparison length".into()))?;
         // Domain parsing may finish after newer row-dump bytes. Its older
         // values must not move the comparison state backwards.
         if previous.is_some_and(|previous| {
-            previous > length || (previous == length && self.saved.is_none())
+            previous > self.length || (previous == self.length && self.saved.is_none())
         }) {
             return Ok(());
         }
         // Later queued groups can outlive an earlier failed transaction.
         // Only a contiguous prefix can become the recovery position.
-        if self.from > previous.unwrap_or(0) as u64 {
+        if self.from > previous.unwrap_or(0) {
             return Err(crate::StoreError::Invalid(format!(
                 "database comparison starts at {} after acknowledged {}",
                 self.from,
