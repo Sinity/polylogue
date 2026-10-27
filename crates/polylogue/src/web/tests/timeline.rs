@@ -21,8 +21,7 @@ fn timeline_and_cost_share_public_operations_and_access() {
             "/api/v1/timeline?date=2023-02-29",
             "/api/v1/cost?date=2023-02-29",
         ] {
-            let (status, _, body) =
-                send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
+            let (status, _, body) = send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         }
         let (status, _, body) = send(
