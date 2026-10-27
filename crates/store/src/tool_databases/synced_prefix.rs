@@ -119,9 +119,21 @@ impl SyncedPrefix {
             hash: hash.finalize().to_hex().to_string(),
         })
         .map_err(std::io::Error::from)?;
-        atomicwrites::AtomicFile::new(checkpoint(out), atomicwrites::AllowOverwrite)
-            .write(|file| file.write_all(&bytes))
-            .map_err(std::io::Error::from)?;
+        let path = checkpoint(out);
+        let mut file = tempfile::NamedTempFile::new_in(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?;
+        file.write_all(&bytes)?;
+        file.as_file().sync_all()?;
+        file.persist(&path).map_err(|e| e.error)?;
+        std::fs::File::open(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?
+        .sync_all()?;
         Ok(())
     }
 
