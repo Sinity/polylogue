@@ -393,3 +393,115 @@ fn an_explicit_tool_message_is_not_assistant_prose() {
         );
     }
 }
+
+#[test]
+fn native_summary_update_time_does_not_become_a_message_clock() {
+    let mut input = records();
+    input[2]["r"]["last_modified_time"] = json!("2026-03-05T04:21:34Z");
+    let parsed = parse(input).unwrap();
+    let event = parsed
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "antigravity_conversation_summary")
+        .unwrap();
+    assert_eq!(
+        event.at,
+        crate::time::rfc3339(&json!("2026-03-05T04:21:34Z"))
+    );
+    assert!(
+        parsed
+            .output
+            .messages
+            .iter()
+            .all(|row| row.message.at.is_none())
+    );
+}
+
+#[test]
+fn malformed_row_dump_frames_are_counted_as_unreadable() {
+    for bad in [
+        json!({"future":true}),
+        json!({"t":"steps","k":[1],"r":9}),
+        json!({"t":"steps","r":{}}),
+    ] {
+        let parsed = parse(vec![
+            header(),
+            row(
+                "trajectory_meta",
+                1,
+                json!({"trajectory_id":"one","cascade_id":"alias"}),
+            ),
+            bad,
+        ])
+        .unwrap();
+        assert_eq!(parsed.counts.unreadable.values().sum::<u64>(), 1);
+    }
+}
+
+#[test]
+fn a_parent_row_without_a_child_does_not_assert_an_edge() {
+    let parsed = parse(vec![
+        header(),
+        row(
+            "trajectory_meta",
+            1,
+            json!({"trajectory_id":"one","cascade_id":"alias"}),
+        ),
+        row("parent_references", 1, json!({"parent_id":"parent"})),
+    ])
+    .unwrap();
+    assert!(parsed.output.links.is_empty());
+    assert!(
+        parsed
+            .output
+            .events
+            .iter()
+            .any(|e| e.kind == "antigravity_parent_reference" && e.session.is_none())
+    );
+}
+
+#[test]
+fn a_native_table_named_schema_is_not_a_schema_header() {
+    let parsed = parse(vec![
+        header(),
+        row(
+            "trajectory_meta",
+            1,
+            json!({"trajectory_id":"one","cascade_id":"alias"}),
+        ),
+        row("schema", 1, json!({"value":7})),
+    ])
+    .unwrap();
+    assert!(
+        parsed
+            .output
+            .events
+            .iter()
+            .any(|e| e.kind == "antigravity_database_row"
+                && e.session.is_none()
+                && e.data["table"] == "schema"
+                && e.data["row"]["value"] == 7)
+    );
+}
+
+#[test]
+fn steps_without_metadata_are_not_reported_as_an_empty_trajectory() {
+    let parsed = parse(vec![
+        header(),
+        row(
+            "steps",
+            1,
+            json!({"idx":0,"step_type":"user","step_format":"v1","step_payload":{"text":"kept"}}),
+        ),
+    ])
+    .unwrap();
+    assert_eq!(parsed.output.messages[0].message.text(), "kept");
+    assert!(
+        !parsed
+            .output
+            .events
+            .iter()
+            .any(|e| e.kind == "antigravity_trajectory_empty")
+    );
+}

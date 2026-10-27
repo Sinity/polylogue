@@ -5,7 +5,8 @@ use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    BlobHash, Block, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction,
+    BlobHash, Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
+    ToolAction,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -29,10 +30,7 @@ static FIELDS: Fields = Fields::new(&[
     ("cascadeId", Rule::Read),
     ("markdown", Rule::Read),
     ("title", Rule::Read),
-    (
-        "lastModifiedTime",
-        Rule::Kept("export update time, not a message time"),
-    ),
+    ("lastModifiedTime", Rule::Read),
     (
         "workspaceName",
         Rule::Kept("workspace label, not a working directory"),
@@ -72,6 +70,17 @@ impl DocumentParser for Antigravity {
             session.offer_title(title, TitleSource::Generated);
         }
         out.sessions.push(session);
+        let mut metadata = value.as_object().expect("validated export object").clone();
+        metadata.remove("markdown");
+        // The source reports its last update, not the time of each message.
+        out.events.push(Event {
+            session: Some(id.clone()),
+            kind: "antigravity_session".into(),
+            at: value.get("lastModifiedTime").and_then(crate::time::rfc3339),
+            after: None,
+            range: None,
+            data: Json::Object(metadata),
+        });
         let mut sink = Sink::new(out, records);
         let mut role = Role::Assistant;
         let mut body = String::new();
