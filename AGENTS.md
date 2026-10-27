@@ -37,9 +37,9 @@ Optimize for fast integration. See `docs/development.md`.
   the rest of the machine's work: `agentctl job start polylogue <operation>
   --workspace <worktree>`. `compile -- -p <crate>` checks that code builds,
   `focused -- -p <crate> [-E <filterset>] [<name>]` runs selected tests,
-  `fmt` formats, and `check` runs formatting, boundaries, clippy and every
-  test. All test runs share one build of the whole workspace, so `focused`
-  and `check` reuse each other's artifacts.
+  `fmt` formats, and `check` runs formatting, boundaries, clippy and default
+  tests. Default tests share one build; `sinex_client` checks primary mode
+  separately. See `docs/development.md` for the selections.
 - Start a job, then wait for it in the background with `agentctl job wait
   <id>` and keep working. A failed wait prints the failing tests and the
   `xtask history` pointer.

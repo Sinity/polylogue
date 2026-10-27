@@ -12,7 +12,6 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
-atomicwrites.workspace = true
 rustix.workspace = true
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
@@ -28,7 +27,6 @@ clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rmcp.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "macros", "fs"] }
 axum.workspace = true
 tokio-util = { version = "0.7", features = ["io"] }

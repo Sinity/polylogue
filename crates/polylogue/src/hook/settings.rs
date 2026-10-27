@@ -177,7 +177,10 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
     let merged = merge_hooks(current, harness, install)?;
     let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
     text.push('\n');
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     use std::os::unix::fs::PermissionsExt;
     let permissions = match std::fs::metadata(path) {
@@ -187,10 +190,20 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
         }
         Err(e) => return Err(e),
     };
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write(|file| {
-            file.set_permissions(permissions)?;
-            file.write_all(text.as_bytes())
-        })
-        .map_err(Into::into)
+    let mut file = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    file.as_file().set_permissions(permissions)?;
+    file.write_all(text.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    std::fs::File::open(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?
+    .sync_all()?;
+    Ok(())
 }
