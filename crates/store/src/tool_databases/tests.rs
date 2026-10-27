@@ -158,36 +158,20 @@ fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
 }
 
 #[test]
-fn exports_without_a_marker_replay_rows_and_removals_without_repeating_them() {
+fn a_lost_marker_refuses_existing_bytes_without_changing_them() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state.sqlite");
     let out = dir.path().join("state.jsonl");
-    let source = Connection::open(&db).unwrap();
-    source
-        .execute_batch(
-            "CREATE TABLE t(id INTEGER PRIMARY KEY,n TEXT); INSERT INTO t VALUES(1,'a'),(2,'b')",
-        )
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
         .unwrap();
     Exporter::default().export(&db, &out, None).unwrap();
-    let mut existing = lines(&out);
-    existing.push(
-        json!({"t":"t","k":[2],"kh":format!("{:016x}",row_key("t",&json!([2]))),"gone":true}),
-    );
-    let bytes = existing
-        .iter()
-        .map(|v| format!("{v}\n"))
-        .collect::<String>();
-    fs::write(&out, &bytes).unwrap();
+    let before = fs::read(&out).unwrap();
     fs::remove_file(synced_prefix::checkpoint(&out)).unwrap();
-    source.execute("DELETE FROM t WHERE id=2", []).unwrap();
-    assert_eq!(
-        Exporter::default()
-            .export(&db, &out, None)
-            .unwrap()
-            .unwrap(),
-        Exported::default()
-    );
-    assert_eq!(fs::read_to_string(&out).unwrap(), bytes);
+    assert!(Exporter::default().export(&db, &out, None).is_err());
+    assert_eq!(fs::read(&out).unwrap(), before);
+    assert!(!synced_prefix::checkpoint(&out).exists());
 }
 
 #[test]
@@ -261,13 +245,8 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
         20000
     );
     let length = fs::metadata(&out).unwrap().len();
-    assert_eq!(
-        Exporter::default()
-            .export(&db, &out, None)
-            .unwrap()
-            .unwrap(),
-        Exported::default()
-    );
+    // An unchanged source is not exported again after a restart.
+    assert_eq!(Exporter::default().export(&db, &out, None).unwrap(), None);
     assert_eq!(fs::metadata(&out).unwrap().len(), length);
     source
         .execute_batch(
@@ -282,6 +261,9 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
             .unwrap(),
         Exported { rows: 20, gone: 20 }
     );
+    assert_eq!(Exporter::default().export(&db, &out, None).unwrap(), None);
+    // A source that changed without changing its rows exports nothing.
+    source.execute_batch("PRAGMA user_version=1").unwrap();
     assert_eq!(
         Exporter::default()
             .export(&db, &out, None)
@@ -292,3 +274,169 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
 }
 
 mod source_binding;
+
+#[test]
+fn a_restart_reuses_the_kept_catalog_and_skips_an_unchanged_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("goals_1.sqlite");
+    let out = dir.path().join("goals_1.sqlite.jsonl");
+    let c = Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE g (id INTEGER PRIMARY KEY, s TEXT); INSERT INTO g VALUES (1, 'x');",
+    )
+    .unwrap();
+    Exporter::default()
+        .export(&db, &out, None)
+        .unwrap()
+        .unwrap();
+    assert!(catalog::rows_path(&out).exists());
+    // Nothing changed: a new process exports nothing.
+    assert_eq!(Exporter::default().export(&db, &out, None).unwrap(), None);
+    c.execute_batch("UPDATE g SET s = 'y' WHERE id = 1; INSERT INTO g VALUES (2, 'z');")
+        .unwrap();
+    assert_eq!(
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
+        Exported { rows: 2, gone: 0 }
+    );
+    let marker: Value =
+        serde_json::from_slice(&fs::read(synced_prefix::checkpoint(&out)).unwrap()).unwrap();
+    assert_eq!(marker["segments"].as_array().unwrap().len(), 2);
+    // A lost catalog is made again from the capture.
+    fs::remove_file(catalog::rows_path(&out)).unwrap();
+    c.execute_batch("INSERT INTO g VALUES (3, 'w');").unwrap();
+    assert_eq!(
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
+        Exported { rows: 1, gone: 0 }
+    );
+}
+
+#[test]
+fn a_capture_whose_facts_changed_is_checked_by_its_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let c = Connection::open(&db).unwrap();
+    c.execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
+        .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    // Same bytes, new facts: the chain is computed again and matches.
+    let bytes = fs::read(&out).unwrap();
+    fs::remove_file(&out).unwrap();
+    fs::write(&out, &bytes).unwrap();
+    c.execute_batch("INSERT INTO t VALUES(2)").unwrap();
+    assert_eq!(
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
+        Exported { rows: 1, gone: 0 }
+    );
+    let marker: Value =
+        serde_json::from_slice(&fs::read(synced_prefix::checkpoint(&out)).unwrap()).unwrap();
+    assert_eq!(marker["segments"].as_array().unwrap().len(), 2);
+    assert!(marker["facts"].is_array());
+}
+
+#[test]
+fn invalid_segment_lengths_refuse_without_truncating_the_capture() {
+    for segments in [json!([]), json!([0]), json!([u64::MAX, 1])] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.sqlite");
+        let out = dir.path().join("state.jsonl");
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
+            .unwrap();
+        Exporter::default().export(&db, &out, None).unwrap();
+        let before = fs::read(&out).unwrap();
+        let path = synced_prefix::checkpoint(&out);
+        let mut marker: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        marker["segments"] = segments;
+        fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        assert!(Exporter::default().export(&db, &out, None).is_err());
+        assert_eq!(fs::read(&out).unwrap(), before);
+    }
+}
+
+#[test]
+fn unchanged_capture_and_source_need_no_replay_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
+        .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    let mut visited = 0;
+    let result = Exporter::default()
+        .export_with(&db, &out, None, &mut || {
+            visited += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(result, None);
+    assert_eq!(visited, 0);
+}
+
+#[test]
+fn comparing_a_changed_source_writes_only_changed_catalog_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let source = Connection::open(&db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, value TEXT);
+        INSERT INTO t VALUES(1,'unchanged'),(2,'before')",
+        )
+        .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    Connection::open(catalog::rows_path(&out))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER unchanged_row BEFORE UPDATE ON row_state
+         WHEN old.h=new.h BEGIN SELECT RAISE(ABORT,'unchanged row written'); END;",
+        )
+        .unwrap();
+    source
+        .execute_batch("UPDATE t SET value='after' WHERE id=2")
+        .unwrap();
+    assert_eq!(
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
+        Exported { rows: 1, gone: 0 }
+    );
+}
+
+#[test]
+fn readers_get_only_completed_capture_bytes_during_an_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    assert_eq!(completed_facts(&out).unwrap(), None);
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
+        .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    let completed = completed_facts(&out).unwrap().unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&out)
+        .unwrap()
+        .write_all(b"incomplete row")
+        .unwrap();
+    assert!(fs::metadata(&out).unwrap().len() > completed.size);
+    assert_eq!(completed_facts(&out).unwrap(), Some(completed));
+    Exporter::default().export(&db, &out, None).unwrap();
+    assert_eq!(fs::metadata(&out).unwrap().len(), completed.size);
+}

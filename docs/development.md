@@ -164,6 +164,11 @@ requests (samples, median, p95), page counts and daemon memory. `--full-walk`
 also reads every page of the large session. It has no elapsed-time
 assertions.
 
+`POLYLOGUE_BENCH_HOME` selects where sample copies and output archives go;
+`POLYLOGUE_BENCH_MANIFEST_DIR` selects the manifest directory. Defaults are
+`/realm/project/polylogue/bench` and `/realm/project/polylogue/analysis/bench`.
+Use private directories for operator data.
+
 A single sample's estimate assumes time is linear in input bytes. Samples
 of two or more sizes (`bench sample --name NAME --mb MB`, then `bench run
 --name NAME`) let `bench estimate` fit each stage as fixed seconds plus
