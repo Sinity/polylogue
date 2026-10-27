@@ -68,6 +68,7 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
+    SecretScan(String, SyncSender<Result<crate::secret_scan::SessionScan>>),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
@@ -508,6 +509,14 @@ impl WriterSender {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    pub fn scan_secrets(&self, session: String) -> Result<crate::secret_scan::SessionScan> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::SecretScan(session, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
@@ -573,6 +582,7 @@ impl Inner {
         let mut excisions = Vec::new();
         let mut imported_excisions = Vec::new();
         let mut derives = Vec::new();
+        let mut scans = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut finish_writing = Vec::new();
@@ -650,6 +660,10 @@ impl Inner {
                         excisions.push((request, store, reply));
                         false
                     }
+                    Msg::SecretScan(session, reply) => {
+                        scans.push((session, reply));
+                        false
+                    }
                     Msg::Derive(reply) => {
                         derives.push(reply);
                         false
@@ -707,6 +721,9 @@ impl Inner {
             }
             for (excision, reply) in imported_excisions.drain(..) {
                 let _ = reply.send(self.import_excision(&excision));
+            }
+            for (session, reply) in scans.drain(..) {
+                let _ = reply.send(crate::secret_scan::scan(&mut self.index, &session));
             }
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived

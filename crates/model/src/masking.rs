@@ -1,5 +1,6 @@
 //! Mask decoded output strings before an encoder escapes their contents.
 
+pub use credential_masking::{Finding as SecretFinding, SCANNER_VERSION, Scanner as SecretScanner};
 use serde_json::Value;
 
 /// Text with credentials masked, as one block.

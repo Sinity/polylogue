@@ -342,3 +342,15 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+## Secret scan
+
+The explicit `scan-secrets` operation reads one stored block at a time through
+Store, including structured tool input and result strings, and each session event
+holding context or other captured text. Model exposes the
+shared credential scanner, which hashes spans as it streams and reports no
+source text. Store commits each session's fingerprint-only output and coverage
+together in `index.db`, tied to the session's change counter and scanner rule
+version. A status request reads only coverage. Rebuilding the index discards
+scan output and makes sessions pending again. Notes, deliveries and excisions
+are not part of scanning.

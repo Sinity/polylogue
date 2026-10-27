@@ -195,3 +195,13 @@ pub fn backfill_jobs(data: &Value) -> String {
     }
     out
 }
+
+pub fn secret_scan(value: &serde_json::Value) -> String {
+    format!(
+        "sessions scanned: {}\nblocks scanned: {}\nsecret candidates found: {}\nremaining pending: {}\n",
+        value["sessions_scanned"],
+        value["blocks_scanned"],
+        value["candidates_found"],
+        value["remaining_pending"]
+    )
+}

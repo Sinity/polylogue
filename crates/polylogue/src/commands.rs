@@ -431,6 +431,27 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "scan-secrets",
+        help: "Find credential-shaped spans; report fingerprints and positions only",
+        args: &[
+            opt("session", Kind::Text, "One session ID"),
+            opt("all", Kind::Bool, "Scan every pending session"),
+            opt("status", Kind::Bool, "Report coverage without scanning"),
+            opt("origin", Kind::Text, "Restrict all or status to an origin"),
+            opt(
+                "limit",
+                Kind::Integer,
+                "With all, scan at most this many pending sessions",
+            ),
+        ],
+        action: Action::Request(requests::scan_secrets),
+        print: print::secret_scan,
+        mcp: true,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
         name: "query",
         help: "Run a query",
         args: &[

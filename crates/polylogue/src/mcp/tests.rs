@@ -61,3 +61,5 @@ mod read_pages;
 mod events;
 
 mod attachments;
+
+mod secret_scan;

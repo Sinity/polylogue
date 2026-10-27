@@ -556,3 +556,12 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
+
+-- Rebuildable scan coverage and fingerprint-only output. A changed session or
+-- detector version makes its previous output pending again.
+CREATE TABLE secret_scan (
+  session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+  version TEXT NOT NULL,
+  from_changed INTEGER NOT NULL,
+  output TEXT NOT NULL
+) STRICT;
