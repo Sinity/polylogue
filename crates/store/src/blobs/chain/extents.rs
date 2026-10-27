@@ -41,7 +41,7 @@ impl ExtentList {
         while let Some(row) = rows.next()? {
             let extent = capture_extent(archive, schema, &target, row)?;
             if previous_end.is_some_and(|end| extent.offset < end) {
-                return Err(invalid("overlapping stored byte ranges"));
+                return Err(invalid("overlapping stored extents"));
             }
             previous_end = Some(extent.offset + extent.length);
             count += 1;
@@ -75,7 +75,7 @@ impl ExtentList {
         let conn = self
             .conn
             .lock()
-            .map_err(|_| invalid("stored byte ranges lock poisoned"))?;
+            .map_err(|_| invalid("stored extents lock poisoned"))?;
         let extent = Self::extent(&conn, at)?;
         let inline = if extent.inline {
             Some(reader::inline(&conn, store, &extent)?)
@@ -90,7 +90,7 @@ impl ExtentList {
         let row = conn.prepare_cached("SELECT e.offset,e.length,e.hash,e.blob_offset,b.size,b.place FROM extent e JOIN blob b ON b.hash=e.hash WHERE e.offset<=?1 ORDER BY e.offset DESC LIMIT 1")?
             .query_row([at as i64], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?))).optional()?;
         let (offset, length, hash, blob_offset, size, place) =
-            row.ok_or_else(|| invalid("stored byte range missing"))?;
+            row.ok_or_else(|| invalid("stored extent missing"))?;
         let extent = Extent {
             offset: number(offset)?,
             length: number(length)?,
@@ -107,14 +107,14 @@ impl ExtentList {
             .checked_add(extent.length)
             .is_none_or(|end| end <= at)
         {
-            return Err(invalid("stored byte range gap"));
+            return Err(invalid("stored extent gap"));
         }
         Ok(extent)
     }
 }
 
 fn number(n: i64) -> Result<u64> {
-    u64::try_from(n).map_err(|_| invalid("negative stored byte range metadata"))
+    u64::try_from(n).map_err(|_| invalid("negative stored extent metadata"))
 }
 
 fn invalid(message: &str) -> StoreError {
@@ -143,7 +143,7 @@ fn capture_extent(
         || offset.checked_add(len).is_none()
         || blob_offset.checked_add(len).is_none_or(|end| end > size)
     {
-        return Err(invalid("invalid stored byte range bounds"));
+        return Err(invalid("invalid stored extent bounds"));
     }
     if encoding != "plain" || !matches!(place.as_str(), "inline" | "file") {
         return Err(invalid(
