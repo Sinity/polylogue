@@ -94,13 +94,19 @@ pub(super) async fn session(
     if View::parse(p.view()).is_none() {
         return failed(StatusCode::BAD_REQUEST, "bad_request", "unknown view");
     }
+    let message = match p
+        .message
+        .as_deref()
+        .map(polylogue_model::MessageId::parse)
+        .transpose()
+    {
+        Ok(message) => message,
+        Err(_) => return failed(StatusCode::BAD_REQUEST, "bad_request", "not a message ID"),
+    };
     let start = if p.cursor.is_some() {
         None
-    } else if let Some(message) = &p.message {
-        match polylogue_model::MessageId::parse(message) {
-            Ok(message) => Some(ReadSelection::Message(message)),
-            Err(_) => return failed(StatusCode::BAD_REQUEST, "bad_request", "not a message ID"),
-        }
+    } else if let Some(message) = message {
+        Some(ReadSelection::Message(message))
     } else {
         p.latest.unwrap_or(false).then_some(ReadSelection::Latest)
     };
