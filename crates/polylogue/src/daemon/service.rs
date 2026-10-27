@@ -694,6 +694,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             detail,
         } => {
             drop(reader);
+            drop(reader);
             write(
                 d,
                 user_writes::new_request_id(),
