@@ -140,7 +140,8 @@ fn read_with(
     {
         return old.lookup.clone();
     }
-    let remote = git(&["remote", "get-url", "origin"]).map(|text| without_credentials(text.strip_suffix('\n').unwrap_or(&text)));
+    let remote = git(&["remote", "get-url", "origin"])
+        .map(|text| without_credentials(text.strip_suffix('\n').unwrap_or(&text)));
     let root_commit = head.as_ref().and_then(|_| {
         let root = git(&["rev-list", "--first-parent", "--max-parents=0", "HEAD"])?
             .lines()

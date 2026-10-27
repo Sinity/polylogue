@@ -26,6 +26,8 @@ fn default_permissions_are_private_and_failed_replacements_remove_the_temporary_
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    assert!(write_atomic(dir.path(), b"cannot replace a directory", None).is_err());
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    let destination = dir.path().join("directory");
+    fs::create_dir(&destination).unwrap();
+    assert!(write_atomic(&destination, b"cannot replace a directory", None).is_err());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
 }

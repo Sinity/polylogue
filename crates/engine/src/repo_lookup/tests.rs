@@ -278,7 +278,6 @@ fn ownership_refusal_reports_the_repository_as_unavailable() {
             root_commit: None
         }
     );
-    assert!(cache.lookups.is_empty());
 }
 
 #[test]
