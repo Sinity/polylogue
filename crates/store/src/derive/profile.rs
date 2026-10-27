@@ -104,11 +104,10 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         if let polylogue_model::Block::Text { text } = &block
             && let Some(m) = authors.get(&message_pk)
             && !text.trim().is_empty()
+            && m.eligible()
         {
-            if m.eligible() {
-                last_text = Some(*m);
-                prompt_text.entry(message_pk).or_default().push_str(text);
-            }
+            last_text = Some(*m);
+            prompt_text.entry(message_pk).or_default().push_str(text);
         }
     }
     let substantive = |m: &&Message| {
@@ -133,15 +132,18 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
             break;
         }
     }
+    let cleaned_title = title
+        .as_deref()
+        .and_then(|s| clean_topic(&polylogue_model::masking::mask(s), 120));
     let topic_source = if topic.is_some() {
         "first_substantive_user_turn"
-    } else if title.as_deref().and_then(|s| clean_topic(s, 120)).is_some() {
+    } else if cleaned_title.is_some() {
         "cleaned_title"
     } else {
         "absent"
     };
     if topic.is_none() {
-        topic = title.as_deref().and_then(|s| clean_topic(s, 120));
+        topic = cleaned_title;
     }
     let mut topic_source = topic_source.to_owned();
     if origin == "codex"
@@ -222,7 +224,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
         .count();
     let n = messages.len();
     let call_count: u64 = actions.values().sum();
-    let ratio = call_count as f64 / n.max(1) as f64;
+    let ratio = (call_count as f64 / n.max(1) as f64 * 10_000.0).round() / 10_000.0;
     let count = |names: &[&str]| {
         names
             .iter()
@@ -311,7 +313,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
             ("assistant_turn_count", assistants as f64),
             (
                 "thinking_ratio",
-                thinking_messages.len() as f64 / n.max(1) as f64,
+                (thinking_messages.len() as f64 / n.max(1) as f64 * 10_000.0).round() / 10_000.0,
             ),
             ("tool_active_duration_ms", tool_active as f64),
         ]

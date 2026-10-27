@@ -56,6 +56,40 @@ fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_sc
     f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
+    let reference_pk: i64 = r
+        .conn()
+        .unwrap()
+        .query_row("SELECT pk FROM session WHERE id='codex:a'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let matches = similar(
+        &r,
+        &Selection {
+            sessions: Some(vec![reference_pk]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0].session, "codex:b");
+    assert_eq!(matches[0].score, 5);
+    assert!(
+        matches
+            .iter()
+            .all(|m| m.reference == "codex:a" && m.session != "codex:a")
+    );
+    assert!(similar(&r, &Selection::default()).is_err());
+    assert!(
+        similar(
+            &r,
+            &Selection {
+                sessions: Some(vec![]),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
     let x = compare(&r, &Selection::default()).unwrap();
     assert!(x.differences.contains_key("word_count"));
     assert!(!x.differences.contains_key("workflow_shape"));
