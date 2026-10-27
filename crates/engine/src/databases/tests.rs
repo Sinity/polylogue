@@ -28,7 +28,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
     databases
         .start(
             vec![source()],
-            archive,
+            archive.clone(),
             writer.sender().unwrap(),
             Some(wake),
         )
@@ -39,6 +39,12 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
     assert_eq!(done.inputs_seen, 1);
     assert!(done.bytes_stored > 0);
     assert!(done.errors.is_empty(), "{:?}", done.errors);
+    let reads = ReadPool::open(&archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(reader.query("SELECT count(*) AS n FROM tool_row", &[]).unwrap()[0]["n"], 0);
+    assert_eq!(reader.query("SELECT count(*) AS n FROM tool_database", &[]).unwrap()[0]["n"], 0);
+    drop(reader);
+    drop(reads);
 
     // The archive path cannot be opened. Unchanged file facts should finish
     // the interval before trying to open any archive reader.
