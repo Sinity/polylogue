@@ -357,7 +357,9 @@ impl Reader<'_> {
         input: &str,
         blobs: &hashed_blobs::Store,
     ) -> Result<Option<(String, String)>> {
-        let Some(progress) = self.input_progress(input)? else { return Ok(None); };
+        let Some(progress) = self.input_progress(input)? else {
+            return Ok(None);
+        };
         let chain = self.stored_chain(input, progress.chain, progress.length)?;
         let mut bytes = Vec::new();
         let mut offset = 0;
@@ -365,11 +367,15 @@ impl Reader<'_> {
             let end = progress.length.min(offset + 4096);
             bytes.extend(chain.read_range(blobs, offset, end)?);
             if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
-                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else { return Ok(None); };
-                return Ok(header.get("source").and_then(|source| Some((
-                    source.get("machine")?.as_str()?.to_owned(),
-                    source.get("path")?.as_str()?.to_owned(),
-                ))));
+                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else {
+                    return Ok(None);
+                };
+                return Ok(header.get("source").and_then(|source| {
+                    Some((
+                        source.get("machine")?.as_str()?.to_owned(),
+                        source.get("path")?.as_str()?.to_owned(),
+                    ))
+                }));
             }
             offset = end;
         }

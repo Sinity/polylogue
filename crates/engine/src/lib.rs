@@ -393,17 +393,33 @@ impl Engine {
             }
         }
         let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let mut database_paths: HashMap<String, String> = self.inputs.iter()
+            .filter(|(_,state)|state.origin.capture == Capture::RowDump)
+            .map(|(path,state)|(state.input_id.clone(),path.display().to_string())).collect();
         for input in &mut known {
-            if ORIGINS.iter().any(|origin|origin.name == input.format && origin.capture == Capture::RowDump)
-                && let Some((machine,path)) = reader.tool_database_source(&input.input_id, &self.blobs)?
-                && machine == self.config.machine
+            if self.refused.contains(Path::new(&input.path)) { continue; }
+            if ORIGINS
+                .iter()
+                .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
             {
-                input.path = path;
-                input.facts = None;
+                if let Some(path) = database_paths.get(&input.input_id) {
+                    input.path = path.clone();
+                    input.facts = None;
+                    continue;
+                }
+                if let Some((machine, path)) =
+                    reader.tool_database_source(&input.input_id, &self.blobs)?
+                && machine == self.config.machine
+                {
+                    database_paths.insert(input.input_id.clone(),path.clone());
+                    input.path = path;
+                    input.facts = None;
+                }
             }
         }
         drop(reader);
-        self.inputs.retain(|_,state|state.origin.capture != Capture::RowDump);
+        self.inputs
+            .retain(|_, state| state.origin.capture != Capture::RowDump);
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {
                 continue;
