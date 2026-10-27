@@ -396,34 +396,65 @@ impl Response {
 /// Mask authored strings while keeping parsed references and opaque root cursors.
 pub(crate) fn output_values(value: &mut serde_json::Value, string: impl FnMut(&str) -> String) {
     let mut references = Vec::new();
-    let mut pending = vec![(String::new(), &*value)];
-    while let Some((path, value)) = pending.pop() {
-        match value {
-            serde_json::Value::Object(fields) => {
-                for (name, value) in fields {
-                    let child = format!("{path}/{}", name.replace('~', "~0").replace('/', "~1"));
-                    let reference = matches!(
-                        name.as_str(),
-                        "id" | "session" | "parent" | "child" | "message" | "ref" | "branch_point"
-                    ) && value
-                        .as_str()
-                        .is_some_and(|text| polylogue_model::SessionId::parse(text).is_ok());
-                    let cursor =
-                        path.is_empty() && matches!(name.as_str(), "next" | "previous" | "cursor");
-                    if reference || cursor {
-                        references.push((child, value.clone()));
-                    } else {
-                        pending.push((child, value));
-                    }
-                }
-            }
-            serde_json::Value::Array(items) => {
-                for (index, value) in items.iter().enumerate() {
-                    pending.push((format!("{path}/{index}"), value));
-                }
-            }
-            _ => {}
+    let mut save = |path: &str, reference: bool| {
+        if let Some(found) = value.pointer(path)
+            && (!reference
+                || found
+                    .as_str()
+                    .is_some_and(|text| polylogue_model::SessionId::parse(text).is_ok()))
+        {
+            references.push((path.to_owned(), found.clone()));
         }
+    };
+    for path in ["/cursor", "/next", "/previous"] {
+        save(path, false);
+    }
+    for path in ["/session/id", "/document/id"] {
+        save(path, true);
+    }
+    for (array, fields) in [
+        ("messages", &["id", "session", "parent"][..]),
+        ("entries", &["message", "session"][..]),
+        ("attachments", &["message"][..]),
+    ] {
+        for index in 0..value[array].as_array().map_or(0, Vec::len) {
+            for field in fields {
+                save(&format!("/{array}/{index}/{field}"), true);
+            }
+        }
+    }
+    for index in 0..value["slices"].as_array().map_or(0, Vec::len) {
+        for field in ["id", "session"] {
+            save(&format!("/slices/{index}/message/{field}"), true);
+        }
+    }
+    for index in 0..value["parents"]["issues"].as_array().map_or(0, Vec::len) {
+        for field in ["parent", "child", "session"] {
+            save(&format!("/parents/issues/{index}/{field}"), true);
+        }
+    }
+    for column in value["columns"].as_array().into_iter().flatten() {
+        if matches!(
+            column["reference"].as_str(),
+            Some("session" | "message" | "document" | "event" | "input")
+        ) && let Some(name) = column["name"].as_str()
+        {
+            let name = name.replace('~', "~0").replace('/', "~1");
+            for index in 0..value["rows"].as_array().map_or(0, Vec::len) {
+                save(&format!("/rows/{index}/{name}"), true);
+            }
+        }
+    }
+    if value["type"] == "change" && matches!(value["component"].as_str(), Some("archive" | "index"))
+    {
+        save("/change/ref", true);
+        save("/change/target", true);
+    }
+    if value["position"]
+        .as_str()
+        .is_some_and(|text| polylogue_model::ChangePosition::parse(text).is_some())
+    {
+        save("/position", false);
     }
     polylogue_model::masking::mask_json_values(value, string);
     for (path, original) in references {
