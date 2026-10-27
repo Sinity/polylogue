@@ -63,7 +63,7 @@ impl<'a> Compiler<'a> {
         let session = self.session_alias(scope, span).map(|s| format!("{s}.pk"));
         let link = self.under_parent(scope.unit, &child, &key, session)?;
         let top = cond.map(top_level).unwrap_or_default();
-        let mut w = self.defaults(&child, &top);
+        let mut w = self.defaults(&child, &top)?;
         w.push(link);
         Ok((base_from(unit, &child.a), and_all(&w), child))
     }
@@ -157,7 +157,7 @@ impl<'a> Compiler<'a> {
         let key = parent.a.expand(units::spec(parent.unit).key);
         let session = self.session_alias(parent, span).map(|s| format!("{s}.pk"));
         let link = self.under_parent(parent.unit, &child, &key, session)?;
-        let mut w = self.defaults(&child, &top_level(cond));
+        let mut w = self.defaults(&child, &top_level(cond))?;
         w.push(link);
         w.push(self.cond(cond, &child, false)?);
         w.push(format!("({parent_rows})"));

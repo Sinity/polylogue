@@ -344,7 +344,7 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         let top: Vec<Cond> = conds.iter().flat_map(top_level).collect();
-        let mut w = self.defaults(&sc, &top);
+        let mut w = self.defaults(&sc, &top)?;
         for c in &conds {
             w.push(self.cond(c, &sc, false)?);
         }
