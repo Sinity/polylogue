@@ -106,7 +106,7 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
             ("written_by", "SELECT session_pk AS pk,written_by AS value FROM message WHERE duplicate_of IS NULL".into()),
             ("block_kinds", "SELECT b.session_pk AS pk,b.kind AS value FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL".into()),
             ("actions", "SELECT t.session_pk AS pk,t.action AS value FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL".into()),
-            ("flags", "SELECT session_pk AS pk,'thinking' AS value FROM block WHERE kind='thinking' UNION ALL SELECT session_pk,'tool_call' FROM tool_call UNION ALL SELECT session_pk,'attachment' FROM block WHERE kind IN ('image','file')".into()),
+            ("flags", "SELECT b.session_pk AS pk, CASE WHEN b.kind='thinking' THEN 'thinking' WHEN b.kind='tool_call' THEN 'tool_call' ELSE 'attachment' END AS value FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL AND b.kind IN ('thinking','tool_call','image','file')".into()),
         ]);
     } else {
         result.omitted = deeper.to_vec();
