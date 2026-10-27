@@ -119,7 +119,13 @@ pub(super) fn grouped(text: &str, field: &str) -> Result<String, String> {
         .first()
         .and_then(|s| text[..s.span.start].rfind('|'))
         .unwrap_or(text.len());
-    Ok(format!("{} | group by {field} | count", text[..end].trim()))
+    let source = text[..end].trim();
+    let source = if source.is_empty() {
+        "sessions"
+    } else {
+        source
+    };
+    Ok(format!("{source} | group by {field} | count"))
 }
 
 pub(super) async fn search(State(web): State<Arc<Web>>, Query(p): Query<Search>) -> HttpResponse {

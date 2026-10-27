@@ -57,6 +57,12 @@ fn facet_literals_cannot_add_query_operations() {
 
 #[test]
 fn unsupported_queries_remain_unedited_and_counts_drop_only_ordering() {
+    for text in ["", " "] {
+        assert_eq!(
+            grouped(text, "origin").unwrap(),
+            "sessions | group by origin | count"
+        );
+    }
     for text in [
         "sessions | union (sessions where repo:morrow)",
         "sessions | limit 2",
