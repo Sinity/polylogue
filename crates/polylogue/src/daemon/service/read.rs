@@ -296,7 +296,7 @@ pub(super) fn run(
             message: end.message,
             key: message_key,
         };
-        let mut remaining = budget.max(1).saturating_mul(4);
+        let mut remaining = polylogue_render::model_pages::budget_characters(budget);
         let mut start = None;
         loop {
             let mut message = None;
@@ -630,12 +630,69 @@ pub(super) fn document(
         Ok(key) => key,
         Err(e) => return store_error(&e),
     };
-    let position = match content_position(&options, &cursor_key, &binding, &content, &generation) {
-        Ok(p) => p,
+    let cursor = match content_cursor(&options, &cursor_key, &binding, &content, &generation) {
+        Ok(cursor) => cursor,
         Err(e) => return e,
     };
+    let mut position = cursor.as_ref().map(|cursor| Position {
+        message: cursor.position[0],
+        block: cursor.position[1],
+        character: cursor.position[2],
+    });
     let heading = format!("[document:{} {}]\n", id, selected.purpose().as_str());
+    let until = if cursor.as_ref().is_some_and(|cursor| cursor.reverse) {
+        let end = position.expect("a reverse cursor has a position");
+        let characters = polylogue_render::model_pages::budget_characters(budget);
+        let mut starts = std::collections::VecDeque::<(Position, usize)>::new();
+        let mut used = 0;
+        let mut index = 0;
+        let mut heading_emitted = false;
+        let mut masker = polylogue_model::masking::MessageMasker::default();
+        // Documents replay the prefix once to recover ordered masking. Keep
+        // only the positions fitting the output budget, never earlier bodies.
+        if let Err(e) = selected.visit_blocks_before(end.message.saturating_add(1), |block| {
+            let visible = view.block_kinds().contains(&block.kind());
+            let (at, size) = polylogue_render::model_pages::previous_block_start(
+                block,
+                view,
+                index,
+                (index == end.message).then_some(end.character),
+                characters,
+                &mut masker,
+                if heading_emitted { "" } else { &heading },
+            );
+            heading_emitted |= visible;
+            index += 1;
+            if let Some(at) = at {
+                starts.push_back((at, size));
+                used += size;
+                while used > characters {
+                    let excess = used - characters;
+                    let (at, size) = starts.front_mut().expect("the page has a start");
+                    let removed = excess.min(*size);
+                    at.character += removed;
+                    *size -= removed;
+                    used -= removed;
+                    if *size == 0 {
+                        starts.pop_front();
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }) {
+            return store_error(&e);
+        }
+        if let Some((start, _)) = starts.front() {
+            position = Some(*start);
+        }
+        Some(end)
+    } else {
+        None
+    };
     let mut pager = polylogue_render::model_pages::BlockPager::new(view, budget, position, heading);
+    if let Some(end) = until {
+        pager = pager.until(end);
+    }
     let mut failure = None;
     if let Err(e) = selected.visit_blocks(|block| match pager.push(block) {
         Ok(flow) => flow,
@@ -649,9 +706,40 @@ pub(super) fn document(
     if let Some(e) = failure {
         return error("bad_request", e);
     }
+    let first = pager.first_position();
     let page = match pager.finish() {
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
+    };
+    let current = content_next(
+        first,
+        &cursor_key,
+        binding.clone(),
+        content.clone(),
+        generation.clone(),
+    );
+    let previous = if let Some(at) = first {
+        let exists = at.character > 0
+            || match selected.previous_block(at.message, view.block_kinds()) {
+                Ok(previous) => previous.is_some(),
+                Err(e) => return store_error(&e),
+            };
+        exists.then(|| {
+            Cursor {
+                version: CURSOR_VERSION,
+                binding: binding.clone(),
+                content: content.clone(),
+                generation: generation.clone(),
+                position: [at.message, at.block, at.character],
+                message_key: None,
+                reverse: true,
+                seal: String::new(),
+            }
+            .seal(&cursor_key)
+            .expect("cursor")
+        })
+    } else {
+        None
     };
     let next = content_next(page.next, &cursor_key, binding, content, generation);
     let metadata = match selected.metadata() {
@@ -662,18 +750,18 @@ pub(super) fn document(
         Ok(sources) => sources,
         Err(e) => return store_error(&e),
     };
-    let mut value = serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next});
+    let mut value = serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next,"cursor":current,"previous":previous});
     representation(&mut value, options.slices);
     ok(value)
 }
 
-fn content_position(
+fn content_cursor(
     options: &Options<'_>,
     key: &[u8; 32],
     binding: &str,
     content: &str,
     generation: &str,
-) -> Result<Option<Position>, Response> {
+) -> Result<Option<Cursor>, Response> {
     let Some(text) = options.cursor else {
         return Ok(None);
     };
@@ -690,11 +778,23 @@ fn content_position(
             "the content read changed; start the read again",
         ));
     }
-    Ok(Some(Position {
-        message: cursor.position[0],
-        block: cursor.position[1],
-        character: cursor.position[2],
-    }))
+    Ok(Some(cursor))
+}
+
+fn content_position(
+    options: &Options<'_>,
+    key: &[u8; 32],
+    binding: &str,
+    content: &str,
+    generation: &str,
+) -> Result<Option<Position>, Response> {
+    content_cursor(options, key, binding, content, generation).map(|cursor| {
+        cursor.map(|cursor| Position {
+            message: cursor.position[0],
+            block: cursor.position[1],
+            character: cursor.position[2],
+        })
+    })
 }
 fn content_next(
     next: Option<Position>,

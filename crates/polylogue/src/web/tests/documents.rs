@@ -214,3 +214,74 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
         }
     });
 }
+
+#[test]
+fn document_previous_pages_seek_across_blocks_and_next_reopens_the_current_page() {
+    let r = reader();
+    let source = r.w._dir.path().join("paged-documents");
+    std::fs::create_dir_all(source.join("projects")).unwrap();
+    std::fs::write(source.join("projects/paged-project.json"),json!({"uuid":"paged-project","name":"Synthetic project","docs":[{"uuid":"paged-doc","filename":"Synthetic document","content":"synthetic paragraph λ🙂 ".repeat(8)}]}).to_string()).unwrap();
+    let imported = handle(
+        Request::Import {
+            request_id: "paged-document-import".into(),
+            paths: vec![source],
+        },
+        &r.web.daemon,
+    );
+    assert!(matches!(imported, Response::Ok { .. }), "{imported:?}");
+    r.w.wait_for(|data| {
+        data["store"]["documents"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    });
+    let id = "claude-ai:project:paged-project:doc:paged-doc";
+    let conn = rusqlite::Connection::open(r.web.daemon.archive.index_db()).unwrap();
+    for index in 1..4 {
+        conn.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) SELECT b.document_pk,?1,b.kind,b.body,b.text_id,b.blob_hash,b.data FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?2 AND b.idx=0",rusqlite::params![index,id]).unwrap();
+    }
+    rt().block_on(async {
+        let base = format!(
+            "/api/v1/read?session=document:{}&budget=64&slices=true",
+            polylogue_render::html::encode_path_segment(id)
+        );
+        let request = |cursor: &str| {
+            format!(
+                "{base}&cursor={}",
+                polylogue_render::html::encode_path_segment(cursor)
+            )
+        };
+        let (status, _, body) = send(&r, authed(get(&base)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let first: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let (status, _, body) = send(
+            &r,
+            authed(get(&request(first["next"].as_str().unwrap())))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let current: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let (status, _, body) = send(
+            &r,
+            authed(get(&request(current["previous"].as_str().unwrap())))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let previous: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(previous["text"], first["text"]);
+        assert_eq!(previous["slices"], first["slices"]);
+        assert_eq!(previous["next"], current["cursor"]);
+        let path = format!(
+            "/d/{}?budget=64&cursor={}",
+            polylogue_render::html::encode_path_segment(id),
+            polylogue_render::html::encode_path_segment(current["cursor"].as_str().unwrap())
+        );
+        let (status, _, html) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("data-previous"));
+        assert!(!html.contains("history.back"));
+    });
+}

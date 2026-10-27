@@ -9,6 +9,10 @@ use std::ops::ControlFlow;
 
 const CHARS_PER_TOKEN: usize = 4;
 
+pub fn budget_characters(tokens: usize) -> usize {
+    tokens.max(1).saturating_mul(CHARS_PER_TOKEN)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub text: String,
@@ -97,7 +101,7 @@ impl Pager {
     pub fn new(view: View, budget_tokens: usize, position: Option<Position>) -> Self {
         Self {
             view,
-            budget: budget_tokens.max(1).saturating_mul(CHARS_PER_TOKEN),
+            budget: budget_characters(budget_tokens),
             at: position.unwrap_or_default(),
             resumed: position.is_some(),
             message: 0,
@@ -362,6 +366,36 @@ pub fn previous_start(
     (start, used)
 }
 
+/// The suffix of one masked document block before an exclusive character.
+pub fn previous_block_start(
+    mut block: polylogue_model::Block,
+    view: View,
+    index: usize,
+    end: Option<usize>,
+    characters: usize,
+    masker: &mut MessageMasker,
+    heading: &str,
+) -> (Option<Position>, usize) {
+    masker.block(&mut block);
+    if !view.keeps_block(false, &block) {
+        return (None, 0);
+    }
+    let Some(block) = crate::block(&block) else {
+        return (None, 0);
+    };
+    let length = block_body(&block, heading, index, 0).chars().count();
+    let until = end.map_or(length, |end| end.min(length));
+    let take = until.min(characters);
+    (
+        (take > 0).then_some(Position {
+            message: index,
+            block: 0,
+            character: until - take,
+        }),
+        take,
+    )
+}
+
 /// Role-free content is projected one ordered block at a time, replaying masking on
 /// continuation before projecting it. Positions use the same character splitter.
 pub struct BlockPager {
@@ -377,6 +411,13 @@ impl BlockPager {
             heading,
             heading_emitted: false,
         }
+    }
+    pub fn until(mut self, end: Position) -> Self {
+        self.stream = self.stream.until(end);
+        self
+    }
+    pub fn first_position(&self) -> Option<Position> {
+        self.stream.first_position()
     }
     pub fn push(
         &mut self,
