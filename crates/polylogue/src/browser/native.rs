@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use tower::ServiceExt;
 
-/// The extension sends bodies as appended bytes of this size; responses go back the
+/// The extension sends bodies as chunks of this size; responses go back the
 /// same way, well under Chrome's 1 MB limit per message to the extension.
 const CHUNK: usize = 64 * 1024;
 
