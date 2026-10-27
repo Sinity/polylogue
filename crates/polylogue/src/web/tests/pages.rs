@@ -455,3 +455,19 @@ fn message_redirects_quote_literal_ids_and_preserve_them_in_links() {
         assert!(body.contains("AKIAIOSFODNN7EXAMPLE"));
     });
 }
+
+#[test]
+fn message_identifiers_are_validated_even_when_a_cursor_is_supplied() {
+    let r = reader();
+    rt().block_on(async {
+        let (status, _, body) = send(
+            &r,
+            authed(get("/s/claude-code:s1?cursor=invalid&message=not-an-id"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("not a message ID"), "{body}");
+    });
+}
