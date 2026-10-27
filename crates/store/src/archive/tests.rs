@@ -281,3 +281,14 @@ fn opening_finishes_every_blob_row_left_writing() {
         used_missing
     );
 }
+
+#[test]
+fn opening_clears_prepared_output_left_by_a_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let output = archive.staging_dir().join("unfinished-output");
+    std::fs::write(&output, b"synthetic prepared output").unwrap();
+    drop(lock);
+    let (_archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert!(!output.exists());
+}

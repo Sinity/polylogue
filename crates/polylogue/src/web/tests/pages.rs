@@ -283,7 +283,7 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         revises: None,
         valid_until: None,
     };
-    let Response::Ok { data } = handle(
+    let Response::Ok { data, .. } = handle(
         Request::AddNote {
             request_id: "exact-note".into(),
             note: note.clone(),
@@ -469,5 +469,63 @@ fn message_identifiers_are_validated_even_when_a_cursor_is_supplied() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("not a message ID"), "{body}");
+    });
+}
+
+#[test]
+fn live_initial_queries_page_through_the_real_http_api() {
+    let r = reader();
+    std::fs::write(
+        r.w.home.join(".claude/projects/-p/s2.jsonl"),
+        polylogue_testkit::claude_user("second", "s2", "second synthetic prompt"),
+    )
+    .unwrap();
+    r.w.wait_for(|s| s["store"]["sessions"].as_u64().is_some_and(|n| n >= 2) && s["busy"] == false);
+    rt().block_on(async {
+        let mut cursor = None;
+        let mut ids = Vec::new();
+        loop {
+            let mut params = vec![
+                ("query".into(), "changes where kind:session".into()),
+                ("limit".into(), "1".into()),
+            ];
+            if let Some(cursor) = cursor {
+                params.push(("cursor".into(), cursor));
+            }
+            let path = format!(
+                "/api/v1/query?{}",
+                params
+                    .iter()
+                    .map(|(k, v): &(String, String)| format!(
+                        "{}={}",
+                        polylogue_render::html::encode_path_segment(k),
+                        polylogue_render::html::encode_path_segment(v)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("&")
+            );
+            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(
+                page["read_at"]["cursor"]
+                    .as_str()
+                    .and_then(polylogue_model::ChangePosition::parse)
+                    .is_some(),
+                "{page}"
+            );
+            for row in page["rows"].as_array().unwrap() {
+                assert_eq!(row["kind"], "session");
+                ids.push(row["ref"].as_str().unwrap().to_owned());
+            }
+            cursor = page["next"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(ids.iter().any(|id| id == "claude-code:s1"));
+        assert!(ids.len() >= 2);
+        let distinct: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len());
     });
 }

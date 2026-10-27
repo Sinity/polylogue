@@ -64,13 +64,15 @@ pub fn call(
     };
     let request = build(command, &values, &caller).map_err(bad)?;
     match crate::cli::send_when_ready(archive, &request) {
-        Ok(Response::Ok { data }) if matches!(request, Request::Context { .. }) => {
+        Ok(Response::Ok { data, .. }) if matches!(request, Request::Context { .. }) => {
             Ok(data["prepared"]["text"]
                 .as_str()
                 .unwrap_or_default()
                 .to_owned())
         }
-        Ok(Response::Ok { data }) => Ok(serde_json::to_string_pretty(&data).unwrap_or_default()),
+        Ok(Response::Ok { data, .. }) => {
+            Ok(serde_json::to_string_pretty(&data).unwrap_or_default())
+        }
         Ok(Response::Error {
             kind,
             message,

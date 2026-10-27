@@ -11,8 +11,20 @@ fn finite_batches_are_scrubbed_once_and_reopened_with_independent_positions() {
         token: "synthetic".into(),
         port: 8765,
     };
-    let mut first = crate::daemon::service::change_feed(&web.daemon, None, true).unwrap();
-    let mut second = crate::daemon::service::change_feed(&web.daemon, None, true).unwrap();
+    let mut first = crate::daemon::service::change_feed(
+        &crate::daemon::Request::Changes { since: None },
+        &web.daemon,
+        Some(super::super::access::scrub),
+    )
+    .unwrap()
+    .unwrap();
+    let mut second = crate::daemon::service::change_feed(
+        &crate::daemon::Request::Changes { since: None },
+        &web.daemon,
+        Some(super::super::access::scrub),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         first.metadata().unwrap().ino(),
         second.metadata().unwrap().ino()
@@ -35,4 +47,46 @@ fn finite_batches_are_scrubbed_once_and_reopened_with_independent_positions() {
     );
     assert_eq!(value["nested"]["[archive]"], "existing key");
     assert_eq!(value["nested"]["[archive] #2"], "path key");
+}
+
+#[test]
+fn different_feed_positions_prepare_without_holding_the_cache_lock() {
+    use std::sync::mpsc;
+    let daemon = crate::test_daemon::start("synthetic feed");
+    let d = Arc::clone(&daemon.daemon);
+    let (entered, reached) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    static PAUSE: std::sync::Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+        std::sync::Mutex::new(None);
+    fn paused(text: &str, _: &std::path::Path) -> String {
+        if let Some((entered, resume)) = PAUSE.lock().unwrap().take() {
+            entered.send(()).unwrap();
+            resume.recv().unwrap();
+        }
+        text.to_owned()
+    }
+    *PAUSE.lock().unwrap() = Some((entered, resume));
+    let request = crate::daemon::Request::Changes { since: None };
+    let first = std::thread::spawn(move || {
+        crate::daemon::service::change_feed(&request, &d, Some(paused))
+            .unwrap()
+            .unwrap()
+    });
+    reached.recv().unwrap();
+    let second = crate::daemon::service::change_feed(
+        &crate::daemon::Request::Changes { since: None },
+        &daemon.daemon,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(second.metadata().unwrap().len() > 0);
+    release.send(()).unwrap();
+    first.join().unwrap();
+    assert!(
+        std::fs::read_dir(daemon.daemon.archive.staging_dir())
+            .unwrap()
+            .count()
+            >= 1
+    );
 }

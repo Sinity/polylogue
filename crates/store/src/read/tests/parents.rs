@@ -337,7 +337,7 @@ fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
     assert_eq!(
         entries
             .iter()
-            .map(|entry| entry.message.as_str())
+            .map(|entry| entry.message.to_string())
             .collect::<Vec<_>>(),
         expected
     );
@@ -346,7 +346,7 @@ fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
             .outline(Some(entries[1].key), 2)
             .unwrap()
             .iter()
-            .map(|entry| entry.message.as_str())
+            .map(|entry| entry.message.to_string())
             .collect::<Vec<_>>(),
         expected[2..4]
     );
@@ -365,4 +365,90 @@ fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
         .unwrap()
         .unwrap();
     assert_eq!(last.message, 4);
+}
+
+#[test]
+fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(&mut f, "a", &["first", "hidden", "last"]);
+    session(&mut f, "b", &["child"]);
+    fork(&mut f, "a", "b", Some("claude-code:a-2"));
+    let conn =
+        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    conn.execute(
+        "UPDATE message SET role='unparseable',written_by='unknown' WHERE id='claude-code:a-1'",
+        [],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    for (id, parents) in [("claude-code:a", false), ("claude-code:b", true)] {
+        let selected = r
+            .select_messages(&SessionId::parse(id).unwrap(), parents)
+            .unwrap();
+        let at = selected
+            .locate(Some(&MessageId::parse("claude-code:a-2").unwrap()))
+            .unwrap()
+            .unwrap();
+        let previous = selected
+            .previous(at, &[polylogue_model::BlockKind::Text], true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(previous.message, 0);
+        let mut found = Vec::new();
+        selected
+            .for_blocks(&[polylogue_model::BlockKind::Text], true)
+            .visit_from(previous, |m| {
+                found.push(m.text());
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(found[0], "first");
+        assert_eq!(found[1], "");
+    }
+}
+
+#[test]
+fn outline_includes_microcompactions_and_seeks_indexed_branch_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(&mut f, "a", &["prompt", "context change"]);
+    let conn =
+        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    conn.execute(
+        "UPDATE message SET written_by='model' WHERE id='claude-code:a-1'",
+        [],
+    )
+    .unwrap();
+    let pk = conn
+        .query_row(
+            "SELECT pk FROM session WHERE id='claude-code:a'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    f.event(pk, "microcompaction", None).unwrap();
+    conn.execute(
+        "UPDATE event SET after_message_pk=(SELECT pk FROM message WHERE id='claude-code:a-1')",
+        [],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let selected = r
+        .select_messages(&SessionId::parse("claude-code:a").unwrap(), false)
+        .unwrap();
+    let entries = selected.outline(None, 10).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].events.len(), 1);
+    assert!(entries[1].kinds.iter().any(|kind| kind == "compaction"));
+    let plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM link WHERE branch_point='claude-code:a-1'",
+            [],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("link_branch_point"), "{plan}");
 }

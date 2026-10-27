@@ -58,7 +58,7 @@ fn seeded() -> ClaudeHome {
 
 fn data(request: Request, runtime: &Runtime) -> serde_json::Value {
     match handle(request, &runtime.daemon) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("read refused: {other:?}"),
     }
 }
@@ -154,7 +154,7 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
         let shown = data(
             Request::Read {
                 slices: true,
-                start: None,
+                selection: None,
                 target: crate::daemon::ReadTarget::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 ),

@@ -231,7 +231,7 @@ the same change.
   preserving the original message identity and source block index.
 - **outline**: paged prompt, tool failure, compaction and branch references,
   selected without reading message bodies.
-- **message selection**: a message anchor or the latest selected message, resolved by
+- **page selection**: a message anchor or the latest selected message, resolved by
   the daemon before issuing continuation cursors.
 - **view**: how a session is shown: `full`, `dialogue`, `prompts`,
   `actions`.

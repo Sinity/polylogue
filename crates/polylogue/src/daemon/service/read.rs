@@ -1,7 +1,8 @@
 //! Reading a session, document or event, in pages on one Reader. Masking
 //! state at page ends is cached (`page_ends`) so a later page need not
 //! replay the messages before it.
-use super::{Response, error, ok, store_error};
+use super::{Response, error, store_error};
+use crate::daemon::request::References;
 use base64::Engine as _;
 use polylogue_model::SessionId;
 use polylogue_render::model_pages::{PageEnd, Pager, Position};
@@ -9,7 +10,7 @@ use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
-const CURSOR_VERSION: u8 = 5;
+const CURSOR_VERSION: u8 = 6;
 
 mod attachments;
 pub(crate) mod page_ends;
@@ -21,7 +22,7 @@ pub(super) struct Options<'a> {
     pub with_parents: bool,
     pub budget: Option<usize>,
     pub cursor: Option<&'a str>,
-    pub start: Option<&'a crate::daemon::ReadSelection>,
+    pub selection: Option<&'a crate::daemon::PageSelection>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,6 +33,8 @@ struct Cursor {
     content: String,
     generation: String,
     position: [usize; 3],
+    /// The selected count is bound to the same content as the cursor.
+    total_messages: Option<usize>,
     /// The key of the message the position is in, so the next read starts
     /// there without reading the messages before it. Absent for documents
     /// and events.
@@ -93,7 +96,7 @@ pub(super) fn run(
     cache: &page_ends::Cache,
     epoch: u64,
 ) -> Response {
-    if options.start.is_some() && (options.cursor.is_some() || options.budget.is_none()) {
+    if options.selection.is_some() && (options.cursor.is_some() || options.budget.is_none()) {
         return error(
             "bad_request",
             "a message or latest selection requires a budget and cannot be combined with a cursor",
@@ -115,6 +118,9 @@ pub(super) fn run(
         Ok(selected) => selected,
         Err(e) => return store_error(&e),
     };
+    let mut references = References::default();
+    references.observe("/session", &session);
+    references.observe("/parents", selected.parents());
     let notices: Vec<String> = selected
         .parents()
         .issues
@@ -138,6 +144,7 @@ pub(super) fn run(
         }) {
             return store_error(&e);
         }
+        references.observe("/messages", &messages);
         let mut descriptors = Vec::new();
         let mut attachment_error = None;
         let rendered = polylogue_render::session_with_attachments(
@@ -163,6 +170,7 @@ pub(super) fn run(
         }
         return match rendered {
             Ok(mut value) => {
+                references.observe("/attachments", &descriptors);
                 if !descriptors.is_empty() {
                     value["attachments"] = serde_json::json!(descriptors);
                 }
@@ -170,7 +178,7 @@ pub(super) fn run(
                     value["parents"] =
                         serde_json::to_value(selected.parents()).expect("parents are serializable");
                 }
-                ok(value)
+                references.response(value)
             }
             Err(e) => error("internal", e),
         };
@@ -201,6 +209,7 @@ pub(super) fn run(
         Err(e) => return store_error(&e),
     };
     let mut reverse = false;
+    let mut total_messages = None;
     let position = if let Some(text) = options.cursor {
         let cursor = match Cursor::open(text, &cursor_key, &generation) {
             Ok(cursor) => cursor,
@@ -219,6 +228,7 @@ pub(super) fn run(
             );
         }
         reverse = cursor.reverse;
+        total_messages = cursor.total_messages;
         Some((
             Position {
                 message: cursor.position[0],
@@ -230,16 +240,19 @@ pub(super) fn run(
     } else {
         None
     };
-    let count = match selected.len() {
+    let count = match total_messages.map(Ok).unwrap_or_else(|| selected.len()) {
         Ok(count) => count,
         Err(e) => return store_error(&e),
     };
-    let latest = matches!(options.start, Some(crate::daemon::ReadSelection::Latest));
-    let position = match (position, options.start) {
+    let latest = matches!(
+        options.selection,
+        Some(crate::daemon::PageSelection::Latest)
+    );
+    let position = match (position, options.selection) {
         (None, Some(start)) => {
             let located = match start {
-                crate::daemon::ReadSelection::Message(message) => selected.locate(Some(message)),
-                crate::daemon::ReadSelection::Latest => {
+                crate::daemon::PageSelection::Message(message) => selected.locate(Some(message)),
+                crate::daemon::PageSelection::Latest => {
                     selected.latest(view.block_kinds(), view.prompts_only())
                 }
             };
@@ -258,7 +271,7 @@ pub(super) fn run(
                         value["parents"] = serde_json::json!(selected.parents());
                     }
                     representation(&mut value, options.slices);
-                    return ok(value);
+                    return references.response(value);
                 }
                 Ok(None) => {
                     return error(
@@ -290,6 +303,14 @@ pub(super) fn run(
     } else {
         selected.for_blocks(view.block_kinds(), view.prompts_only())
     };
+    let states = if reverse {
+        match selected.masking_states() {
+            Ok(states) => Some(states),
+            Err(e) => return store_error(&e),
+        }
+    } else {
+        None
+    };
     let until = if reverse {
         let end = position.expect("a reverse cursor has a position");
         let mut from = polylogue_store::read::VisitStart {
@@ -309,10 +330,11 @@ pub(super) fn run(
             let Some(message) = message else {
                 break;
             };
-            let masker = match selected.masking_before(from.message) {
-                Ok(masker) => masker.unwrap_or_default(),
-                Err(e) => return store_error(&e),
-            };
+            let masker = states
+                .as_ref()
+                .expect("backward states")
+                .before(from.message)
+                .unwrap_or_default();
             let mut failure = None;
             let (at, used) = polylogue_render::model_pages::previous_start(
                 message,
@@ -339,10 +361,10 @@ pub(super) fn run(
             if remaining == 0 {
                 break;
             }
-            let Some(key) = from.key else {
+            if from.key.is_none() {
                 break;
-            };
-            from = match selected.previous(key, view.block_kinds(), view.prompts_only()) {
+            }
+            from = match selected.previous(from, view.block_kinds(), view.prompts_only()) {
                 Ok(Some(previous)) => previous,
                 Ok(None) => break,
                 Err(e) => return store_error(&e),
@@ -363,7 +385,11 @@ pub(super) fn run(
     let page_end = match position {
         Some(at) => match cache.get(&key, epoch, at.message) {
             Some(cached) => Some(cached),
-            None => match selected.masking_before(at.message) {
+            None => match states
+                .as_ref()
+                .map(|states| Ok(states.before(at.message)))
+                .unwrap_or_else(|| selected.masking_before(at.message))
+            {
                 Ok(masker) => Some(PageEnd::new(at.message, masker.unwrap_or_default())),
                 Err(e) => return store_error(&e),
             },
@@ -383,7 +409,7 @@ pub(super) fn run(
     }
     if latest {
         pager = pager.at_latest();
-    } else if options.start.is_some() {
+    } else if options.selection.is_some() {
         pager = pager.at_anchor();
     }
     let mut failure = None;
@@ -484,6 +510,7 @@ pub(super) fn run(
             };
             let cursor = Cursor {
                 version: CURSOR_VERSION,
+                total_messages: Some(count),
                 binding: binding.clone(),
                 content: content.clone(),
                 generation: generation.clone(),
@@ -509,8 +536,15 @@ pub(super) fn run(
         };
         let exists = if at.character > 0 || at.block > 0 {
             true
-        } else if let Some(key) = message_key {
-            match selected.previous(key, view.block_kinds(), view.prompts_only()) {
+        } else if message_key.is_some() {
+            match selected.previous(
+                polylogue_store::read::VisitStart {
+                    message: at.message,
+                    key: message_key,
+                },
+                view.block_kinds(),
+                view.prompts_only(),
+            ) {
                 Ok(previous) => previous.is_some(),
                 Err(e) => return store_error(&e),
             }
@@ -520,6 +554,7 @@ pub(super) fn run(
         exists.then(|| {
             Cursor {
                 version: CURSOR_VERSION,
+                total_messages: Some(count),
                 binding: binding.clone(),
                 content: content.clone(),
                 generation: generation.clone(),
@@ -539,6 +574,7 @@ pub(super) fn run(
             // A page breaks in the last message it visited.
             let cursor = Cursor {
                 version: CURSOR_VERSION,
+                total_messages: Some(count),
                 binding: binding.clone(),
                 content: content.clone(),
                 generation: generation.clone(),
@@ -554,6 +590,11 @@ pub(super) fn run(
         }
         None => None,
     };
+    references.observe("/slices", &page.slices);
+    references.observe("/attachments", &descriptors);
+    references.add("/next", &next);
+    references.add("/cursor", &current);
+    references.add("/previous", &previous);
     let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "slices": page.slices, "next": next, "cursor":current,"previous":previous,
         "position": {"message": first.or(position).map_or(0, |at| at.message), "total_messages": count},
         "content_version": content, "generation": generation});
@@ -565,7 +606,7 @@ pub(super) fn run(
             serde_json::to_value(selected.parents()).expect("parents are serializable");
     }
     representation(&mut value, options.slices);
-    ok(value)
+    references.response(value)
 }
 
 /// A document page holds only metadata, one decoded block and the output
@@ -575,7 +616,7 @@ pub(super) fn document(
     id: &polylogue_model::DocumentId,
     options: Options<'_>,
 ) -> Response {
-    if options.start.is_some() {
+    if options.selection.is_some() {
         return error("bad_request", "documents have no message starting point");
     }
     let Some(view) = polylogue_render::View::parse(options.view) else {
@@ -602,7 +643,9 @@ pub(super) fn document(
         let Some(format) = polylogue_render::Format::parse(options.format) else {
             return error("bad_request", "unknown document format");
         };
+        let mut references = References::default();
         return match selected.document().and_then(|doc| {
+            references.observe("/document", &doc);
             polylogue_render::documents::document(doc, view, format).map_err(Into::into)
         }) {
             Ok(mut value) => {
@@ -610,7 +653,7 @@ pub(super) fn document(
                     Ok(sources) => value["sources"] = serde_json::json!(sources),
                     Err(e) => return store_error(&e),
                 };
-                ok(value)
+                references.response(value)
             }
             Err(e) => store_error(&e),
         };
@@ -727,6 +770,7 @@ pub(super) fn document(
         exists.then(|| {
             Cursor {
                 version: CURSOR_VERSION,
+                total_messages: None,
                 binding: binding.clone(),
                 content: content.clone(),
                 generation: generation.clone(),
@@ -742,6 +786,11 @@ pub(super) fn document(
         None
     };
     let next = content_next(page.next, &cursor_key, binding, content, generation);
+    let mut references = References::default();
+    references.observe("/document/id", selected.id());
+    references.add("/cursor", &current);
+    references.add("/previous", &previous);
+    references.add("/next", &next);
     let metadata = match selected.metadata() {
         Ok(value) => value,
         Err(e) => return store_error(&e),
@@ -752,7 +801,7 @@ pub(super) fn document(
     };
     let mut value = serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next,"cursor":current,"previous":previous});
     representation(&mut value, options.slices);
-    ok(value)
+    references.response(value)
 }
 
 fn content_cursor(
@@ -806,6 +855,7 @@ fn content_next(
     next.map(|p| {
         Cursor {
             version: CURSOR_VERSION,
+            total_messages: None,
             binding,
             content,
             generation,
@@ -820,7 +870,7 @@ fn content_next(
 }
 
 pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Response {
-    if options.start.is_some() {
+    if options.selection.is_some() {
         return error("bad_request", "events have no message starting point");
     }
     let Some(view) = polylogue_render::View::parse(options.view) else {
@@ -850,17 +900,27 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
         Ok(s) => s,
         Err(e) => return store_error(&e),
     };
+    let mut references = References::default();
+    let prefix = if options.budget.is_some() {
+        "/event"
+    } else {
+        "/reference"
+    };
+    references.add(format!("{prefix}/id"), &exported.id);
+    references.observe(&format!("{prefix}/session"), &exported.event.session);
+    references.observe(&format!("{prefix}/after"), &exported.event.after);
     let metadata = serde_json::json!({"id":exported.id,"input":exported.input,"source":exported.source,"source_chain":exported.source_chain,"source_start":exported.source_start,"source_end":exported.source_end,
         "session":exported.event.session,"kind":exported.event.kind,"at":exported.event.at,"after":exported.event.after});
     let Some(budget) = options.budget else {
         if options.cursor.is_some() {
             return error("bad_request", "a cursor continues a read with a budget");
         }
+        references.observe("/event", &exported.event);
         return match polylogue_render::events::event(exported.event, format) {
             Ok(mut value) => {
                 value["reference"] = metadata;
                 value["sources"] = serde_json::json!(sources);
-                ok(value)
+                references.response(value)
             }
             Err(e) => error("internal", e),
         };
@@ -899,7 +959,10 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
         Err(e) => return error("bad_request", e),
     };
     let next = content_next(page.next, &cursor_key, binding, content, generation);
-    ok(serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}))
+    references.add("/next", &next);
+    references.response(
+        serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}),
+    )
 }
 
 /// The outline's cursor binds its metadata continuation to the same selected
@@ -972,6 +1035,7 @@ pub(super) fn outline(
         Some(
             Cursor {
                 version: CURSOR_VERSION,
+                total_messages: None,
                 binding,
                 content,
                 generation,
@@ -986,7 +1050,11 @@ pub(super) fn outline(
     } else {
         None
     };
-    ok(serde_json::json!({"entries":entries,"next":next,"parents":selected.parents()}))
+    let mut references = References::default();
+    let entries = references.value("/entries", &entries);
+    let parents = references.value("/parents", selected.parents());
+    references.add("/next", &next);
+    references.response(serde_json::json!({"entries":entries,"next":next,"parents":parents}))
 }
 
 fn representation(value: &mut serde_json::Value, slices: bool) {

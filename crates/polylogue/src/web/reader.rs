@@ -1,6 +1,6 @@
 //! HTTP selections and navigation for the shared paged reader.
 use super::*;
-use crate::daemon::{ReadSelection, ReadTarget};
+use crate::daemon::{PageSelection, ReadTarget};
 use polylogue_render::{View, html::encode_path_segment as encode};
 
 const DEFAULT_BUDGET: usize = 8192;
@@ -106,9 +106,9 @@ pub(super) async fn session(
     let start = if p.cursor.is_some() {
         None
     } else if let Some(message) = message {
-        Some(ReadSelection::Message(message))
+        Some(PageSelection::Message(message))
     } else {
-        p.latest.unwrap_or(false).then_some(ReadSelection::Latest)
+        p.latest.unwrap_or(false).then_some(PageSelection::Latest)
     };
     let response = ask(
         &web,
@@ -120,12 +120,12 @@ pub(super) async fn session(
             with_parents: p.parents(),
             budget: Some(p.budget.unwrap_or(DEFAULT_BUDGET)),
             cursor: p.cursor.clone(),
-            start,
+            selection: start,
         },
     )
     .await;
     let data = match response {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         Response::Error { kind, message, .. } => {
             if kind == "stale_cursor" {
                 let refresh = p.url(&format!("/s/{}", encode(&id)), None);
@@ -159,6 +159,7 @@ pub(super) async fn session(
     } else {
         Response::Ok {
             data: serde_json::Value::Null,
+            references: Default::default(),
         }
     };
     let links = ask(
@@ -185,7 +186,7 @@ pub(super) async fn session(
     )
     .await;
     let optional = |response| match response {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         Response::Error { kind, message, .. } => {
             serde_json::json!({"error":kind,"message":access::scrub(&message,&web.daemon.archive.root)})
         }
@@ -233,13 +234,12 @@ pub(super) async fn document(
             with_parents: false,
             budget: Some(p.budget.unwrap_or(DEFAULT_BUDGET)),
             cursor: p.cursor.clone(),
-            start: None,
+            selection: None,
         },
     )
     .await
     {
-        Response::Ok { data } => {
-            let data = scrubbed(&web, data);
+        Response::Ok { data, .. } => {
             let shown_id = data["document"]["id"]
                 .as_str()
                 .unwrap_or("Document unknown");
@@ -274,7 +274,7 @@ pub(super) async fn message(
     )
     .await
     {
-        Response::Ok { data } => match (
+        Response::Ok { data, .. } => match (
             data["rows"][0]["session"].as_str(),
             data["rows"][0]["id"].as_str(),
         ) {
@@ -307,26 +307,21 @@ pub(super) async fn note(
     UrlPath(id): UrlPath<String>,
 ) -> HttpResponse {
     match ask(&web, Request::Note { id: id.clone() }).await {
-        Response::Ok { data } => {
-            let data = scrubbed(&web, data);
-            page(pages::layout(
-                "Note",
-                "",
-                &format!(
-                    "polylogue note read {}",
-                    polylogue_render::shell_quote(&polylogue_render::mask(&access::scrub(
-                        &id,
-                        &web.daemon.archive.root
-                    )))
-                ),
-                &format!(
-                    "<h1>Note</h1><pre>{}</pre>",
-                    polylogue_render::html::escape(
-                        &serde_json::to_string_pretty(&data).expect("JSON")
-                    )
-                ),
-            ))
-        }
+        Response::Ok { data, .. } => page(pages::layout(
+            "Note",
+            "",
+            &format!(
+                "polylogue note read {}",
+                polylogue_render::shell_quote(&polylogue_render::mask(&access::scrub(
+                    &id,
+                    &web.daemon.archive.root
+                )))
+            ),
+            &format!(
+                "<h1>Note</h1><pre>{}</pre>",
+                polylogue_render::html::escape(&serde_json::to_string_pretty(&data).expect("JSON"))
+            ),
+        )),
         Response::Error { kind, message, .. } => failure(&web, &kind, &message),
     }
 }

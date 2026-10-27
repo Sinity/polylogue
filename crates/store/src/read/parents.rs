@@ -60,9 +60,6 @@ pub struct VisitStart {
     pub key: Option<i64>,
 }
 
-pub(super) const PROMPT_SQL: &str =
-    "m.role='user' AND (m.prompt_kind IS NULL OR m.prompt_kind NOT IN ('harness','model'))";
-
 pub(super) struct Visibility {
     pub(super) kinds: String,
     pub(super) prompts: bool,
@@ -299,8 +296,33 @@ impl MessageSelection<'_, '_> {
     pub fn visit_from(
         &self,
         start: VisitStart,
-        visit: impl FnMut(Message) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
+        if let Some(keys) = &self.with_parents {
+            let mut last = None;
+            for key in keys.iter().skip(start.message) {
+                let mut flow = ControlFlow::Continue(());
+                self.reader.visit_messages_where(
+                    key.session_pk,
+                    &key.session,
+                    Some(key.message_pk),
+                    MessageContent {
+                        structured: self.structured,
+                        visibility: self.visibility.as_ref(),
+                    },
+                    |pk| pk == key.message_pk,
+                    |pk, message| {
+                        last = Some(pk);
+                        flow = visit(message);
+                        ControlFlow::Break(())
+                    },
+                )?;
+                if flow.is_break() {
+                    break;
+                }
+            }
+            return Ok(last);
+        }
         let mut remaining = start.message;
         let after_prefix = |_| {
             if remaining == 0 {
@@ -311,8 +333,8 @@ impl MessageSelection<'_, '_> {
             }
         };
         match (start.key, &self.with_parents) {
-            (Some(key), None) => self.visit_kept(Some(key), |_| true, visit),
-            _ => self.visit_kept(None, after_prefix, visit),
+            (Some(key), None) => self.visit_kept(Some(key), 0, |_| true, visit),
+            _ => self.visit_kept(None, 0, after_prefix, visit),
         }
     }
 
@@ -322,6 +344,7 @@ impl MessageSelection<'_, '_> {
     fn visit_kept(
         &self,
         from: Option<i64>,
+        skip: usize,
         mut keep: impl FnMut(i64) -> bool,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
@@ -331,7 +354,7 @@ impl MessageSelection<'_, '_> {
             visit(message)
         };
         if let Some(keys) = &self.with_parents {
-            let mut start = 0;
+            let mut start = skip;
             while start < keys.len() {
                 let key = &keys[start];
                 let end = start
@@ -345,7 +368,7 @@ impl MessageSelection<'_, '_> {
                     .visit_messages_where(
                         key.session_pk,
                         &key.session,
-                        None,
+                        Some(key.message_pk),
                         MessageContent {
                             structured: self.structured,
                             visibility: self.visibility.as_ref(),
@@ -403,45 +426,46 @@ impl MessageSelection<'_, '_> {
     /// (`message.pem`) open or close one. So the state is the masker after
     /// those messages alone, in order from the first that leaves a key open.
     pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
+        Ok(self.masking_states()?.before(message))
+    }
+
+    /// Recover the ordered states at PEM markers once for a backward page.
+    pub fn masking_states(&self) -> Result<MaskingStates> {
         let conn = self.reader.conn()?;
-        let mut marked = HashMap::new();
+        let mut marked = HashSet::new();
         let mut statement =
-            conn.prepare_cached("SELECT pk, pem FROM message WHERE session_pk = ?1 AND pem <> 0")?;
+            conn.prepare_cached("SELECT pk FROM message WHERE session_pk=?1 AND pem<>0")?;
         for (session, _) in self.sessions() {
-            for row in statement.query_map([session], |r| Ok((r.get::<_, i64>(0)?, r.get(1)?)))? {
-                let (pk, pem): (i64, i64) = row?;
-                marked.insert(pk, pem);
+            for row in statement.query_map([session], |r| r.get::<_, i64>(0))? {
+                marked.insert(row?);
             }
         }
-        if !marked.values().any(|pem| *pem == 2) {
-            return Ok(None);
+        if marked.is_empty() {
+            return Ok(MaskingStates(Vec::new()));
         }
-        let keys = self.keys()?;
-        let before = &keys[..message.min(keys.len())];
-        let Some(first) = before.iter().position(|pk| marked.get(pk) == Some(&2)) else {
-            return Ok(None);
-        };
-        let replay: HashSet<i64> = before[first..]
-            .iter()
-            .filter(|pk| marked.contains_key(pk))
-            .copied()
+        let positions: HashMap<_, _> = self
+            .keys()?
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| (key, index))
             .collect();
+        let mut states = Vec::new();
         let mut masker = MessageMasker::default();
-        let mut left = replay.len();
+        let current = std::cell::Cell::new(0);
         self.visit_kept(
             None,
-            |pk| replay.contains(&pk),
+            0,
+            |pk| {
+                current.set(pk);
+                marked.contains(&pk)
+            },
             |mut message| {
                 masker.message_text(&mut message);
-                left -= 1;
-                if left == 0 {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
+                states.push((positions[&current.get()] + 1, masker.clone()));
+                ControlFlow::Continue(())
             },
         )?;
-        Ok(Some(masker))
+        Ok(MaskingStates(states))
     }
 
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
@@ -563,4 +587,13 @@ fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Private masking states indexed by the next source message.
+pub struct MaskingStates(Vec<(usize, MessageMasker)>);
+impl MaskingStates {
+    pub fn before(&self, message: usize) -> Option<MessageMasker> {
+        let end = self.0.partition_point(|(at, _)| *at <= message);
+        end.checked_sub(1).map(|index| self.0[index].1.clone())
+    }
 }

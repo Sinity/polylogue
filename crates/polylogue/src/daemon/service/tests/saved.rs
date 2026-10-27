@@ -6,7 +6,7 @@ fn answer(d: &test_daemon::TestDaemon, request: Request) -> Response {
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
     match answer(d, request) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     }
 }

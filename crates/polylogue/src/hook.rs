@@ -211,7 +211,7 @@ fn context(ask: Ask) -> Option<(String, String)> {
         },
         CONTEXT_BUDGET,
     )?;
-    let Response::Ok { data } = reply else {
+    let Response::Ok { data, .. } = reply else {
         return None;
     };
     if data["prepared"]["empty"].as_bool() != Some(false) {

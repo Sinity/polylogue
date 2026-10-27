@@ -3,7 +3,7 @@ use polylogue_model::{Author, NewNote, NoteKind, Target};
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
     match handle(request, &d.daemon) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -196,7 +196,7 @@ fn user_state_exports_notes_and_judgments_as_their_requests() {
             &d.daemon,
         )
     };
-    let Response::Ok { data } = export("json") else {
+    let Response::Ok { data, .. } = export("json") else {
         panic!("export failed");
     };
     let document = polylogue_model::export::Document::from_json(&data.to_string()).unwrap();

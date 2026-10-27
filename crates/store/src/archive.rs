@@ -236,7 +236,14 @@ impl Archive {
         Ok(ArchiveLock { _file: file })
     }
 
+    /// Private prepared output, cleared after the archive lock is taken on open.
+    pub fn staging_dir(&self) -> PathBuf {
+        self.root.join("staging")
+    }
+
     fn finish_open(&self) -> Result<()> {
+        fs::create_dir_all(self.staging_dir())?;
+        clear_directory(&self.staging_dir())?;
         let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);

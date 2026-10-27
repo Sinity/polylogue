@@ -261,7 +261,13 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     use std::io::Read;
     let daemon = crate::test_daemon::start("synthetic finite delivery");
-    let mut file = crate::daemon::service::change_feed(&daemon.daemon, None, false).unwrap();
+    let mut file = crate::daemon::service::change_feed(
+        &Request::Changes { since: None },
+        &daemon.daemon,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     drop(daemon);
     let mut wire = Vec::new();
     file.read_to_end(&mut wire).unwrap();
@@ -308,7 +314,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
 
 fn request(v: &crate::commands::Values) -> Result<Request, String> {
     let command = crate::commands::command("changes").unwrap();
-    let crate::commands::Action::Stream(build) = command.action else {
+    let crate::commands::Action::Stream { build, .. } = command.action else {
         panic!("shared request")
     };
     build(

@@ -263,7 +263,7 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        crate::daemon::Response::Ok { data } => Ok(data["action"].clone()),
+        crate::daemon::Response::Ok { data, .. } => Ok(data["action"].clone()),
         crate::daemon::Response::Error { kind, .. } => Err(kind),
     }
 }
@@ -391,7 +391,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
             &w.daemon,
         )
     };
-    let crate::daemon::Response::Ok { data } = start("chatgpt") else {
+    let crate::daemon::Response::Ok { data, .. } = start("chatgpt") else {
         panic!("the job did not start")
     };
     let id = data["job"]["id"].as_str().unwrap().to_owned();
@@ -519,7 +519,7 @@ fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
     until(
         || match host.ask(&crate::daemon::Request::Read {
             slices: true,
-            start: None,
+            selection: None,
             target: crate::daemon::ReadTarget::Session(session.clone()),
             view: "full".into(),
             format: "markdown".into(),
@@ -527,7 +527,7 @@ fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
             budget: None,
             cursor: None,
         }) {
-            Some(crate::daemon::Response::Ok { data }) => data["content"].clone(),
+            Some(crate::daemon::Response::Ok { data, .. }) => data["content"].clone(),
             _ => Value::Null,
         },
         |content| {

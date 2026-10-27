@@ -116,3 +116,18 @@ the foundation does not add those action controls. Sharing and per-span
 credential reveal are outside this contract. Page pings and background triggers
 may issue existing daemon requests only. Investigations use references for this
 increment. The existing design boards need no review for this increment.
+
+The outline includes full compactions and microcompactions: both change the
+context available to the model. Branch points use their own index.
+
+A session Previous page seeks backward from its sealed position and derives
+message indexes from the range crossed. Parent reads start at the selected
+key, and private-key masking states are prepared once per backward request.
+Document Previous replays the prefix once to recover ordered masking, so its
+cost grows with the earlier block count; the HTML measurement reports that
+cost separately at 1,000 and 100,000 blocks.
+
+Every live view supplies its own initial query. An active initial query holds
+the shared position; a failed initial query reports its error and retries while
+other initialized views continue. Change batches are prepared once per key,
+outside the shared cache lock, under the archive's staging directory.

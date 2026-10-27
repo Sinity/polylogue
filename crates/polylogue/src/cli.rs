@@ -183,7 +183,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let values = values(cmd, m);
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
-        Action::Request(build) | Action::Stream(build) => build,
+        Action::Request(build) | Action::Stream { build, .. } => build,
     };
     let caller = Caller {
         surface: Surface::Cli,
@@ -194,8 +194,8 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Ok(r) => r,
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
-    if matches!(cmd.action, Action::Stream(_)) {
-        return changes::run(&request);
+    if let Action::Stream { cli, .. } = cmd.action {
+        return cli(&request);
     }
     let root = Archive::default_root();
     let response = match send_when_ready(&Archive::at(&root), &request) {
@@ -214,7 +214,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
-        Response::Ok { data } => {
+        Response::Ok { data, .. } => {
             if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
                 crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
@@ -372,7 +372,7 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
     {
         return Vec::new();
     }
-    let Ok(Response::Ok { data }) = serde_json::from_str::<Response>(&reply) else {
+    let Ok(Response::Ok { data, .. }) = serde_json::from_str::<Response>(&reply) else {
         return Vec::new();
     };
     data.as_array()

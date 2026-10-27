@@ -75,7 +75,7 @@ impl BrowserHost {
             machine: false,
         };
         match self.ask(&request) {
-            Some(Response::Ok { data }) => Some(data["value"] == "on"),
+            Some(Response::Ok { data, .. }) => Some(data["value"] == "on"),
             _ => None,
         }
     }

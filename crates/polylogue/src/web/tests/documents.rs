@@ -106,10 +106,10 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
             source_path.contains("masked"),
             "the supplied source path must be masked: {source_path}"
         );
-        let Response::Ok { data } = handle(
+        let Response::Ok { data, .. } = handle(
             Request::Read {
                 slices: true,
-                start: None,
+                selection: None,
                 target: crate::daemon::ReadTarget::Document(
                     polylogue_model::DocumentId::parse(id).unwrap(),
                 ),

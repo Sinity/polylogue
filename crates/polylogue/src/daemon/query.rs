@@ -617,6 +617,38 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
     Ok(Value::Array(out))
 }
 
+/// Reference columns belong to the compiled answer's declared types.
+pub(crate) fn answer(data: Value) -> super::Response {
+    use super::request::References;
+    use polylogue_model::{DocumentId, MessageId, SessionId};
+    use polylogue_query::{Column, ColumnReference};
+    let mut references = References::default();
+    references.opaque_field(&data, "/next");
+    references.opaque_field(&data, "/read_at/cursor");
+    for column in data["columns"].as_array().into_iter().flatten() {
+        let Ok(column) = serde_json::from_value::<Column>(column.clone()) else {
+            continue;
+        };
+        let name = column.name.replace('~', "~0").replace('/', "~1");
+        for index in 0..data["rows"].as_array().map_or(0, Vec::len) {
+            let path = format!("/rows/{index}/{name}");
+            match column.reference {
+                Some(ColumnReference::Session) => references.field::<SessionId>(&data, path),
+                Some(ColumnReference::Message) => references.field::<MessageId>(&data, path),
+                Some(ColumnReference::Document) => references.field::<DocumentId>(&data, path),
+                Some(ColumnReference::Note) => references.opaque_field(&data, path),
+                None => {}
+            }
+        }
+    }
+    if data["unit"] == "changes" {
+        for (index, row) in data["rows"].as_array().into_iter().flatten().enumerate() {
+            feed::reference_fields(row, &format!("/rows/{index}"), &data, &mut references);
+        }
+    }
+    super::Response::Ok { data, references }
+}
+
 #[cfg(test)]
 mod tests;
 

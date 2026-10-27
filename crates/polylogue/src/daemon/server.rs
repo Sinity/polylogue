@@ -2,7 +2,7 @@
 //! in `service`; ordinary requests receive one response, finite feeds a batch.
 
 use super::Request;
-use super::service::{self, Daemon, error, handle};
+use super::service::{Daemon, error, handle};
 use polylogue_engine::Config;
 use polylogue_store::Archive;
 use std::io::{BufRead, BufReader, Write};
@@ -30,18 +30,25 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             Ok(request @ Request::Attachment { reveal: true, .. }) => {
                 super::attachment::socket(&out, request, d)
             }
-            Ok(Request::Changes { since }) => {
-                match service::change_feed(d, since.as_deref(), false) {
-                    Ok(mut file) => {
+            Ok(r) => {
+                let prepared =
+                    crate::commands::COMMANDS
+                        .iter()
+                        .find_map(|command| match command.action {
+                            crate::commands::Action::Stream { prepare, .. } => prepare(&r, d, None),
+                            _ => None,
+                        });
+                match prepared {
+                    Some(Ok(mut file)) => {
                         if std::io::copy(&mut file, &mut out).is_err() {
                             return;
                         }
                         continue;
                     }
-                    Err(response) => response,
+                    Some(Err(response)) => response,
+                    None => handle(r, d),
                 }
             }
-            Ok(r) => handle(r, d),
             Err(e) => error("bad_request", e),
         };
         let Ok(mut text) = serde_json::to_string(&response) else {
