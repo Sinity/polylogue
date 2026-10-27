@@ -687,12 +687,6 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
     })
 }
 
-/// The export file name of a database found at a [`Capture::RowDump`]
-/// origin's location: `<db file name>.jsonl`.
-pub fn export_name(db: &Path) -> Option<String> {
-    Some(format!("{}.jsonl", db.file_name()?.to_str()?))
-}
-
 /// The origin's declared change cursor, or complete comparison for an undeclared table.
 pub fn table_cursor(db: &Path, table: &str) -> Option<&'static str> {
     ORIGINS

@@ -119,7 +119,7 @@ impl Exporter {
             st.exported = Some(now);
             st.exported_at = Some(Instant::now());
         }
-        st.cursor_at = Some(Instant::now());
+        if cursor_due { st.cursor_at = Some(Instant::now()); }
         Ok(Some(done))
     }
 }
@@ -399,7 +399,9 @@ fn write_export(
         },
     )?;
     saved.schema = Some(schema);
-    saved.source_file = Some((facts.device, facts.inode));
+    let unchanged_file = DbFacts::of(db).db.is_some_and(|now|now.device==facts.device && now.inode==facts.inode);
+    saved.source_file = unchanged_file.then_some((facts.device,facts.inode));
+    if !unchanged_file { saved.cursors.clear(); }
     saved
         .cursors
         .retain(|table, _| tables.iter().any(|t| &t.name == table));

@@ -85,8 +85,7 @@ impl Engine {
         errors
     }
 
-    /// Completes a finite capture batch. The daemon also discovers source
-    /// changes and handles queued requests between its turns.
+    /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let mut total = self.run_turn()?;
         while total.capture_pending {
@@ -112,7 +111,7 @@ impl Engine {
         Ok(total)
     }
 
-    /// Services ordinary inputs and one cooperative SQLite capture turn.
+    /// Services files and starts or observes an independent database read.
     pub fn run_turn(&mut self) -> Result<Pass, EngineError> {
         self.one_pass(true, &Default::default(), false)
     }
@@ -320,7 +319,6 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
-        self.first_pass = false;
         self.restore_failed_writes()?;
         if !pass.capture_pending {
             pass.sessions_derived = self.derive()?;
@@ -996,6 +994,8 @@ impl Engine {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
                     || finished.inputs_seen > 0
+                    || finished.inputs_changed > 0
+                    || s.last_pass.capture_pending
                     || finished.capture_pending
                     || !finished.errors.is_empty()
                     || s.passes == 0

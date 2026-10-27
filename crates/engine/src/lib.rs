@@ -196,7 +196,7 @@ pub struct Pass {
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
-    /// A SQLite capture has more cooperative work to do.
+    /// A database reader has queued or pending work.
     pub capture_pending: bool,
 }
 
@@ -276,8 +276,6 @@ pub struct Engine {
     /// In primary mode, the Sinex that holds the archive: sessions go to it
     /// as events once derived.
     sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
-    /// No pass has run since the engine started.
-    first_pass: bool,
 }
 
 fn now_ms() -> i64 {
@@ -339,7 +337,6 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             sinex,
-            first_pass: true,
         })
     }
 
