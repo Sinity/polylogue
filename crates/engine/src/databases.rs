@@ -338,5 +338,78 @@ impl<'a> InputWriter<'a> {
     }
 }
 
+impl Engine {
+    pub(super) fn capture_databases(&mut self, found: &[collect::Found], force: bool, pass: &mut Pass) -> Result<(bool, bool), EngineError> {
+        let mut new_database = false;
+        for f in found
+            .iter()
+            .filter(|f| f.origin.is_row_dump(&f.path))
+        {
+            new_database |= self
+                .databases
+                .insert(f.path.clone(), f.origin.name)
+                .is_none();
+        }
+        let completed = self.exporter.completed(false);
+        pass.inputs_seen += completed.inputs_seen;
+        pass.bytes_stored += completed.bytes_stored;
+        pass.errors.extend(completed.errors);
+        if completed.finished && self.capture_checked.is_some() {
+            self.capture_checked = Some(Instant::now());
+        }
+        if completed.changed {
+            self.loaded = false;
+            self.load()?;
+        }
+        let capture_due = force
+            || new_database
+            || self
+                .capture_checked
+                .is_none_or(|at| at.elapsed() >= self.config.live_every);
+        let mut deferred_database = false;
+        if capture_due && !self.exporter.pending() {
+            deferred_database = self.databases.keys().any(|path| {
+                !self.refused.contains(path)
+                    && self.inputs.get(path).is_some_and(|state| {
+                        state.stored > 0 && (!state.parsed || state.parsed_upto < state.stored)
+                    })
+            });
+            self.capture_checked = (!deferred_database).then(Instant::now);
+            let databases = self
+                .databases
+                .iter()
+                .filter(|(path, _)| !self.refused.contains(*path))
+                .filter(|(path, _)| {
+                    self.inputs.get(*path).is_none_or(|state| {
+                        state.stored == 0 || (state.parsed && state.parsed_upto == state.stored)
+                    })
+                })
+                .map(|(path, origin)| databases::DatabaseInput {
+                    path: path.clone(),
+                    input: InputKey {
+                        id: self
+                            .inputs
+                            .get(path)
+                            .filter(|state| state.origin.name == *origin)
+                            .map(|state| state.input_id.clone())
+                            .unwrap_or_else(|| self.location_id(path)),
+                        format: (*origin).into(),
+                        arrival_rank: 0,
+                    },
+                    observation: self.observation(path, None),
+                })
+                .collect();
+            self.exporter.start(
+                databases,
+                self.archive.clone(),
+                self.writer.sender()?,
+                self.wake.clone(),
+            )?;
+        }
+        pass.capture_pending |= self.exporter.pending() || deferred_database;
+        Ok((deferred_database, completed.changed))
+    }
+}
+
 #[cfg(test)]
 mod tests;

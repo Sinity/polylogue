@@ -136,7 +136,9 @@ A [tool database](../crates/store/src/tool_databases.rs) is read as row-dump
 records from one SQLite read transaction, including its WAL. Its identity is
 the machine and native file path. The source header lets a native observation continue an existing input even when its earlier observations named a capture file. A separate database reader sends groups of
 changed records directly to the writer as an input's appended bytes, while
-file discovery and parsing continue. Stopping the loop ends the reads between rows and waits for groups already queued. There is no export file. The writer
+file discovery and parsing continue. A long file pass consumes watcher changes
+and committed database records on its live check, giving them priority over
+remaining bulk work. Stopping the loop ends the reads between rows and waits for groups already queued. There is no export file. The writer
 commits the records' comparison hashes and byte position in `index.db`.
 Domain parsing reads the stored input through the ordinary parse path.
 

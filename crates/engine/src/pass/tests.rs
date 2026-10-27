@@ -22,7 +22,7 @@ fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
     home.append("changed.jsonl", &claude_user("two", "changed", "changed"));
     home.append("missed.jsonl", &claude_user("three", "missed", "missed"));
     let changed = [home.file("changed.jsonl")].into_iter().collect();
-    let pass = engine.one_pass(false, &changed, true).unwrap();
+    let pass = engine.one_pass(false, &changed).unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.full_scans, 0);
     assert_eq!(home.texts("changed"), ["changed"]);
@@ -31,7 +31,7 @@ fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
         full: true,
         ..Default::default()
     };
-    let pass = engine.one_pass(changes.full, &changes.paths, true).unwrap();
+    let pass = engine.one_pass(changes.full, &changes.paths).unwrap();
     assert_eq!(pass.full_scans, 1);
     assert_eq!(home.texts("missed"), ["missed"]);
 }
@@ -60,20 +60,22 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     let changed = [db.clone()].into_iter().collect();
     source.execute("UPDATE kept SET n=1", []).unwrap();
     engine.capture_checked = None;
-    engine.one_pass(false, &changed, true).unwrap();
+    engine.one_pass(false, &changed).unwrap();
     engine.exporter.completed(true);
     home.append("other.jsonl", &claude_user("one", "other", "other"));
     let other = [home.file("other.jsonl")].into_iter().collect();
-    engine.one_pass(false, &other, true).unwrap();
+    engine.one_pass(false, &other).unwrap();
     assert_eq!(length(&engine), before);
     source.execute("UPDATE kept SET n=2", []).unwrap();
     engine.capture_checked = None;
-    engine.one_pass(false, &changed, true).unwrap();
+    engine.one_pass(false, &changed).unwrap();
     engine.exporter.completed(true);
     assert_eq!(length(&engine), before);
     engine.capture_checked = None;
-    engine.one_pass(false, &Default::default(), true).unwrap();
+    engine.one_pass(false, &Default::default()).unwrap();
     let completed = engine.exporter.completed(true);
     assert!(completed.errors.is_empty(), "{:?}", completed.errors);
     assert!(length(&engine) > before);
 }
+
+mod live_inputs;
