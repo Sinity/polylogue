@@ -1,6 +1,6 @@
 //! Search and facet requests use the daemon's query operation.
 use super::*;
-use polylogue_query::ast::{Query as Parsed, Source, StageKind, Unit};
+use polylogue_query::ast::{CondKind, Query as Parsed, Source, StageKind, Unit};
 use polylogue_query::fields::Field;
 
 #[derive(Default, Deserialize)]
@@ -32,6 +32,14 @@ fn editable(text: &str) -> Result<(Parsed, Unit), String> {
             .any(|s| !matches!(s.kind, StageKind::SortBy { .. }))
     {
         return Err("Edit this query directly. Facets are unavailable for attached, combined, scoped, or transformed results.".into());
+    }
+    let condition = match &parsed.source {
+        Source::Unit { cond, .. } => cond.as_ref(),
+        Source::Sessions { cond } => Some(cond),
+        Source::Empty => None,
+    };
+    if condition.is_some_and(|cond| matches!(&cond.kind, CondKind::Match {field, ..} if field.eq_ignore_ascii_case("result"))) {
+        return Err("Kept results have recorded rows. Use query stages to read them; facet controls apply to live queries.".into());
     }
     let unit = match parsed.source {
         Source::Unit { unit, .. } => unit,

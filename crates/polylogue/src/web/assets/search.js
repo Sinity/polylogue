@@ -58,7 +58,8 @@ form?.addEventListener("submit", async event => {
     if (!response.ok) throw new Error(data.message ?? "Write failed");
     output.textContent = (operation === "save" ? "Query saved: " : "Results kept: ") + JSON.stringify(data);
     const link = document.createElement("a");
-    link.href = "/search?q=" + encodeURIComponent(operation === "save" ? "query:" + name : "result:" + data.id);
+    const literal = text => '"' + text.replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
+    link.href = "/search?q=" + encodeURIComponent(operation === "save" ? "query:" + literal(name) : "result:" + literal(data.id));
     link.textContent = operation === "save" ? "Run again" : "Open kept results";
     output.append(" ", link);
     attempt = undefined;

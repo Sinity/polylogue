@@ -63,6 +63,7 @@ fn unsupported_queries_remain_unedited_and_counts_drop_only_ordering() {
         "sessions | messages",
         "sessions with messages(first 2)",
         "sessions | group by origin | count",
+        "result:\"synthetic:opaque\"",
     ] {
         assert!(filtered(text, "origin", "claude-code").is_err(), "{text}");
         assert!(grouped(text, "origin").is_err(), "{text}");

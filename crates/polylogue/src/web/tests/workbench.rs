@@ -261,7 +261,10 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             let receipt: Value = serde_json::from_str(&raw).unwrap();
             let kept = data(
                 &r,
-                &format!("result:{}", receipt["id"].as_str().unwrap()),
+                &format!(
+                    "result:{}",
+                    serde_json::to_string(receipt["id"].as_str().unwrap()).unwrap()
+                ),
                 None,
             );
             assert_eq!(kept["rows"].as_array().unwrap().len(), 1, "{kept}");
