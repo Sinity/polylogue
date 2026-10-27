@@ -190,7 +190,9 @@ holding either, and those holding a block that leaves a key open. A page
 starts at its cursor's message, seeking to it by its key: masking starts
 afresh there when no earlier message leaves a key open, and otherwise from
 the state reached by masking only the marked messages from the first that
-does. Cursors are sealed with a secret of the index
+does. For the session's own messages, the cursor key bounds that lookup;
+the marked blocks are read directly, without scanning ordinary message
+metadata. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
 The budget limits output size, not

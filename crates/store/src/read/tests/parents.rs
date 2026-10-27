@@ -274,7 +274,15 @@ fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches(
     let plain = reader
         .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
         .unwrap();
-    assert!(plain.masking_before(2).unwrap().is_none());
+    assert!(
+        plain
+            .masking_before(VisitStart {
+                message: 2,
+                key: None
+            })
+            .unwrap()
+            .is_none()
+    );
     let keyed = reader
         .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
         .unwrap();
@@ -300,12 +308,101 @@ fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches(
         for message in &messages[..at] {
             from_start.message_text(&mut message.clone());
         }
-        let resumed = keyed.masking_before(at).unwrap();
-        assert_eq!(resumed.is_none(), at <= 2, "at {at}");
-        assert_eq!(
-            shown(resumed.unwrap_or_default(), at),
-            shown(from_start, at),
-            "at {at}"
-        );
+        for key in [None, Some(keyed.keys().unwrap()[at])] {
+            let resumed = keyed
+                .masking_before(VisitStart { message: at, key })
+                .unwrap();
+            assert_eq!(resumed.is_none(), at <= 2, "at {at}");
+            assert_eq!(
+                shown(resumed.unwrap_or_default(), at),
+                shown(from_start.clone(), at),
+                "at {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn recovering_masking_state_reads_blocks_without_message_metadata() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(
+        &mut f,
+        "sparse",
+        &[
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "ordinary synthetic body",
+            "tail",
+        ],
+    );
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader
+        .select_messages(&SessionId::parse("claude-code:sparse").unwrap(), false)
+        .unwrap();
+    let key = selected.keys().unwrap()[2];
+    reader
+        .conn()
+        .unwrap()
+        .authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "message",
+                column_name: "model",
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))
+        .unwrap();
+    for key in [None, Some(key)] {
+        let mut masker = selected
+            .masking_before(VisitStart { message: 2, key })
+            .unwrap()
+            .unwrap();
+        let mut block = polylogue_model::Block::Text {
+            text: "synthetic hidden text".into(),
+        };
+        masker.block_text(&mut block);
+        assert!(!block.text().unwrap().contains("synthetic hidden text"));
+    }
+    reader
+        .conn()
+        .unwrap()
+        .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
+}
+
+#[test]
+fn a_hidden_duplicate_cannot_close_the_selected_masking_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(
+        &mut f,
+        "duplicates",
+        &[
+            "-----END RSA PRIVATE KEY-----",
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----END RSA PRIVATE KEY-----",
+            "synthetic hidden tail",
+        ],
+    );
+    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap()
+        .execute("UPDATE message SET duplicate_of='claude-code:duplicates-0' WHERE id='claude-code:duplicates-2'", []).unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader
+        .select_messages(&SessionId::parse("claude-code:duplicates").unwrap(), false)
+        .unwrap();
+    let keys = selected.keys().unwrap();
+    assert_eq!(keys.len(), 3);
+    for key in [None, Some(keys[2])] {
+        let mut masker = selected
+            .masking_before(VisitStart { message: 2, key })
+            .unwrap()
+            .unwrap();
+        let mut block = polylogue_model::Block::Text {
+            text: "synthetic hidden tail".into(),
+        };
+        masker.block_text(&mut block);
+        assert!(!block.text().unwrap().contains("synthetic hidden tail"));
     }
 }
