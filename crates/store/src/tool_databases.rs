@@ -295,9 +295,11 @@ fn write_export(
     send: &mut dyn FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
     let stopped = || {
-        if stop.is_some_and(|stop|stop.load(std::sync::atomic::Ordering::Relaxed)) {
+        if stop.is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed)) {
             Err(ExportError::Stopped)
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     };
     stopped()?;
     let _busy = crate::timing::enter(crate::timing::Stage::Database);

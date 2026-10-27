@@ -59,7 +59,9 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
-                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
                     let Some(due) = exporter.observe(&source.path) else {
                         continue;
                     };
@@ -172,7 +174,9 @@ impl Databases {
 impl Drop for Databases {
     fn drop(&mut self) {
         if let Some(worker) = &self.worker {
-            worker.stop.store(true,std::sync::atomic::Ordering::Relaxed);
+            worker
+                .stop
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.completed(true);
     }
