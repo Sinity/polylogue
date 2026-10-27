@@ -18,6 +18,10 @@ pub enum UserWrite {
     AddNote {
         note: NewNote,
     },
+    /// A named query with the revision resolved when saving it.
+    SaveQuery {
+        note: NewNote,
+    },
     /// Withdraws a note family: the newest revision and every older one.
     Withdraw {
         note: String,
@@ -123,29 +127,18 @@ pub struct LeftOut {
 }
 
 impl UserWrite {
-    /// Search writes resolve rows or the revision to replace when they run.
-    /// A retry keeps that first resolution even if the archive changed.
-    pub fn same_search_request(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::KeepResult { name, query, .. },
-                Self::KeepResult {
-                    name: other_name,
-                    query: other_query,
-                    ..
-                },
-            ) => name == other_name && query == other_query,
-            (Self::AddNote { note }, Self::AddNote { note: other })
-                if note.kind == NoteKind::SavedQuery && other.kind == NoteKind::SavedQuery =>
-            {
-                let mut note = note.clone();
-                let mut other = other.clone();
-                note.revises = None;
-                other.revises = None;
-                note == other
+    /// Hashes client intent without the data resolved when the write runs.
+    pub fn intent_hash(&self) -> Result<blake3::Hash> {
+        let mut intent = self.clone();
+        match &mut intent {
+            Self::KeepResult { rows_json, read_at, .. } => {
+                rows_json.clear();
+                read_at.clear();
             }
-            _ => false,
+            Self::SaveQuery { note } => note.revises = None,
+            _ => {}
         }
+        Ok(blake3::hash(&serde_json::to_vec(&intent)?))
     }
 }
 
@@ -205,8 +198,7 @@ pub fn new_request_id() -> String {
 /// Applies one request in `tx`, which the writer commits. `seq` is the
 /// archive's write counter for this transaction.
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    let content = serde_json::to_vec(&r.write)?;
-    let hash = blake3::hash(&content);
+    let hash = r.write.intent_hash()?;
     let seen: Option<Vec<u8>> = tx
         .query_row(
             "SELECT content_hash FROM client_request WHERE id = ?1",
@@ -221,23 +213,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: true,
             });
         }
-        Some(_) => {
-            let packed: Option<Vec<u8>> = tx.query_row(
-                "SELECT request FROM client_request WHERE id=?1",
-                [&r.id],
-                |row| row.get(0),
-            )?;
-            let prior: UserRequest = serde_json::from_str(&crate::encoding::unpack_text(
-                &packed.ok_or_else(|| StoreError::Conflict(r.id.clone()))?,
-            )?)?;
-            if r.write.same_search_request(&prior.write) {
-                return Ok(UserOutcome {
-                    id: r.id.clone(),
-                    repeat: true,
-                });
-            }
-            return Err(StoreError::Conflict(r.id.clone()));
-        }
+        Some(_) => return Err(StoreError::Conflict(r.id.clone())),
         None => {}
     }
     tx.execute(
@@ -253,7 +229,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
     )?;
     let at = r.at.unix_ms();
     match &r.write {
-        UserWrite::AddNote { note } => add_note(tx, r, note, seq),
+        UserWrite::AddNote { note } | UserWrite::SaveQuery { note } => add_note(tx, r, note, seq),
         UserWrite::Withdraw {
             note,
             author,
@@ -444,7 +420,7 @@ pub(crate) fn first_note_of_request(
     r: &UserRequest,
 ) -> Result<Option<String>> {
     match &r.write {
-        UserWrite::AddNote { .. } => first_note_of(tx, &r.id).map(Some),
+        UserWrite::AddNote { .. } | UserWrite::SaveQuery { .. } => first_note_of(tx, &r.id).map(Some),
         UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
         _ => Ok(None),
     }

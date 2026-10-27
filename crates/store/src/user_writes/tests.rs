@@ -48,7 +48,7 @@ fn repeated_search_writes_keep_the_first_resolved_rows_and_revision() {
         w.writer.user(UserRequest::now("keep".into(), changed)),
         Err(StoreError::Conflict(_))
     ));
-    let note = |revises| UserWrite::AddNote {
+    let note = |revises| UserWrite::SaveQuery {
         note: NewNote {
             kind: NoteKind::SavedQuery,
             key: Some("example".into()),
@@ -72,4 +72,33 @@ fn repeated_search_writes_keep_the_first_resolved_rows_and_revision() {
             .unwrap()
             .repeat
     );
+    let UserWrite::SaveQuery { note: explicit } = note(None) else {
+        panic!()
+    };
+    w.writer
+        .user(UserRequest::now("explicit".into(), UserWrite::AddNote { note: explicit.clone() }))
+        .unwrap();
+    let mut changed = explicit;
+    changed.revises = Some("save".into());
+    assert!(matches!(
+        w.writer.user(UserRequest::now("explicit".into(), UserWrite::AddNote { note: changed })),
+        Err(StoreError::Conflict(_))
+    ));
+
+    w.writer
+        .user(UserRequest::now("revision".into(), note(Some("save".into()))))
+        .unwrap();
+    assert!(w.writer
+        .user(UserRequest::now("revision".into(), note(Some("explicit".into()))))
+        .unwrap()
+        .repeat);
+    let reader = pool.reader().unwrap();
+    let saved = reader.note("revision").unwrap().unwrap();
+    let requests = ["save", "revision"].map(|id| reader.user_request(id).unwrap().unwrap());
+    let replay = WriterArchive::new();
+    for request in requests {
+        replay.writer.user(request).unwrap();
+    }
+    let replay_reads = crate::ReadPool::open(&replay.archive).unwrap();
+    assert_eq!(replay_reads.reader().unwrap().note("revision").unwrap().unwrap(), saved);
 }

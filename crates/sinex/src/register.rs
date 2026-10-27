@@ -142,7 +142,7 @@ pub(crate) fn request_event(
             .ok_or_else(|| Error::Invalid(format!("note request {} has no family", r.id)))
     };
     Ok(Some(match &r.write {
-        UserWrite::AddNote { note } => (
+        UserWrite::AddNote { note } | UserWrite::SaveQuery { note } => (
             "polylogue.note",
             serde_json::to_value(event::Note {
                 note: r.id.clone(),

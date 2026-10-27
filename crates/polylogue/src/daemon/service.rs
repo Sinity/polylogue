@@ -166,15 +166,20 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     }
 }
 
-fn repeated_search(
+fn repeated_write(
     reader: &polylogue_store::Reader<'_>,
     id: &str,
     intended: &UserWrite,
 ) -> Result<Option<UserWrite>, Response> {
-    match reader.user_request(id).map_err(|e| store_error(&e))? {
-        Some(previous) if intended.same_search_request(&previous.write) => Ok(Some(previous.write)),
-        Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
-        None => Ok(None),
+    let Some(previous) = reader.user_request(id).map_err(|e| store_error(&e))? else {
+        return Ok(None);
+    };
+    let intended = intended.intent_hash().map_err(|e| store_error(&e))?;
+    let committed = previous.write.intent_hash().map_err(|e| store_error(&e))?;
+    if intended == committed {
+        Ok(Some(previous.write))
+    } else {
+        Err(store_error(&StoreError::Conflict(id.into())))
     }
 }
 
@@ -540,7 +545,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 rows_json: String::new(),
                 read_at: String::new(),
             };
-            match repeated_search(&reader, &request_id, &intended) {
+            match repeated_write(&reader, &request_id, &intended) {
                 Ok(Some(previous)) => {
                     drop(reader);
                     return write(d, request_id, previous);
@@ -597,7 +602,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             author,
         } => {
-            let intended = UserWrite::AddNote {
+            let intended = UserWrite::SaveQuery {
                 note: NewNote {
                     kind: NoteKind::SavedQuery,
                     key: Some(name.clone()),
@@ -609,7 +614,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     valid_until: None,
                 },
             };
-            match repeated_search(&reader, &request_id, &intended) {
+            match repeated_write(&reader, &request_id, &intended) {
                 Ok(Some(previous)) => {
                     drop(reader);
                     return write(d, request_id, previous);
@@ -632,7 +637,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 revises,
                 valid_until: None,
             };
-            write(d, request_id, UserWrite::AddNote { note })
+            write(d, request_id, UserWrite::SaveQuery { note })
         }
         Request::Watch {
             request_id,

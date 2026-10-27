@@ -71,6 +71,26 @@ fn a_chat_action_request_makes_no_event() {
 }
 
 #[test]
+fn a_saved_query_request_becomes_a_note_with_its_resolved_revision() {
+    let saved = request(UserWrite::SaveQuery {
+        note: NewNote {
+            kind: NoteKind::SavedQuery,
+            key: Some("example".into()),
+            value: Some("sessions".into()),
+            author: Author::Operator,
+            targets: vec![],
+            relations: vec![],
+            revises: Some("earlier".into()),
+            valid_until: None,
+        },
+    });
+    let (kind, payload) = request_event(&saved, Some("first")).unwrap().unwrap();
+    assert_eq!(kind, "polylogue.note");
+    assert_eq!(payload["kind"], "saved_query");
+    assert_eq!(payload["relations"][0]["other"], "note:earlier");
+}
+
+#[test]
 fn a_held_part_carries_the_rows_that_place_it() {
     let rows = InputRows {
         input: "input".into(),
