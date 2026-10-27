@@ -51,7 +51,7 @@ impl Comparison {
                 let row = value.get("r").filter(|r| r.is_object()).ok_or_else(|| {
                     crate::StoreError::Invalid("row dump record has no values".into())
                 })?;
-                Some(blake3::hash(row.to_string().as_bytes()).as_bytes().to_vec())
+                Some(row_hash(row).as_bytes().to_vec())
             };
             out.rows.push((table.into(), key, hash));
         }
@@ -154,7 +154,7 @@ impl Catalog {
             .prepare_cached("SELECT hash FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND key=?3")?
             .query_row(params![self.pk, table, key], |r| r.get(0))
             .optional()?;
-        Ok(old.as_deref() != Some(blake3::hash(row.to_string().as_bytes()).as_bytes()))
+        Ok(old.as_deref() != Some(row_hash(row).as_bytes()))
     }
     pub fn gone(
         &self,

@@ -305,7 +305,7 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
         .unwrap();
     assert_eq!(
         hash,
-        blake3::hash(json!({"id":1,"body":"newer","n":42}).to_string().as_bytes()).as_bytes()
+        blake3::hash(br#"{"body":"newer","id":1,"n":42}"#).as_bytes()
     );
     update.length = t.length;
     update.write(&conn, pk).unwrap();
@@ -315,4 +315,16 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
             .unwrap(),
         before
     );
+}
+
+#[test]
+fn a_column_order_change_does_not_repeat_unchanged_named_values() {
+    let mut t=Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');");
+    t.export(&mut Exporter::default()).unwrap();
+    let replacement=t.dir.path().join("replacement");
+    Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(body TEXT,id INTEGER PRIMARY KEY); INSERT INTO items VALUES('same',1);").unwrap();
+    fs::rename(replacement,&t.db).unwrap();
+    let done=t.export(&mut Exporter::default()).unwrap().unwrap();
+    assert_eq!((done.rows,done.gone),(0,0));
+    assert_eq!(t.lines().iter().filter(|r|r.get("r").is_some()).count(),1);
 }
