@@ -89,3 +89,34 @@ fn membership_refuses_group_values_of_another_type() {
     assert_eq!(error.kind, "invalid_query");
     assert!(error.message.contains("same type"), "{}", error.message);
 }
+
+#[test]
+fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
+    let mut w = morrow();
+    for (name, text) in [
+        ("children", "sessions where kind:subagent"),
+        ("child-ref", "session:claude-code:7f3a2c10-0003"),
+        ("abandoned", "messages where active:false"),
+    ] {
+        w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
+            .unwrap();
+    }
+    for query in [
+        "sessions where query:children",
+        "sessions where query:children origin:claude-code",
+        "sessions where query:child-ref",
+    ] {
+        assert_eq!(ids(&q(&w, query)), ["#3"], "{query}");
+    }
+    assert_eq!(
+        q(&w, "messages where query:abandoned")["count"],
+        q(&w, "messages where active:false")["count"]
+    );
+    assert_eq!(
+        ids(&q(
+            &w,
+            "sessions where (query:children OR origin:claude-code)"
+        )),
+        ["#4", "#2", "#1"]
+    );
+}

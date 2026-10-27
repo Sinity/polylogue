@@ -762,8 +762,40 @@ impl<'a> Compiler<'a> {
     /// The default filters a unit binds, dropped by a top-level condition
     /// naming their field.
     pub(super) fn defaults(&mut self, scope: &RowContext, top: &[Cond]) -> Vec<String> {
-        let named = named_fields(top, scope.unit);
-        let reference = top.iter().any(|c| self.is_reference(c));
+        // A saved relation at the top level binds its defaults before
+        // the caller narrows it. Nested OR and NOT do not name defaults.
+        let mut bound = top.to_vec();
+        let mut seen = HashSet::new();
+        let mut next = 0;
+        while next < bound.len() {
+            let condition = bound[next].clone();
+            next += 1;
+            let CondKind::Saved { name, .. } = condition.kind else {
+                continue;
+            };
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let Some([definition]) = self.opts.saved.get(&name).map(Vec::as_slice) else {
+                continue;
+            };
+            let Ok(query) = parse(&definition.text) else {
+                continue;
+            };
+            if !query.stages.is_empty() || !query.attach.is_empty() {
+                continue;
+            }
+            let condition = match query.source {
+                Source::Unit { unit, cond } if unit == scope.unit => cond,
+                Source::Sessions { cond } if scope.unit == Unit::Sessions => Some(cond),
+                _ => None,
+            };
+            if let Some(condition) = condition {
+                bound.extend(top_level(&condition));
+            }
+        }
+        let named = named_fields(&bound, scope.unit);
+        let reference = bound.iter().any(|c| self.is_reference(c));
         units::spec(scope.unit)
             .defaults
             .iter()

@@ -355,7 +355,7 @@ fn answer(
             .unwrap_or(0);
         if without > 0 {
             notes.push(format!(
-                "{without} of {count} rows have no vector; they follow the ranked rows, unranked"
+                "{without} of {count} rows have no vector; their semantic similarity is unknown"
             ));
         }
         unknown.insert("near".into(), json!(without));

@@ -117,3 +117,33 @@ fn near_says_how_many_rows_have_no_vector() {
         "{v}"
     );
 }
+
+#[test]
+fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
+    let w = morrow();
+    let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let mut request = ask(r#"messages where chrono near:"ambiguous dates""#);
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["count"], 4);
+    assert_eq!(answer["unknown"]["near"], 2);
+    assert!(
+        answer["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["rank"].is_number()),
+        "{answer}"
+    );
+    assert!(
+        answer["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str()
+                == Some("2 of 4 rows have no vector; their semantic similarity is unknown")),
+        "{answer}"
+    );
+}
