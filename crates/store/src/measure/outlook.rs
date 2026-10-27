@@ -140,7 +140,7 @@ pub fn outlook(
         ..scope.clone()
     };
     let (condition, params) = unbounded.condition();
-    let untimed:u64=reader.conn()?.query_row(&format!("SELECT count(*) FROM message m WHERE {condition} AND m.at IS NULL AND m.role='assistant'"),rusqlite::params_from_iter(params.iter()),|r|r.get(0))?;
+    let untimed:u64=reader.conn()?.query_row(&format!("SELECT count(*) FROM message m WHERE {condition} AND m.at IS NULL AND m.role='assistant'"),rusqlite::params_from_iter(params.iter()),|r|r.get::<_, i64>(0).map(|n|n as u64))?;
     answer.incomplete_usage |= untimed > 0;
     let mut daily: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
     let mut observed_days = std::collections::BTreeSet::new();
