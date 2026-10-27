@@ -160,22 +160,24 @@ fn scheduled() -> Option<(u64, u64)> {
     let mut fields = text.split_whitespace();
     Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
 }
-pub struct WorkerTimeGuard(Option<(String, f64, Option<(u64, u64)>)>);
+struct WorkerStart {
+    name: String,
+    started: f64,
+    scheduled: Option<(u64, u64)>,
+}
+pub struct WorkerTimeGuard(Option<WorkerStart>);
 pub fn worker() -> WorkerTimeGuard {
     WorkerTimeGuard(std::env::var_os("POLYLOGUE_TIMING_WORKERS").map(|_| {
-        (
-            std::thread::current()
-                .name()
-                .unwrap_or("unnamed")
-                .to_owned(),
-            clock_seconds(),
-            scheduled(),
-        )
+        WorkerStart {
+            name: std::thread::current().name().unwrap_or("unnamed").to_owned(),
+            started: clock_seconds(),
+            scheduled: scheduled(),
+        }
     }))
 }
 impl Drop for WorkerTimeGuard {
     fn drop(&mut self) {
-        if let Some((name, started, before)) = self.0.take() {
+        if let Some(WorkerStart { name, started, scheduled: before }) = self.0.take() {
             let elapsed = scheduled().zip(before);
             let cpu_seconds =
                 elapsed.map(|(after, before)| after.0.saturating_sub(before.0) as f64 / 1e9);

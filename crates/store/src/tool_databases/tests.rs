@@ -54,6 +54,7 @@ impl Test {
             observation,
             |bytes, mut update| {
                 let first = length == 0;
+                update.from = length;
                 length += bytes.len() as u64;
                 update.length = length;
                 let (new_blob, files) = if bytes.is_empty() {

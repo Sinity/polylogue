@@ -22,6 +22,7 @@ pub struct Comparison {
     rows: Vec<(String, String, Option<Vec<u8>>)>,
     schema: Option<Value>,
     pub saved: Option<SavedDatabase>,
+    pub from: u64,
     pub length: u64,
 }
 impl Comparison {
@@ -74,6 +75,14 @@ impl Comparison {
             previous > length || (previous == length && self.saved.is_none())
         }) {
             return Ok(());
+        }
+        // Later queued groups can outlive an earlier failed transaction.
+        // Only a contiguous prefix can become the recovery position.
+        if self.from > previous.unwrap_or(0) as u64 {
+            return Err(crate::StoreError::Invalid(format!(
+                "database comparison starts at {} after acknowledged {}",
+                self.from, previous.unwrap_or(0)
+            )));
         }
         for (table, key, hash) in &self.rows {
             if let Some(hash) = hash {

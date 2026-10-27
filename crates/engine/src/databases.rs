@@ -152,7 +152,7 @@ impl Databases {
         } else {
             worker.result.try_recv()
         };
-        let bytes_stored = worker.bytes.swap(0,std::sync::atomic::Ordering::Relaxed);
+        let bytes_stored = worker.bytes.swap(0, std::sync::atomic::Ordering::Relaxed);
         match result {
             Ok((exporter, completed)) => {
                 let worker = self.worker.take().expect("active worker");
@@ -253,6 +253,7 @@ impl<'a> InputWriter<'a> {
                     if let Some(last) = pending.iter().rposition(|b| *b == b'\n') {
                         let mut update = Comparison::records(&pending[..=last], None)?;
                         update.length = end - (pending.len() - last - 1) as u64;
+                        update.from = update.length - (last + 1) as u64;
                         let batch = Batch {
                             input: source.input.clone(),
                             change: Change::Reparse {
@@ -291,6 +292,7 @@ impl<'a> InputWriter<'a> {
     }
     fn append(&mut self, bytes: Vec<u8>, mut update: Comparison) -> Result<(), ExportError> {
         let size = bytes.len() as u64;
+        update.from = self.length;
         self.length += size;
         update.length = self.length;
         let (new_blob, files) = if bytes.is_empty() {
@@ -349,7 +351,8 @@ impl<'a> InputWriter<'a> {
         for result in results {
             result?;
         }
-        self.captured.fetch_add(size,std::sync::atomic::Ordering::Relaxed);
+        self.captured
+            .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
     fn acknowledge_ready(&mut self) -> Result<(), ExportError> {

@@ -36,8 +36,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
     assert!(matches!(changes.recv().unwrap(), LoopMsg::Changed));
     let done = databases.completed(true);
     assert!(done.changed);
-    assert_eq!(done.inputs_seen,1);
-    assert!(done.bytes_stored>0);
+    assert_eq!(done.inputs_seen, 1);
+    assert!(done.bytes_stored > 0);
     assert!(done.errors.is_empty(), "{:?}", done.errors);
 
     // The archive path cannot be opened. Unchanged file facts should finish
@@ -52,8 +52,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
         .unwrap();
     let done = databases.completed(true);
     assert!(!done.changed);
-    assert_eq!(done.inputs_seen,0);
-    assert_eq!(done.bytes_stored,0);
+    assert_eq!(done.inputs_seen, 0);
+    assert_eq!(done.bytes_stored, 0);
     assert!(done.errors.is_empty(), "{:?}", done.errors);
 }
 
