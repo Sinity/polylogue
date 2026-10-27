@@ -37,12 +37,10 @@ struct Cursor {
     /// and events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message_key: Option<i64>,
-    /// A keyed hash of the rest, keyed by the index generation's cursor key
-    /// ([`Reader::cursor_key`]): a cursor changed or made up is refused.
+    /// Read the page before this exclusive position.
     #[serde(default)]
-    tail: bool,
-    #[serde(default)]
-    last_block: bool,
+    reverse: bool,
+    /// A keyed hash of the rest, using the index generation's cursor key.
     seal: String,
 }
 
@@ -202,8 +200,7 @@ pub(super) fn run(
         Ok(key) => key,
         Err(e) => return store_error(&e),
     };
-    let mut tail = false;
-    let mut last_block = false;
+    let mut reverse = false;
     let position = if let Some(text) = options.cursor {
         let cursor = match Cursor::open(text, &cursor_key, &generation) {
             Ok(cursor) => cursor,
@@ -221,8 +218,7 @@ pub(super) fn run(
                 "the session read changed; start the read again",
             );
         }
-        tail = cursor.tail;
-        last_block = cursor.last_block;
+        reverse = cursor.reverse;
         Some((
             Position {
                 message: cursor.position[0],
@@ -275,7 +271,7 @@ pub(super) fn run(
         }
         (position, _) => position,
     };
-    let (position, message_key) = match position {
+    let (mut position, mut message_key) = match position {
         Some((position, key)) => (Some(position), key),
         None => (None, None),
     };
@@ -293,6 +289,72 @@ pub(super) fn run(
         selected.for_text()
     } else {
         selected.for_blocks(view.block_kinds(), view.prompts_only())
+    };
+    let until = if reverse {
+        let end = position.expect("a reverse cursor has a position");
+        let mut from = polylogue_store::read::VisitStart {
+            message: end.message,
+            key: message_key,
+        };
+        let mut remaining = budget.max(1).saturating_mul(4);
+        let mut start = None;
+        loop {
+            let mut message = None;
+            if let Err(e) = selected.visit_from(from, |found| {
+                message = Some(found);
+                ControlFlow::Break(())
+            }) {
+                return store_error(&e);
+            }
+            let Some(message) = message else {
+                break;
+            };
+            let masker = match selected.masking_before(from.message) {
+                Ok(masker) => masker.unwrap_or_default(),
+                Err(e) => return store_error(&e),
+            };
+            let mut failure = None;
+            let (at, used) = polylogue_render::model_pages::previous_start(
+                message,
+                view,
+                from.message,
+                (from.message == end.message).then_some(end),
+                remaining,
+                masker,
+                |message| match attachments::labels(reader, message, view) {
+                    Ok((labels, _)) => labels,
+                    Err(e) => {
+                        failure = Some(e);
+                        Vec::new()
+                    }
+                },
+            );
+            if let Some(e) = failure {
+                return store_error(&e);
+            }
+            if let Some(at) = at {
+                start = Some((at, from.key));
+            }
+            remaining -= used;
+            if remaining == 0 {
+                break;
+            }
+            let Some(key) = from.key else {
+                break;
+            };
+            from = match selected.previous(key, view.block_kinds(), view.prompts_only()) {
+                Ok(Some(previous)) => previous,
+                Ok(None) => break,
+                Err(e) => return store_error(&e),
+            };
+        }
+        if let Some((at, key)) = start {
+            position = Some(at);
+            message_key = key;
+        }
+        Some(end)
+    } else {
+        None
     };
     // A read resumes at its cursor's message, from the masking state
     // remembered at that page end or else the state the selection gives
@@ -316,8 +378,8 @@ pub(super) fn run(
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),
     };
-    if tail {
-        pager = pager.at_block_end(last_block);
+    if let Some(end) = until {
+        pager = pager.until(end);
     }
     if latest {
         pager = pager.at_latest();
@@ -427,8 +489,7 @@ pub(super) fn run(
                 generation: generation.clone(),
                 position: [at.message, at.block, at.character],
                 message_key,
-                tail: false,
-                last_block: false,
+                reverse: false,
                 seal: String::new(),
             };
             match cursor.seal(&cursor_key) {
@@ -442,50 +503,21 @@ pub(super) fn run(
         first,
         page.slices.first().and_then(|slice| slice.message.as_ref()),
     ) {
-        let key = match selected.message_key(&message.id) {
+        let message_key = match selected.message_key(&message.id) {
             Ok(key) => key,
             Err(e) => return store_error(&e),
         };
-        let before = if at.character > 0 {
-            Some((
-                Position {
-                    character: at.character.saturating_sub(budget.max(1).saturating_mul(4)),
-                    ..at
-                },
-                key,
-                false,
-                false,
-            ))
-        } else if at.block > 0 {
-            Some((
-                Position {
-                    block: at.block - 1,
-                    character: 0,
-                    ..at
-                },
-                key,
-                true,
-                false,
-            ))
-        } else if let Some(key) = key {
+        let exists = if at.character > 0 || at.block > 0 {
+            true
+        } else if let Some(key) = message_key {
             match selected.previous(key, view.block_kinds(), view.prompts_only()) {
-                Ok(Some(previous)) => Some((
-                    Position {
-                        message: previous.message,
-                        block: 0,
-                        character: 0,
-                    },
-                    previous.key,
-                    true,
-                    true,
-                )),
-                Ok(None) => None,
+                Ok(previous) => previous.is_some(),
                 Err(e) => return store_error(&e),
             }
         } else {
-            None
+            false
         };
-        before.map(|(at, message_key, tail, last_block)| {
+        exists.then(|| {
             Cursor {
                 version: CURSOR_VERSION,
                 binding: binding.clone(),
@@ -493,8 +525,7 @@ pub(super) fn run(
                 generation: generation.clone(),
                 position: [at.message, at.block, at.character],
                 message_key,
-                tail,
-                last_block,
+                reverse: true,
                 seal: String::new(),
             }
             .seal(&cursor_key)
@@ -513,8 +544,7 @@ pub(super) fn run(
                 generation: generation.clone(),
                 position: [position.message, position.block, position.character],
                 message_key: last_key,
-                tail: false,
-                last_block: false,
+                reverse: false,
                 seal: String::new(),
             };
             match cursor.seal(&cursor_key) {
@@ -681,8 +711,7 @@ fn content_next(
             generation,
             position: [p.message, p.block, p.character],
             message_key: None,
-            tail: false,
-            last_block: false,
+            reverse: false,
             seal: String::new(),
         }
         .seal(key)
@@ -849,8 +878,7 @@ pub(super) fn outline(
                 position: [0; 3],
                 message_key: entries.last().map(|entry| entry.key),
                 seal: String::new(),
-                tail: false,
-                last_block: false,
+                reverse: false,
             }
             .seal(&key)
             .expect("cursor"),
