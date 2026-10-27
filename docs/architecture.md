@@ -170,7 +170,7 @@ runs, so its other conditions choose the rows before any ranking; with
 words in the same query the two orders are fused (reciprocal rank fusion).
 Its cursor is refused once vectors were stored or removed. Semantic setup runs
 only when the answer needs ranking, including a limit that selects rows before
-a count. The final row query keeps each row's similarity in a hidden column,
+a count. A row answer's own semantic ranking keeps each row's similarity in a hidden column,
 so one statement counts both the answer and its rows without a vector, after
 stages such as `distinct`. Session `has:errors` and `has:tool_calls` inspect
 its own messages: duplicates and abandoned branches are excluded. Every field

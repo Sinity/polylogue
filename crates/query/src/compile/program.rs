@@ -569,10 +569,7 @@ impl<'a> Compiler<'a> {
             select.extend(cols.iter().map(|(n, e, _, _)| format!("{e} AS {n}")));
             select.push(format!(
                 "{} AS _near",
-                self.near_rank
-                    .as_deref()
-                    .or_else(|| self.fusion.as_ref().and_then(|f| f.near.as_deref()))
-                    .unwrap_or("1")
+                self.near_rank.as_deref().unwrap_or("1")
             ));
             let (sql, keys) = if distinct {
                 // Distinct rows are identified by their values alone.
@@ -657,6 +654,7 @@ impl<'a> Compiler<'a> {
             why,
             why_of,
             page_size,
+            counts_near: shape == Shape::Rows && self.near_rank.is_some(),
             near: self.near,
             definitions: self.definitions,
             now: self.opts.clock.now,
@@ -692,7 +690,7 @@ impl<'a> Compiler<'a> {
         let fused = format!("f{}", self.ctes.len() + 1);
         self.ctes.push(format!(
             "{fused} AS MATERIALIZED (SELECT k, -(1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY t IS NULL, t, k))) \
-             - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r, n \
+             - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r \
              FROM {rows})"
         ));
         // The fused rows are the rows the conditions keep: the join
@@ -700,7 +698,6 @@ impl<'a> Compiler<'a> {
         self.fusion = Some(Fusion {
             join: format!("JOIN {fused} fused ON fused.k = {pk}"),
             rank: "fused.r".into(),
-            near: Some("fused.n".into()),
         });
         where_sql.clear();
         Ok(())

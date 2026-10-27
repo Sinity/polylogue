@@ -222,23 +222,12 @@ impl<'a> Compiler<'a> {
             Some(rank) => format!("({rank}) IS NOT NULL"),
             None => "1".into(),
         };
-        let near = self
-            .near_rank
-            .clone()
-            .or_else(|| self.fusion.as_ref().and_then(|f| f.near.clone()));
-        let has_near = near.is_some()
-            || pending
-                .unions
-                .iter()
-                .chain(&pending.fuses)
-                .any(|p| p.near.is_some());
-        let near = near.as_deref().unwrap_or("NULL");
-        // Each list is `SELECT k, place, counts, list, n`: the row, its place
+        // Each list is `SELECT k, place, counts, list`: the row, its place
         // in the list's order, whether that place is a rank (a ranked list
         // holds rows without a rank, such as messages with no vector, after
         // its ranked ones) and which list it is (0 for a fuse list).
         let mut lists = vec![format!(
-            "SELECT {pk} AS k, row_number() OVER (ORDER BY {own_order}) AS place, {own_counts} AS counts, 1 AS list, {near} AS n FROM {from} WHERE {here}"
+            "SELECT {pk} AS k, row_number() OVER (ORDER BY {own_order}) AS place, {own_counts} AS counts, 1 AS list FROM {from} WHERE {here}"
         )];
         for (i, other) in pending.unions.iter().enumerate() {
             lists.push(other_list(other, None, i + 2));
@@ -261,7 +250,7 @@ impl<'a> Compiler<'a> {
         let fused = format!("c{}", self.ctes.len() + 1);
         self.ctes.push(format!(
             "{fused} AS MATERIALIZED (SELECT k, \
-             -sum(CASE WHEN counts THEN 1.0 / ({RANK_FUSION_OFFSET} + place) ELSE 0.0 END) AS r, max(n) AS n, {} \
+             -sum(CASE WHEN counts THEN 1.0 / ({RANK_FUSION_OFFSET} + place) ELSE 0.0 END) AS r, {} \
              FROM ({}) GROUP BY k)",
             found_in.join(", "),
             fuses.join(" UNION ALL ")
@@ -270,7 +259,6 @@ impl<'a> Compiler<'a> {
         self.fusion = Some(Fusion {
             join: format!("JOIN {fused} {alias} ON {alias}.k = {pk}"),
             rank: format!("{alias}.r"),
-            near: has_near.then(|| format!("{alias}.n")),
         });
         let numbered: Vec<String> = (1..=pending.unions.len() + 1)
             .map(|n| format!("{alias}.in{n} * {n}"))
@@ -314,16 +302,11 @@ fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
     } else {
         "1"
     };
-    let near = if other.near.is_some() {
-        "_near"
-    } else {
-        "NULL"
-    };
     let within = within
         .map(|rows| format!(" WHERE _pk IN ({rows})"))
         .unwrap_or_default();
     format!(
-        "SELECT _pk AS k, row_number() OVER (ORDER BY {order}) AS place, {counts} AS counts, {list} AS list, {near} AS n FROM ({}){within}",
+        "SELECT _pk AS k, row_number() OVER (ORDER BY {order}) AS place, {counts} AS counts, {list} AS list FROM ({}){within}",
         other.sql
     )
 }
