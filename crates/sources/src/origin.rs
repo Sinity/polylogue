@@ -415,6 +415,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -432,6 +433,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -467,6 +469,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -550,6 +553,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -573,6 +577,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -620,6 +625,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -637,6 +643,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -656,6 +663,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     // origin that recognizes the same file is tried first.
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,

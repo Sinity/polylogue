@@ -176,7 +176,7 @@ fn usage(reader: &Reader<'_>, pk: i64, session: &str) -> Result<Usage> {
 impl Reader<'_> {
     pub fn underived_profiles(&self, selection: &Selection) -> Result<u64> {
         let (condition, params) = selection.session_condition("s.pk")?;
-        Ok(self.conn()?.query_row(&format!("SELECT count(*) FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} AND p.session_pk IS NULL"),rusqlite::params_from_iter(params.iter()),|r|r.get(0))?)
+        Ok(self.conn()?.query_row(&format!("SELECT count(*) FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} AND p.session_pk IS NULL"),rusqlite::params_from_iter(params.iter()),|r|r.get::<_,i64>(0).map(|n|n as u64))?)
     }
 
     pub fn session_profiles(&self, selection: &Selection) -> Result<Vec<Profile>> {
@@ -272,34 +272,44 @@ pub(crate) fn bounds(
     )?)
 }
 
+fn stored_count(n: impl TryInto<i64>) -> Result<i64> {
+    n.try_into()
+        .map_err(|_| StoreError::Invalid("profile count exceeds SQLite's integer range".into()))
+}
+
+/// Preserve the selected session identity even when display fields omit its ID.
+pub fn page_query(selection_sql: &str) -> String {
+    format!("SELECT q.*,s.id AS _session_id FROM ({selection_sql}) q JOIN session s ON s.pk=q._pk")
+}
+
 pub(crate) fn write_facts(conn: &rusqlite::Connection, pk: i64, facts: &Facts) -> Result<()> {
     conn.prepare_cached("INSERT OR REPLACE INTO session_profile(session_pk,rule_version,cluster_gap_ms,timestamped_messages,message_count,word_count,substantive_count,compaction_count,total_duration_ms,thinking_count,message_clustered_duration_ms,tool_active_duration_ms,tool_latency_measured_pairs,tool_latency_median_ms,tool_latency_p90_ms,tool_latency_max_ms,agent_response_latency_measured_pairs,agent_response_latency_median_ms,agent_response_latency_p90_ms,agent_response_latency_max_ms,user_response_latency_measured_pairs,user_response_latency_median_ms,user_response_latency_p90_ms,user_response_latency_max_ms,unpaired_tools_past_gap,tools,tool_call_count,actions,workflow_shape,workflow_features,final_observed_state,final_observed_state_method,final_message) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)")?.execute(rusqlite::params![pk,
         facts.rule_version,
         facts.cluster_gap_ms,
-        facts.timestamped_messages,
-        facts.message_count,
-        facts.word_count,
-        facts.substantive_count,
-        facts.compaction_count,
+        stored_count(facts.timestamped_messages)?,
+        stored_count(facts.message_count)?,
+        stored_count(facts.word_count)?,
+        stored_count(facts.substantive_count)?,
+        stored_count(facts.compaction_count)?,
         facts.total_duration_ms,
-        facts.thinking_count,
+        stored_count(facts.thinking_count)?,
         facts.message_clustered_duration_ms,
         facts.tool_active_duration_ms,
-        facts.tool_latency.measured_pairs,
+        stored_count(facts.tool_latency.measured_pairs)?,
         facts.tool_latency.median_ms,
         facts.tool_latency.p90_ms,
         facts.tool_latency.max_ms,
-        facts.agent_response_latency.measured_pairs,
+        stored_count(facts.agent_response_latency.measured_pairs)?,
         facts.agent_response_latency.median_ms,
         facts.agent_response_latency.p90_ms,
         facts.agent_response_latency.max_ms,
-        facts.user_response_latency.measured_pairs,
+        stored_count(facts.user_response_latency.measured_pairs)?,
         facts.user_response_latency.median_ms,
         facts.user_response_latency.p90_ms,
         facts.user_response_latency.max_ms,
-        facts.unpaired_tools_past_gap,
+        stored_count(facts.unpaired_tools_past_gap)?,
         serde_json::to_string(&facts.tools)?,
-        facts.tool_call_count,
+        stored_count(facts.tool_call_count)?,
         serde_json::to_string(&facts.actions)?,
         facts.workflow_shape,
         serde_json::to_string(&facts.workflow_features)?,
@@ -318,37 +328,37 @@ pub(crate) fn facts(conn: &rusqlite::Connection, pk: i64) -> Result<Option<Facts
             first_at: None,
             last_at: None,
             timestamp_source: String::new(),
-            timestamped_messages: r.get(2)?,
-            message_count: r.get(3)?,
-            word_count: r.get(4)?,
-            substantive_count: r.get(5)?,
-            compaction_count: r.get(6)?,
+            timestamped_messages: r.get::<_,i64>(2)? as u64,
+            message_count: r.get::<_,i64>(3)? as u64,
+            word_count: r.get::<_,i64>(4)? as u64,
+            substantive_count: r.get::<_,i64>(5)? as u64,
+            compaction_count: r.get::<_,i64>(6)? as u64,
             total_duration_ms: r.get(7)?,
-            thinking_count: r.get(8)?,
+            thinking_count: r.get::<_,i64>(8)? as u64,
             wall_duration_ms: None,
             message_clustered_duration_ms: r.get(9)?,
             tool_active_duration_ms: r.get(10)?,
             tool_latency: Latency {
-                measured_pairs: r.get(11)?,
+                measured_pairs: r.get::<_,i64>(11)? as usize,
                 median_ms: r.get(12)?,
                 p90_ms: r.get(13)?,
                 max_ms: r.get(14)?,
             },
             agent_response_latency: Latency {
-                measured_pairs: r.get(15)?,
+                measured_pairs: r.get::<_,i64>(15)? as usize,
                 median_ms: r.get(16)?,
                 p90_ms: r.get(17)?,
                 max_ms: r.get(18)?,
             },
             user_response_latency: Latency {
-                measured_pairs: r.get(19)?,
+                measured_pairs: r.get::<_,i64>(19)? as usize,
                 median_ms: r.get(20)?,
                 p90_ms: r.get(21)?,
                 max_ms: r.get(22)?,
             },
-            unpaired_tools_past_gap: r.get(23)?,
+            unpaired_tools_past_gap: r.get::<_,i64>(23)? as u64,
             tools: Default::default(),
-            tool_call_count: r.get(25)?,
+            tool_call_count: r.get::<_,i64>(25)? as u64,
             actions: Default::default(),
             workflow_shape: r.get(27)?,
             workflow_features: Default::default(),

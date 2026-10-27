@@ -160,7 +160,7 @@ pub fn outlook(
         let Some(day) = day else {
             // Only response rows have a response denominator; unknown-boundary
             // items above are accounted for separately.
-            answer.untimed_responses = row.get(10)?;
+            answer.untimed_responses = row.get::<_, i64>(10)? as u64;
             answer.incomplete_usage = true;
             continue;
         };
