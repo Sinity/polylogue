@@ -153,8 +153,9 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
     let w = morrow();
     let similarity = super::generated::vectors_for(&w, |_| false);
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let fields = ["origin".into()];
     let mut request = ask("kind:* near:dates | distinct");
-    request.fields = &["origin".into()];
+    request.fields = &fields;
     request.embeddings = true;
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
