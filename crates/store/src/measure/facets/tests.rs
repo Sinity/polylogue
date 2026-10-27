@@ -71,9 +71,10 @@ fn distinct_sessions_global_idf_and_optional_families_share_one_reader() {
         )
         .unwrap();
     }
+    f.derive().unwrap();
+    // This fixture supplies the already-derived repository identity.
     f.live(a, "hook_stop", 0, None, Some("root-one")).unwrap();
     f.live(b, "hook_stop", 0, None, Some("root-one")).unwrap();
-    f.derive().unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let selected = Selection {
