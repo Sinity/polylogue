@@ -21,17 +21,21 @@ pub fn mask_json(value: &mut Value) {
 }
 
 pub fn mask_json_values(value: &mut Value, string: impl FnMut(&str) -> String) {
-    map_values(value, string, None);
+    map_values(value, string, None, None);
 }
 
-/// Exclusions come from typed serialization, before JSON object keys can change.
-pub fn mask_json_values_except<'a>(
+/// Follow typed exclusions through key changes so a later cleaning pass sees them too.
+pub fn mask_json_values_except(
     value: &mut Value,
     string: impl FnMut(&str) -> String,
-    paths: impl IntoIterator<Item = &'a str>,
+    paths: &mut Vec<String>,
 ) {
+    if paths.is_empty() {
+        map_values(value, string, None, None);
+        return;
+    }
     let mut tree = Exclusions::default();
-    for path in paths {
+    for path in paths.iter() {
         let mut node = &mut tree;
         for key in path.split('/').skip(1) {
             node = node
@@ -41,7 +45,8 @@ pub fn mask_json_values_except<'a>(
         }
         node.value = true;
     }
-    map_values(value, string, Some(&tree));
+    paths.clear();
+    map_values(value, string, Some(&tree), Some(paths));
 }
 
 #[derive(Default)]
@@ -54,21 +59,47 @@ fn map_values(
     value: &mut Value,
     mut string: impl FnMut(&str) -> String,
     exclusions: Option<&Exclusions>,
+    mut paths: Option<&mut Vec<String>>,
 ) {
-    let mut pending = vec![(value, exclusions)];
-    while let Some((value, exclusions)) = pending.pop() {
+    // Most values have no typed references. Their stack holds only value pointers.
+    let mut plain = Vec::new();
+    let mut protected = Vec::new();
+    match exclusions {
+        Some(node) => protected.push((value, node, String::new())),
+        None => plain.push(value),
+    }
+    loop {
+        let (value, exclusions, path) = if let Some((value, node, path)) = protected.pop() {
+            (value, Some(node), Some(path))
+        } else if let Some(value) = plain.pop() {
+            (value, None, None)
+        } else {
+            break;
+        };
         if exclusions.is_some_and(|node| node.value) {
+            if let Some(paths) = paths.as_mut()
+                && let Some(path) = path
+            {
+                paths.push(path);
+            }
             continue;
         }
         match value {
             Value::String(text) => *text = string(text),
             Value::Array(values) => {
-                pending.extend(values.iter_mut().enumerate().map(|(index, value)| {
-                    (
-                        value,
-                        exclusions.and_then(|node| node.children.get(&index.to_string())),
-                    )
-                }))
+                for (index, value) in values.iter_mut().enumerate() {
+                    if let Some(child) =
+                        exclusions.and_then(|node| node.children.get(&index.to_string()))
+                    {
+                        protected.push((
+                            value,
+                            child,
+                            format!("{}/{index}", path.as_deref().unwrap_or_default()),
+                        ));
+                    } else {
+                        plain.push(value);
+                    }
+                }
             }
             Value::Object(values) => {
                 let mut renamed = Vec::new();
@@ -97,11 +128,21 @@ fn map_values(
                     }
                     values.insert(key, value);
                 }
-                pending.extend(
-                    values
-                        .iter_mut()
-                        .map(|(key, value)| (value, children.get(key).copied())),
-                );
+                for (key, value) in values.iter_mut() {
+                    if let Some(child) = children.get(key).copied() {
+                        protected.push((
+                            value,
+                            child,
+                            format!(
+                                "{}/{}",
+                                path.as_deref().unwrap_or_default(),
+                                key.replace('~', "~0").replace('/', "~1")
+                            ),
+                        ));
+                    } else {
+                        plain.push(value);
+                    }
+                }
             }
             _ => {}
         }

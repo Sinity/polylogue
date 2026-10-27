@@ -460,12 +460,8 @@ impl References {
         }
     }
 
-    fn clean(&self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
-        polylogue_model::masking::mask_json_values_except(
-            value,
-            string,
-            self.0.iter().map(String::as_str),
-        );
+    fn clean(&mut self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
+        polylogue_model::masking::mask_json_values_except(value, string, &mut self.0);
     }
 }
 

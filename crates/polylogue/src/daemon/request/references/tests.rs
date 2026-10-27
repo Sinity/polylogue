@@ -80,13 +80,17 @@ fn exact_numbers_and_raw_json_keep_their_types() {
 #[test]
 fn typed_references_survive_masked_map_keys_and_key_collisions() {
     let secret = "AKIAIOSFODNN7EXAMPLE";
-    let id = MessageId::parse(&format!("claude-code:{secret}")).unwrap();
+    let id = MessageId::parse(&format!("claude-code:/synthetic/archive/{secret}")).unwrap();
     let label = polylogue_render::mask(secret);
     let map = std::collections::BTreeMap::from([
         (secret.to_owned(), id.clone()),
         (label.clone(), id.clone()),
     ]);
-    let response = References::default().response(map).masked();
+    let response = References::default()
+        .response(map)
+        .masked()
+        .clean(|text| text.replace("/synthetic/archive", "[archive]"))
+        .clean(polylogue_render::mask);
     let super::super::Response::Ok { data, .. } = response else {
         panic!()
     };
