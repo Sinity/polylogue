@@ -296,6 +296,8 @@ pub struct Measure {
     pub what: String,
     /// The same unit defaults before the query adds its conditions.
     pub population_sql: String,
+    /// The selected sessions, before an application measure projects its rows.
+    pub selection_sql: String,
     /// The query named no conditions: the measurement covers every session.
     pub everything: bool,
 }
