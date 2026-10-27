@@ -34,7 +34,7 @@ fn source(selection: &Selection<'_>) -> (String, Vec<SqlValue>) {
             .collect();
         return (
             format!(
-                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd AS cost FROM message m JOIN session s ON s.pk=m.session_pk WHERE {} AND {condition}",
+                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd AS cost_nusd FROM message m JOIN session s ON s.pk=m.session_pk WHERE {} AND {condition}",
                 crate::measure::RESPONSE_ROWS
             ),
             params,
@@ -118,7 +118,7 @@ pub fn page(
         i64::try_from(size.saturating_add(1))
             .map_err(|_| crate::StoreError::Invalid("page size exceeds i64".into()))?,
     ));
-    let mut rows = reader.query(&format!("WITH activity AS ({source}), dated AS (SELECT *, {date_expr} AS date FROM activity) SELECT * FROM dated WHERE {} ORDER BY date IS NULL,{time_key},kind,id LIMIT {limit}",conditions.join(" AND ")), &params)?;
+    let mut rows = reader.query(&format!("WITH activity AS ({source}), dated AS (SELECT *, {date_expr} AS date FROM activity) SELECT at,kind,id,session,label,time_source,date FROM dated WHERE {} ORDER BY date IS NULL,{time_key},kind,id LIMIT {limit}",conditions.join(" AND ")), &params)?;
     let more = rows.len() as u64 > size;
     if more {
         rows.pop();
@@ -200,7 +200,7 @@ pub fn costs_by_day(
     let first = params.len();
     params.push(SqlValue::Int(until));
     let last = params.len();
-    reader.query(&format!("WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records,sum(cost)/1e9 AS known_usd,sum(cost IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params)
+    reader.query(&format!("WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records,sum(cost_nusd)/1e9 AS known_usd,sum(cost_nusd IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params)
 }
 
 /// Known responses with unrepresentable source times in the selected sessions,

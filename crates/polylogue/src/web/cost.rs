@@ -254,6 +254,15 @@ fn daily(scope: &str, options: &Options, data: &Value) -> String {
             );
         }
     }
+    if let Some(error) = data["days_error"]["error"].as_str() {
+        let _ = write!(
+            body,
+            "</nav><p role=\"status\">Daily response costs unavailable: {}: {}</p>",
+            esc(error),
+            esc(data["days_error"]["message"].as_str().unwrap_or(""))
+        );
+        return body;
+    }
     body.push_str("</nav><table class=\"results\"><caption>Known API-equivalent physical response subtotals in the displayed month and selected source record period. Unpriced records are excluded from known USD.</caption><thead><tr><th scope=\"col\">Logical day</th><th scope=\"col\">Response records</th><th scope=\"col\">Known USD</th><th scope=\"col\">Unpriced records</th></tr></thead><tbody>");
     for row in data["days"].as_array().into_iter().flatten() {
         let date = row["date"].as_str().unwrap_or("");
