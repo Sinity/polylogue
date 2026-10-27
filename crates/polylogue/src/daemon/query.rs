@@ -618,7 +618,7 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 }
 
 /// Reference columns belong to the compiled answer's declared types.
-pub(crate) fn answer(data: Value) -> super::Response {
+pub(crate) fn response(data: Value) -> super::Response {
     use super::request::References;
     use polylogue_model::{DocumentId, MessageId, SessionId};
     use polylogue_query::{Column, ColumnReference};

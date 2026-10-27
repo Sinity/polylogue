@@ -2,7 +2,7 @@
 //! in `service`; ordinary requests receive one response, finite feeds a batch.
 
 use super::Request;
-use super::service::{Daemon, error, handle};
+use super::service::{self, Daemon, error, handle};
 use polylogue_engine::Config;
 use polylogue_store::Archive;
 use std::io::{BufRead, BufReader, Write};

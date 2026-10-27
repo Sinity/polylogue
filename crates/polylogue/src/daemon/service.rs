@@ -354,7 +354,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             let key =
                 serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
             if let Some(data) = d.warm.answer(&key, &position) {
-                return super::query::answer(data);
+                return super::query::response(data);
             }
             let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
                 .ok()
@@ -379,7 +379,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             match super::query::run(&reader, ask) {
                 Ok(data) => {
                     d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                    super::query::answer(data)
+                    super::query::response(data)
                 }
                 Err(f) => Response::Error {
                     kind: f.kind,

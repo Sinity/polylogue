@@ -95,7 +95,7 @@ fn document_previous_cost() {
         for size in [1000,100000] {
             conn.execute("WITH RECURSIVE n(i) AS (SELECT coalesce(max(idx),0)+1 FROM document_block UNION ALL SELECT i+1 FROM n WHERE i+1<?1)
                 INSERT INTO document_block(document_pk,idx,kind,body,text_id,data)
-                SELECT b.document_pk,n.i,b.kind,b.body,b.text_id,b.data FROM n CROSS JOIN document_block b JOIN document d ON d.pk=b.document_pk WHERE b.idx=0 AND d.id=?2",rusqlite::params![size,id]).unwrap();
+                SELECT b.document_pk,n.i,b.kind,b.body,b.text_id,b.data FROM n CROSS JOIN document_block b JOIN document d ON d.pk=b.document_pk WHERE b.idx=0 AND d.id=?2",rusqlite::params![size as i64,id]).unwrap();
             let base=format!("/api/v1/read?session=document:{}&budget=64&slices=true",polylogue_render::html::encode_path_segment(id));
             let (status,_,body)=send(&r,authed(get(&base)).body(Body::empty()).unwrap()).await;
             assert_eq!(status,StatusCode::OK,"{body}");
