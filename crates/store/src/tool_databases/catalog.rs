@@ -82,7 +82,9 @@ impl Comparison {
                 .execute(params![input_pk, table, key])?;
             }
         }
-        if let Some((table,_,_))=self.rows.first() { crate::fault::check("tool_database.comparison_commit",table)?; }
+        if let Some((table, _, _)) = self.rows.first() {
+            crate::fault::check("tool_database.comparison_commit", table)?;
+        }
         let saved = if let Some(saved) = &self.saved {
             Some(saved.clone())
         } else {

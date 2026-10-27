@@ -231,7 +231,9 @@ fn write_export(
 ) -> Result<Exported, ExportError> {
     let _busy = crate::timing::enter(crate::timing::Stage::Database);
     let sql_err = |e| ExportError::Sqlite(db.to_owned(), e);
-    let facts = DbFacts::of(db).db.ok_or_else(||ExportError::Invalid("source database disappeared before its read".into()))?;
+    let facts = DbFacts::of(db).db.ok_or_else(|| {
+        ExportError::Invalid("source database disappeared before its read".into())
+    })?;
     let source = Connection::open_with_flags(
         db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
