@@ -3363,7 +3363,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=87b3291a407d2ef36dc8abb693c99c981ee05b30#87b3291a407d2ef36dc8abb693c99c981ee05b30"
+source = "git+https://github.com/Sinity/sinex?rev=1c01cad22ece52c004f4da419031855667b98e2e#1c01cad22ece52c004f4da419031855667b98e2e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3373,7 +3373,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=87b3291a407d2ef36dc8abb693c99c981ee05b30#87b3291a407d2ef36dc8abb693c99c981ee05b30"
+source = "git+https://github.com/Sinity/sinex?rev=1c01cad22ece52c004f4da419031855667b98e2e#1c01cad22ece52c004f4da419031855667b98e2e"
 dependencies = [
  "blake3",
  "caseless",
@@ -3393,7 +3393,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=87b3291a407d2ef36dc8abb693c99c981ee05b30#87b3291a407d2ef36dc8abb693c99c981ee05b30"
+source = "git+https://github.com/Sinity/sinex?rev=1c01cad22ece52c004f4da419031855667b98e2e#1c01cad22ece52c004f4da419031855667b98e2e"
 dependencies = [
  "serde",
  "serde_json",
@@ -3403,7 +3403,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=87b3291a407d2ef36dc8abb693c99c981ee05b30#87b3291a407d2ef36dc8abb693c99c981ee05b30"
+source = "git+https://github.com/Sinity/sinex?rev=1c01cad22ece52c004f4da419031855667b98e2e#1c01cad22ece52c004f4da419031855667b98e2e"
 dependencies = [
  "blake3",
  "tempfile",
