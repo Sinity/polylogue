@@ -66,7 +66,8 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
             &claude_user(name, name, "stored text"),
         );
     }
-    let (mut engine, _lock) = w.engine(64 << 20);
+    let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
+    let mut engine = Engine::new(w.config(64 << 20), archive).unwrap();
     assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.config.workers = 2;
     let behind = engine
@@ -83,7 +84,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
     let plans = behind
         .into_iter()
         .map(|chain| {
-            engine.reparse_plan(
+            Plan::stored(
                 watched[&chain.input].clone(),
                 &ORIGIN,
                 InputKey {
@@ -91,12 +92,18 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
                     format: "claude-code".into(),
                     arrival_rank: 0,
                 },
-                &polylogue_store::read::ChainProgress {
-                    parsed: false,
-                    parsed_upto: 0,
-                    ..chain.progress
+                Change::Reparse {
+                    chain: chain.progress.chain,
                 },
                 None,
+                chain.progress.length,
+                0,
+                pool::Bytes::Unloaded {
+                    chain: chain.progress.chain,
+                    length: chain.progress.length,
+                    decoded: true,
+                },
+                64 << 20,
                 false,
             )
         })

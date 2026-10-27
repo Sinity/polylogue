@@ -107,7 +107,11 @@ fn main() {
         pass.unreadable_roots.is_empty(),
         "sample has unreadable roots"
     );
-    assert!(pass.messages_written > 0, "sample wrote no messages");
+    if mode == "fresh" {
+        assert!(pass.messages_written > 0, "sample wrote no messages");
+    } else {
+        assert!(pass.bytes_read > 0, "sample read no chains");
+    }
     let stages: serde_json::Map<String, Value> = polylogue_store::timing::stage_seconds()
         .into_iter()
         .map(|(s, n)| (s.name().into(), json!(n)))

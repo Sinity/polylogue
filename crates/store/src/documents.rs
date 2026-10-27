@@ -12,8 +12,6 @@ use std::ops::ControlFlow;
 pub(crate) struct Source<'a> {
     pub input_pk: i64,
     pub chain: i64,
-    /// Later records of the chain restate earlier ones.
-    pub repeats_whole_conversations: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -107,7 +105,6 @@ pub(crate) fn refresh(
     let source = Source {
         input_pk,
         chain,
-        repeats_whole_conversations: false,
         rank,
         counter,
         packed: &packed,

@@ -46,7 +46,6 @@ pub(super) fn write_rows(
     let source = crate::documents::Source {
         input_pk,
         chain,
-        repeats_whole_conversations: p.repeats_whole_conversations,
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
