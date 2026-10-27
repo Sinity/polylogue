@@ -33,14 +33,14 @@ fn source(selection: &Selection<'_>) -> (String, Vec<SqlValue>) {
             .collect();
         return (
             format!(
-                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Provider message time' AS time_source, m.cost_nusd AS cost FROM message m JOIN session s ON s.pk=m.session_pk WHERE {} AND {condition}",
-                crate::measure::usage::RESPONSE_ROWS
+                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd AS cost FROM message m JOIN session s ON s.pk=m.session_pk WHERE {} AND {condition}",
+                crate::measure::RESPONSE_ROWS
             ),
             params,
         );
     }
-    ("SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Provider message time' AS time_source FROM message m JOIN session s ON s.pk=m.session_pk
-       UNION ALL SELECT e.at, 'event', e.id, s.id, e.kind, 'Provider event time' FROM event e LEFT JOIN session s ON s.pk=e.session_pk
+    ("SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m JOIN session s ON s.pk=m.session_pk
+       UNION ALL SELECT e.at, 'event', e.id, s.id, e.kind, 'Recorded event time' FROM event e LEFT JOIN session s ON s.pk=e.session_pk
        UNION ALL SELECT n.created_at, 'note', n.id, NULL, n.kind, 'Note writer clock' FROM a.note n".into(), vec![])
 }
 
