@@ -128,8 +128,8 @@ embeddings built, `near:TEXT` ranks rows by similarity to TEXT: the query's
 other conditions choose the rows first and every row they keep is ranked,
 and with words in the same query both orders are fused (reciprocal rank
 fusion). Rows without a vector follow the ranked ones, unranked, and the
-answer counts them (`unknown.near`); a count or grouping after `near:`
-computes no similarity. `| union (…)` adds another query's rows; when either
+answer counts them (`unknown.near`). A count or grouping after `near:`
+computes no similarity unless an earlier selection used the ranking. `| union (…)` adds another query's rows; when either
 side is ranked, the rows rank by fusing every list's order, and `found_in`
 names the lists that ranked each row. `| fuse (…)` ranks the rows also by
 another query's order without adding any. Ranked answers page by cursor like

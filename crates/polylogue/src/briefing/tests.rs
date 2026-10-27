@@ -19,7 +19,7 @@ fn start_sources_parse_from_harness_names() {
 }
 
 #[test]
-fn recall_finds_prose_then_tool_output_as_a_query_sees_them() {
+fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
@@ -81,9 +81,11 @@ fn recall_finds_prose_then_tool_output_as_a_query_sees_them() {
         None,
     )
     .unwrap();
+    // Each list has one first-place hit. Equal ranks and unknown times
+    // are ordered by message ID, highest first.
     assert_eq!(
         p.refs,
-        ["session:test:s1", "message:m1", "message:m2"],
+        ["session:test:s1", "message:m2", "message:m1"],
         "{}",
         p.text
     );
