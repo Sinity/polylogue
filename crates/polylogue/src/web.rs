@@ -6,10 +6,11 @@
 
 pub mod access;
 mod api;
+mod connection;
 pub mod pages;
 mod reader;
 
-use crate::daemon::service::{Daemon, handle};
+use crate::daemon::service::Daemon;
 use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
@@ -111,7 +112,7 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
     server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
         runtime.block_on(async move {
             tokio::select! {
-                result = axum::serve(OwnerListener { inner: listener, uid }, router(web)).into_future() => result,
+                result = axum::serve(OwnerListener { inner: listener, uid }, router(web).into_make_service_with_connect_info::<connection::Peer>()).into_future() => result,
                 _ = stopped => Ok(()),
             }
         })
@@ -130,7 +131,7 @@ struct OwnerListener {
 }
 
 impl axum::serve::Listener for OwnerListener {
-    type Io = tokio::net::TcpStream;
+    type Io = connection::Connection;
     type Addr = std::net::SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
@@ -142,8 +143,10 @@ impl axum::serve::Listener for OwnerListener {
             let Ok(server) = stream.local_addr() else {
                 continue;
             };
-            if access::socket_owner(peer, server) == Some(self.uid) {
-                return (stream, peer);
+            if access::socket_owner(peer, server) == Some(self.uid)
+                && let Ok(connection) = connection::Connection::new(stream)
+            {
+                return (connection, peer);
             }
         }
     }
@@ -230,8 +233,38 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     next.run(req).await
 }
 
+tokio::task_local! {
+    static READ_LIMIT: (Option<i64>, polylogue_store::read::limit::ReadCancellation);
+}
+
 async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
-    let mut response = guarded(web, req, next).await;
+    let cancellation = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<connection::Peer>>()
+        .map(|peer| peer.0.0.child())
+        .unwrap_or_default();
+    let deadline_ms = match req.headers().get("x-polylogue-deadline-ms") {
+        Some(value) => match value
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+        {
+            Some(value) => Some(value),
+            None => {
+                return json_answer(
+                    &web,
+                    crate::daemon::service::error(
+                        "bad_request",
+                        "x-polylogue-deadline-ms must be Unix milliseconds",
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
+    let mut response = READ_LIMIT
+        .scope((deadline_ms, cancellation), guarded(web, req, next))
+        .await;
     let h = response.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -254,9 +287,33 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
 /// Runs a request on a blocking thread, as the socket would.
 pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     let d = Arc::clone(&web.daemon);
-    tokio::task::spawn_blocking(move || handle(request, &d))
-        .await
-        .unwrap_or_else(|error| crate::daemon::service::error("internal", error))
+    let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
+    let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
+    let mut cancel = CancelRead(Some(limit.cancellation.clone()));
+    let response = tokio::task::spawn_blocking(move || {
+        crate::daemon::service::handle_with_limit(request, &d, &limit)
+    })
+    .await
+    .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
+    cancel.0.take();
+    response
+}
+
+pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
+    READ_LIMIT
+        .try_with(|(deadline_ms, cancellation)| {
+            crate::daemon::execution::limit(*deadline_ms, cancellation.clone())
+        })
+        .unwrap_or_else(|_| crate::daemon::execution::limit(None, Default::default()))
+}
+
+pub(super) struct CancelRead(Option<polylogue_store::read::limit::ReadCancellation>);
+impl Drop for CancelRead {
+    fn drop(&mut self) {
+        if let Some(cancellation) = &self.0 {
+            cancellation.cancel();
+        }
+    }
 }
 
 /// A response's data with the archive directory's path taken out.
@@ -523,6 +580,8 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .and_then(|d| d["http_status"].as_u64())
                 .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
             let status = named.unwrap_or(match kind.as_str() {
+                "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
+                "cancelled" => StatusCode::REQUEST_TIMEOUT,
                 "not_found" => StatusCode::NOT_FOUND,
                 "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
                 "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,

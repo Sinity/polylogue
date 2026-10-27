@@ -6,7 +6,7 @@ fn a_missing_daemon_is_daemon_required() {
     let err = send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
     assert!(is_down(&err));
     assert!(!Archive::at(dir.path()).lock_held());
-    let err = send_when_ready(&Archive::at(dir.path()), &Request::Status).unwrap_err();
+    let err = send_with_timeout(&Archive::at(dir.path()), &Request::Status, None).unwrap_err();
     assert!(is_down(&err));
 }
 
@@ -31,9 +31,84 @@ fn a_starting_daemon_is_waited_for() {
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
         drop(lock);
     });
-    let response = send_when_ready(&archive, &Request::Status).unwrap();
+    let response = send_with_timeout(&archive, &Request::Status, None).unwrap();
     assert!(matches!(response, Response::Ok { .. }));
     server.join().unwrap();
+}
+
+#[test]
+fn timeout_is_global_and_requires_positive_seconds() {
+    for args in [
+        vec!["polylogue", "--timeout", "120", "status"],
+        vec!["polylogue", "status", "--timeout", "120"],
+    ] {
+        let matches = command().try_get_matches_from(args).unwrap();
+        assert_eq!(matches.get_one::<u64>("timeout"), Some(&120));
+    }
+    assert!(
+        command()
+            .try_get_matches_from(["polylogue", "--timeout", "0", "status"])
+            .is_err()
+    );
+}
+
+#[test]
+fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
+    use std::os::unix::net::UnixListener;
+    use std::time::Duration;
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    for (request, timeout, expected) in [
+        (Request::Status, None, true),
+        (
+            Request::Export {
+                targets: vec![],
+                format: "json".into(),
+                user_state: true,
+            },
+            None,
+            false,
+        ),
+        (
+            Request::Export {
+                targets: vec![],
+                format: "json".into(),
+                user_state: true,
+            },
+            Some(Duration::from_secs(120)),
+            true,
+        ),
+        (
+            Request::Embed {
+                what: "build".into(),
+                query: None,
+                limit: None,
+                yes: false,
+            },
+            Some(Duration::from_secs(120)),
+            false,
+        ),
+    ] {
+        let listener = UnixListener::bind(archive.socket()).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let outgoing: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(outgoing.get("deadline_ms").is_some(), expected);
+            if let Some(timeout) = timeout.filter(|_| expected) {
+                let left =
+                    outgoing["deadline_ms"].as_i64().unwrap() - crate::daemon::service::now_ms();
+                assert!(left > timeout.as_millis() as i64 - 5000);
+            }
+            stream
+                .write_all(b"{\"result\":\"ok\",\"data\":{}}\n")
+                .unwrap();
+        });
+        send_with_timeout(&archive, &request, timeout).unwrap();
+        server.join().unwrap();
+        std::fs::remove_file(archive.socket()).unwrap();
+    }
 }
 
 #[test]

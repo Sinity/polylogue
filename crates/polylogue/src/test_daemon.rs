@@ -81,6 +81,45 @@ impl TestDaemon {
         }
     }
 
+    pub(crate) fn watch_reads(
+        &self,
+    ) -> std::sync::mpsc::Receiver<polylogue_store::read::limit::ReadLimit> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.daemon.read_limits.lock().unwrap() = Some(sender);
+        receiver
+    }
+
+    pub(crate) fn wait_for_sql(limit: &polylogue_store::read::limit::ReadLimit) {
+        let start = std::time::Instant::now();
+        while limit.sqlite_steps() < 10_000 {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "request never reached SQL"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    pub(crate) fn assert_slot_freed(&self) -> Duration {
+        let start = std::time::Instant::now();
+        let reads = &self.daemon.reads;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let limit = crate::daemon::execution::limit(
+                        Some(crate::daemon::execution::deadline(Duration::from_secs(2))),
+                        Default::default(),
+                    );
+                    limit.scope(|| reads.reader().map(drop)).unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_secs(2));
+        elapsed
+    }
+
     /// Sets an archive setting through the daemon.
     pub fn set(&self, key: &str, value: &str) {
         let r = handle(

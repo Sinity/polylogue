@@ -16,6 +16,8 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
+pub mod limit;
+
 mod behind_index;
 mod captured;
 mod parents;
@@ -58,6 +60,7 @@ pub struct Reader<'a> {
     index_identity: Option<IndexIdentity>,
     state: std::cell::Cell<ReadState>,
     owner: ThreadId,
+    limit: Option<limit::ReadLimit>,
     // ThreadId ownership detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -169,6 +172,11 @@ impl ReadPool {
         })
     }
 
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn checked_out(&self) -> usize {
+        self.state.lock().unwrap().owners.values().sum()
+    }
+
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
         let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
@@ -189,10 +197,14 @@ impl ReadPool {
     }
 
     fn acquire(&self, connect: impl FnOnce() -> Result<Connection>) -> Result<Reader<'_>> {
+        let limit = limit::ReadLimit::current();
         let owner = std::thread::current().id();
         let idle = {
             let mut state = self.state.lock().map_err(|_| pool_poisoned())?;
             loop {
+                if let Some(limit) = &limit {
+                    limit.check()?;
+                }
                 if state.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
@@ -213,7 +225,14 @@ impl ReadPool {
                     state.waiters += 1;
                     self.changed.notify_all();
                 }
-                state = self.available.wait(state).map_err(|_| pool_poisoned())?;
+                state = if limit.is_some() {
+                    self.available
+                        .wait_timeout(state, std::time::Duration::from_millis(5))
+                        .map_err(|_| pool_poisoned())?
+                        .0
+                } else {
+                    self.available.wait(state).map_err(|_| pool_poisoned())?
+                };
                 #[cfg(test)]
                 {
                     state.waiters -= 1;
@@ -228,6 +247,7 @@ impl ReadPool {
             index_identity: None,
             state: std::cell::Cell::new(ReadState::Deferred),
             owner,
+            limit,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
         };
@@ -238,7 +258,10 @@ impl ReadPool {
         let (conn, identity) = match idle {
             Some(connection) => connection,
             None => {
-                let conn = connect()?;
+                let conn = match &reader.limit {
+                    Some(limit) => limit.scope(connect),
+                    None => connect(),
+                }?;
                 let before = current?;
                 let after = index_identity(&self.archive)?;
                 if before != after {
@@ -247,6 +270,9 @@ impl ReadPool {
                 (conn, after)
             }
         };
+        if let Some(limit) = &reader.limit {
+            limit.install(&conn)?;
+        }
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
@@ -278,8 +304,16 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
+            if self.limit.is_some()
+                && (conn.progress_handler(0, None::<fn() -> bool>).is_err()
+                    || conn
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .is_err())
+            {
+                return false;
+            }
             matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
-                && conn.execute_batch("COMMIT").is_ok()
+                && conn.execute_batch("ROLLBACK").is_ok()
         });
         let mut state = self
             .pool
@@ -340,6 +374,10 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    pub fn check(&self) -> Result<()> {
+        self.limit.as_ref().map_or(Ok(()), limit::ReadLimit::check)
+    }
+
     /// The optional embeddings read connection shares this reader's slot and
     /// cannot outlive it. Only one vector guard can be held.
     pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
@@ -368,6 +406,7 @@ impl Reader<'_> {
                 &self.pool.archive,
                 self.pool.cache_kib,
                 writable,
+                self.limit.as_ref(),
             )?);
         }
         Ok(std::cell::RefMut::map(vectors, |v| {
@@ -376,6 +415,7 @@ impl Reader<'_> {
     }
 
     pub(crate) fn conn(&self) -> Result<&Connection> {
+        self.check()?;
         let conn = self
             .conn
             .as_ref()
@@ -397,6 +437,9 @@ impl Reader<'_> {
                             None,
                         )
                         .into());
+                    }
+                    if let Some(limit) = &self.limit {
+                        limit.check()?;
                     }
                     let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
                     if state.closed {
@@ -780,6 +823,7 @@ impl Reader<'_> {
     }
 
     pub fn status(&self) -> Result<Status> {
+        limit::ReadLimit::set_stage("status counts");
         let c = self.conn()?;
         let count =
             |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };

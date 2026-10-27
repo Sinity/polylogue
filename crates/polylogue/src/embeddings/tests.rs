@@ -9,3 +9,5 @@ fn long_texts_are_chunked_and_normalized() {
     let v = unit(vec![3.0, 4.0]);
     assert!((v[0] - 0.6).abs() < 1e-6 && (v[1] - 0.8).abs() < 1e-6);
 }
+
+mod cancellation;

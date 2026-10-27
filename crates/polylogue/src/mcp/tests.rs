@@ -4,6 +4,19 @@ use super::*;
 use crate::test_daemon;
 use serde_json::json;
 
+pub(crate) fn call(
+    archive: &Archive,
+    name: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<String, String> {
+    let request = build_request(name, arguments)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    format_answer(&request, runtime.block_on(send(archive, &request, None)))
+}
+
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
 }
@@ -63,6 +76,8 @@ mod events;
 mod attachments;
 
 mod explain;
+
+mod cancellation;
 
 #[test]
 fn errors_show_archived_controls_as_text() {

@@ -62,12 +62,20 @@ pub struct Vectors {
 }
 
 impl Vectors {
-    pub(crate) fn for_reader(archive: &Archive, cache_kib: i64, writable: bool) -> Result<Self> {
+    pub(crate) fn for_reader(
+        archive: &Archive,
+        cache_kib: i64,
+        writable: bool,
+        limit: Option<&crate::read::limit::ReadLimit>,
+    ) -> Result<Self> {
         let conn = if writable {
             open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
         } else {
             open_read(&archive.embeddings_db())?
         };
+        if !writable && let Some(limit) = limit {
+            limit.install(&conn)?;
+        }
         conn.pragma_update(None, "cache_size", -cache_kib)?;
         conn.pragma_update(None, "mmap_size", 0)?;
         if !writable {
@@ -413,11 +421,18 @@ impl Loaded {
             .map_or(1, |n| n.get())
             .min(8);
         let per = n.div_ceil(workers).max(1);
+        let limit = crate::read::limit::ReadLimit::current();
         std::thread::scope(|scope| {
             for (part, out) in scores.chunks_mut(per).enumerate() {
+                let limit = limit.clone();
                 let first = part * per;
                 scope.spawn(move || {
                     for (i, score) in out.iter_mut().enumerate() {
+                        if i % 256 == 0
+                            && limit.as_ref().is_some_and(|limit| limit.check().is_err())
+                        {
+                            break;
+                        }
                         let v = first + i;
                         let row = &self.values[v * dims..(v + 1) * dims];
                         let dot: f32 = row.iter().zip(query).map(|(a, q)| f32::from(*a) * q).sum();
@@ -426,8 +441,16 @@ impl Loaded {
                 });
             }
         });
+        if let Some(limit) = &limit {
+            limit.check()?;
+        }
         let mut best = vec![f32::MIN; self.texts.len()];
         for (v, score) in scores.into_iter().enumerate() {
+            if v % 256 == 0
+                && let Some(limit) = &limit
+            {
+                limit.check()?;
+            }
             let text = self.owner[v] as usize;
             if score > best[text] {
                 best[text] = score;

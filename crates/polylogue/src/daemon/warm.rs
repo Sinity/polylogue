@@ -122,6 +122,7 @@ pub struct Counted {
 pub struct Warm {
     vectors: Mutex<Option<Arc<Loaded>>>,
     archive_counts: Mutex<Option<Counted>>,
+    count_error: Mutex<Option<String>>,
     /// Wakes the count worker: a request saw counts older than its read.
     recount: std::sync::Condvar,
     recount_wanted: std::sync::atomic::AtomicBool,
@@ -136,6 +137,7 @@ impl Default for Warm {
         Self {
             vectors: Mutex::new(None),
             archive_counts: Mutex::new(None),
+            count_error: Mutex::new(None),
             recount: std::sync::Condvar::new(),
             // The first count starts with the daemon.
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
@@ -143,6 +145,22 @@ impl Default for Warm {
             answers: Mutex::new(Recent::new(ANSWERS)),
             completion: Mutex::new(None),
             counts: Counts::default(),
+        }
+    }
+}
+
+fn read_lock<'a, T>(
+    lock: &'a Mutex<T>,
+    reader: &Reader<'_>,
+) -> Result<std::sync::MutexGuard<'a, T>, String> {
+    loop {
+        reader.check().map_err(|error| error.to_string())?;
+        match lock.try_lock() {
+            Ok(held) => return Ok(held),
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err("read cache poisoned".into()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
         }
     }
 }
@@ -156,7 +174,7 @@ impl Warm {
         provider: &Provider,
     ) -> Result<Option<Arc<Loaded>>, String> {
         let prefix = provider.key_prefix();
-        let mut held = self.vectors.lock().map_err(|_| "vector cache poisoned")?;
+        let mut held = read_lock(&self.vectors, reader)?;
         if let Some(loaded) = held.as_ref()
             && loaded.key.starts_with(&prefix)
             && loaded.writes == vectors::writes()
@@ -249,7 +267,7 @@ impl Warm {
         reader: &Reader<'_>,
         position: &str,
     ) -> Result<Arc<Completion>, String> {
-        let mut held = self.completion.lock().map_err(|_| "completion poisoned")?;
+        let mut held = read_lock(&self.completion, reader)?;
         if let Some((at, data)) = held.as_ref()
             && at == position
         {
@@ -264,24 +282,30 @@ impl Warm {
     /// (under [`QUICK_COUNT`]) and is older than `position`, it counts again
     /// now, so a small archive's status is exact; otherwise it answers from
     /// memory and asks the worker for newer counts. `None` until the first
-    /// count ends.
+    /// count ends. After a failure, the worker retries while previous counts stay available.
     pub fn counts(&self, reader: &Reader<'_>, position: &str) -> Option<Counted> {
         let held = self.archive_counts.lock().ok()?.clone();
         match held {
             Some(c) if c.position == position => Some(c),
-            Some(c) if c.took < QUICK_COUNT => {
-                let counted = count(reader, position).ok()?;
-                if let Ok(mut held) = self.archive_counts.lock() {
-                    *held = Some(counted.clone());
+            Some(c) if c.took < QUICK_COUNT && self.count_error().is_none() => {
+                match self.record_count(count(reader, position)) {
+                    Some(counted) => Some(counted),
+                    None => {
+                        self.request_count();
+                        Some(c)
+                    }
                 }
-                Some(counted)
             }
             held => {
-                self.recount_wanted.store(true, Ordering::Release);
-                self.recount.notify_one();
+                self.request_count();
                 held
             }
         }
+    }
+
+    fn request_count(&self) {
+        self.recount_wanted.store(true, Ordering::Release);
+        self.recount.notify_one();
     }
 
     /// The count worker: counts again when a `status` asked for newer
@@ -323,18 +347,49 @@ impl Warm {
             if !gap.is_zero() || !self.recount_wanted.swap(false, Ordering::AcqRel) {
                 continue;
             }
-            let Ok(reader) = reads.reader() else {
-                continue;
-            };
-            let Ok(position) = reader.change_position().map(|p| p.to_string()) else {
-                continue;
-            };
-            if let Ok(counted) = count(&reader, &position)
-                && let Ok(mut held) = self.archive_counts.lock()
-            {
-                *held = Some(counted);
+            self.refresh_counts(reads);
+        }
+    }
+
+    fn refresh_counts(&self, reads: &polylogue_store::ReadPool) {
+        let result = (|| {
+            let reader = reads.reader().map_err(|error| error.to_string())?;
+            let position = reader
+                .change_position()
+                .map_err(|error| error.to_string())?;
+            count(&reader, &position.to_string())
+        })();
+        self.record_count(result);
+    }
+
+    fn record_count(&self, result: Result<Counted, String>) -> Option<Counted> {
+        match result {
+            Ok(counted) => {
+                *self
+                    .archive_counts
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(counted.clone());
+                *self
+                    .count_error
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = None;
+                Some(counted)
+            }
+            Err(error) => {
+                *self
+                    .count_error
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(error);
+                None
             }
         }
+    }
+
+    pub fn count_error(&self) -> Option<String> {
+        self.count_error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// Drops everything; the next requests rebuild what they use.

@@ -382,3 +382,29 @@ unset. JSON uses JSON Unicode escapes and round trips the original values.
 HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
+
+## Read deadlines
+
+Read-only requests have a 30-second default time limit, including time waiting
+for a reader slot. `POLYLOGUE_READ_TIMEOUT_MS` configures the global default in
+milliseconds; the CLI `--timeout SECONDS` flag overrides it for one command.
+Export has no deadline unless the caller supplies one. Writes, background
+counts, vector preload and signals do not inherit a request deadline.
+Embedding provider calls outside a read request have their own 60-second timeout.
+A failed count appears in status as `count_error`, alongside any previous counts. A socket request can supply `deadline_ms` as absolute Unix
+milliseconds; HTTP accepts the same value in `X-Polylogue-Deadline-Ms`, and MCP
+accepts it in the call's `_meta.deadline_ms`. The daemon converts that value to
+a monotonic deadline when the request arrives. Completion sends a 500 ms
+deadline. Continuation pages start new requests.
+
+A request shares one deadline across every reader it opens. SQLite progress
+handlers stop long statements, and slot and write-lock waits check the same
+deadline and cancellation signal. Socket and HTTP disconnects cancel the
+request; MCP cancellation and EOF close its daemon socket. Provider HTTP waits and in-memory vector ranking observe the same limit.
+Progress handlers are removed before a connection returns to the pool. Requests cancelled while
+waiting for a slot never acquire one.
+
+A read that runs out of time returns `deadline_exceeded` (CLI exit 7); one its
+caller cancels returns `cancelled` (exit 3). Refusals name the running stage and
+report SQLite execution steps. An unfinished count and an unavailable scanned
+row count are `null`. A timed-out read never returns a successful partial page.

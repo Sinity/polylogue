@@ -83,11 +83,20 @@ async fn answer(
 async fn changes(web: &Arc<Web>, since: Option<String>) -> HttpResponse {
     let web = Arc::clone(web);
     let worker = Arc::clone(&web);
+    let limit = super::request_limit();
+    let mut cancel = super::CancelRead(Some(limit.cancellation.clone()));
     let result = tokio::task::spawn_blocking(move || {
-        let file = crate::daemon::service::change_feed(&worker.daemon, since.as_deref())?;
-        scrub_changes(&worker, file)
+        limit.scope(|| {
+            let result = crate::daemon::service::change_feed(&worker.daemon, since.as_deref())
+                .and_then(|file| scrub_changes(&worker, file));
+            limit.check().map_err(|e| {
+                crate::daemon::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
+            })?;
+            result
+        })
     })
     .await;
+    cancel.0.take();
     match result {
         Ok(Ok(file)) => {
             let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
@@ -107,6 +116,11 @@ fn scrub_changes(web: &Web, file: std::fs::File) -> Result<std::fs::File, crate:
     let failed = |error: std::io::Error| crate::daemon::service::error("io", error);
     let mut output = tempfile::tempfile_in(&web.daemon.archive.root).map_err(failed)?;
     for line in std::io::BufReader::new(file).lines() {
+        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
+            limit.check().map_err(|e| {
+                crate::daemon::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
+            })?;
+        }
         let line = line.map_err(failed)?;
         let response: crate::daemon::Response =
             serde_json::from_str(&line).map_err(|e| failed(std::io::Error::other(e)))?;

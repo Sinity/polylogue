@@ -2,7 +2,7 @@
 //! in `service`; ordinary requests receive one response, finite feeds a batch.
 
 use super::Request;
-use super::service::{self, Daemon, error, handle};
+use super::service::{self, Daemon, error};
 use polylogue_engine::Config;
 use polylogue_store::Archive;
 use std::io::{BufRead, BufReader, Write};
@@ -18,6 +18,10 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
+    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    let Ok(_watch) = super::disconnect::Watch::start(&stream, cancellation.clone()) else {
+        return;
+    };
     let mut out = stream;
     for line in BufReader::new(read_half).lines() {
         let Ok(line) = line else {
@@ -26,21 +30,59 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(request @ Request::Attachment { reveal: true, .. }) => {
-                super::attachment::socket(&out, request, d)
+        let incoming = match serde_json::from_str::<super::execution::Incoming>(&line) {
+            Ok(incoming) => incoming,
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string(&error("bad_request", e)).unwrap_or_default()
+                );
+                continue;
             }
-            Ok(Request::Changes { since }) => match service::change_feed(d, since.as_deref()) {
+        };
+        let limit = super::execution::limit_for(
+            &incoming.request,
+            incoming.deadline_ms,
+            cancellation.clone(),
+        );
+        let request = incoming.request;
+        if let Request::Changes { since } = &request {
+            let prepared = limit.scope(|| service::change_feed(d, since.as_deref()));
+            let prepared = limit
+                .check()
+                .map_err(|e| {
+                    super::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
+                })
+                .and(prepared);
+            match prepared {
                 Ok(mut file) => {
                     if std::io::copy(&mut file, &mut out).is_err() {
                         return;
                     }
                     continue;
                 }
-                Err(response) => response,
-            },
-            Ok(r) => handle(r, d),
-            Err(e) => error("bad_request", e),
+                Err(response) => {
+                    if writeln!(
+                        out,
+                        "{}",
+                        serde_json::to_string(&response).unwrap_or_default()
+                    )
+                    .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+            }
+        }
+        let response = match request {
+            request @ Request::Attachment { reveal: true, .. } => {
+                super::execution::run(request, &limit, |request| {
+                    super::attachment::socket(&out, request, d)
+                })
+            }
+            request => service::handle_with_limit(request, d, &limit),
         };
         let Ok(mut text) = serde_json::to_string(&response) else {
             return;

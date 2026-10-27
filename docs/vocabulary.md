@@ -162,6 +162,9 @@ the same change.
 - **writer**: the one thread that writes the databases.
 - **read pool**, **reader**, **reader slot**: readers see one SQLite read
   transaction each; a slot bounds how many run at once.
+- **read deadline** (`deadline_ms`): the time one request has to finish its
+  reads, including its wait for a reader slot. **Cancellation** stops the
+  request when its caller leaves or cancels it.
 - **write lock**: what a register commit holds so readers start from a
   consistent pair of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
