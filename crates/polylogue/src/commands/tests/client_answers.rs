@@ -21,6 +21,7 @@ const ASKED: &[(&str, &[&str])] = &[
     ("read", &["claude-code:missing"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("note list", &[]),
+    ("note read", &["missing"]),
     ("continue", &["claude-code:s1"]),
     ("chat list", &[]),
     ("backfill list", &[]),
