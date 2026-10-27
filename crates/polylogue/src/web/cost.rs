@@ -18,7 +18,20 @@ pub struct Options {
     pub cursor: Option<String>,
 }
 
-pub async fn cost(State(web): State<Arc<Web>>, Query(mut options): Query<Options>) -> HttpResponse {
+pub async fn cost(
+    State(web): State<Arc<Web>>,
+    controls: Result<Query<Options>, axum::extract::rejection::QueryRejection>,
+) -> HttpResponse {
+    let Query(mut options) = match controls {
+        Ok(controls) => controls,
+        Err(_) => {
+            return failed(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Cost controls could not be read.",
+            );
+        }
+    };
     options.month = options.month.filter(|s| !s.is_empty());
     options.date = options.date.filter(|s| !s.is_empty());
     options.model = options.model.filter(|s| !s.is_empty());
@@ -47,12 +60,12 @@ pub async fn cost(State(web): State<Arc<Web>>, Query(mut options): Query<Options
             &options,
             &scrubbed(&web, data),
         )),
-        Response::Error { kind, message, .. } => failed(
-            if matches!(kind.as_str(), "store" | "internal") {
-                StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                StatusCode::BAD_REQUEST
-            },
+        Response::Error {
+            kind,
+            message,
+            detail,
+        } => failed(
+            error_status(&kind, &detail),
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
         ),
