@@ -362,7 +362,7 @@ impl Engine {
     /// pass's bulk work. Paths with work in flight are left to it.
     fn live_plans(
         &mut self,
-        busy: &HashMap<PathBuf, Plan>,
+        busy: &HashSet<&Path>,
         pass: &mut Pass,
     ) -> Result<Vec<Plan>, EngineError> {
         let mut changes = watch::Changes::default();
@@ -409,7 +409,7 @@ impl Engine {
         found.dedup_by(|left, right| left.path == right.path);
         let mut plans = Vec::new();
         for f in found {
-            if self.refused.contains(&f.path) || busy.contains_key(&f.path) {
+            if self.refused.contains(&f.path) || busy.contains(f.path.as_path()) {
                 continue;
             }
             let Ok(meta) = std::fs::metadata(&f.path) else {
@@ -430,7 +430,7 @@ impl Engine {
         let databases: Vec<_> = self
             .inputs
             .iter()
-            .filter(|(path, state)| state.origin.is_row_dump(path) && !busy.contains_key(*path))
+            .filter(|(path, state)| state.origin.is_row_dump(path) && !busy.contains(path.as_path()))
             .map(|(path, _)| path.clone())
             .collect();
         for path in databases {
@@ -845,7 +845,8 @@ impl Engine {
         loop {
             if checked.elapsed() >= every {
                 checked = Instant::now();
-                match self.live_plans(&running, pass) {
+                let busy = running.keys().map(PathBuf::as_path).chain(waiting.iter().map(|plan| plan.path.as_path())).collect();
+                match self.live_plans(&busy, pass) {
                     Ok(live) => {
                         for plan in live.into_iter().rev() {
                             waiting.retain(|w| w.path != plan.path);

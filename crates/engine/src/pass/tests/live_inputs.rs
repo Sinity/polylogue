@@ -106,7 +106,10 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     }));
     let (started, waiting) = channel();
     let (release, continue_reading) = channel();
-    *CONTROL.lock().unwrap() = Some(Control { started, release: continue_reading });
+    *CONTROL.lock().unwrap() = Some(Control {
+        started,
+        release: continue_reading,
+    });
     let mut plan = Plan::stored(
         path.clone(),
         origin,
