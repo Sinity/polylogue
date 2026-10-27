@@ -42,7 +42,7 @@ keeps an anchor in its continuation URL and offers Refresh from this message.
 There is no automatic joining of pages across a stale cursor.
 
 `/s/{id}` and `/d/{id}` render one content page and explicit First/Next links.
-Latest is available for sessions; Previous uses a daemon-issued cursor, seeking backward to the preceding visible message or block.
+Latest is available for sessions; Previous uses a daemon-issued cursor and reverse key seeks to fill the page before the current start. Its Next link reopens the current page.
 Changing parent inclusion opens the first page of the new selection. Changing the view starts a new read at the page's message anchor. `/m/{id}`
 resolves a message's owning session and redirects to its anchor; `/n/{id}`
 reads one exact revision through the shared `note read ID` operation, also
