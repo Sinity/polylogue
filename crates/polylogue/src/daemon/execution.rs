@@ -77,7 +77,8 @@ pub fn run(
             return refusal(&error, &info, limit);
         }
         let response = work(request);
-        if read_only && let Err(error) = limit.check() {
+        let read_refusal = matches!(&response, Response::Error { kind, .. } if matches!(kind.as_str(), "deadline_exceeded" | "cancelled"));
+        if (read_only || read_refusal) && let Err(error) = limit.check() {
             return refusal(&error, &info, limit);
         }
         response
@@ -96,21 +97,7 @@ pub fn refusal(
     let query = info["text"]
         .as_str()
         .or_else(|| info["expression"].as_str());
-    let suggestion = query
-        .map(|query| {
-            // Add a condition before the first pipeline stage, preserving the unit.
-            let (conditions, stages) = query.split_once('|').unwrap_or((query, ""));
-            format!(
-                "{} since:1d{}",
-                conditions.trim_end(),
-                if stages.is_empty() {
-                    String::new()
-                } else {
-                    format!(" |{stages}")
-                }
-            )
-        })
-        .filter(|query| polylogue_query::parse(query).is_ok());
+    let suggestion = query.and_then(narrower);
     Response::Error {
         kind: kind.into(),
         message: error.to_string(),
@@ -124,6 +111,34 @@ pub fn refusal(
             "retryable": true,
         })),
     }.masked()
+}
+
+fn narrower(query: &str) -> Option<String> {
+    use polylogue_query::Source;
+    let parsed = polylogue_query::parse(query).ok()?;
+    let suggestion = match parsed.source {
+        Source::Empty => "since:1d".to_owned(),
+        Source::Sessions { cond }
+        | Source::Unit {
+            cond: Some(cond), ..
+        } => {
+            let span = cond.span;
+            format!(
+                "{}({}) since:1d{}",
+                &query[..span.start],
+                &query[span.start..span.end],
+                &query[span.end..]
+            )
+        }
+        Source::Unit { cond: None, .. } => {
+            let start = query.len() - query.trim_start().len();
+            let end = query[start..]
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .map_or(query.len(), |end| start + end);
+            format!("{} where since:1d{}", &query[..end], &query[end..])
+        }
+    };
+    polylogue_query::parse(&suggestion).ok().map(|_| suggestion)
 }
 
 /// Timeout follows the operations exit table; cancellation is a refusal.

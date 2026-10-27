@@ -132,7 +132,7 @@ impl Provider {
         }
         let url = format!("{}/embeddings", self.endpoint.trim_end_matches('/'));
         let failed = |error: reqwest::Error| EmbedError::Transport(error.to_string());
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().build().map_err(failed)?;
         let mut request = client.post(&url).json(&body);
         if self.kind == ProviderKind::Voyage {
             let key = std::env::var("VOYAGE_API_KEY")

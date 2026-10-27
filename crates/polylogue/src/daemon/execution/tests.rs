@@ -99,3 +99,17 @@ fn expired_requests_never_start_any_read_operation() {
         );
     }
 }
+
+#[test]
+fn narrower_suggestions_preserve_quoted_pipes_and_pipeline_stages() {
+    for (query, expected) in [
+        ("sessions | count", "sessions where since:1d | count"),
+        ("\"a|b\"", "(\"a|b\") since:1d"),
+        (
+            "messages where role:user OR role:assistant | count",
+            "messages where (role:user OR role:assistant) since:1d | count",
+        ),
+    ] {
+        assert_eq!(narrower(query).as_deref(), Some(expected));
+    }
+}
