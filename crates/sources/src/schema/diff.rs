@@ -18,7 +18,7 @@ pub struct Change {
     pub after: Option<Field>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Population {
+pub struct Sample {
     pub origin: String,
     pub sample: bool,
     pub selection: Vec<Selection>,
@@ -26,25 +26,25 @@ pub struct Population {
     pub unreadable_inputs: u64,
     pub unreadable_records: u64,
 }
-impl From<&Schema> for Population {
-    fn from(s: &Schema) -> Self {
+impl From<&Schema> for Sample {
+    fn from(schema: &Schema) -> Self {
         Self {
-            origin: s.origin.clone(),
-            sample: s.sample,
-            selection: s.selection.clone(),
-            records: s.records,
-            unreadable_inputs: s.unreadable_inputs,
-            unreadable_records: s.unreadable_records,
+            origin: schema.origin.clone(),
+            sample: schema.sample,
+            selection: schema.selection.clone(),
+            records: schema.records,
+            unreadable_inputs: schema.unreadable_inputs,
+            unreadable_records: schema.unreadable_records,
         }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diff {
     pub rule_version: u32,
-    pub before: Population,
-    pub after: Population,
+    pub before: Sample,
+    pub after: Sample,
     pub named_fields: BTreeSet<String>,
-    /// Different samples describe observed drift, not a proven origin-wide change.
+    /// Different samples describe observed schema differences, not a proven origin-wide change.
     pub comparable: bool,
     pub reasons: Vec<String>,
     pub changes: Vec<Change>,
