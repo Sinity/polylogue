@@ -1,5 +1,0 @@
-.calendar { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .4rem; padding: 0; list-style: none; }
-.calendar a { display: block; min-height: 3rem; padding: .4rem; border: 1px solid var(--rule); border-radius: .2rem; font-variant-numeric: tabular-nums; }
-.calendar a:focus-visible { outline: 2px solid var(--accent); }
-.activity { overflow-x: auto; }
-.activity th[scope=rowgroup] { padding-top: 1rem; }
