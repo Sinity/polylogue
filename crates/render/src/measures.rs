@@ -306,11 +306,15 @@ fn number(value: &Value) -> String {
 
 /// Billing projections keep units apart and label estimates and missing inputs.
 pub fn outlook(data: &Value) -> String {
+    crate::terminal::escape(&outlook_text(data))
+}
+
+fn outlook_text(data: &Value) -> String {
     if let Some(reason) = data["reason"].as_str() {
         let detail = match reason {
             "no_cycle_anchor" => "Set cycle_anchor_day for the plan in cost.plans.",
-            "plan_name_required" => "Choose a configured plan with --metric plan_name:method.",
-            _ => "Configure cost.plans and choose a plan with --metric plan_name:method.",
+            "plan_name_required" => "Choose a configured plan with --option plan_name:method.",
+            _ => "Configure cost.plans and choose a plan with --option plan_name:method.",
         };
         return format!("Cost outlook unavailable: {reason}. {detail}\n");
     }

@@ -30,3 +30,21 @@ fn outlook_renders_unobserved_usage_and_missing_prices_as_unknown() {
     assert!(text.contains("Configured cycle price USD: unknown"));
     assert!(!text.contains("null"));
 }
+
+#[test]
+fn outlook_escapes_controls_in_plan_names_units_and_reasons() {
+    let data = serde_json::json!({
+        "plan_name": "sample\u{1b}[2J",
+        "projection_method": "linear",
+        "units": {"unit\u{85}": {"used": 1}},
+        "quota_pressure": {"unit": "quota\u{202e}", "reason": "reason\u{7}"}
+    });
+    let text = outlook(&data);
+    assert!(text.contains("sample\\x1b[2J"));
+    assert!(text.contains("unit\\x85"));
+    assert!(text.contains("quota\\u{202e}"));
+    assert!(text.contains("reason\\x07"));
+    let missing = outlook(&serde_json::json!({"reason": "missing\u{1b}[2J"}));
+    assert!(missing.contains("missing\\x1b[2J"));
+    assert!(missing.contains("--option plan_name:method"));
+}

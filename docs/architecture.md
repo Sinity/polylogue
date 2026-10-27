@@ -390,4 +390,3 @@ and distinct deep facets in `session_facet`. Profiles reuse the title and
 `session_survival` derivations. Usage is read only for a full profile or an
 explicit cost metric. Profile, comparison, gap and similarity pages use
 the ordinary query cursor.
-
