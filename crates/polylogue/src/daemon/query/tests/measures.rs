@@ -187,3 +187,17 @@ fn paged_measures_preserve_query_order_when_display_fields_omit_the_id() {
         assert_eq!(ids, expected, "{name}");
     }
 }
+
+#[test]
+fn similarity_can_take_a_reference_selected_by_near_ranking() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let vectors = super::generated::vectors_for(&archive, |_| true);
+    let near = |_: &str| Ok(std::sync::Arc::clone(&vectors));
+    let text = "sessions where near:\"synthetic ranking\" | limit 1 | measure similar";
+    let mut request = ask(text);
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&archive, request).unwrap();
+    assert!(!answer["data"]["matches"].as_array().unwrap().is_empty());
+}
