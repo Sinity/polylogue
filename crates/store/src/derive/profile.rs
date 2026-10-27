@@ -145,6 +145,11 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     if topic.is_none() {
         topic = cleaned_title;
     }
+    let repo = crate::measure::profiles::repositories(tx, pk)?
+        .0
+        .into_iter()
+        .find_map(|r| r.label)
+        .or(repo);
     let mut topic_source = topic_source.to_owned();
     if origin == "codex"
         && topic_source == "first_substantive_user_turn"
