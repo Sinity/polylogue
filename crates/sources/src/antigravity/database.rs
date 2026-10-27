@@ -440,17 +440,19 @@ impl ExportParser for Database {
                 sink.records.fields("trajectory_step", row, &STEP_FIELDS);
                 sink.records
                     .fields("trajectory_step_payload", &payload, &PAYLOAD_FIELDS);
-                let ordinal = row
-                    .get("step_id")
-                    .or_else(|| row.get("id"))
-                    .or_else(|| row.get("idx"))
+                let native = ["step_id", "id", "idx"]
+                    .into_iter()
+                    .filter_map(|key| row.get(key))
+                    .find_map(|value| match value {
+                        Json::String(value) if !value.is_empty() => Some(value.clone()),
+                        Json::Number(value) => Some(value.to_string()),
+                        _ => None,
+                    })
                     .ok_or("trajectory step without identity")?;
-                let native = ordinal
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| ordinal.to_string());
-                let mid = message_id(ORIGIN, &format!("{}:step:{native}", sid.native()))
-                    .ok_or("invalid step ID")?;
+                let digest = BlobHash::of(
+                    &serde_json::to_vec(&(sid.native(), native)).expect("step identity serializes"),
+                );
+                let mid = message_id(ORIGIN, &format!("step-{digest}")).ok_or("invalid step ID")?;
                 let answered = last.filter(|(session, _, _)| *session == sid);
                 let (role, prompt_kind, blocks, call) =
                     step(&kind, &payload, row, &mid.to_string(), answered.as_ref());
