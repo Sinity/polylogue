@@ -68,7 +68,7 @@ fn every_grammar_keyword_is_discoverable() {
     {
         for (i, text) in line.split('"').enumerate() {
             if i % 2 == 1
-                && !text.is_empty()
+                && text.chars().any(|c| c.is_ascii_alphabetic())
                 && text
                     .chars()
                     .all(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')

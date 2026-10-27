@@ -6,7 +6,7 @@ fn words(text: &str) -> Vec<&str> {
         .enumerate()
         .filter(|(i, word)| {
             i % 2 == 1
-                && !word.is_empty()
+                && word.chars().any(|c| c.is_ascii_alphabetic())
                 && word
                     .chars()
                     .all(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')
@@ -15,39 +15,58 @@ fn words(text: &str) -> Vec<&str> {
         .collect()
 }
 
+fn references(text: &str) -> impl Iterator<Item = &str> {
+    text.split('"').step_by(2).flat_map(|text| {
+        text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|word| !word.is_empty())
+    })
+}
+
+fn leading_words(name: &str, rules: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let Some(rule) = rules.get(name) else {
+        return Vec::new();
+    };
+    let words = words(rule);
+    if words.is_empty() {
+        return references(rule)
+            .next()
+            .map_or_else(Vec::new, |name| leading_words(name, rules));
+    }
+    if rule.contains('|') {
+        words.into_iter().map(str::to_owned).collect()
+    } else {
+        vec![words.join(" ")]
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=src/query.pest");
     let grammar = fs::read_to_string("src/query.pest").expect("query grammar");
-    let rules: Vec<_> = grammar
+    let mut rules = std::collections::BTreeMap::<String, String>::new();
+    let mut current = None;
+    for line in grammar
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
-        .collect();
-    let keywords: BTreeSet<_> = rules.iter().flat_map(|line| words(line)).collect();
-    let rule = |name: &str| -> &str {
-        rules
-            .iter()
-            .find(|line| {
-                line.split_once('=')
-                    .is_some_and(|(left, _)| left.trim() == name)
-            })
-            .expect("grammar rule")
-    };
-    let mut stages = vec!["sort by", "group by"];
-    for name in [
-        "agg",
-        "count",
-        "limit",
-        "offset",
-        "distinct",
-        "matches",
-        "measure",
-        "combination",
-    ] {
-        stages.extend(words(rule(name)));
+    {
+        if let Some((name, body)) = line.split_once('=')
+            && !name.trim().is_empty()
+            && name
+                .trim()
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            current = Some(name.trim().to_owned());
+            rules.insert(name.trim().to_owned(), body.to_owned());
+        } else if let Some(name) = &current {
+            rules.get_mut(name).expect("current rule").push_str(line);
+        }
     }
-    stages.extend(words(rule("kw_where")));
-    let mut aggregates = words(rule("agg_name"));
-    aggregates.extend(words(rule("count")));
+    let keywords: BTreeSet<_> = rules.values().flat_map(|rule| words(rule)).collect();
+    let stages: Vec<_> = references(&rules["stage"])
+        .flat_map(|name| leading_words(name, &rules))
+        .collect();
+    let mut aggregates = words(&rules["agg_name"]);
+    aggregates.extend(words(&rules["agg_fn"]));
     let output = format!(
         "pub const KEYWORDS: &[&str] = &{:?};\npub const STAGES: &[&str] = &{:?};\npub const AGGREGATES: &[&str] = &{:?};\n",
         keywords.into_iter().collect::<Vec<_>>(),
