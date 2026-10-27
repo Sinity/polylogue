@@ -79,7 +79,7 @@ pub enum Ask {
         #[serde(default)]
         source: StartSource,
     },
-    /// Taking over from another session named by its ID (a pasted ID).
+    /// Taking over from another session named by its ID or a pasted session link.
     Takeover {
         session: SessionId,
         #[serde(default)]

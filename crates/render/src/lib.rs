@@ -4,6 +4,7 @@
 //! also masked at the application boundary.
 
 mod attachments;
+pub mod data;
 pub mod documents;
 pub mod events;
 pub use attachments::{AttachmentLabel, AttachmentRef};
@@ -25,10 +26,25 @@ pub enum Format {
     Markdown,
     Html,
     Json,
+    Csv,
+    Org,
+    Yaml,
 }
 
 impl Format {
-    pub const NAMES: &[&str] = &["terminal", "markdown", "html", "json"];
+    pub const NAMES: &[&str] = &["terminal", "markdown", "html", "json", "csv", "org", "yaml"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Org => "org",
+            Self::Yaml => "yaml",
+        }
+    }
 
     pub fn parse(name: &str) -> Option<Format> {
         Some(match name {
@@ -36,6 +52,9 @@ impl Format {
             "markdown" | "md" => Format::Markdown,
             "html" => Format::Html,
             "json" => Format::Json,
+            "csv" => Format::Csv,
+            "org" => Format::Org,
+            "yaml" => Format::Yaml,
             _ => return None,
         })
     }
@@ -56,6 +75,18 @@ pub enum View {
 
 impl View {
     pub const NAMES: &[&str] = &["full", "dialogue", "prompts", "actions"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Org => "org",
+            Self::Yaml => "yaml",
+        }
+    }
 
     pub fn parse(name: &str) -> Option<View> {
         Some(match name {
@@ -247,7 +278,7 @@ pub fn session_with_attachments(
     for message in &mut messages {
         masker.message(message);
         let labels = labels(message);
-        if format != Format::Json {
+        if matches!(format, Format::Terminal | Format::Markdown | Format::Html) {
             attachments::apply(message, view, labels);
         }
     }
@@ -318,11 +349,40 @@ fn project(mut messages: Vec<Message>, view: View) -> Vec<Message> {
 }
 
 fn formatted(items: &[Rendered<'_>], format: Format, view: View) -> io::Result<Value> {
+    if format == Format::Org {
+        let mut out = Vec::new();
+        org(items, view, &mut out)?;
+        return Ok(
+            json!({"format":"org","content":String::from_utf8(out).expect("rendered strings are UTF-8")}),
+        );
+    }
+    if matches!(format, Format::Csv | Format::Yaml) {
+        let rows: Vec<Value> = items
+            .iter()
+            .filter_map(|item| match item {
+                Rendered::SessionHeader { session, title } => {
+                    Some(json!({"kind":"session", "session": session, "title":title}))
+                }
+                Rendered::Message(message) => Some(json!({"kind":"message", "session_id":message.session,"message_id":message.id,"role":who(message),"timestamp":when(message),"text":message.text(),"blocks":message.blocks})),
+                Rendered::Document(document) => {
+                    Some(json!({"kind":"document", "document":document}))
+                }
+                Rendered::Event(event) if view == View::Full => {
+                    Some(json!({"kind":"event", "event":event}))
+                }
+                Rendered::Notice(text) => Some(json!({"kind":"notice", "text":text})),
+                _ => None,
+            })
+            .collect();
+        let data = json!({"rows":rows});
+        return Ok(json!({"format":format.name(), "content":data::text(&data, format)?}));
+    }
     let mut out = Vec::new();
     match format {
         Format::Html => html::document(items, view, &mut out)?,
         Format::Markdown => markdown(items, view, &mut out)?,
         Format::Terminal => terminal(items, view, &mut out)?,
+        Format::Csv | Format::Org | Format::Yaml => unreachable!("data formats handled above"),
         Format::Json => unreachable!("structured JSON is encoded before prose rendering"),
     }
     let name = match format {
@@ -455,6 +515,84 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
             Rendered::Event(e) if view == View::Full => events::markdown(e, out)?,
             Rendered::Event(_) => {}
             Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
+        }
+    }
+    Ok(())
+}
+
+/// Source text stays literal even when it contains Org headings or directives.
+fn org_example(text: &str, out: &mut dyn Write) -> io::Result<()> {
+    writeln!(out, "#+begin_example")?;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('*') || trimmed.starts_with("#+") || trimmed.starts_with(',') {
+            write!(out, ",")?;
+        }
+        writeln!(out, "{line}")?;
+    }
+    writeln!(out, "#+end_example\n")
+}
+fn org(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
+    let heading = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for item in items {
+        match item {
+            Rendered::SessionHeader {
+                session,
+                title: selected,
+            } => {
+                writeln!(
+                    out,
+                    "#+TITLE: {}\n#+PROPERTY: session_id {}\n",
+                    heading(&title(session, *selected)),
+                    session.id
+                )?;
+            }
+            Rendered::Message(message) => {
+                writeln!(
+                    out,
+                    "* {}\n:PROPERTIES:\n:ID: {}\n:END:\n",
+                    who(message),
+                    message.id
+                )?;
+                for block in rendered_blocks(message, view) {
+                    if block.kind != "text" {
+                        writeln!(
+                            out,
+                            "** {} {}",
+                            block.kind,
+                            heading(block.label.as_deref().unwrap_or(""))
+                        )?;
+                    }
+                    org_example(&block.text, out)?;
+                }
+            }
+            Rendered::Document(document) => {
+                writeln!(
+                    out,
+                    "* {}\n:PROPERTIES:\n:ID: document:{}\n:END:\n",
+                    heading(&mask(
+                        document
+                            .title
+                            .as_deref()
+                            .unwrap_or(document.purpose.as_str())
+                    )),
+                    document.id
+                )?;
+                for block in document
+                    .blocks
+                    .iter()
+                    .filter(|b| view.keeps_block(false, b))
+                    .filter_map(block)
+                {
+                    org_example(&block.text, out)?;
+                }
+            }
+            Rendered::Event(event) if view == View::Full => {
+                writeln!(out, "* {}", heading(&mask(&event.kind)))?;
+                org_example(&events::text(event), out)?;
+            }
+            Rendered::Notice(text) => org_example(&mask(text), out)?,
+            _ => {}
         }
     }
     Ok(())

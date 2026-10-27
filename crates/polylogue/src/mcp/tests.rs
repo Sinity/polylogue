@@ -63,3 +63,60 @@ mod events;
 mod attachments;
 
 mod explain;
+
+#[test]
+fn server_instructions_include_guidance_and_current_command_names() {
+    let server = Polylogue {
+        archive: std::path::PathBuf::from("/synthetic/archive"),
+    };
+    let info = server.get_info();
+    let text = info.instructions.unwrap();
+    assert!(text.contains("Continue pages"));
+    for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
+        assert!(text.contains(&format!("`{}`", command.mcp_name())));
+    }
+    assert_eq!(text, crate::manual::text());
+}
+
+#[test]
+fn added_read_formats_work_through_the_public_command() {
+    let w = test_daemon::start("the walrus migration");
+    let archive = Archive::at(&w.daemon.archive.root);
+    for format in ["csv", "org", "yaml"] {
+        let text = call(
+            &archive,
+            "read",
+            args(json!({"session":"claude-code:s1","format":format})),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["format"], format);
+        assert!(value["content"].as_str().unwrap().contains("walrus"));
+    }
+}
+
+#[test]
+fn added_formats_keep_budgeted_read_cursors_usable() {
+    let w = test_daemon::start("the walrus migration has a long synthetic prompt to page through");
+    let archive = Archive::at(&w.daemon.archive.root);
+    for format in ["csv", "org", "yaml"] {
+        let first = call(
+            &archive,
+            "read",
+            args(json!({"session":"claude-code:s1","budget":2,"format":format})),
+        )
+        .unwrap();
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let cursor = first["next"].as_str().unwrap();
+        assert_eq!(first["format"], format);
+        assert!(first["content"].as_str().unwrap().contains(cursor));
+        let second = call(
+            &archive,
+            "read",
+            args(json!({"session":"claude-code:s1","budget":2,"format":format,"cursor":cursor})),
+        )
+        .unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_ne!(first["text"], second["text"]);
+    }
+}

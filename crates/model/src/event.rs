@@ -26,6 +26,8 @@ pub struct Event {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
+    /// The source names a parent without saying how the sessions are related.
+    Parent,
     /// A fork: the child shares the parent's messages up to `at`, then
     /// diverges. The child stores only its own tail.
     Fork,
@@ -40,12 +42,19 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
-    pub const ALL: &'static [LinkKind] = &[Self::Fork, Self::Spawn, Self::Continuation, Self::Copy];
+    pub const ALL: &'static [LinkKind] = &[
+        Self::Parent,
+        Self::Fork,
+        Self::Spawn,
+        Self::Continuation,
+        Self::Copy,
+    ];
 
     /// The stored `(kind, how)` pair: the link table and the query language
     /// name a link's family (`subagent`, `continuation`) and how it was made.
     pub const fn columns(self) -> (&'static str, &'static str) {
         match self {
+            Self::Parent => ("continuation", "parent"),
             Self::Spawn => ("subagent", "fresh"),
             Self::Fork => ("continuation", "fork"),
             Self::Copy => ("continuation", "resume"),

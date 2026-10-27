@@ -113,6 +113,8 @@ the same change.
   message seen in several inputs is stored once, with one **shown version**.
 - **duplicate**: a message another route of its session holds under a
   different ID, matched by exact evidence; the session shows the other one.
+- **parent link**: a source names a parent session without saying whether it
+  was a fork, compaction or another kind of continuation.
 - **parents**: the sessions a session continues or was forked from, whose
   messages a read `--with-parents` shows first.
 - **record position**: a message's place among the messages its record
