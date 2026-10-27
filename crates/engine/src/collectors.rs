@@ -21,19 +21,32 @@ impl Collectors {
                 return errors;
             }
             let task = self.tasks.remove(name).expect("known collector");
-            errors.extend(task.join().unwrap_or_else(|_| vec!["collector panicked".into()]));
+            errors.extend(
+                task.join()
+                    .unwrap_or_else(|_| vec!["collector panicked".into()]),
+            );
         }
         if collector.background {
             let home = paths.home.to_path_buf();
             let state_dir = paths.state_dir.to_path_buf();
             let spool = paths.spool.to_path_buf();
-            self.tasks.insert(name, spawn(move || {
-                (collector.sync)(&CollectorPaths { home: &home, state_dir: &state_dir, spool: &spool })
-            }));
+            self.tasks.insert(
+                name,
+                spawn(move || {
+                    (collector.sync)(&CollectorPaths {
+                        home: &home,
+                        state_dir: &state_dir,
+                        spool: &spool,
+                    })
+                }),
+            );
         } else {
             errors.extend((collector.sync)(paths));
         }
-        errors.into_iter().map(|error| format!("{name} collector: {error}")).collect()
+        errors
+            .into_iter()
+            .map(|error| format!("{name} collector: {error}"))
+            .collect()
     }
 }
 

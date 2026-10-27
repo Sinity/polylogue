@@ -29,7 +29,10 @@ fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     assert_eq!(
-        reader.messages(&SessionId::parse("antigravity:exported").unwrap(), false).unwrap().len(),
+        reader
+            .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
+            .unwrap()
+            .len(),
         2
     );
 }
@@ -67,12 +70,19 @@ fn opaque_trajectories_and_conversion_events_share_a_session_and_rebuild() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     let pool = w.reads();
     let reader = pool.reader().unwrap();
-    let mut events = reader.events(&SessionId::parse("antigravity:not-converted").unwrap()).unwrap();
-    events.sort_by(|a,b| a.kind.cmp(&b.kind));
+    let mut events = reader
+        .events(&SessionId::parse("antigravity:not-converted").unwrap())
+        .unwrap();
+    events.sort_by(|a, b| a.kind.cmp(&b.kind));
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(events[0].kind, "antigravity_conversion");
     assert_eq!(events[0].data["status"], "server_unavailable");
     assert_eq!(events[1].kind, "antigravity_trajectory_bytes");
-    let sessions = reader.query("SELECT id FROM session WHERE id='antigravity:not-converted'", &[]).unwrap();
+    let sessions = reader
+        .query(
+            "SELECT id FROM session WHERE id='antigravity:not-converted'",
+            &[],
+        )
+        .unwrap();
     assert_eq!(sessions.len(), 1);
 }

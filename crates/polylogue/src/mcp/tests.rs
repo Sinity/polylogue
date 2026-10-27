@@ -82,7 +82,15 @@ fn server_instructions_include_guidance_and_current_command_names() {
 fn manual_query_examples_compile_through_the_public_command() {
     let w = test_daemon::start("manual query examples");
     let archive = Archive::at(&w.daemon.archive.root);
-    for query in crate::manual::text().split('`').filter(|text| text.starts_with("sessions where ") || text.starts_with("messages where ")) {
-        call(&archive, "explain", args(json!({"subject":"query", "expression":query}))).unwrap_or_else(|e| panic!("{query}: {e}"));
+    for query in crate::manual::text()
+        .split('`')
+        .filter(|text| text.starts_with("sessions where ") || text.starts_with("messages where "))
+    {
+        call(
+            &archive,
+            "explain",
+            args(json!({"subject":"query", "expression":query})),
+        )
+        .unwrap_or_else(|e| panic!("{query}: {e}"));
     }
 }

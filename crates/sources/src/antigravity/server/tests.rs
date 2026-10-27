@@ -165,13 +165,29 @@ fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
     let parsed = crate::parse::run_document(&super::super::Antigravity, &bytes).unwrap();
     assert_eq!(parsed.output.events[0].kind, "antigravity_conversion");
     assert_eq!(parsed.output.events[0].data["status"], "server_unavailable");
-    assert_eq!(parsed.output.events[0].session.as_ref().unwrap().to_string(), "antigravity:one");
+    assert_eq!(
+        parsed.output.events[0]
+            .session
+            .as_ref()
+            .unwrap()
+            .to_string(),
+        "antigravity:one"
+    );
     assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
-    assert_eq!(before, fs::metadata(status_path).unwrap().modified().unwrap());
-    let (client, task) = server(vec![search(1), markdown("one", json!({"markdown":"### User Input\nQuestion"}))]);
+    assert_eq!(
+        before,
+        fs::metadata(status_path).unwrap().modified().unwrap()
+    );
+    let (client, task) = server(vec![
+        search(1),
+        markdown("one", json!({"markdown":"### User Input\nQuestion"})),
+    ]);
     assert!(sync_paths(&[path.clone()], &spool, &[client]).is_empty());
     task.join().unwrap();
-    let status: Json = serde_json::from_slice(&fs::read(destination(&path, &spool).with_extension("status.json")).unwrap()).unwrap();
+    let status: Json = serde_json::from_slice(
+        &fs::read(destination(&path, &spool).with_extension("status.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(status["status"], "converted");
 }
 
@@ -250,19 +266,45 @@ fn conversion_uses_size_and_nanosecond_mtime_without_reading_source_bytes() {
     // Metadata stays accessible while the trajectory content cannot be read.
     fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
     let spool = temp.path().join("spool");
-    let (client, task) = server(vec![search(1), markdown("one", json!({"markdown":"### User Input\nQuestion"}))]);
+    let (client, task) = server(vec![
+        search(1),
+        markdown("one", json!({"markdown":"### User Input\nQuestion"})),
+    ]);
     assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
     let first = FileState::read(&path).unwrap();
     assert!(converted(&path, &spool, first));
-    assert!(!converted(&path, &spool, FileState { size: first.size + 1, ..first }));
-    assert!(!converted(&path, &spool, FileState { modified_nanoseconds: first.modified_nanoseconds + 1, ..first }));
+    assert!(!converted(
+        &path,
+        &spool,
+        FileState {
+            size: first.size + 1,
+            ..first
+        }
+    ));
+    assert!(!converted(
+        &path,
+        &spool,
+        FileState {
+            modified_nanoseconds: first.modified_nanoseconds + 1,
+            ..first
+        }
+    ));
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(123))).unwrap();
+    file.set_times(
+        std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(123)),
+    )
+    .unwrap();
     assert!(!converted(&path, &spool, FileState::read(&path).unwrap()));
-    let (client, task) = server(vec![search(1), markdown("one", json!({"markdown":"### User Input\nChanged question"}))]);
+    let (client, task) = server(vec![
+        search(1),
+        markdown(
+            "one",
+            json!({"markdown":"### User Input\nChanged question"}),
+        ),
+    ]);
     assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     assert!(converted(&path, &spool, FileState::read(&path).unwrap()));
@@ -278,9 +320,16 @@ fn an_unresponsive_server_has_a_short_request_timeout() {
         let _ = wait.recv();
     });
     let mut client = Server::new(port, "synthetic-token".into());
-    assert_eq!(client.agent.config().timeout_global(), Some(Duration::from_secs(5)));
-    client.agent = ureq::Agent::config_builder().proxy(None).max_redirects(0)
-        .timeout_global(Some(Duration::from_millis(50))).build().into();
+    assert_eq!(
+        client.agent.config().timeout_global(),
+        Some(Duration::from_secs(5))
+    );
+    client.agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(0)
+        .timeout_global(Some(Duration::from_millis(50)))
+        .build()
+        .into();
     let started = std::time::Instant::now();
     assert!(client.post("SearchConversations", json!({})).is_err());
     stop.send(()).unwrap();

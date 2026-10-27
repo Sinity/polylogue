@@ -20,7 +20,11 @@ fn a_waiting_collector_runs_off_the_loop_thread_and_does_not_start_twice() {
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let mut collectors = Collectors::default();
-    let paths = CollectorPaths { home: temp.path(), state_dir: temp.path(), spool: &socket };
+    let paths = CollectorPaths {
+        home: temp.path(),
+        state_dir: temp.path(),
+        spool: &socket,
+    };
     assert!(collectors.run("waiting", &WAITING, &paths).is_empty());
     // A blocking accept waits for the worker while the calling thread is free.
     listener.set_nonblocking(false).unwrap();
@@ -28,7 +32,10 @@ fn a_waiting_collector_runs_off_the_loop_thread_and_does_not_start_twice() {
     assert!(collectors.run("waiting", &WAITING, &paths).is_empty());
     assert_eq!(collectors.tasks.len(), 1);
     listener.set_nonblocking(true).unwrap();
-    assert_eq!(listener.accept().unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
     request.write_all(&[1]).unwrap();
     let task = collectors.tasks.remove("waiting").unwrap();
     assert_eq!(task.join().unwrap(), ["finished request"]);

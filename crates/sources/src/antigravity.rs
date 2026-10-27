@@ -47,7 +47,8 @@ struct Trajectory {
 }
 impl DocumentParser for Trajectory {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        out.sessions.push(Session::new(self.session.clone(), SessionKind::Main));
+        out.sessions
+            .push(Session::new(self.session.clone(), SessionKind::Main));
         out.events.push(Event {
             session: Some(self.session.clone()),
             kind: "antigravity_trajectory_bytes".into(),
@@ -87,15 +88,26 @@ impl DocumentParser for Antigravity {
             return;
         };
         if value["source"] == "antigravity_conversion" {
-            records.fields("conversion", &value, &Fields::new(&[
-                ("source", Rule::Read), ("cascadeId", Rule::Read),
-                ("trajectoryFile", Rule::Read), ("status", Rule::Read), ("error", Rule::Read),
-            ]));
+            records.fields(
+                "conversion",
+                &value,
+                &Fields::new(&[
+                    ("source", Rule::Read),
+                    ("cascadeId", Rule::Read),
+                    ("trajectoryFile", Rule::Read),
+                    ("status", Rule::Read),
+                    ("error", Rule::Read),
+                ]),
+            );
             let Some(id) = str_of(&value, "cascadeId").and_then(|id| session_id(ORIGIN, id)) else {
-                records.record("conversion", &RecordOutcome::unreadable("invalid cascadeId"));
+                records.record(
+                    "conversion",
+                    &RecordOutcome::unreadable("invalid cascadeId"),
+                );
                 return;
             };
-            out.sessions.push(Session::new(id.clone(), SessionKind::Main));
+            out.sessions
+                .push(Session::new(id.clone(), SessionKind::Main));
             out.events.push(Event {
                 session: Some(id),
                 kind: "antigravity_conversion".into(),

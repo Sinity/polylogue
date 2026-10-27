@@ -136,9 +136,15 @@ fn source_update_time_belongs_to_metadata_without_inventing_message_times() {
 
 #[test]
 fn opaque_bytes_and_the_export_share_the_named_session() {
-    let parser = open(Path::new("/synthetic/.gemini/antigravity/conversations/one.pb")).unwrap();
+    let parser = open(Path::new(
+        "/synthetic/.gemini/antigravity/conversations/one.pb",
+    ))
+    .unwrap();
     let (parsed, _) = parser.step(None, b"opaque bytes", 0).unwrap();
     assert_eq!(parsed.output.sessions[0].id.to_string(), "antigravity:one");
-    assert_eq!(parsed.output.events[0].session, Some(parsed.output.sessions[0].id.clone()));
+    assert_eq!(
+        parsed.output.events[0].session,
+        Some(parsed.output.sessions[0].id.clone())
+    );
     assert!(parsed.output.messages.is_empty());
 }

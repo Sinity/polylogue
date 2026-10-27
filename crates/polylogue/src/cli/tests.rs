@@ -40,5 +40,9 @@ fn a_starting_daemon_is_waited_for() {
 fn manual_is_an_offline_topic() {
     let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
     assert!(matches!(manual.action, Action::Local(_)));
-    assert!(command().try_get_matches_from(["polylogue", "manual"]).is_ok());
+    assert!(
+        command()
+            .try_get_matches_from(["polylogue", "manual"])
+            .is_ok()
+    );
 }

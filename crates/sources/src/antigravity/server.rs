@@ -1,9 +1,9 @@
 //! Imports the running vendor server's Markdown without decoding trajectories.
 use polylogue_model::{BlobHash, Json};
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::MetadataExt;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -171,17 +171,26 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
         let state = match FileState::read(path) {
             Ok(state) => state,
             Err(e) => {
-                errors.push(format!("Antigravity trajectory {} not converted: {e}", path.display()));
+                errors.push(format!(
+                    "Antigravity trajectory {} not converted: {e}",
+                    path.display()
+                ));
                 continue;
             }
         };
         if counts[&path.file_stem()] > 1 {
-            errors.push(format!("Antigravity trajectory {} not converted: duplicate conversation identity", path.display()));
+            errors.push(format!(
+                "Antigravity trajectory {} not converted: duplicate conversation identity",
+                path.display()
+            ));
             continue;
         }
         if converted(path, spool, state) {
             if let Err(e) = conversion_status(path, spool, state, "converted", None) {
-                errors.push(format!("Antigravity conversion status {}: {e}", path.display()));
+                errors.push(format!(
+                    "Antigravity conversion status {}: {e}",
+                    path.display()
+                ));
             }
         } else {
             pending.push((path, state));
@@ -214,10 +223,16 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
             (Some(_), Err(_)) => "not_converted",
         };
         if let Err(e) = conversion_status(path, spool, state, status, result.as_ref().err()) {
-            errors.push(format!("Antigravity conversion status {}: {e}", path.display()));
+            errors.push(format!(
+                "Antigravity conversion status {}: {e}",
+                path.display()
+            ));
         }
         if let Err(e) = result {
-            errors.push(format!("Antigravity trajectory {} not converted: {e}", path.display()));
+            errors.push(format!(
+                "Antigravity trajectory {} not converted: {e}",
+                path.display()
+            ));
         }
     }
     errors
@@ -244,7 +259,8 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     if fs::read(path).ok().as_deref() == Some(bytes.as_slice()) {
         return Ok(());
     }
-    fs::create_dir_all(path.parent().ok_or("missing spool directory")?).map_err(|e| e.to_string())?;
+    fs::create_dir_all(path.parent().ok_or("missing spool directory")?)
+        .map_err(|e| e.to_string())?;
     atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
         .write(|f| f.write_all(&bytes))
         .map_err(|e| e.to_string())
@@ -257,15 +273,27 @@ fn conversion_status(
     status: &str,
     error: Option<&String>,
 ) -> Result<(), String> {
-    let id = path.file_stem().and_then(|s| s.to_str()).ok_or("invalid trajectory name")?;
+    let id = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid trajectory name")?;
     let value = serde_json::json!({
         "source":"antigravity_conversion", "cascadeId":id,
         "trajectoryFile":state, "status":status, "error":error,
     });
-    write_json(&destination(path, spool).with_extension("status.json"), &value)
+    write_json(
+        &destination(path, spool).with_extension("status.json"),
+        &value,
+    )
 }
 
-fn convert(server: &Server, listing: &Json, path: &Path, spool: &Path, state: FileState) -> Result<(), String> {
+fn convert(
+    server: &Server,
+    listing: &Json,
+    path: &Path,
+    spool: &Path,
+    state: FileState,
+) -> Result<(), String> {
     let id = path
         .file_stem()
         .and_then(|s| s.to_str())
