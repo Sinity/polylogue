@@ -499,6 +499,7 @@ fn prepare_measure(
         program.sql = polylogue_store::measure::profiles::page_query(&program.sql);
     }
     if matches!(definition.paging, Some(super::measure::Paging::Pace)) {
+        program.counts_near = false;
         program.page_size = page_size.unwrap_or(100);
         let (_, options) = super::measure::find_checked(&m.what)?;
         program.sql = polylogue_store::measure::pace::gap_query(&program.sql, options)?;
@@ -518,6 +519,7 @@ fn prepare_measure(
         .collect();
     }
     if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
+        program.counts_near = false;
         reference = Some(program.sql.clone());
         program.sql = polylogue_store::measure::comparison::similarity_query(&program.sql);
         program.order = vec![
