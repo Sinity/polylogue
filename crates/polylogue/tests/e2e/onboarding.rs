@@ -1,5 +1,4 @@
 use serde_json::Value;
-use std::process::Command;
 
 #[test]
 fn public_morrow_tour_matches_current_query_examples() {
@@ -10,7 +9,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     std::os::unix::fs::symlink(&actual, &alias).unwrap();
     let directory = alias.join("tour");
     let operator_archive = temp.path().join("operator-archive");
-    let output = Command::new(crate::BIN)
+    let output = crate::command(temp.path())
         .args(["--json", "demo", "tour"])
         .arg(&directory)
         .env("POLYLOGUE_ARCHIVE", &operator_archive)
@@ -158,7 +157,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     drop(daemon);
     let marker = directory.join("keep.txt");
     std::fs::write(&marker, "keep this file").unwrap();
-    let retry = Command::new(crate::BIN)
+    let retry = crate::command(temp.path())
         .args(["demo", "tour"])
         .arg(&directory)
         .output()

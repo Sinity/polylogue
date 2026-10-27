@@ -3,7 +3,7 @@
 //! it (with the extension's origin) answers a native messaging exchange.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn frame(v: &serde_json::Value) -> Vec<u8> {
     let bytes = serde_json::to_vec(v).unwrap();
@@ -28,7 +28,7 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
     let config = dir.path().join("config");
     std::fs::create_dir_all(config.join("chromium")).unwrap();
     let run = |args: &[&str]| {
-        Command::new(crate::BIN)
+        crate::command(dir.path())
             .env("XDG_CONFIG_HOME", &config)
             .args(args)
             .output()
@@ -68,7 +68,7 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
 #[test]
 fn started_as_chrome_starts_it_the_binary_is_the_host() {
     let dir = tempfile::tempdir().unwrap();
-    let mut child = Command::new(crate::BIN)
+    let mut child = crate::command(dir.path())
         .arg("chrome-extension://abcdefghijklmnop/")
         .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
         .env("POLYLOGUE_HOME", dir.path().join("home"))
@@ -122,7 +122,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     let archive = dir.path().join("archive");
     let state = dir.path().join("state");
     let command = || {
-        let mut command = Command::new(crate::BIN);
+        let mut command = crate::command(dir.path());
         command
             .env("POLYLOGUE_HOME", &home)
             .env("POLYLOGUE_ARCHIVE", &archive)

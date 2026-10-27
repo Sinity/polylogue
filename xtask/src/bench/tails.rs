@@ -14,6 +14,15 @@ const PAGE: &str = "32768";
 /// Tokens per page while walking to the end.
 const WALK: &str = "4000000";
 
+struct Daemon(Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 struct Reader {
     binary: PathBuf,
     env: Vec<(String, PathBuf)>,
@@ -31,31 +40,37 @@ impl Reader {
         command
     }
 
-    fn start(&self) -> Result<Child, String> {
-        let mut daemon = self
-            .command()
-            .arg("daemon")
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
+    fn start(&self) -> Result<Daemon, String> {
+        let mut daemon = Daemon(
+            self.command()
+                .arg("daemon")
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| e.to_string())?,
+        );
         let mut line = String::new();
-        BufReader::new(daemon.stderr.as_mut().ok_or("no daemon stderr")?)
+        BufReader::new(daemon.0.stderr.as_mut().ok_or("no daemon stderr")?)
             .read_line(&mut line)
             .map_err(|e| e.to_string())?;
         if !line.contains("serving") {
-            let _ = daemon.kill();
             return Err(format!("the daemon did not start: {line}"));
         }
         Ok(daemon)
     }
 
-    fn stop(&self, mut daemon: Child) -> Result<(), String> {
-        Command::new("kill")
+    fn stop(&self, mut daemon: Daemon) -> Result<(), String> {
+        let stopped = Command::new("kill")
             .arg("-TERM")
-            .arg(daemon.id().to_string())
+            .arg(daemon.0.id().to_string())
             .status()
             .map_err(|e| e.to_string())?;
-        daemon.wait().map_err(|e| e.to_string())?;
+        if !stopped.success() {
+            return Err(format!("stopping the benchmark daemon failed: {stopped}"));
+        }
+        let status = daemon.0.wait().map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("the benchmark daemon exited with {status}"));
+        }
         Ok(())
     }
 
@@ -164,7 +179,11 @@ pub(super) fn run(
     if scratch.exists() {
         fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
     }
-    let mut env = vec![("POLYLOGUE_ARCHIVE".to_owned(), archive.clone())];
+    let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut env = vec![
+        ("POLYLOGUE_ARCHIVE".to_owned(), archive.clone()),
+        ("XDG_RUNTIME_DIR".to_owned(), runtime.path().to_owned()),
+    ];
     for (key, dir) in [
         ("POLYLOGUE_HOME", "home"),
         ("XDG_CONFIG_HOME", "config"),
