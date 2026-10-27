@@ -71,7 +71,7 @@
       try {
         const { body = null, ...facts } = await answer(request);
         if (!open) return;
-        port.postMessage({ type: "facts", ...facts });
+        port.postMessage({ type: "facts", ...facts, has_body: body !== null });
         if (body) await sendBody(port, body);
         if (open) port.postMessage({ type: "end" });
       } catch (error) {
