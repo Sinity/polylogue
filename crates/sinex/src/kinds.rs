@@ -4,7 +4,7 @@
 //! rollout, an export). It parses them itself and sends these events, each
 //! anchored at its record in that material and keyed by Polylogue's stable
 //! IDs: a message carried by two files, or read again by a changed parser, is
-//! one occurrence, and the newer reading replaces the older. Sinex never
+//! one record, and the newer reading replaces the older. Sinex never
 //! parses AI sessions.
 //!
 //! Notes, settings, kept results, deliveries and excisions are requests
