@@ -5,7 +5,7 @@ use std::io::{self, BufRead, Read};
 
 mod diff;
 mod observe;
-pub use diff::{Change, ChangeKind, Diff, compare};
+pub use diff::{Change, ChangeKind, Diff, Sample, compare};
 
 pub const RULE_VERSION: u32 = 2;
 
@@ -58,9 +58,15 @@ pub enum Framing {
 #[derive(Default)]
 pub struct Observer {
     names: BTreeSet<String>,
-    root: Node,
+    root: Tree,
     records: u64,
     unreadable: u64,
+}
+
+#[derive(Default)]
+struct Tree {
+    nodes: Vec<Node>,
+    free: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -68,88 +74,217 @@ struct Node {
     types: BTreeMap<String, u64>,
     occurrences: u64,
     present: u64,
-    children: BTreeMap<String, Node>,
-    /// Counts of object member sets preserve presence when names are grouped later.
-    objects: BTreeMap<BTreeSet<String>, u64>,
+    children: BTreeMap<String, usize>,
+    // At most 51 names establish whether all unforced members must be grouped.
+    members: BTreeSet<String>,
+    grouped: bool,
+    // Grouped presence is the number of objects with any unforced member.
+    unforced_present: u64,
+    // Parser-assigned numbers count presence once per parent at a shared path.
+    last_unforced: u64,
+    last_parent: u64,
 }
 
-impl Node {
-    fn kind(&mut self, kind: &str) {
-        *self.types.entry(kind.into()).or_default() += 1;
-        self.occurrences += 1;
+impl Tree {
+    fn root(&mut self) -> usize {
+        if self.nodes.is_empty() {
+            self.nodes.push(Node::default());
+        }
+        0
     }
 
-    fn merge(&mut self, other: Self) {
-        self.occurrences += other.occurrences;
-        self.present += other.present;
-        for (kind, count) in other.types {
-            *self.types.entry(kind).or_default() += count;
-        }
-        for (keys, count) in other.objects {
-            *self.objects.entry(keys).or_default() += count;
-        }
-        for (key, child) in other.children {
-            self.children.entry(key).or_default().merge(child);
+    fn allocate(&mut self) -> usize {
+        if let Some(index) = self.free.pop() {
+            index
+        } else {
+            self.nodes.push(Node::default());
+            self.nodes.len() - 1
         }
     }
 
-    fn group_names(&mut self, names: &BTreeSet<String>) {
-        let members: BTreeSet<_> = self
+    fn child(&mut self, parent: usize, key: String) -> usize {
+        if let Some(index) = self.nodes[parent].children.get(&key) {
+            return *index;
+        }
+        let index = self.allocate();
+        self.nodes[parent].children.insert(key, index);
+        index
+    }
+
+    fn kind(&mut self, index: usize, kind: &str) {
+        let node = &mut self.nodes[index];
+        *node.types.entry(kind.into()).or_default() += 1;
+        node.occurrences += 1;
+    }
+
+    fn member(
+        &mut self,
+        parent: usize,
+        name: &str,
+        object: u64,
+        names: &BTreeSet<String>,
+    ) -> usize {
+        let forced = names.contains(name);
+        let key = field_name(name);
+        let node = &mut self.nodes[parent];
+        let was_grouped = node.grouped;
+        if !node.grouped {
+            node.members.insert(key.clone());
+            if node.members.len() > 50 {
+                node.grouped = true;
+            }
+        }
+        if !forced && node.last_unforced != object {
+            node.unforced_present += 1;
+            node.last_unforced = object;
+        }
+        if !was_grouped && node.grouped {
+            self.normalize(parent, names);
+        }
+        let grouped = !forced && (self.nodes[parent].grouped || identifier(name));
+        let index = self.child(parent, if grouped { "*".into() } else { key });
+        let node = &mut self.nodes[index];
+        if node.last_parent != object {
+            node.present += 1;
+            node.last_parent = object;
+        }
+        index
+    }
+
+    fn group(&mut self, parent: usize, names: &BTreeSet<String>) {
+        if !self.nodes[parent].grouped {
+            return;
+        }
+        self.nodes[parent].members.clear();
+        let keys: Vec<_> = self.nodes[parent]
             .children
             .keys()
-            .filter(|key| *key != "[]")
-            .cloned()
-            .collect();
-        let collapsed: BTreeSet<_> = members
-            .iter()
             .filter(|key| {
-                let name = key
-                    .replace("~3", "[]")
-                    .replace("~2", "*")
-                    .replace("~1", "/")
-                    .replace("~0", "~");
-                !names.contains(&name) && (members.len() > 50 || identifier(&name))
+                key.as_str() != "[]" && key.as_str() != "*" && !names.contains(&unescape(key))
             })
             .cloned()
             .collect();
-        if !collapsed.is_empty() {
-            let mut grouped = Node::default();
-            for key in &collapsed {
-                grouped.merge(self.children.remove(key).expect("observed member"));
-            }
-            grouped.present = self
-                .objects
-                .iter()
-                .filter(|(keys, _)| !keys.is_disjoint(&collapsed))
-                .map(|(_, count)| count)
-                .sum();
-            self.children.insert("*".into(), grouped);
+        if keys.is_empty() {
+            return;
         }
-        self.objects.clear();
-        for child in self.children.values_mut() {
-            child.group_names(names);
+        let target = self.child(parent, "*".into());
+        for key in keys {
+            let source = self.nodes[parent]
+                .children
+                .remove(&key)
+                .expect("observed member");
+            self.merge_nodes(target, source);
+        }
+        self.nodes[target].present = self.nodes[parent].unforced_present;
+        self.nodes[target].last_parent = self.nodes[parent].last_unforced;
+    }
+
+    fn merge_nodes(&mut self, target: usize, source: usize) {
+        let mut pending = vec![(target, source)];
+        while let Some((target, source)) = pending.pop() {
+            let node = std::mem::take(&mut self.nodes[source]);
+            self.free.push(source);
+            self.add_counts(target, &node);
+            for (key, source) in node.children {
+                let child = self.child(target, key);
+                pending.push((child, source));
+            }
         }
     }
 
-    fn flatten(self, path: String, parents: u64, fields: &mut BTreeMap<String, Field>) {
-        let objects = self.types.get("object").copied().unwrap_or(0);
-        let arrays = self.types.get("array").copied().unwrap_or(0);
-        fields.insert(
-            path.clone(),
-            Field {
-                types: self.types,
-                occurrences: self.occurrences,
-                parents,
-                present: self.present,
-                missing: parents - self.present,
-                required: parents > 0 && self.present == parents,
-            },
-        );
-        for (key, child) in self.children {
-            let parents = if key == "[]" { arrays } else { objects };
-            child.flatten(format!("{path}/{key}"), parents, fields);
+    fn add_counts(&mut self, target: usize, source: &Node) {
+        let node = &mut self.nodes[target];
+        node.occurrences += source.occurrences;
+        node.present += source.present;
+        node.unforced_present += source.unforced_present;
+        node.last_parent = node.last_parent.max(source.last_parent);
+        node.last_unforced = node.last_unforced.max(source.last_unforced);
+        for (kind, count) in &source.types {
+            *node.types.entry(kind.clone()).or_default() += count;
+        }
+        node.grouped |= source.grouped;
+        if !node.grouped {
+            for key in &source.members {
+                node.members.insert(key.clone());
+                if node.members.len() > 50 {
+                    node.grouped = true;
+                    break;
+                }
+            }
         }
     }
+
+    fn merge(&mut self, mut other: Self, names: &BTreeSet<String>) {
+        if other.nodes.is_empty() {
+            return;
+        }
+        let root = self.root();
+        let mut pending = vec![(root, 0)];
+        while let Some((target, source)) = pending.pop() {
+            let node = std::mem::take(&mut other.nodes[source]);
+            self.add_counts(target, &node);
+            for (key, source) in node.children {
+                let key = if self.nodes[target].grouped
+                    && key != "[]"
+                    && !names.contains(&unescape(&key))
+                {
+                    "*".into()
+                } else {
+                    key
+                };
+                let child = self.child(target, key);
+                pending.push((child, source));
+            }
+        }
+        self.normalize(root, names);
+    }
+
+    fn normalize(&mut self, root: usize, names: &BTreeSet<String>) {
+        let mut pending = vec![root];
+        while let Some(index) = pending.pop() {
+            self.group(index, names);
+            if self.nodes[index].grouped
+                && let Some(child) = self.nodes[index].children.get("*").copied()
+            {
+                self.nodes[child].present = self.nodes[index].unforced_present;
+                self.nodes[child].last_parent = self.nodes[index].last_unforced;
+            }
+            pending.extend(self.nodes[index].children.values().copied());
+        }
+    }
+
+    fn flatten(mut self, records: u64) -> BTreeMap<String, Field> {
+        let mut fields = BTreeMap::new();
+        let mut pending = vec![(0, String::new(), records)];
+        while let Some((index, path, parents)) = pending.pop() {
+            let node = std::mem::take(&mut self.nodes[index]);
+            let objects = node.types.get("object").copied().unwrap_or(0);
+            let arrays = node.types.get("array").copied().unwrap_or(0);
+            for (key, child) in node.children {
+                let parents = if key == "[]" { arrays } else { objects };
+                pending.push((child, format!("{path}/{key}"), parents));
+            }
+            fields.insert(
+                path,
+                Field {
+                    types: node.types,
+                    occurrences: node.occurrences,
+                    parents,
+                    present: node.present,
+                    missing: parents - node.present,
+                    required: parents > 0 && node.present == parents,
+                },
+            );
+        }
+        fields
+    }
+}
+
+fn unescape(key: &str) -> String {
+    key.replace("~3", "[]")
+        .replace("~2", "*")
+        .replace("~1", "/")
+        .replace("~0", "~")
 }
 
 impl Observer {
@@ -162,8 +297,8 @@ impl Observer {
 
     /// A failed JSON record contributes no partial structure.
     pub fn json(&mut self, reader: impl Read) -> Result<(), serde_json::Error> {
-        let node = observe::read(reader)?;
-        self.root.merge(node);
+        let node = observe::read(reader, &self.names)?;
+        self.root.merge(node, &self.names);
         self.records += 1;
         Ok(())
     }
@@ -173,14 +308,7 @@ impl Observer {
             Framing::Lines => self.lines(reader),
             Framing::Json => self.json(reader).map_err(io::Error::other),
             Framing::Array => {
-                // Malformed exports must not contribute a valid-looking prefix.
-                let mut whole = Self::new(self.names.clone());
-                crate::export::scan(reader, |_, raw| {
-                    whole
-                        .json(raw.get().as_bytes())
-                        .map_err(|_| "invalid_record".into())
-                })
-                .map_err(|_| io::Error::other("invalid_export"))?;
+                let whole = observe::array(reader, &self.names).map_err(io::Error::other)?;
                 self.merge(whole).map_err(io::Error::other)?;
                 Ok(())
             }
@@ -189,21 +317,22 @@ impl Observer {
     }
 
     fn lines(&mut self, mut reader: impl BufRead) -> io::Result<()> {
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            if reader.read_until(b'\n', &mut line)? == 0 {
-                break;
-            }
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
-            }
-            // Offline revisions have a known end, including a complete last line.
-            if let Err(error) = self.json(line.as_slice()) {
+        while !reader.fill_buf()?.is_empty() {
+            // Draining a failed record starts the next read at its own newline.
+            let mut line = observe::Line {
+                reader: &mut reader,
+                ended: false,
+                nonwhite: false,
+            };
+            let result = self.json(&mut line);
+            io::copy(&mut line, &mut io::sink())?;
+            if let Err(error) = result {
                 if error.is_io() {
                     return Err(io::Error::other("input_read"));
                 }
-                self.unreadable += 1;
+                if line.nonwhite {
+                    self.unreadable += 1;
+                }
             }
         }
         Ok(())
@@ -226,15 +355,15 @@ impl Observer {
             let mut header = [0; HEADER_LEN];
             reader.read_exact(&mut header)?;
             let header = Header::decode(&header).map_err(io::Error::other)?;
-            let mut bytes = Vec::new();
-            reader
-                .by_ref()
-                .take(header.length)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 != header.length || !header.verifies(&bytes) {
+            let mut frame = Hashed {
+                reader: reader.by_ref().take(header.length),
+                hash: blake3::Hasher::new(),
+            };
+            whole.json(&mut frame).map_err(io::Error::other)?;
+            if frame.reader.limit() != 0 || frame.hash.finalize().to_hex().as_str() != header.digest
+            {
                 return Err(io::Error::other("invalid_capture"));
             }
-            whole.json(bytes.as_slice()).map_err(io::Error::other)?;
         }
         self.merge(whole).map_err(io::Error::other)?;
         Ok(())
@@ -248,7 +377,7 @@ impl Observer {
         if self.names != other.names {
             return Err("observer field-name selections differ");
         }
-        self.root.merge(other.root);
+        self.root.merge(other.root, &self.names);
         self.records += other.records;
         self.unreadable += other.unreadable;
         Ok(())
@@ -256,12 +385,11 @@ impl Observer {
 
     pub fn finish(self, origin: String, mut selection: Vec<Selection>) -> Schema {
         selection.sort_by(|a, b| (&a.input, a.revision).cmp(&(&b.input, b.revision)));
-        let mut fields = BTreeMap::new();
-        if self.records > 0 {
-            let mut root = self.root;
-            root.group_names(&self.names);
-            root.flatten(String::new(), self.records, &mut fields);
-        }
+        let fields = if self.records > 0 {
+            self.root.flatten(self.records)
+        } else {
+            BTreeMap::new()
+        };
         Schema {
             rule_version: RULE_VERSION,
             origin,
@@ -273,6 +401,18 @@ impl Observer {
             unreadable_records: self.unreadable,
             fields,
         }
+    }
+}
+
+struct Hashed<R> {
+    reader: R,
+    hash: blake3::Hasher,
+}
+impl<R: Read> Read for Hashed<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let length = self.reader.read(out)?;
+        self.hash.update(&out[..length]);
+        Ok(length)
     }
 }
 
