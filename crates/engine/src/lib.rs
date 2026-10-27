@@ -254,7 +254,7 @@ pub struct Engine {
     reads: ReadPool,
     blobs: Arc<hashed_blobs::Store>,
     inputs: HashMap<PathBuf, InputState>,
-    /// Rejected writes awaiting checkpoint reload after their plans settle.
+    /// Rejected writes awaiting checkpoint reload after their plans finish.
     failed_writes: HashSet<String>,
     loaded: bool,
     exporter: Captures,

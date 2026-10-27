@@ -31,7 +31,7 @@ fn classifies_every_kind_of_change() {
 }
 
 #[test]
-fn small_pieces_are_inline_and_large_ones_files() {
+fn small_appended_bytes_are_inline_and_large_ones_files() {
     let dir = tempfile::tempdir().unwrap();
     let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
     let small = NewBlob::prepare(&store, b"hello").unwrap();

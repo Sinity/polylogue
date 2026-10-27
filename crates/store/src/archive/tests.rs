@@ -218,7 +218,7 @@ fn opening_clears_blob_files_a_stop_left_before_their_move() {
 }
 
 #[test]
-fn opening_settles_every_blob_row_left_writing() {
+fn opening_finishes_every_blob_row_left_writing() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();

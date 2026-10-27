@@ -297,8 +297,8 @@ fn maybe_session_visible(a: &Aliases) -> String {
     )
 }
 
-fn counted_call(a: &Aliases) -> String {
-    fields::counted_call(&a.t)
+fn counts_as_action(a: &Aliases) -> String {
+    fields::counts_as_action(&a.t)
 }
 
 fn current_note(a: &Aliases) -> String {
@@ -573,7 +573,7 @@ pub static UNITS: &[UnitSpec] = &[
                 &["active"],
                 true,
             ),
-            d(Expr::Fn(counted_call), &["action"], false),
+            d(Expr::Fn(counts_as_action), &["action"], false),
             d(Expr::Fn(not_hidden), &["hidden"], true),
             d(Expr::Fn(not_excised), &[], false),
         ],

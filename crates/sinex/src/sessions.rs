@@ -145,7 +145,7 @@ impl Anchors<'_, '_> {
                 Some(RecordLocation {
                     material,
                     anchor: u64::try_from(start - offset)
-                        .map_err(|_| Error::Invalid("a record before its part".into()))?,
+                        .map_err(|_| Error::Invalid("a record before its stored bytes".into()))?,
                 })
             }
             None => None,

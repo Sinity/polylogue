@@ -1,4 +1,4 @@
-//! Polylogue on a real Sinex: the Morrow example converged in primary mode
+//! Polylogue on a real Sinex: the Morrow example built in primary mode
 //! gives the answers standalone gives; deleting the local copy and the index
 //! and rebuilding them from Sinex, with no provider file left, gives the same
 //! answers again; and Sinex answers its own query language about the
@@ -113,11 +113,11 @@ fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
     }
 }
 
-/// Converges the Morrow world `world` with its home at `home`, on Sinex.
-fn converge_on_sinex(world: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
+/// Builds the Morrow example `example` with its home at `home`, on Sinex.
+fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
     let (archive, _lock) =
-        Archive::open_primary(&world.root, &config.store, sinex.as_ref()).unwrap();
-    let mut settings = world.config();
+        Archive::open_primary(&example.root, &config.store, sinex.as_ref()).unwrap();
+    let mut settings = example.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
     let pass = engine.run_pass().unwrap();
@@ -184,17 +184,17 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let expected = answers(&Archive::at(&standalone.root)).0;
     assert!(expected.len() >= 8, "the example produced its sessions");
 
-    let world = Morrow::lay_out(Set::Main);
-    let running = sinex(world.dir.path());
-    let sinex = connect(&running.config, &world.root);
+    let example = Morrow::lay_out(Set::Main);
+    let running = sinex(example.dir.path());
+    let sinex = connect(&running.config, &example.root);
     phase("sinexd answers");
-    converge_on_sinex(&world, &world.home, &sinex, &running.config);
-    phase("converged on Sinex");
+    build_on_sinex(&example, &example.home, &sinex, &running.config);
+    phase("built on Sinex");
     {
         let (archive, _lock) =
-            Archive::open_primary(&world.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine = Engine::on_sinex(world.config(), archive, sinex.clone()).unwrap();
-        world.import_exports(&mut engine);
+            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
+        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
+        example.import_exports(&mut engine);
         engine
             .writer()
             .unwrap()
@@ -216,7 +216,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             .unwrap();
     }
     phase("exports imported");
-    let on_sinex = Archive::on_sinex(&world.root, &running.config.store);
+    let on_sinex = Archive::on_sinex(&example.root, &running.config.store);
     let (sessions, notes) = answers(&on_sinex);
     assert_eq!(
         sessions, expected,
@@ -224,11 +224,11 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     );
     assert_eq!(notes.len(), 1);
     assert!(
-        !world.root.join("archive.db").exists(),
+        !example.root.join("archive.db").exists(),
         "primary keeps no archive.db"
     );
     assert!(
-        !world.root.join("blobs").exists(),
+        !example.root.join("blobs").exists(),
         "primary keeps no local blobs"
     );
 
@@ -260,11 +260,11 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         "index.db-shm",
         "sinex-sent.json",
     ] {
-        let _ = fs::remove_file(world.root.join(name));
+        let _ = fs::remove_file(example.root.join(name));
     }
-    let empty = world.dir.path().join("empty-home");
+    let empty = example.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
-    converge_on_sinex(&world, &empty, &sinex, &running.config);
+    build_on_sinex(&example, &empty, &sinex, &running.config);
     phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
 
@@ -272,8 +272,8 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     // as the actor; a later rebuild keeps it removed.
     {
         let (archive, _lock) =
-            Archive::open_primary(&world.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine = Engine::on_sinex(world.config(), archive, sinex.clone()).unwrap();
+            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
+        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
         let excised = engine
             .excise(polylogue_engine::ExciseRequest {
                 id: "0199d8a0-0000-7000-8000-00000000e001".into(),
@@ -313,9 +313,9 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         "index.db-shm",
         "sinex-sent.json",
     ] {
-        let _ = fs::remove_file(world.root.join(name));
+        let _ = fs::remove_file(example.root.join(name));
     }
-    converge_on_sinex(&world, &world.home, &sinex, &running.config);
+    build_on_sinex(&example, &example.home, &sinex, &running.config);
     phase("rebuilt after the excision");
     assert_eq!(
         answers(&on_sinex).0,

@@ -4,7 +4,7 @@
 // conversation list and its files.
 //
 // The background asks through a port (`chrome.tabs.connect`) and gets the
-// answer's facts first, then any body as base64 pieces, so a conversation of
+// answer's facts first, then any body as base64 appended bytes, so a conversation of
 // any size crosses without one oversized message. The page tells the
 // background when its conversation may have changed; the background decides
 // whether to capture.
@@ -14,9 +14,9 @@
   if (!provider) return;
   globalThis.polylogueContent = true;
 
-  const PIECE_BYTES = 4 * 1024 * 1024;
-  // The page counts as settled once its messages stop changing for this long.
-  const SETTLED_MS = 3000;
+  const APPENDED_BYTES = 4 * 1024 * 1024;
+  // Announce a change after the messages stop changing for this long.
+  const CHANGE_PAUSE_MS = 3000;
 
   function base64(bytes) {
     let text = "";
@@ -27,9 +27,9 @@
   }
 
   async function sendBody(port, body) {
-    for (let at = 0; at < body.size; at += PIECE_BYTES) {
-      const piece = new Uint8Array(await body.slice(at, at + PIECE_BYTES).arrayBuffer());
-      port.postMessage({ type: "piece", data: base64(piece) });
+    for (let at = 0; at < body.size; at += APPENDED_BYTES) {
+      const appendedBytes = new Uint8Array(await body.slice(at, at + APPENDED_BYTES).arrayBuffer());
+      port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
     }
   }
 
@@ -66,7 +66,7 @@
   });
 
   // Change notices. A conversation that is still being written (the
-  // provider shows its stop button) is announced once it settles. Pages
+  // provider shows its stop button) is announced once it finishes. Pages
   // change their markup all the time (menus, animations); only a change of
   // the conversation's text, or another page, is announced.
   let timer = null;
@@ -85,30 +85,30 @@
     announced = shown;
     chrome.runtime.sendMessage({ type: "polylogue.changed", provider: provider.name, reason }).catch(() => undefined);
   }
-  function settleThenAnnounce(reason) {
+  function announceAfterPause(reason) {
     clearTimeout(timer);
     timer = setTimeout(() => {
       if (provider.generating?.()) {
-        settleThenAnnounce(reason);
+        announceAfterPause(reason);
         return;
       }
       announce(reason);
-    }, SETTLED_MS);
+    }, CHANGE_PAUSE_MS);
   }
   const observer = new MutationObserver(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      settleThenAnnounce("opened");
+      announceAfterPause("opened");
       return;
     }
-    settleThenAnnounce("changed");
+    announceAfterPause("changed");
   });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   window.addEventListener("pagehide", () => { clearTimeout(timer); observer.disconnect(); });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-    settleThenAnnounce("opened");
+    announceAfterPause("opened");
   });
-  settleThenAnnounce("opened");
+  announceAfterPause("opened");
 })();

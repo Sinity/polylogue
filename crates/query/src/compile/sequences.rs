@@ -78,7 +78,7 @@ impl<'a> Compiler<'a> {
                  FROM tool_call t JOIN block cb ON cb.pk = t.call_block_pk JOIN message m ON m.pk = cb.message_pk \
                  WHERE m.duplicate_of IS NULL \
                  AND COALESCE(m.on_active_path, 1) = 1 AND {})",
-                fields::counted_call("t")
+                fields::counts_as_action("t")
             ));
         }
         let mut aliases = vec![];

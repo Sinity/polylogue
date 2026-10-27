@@ -74,7 +74,7 @@ impl StoredChain {
         while at < out.len() {
             let n = cursor.read(&mut out[at..], self.extents.as_deref(), store)?;
             if n == 0 {
-                return Err(StoreError::Invalid("stored extent missing".into()));
+                return Err(StoreError::Invalid("stored byte range missing".into()));
             }
             at += n;
         }

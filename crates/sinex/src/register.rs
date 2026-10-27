@@ -69,7 +69,7 @@ pub(crate) async fn send(
         })
         .await?
         .material
-        .ok_or_else(|| Error::Invalid(format!("{name} registered no material")))?;
+        .ok_or_else(|| Error::Invalid(format!("{name} stored no material")))?;
     let event = match change {
         RegisterChange::Request {
             request,

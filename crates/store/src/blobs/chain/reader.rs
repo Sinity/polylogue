@@ -74,7 +74,7 @@ impl Cursor {
         }
         if self.left == 0 {
             let (extent, inline) = extents
-                .ok_or_else(|| StoreError::Invalid("stored extent missing".into()))?
+                .ok_or_else(|| StoreError::Invalid("stored byte range missing".into()))?
                 .select(self.position, store)?;
             if !extent.inline && self.access == Access::Range {
                 let length =
@@ -104,7 +104,9 @@ impl Cursor {
         let want = out.len().min(self.left.try_into().unwrap_or(usize::MAX));
         let n = self.current.as_mut().unwrap().read(&mut out[..want])?;
         if n == 0 {
-            return Err(StoreError::Invalid("stored blob ends before extent".into()));
+            return Err(StoreError::Invalid(
+                "stored blob ends before its byte range".into(),
+            ));
         }
         self.left -= n as u64;
         self.position += n as u64;

@@ -83,7 +83,7 @@ what changed there goes ahead of the work still waiting, so a capture or a
 session being written shows up within seconds even during a first build. The [writer](../crates/store/src/writer/staging.rs)
 checks them against excisions, commits the blob rows as `writing` with their
 revision and extents, writes the files, then marks the rows `present`. After a
-stop, opening the archive and every pass settle what is left: files not yet
+stop, opening the archive and every pass finish what is left: files not yet
 moved under their content names are deleted (on open), a `writing` row that
 stored bytes use becomes `present` when its file exists, and a `writing` row
 nothing in the archive uses (decoded bytes whose parsed rows never committed)

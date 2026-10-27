@@ -984,7 +984,7 @@ pub fn own_messages(s: &str, x: &str) -> String {
 
 /// A script call whose commands are recorded is counted through them; a
 /// script call with no recorded command counts itself.
-pub fn counted_call(t: &str) -> String {
+pub fn counts_as_action(t: &str) -> String {
     format!(
         "NOT ({t}.action = 'code' AND EXISTS (SELECT 1 FROM tool_call cw WHERE cw.session_pk = {t}.session_pk AND cw.run_by_script = 1))"
     )
@@ -996,7 +996,7 @@ fn own_calls(s: &str, x: &str, extra: &str) -> String {
          JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
          WHERE {x}.session_pk = {s}.pk AND {x}m.duplicate_of IS NULL \
          AND COALESCE({x}m.on_active_path, 1) = 1 AND {}{extra})",
-        counted_call(x)
+        counts_as_action(x)
     )
 }
 

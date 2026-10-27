@@ -109,19 +109,19 @@ impl Pager {
         // Pages are text: values no text view shows stay unmasked.
         self.masker.message_text(&mut message);
         if self.message < self.at.message {
-            return self.push_pieces(Vec::new(), header(&message), Vec::new());
+            return self.push_blocks(Vec::new(), header(&message), Vec::new());
         }
         let labels = labels(&message);
         let annotations = crate::attachments::apply(&mut message, self.view, labels);
         let ps = rendered_blocks(&message, self.view);
-        self.push_pieces(ps, header(&message), annotations)
+        self.push_blocks(ps, header(&message), annotations)
     }
 
     pub fn visible_attachments(&self) -> &[crate::AttachmentRef] {
         &self.attachments
     }
 
-    fn push_pieces(
+    fn push_blocks(
         &mut self,
         ps: Vec<crate::RenderedBlock>,
         heading: String,
@@ -230,7 +230,7 @@ impl BlockPager {
         } else {
             String::new()
         };
-        self.stream.push_pieces(ps, heading, Vec::new())
+        self.stream.push_blocks(ps, heading, Vec::new())
     }
     pub fn finish(self) -> Result<Page, &'static str> {
         self.stream.finish()

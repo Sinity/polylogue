@@ -68,7 +68,7 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
     }
 }
 
-/// Whether the index was being built without syncs and never settled
+/// Whether the index was being built without syncs and never finished
 /// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
 /// rebuilt rather than trusted.
 pub fn unsynced(conn: &Connection) -> Result<bool> {
