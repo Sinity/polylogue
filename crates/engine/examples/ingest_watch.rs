@@ -118,7 +118,6 @@ fn watch(dir: &Path, seconds: u64) {
         .unwrap();
     assert!(producer.wait().unwrap().success());
     // End the measurement after the last append and final comparison are read.
-    let expected = seconds + 1;
     loop {
         let s = status.lock().unwrap().clone();
         assert!(s.last_pass.errors.is_empty(), "{:?}", s.last_pass.errors);
@@ -143,16 +142,16 @@ fn watch(dir: &Path, seconds: u64) {
             .unwrap()
             .iter()
             .any(|r| r["hash"] == hash);
-        if count >= seconds && captured && !s.busy && s.passes >= expected.min(2) {
+        if count >= seconds && captured {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let after = io();
-    stop_sample.send(()).unwrap();
-    let sampling_io = sampler.join().unwrap();
     tx.send(LoopMsg::Stop).unwrap();
     thread.join().unwrap();
+    stop_sample.send(()).unwrap();
+    let sampling_io = sampler.join().unwrap();
+    let after = io();
     fs::write(dir.join("result.json"), json!({"seconds":seconds,"before_io":before,"after_io":after,"memory":fs::read_to_string("/proc/self/status").unwrap().lines().filter(|line| line.starts_with("VmHWM:") || line.starts_with("VmRSS:")).collect::<Vec<_>>(),"load":fs::read_to_string("/proc/loadavg").unwrap(),"status":*status.lock().unwrap(),"sampling_io":sampling_io,"measurement_clock":measurement_clock,"workers":polylogue_store::timing::workers(),"samples":*samples.lock().unwrap(),"stages":stages(),"producer":serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join("producer.json")).unwrap()).unwrap()}).to_string()).unwrap();
 }
 
