@@ -1257,7 +1257,7 @@ const WRITTEN: &[Command] = &[
             opt(
                 "model",
                 Kind::Text,
-                "Show response details for this model; totals retain all selected models",
+                "Show response details for this model; totals include all selected models",
             ),
             opt(
                 "undated",

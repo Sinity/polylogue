@@ -113,7 +113,7 @@ fn replaced_index_keeps_the_archive(change: &str) {
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
     assert!(
-        schema::same_schema(&index, &[schema::INDEX]).unwrap(),
+        schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap(),
         "{change}"
     );
     assert_eq!(

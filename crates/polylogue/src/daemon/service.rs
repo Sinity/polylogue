@@ -272,11 +272,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
                     return error("bad_request", "expression is required for query");
                 };
-                let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                    .ok()
-                    .flatten();
-                let embeddings =
-                    crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+                super::query::with_ranking(&reader, &d.warm, |embeddings, _near| {
                 super::query::explain(
                     &reader,
                     super::query::Ask {
@@ -292,6 +288,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                         fields: &[],
                     },
                 )
+                })
             } else {
                 crate::explain::answer(
                     &subject,
@@ -346,19 +343,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             cursor,
             page_size,
         } => {
-            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                .ok()
-                .flatten();
-            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-            let near = |q: &str| match &provider {
-                Some(provider) => d.warm.similarity(&reader, provider, q),
-                None => Err("embeddings are off".into()),
-            };
+            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
             match super::calendar::cost(
                 &reader,
                 super::calendar::Cost {
                     embeddings,
-                    near: Some(&near),
+                    near: Some(near),
                     month: month.as_deref(),
                     query: &query,
                     date: date.as_deref(),
@@ -377,6 +367,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     detail: f.detail,
                 },
             }
+            })
         }
         Request::Status => {
             let position = match reader.change_position() {
@@ -427,14 +418,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             if let Some(data) = d.warm.answer(&key, &position) {
                 return Response::Ok { data };
             }
-            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                .ok()
-                .flatten();
-            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-            let near = |q: &str| match &provider {
-                Some(p) => d.warm.similarity(&reader, p, q),
-                None => Err("embeddings are off".into()),
-            };
+            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
             let ask = super::query::Ask {
                 text: &text,
                 cursor: cursor.as_deref(),
@@ -444,7 +428,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 now: now_ms(),
                 day: None,
                 embeddings,
-                near: Some(&near),
+                near: Some(near),
                 fields: &fields,
             };
             match super::query::run(&reader, ask) {
@@ -458,6 +442,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     detail: f.detail,
                 },
             }
+            })
         }
         Request::Complete { word } => {
             let position = match reader.change_position() {
@@ -590,6 +575,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             name,
         } => {
+            let kept = super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
             let ask = super::query::Ask {
                 text: &text,
                 cursor: None,
@@ -598,19 +584,15 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 session: None,
                 now: now_ms(),
                 day: None,
-                embeddings: false,
-                near: None,
+                embeddings,
+                near: Some(near),
                 fields: &[],
             };
-            let kept = match super::query::keep(&reader, ask) {
+            super::query::keep(&reader, ask)
+            });
+            let kept = match kept {
                 Ok(k) => k,
-                Err(f) => {
-                    return Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    };
-                }
+                Err(f) => return Response::Error { kind: f.kind, message: f.message, detail: f.detail },
             };
             drop(reader);
             let read_at = serde_json::json!({ "now": kept["now"] }).to_string();

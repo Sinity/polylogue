@@ -321,3 +321,21 @@ fn index_format_changes_require_a_version_and_digest_update() {
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"
     );
 }
+
+#[test]
+fn time_indexes_are_added_in_place_and_survive_reopen() {
+    let conn=Connection::open_in_memory().unwrap();
+    conn.execute_batch(INDEX).unwrap();
+    set_version(&conn,INDEX_VERSION).unwrap();
+    conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')",[]).unwrap();
+    assert!(same_index_schema(&conn).unwrap());
+    ensure_index(&conn).unwrap();
+    conn.execute_batch("DROP INDEX event_at").unwrap();
+    assert!(same_index_schema(&conn).unwrap());
+    ensure_index(&conn).unwrap();
+    assert!(same_schema(&conn,&[INDEX,READ_INDEXES]).unwrap());
+    assert_eq!(version(&conn).unwrap(),INDEX_VERSION);
+    assert_eq!(conn.query_row("SELECT id FROM input_ref",[],|row|row.get::<_,String>(0)).unwrap(),"synthetic");
+    conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)").unwrap();
+    assert!(!same_index_schema(&conn).unwrap());
+}

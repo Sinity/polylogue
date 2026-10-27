@@ -12,6 +12,12 @@ use std::collections::HashSet;
 
 pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
+/// Read indexes added in place when an existing index opens.
+pub(crate) const READ_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS message_at ON message(at, id);
+CREATE INDEX IF NOT EXISTS event_at ON event(at, id);
+";
+
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// A different version rebuilds the index into a new file. Raise it when the
@@ -48,6 +54,7 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    conn.execute_batch(READ_INDEXES)?;
     crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
@@ -60,7 +67,10 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     match version(conn)? {
         0 => create_index(conn),
-        v if v == INDEX_VERSION => Ok(()),
+        v if v == INDEX_VERSION => {
+            conn.execute_batch(READ_INDEXES)?;
+            Ok(())
+        },
         found => Err(StoreError::IndexVersion {
             found,
             wanted: INDEX_VERSION,
@@ -146,6 +156,19 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
         expected.execute_batch(part)?;
     }
     Ok(shape(conn)? == shape(&expected)?)
+}
+
+/// Missing read indexes can be created without rebuilding parsed rows.
+pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    expected.execute_batch(READ_INDEXES)?;
+    let expected = shape(&expected)?;
+    let found = shape(conn)?;
+    Ok(found.iter().all(|item| expected.contains(item))
+        && expected.iter().all(|item| {
+            (item.0 == "index" && matches!(item.1.as_str(), "message_at" | "event_at")) || found.contains(item)
+        }))
 }
 
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {

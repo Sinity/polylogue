@@ -66,6 +66,28 @@ pub struct Ask<'a> {
 pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
+/// Uses the configured provider and warm vectors for every query client.
+pub(crate) fn with_ranking<T>(reader: &Reader<'_>, warm: &super::warm::Warm, run: impl FnOnce(bool, &NearFn<'_>) -> T) -> T {
+    let provider = crate::embeddings::Provider::from_settings(reader, &polylogue_store::user_writes::machine_id()).ok().flatten();
+    let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
+    let near = |text: &str| match &provider {
+        Some(provider) => warm.similarity(reader, provider, text),
+        None => Err("embeddings are off".into()),
+    };
+    run(available, &near)
+}
+
+fn with_similarity<T>(reader: &Reader<'_>, program: &Program, near: Option<&NearFn<'_>>, read: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
+    match &program.near {
+        Some(request) => {
+            let near = near.ok_or_else(|| Failure { kind: "embed".into(), message: "semantic search unavailable".into(), detail: None })?;
+            let similarity = near(&request.text).map_err(|message| Failure { kind: "embed".into(), message, detail: None })?;
+            reader.with_similarity(similarity, read)
+        }
+        None => read(),
+    }
+}
+
 /// The current saved queries by name (`saved_query` notes, newest
 /// revision of each family, not withdrawn), for `query:NAME`. Two families
 /// with one name both stay listed, so the name is refused as ambiguous.
@@ -224,10 +246,9 @@ fn chat_pages() -> Vec<polylogue_query::ChatPage> {
 pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut opts = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
     opts.page_size = None;
-    opts.embeddings = false;
     let program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    let mut rows = reader.query(&program.sql, &values(&program.params))?;
+    let mut rows = with_similarity(reader, &program, ask.near, || Ok(reader.query(&program.sql, &values(&program.params))?))?;
     for row in &mut rows {
         present(&program, row)?;
     }
@@ -244,7 +265,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;
-        let mut matches = reader.query(&m.sql, &values(&m.params))?;
+        let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query(&m.sql, &values(&m.params))?))?;
         for row in &mut matches {
             present(&m, row)?;
         }
@@ -272,20 +293,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .as_ref()
         .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
         .transpose()?;
-    let similarity = match (&program.near, ask.near) {
-        (Some(near), Some(f)) => Some(f(&near.text).map_err(|message| Failure {
-            kind: "embed".into(),
-            message,
-            detail: None,
-        })?),
-        _ => None,
-    };
     let day = opts.clock.day.clone();
-    let answer = || answer(reader, &program, &day, after, seed, question, ask.why);
-    match similarity {
-        Some(similarity) => reader.with_similarity(similarity, answer),
-        None => answer(),
-    }
+    with_similarity(reader, &program, ask.near, || answer(reader, &program, &day, after, seed, question, ask.why))
 }
 
 /// The answer to a compiled program: its count and one page after `after`.
@@ -648,21 +657,6 @@ pub(crate) fn usage_selection(
         message: "cost requires a sessions query".into(),
         detail: None,
     })?;
-    let similarity = match (&program.near, near) {
-        (Some(request), Some(near)) => Some(near(&request.text).map_err(|message| Failure {
-            kind: "embed".into(),
-            message,
-            detail: None,
-        })?),
-        (Some(_), None) => {
-            return Err(Failure {
-                kind: "embed".into(),
-                message: "semantic search unavailable".into(),
-                detail: None,
-            });
-        }
-        _ => None,
-    };
     let select = || -> Result<Option<Vec<i64>>, Failure> {
         if m.everything {
             Ok(None)
@@ -679,10 +673,7 @@ pub(crate) fn usage_selection(
             ))
         }
     };
-    let sessions = match similarity {
-        Some(similarity) => reader.with_similarity(similarity, select)?,
-        None => select()?,
-    };
+    let sessions = with_similarity(reader, &program, near, select)?;
     Ok((
         polylogue_store::measure::Selection {
             sessions,
