@@ -49,7 +49,7 @@ fn pending_files_live_in_the_daemon_and_known_hashes_can_be_reused() {
     );
     drop(engine);
     drop(lock);
-    let (mut engine, _lock) = w.engine(64 << 20);
+    let (mut engine, _lock) = super::engine(&w, 64 << 20);
     assert!(
         engine
             .reads
