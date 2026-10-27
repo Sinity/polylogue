@@ -2,6 +2,8 @@
 //! let readers skip earlier captures without decoding them. A frame holds
 //! the exact submitted JSON bytes.
 
+use std::io::{self, Read};
+
 pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
 pub const HEADER_LEN: usize = 86;
 
@@ -41,6 +43,46 @@ impl Header {
     }
 
     pub fn verifies(&self, bytes: &[u8]) -> bool {
-        bytes.len() as u64 == self.length && blake3::hash(bytes).to_hex().as_str() == self.digest
+        self.matches(bytes.len() as u64, blake3::hash(bytes))
+    }
+
+    /// Reads at most this frame's length and hashes bytes as they are consumed.
+    pub fn verifier<R: Read>(&self, reader: R) -> Verifier<'_, R> {
+        Verifier {
+            header: self,
+            reader: reader.take(self.length),
+            hash: blake3::Hasher::new(),
+        }
+    }
+
+    fn matches(&self, length: u64, digest: blake3::Hash) -> bool {
+        length == self.length && digest.to_hex().as_str() == self.digest
     }
 }
+
+pub struct Verifier<'a, R> {
+    header: &'a Header,
+    reader: io::Take<R>,
+    hash: blake3::Hasher,
+}
+
+impl<R> Verifier<'_, R> {
+    /// True only when the complete frame was consumed and its digest matches.
+    pub fn verifies(self) -> bool {
+        self.header.matches(
+            self.header.length - self.reader.limit(),
+            self.hash.finalize(),
+        )
+    }
+}
+
+impl<R: Read> Read for Verifier<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let length = self.reader.read(bytes)?;
+        self.hash.update(&bytes[..length]);
+        Ok(length)
+    }
+}
+
+#[cfg(test)]
+mod tests;

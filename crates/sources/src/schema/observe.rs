@@ -77,13 +77,25 @@ impl<R: BufRead> Parser<R> {
         Ok(byte)
     }
 
-    fn space(&mut self) -> Result<Option<u8>, serde_json::Error> {
-        while self
-            .peek()?
-            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
-        {
-            self.byte()?;
+    fn skip_while(&mut self, accepts: fn(u8) -> bool) -> Result<bool, serde_json::Error> {
+        let mut any = false;
+        loop {
+            let bytes = self.reader.fill_buf().map_err(serde_json::Error::io)?;
+            let count = bytes.iter().take_while(|byte| accepts(**byte)).count();
+            if count == 0 {
+                return Ok(any);
+            }
+            any = true;
+            let ended = count < bytes.len();
+            self.reader.consume(count);
+            if ended {
+                return Ok(any);
+            }
         }
+    }
+
+    fn space(&mut self) -> Result<Option<u8>, serde_json::Error> {
+        self.skip_while(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))?;
         self.peek()
     }
 
@@ -180,13 +192,11 @@ impl<R: BufRead> Parser<R> {
     }
 
     fn digits(&mut self) -> Result<(), serde_json::Error> {
-        if !self.peek()?.is_some_and(|c| c.is_ascii_digit()) {
-            return Err(invalid());
+        if self.skip_while(|byte| byte.is_ascii_digit())? {
+            Ok(())
+        } else {
+            Err(invalid())
         }
-        while self.peek()?.is_some_and(|c| c.is_ascii_digit()) {
-            self.byte()?;
-        }
-        Ok(())
     }
 
     fn number(&mut self) -> Result<&'static str, serde_json::Error> {
@@ -229,18 +239,28 @@ impl<R: BufRead> Parser<R> {
         self.expect(b'"')?;
         let mut text = String::new();
         loop {
-            // Scan plain ASCII in the input buffer without copying scalar bodies.
+            // Validate whole UTF-8 runs; only a split character needs byte reads.
             let bytes = self.reader.fill_buf().map_err(serde_json::Error::io)?;
             let count = bytes
                 .iter()
-                .take_while(|c| matches!(**c, 0x20..=0x7f) && **c != b'"' && **c != b'\\')
+                .take_while(|c| **c >= 0x20 && **c != b'"' && **c != b'\\')
                 .count();
             if count > 0 {
-                if keep {
-                    text.push_str(std::str::from_utf8(&bytes[..count]).expect("ASCII"));
+                let valid = match std::str::from_utf8(&bytes[..count]) {
+                    Ok(text) => text,
+                    Err(error) if error.error_len().is_none() => {
+                        std::str::from_utf8(&bytes[..error.valid_up_to()]).expect("valid prefix")
+                    }
+                    Err(_) => return Err(invalid()),
+                };
+                if !valid.is_empty() {
+                    if keep {
+                        text.push_str(valid);
+                    }
+                    let length = valid.len();
+                    self.reader.consume(length);
+                    continue;
                 }
-                self.reader.consume(count);
-                continue;
             }
             let byte = self.byte()?;
             let character = match byte {

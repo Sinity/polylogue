@@ -243,3 +243,46 @@ fn grouping_joins_deep_subtrees_without_recursing() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn buffered_runs_validate_unicode_numbers_and_whitespace_across_reads() {
+    let text = "é界🦀".repeat(4096);
+    let bytes = format!(
+        "{}{{\"{text}\":\"{text}\",\"number\":{}e+{}}}{}",
+        " \t\r\n".repeat(4096),
+        "9".repeat(16384),
+        "1".repeat(16384),
+        " \n".repeat(4096)
+    );
+    for size in [1, 7, 8192] {
+        let mut observer = Observer::default();
+        observer
+            .read(
+                BufReader::new(Chunks {
+                    bytes: bytes.as_bytes(),
+                    size,
+                }),
+                Framing::Json,
+            )
+            .unwrap();
+        let schema = observer.finish("synthetic".into(), vec![]);
+        assert_eq!(schema.records, 1);
+        assert_eq!(schema.fields[&format!("/{text}")].types["string"], 1);
+        assert_eq!(schema.fields["/number"].types["number"], 1);
+    }
+    let mut invalid = b"\"".to_vec();
+    invalid.extend("é".repeat(8192).as_bytes());
+    invalid.extend(b"\xff\"");
+    for size in [1, 7, 8192] {
+        let mut observer = Observer::default();
+        assert!(
+            observer
+                .json(Chunks {
+                    bytes: &invalid,
+                    size
+                })
+                .is_err()
+        );
+        assert_eq!(observer.counts(), (0, 0));
+    }
+}

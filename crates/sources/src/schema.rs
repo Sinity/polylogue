@@ -219,10 +219,20 @@ impl Tree {
             return;
         }
         let root = self.root();
-        let mut pending = vec![(root, 0)];
+        let mut pending = vec![(root, Some(0))];
         while let Some((target, source)) = pending.pop() {
+            let Some(source) = source else {
+                self.group_presence(target);
+                continue;
+            };
             let node = std::mem::take(&mut other.nodes[source]);
+            let was_grouped = self.nodes[target].grouped;
             self.add_counts(target, &node);
+            // Only a newly grouped path needs to fold its existing subtrees.
+            if !was_grouped && self.nodes[target].grouped {
+                self.normalize(target, names);
+            }
+            pending.push((target, None));
             for (key, source) in node.children {
                 let key = if self.nodes[target].grouped
                     && key != "[]"
@@ -233,23 +243,26 @@ impl Tree {
                     key
                 };
                 let child = self.child(target, key);
-                pending.push((child, source));
+                pending.push((child, Some(source)));
             }
         }
-        self.normalize(root, names);
     }
 
     fn normalize(&mut self, root: usize, names: &BTreeSet<String>) {
         let mut pending = vec![root];
         while let Some(index) = pending.pop() {
             self.group(index, names);
-            if self.nodes[index].grouped
-                && let Some(child) = self.nodes[index].children.get("*").copied()
-            {
-                self.nodes[child].present = self.nodes[index].unforced_present;
-                self.nodes[child].last_parent = self.nodes[index].last_unforced;
-            }
+            self.group_presence(index);
             pending.extend(self.nodes[index].children.values().copied());
+        }
+    }
+
+    fn group_presence(&mut self, index: usize) {
+        if self.nodes[index].grouped
+            && let Some(child) = self.nodes[index].children.get("*").copied()
+        {
+            self.nodes[child].present = self.nodes[index].unforced_present;
+            self.nodes[child].last_parent = self.nodes[index].last_unforced;
         }
     }
 
@@ -355,13 +368,9 @@ impl Observer {
             let mut header = [0; HEADER_LEN];
             reader.read_exact(&mut header)?;
             let header = Header::decode(&header).map_err(io::Error::other)?;
-            let mut frame = Hashed {
-                reader: reader.by_ref().take(header.length),
-                hash: blake3::Hasher::new(),
-            };
+            let mut frame = header.verifier(&mut reader);
             whole.json(&mut frame).map_err(io::Error::other)?;
-            if frame.reader.limit() != 0 || frame.hash.finalize().to_hex().as_str() != header.digest
-            {
+            if !frame.verifies() {
                 return Err(io::Error::other("invalid_capture"));
             }
         }
@@ -401,18 +410,6 @@ impl Observer {
             unreadable_records: self.unreadable,
             fields,
         }
-    }
-}
-
-struct Hashed<R> {
-    reader: R,
-    hash: blake3::Hasher,
-}
-impl<R: Read> Read for Hashed<R> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let length = self.reader.read(out)?;
-        self.hash.update(&out[..length]);
-        Ok(length)
     }
 }
 

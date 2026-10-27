@@ -37,7 +37,11 @@ forced names and nesting depth, rather than record count or scalar size.
 Parsing, merging, output-path traversal and cleanup use explicit stacks or
 flat storage, with no fixed JSON depth cutoff. Artifact paths themselves
 grow with nesting depth. Capture logs use the shared length and digest
-format. Tool databases are read only
+format and `Header`'s streaming verifier. Arrays use the observer's reader because
+`export::scan` buffers each complete element as a Serde `RawValue` and uses
+recursive validation. Observation must discard scalar bodies and accept deep
+JSON without a call-stack limit; both array readers require a closing bracket
+and end of input before accepting the document. Tool databases are read only
 as their already-stored JSON row dumps; row fields contribute column shape,
 and the schema map contributes table structure. SQL text stays out of the
 artifact.
