@@ -78,7 +78,12 @@ pub fn pearson(pairs: &[(f64, f64)]) -> (Option<f64>, Option<&'static str>) {
         return (None, Some("zero_variance"));
     }
     (
-        Some((x.iter().zip(&y).map(|(x, y)| x * y).sum::<f64>() / denominator).clamp(-1.0, 1.0)),
+        Some(
+            ((x.iter().zip(&y).map(|(x, y)| x * y).sum::<f64>() / denominator).clamp(-1.0, 1.0)
+                * 10_000.0)
+                .round()
+                / 10_000.0,
+        ),
         None,
     )
 }
