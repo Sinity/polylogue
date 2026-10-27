@@ -46,7 +46,16 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     let (mut engine, _lock) = open_engine(&home);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.config.live_every = Duration::from_secs(3600);
-    let length = |engine: &Engine| engine.reads.reader().unwrap().input_progress(&engine.location_id(&db)).unwrap().unwrap().length;
+    let length = |engine: &Engine| {
+        engine
+            .reads
+            .reader()
+            .unwrap()
+            .input_progress(&engine.location_id(&db))
+            .unwrap()
+            .unwrap()
+            .length
+    };
     let before = length(&engine);
     let changed = [db.clone()].into_iter().collect();
     source.execute("UPDATE kept SET n=1", []).unwrap();
@@ -56,15 +65,15 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     home.append("other.jsonl", &claude_user("one", "other", "other"));
     let other = [home.file("other.jsonl")].into_iter().collect();
     engine.one_pass(false, &other, true).unwrap();
-    assert_eq!(length(&engine),before);
+    assert_eq!(length(&engine), before);
     source.execute("UPDATE kept SET n=2", []).unwrap();
     engine.capture_checked = None;
     engine.one_pass(false, &changed, true).unwrap();
     engine.exporter.completed(true);
-    assert_eq!(length(&engine),before);
+    assert_eq!(length(&engine), before);
     engine.capture_checked = None;
     engine.one_pass(false, &Default::default(), true).unwrap();
     let completed = engine.exporter.completed(true);
     assert!(completed.errors.is_empty(), "{:?}", completed.errors);
-    assert!(length(&engine)>before);
+    assert!(length(&engine) > before);
 }

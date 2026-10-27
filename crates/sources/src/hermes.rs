@@ -52,7 +52,11 @@ pub fn open(path: &Path) -> Option<Parse> {
         .is_some_and(|name| name == "state.db.jsonl" || name == "state.db")
     {
         Some(Parse::Export(Box::new(Database::default())))
-    } else if verification::recognize(path) || path.file_name().is_some_and(|name|name == "verification_evidence.db") {
+    } else if verification::recognize(path)
+        || path
+            .file_name()
+            .is_some_and(|name| name == "verification_evidence.db")
+    {
         Some(verification::open())
     } else if path.extension().is_some_and(|s| s == "json") {
         Some(trajectory::open())

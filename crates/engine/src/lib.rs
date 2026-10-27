@@ -18,10 +18,10 @@ pub mod read;
 pub mod repo_lookup;
 mod watch;
 
+use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
-use databases::Databases;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };

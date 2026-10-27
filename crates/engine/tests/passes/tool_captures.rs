@@ -56,7 +56,11 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
         1
     );
     let reader = w.reads();
-    let rows = reader.reader().unwrap().query("SELECT count(*) AS n FROM tool_row", &[]).unwrap();
+    let rows = reader
+        .reader()
+        .unwrap()
+        .query("SELECT count(*) AS n FROM tool_row", &[])
+        .unwrap();
     assert_eq!(rows[0]["n"], 3000);
     assert!(!w.root.join("exports").exists());
 }

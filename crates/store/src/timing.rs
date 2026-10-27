@@ -68,7 +68,10 @@ impl Stage {
 
     /// Runs on a pool thread, so its sum is thread-seconds.
     pub fn parallel(self) -> bool {
-        matches!(self, Stage::Read | Stage::Store | Stage::Parse | Stage::Database)
+        matches!(
+            self,
+            Stage::Read | Stage::Store | Stage::Parse | Stage::Database
+        )
     }
 
     fn index(self) -> usize {
@@ -104,17 +107,33 @@ pub fn reset() {
 
 /// A stage whose time includes its final operation, including early returns.
 pub struct Running(Stage, Instant);
-pub fn enter(stage: Stage) -> Running { Running(stage,Instant::now()) }
-impl Drop for Running { fn drop(&mut self) { add(self.0,self.1.elapsed()); } }
+pub fn enter(stage: Stage) -> Running {
+    Running(stage, Instant::now())
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        add(self.0, self.1.elapsed());
+    }
+}
 
 use std::sync::atomic::AtomicI64;
 #[derive(Clone, Copy)]
-pub enum Queue { Parse, Writer }
+pub enum Queue {
+    Parse,
+    Writer,
+}
 static PARSE_WAITING: AtomicI64 = AtomicI64::new(0);
 static WRITER_WAITING: AtomicI64 = AtomicI64::new(0);
 pub fn queue(queue: Queue, count: i64) {
-    match queue { Queue::Parse => &PARSE_WAITING, Queue::Writer => &WRITER_WAITING }.fetch_add(count,Ordering::Relaxed);
+    match queue {
+        Queue::Parse => &PARSE_WAITING,
+        Queue::Writer => &WRITER_WAITING,
+    }
+    .fetch_add(count, Ordering::Relaxed);
 }
-pub fn queues() -> [(&'static str,i64);2] {
-    [("parse",PARSE_WAITING.load(Ordering::Relaxed)),("writer",WRITER_WAITING.load(Ordering::Relaxed))]
+pub fn queues() -> [(&'static str, i64); 2] {
+    [
+        ("parse", PARSE_WAITING.load(Ordering::Relaxed)),
+        ("writer", WRITER_WAITING.load(Ordering::Relaxed)),
+    ]
 }

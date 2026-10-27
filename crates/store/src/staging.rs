@@ -116,7 +116,7 @@ impl crate::Archive {
                 std::io::Write::write_all(&mut file, &buffer[..n])?;
                 length += n as u64;
             }
-            crate::timing::time(crate::timing::Stage::Sync,|| file.as_file().sync_all())?;
+            crate::timing::time(crate::timing::Stage::Sync, || file.as_file().sync_all())?;
             return Ok(PreparedBytes {
                 owner: self.root.clone(),
                 file: Prepared::Part {
@@ -131,7 +131,7 @@ impl crate::Archive {
             store.prepare_plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
         // Synced here, on the thread that prepared it, so the writer only
         // links it and syncs its directory.
-        crate::timing::time(crate::timing::Stage::Sync,|| prepared.sync())?;
+        crate::timing::time(crate::timing::Stage::Sync, || prepared.sync())?;
         Ok(PreparedBytes {
             owner: self.root.clone(),
             file: Prepared::Local {

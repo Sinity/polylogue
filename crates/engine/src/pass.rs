@@ -166,18 +166,35 @@ impl Engine {
             self.loaded = false;
             self.load()?;
         }
-        let capture_due = discover || new_database || self.capture_checked.is_none_or(|at|at.elapsed() >= self.config.live_every);
+        let capture_due = discover
+            || new_database
+            || self
+                .capture_checked
+                .is_none_or(|at| at.elapsed() >= self.config.live_every);
         if capture_due && !self.exporter.pending() {
             self.capture_checked = Some(Instant::now());
-            let databases = self.databases.iter().filter(|(path,_)| !self.refused.contains(*path)).map(|(path,origin)| databases::DatabaseInput {
-                path:path.clone(),
-                input:InputKey {id:self.location_id(path),format:(*origin).into(),arrival_rank:0},
-                observation:self.observation(path,None),
-            }).collect();
-            self.exporter.start(databases,self.archive.clone(),self.writer.sender()?)?;
+            let databases = self
+                .databases
+                .iter()
+                .filter(|(path, _)| !self.refused.contains(*path))
+                .map(|(path, origin)| databases::DatabaseInput {
+                    path: path.clone(),
+                    input: InputKey {
+                        id: self.location_id(path),
+                        format: (*origin).into(),
+                        arrival_rank: 0,
+                    },
+                    observation: self.observation(path, None),
+                })
+                .collect();
+            self.exporter
+                .start(databases, self.archive.clone(), self.writer.sender()?)?;
         }
         pass.capture_pending = self.exporter.pending();
-        let mut found: Vec<_> = found.into_iter().filter(|f| f.origin.capture != Capture::RowDump).collect();
+        let mut found: Vec<_> = found
+            .into_iter()
+            .filter(|f| f.origin.capture != Capture::RowDump)
+            .collect();
         if !discover && self.live_checked.elapsed() >= self.config.live_every {
             self.live_checked = Instant::now();
             let now_ns = i128::from(now_ms()) * 1_000_000;
@@ -185,7 +202,10 @@ impl Engine {
             found.extend(
                 self.inputs
                     .iter()
-                    .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live && st.origin.capture != Capture::RowDump)
+                    .filter(|(_, st)| {
+                        st.origin.arrival == polylogue_sources::Arrival::Live
+                            && st.origin.capture != Capture::RowDump
+                    })
                     .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                     .map(|(path, st)| collect::Found {
                         path: path.clone(),
@@ -205,7 +225,13 @@ impl Engine {
                 .iter()
                 .any(|(p, st)| p.starts_with(path) && st.facts.is_some() && !p.exists())
         });
-        if !discover && !continuing && !changed && !disappeared && !pass.capture_pending && !completed.changed {
+        if !discover
+            && !continuing
+            && !changed
+            && !disappeared
+            && !pass.capture_pending
+            && !completed.changed
+        {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok(pass);
         }
@@ -373,7 +399,10 @@ impl Engine {
         found.extend(
             self.inputs
                 .iter()
-                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live && st.origin.capture != Capture::RowDump)
+                .filter(|(_, st)| {
+                    st.origin.arrival == polylogue_sources::Arrival::Live
+                        && st.origin.capture != Capture::RowDump
+                })
                 .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                 .map(|(path, st)| collect::Found {
                     path: path.clone(),
@@ -988,8 +1017,7 @@ impl Engine {
             loop {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                        self.exporter =
-                            Databases::default();
+                        self.exporter = Databases::default();
                         self.pass_open = false;
                         return Ok(());
                     }
