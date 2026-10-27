@@ -92,3 +92,36 @@ fn org_read_keeps_source_directives_literal() {
     assert!(content.contains("* user"));
     assert!(content.contains(",#+end_example\n,* source heading\n,,comma"));
 }
+
+#[test]
+fn csv_and_yaml_reads_keep_message_metadata_and_zero_values() {
+    let session = Session::new(
+        SessionId::parse("claude-code:s").unwrap(),
+        SessionKind::Main,
+    );
+    let mut messages = conversation();
+    messages[1].model = Some("synthetic-model".into());
+    messages[1].duration_ms = Some(0);
+    messages[1].usage.input = Some(0);
+    messages[1].production.effort = Some("high".into());
+    for format in [Format::Csv, Format::Yaml] {
+        let result =
+            crate::session(&session, None, messages.clone(), View::Full, format, &[]).unwrap();
+        let text = result["content"].as_str().unwrap();
+        for expected in [
+            "synthetic-model",
+            "duration_ms",
+            "production",
+            "high",
+            "usage",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected} in {format:?}: {text}"
+            );
+        }
+        if format == Format::Yaml {
+            assert!(text.contains("\"duration_ms\": 0"));
+        }
+    }
+}
