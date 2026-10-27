@@ -1,5 +1,5 @@
 //! Codex SQLite databases, parsed from their stored row-dump records.
-//! Lines are a schema line, row lines `{t, k, r, h}` and gone lines
+//! Lines are a schema line, row lines `{t, k, r}` and gone lines
 //! `{t, k, gone}`.
 //!
 //! What becomes rows: thread names, kinds and settings (`threads`), spawn

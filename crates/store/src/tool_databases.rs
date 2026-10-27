@@ -182,22 +182,12 @@ fn file_identity(path: &Path) -> Option<(u64, u64, i128)> {
     Some((facts.device, facts.inode, created))
 }
 
-/// The digest naming a row: its table and its key.
-fn row_key(table: &str, key: &Value) -> u64 {
-    digest(&format!("{table}\0{key}"))
-}
-
 fn row_hash(row: &Value) -> blake3::Hash {
     // SQLite values are scalars or one-key blob objects. Column order is
     // schema metadata, not a change to the row's named values.
     let fields: std::collections::BTreeMap<_, _> =
         row.as_object().expect("row object").iter().collect();
     blake3::hash(&serde_json::to_vec(&fields).expect("JSON row values serialize"))
-}
-
-fn digest(s: &str) -> u64 {
-    let h = blake3::hash(s.as_bytes());
-    u64::from_le_bytes(h.as_bytes()[..8].try_into().expect("8 bytes"))
 }
 
 fn value(v: ValueRef<'_>) -> Result<Value, ExportError> {
@@ -425,7 +415,7 @@ fn write_export(
             }
             let encoded = Value::Object(values);
             if catalog.changed(&table.name, &key, &encoded, full)? {
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"h":format!("{:016x}",digest(&encoded.to_string())),"r":encoded})).map_err(std::io::Error::from)?;
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"r":encoded})).map_err(std::io::Error::from)?;
                 bytes.push(b'\n');
                 done.rows += 1;
                 crate::fault::check("tool_export.after_row", &table.name)?;
@@ -437,7 +427,7 @@ fn write_export(
         if full {
             catalog.gone(&table.name, &mut |key| {
                 stopped()?;
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"kh":format!("{:016x}", row_key(&table.name, &key)),"gone":true})).map_err(std::io::Error::from)?;
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"gone":true})).map_err(std::io::Error::from)?;
                 bytes.push(b'\n'); done.gone += 1;
                 crate::fault::check("tool_export.after_gone", &table.name)?;
                 if bytes.len() >= APPEND_BYTES { send(std::mem::take(&mut bytes), None)?; }
@@ -467,7 +457,7 @@ fn write_export(
             stopped()?;
             serde_json::to_writer(
                 &mut bytes,
-                &json!({"t":table,"k":key,"kh":format!("{:016x}",row_key(table,&key)),"gone":true}),
+                &json!({"t":table,"k":key,"gone":true}),
             )
             .map_err(std::io::Error::from)?;
             bytes.push(b'\n');
