@@ -73,11 +73,19 @@ pub fn search(
             "<button type=\"button\" data-previous hidden>Previous visited page</button>",
         );
         body.push_str(&next_results(query, data));
+        let keep_disabled = if data["rows"].is_array() {
+            ""
+        } else {
+            " disabled"
+        };
         let _ = write!(
             body,
-            r#"<section aria-label="Save search"><h2>Keep this work</h2><p>A saved query runs current data. A kept result records all rows when applied.</p><form id="save-search" hidden data-query="{}"><label for="search-name">Name</label><input id="search-name" name="name" required><button name="operation" value="save" type="submit">Save query</button><button name="operation" value="keep" type="submit" formnovalidate>Keep results</button></form><p id="save-status" role="status" aria-live="polite"></p><noscript><p>Use copy as CLI, then <code>polylogue save NAME QUERY</code> or <code>polylogue keep QUERY</code>.</p></noscript></section>"#,
+            r#"<section aria-label="Save search"><h2>Keep this work</h2><p>A saved query runs current data. A kept result records all rows when applied.</p><form id="save-search" hidden data-query="{}"><label for="search-name">Name</label><input id="search-name" name="name" required><button name="operation" value="save" type="submit">Save query</button><button name="operation" value="keep" type="submit" formnovalidate{keep_disabled}>Keep results</button></form><p id="save-status" role="status" aria-live="polite"></p><noscript><p>Use copy as CLI, then <code>polylogue save NAME QUERY</code> or <code>polylogue keep QUERY</code>.</p></noscript></section>"#,
             esc(query)
         );
+    }
+    if data.is_some_and(|data| !data["rows"].is_array()) {
+        body.push_str("<p>Keep results applies to table rows. This answer is a report.</p>");
     }
     layout(&format!("Search: {query}"), query, &cli, &body)
 }
