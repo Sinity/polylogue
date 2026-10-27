@@ -56,14 +56,14 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert_eq!(msgs[3].model.as_deref(), Some("gemini-3-pro-preview"));
     assert_eq!(
         msgs[3].parent.as_ref().unwrap().native().as_str(),
-        "Electrons#1"
+        "9:Electrons#position:1:1"
     );
     assert!(
         matches!(&msgs[4].blocks[1], Block::File(a) if a.source_id.as_deref() == Some("abc123"))
     );
     assert!(matches!(&msgs[5].blocks[0], Block::Other { type_name, .. } if type_name == "error"));
     // A chunk without an ID keeps its identity by its place.
-    assert_eq!(msgs[1].id.native().as_str(), "Electrons#0");
+    assert_eq!(msgs[1].id.native().as_str(), "9:Electrons#position:1:0");
     assert_eq!(
         step.output.sessions[0].title.as_ref().unwrap().text,
         "Electrons"
@@ -117,10 +117,12 @@ fn code_and_images_inside_parts_are_read() {
     ], "safetyRatings": [], "thoughtSignatures": ["s"], "isEdited": true})]);
     let step = parse("p", &bytes);
     let m = &step.output.messages[1].message;
-    assert!(matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "p#0:code1"));
+    assert!(
+        matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "1:p#position:1:0:code1")
+    );
     assert!(matches!(
         &m.blocks[2],
-        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "p#0:code1"
+        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "1:p#position:1:0:code1"
     ));
     assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
     assert!(
@@ -249,7 +251,12 @@ fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
     let step = parse("p", &bytes);
     let rows = &step.output.messages;
     assert_eq!(rows.len(), 5);
-    let expected = ["p#question", "p#thought", "p#2", "p#4"];
+    let expected = [
+        "1:p#id:8:question",
+        "1:p#id:7:thought",
+        "1:p#position:1:2",
+        "1:p#position:1:4",
+    ];
     for (i, row) in rows[1..].iter().enumerate() {
         assert_eq!(row.message.id.native().as_str(), expected[i]);
         assert_eq!(row.message.parent.as_ref(), Some(&rows[i].message.id));
@@ -262,4 +269,35 @@ fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
     assert_eq!(step.output.blobs[0].bytes, b"hi");
     assert_eq!(step.counts.records, 6);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
+}
+
+#[test]
+fn native_ids_positions_and_the_system_header_cannot_name_the_same_message() {
+    let bytes = prompt(vec![
+        json!({"role": "user", "id": "1", "text": "native ID"}),
+        json!({"role": "model", "text": "position one"}),
+        json!({"role": "user", "id": "system", "text": "native system ID"}),
+        json!({"role": "model", "id": "id:1:1", "text": "separators"}),
+    ]);
+    let step = parse("p", &bytes);
+    let ids: Vec<_> = step
+        .output
+        .messages
+        .iter()
+        .map(|r| r.message.id.to_string())
+        .collect();
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(ids.len(), 5);
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert_eq!(ids[1], "ai-studio:1:p#id:1:1");
+    assert_eq!(ids[2], "ai-studio:1:p#position:1:1");
+    let other = parse(
+        "p#id:1",
+        &prompt(vec![
+            json!({"role": "user", "id": "1", "text": "another file"}),
+        ]),
+    );
+    for row in other.output.messages {
+        assert!(!ids.contains(&row.message.id.to_string()));
+    }
 }

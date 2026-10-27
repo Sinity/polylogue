@@ -42,7 +42,7 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:multi_turn_prompt#0",
+          "id": "ai-studio:17:multi_turn_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multi_turn_prompt"
@@ -59,8 +59,8 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:multi_turn_prompt#1",
-          "parent": "ai-studio:multi_turn_prompt#0",
+          "id": "ai-studio:17:multi_turn_prompt#position:1:1",
+          "parent": "ai-studio:17:multi_turn_prompt#position:1:0",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt"
         },
@@ -76,8 +76,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:multi_turn_prompt#2",
-          "parent": "ai-studio:multi_turn_prompt#1",
+          "id": "ai-studio:17:multi_turn_prompt#position:1:2",
+          "parent": "ai-studio:17:multi_turn_prompt#position:1:1",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt",
           "stop_reason": "STOP",
@@ -101,8 +101,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:multi_turn_prompt#3",
-          "parent": "ai-studio:multi_turn_prompt#2",
+          "id": "ai-studio:17:multi_turn_prompt#position:1:3",
+          "parent": "ai-studio:17:multi_turn_prompt#position:1:2",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multi_turn_prompt"
@@ -119,8 +119,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:multi_turn_prompt#4",
-          "parent": "ai-studio:multi_turn_prompt#3",
+          "id": "ai-studio:17:multi_turn_prompt#position:1:4",
+          "parent": "ai-studio:17:multi_turn_prompt#position:1:3",
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt",
           "stop_reason": "STOP",
