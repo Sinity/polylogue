@@ -304,7 +304,7 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
     assert!(messages[2].to_string().contains("thinking"));
     assert!(messages[3].to_string().contains("answer"));
     for row in before["sources"].as_array().unwrap() {
-        if row["id"].as_str().unwrap().ends_with("#system") {
+        if row["id"].as_str().unwrap().ends_with("#system:0:") {
             continue;
         }
         let start = row["source_start"].as_u64().unwrap() as usize;

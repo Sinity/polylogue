@@ -35,7 +35,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:1abd#drive-user",
+          "id": "ai-studio:4:1abd#id:10:drive-user",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:1abd"
@@ -51,8 +51,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:1abd#drive-assistant",
-          "parent": "ai-studio:1abd#drive-user",
+          "id": "ai-studio:4:1abd#id:15:drive-assistant",
+          "parent": "ai-studio:4:1abd#id:10:drive-user",
           "role": "assistant",
           "session": "ai-studio:1abd"
         },

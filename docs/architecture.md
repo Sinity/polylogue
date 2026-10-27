@@ -113,7 +113,10 @@ conversation or decoded output.
 
 AI Studio keeps one message per usable chunk, including adjacent chunks of
 one role. A native chunk ID names its message; otherwise its position in the
-original chunk array does. Thoughts and answers keep their separate token
+original chunk array does. Message IDs include the file name, the kind
+(`id`, `position` or `system`) and the value, with byte lengths before the
+file name and value. Native IDs, positions and the system header cannot
+collide, even when names contain separators. Thoughts and answers keep their separate token
 counts, code results name their preceding call, and each message cites its
 chunk's byte range. Unknown roles are counted as unreadable and empty chunks
 as skipped; they still occupy their original positions. A header, settings or
