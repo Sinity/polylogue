@@ -92,7 +92,7 @@ fn the_command_line_has_nothing_outside_the_table() {
 fn mcp_offers_exactly_the_table_commands_marked_for_it() {
     let tools: Vec<String> = crate::mcp::tools()
         .into_iter()
-        .map(|t| t.name.into_owned())
+        .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     let declared: Vec<String> = COMMANDS
         .iter()
