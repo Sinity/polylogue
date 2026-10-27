@@ -40,6 +40,16 @@ impl Reader<'_> {
         let created_at = Timestamp::from_unix_ms(raw.created_at).ok_or_else(|| {
             StoreError::Invalid("the note creation time is outside the supported range".into())
         })?;
+        let valid_until = raw
+            .valid_until
+            .map(|until| {
+                Timestamp::from_unix_ms(until).ok_or_else(|| {
+                    StoreError::Invalid(
+                        "the note expiry time is outside the supported range".into(),
+                    )
+                })
+            })
+            .transpose()?;
         let conn = self.conn()?;
         let targets = conn
             .prepare_cached("SELECT ref FROM a.note_target WHERE note_id = ?1 ORDER BY ref")?
@@ -77,7 +87,7 @@ impl Reader<'_> {
             value: raw.value,
             author,
             created_at,
-            valid_until: raw.valid_until.and_then(Timestamp::from_unix_ms),
+            valid_until,
             targets,
             relations,
         }))
