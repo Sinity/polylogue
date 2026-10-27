@@ -1,0 +1,89 @@
+use super::*;
+use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+
+#[test]
+fn pearson_keeps_translation_scale_and_order_and_undefined_cases() {
+    for scale in [1.0, 1e120, 1e200] {
+        let pairs: Vec<_> = [(1.0, 1.0), (2.0, 2.0), (3.0, 4.0), (4.0, 3.0)]
+            .map(|(x, y)| ((100_000_000.0 + x) * scale, y))
+            .into();
+        let value = pearson(&pairs).0.unwrap();
+        assert!((value - 0.8).abs() < 1e-7);
+        let reverse: Vec<_> = pairs.into_iter().rev().collect();
+        assert!((pearson(&reverse).0.unwrap() - 0.8).abs() < 1e-7);
+    }
+    assert_eq!(pearson(&[(1.0, 3.0), (2.0, 2.0), (3.0, 1.0)]).0, Some(-1.0));
+    assert_eq!(pearson(&[(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]).0, Some(1.0));
+    assert_eq!(
+        pearson(&[(1.0, 1.0), (2.0, 2.0)]),
+        (None, Some("insufficient_pairs"))
+    );
+    assert_eq!(
+        pearson(&[(1e8, 1.0), (1e8, 2.0), (1e8, 3.0)]),
+        (None, Some("zero_variance"))
+    );
+}
+
+#[test]
+fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_scores() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for (id, origin, text) in [
+        ("codex:a", "codex", "one"),
+        ("codex:b", "codex", "one two"),
+        ("chatgpt:c", "chatgpt", "one two three"),
+    ] {
+        let _ = origin;
+        let pk = f
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        f.message(
+            pk,
+            MessageFacts {
+                id: &format!("{id}:m"),
+                role: "user",
+                written_by: "human",
+                text: Some(text),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        f.note("tag", None, Some("shared"), &format!("session:{id}"))
+            .unwrap();
+    }
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let x = compare(&r, &Selection::default()).unwrap();
+    assert!(x.differences.contains_key("word_count"));
+    assert!(!x.differences.contains_key("workflow_shape"));
+    assert!(!x.differences.contains_key("session"));
+    let a = x.profiles.iter().find(|p| p.session == "codex:a").unwrap();
+    let b = x.profiles.iter().find(|p| p.session == "codex:b").unwrap();
+    assert!(similarity(a, a).is_none());
+    assert_eq!(similarity(a, b).unwrap().score, 5);
+    let mut b = reader_profile(&r, "codex:b");
+    b.origin = "other".into();
+    b.facts.workflow_shape = "unknown".into();
+    b.tags.clear();
+    assert!(similarity(a, &b).is_none());
+    let c = correlation(
+        &r,
+        &Selection::default(),
+        "message_count:median_tool_call_ms",
+    )
+    .unwrap();
+    assert_eq!(c.sample_count, 0);
+    assert_eq!(c.missing_pairs, 3);
+    assert!(correlation(&r, &Selection::default(), "word_count:unknown").is_err());
+}
+fn reader_profile(r: &Reader<'_>, id: &str) -> Profile {
+    r.session_profiles(&Selection::default())
+        .unwrap()
+        .into_iter()
+        .find(|p| p.session == id)
+        .unwrap()
+}

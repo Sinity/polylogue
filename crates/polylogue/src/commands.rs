@@ -335,7 +335,9 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
 /// and the series for one that takes it.
 fn measure_command(m: &'static Measure) -> Command {
     let mut args: Vec<Arg> = Vec::new();
-    if !m.metrics.is_empty() {
+    if let Some(help) = m.argument {
+        args.push(opt("metric", Kind::Text, help));
+    } else if !m.metrics.is_empty() {
         args.push(pos("metric", Kind::Choice(m.metrics), "The series"));
     }
     args.extend_from_slice(if m.whole_archive {

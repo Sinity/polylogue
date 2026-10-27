@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 mod active_path;
 mod cost;
 mod duplicates;
+mod profile;
 mod repository;
 mod session;
 mod session_survival;
@@ -79,6 +80,7 @@ const ALL: &[Derivation] = &[
     work::DERIVATION,
     cost::DERIVATION,
     session_survival::DERIVATION,
+    profile::DERIVATION,
 ];
 
 /// Runs every derivation over the sessions it has not derived at their
