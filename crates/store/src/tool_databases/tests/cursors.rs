@@ -58,6 +58,25 @@ fn a_replaced_source_rechecks_rows_below_the_cursor() {
 }
 
 #[test]
+fn a_missing_database_keeps_its_export_and_reappearance_verifies_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("tool.sqlite");
+    let out = dir.path().join("tool.jsonl");
+    Connection::open(&db).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');").unwrap();
+    let mut exporter = Exporter::with_cursor(cursor);
+    exporter.export(&db, &out, None).unwrap();
+    let before = fs::read(&out).unwrap();
+    fs::remove_file(&db).unwrap();
+    assert_eq!(exporter.export(&db, &out, None).unwrap(), None);
+    assert_eq!(fs::read(&out).unwrap(), before);
+    Connection::open(&db).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'returned');").unwrap();
+    assert_eq!(
+        exporter.export(&db, &out, None).unwrap().unwrap(),
+        Exported { rows: 1, gone: 1 }
+    );
+}
+
+#[test]
 fn declared_cursors_read_inserts_and_daily_verification_finds_updates_and_deletions() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("tool.sqlite");

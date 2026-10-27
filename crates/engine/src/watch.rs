@@ -19,7 +19,13 @@ impl Changes {
     fn record(&mut self, result: notify::Result<notify::Event>) {
         match result {
             Ok(event) if event.need_rescan() => self.full = true,
-            Ok(event) if collect::requires_scan(&event) => self.paths.extend(event.paths),
+            Ok(event) if collect::requires_scan(&event) => {
+                if event.paths.is_empty() {
+                    self.full = true;
+                } else {
+                    self.paths.extend(event.paths);
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 self.full = true;

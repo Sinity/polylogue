@@ -52,4 +52,7 @@ fn repeated_paths_are_coalesced_and_watch_failures_request_reconciliation() {
         notify::Event::new(notify::EventKind::Other).set_flag(Flag::Rescan)
     ));
     assert!(changes.full);
+    changes.full = false;
+    changes.record(Ok(notify::Event::new(notify::EventKind::Any)));
+    assert!(changes.full);
 }

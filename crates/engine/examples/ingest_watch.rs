@@ -41,6 +41,9 @@ fn produce(dir: &Path, seconds: u64) {
         rollout.write_all(line.as_bytes()).unwrap();
         rollout.sync_data().unwrap();
         written += line.len();
+        // Separate the two event bursts so unrelated file wakes cannot make
+        // a continuously updated database appear quiet.
+        std::thread::sleep(Duration::from_millis(250));
         db.execute("UPDATE kept_rows SET n=?1 WHERE id=1", [n])
             .unwrap();
         fs::write(

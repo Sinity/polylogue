@@ -153,6 +153,12 @@ impl Exporter {
             .expect("loaded catalog")
             .bind(requested)?;
         let now = DbFacts::of(db);
+        if now.db.is_none() {
+            st.last_seen = Some(now);
+            st.exported = None;
+            st.exported_at = None;
+            return Ok(None);
+        }
         let quiet = st.last_seen == Some(now);
         st.last_seen = Some(now);
         let changed = st.exported != Some(now);
@@ -487,13 +493,13 @@ fn write_export(
             }
             checkpoint()?;
         }
-        if declared.is_some() {
+        if let Some(column) = declared {
             let verified = if full {
                 at_ms
             } else {
                 previous.as_ref().expect("stored cursor").2
             };
-            transaction.execute("INSERT INTO table_cursor VALUES(?1,?2,?3,?4) ON CONFLICT(t) DO UPDATE SET column_name=excluded.column_name,value=excluded.value,verified_at=excluded.verified_at", rusqlite::params![t.name,declared.expect("declared cursor"),high,verified]).map_err(sql_err)?;
+            transaction.execute("INSERT INTO table_cursor VALUES(?1,?2,?3,?4) ON CONFLICT(t) DO UPDATE SET column_name=excluded.column_name,value=excluded.value,verified_at=excluded.verified_at", rusqlite::params![t.name,column,high,verified]).map_err(sql_err)?;
         }
     }
     // Only fully compared tables and dropped tables can have removals.

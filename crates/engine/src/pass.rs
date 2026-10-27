@@ -119,6 +119,7 @@ impl Engine {
         slice: bool,
     ) -> Result<Pass, EngineError> {
         let continuing = self.pass_open;
+        self.pass_open = false;
         let started = Instant::now();
         self.load()?;
         let collectors_due = self
@@ -144,11 +145,15 @@ impl Engine {
             errors,
             ..Pass::default()
         };
+        let mut new_database = false;
         for f in found
             .iter()
             .filter(|f| f.origin.capture == Capture::RowDump)
         {
-            self.databases.insert(f.path.clone(), f.origin.name);
+            new_database |= self
+                .databases
+                .insert(f.path.clone(), f.origin.name)
+                .is_none();
         }
         let databases = self
             .databases
@@ -170,10 +175,20 @@ impl Engine {
         // files, and parses each capture's parts in the same pass as they are
         // appended; afterwards a pass captures in turns of 1,024 rows, so
         // other work goes between them.
+        let capture_due = discover
+            || new_database
+            || self.exporter.pending()
+            || self
+                .capture_checked
+                .is_none_or(|at| at.elapsed() >= self.config.live_every);
         let whole_capture = if discover && self.first_pass && self.writer.started_empty() {
+            self.capture_checked = Some(Instant::now());
             Some(databases)
-        } else {
+        } else if capture_due {
+            self.capture_checked = Some(Instant::now());
             self.capture_turn(databases, 1024, &mut pass);
+            None
+        } else {
             None
         };
         let mut found: Vec<_> = found
@@ -213,14 +228,13 @@ impl Engine {
             return Ok(pass);
         }
         if !continuing {
-            self.pass_open = true;
-            pass.pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
+            self.pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
             self.restore_failed_writes()?;
         }
+        pass.pending_inputs = self.pending_inputs.clone();
         // The asset lookup comes from stored observations and sidecars, so
         // after an index rebuild it is in place before any message that
-        // names an asset is parsed. Imports stored in this pass add theirs
-        // at its end.
+        // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
             self.refresh_import_assets(&mut pass)?;
         }
@@ -346,10 +360,9 @@ impl Engine {
         self.first_pass = false;
         self.restore_failed_writes()?;
         if !pass.capture_pending {
-            self.refresh_import_assets(&mut pass)?;
             pass.sessions_derived = self.derive()?;
-            self.pass_open = false;
         }
+        self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
     }
@@ -1074,7 +1087,9 @@ impl Engine {
             loop {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                        self.exporter = Captures::default();
+                        self.exporter =
+                            Captures::with_cursor(polylogue_sources::origin::table_cursor);
+                        self.pass_open = false;
                         return Ok(());
                     }
                     Ok(LoopMsg::Import { paths, reply }) => {
