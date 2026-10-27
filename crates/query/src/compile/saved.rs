@@ -4,6 +4,13 @@
 
 use super::*;
 
+pub(super) struct BoundRelation {
+    name: String,
+    arguments: Vec<Argument>,
+    unit: Unit,
+    cond: Option<Cond>,
+}
+
 impl<'a> Compiler<'a> {
     /// `query:NAME` as a condition: a saved relation over the same unit,
     /// its parameters bound to the values given. A shaped result cannot be
@@ -15,33 +22,7 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let opts = self.opts;
-        let definition = saved_definition(self.text, span.start, name, opts)?;
-        if self.saved_stack.iter().any(|n| n == name) {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} refers to itself (through {})",
-                    self.saved_stack.join(" -> ")
-                ),
-                position: span.start,
-            });
-        }
-        let mut shape = parse(&definition.text)?;
-        Parameters::new(name, arguments, None).bind(&mut shape, span.start)?;
-        if !shape.stages.is_empty() || !shape.attach.is_empty() {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
-                     read it as `query:{name} | where …`"
-                ),
-                position: span.start,
-            });
-        }
-        let (unit, cond) = match shape.source {
-            Source::Unit { unit, cond } => (unit, cond),
-            Source::Sessions { cond } => (Unit::Sessions, Some(cond)),
-            Source::Empty => (Unit::Sessions, None),
-        };
+        let (unit, cond) = self.saved_relation(name, arguments, span)?;
         if unit != scope.unit {
             return Err(QueryError::Invalid {
                 message: format!(
@@ -52,7 +33,6 @@ impl<'a> Compiler<'a> {
                 position: span.start,
             });
         }
-        self.used(name, definition);
         let Some(cond) = cond else {
             return Ok("1".into());
         };
@@ -60,6 +40,88 @@ impl<'a> Compiler<'a> {
         let sql = self.cond(&cond, scope, false);
         self.saved_stack.pop();
         Ok(format!("({})", sql?))
+    }
+
+    /// Resolves and binds each saved relation once for both defaults and SQL.
+    pub(super) fn saved_relation(
+        &mut self,
+        name: &str,
+        arguments: &[Argument],
+        span: Span,
+    ) -> Result<(Unit, Option<Cond>), QueryError> {
+        if self.saved_stack.iter().any(|n| n == name) {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} refers to itself (through {})",
+                    self.saved_stack.join(" -> ")
+                ),
+                position: span.start,
+            });
+        }
+        if let Some(bound) = self
+            .saved_relations
+            .iter()
+            .find(|bound| bound.name == name && bound.arguments == arguments)
+        {
+            return Ok((bound.unit, bound.cond.clone()));
+        }
+        let definition = saved_definition(self.text, span.start, name, self.opts)?;
+        let mut query = parse(&definition.text)?;
+        Parameters::new(name, arguments, None).bind(&mut query, span.start)?;
+        if !query.stages.is_empty() || !query.attach.is_empty() {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
+                     read it as `query:{name} | where …`"
+                ),
+                position: span.start,
+            });
+        }
+        let (unit, cond) = match query.source {
+            Source::Unit { unit, cond } => (unit, cond),
+            Source::Sessions { cond } => (Unit::Sessions, Some(cond)),
+            Source::Empty => (Unit::Sessions, None),
+        };
+        self.used(name, definition);
+        self.saved_relations.push(BoundRelation {
+            name: name.to_owned(),
+            arguments: arguments.to_vec(),
+            unit,
+            cond: cond.clone(),
+        });
+        Ok((unit, cond))
+    }
+
+    pub(super) fn saved_defaults(
+        &mut self,
+        scope: &RowContext,
+        top: &[Cond],
+    ) -> Result<Vec<Cond>, QueryError> {
+        let mut bound = vec![];
+        for condition in top {
+            let CondKind::Saved { name, arguments } = &condition.kind else {
+                bound.push(condition.clone());
+                continue;
+            };
+            let (unit, cond) = self.saved_relation(name, arguments, condition.span)?;
+            if unit != scope.unit {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "query:{name} selects {}, not {}",
+                        unit.name(),
+                        scope.unit.name()
+                    ),
+                    position: condition.span.start,
+                });
+            }
+            if let Some(cond) = cond {
+                self.saved_stack.push(name.clone());
+                let defaults = self.saved_defaults(scope, &top_level(&cond));
+                self.saved_stack.pop();
+                bound.extend(defaults?);
+            }
+        }
+        Ok(bound)
     }
 
     /// Records the revision a saved query's name resolved to.

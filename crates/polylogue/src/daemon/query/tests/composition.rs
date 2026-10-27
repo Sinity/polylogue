@@ -120,3 +120,143 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
         ["#4", "#2", "#1"]
     );
 }
+
+fn save(w: &mut TestArchive, name: &str, text: &str) {
+    w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
+        .unwrap();
+}
+
+#[test]
+fn parameterized_saved_references_agree_with_direct_references() {
+    let mut w = morrow();
+    w.fx.note(
+        "hidden",
+        None,
+        None,
+        "session:claude-code:7f3a2c10-0002-4000-8000-000000000002",
+    )
+    .unwrap();
+    save(&mut w, "pick", "$id");
+    save(&mut w, "forward", "query:pick(id=$id)");
+    save(&mut w, "nested", "query:forward(id=$id)");
+    for id in [
+        "7f3a2c10-0003-4000-8000-000000000003",
+        "7f3a2c10-0002-4000-8000-000000000002",
+    ] {
+        let expected = row_ids(&q(&w, id));
+        assert_eq!(expected.len(), 1);
+        for name in ["pick", "forward", "nested"] {
+            for query in [
+                format!("query:{name}(id={id})"),
+                format!("sessions where query:{name}(id={id})"),
+                format!("sessions where query:{name}(id={id}) origin:claude-code"),
+            ] {
+                assert_eq!(row_ids(&q(&w, &query)), expected, "{query}");
+            }
+        }
+    }
+    assert_eq!(
+        ids(&q(
+            &w,
+            "sessions where query:pick(id=chrono) query:pick(id=7f3a2c10-0003)"
+        )),
+        ["#3"]
+    );
+    // Calls sharing a name may bind different values in the same program.
+    assert_eq!(
+        row_ids(&q(
+            &w,
+            "sessions where query:pick(id=7f3a2c10-0003) | union (sessions where query:pick(id=7f3a2c10-0002))"
+        )),
+        row_ids(&q(&w, "7f3a2c10-0003"))
+            .union(&row_ids(&q(&w, "7f3a2c10-0002")))
+            .cloned()
+            .collect::<BTreeSet<_>>()
+    );
+}
+
+#[test]
+fn saved_references_under_or_and_not_keep_outer_defaults() {
+    let mut w = morrow();
+    save(&mut w, "pick", "$id");
+    save(&mut w, "either", "query:pick(id=$id) OR origin:claude-code");
+    save(&mut w, "other", "NOT query:pick(id=$id)");
+    let id = "7f3a2c10-0003";
+    for (name, condition) in [
+        ("either", format!("{id} OR origin:claude-code")),
+        ("other", format!("NOT {id}")),
+    ] {
+        let expected = row_ids(&q(&w, &format!("sessions where {condition}")));
+        assert!(!expected.contains("claude-code:7f3a2c10-0003-4000-8000-000000000003"));
+        for query in [
+            format!("query:{name}(id={id})"),
+            format!("sessions where query:{name}(id={id})"),
+        ] {
+            assert_eq!(row_ids(&q(&w, &query)), expected, "{query}");
+        }
+    }
+    for (condition, direct) in [
+        (
+            format!("query:pick(id={id}) OR origin:claude-code"),
+            format!("{id} OR origin:claude-code"),
+        ),
+        (format!("NOT query:pick(id={id})"), format!("NOT {id}")),
+    ] {
+        assert_eq!(
+            row_ids(&q(&w, &format!("sessions where {condition}"))),
+            row_ids(&q(&w, &format!("sessions where {direct}")))
+        );
+    }
+}
+
+#[test]
+fn saved_relation_errors_reach_the_query_error_path() {
+    let mut w = morrow();
+    for (name, text) in [
+        ("pick", "$id"),
+        ("forward", "query:pick(id=$id)"),
+        ("missing", "query:absent"),
+        ("twice", "origin:codex"),
+        ("twice", "origin:claude-code"),
+        ("ambiguous", "query:twice"),
+        ("cycle", "query:cycle"),
+        ("cycle-a", "query:cycle-b"),
+        ("cycle-b", "query:cycle-a"),
+        ("broken", "sessions where ("),
+        ("invalid-field", "sessions where invented_field:true"),
+        ("invalid-value", "sessions where cost > nonsense"),
+    ] {
+        save(&mut w, name, text);
+    }
+    for (call, kind, message) in [
+        ("absent", "invalid_query", "no saved query"),
+        ("missing", "invalid_query", "no saved query"),
+        ("pick", "invalid_query", "needs a value"),
+        ("forward", "invalid_query", "needs a value"),
+        (
+            "pick(id=7f3a2c10, extra=1)",
+            "invalid_query",
+            "has no parameter",
+        ),
+        ("twice", "invalid_query", "2 saved queries"),
+        ("ambiguous", "invalid_query", "2 saved queries"),
+        ("cycle", "invalid_query", "refers to itself"),
+        ("cycle-a", "invalid_query", "refers to itself"),
+        ("broken", "invalid_query", ""),
+        ("invalid-field", "unknown_field", "invented_field"),
+        ("invalid-value", "bad_value", "amount in dollars"),
+    ] {
+        for query in [
+            format!("query:{call}"),
+            format!("sessions where query:{call}"),
+        ] {
+            let failure = run_q(&w, ask(&query)).unwrap_err();
+            assert_eq!(failure.kind, kind, "{query}: {}", failure.message);
+            assert!(
+                failure.message.contains(message),
+                "{query}: {}",
+                failure.message
+            );
+        }
+    }
+}

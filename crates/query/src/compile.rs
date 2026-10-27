@@ -465,6 +465,7 @@ pub(crate) struct Compiler<'a> {
     aliases: usize,
     /// Saved queries being expanded, innermost last: a cycle is refused.
     saved_stack: Vec<String>,
+    saved_relations: Vec<saved::BoundRelation>,
     /// The full-text ranking expression, when a top-level text term ranks
     /// the rows.
     rank: Option<String>,
@@ -512,6 +513,7 @@ impl<'a> Compiler<'a> {
             shown: vec![],
             aliases: 0,
             saved_stack: vec![],
+            saved_relations: vec![],
             rank: None,
             near_rank: None,
             near_join: None,
