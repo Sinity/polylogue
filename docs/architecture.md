@@ -4,7 +4,9 @@ Polylogue stores the files AI tools write, and what people and agents add, in
 a local archive; parses them into sessions, messages and documents; and serves
 them through one daemon. This guide describes the current code. The
 [README](../README.md) describes the commands, [vocabulary.md](vocabulary.md)
-the names, and Beads the planned work.
+the names, [sources.md](sources.md) the input formats,
+[query.md](query.md) queries and views, and [export-format.md](export-format.md)
+the structured exchange format. Beads holds planned work.
 
 ## Crates
 

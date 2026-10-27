@@ -19,22 +19,6 @@ const GAPS: &[(&str, &str)] = &[
         "3",
         "cost: the example prices from its own table (FACTS.md), not the real price catalog",
     ),
-    (
-        "6",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "7",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "19",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "31",
-        "notes: the example's annotation notes are not written by the fixture",
-    ),
     ("21", "seq() does not yet take search words over tool calls"),
     (
         "34",
@@ -42,6 +26,44 @@ const GAPS: &[(&str, &str)] = &[
     ),
     ("38", "tree_cost is not built"),
 ];
+
+fn archive_with_notes() -> Morrow {
+    use crate::daemon::service::ArchiveMode;
+    use crate::daemon::{Request, Response, service};
+    use polylogue_model::{Author, Block, NewNote, NoteKind, Target};
+    use polylogue_testkit::session;
+
+    let archive = Morrow::build(Set::Main);
+    let decision = {
+        let pool = archive.reads();
+        let reader = pool.reader().unwrap();
+        reader.messages(&session(2), false).unwrap().into_iter().find(|message| {
+            message.blocks.iter().any(|block| matches!(block,
+                Block::Text { text } if text.contains("let's use chrono, not time")))
+        }).unwrap().id
+    };
+    let mut runtime = service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+    for (id, kind, key, value, targets) in [
+        ("morrow-project", NoteKind::Tag, Some("project:morrow"), None,
+            [1, 2, 4, 5, 6].into_iter().map(|n| Target::Session(session(n))).collect()),
+        ("morrow-research", NoteKind::Tag, Some("research"), None,
+            vec![Target::Session(session(7))]),
+        ("morrow-decision", NoteKind::Decision, None, Some("decided: chrono, not time"),
+            vec![Target::Message(decision)]),
+    ] {
+        let response = service::handle(Request::AddNote {
+            request_id: id.into(),
+            note: NewNote {
+                kind, key: key.map(Into::into), value: value.map(Into::into),
+                author: Author::Operator, targets, relations: vec![], revises: None,
+                valid_until: None,
+            },
+        }, &runtime.daemon);
+        assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    }
+    runtime.shutdown().unwrap();
+    archive
+}
 
 fn ask(text: &str) -> Ask<'_> {
     Ask {
@@ -235,7 +257,7 @@ fn codex_message_counts_include_script_commands() {
 
 #[test]
 fn the_query_examples_match_on_the_real_archive() {
-    let w = Morrow::build(Set::Main);
+    let w = archive_with_notes();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let expected: Value = serde_json::from_str(
@@ -277,7 +299,7 @@ fn the_query_examples_match_on_the_real_archive() {
 /// carries the unpaged count.
 #[test]
 fn pages_of_every_size_concatenate_to_the_whole_answer() {
-    let w = Morrow::build(Set::Main);
+    let w = archive_with_notes();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let expected: Value = serde_json::from_str(

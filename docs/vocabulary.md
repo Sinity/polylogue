@@ -242,7 +242,9 @@ the same change.
 - **parent row**: in `| matches`, the row a matching child belongs to
   (`parent_id`).
 - **budget**: the size a page for a model, or a brief, may take.
-- **masking**: hiding credentials in output; stored bytes never change.
+- **masking**: hiding credentials in output; stored bytes never change. The
+  shared [masking rules](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/credential-masking.md)
+  own recognition and stream boundaries.
 - **change feed** and **position**: `changes --since POSITION`.
 
 ## Words not used
