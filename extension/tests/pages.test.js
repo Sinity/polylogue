@@ -29,7 +29,9 @@ function page(url, scripts, { html = "<body></body>", routes = {}, resources = [
     status,
     headers: { get: (name) => headers[name.toLowerCase()] ?? null },
     json: async () => JSON.parse(text),
+    text: async () => text,
     blob: async () => new window.Blob([text]),
+    body: new Blob([text]).stream(),
   });
   window.fetch = async (path, init = {}) => {
     const href = new URL(path, url).href;
@@ -119,36 +121,69 @@ describe("the Gemini page script", () => {
 });
 
 describe("the shared page script", () => {
-  it("answers through a port with the facts, then the body in appended bytes", async () => {
-    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
-    const big = "x".repeat(5 * 1024 * 1024);
-    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
+  async function exchanged(window) {
     const received = [];
     const port = { name: "polylogue", onMessage: event(), onDisconnect: event(), postMessage: (m) => received.push(m) };
     window.chrome.runtime.onConnect.fire(port);
     port.onMessage.fire({ type: "conversation" });
     await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
-    expect(received[0]).toMatchObject({ type: "facts", status: 200, info: { id: "c1" }, size: big.length });
+    return received;
+  }
+
+  it("answers through a port with the facts, then the body as appended bytes", async () => {
+    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
+    const big = "x".repeat(5 * 1024 * 1024);
+    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
+    const received = await exchanged(window);
+    expect(received[0]).toEqual({ type: "facts", status: 200, info: { id: "c1" } });
     const appendedBytes = received.filter((m) => m.type === "appended_bytes");
-    expect(appendedBytes.length).toBe(2);
+    expect(appendedBytes.length).toBe(20);
     expect(appendedBytes.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+  });
+
+  it("sends a download as appended bytes as it arrives, before it has finished", async () => {
+    const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
+    const chunk = new Uint8Array(300 * 1024).fill(7);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const stream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(chunk);
+        await held;
+        controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new Response(stream) });
+    const received = [];
+    const port = { name: "polylogue", onMessage: event(), onDisconnect: event(), postMessage: (m) => received.push(m) };
+    window.chrome.runtime.onConnect.fire(port);
+    port.onMessage.fire({ type: "conversation" });
+    // The first bytes arrive while the rest of the download is held back.
+    await new Promise((resolve) => { const check = () => (received.some((m) => m.type === "appended_bytes") ? resolve() : setTimeout(check, 5)); check(); });
+    expect(received.at(-1).type).toBe("appended_bytes");
+    release();
+    await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
+    const bytes = Buffer.concat(received.filter((m) => m.type === "appended_bytes").map((p) => Buffer.from(p.data, "base64")));
+    expect(bytes.length).toBe(2 * chunk.length);
+    expect(bytes.every((b) => b === 7)).toBe(true);
   });
 
   it("tells the background when the conversation's text changes, not when the markup does", async () => {
     const { window, sent } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"], {
       html: "<body><main><p>first answer</p></main><div id='menu'></div></body>",
     });
-    const waitForPause = () => new Promise((resolve) => setTimeout(resolve, 3300));
-    await waitForPause();
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 3300));
+    await pause();
     expect(sent).toEqual([{ type: "polylogue.changed", provider: "claude-ai", reason: "opened" }]);
     // A menu opening and closing, as pages do all the time.
     window.document.getElementById("menu").append(window.document.createElement("span"));
-    await waitForPause();
+    await pause();
     window.document.getElementById("menu").replaceChildren();
-    await waitForPause();
+    await pause();
     expect(sent).toHaveLength(1);
     window.document.querySelector("main").append(window.document.createTextNode(" and a new turn"));
-    await waitForPause();
+    await pause();
     expect(sent).toHaveLength(2);
     expect(sent[1].reason).toBe("changed");
   }, 20_000);

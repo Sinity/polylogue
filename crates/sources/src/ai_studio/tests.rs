@@ -211,3 +211,55 @@ fn listings_distinguish_empty_invalid_and_refused_entries() {
         assert_eq!(step.output.sessions.len(), sessions);
     }
 }
+
+#[test]
+fn headers_and_unusable_chunks_do_not_make_a_session() {
+    for chunks in [
+        json!([]),
+        json!(false),
+        json!([null, {}, {"role": "future", "text": "unknown"}]),
+    ] {
+        let bytes = serde_json::to_vec(&json!({
+            "runSettings": {"model": "models/test"},
+            "systemInstruction": {"text": "A system header alone is not a chat."},
+            "chunkedPrompt": {"chunks": chunks}
+        }))
+        .unwrap();
+        let step = parse("empty", &bytes);
+        assert!(
+            step.output.sessions.is_empty(),
+            "{chunks}: {:?}",
+            step.output.sessions
+        );
+        assert!(step.output.messages.is_empty(), "{chunks}");
+        assert!(step.output.events.is_empty(), "{chunks}");
+    }
+}
+
+#[test]
+fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
+    let chunks = vec![
+        json!({"role": "user", "id": "question", "text": "ask", "tokenCount": 3}),
+        json!({"role": "model", "id": "thought", "isThought": true, "text": "think", "tokenCount": 7}),
+        json!({"role": "model", "text": "answer", "tokenCount": 5}),
+        json!({"role": "unknown", "text": "unreadable"}),
+        json!({"role": "user", "text": "next", "inlineImage": {"mimeType": "image/png", "data": "aGk="}}),
+    ];
+    let bytes = prompt(chunks.clone());
+    let step = parse("p", &bytes);
+    let rows = &step.output.messages;
+    assert_eq!(rows.len(), 5);
+    let expected = ["p#question", "p#thought", "p#2", "p#4"];
+    for (i, row) in rows[1..].iter().enumerate() {
+        assert_eq!(row.message.id.native().as_str(), expected[i]);
+        assert_eq!(row.message.parent.as_ref(), Some(&rows[i].message.id));
+        let source: Json =
+            serde_json::from_slice(&bytes[row.offset as usize..row.end as usize]).unwrap();
+        assert_eq!(source, chunks[if i == 3 { 4 } else { i }]);
+    }
+    assert_eq!(rows[2].message.usage.reasoning, Some(7));
+    assert_eq!(rows[3].message.usage.output, Some(5));
+    assert_eq!(step.output.blobs[0].bytes, b"hi");
+    assert_eq!(step.counts.records, 6);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
+}

@@ -55,7 +55,7 @@
     return {
       status: 200,
       info: { id: conversation, temporary: false, url: pageUrl(conversation) },
-      body: await response.blob(),
+      body: response,
     };
   }
 

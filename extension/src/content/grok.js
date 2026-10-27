@@ -79,7 +79,7 @@
     return {
       status: 200,
       info: { name: file.name || null, media_type: response.headers.get("content-type") },
-      body: await response.blob(),
+      body: response,
     };
   }
 

@@ -65,7 +65,7 @@ Tests that need realistic data use `polylogue-testkit`:
 `Morrow::build(Set::Main)` lays out the Morrow example archive
 (`examples/morrow/`, facts in its `FACTS.md`) where each tool writes, runs the
 loop over it and imports its exports. `view()` and `stored_bytes()` give what
-laws compare. Query examples run against it in
+the property tests compare. Query examples run against it in
 `crates/polylogue/src/daemon/query/tests/spec_examples.rs`.
 
 Tests do not assert on elapsed time. A test that checks a deadline makes the

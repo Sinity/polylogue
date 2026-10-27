@@ -4,7 +4,7 @@
 // conversation list and its files.
 //
 // The background asks through a port (`chrome.tabs.connect`) and gets the
-// answer's facts first, then any body as base64 appended bytes, so a conversation of
+// answer's facts first, then any body as base64 parts, so a conversation of
 // any size crosses without one oversized message. The page tells the
 // background when its conversation may have changed; the background decides
 // whether to capture.
@@ -14,7 +14,9 @@
   if (!provider) return;
   globalThis.polylogueContent = true;
 
-  const APPENDED_BYTES = 4 * 1024 * 1024;
+  // A body is sent as appended bytes as it arrives, so a slow download keeps
+  // talking to the background, which Chrome would otherwise stop as idle.
+  const APPENDED_BYTES = 256 * 1024;
   // Announce a change after the messages stop changing for this long.
   const CHANGE_PAUSE_MS = 3000;
 
@@ -26,11 +28,38 @@
     return btoa(text);
   }
 
+  /** Sends a body (a Blob, or a fetch Response read as it arrives). */
   async function sendBody(port, body) {
-    for (let at = 0; at < body.size; at += APPENDED_BYTES) {
-      const appendedBytes = new Uint8Array(await body.slice(at, at + APPENDED_BYTES).arrayBuffer());
-      port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+    if (body instanceof Blob) {
+      for (let at = 0; at < body.size; at += APPENDED_BYTES) {
+        const appendedBytes = new Uint8Array(await body.slice(at, at + APPENDED_BYTES).arrayBuffer());
+        port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+      }
+      return;
     }
+    const reader = body.body.getReader();
+    let held = [];
+    let size = 0;
+    const flush = () => {
+      if (!size) return;
+      const appendedBytes = new Uint8Array(size);
+      let at = 0;
+      for (const chunk of held) {
+        appendedBytes.set(chunk, at);
+        at += chunk.length;
+      }
+      port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+      held = [];
+      size = 0;
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      held.push(value);
+      size += value.length;
+      if (size >= APPENDED_BYTES) flush();
+    }
+    flush();
   }
 
   async function answer(request) {
@@ -56,7 +85,7 @@
       try {
         const { body = null, ...facts } = await answer(request);
         if (!open) return;
-        port.postMessage({ type: "facts", ...facts, size: body ? body.size : null });
+        port.postMessage({ type: "facts", ...facts });
         if (body) await sendBody(port, body);
         if (open) port.postMessage({ type: "end" });
       } catch (error) {
@@ -66,7 +95,7 @@
   });
 
   // Change notices. A conversation that is still being written (the
-  // provider shows its stop button) is announced once it finishes. Pages
+  // provider shows its stop button) is announced once it stops changing. Pages
   // change their markup all the time (menus, animations); only a change of
   // the conversation's text, or another page, is announced.
   let timer = null;

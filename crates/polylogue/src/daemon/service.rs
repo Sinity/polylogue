@@ -249,7 +249,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         | Request::BackfillCancel { .. }
         | Request::BackfillClaim { .. }
         | Request::BackfillReport { .. }
-        | Request::Conversations { .. } => browser::handle(request, d, reader),
+        | Request::Conversations { .. }
+        | Request::StoredFiles { .. } => browser::handle(request, d, reader),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",

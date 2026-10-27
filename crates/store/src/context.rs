@@ -93,6 +93,17 @@ pub struct FailingCommand {
     pub times: u64,
 }
 
+/// Failures of one check under a directory since its last pass there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckFailures {
+    pub times: u64,
+    pub sessions: u64,
+    pub first: Option<Timestamp>,
+    /// The latest failure's session and exit code.
+    pub session: String,
+    pub exit_code: Option<i64>,
+}
+
 /// A Bead whose latest claim under a directory is still open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OpenBead {
@@ -482,6 +493,61 @@ impl Reader<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// The failures of the check `title` since `since` in sessions under
+    /// `dirs` that came after its last pass there; `None` when it has not
+    /// failed since passing.
+    pub fn check_failures(
+        &self,
+        dirs: &[String],
+        title: &str,
+        since: i64,
+    ) -> Result<Option<CheckFailures>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT v.state, v.at, s.id, t.exit_code
+               FROM work_node v JOIN session s ON s.pk = v.session_pk
+               LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
+              WHERE v.kind = 'verification' AND v.title = ?2 AND v.at >= ?3
+                AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
+                            OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
+              ORDER BY v.at DESC, v.pk DESC",
+        )?;
+        let dirs = serde_json::to_string(dirs)?;
+        let mut found: Option<CheckFailures> = None;
+        let mut sessions: Vec<String> = Vec::new();
+        let rows = stmt.query_map(params![dirs, title, since], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (state, at, session, exit_code) = row?;
+            if state == "ok" {
+                break;
+            }
+            if state != "error" {
+                continue;
+            }
+            if !sessions.contains(&session) {
+                sessions.push(session.clone());
+            }
+            let failures = found.get_or_insert(CheckFailures {
+                times: 0,
+                sessions: 0,
+                first: None,
+                session,
+                exit_code,
+            });
+            failures.times += 1;
+            failures.sessions = sessions.len() as u64;
+            failures.first = ts(at);
+        }
+        Ok(found)
     }
 
     /// Beads claimed since `since` whose latest claim by a session under

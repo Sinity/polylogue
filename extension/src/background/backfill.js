@@ -121,7 +121,11 @@ export class Backfill {
         if (!(await report("progress"))) return;
       }
     } finally {
-      if (opened) await this.chrome.tabs.remove(tab.id).catch(() => undefined);
+      // Files download through the tab, after their conversation is stored.
+      if (opened) {
+        await this.capturer.downloads();
+        await this.chrome.tabs.remove(tab.id).catch(() => undefined);
+      }
     }
   }
 }

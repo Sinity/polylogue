@@ -111,6 +111,15 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
+AI Studio keeps one message per usable chunk, including adjacent chunks of
+one role. A native chunk ID names its message; otherwise its position in the
+original chunk array does. Thoughts and answers keep their separate token
+counts, code results name their preceding call, and each message cites its
+chunk's byte range. Unknown roles are counted as unreadable and empty chunks
+as skipped; they still occupy their original positions. A header, settings or
+system instruction without a usable chunk creates no session. Keeping chunks separate
+preserves native IDs and exact ranges even when the role does not change.
+
 A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
@@ -331,3 +340,12 @@ excision refuses what it removed from then on. When step 1 already collected
 something an excision removed (its provider file was still there), the
 import stops at that excision and names it: excise it in the primary
 archive and import the file again.
+
+## Python client
+
+The standard-library client in `clients/python/polylogue/sdk.py` invokes the
+installed CLI with an argument list, so command validation, daemon access,
+masking and feed validation have the same implementation as other clients.
+`polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`
+returns an independent ordinary JSON value. No query or read is redirected to a
+local database. A write is submitted once; the caller owns its retry ID.

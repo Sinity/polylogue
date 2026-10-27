@@ -395,3 +395,5 @@ fn chat_send_reads_attached_files_on_the_command_line() {
             .all(|a| a.name != "attach")
     );
 }
+
+mod parity;
