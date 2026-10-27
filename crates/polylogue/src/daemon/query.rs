@@ -267,7 +267,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     )?;
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    prepare_measure(reader, &mut program)?;
+    let reference = prepare_measure(&mut program)?;
     let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
@@ -282,7 +282,23 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         _ => None,
     };
     let day = opts.clock.day.clone();
-    let answer = || answer(reader, &program, &day, after, seed, question, ask.why);
+    let answer = || {
+        if let Some(sql) = reference {
+            let count = reader.query(
+                &format!("SELECT count(*) FROM ({sql})"),
+                &values(&program.params),
+            )?;
+            if count[0]["count(*)"] != 1 {
+                return Err(Failure {
+                    kind: "bad_request".into(),
+                    message: "similar needs one reference session; select it with a sessions query"
+                        .into(),
+                    detail: None,
+                });
+            }
+        }
+        answer(reader, &program, &day, after, seed, question, ask.why)
+    };
     match similarity {
         Some(similarity) => reader.with_similarity(similarity, answer),
         None => answer(),
@@ -451,24 +467,17 @@ fn answer(
     Ok(out)
 }
 
-fn prepare_measure(reader: &Reader<'_>, program: &mut Program) -> Result<(), Failure> {
+fn prepare_measure(program: &mut Program) -> Result<Option<String>, Failure> {
     let Some(m) = &program.measure else {
-        return Ok(());
+        return Ok(None);
     };
     let (definition, _) = super::measure::find_checked(&m.what)?;
+    let mut reference = None;
     if matches!(definition.paging, Some(super::measure::Paging::Sessions)) {
         program.sql = polylogue_store::measure::profiles::page_query(&program.sql);
     }
     if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
-        let count = reader.query(&program.count_sql(), &values(&program.params))?;
-        if count[0]["count(*)"] != 1 {
-            return Err(Failure {
-                kind: "bad_request".into(),
-                message: "similar needs one reference session; select it with a sessions query"
-                    .into(),
-                detail: None,
-            });
-        }
+        reference = Some(program.sql.clone());
         program.sql = polylogue_store::measure::comparison::similarity_query(&program.sql);
         program.order = vec![
             polylogue_query::OrderKey {
@@ -481,7 +490,7 @@ fn prepare_measure(reader: &Reader<'_>, program: &mut Program) -> Result<(), Fai
             },
         ];
     }
-    Ok(())
+    Ok(reference)
 }
 
 /// Row selection for ordinary queries and paged measures uses the same SQL and cursor.
