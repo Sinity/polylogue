@@ -133,3 +133,37 @@ fn a_note_needs_a_target_and_a_revision_needs_its_family() {
         Err(crate::StoreError::NotFound(_))
     ));
 }
+
+#[test]
+fn unsupported_note_metadata_returns_an_error_instead_of_an_empty_or_invented_note() {
+    let (_dir, archive, _lock, writer, reads) = setup();
+    let created = writer
+        .user(UserRequest::now(
+            "unsupported-note".into(),
+            UserWrite::AddNote {
+                note: note(
+                    NoteKind::Note,
+                    Author::Operator,
+                    "work:synthetic",
+                    "synthetic body",
+                ),
+            },
+        ))
+        .unwrap();
+    let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
+    for (kind, author, time) in [
+        ("unrecognized", "operator", 1),
+        ("note", "unrecognized", 1),
+        ("note", "operator", i64::MAX),
+    ] {
+        conn.execute(
+            "UPDATE note SET kind=?1,author=?2,created_at=?3 WHERE id=?4",
+            rusqlite::params![kind, author, time, created.id],
+        )
+        .unwrap();
+        assert!(matches!(
+            reads.reader().unwrap().note(&created.id),
+            Err(crate::StoreError::Invalid(_))
+        ));
+    }
+}

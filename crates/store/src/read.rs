@@ -19,11 +19,12 @@ use std::thread::ThreadId;
 mod behind_index;
 mod captured;
 mod parents;
+mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::CapturedSession;
 mod rows;
 
-pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
+pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
@@ -333,6 +334,11 @@ pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
     ms.and_then(Timestamp::from_unix_ms)
 }
 
+struct MessageContent<'a> {
+    structured: bool,
+    visibility: Option<&'a parents::Visibility>,
+}
+
 impl Reader<'_> {
     /// The optional embeddings read connection shares this reader's slot and
     /// cannot outlive it. Only one vector guard can be held.
@@ -600,14 +606,14 @@ impl Reader<'_> {
         session_pk: i64,
         session: &SessionId,
         from: Option<i64>,
-        structured: bool,
+        content: MessageContent<'_>,
         mut keep: impl FnMut(i64) -> bool,
         visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed";
+            m.cache_write_1h_tokens, m.speed, m.pem";
         const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";
         let start: Option<(String, i64, i64, String)> = match from {
             Some(pk) => self
@@ -676,6 +682,7 @@ impl Reader<'_> {
                     r.get::<_, Option<i64>>(16)?,
                     r.get::<_, Option<String>>(17)?,
                 ),
+                r.get::<_, i64>(18)?,
             ))
         })?;
         for row in rows {
@@ -693,6 +700,7 @@ impl Reader<'_> {
                 duration,
                 attrs,
                 (w1h, speed),
+                pem,
             ) = row?;
             let Ok(id) = MessageId::parse(&id) else {
                 continue;
@@ -703,6 +711,35 @@ impl Reader<'_> {
             let n = |x: Option<i64>| x.map(|x| x as u64);
             let attrs: Option<serde_json::Value> =
                 attrs.and_then(|a| serde_json::from_str(&a).ok());
+            let visible = if pem != 0 {
+                true
+            } else {
+                match content.visibility {
+                    None => true,
+                    Some(filter)
+                        if filter.prompts
+                            && (role != "user"
+                                || matches!(kind.as_deref(), Some("harness" | "model"))) =>
+                    {
+                        false
+                    }
+                    Some(filter) if filter.kinds.is_empty() => false,
+                    Some(filter) => {
+                        let sql = format!(
+                            "SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND kind IN ({}))",
+                            filter.kinds
+                        );
+                        self.conn()?
+                            .prepare_cached(&sql)?
+                            .query_row([pk], |row| row.get::<_, bool>(0))?
+                    }
+                }
+            };
+            let blocks = if visible {
+                self.message_blocks(pk, content.structured)?
+            } else {
+                Vec::new()
+            };
             let message = Message {
                 id,
                 session: session.clone(),
@@ -711,7 +748,7 @@ impl Reader<'_> {
                 at: ts(at),
                 model,
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
-                blocks: self.message_blocks(pk, structured)?,
+                blocks,
                 usage: Usage {
                     input: n(tokens[0]),
                     cached_input: n(tokens[1]),

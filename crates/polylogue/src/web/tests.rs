@@ -31,7 +31,16 @@ fn get(path: &str) -> axum::http::request::Builder {
 }
 
 fn post(path: &str) -> axum::http::request::Builder {
-    Http::post(path).header(header::HOST, format!("127.0.0.1:{PORT}"))
+    Http::post(path)
+        .header(header::HOST, format!("127.0.0.1:{PORT}"))
+        .header(
+            header::CONTENT_TYPE,
+            if path == "/auth" {
+                "application/x-www-form-urlencoded"
+            } else {
+                "application/json"
+            },
+        )
 }
 
 fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
@@ -164,7 +173,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         );
         assert!(!page.contains("<script>alert"));
         assert!(
-            page.contains("data-cli=\"polylogue read claude-code:s1 --with-parents --view full\""),
+            page.contains("data-cli=\"polylogue read claude-code:s1 --with-parents --view full --budget 8192 --cursor "),
             "{page}"
         );
         // The same read through the API is the socket's answer.
@@ -175,7 +184,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         assert_eq!(s, StatusCode::OK);
         let api: serde_json::Value = serde_json::from_str(&body).unwrap();
         let Response::Ok { data } = handle(
-            Request::Read {
+            Request::Read { start: None,
                 target: crate::daemon::ReadTarget::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 ),
@@ -221,7 +230,6 @@ fn search_renders_the_cli_answer_with_session_links() {
 
 fn chat_send(body: &serde_json::Value) -> axum::http::Request<Body> {
     own_origin(authed(post("/api/v1/chat/send")))
-        .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -336,7 +344,6 @@ fn backfill_jobs_start_and_list_over_http() {
     let r = reader();
     rt().block_on(async {
         let start = own_origin(authed(post("/api/v1/backfill/start")))
-            .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(r#"{"provider":"claude-ai"}"#))
             .unwrap();
         let (s, _, started) = send(&r, start).await;
@@ -489,7 +496,7 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
     drop(file);
     r.w.wait_for(|status| {
         if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read { target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
+        let response = handle(Request::Read { start: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
         matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
     });
     rt().block_on(async {
@@ -576,7 +583,10 @@ fn cost_uses_public_accounting_and_session_scope() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("Every parent session is here."), "{html}");
+        assert!(
+            html.contains("Every selected parent session is here."),
+            "{html}"
+        );
         assert!(!html.contains("Links unavailable"), "{html}");
         assert!(html.contains("Session cost and usage"));
     });
@@ -739,3 +749,7 @@ fn priced_native_usage_and_drilldown_keep_the_selected_session_population() {
 mod documents;
 
 mod attachments;
+
+mod pages;
+
+mod benchmark;

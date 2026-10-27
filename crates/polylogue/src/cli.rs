@@ -194,6 +194,9 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Ok(r) => r,
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
+    if matches!(request, Request::Changes { .. }) {
+        return changes::run(&request);
+    }
     let root = Archive::default_root();
     let response = match send_when_ready(&Archive::at(&root), &request) {
         Ok(r) => r,

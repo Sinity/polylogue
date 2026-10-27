@@ -1,7 +1,6 @@
 //! Printing the change feed. A completion line is forwarded only after every
 //! preceding line has been validated and written, then stdout is flushed.
 use super::{Archive, Request, Response, fail, when_ready};
-use crate::commands::{Command, Values};
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
 use std::io::{self, BufRead, BufReader, Write};
@@ -14,28 +13,13 @@ fn invalid(message: &str) -> io::Error {
 
 /// `changes`: writes one finite batch to stdout, ending with its
 /// completion line.
-pub fn run(_: &Command, v: &Values, json: bool) -> ExitCode {
-    let request = match request(v) {
-        Ok(request) => request,
-        Err(message) => return fail(json, "bad_request", &message, 2),
-    };
+pub fn run(request: &Request) -> ExitCode {
     let archive = Archive::at(&Archive::default_root());
-    match send(&archive, &request, &mut io::stdout().lock()) {
+    match send(&archive, request, &mut io::stdout().lock()) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => fail(true, "io", &e.to_string(), 1),
     }
-}
-
-/// The feed request. The global query flags are refused rather than
-/// ignored: filtering and pages belong to a `changes` query.
-fn request(v: &Values) -> Result<Request, String> {
-    if v.text("cursor").is_some() || v.0.contains_key("fields") || v.0.contains_key("why") {
-        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
-    }
-    Ok(Request::Changes {
-        since: v.text("since"),
-    })
 }
 
 fn send(archive: &Archive, request: &Request, output: &mut impl Write) -> io::Result<bool> {

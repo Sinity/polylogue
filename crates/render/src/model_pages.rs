@@ -4,6 +4,7 @@
 use crate::{View, rendered_blocks};
 use polylogue_model::Message;
 use polylogue_model::masking::MessageMasker;
+use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
 const CHARS_PER_TOKEN: usize = 4;
@@ -13,6 +14,34 @@ pub struct Page {
     pub text: String,
     pub next: Option<Position>,
     pub attachments: Vec<crate::AttachmentRef>,
+    pub slices: Vec<BlockSlice>,
+}
+
+/// One masked portion of an original block. Offsets count Unicode characters
+/// in the projected block text, before HTML escaping. The source block index
+/// survives view filtering and continuation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockSlice {
+    pub message: Option<MessageHeader>,
+    pub block: usize,
+    pub kind: String,
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<polylogue_model::CallOutcome>,
+    pub text: String,
+    pub from: usize,
+    pub until: usize,
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageHeader {
+    pub id: polylogue_model::MessageId,
+    pub session: polylogue_model::SessionId,
+    pub role: polylogue_model::Role,
+    pub written_by: polylogue_model::WrittenBy,
+    pub at: Option<polylogue_model::Timestamp>,
+    pub model: Option<String>,
 }
 
 /// A position in the rendered stream. The caller binds it to the read view.
@@ -53,6 +82,11 @@ pub struct Pager {
     validated: bool,
     used: usize,
     text: String,
+    slices: Vec<BlockSlice>,
+    source_blocks: Vec<usize>,
+    header: Option<MessageHeader>,
+    first: Option<Position>,
+    latest: bool,
     next: Option<Position>,
     attachments: Vec<crate::AttachmentRef>,
     seen_attachments: std::collections::HashSet<crate::AttachmentRef>,
@@ -71,6 +105,11 @@ impl Pager {
             validated: position.is_none(),
             used: 0,
             text: String::new(),
+            slices: Vec::new(),
+            source_blocks: Vec::new(),
+            header: None,
+            first: None,
+            latest: false,
             next: None,
             attachments: Vec::new(),
             seen_attachments: std::collections::HashSet::new(),
@@ -83,6 +122,24 @@ impl Pager {
         pager.message = page_end.message;
         pager.masker = page_end.masker;
         pager
+    }
+
+    /// An anchor begins a fresh selection at this message. Unlike a sealed
+    /// continuation, its first message may have no blocks in the chosen view.
+    pub fn at_anchor(mut self) -> Self {
+        self.resumed = false;
+        self.validated = true;
+        self
+    }
+
+    pub fn at_latest(mut self) -> Self {
+        self.latest = true;
+        self.at_anchor()
+    }
+
+    /// The first emitted character, after resolving an anchor or latest start.
+    pub fn first_position(&self) -> Option<Position> {
+        self.first
     }
 
     pub fn page_end(&self) -> Option<PageEnd> {
@@ -113,6 +170,21 @@ impl Pager {
         }
         let labels = labels(&message);
         let annotations = crate::attachments::apply(&mut message, self.view, labels);
+        self.header = Some(MessageHeader {
+            id: message.id.clone(),
+            session: message.session.clone(),
+            role: message.role,
+            at: message.at,
+            model: message.model.clone(),
+            written_by: polylogue_model::WrittenBy::of(message.role, message.prompt_kind),
+        });
+        self.source_blocks = message
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| self.view.keeps(&message, block))
+            .map(|(index, _)| index)
+            .collect();
         let ps = rendered_blocks(&message, self.view);
         self.push_blocks(ps, header(&message), annotations)
     }
@@ -135,6 +207,27 @@ impl Pager {
 
         if self.resumed && !self.validated && self.at.block >= ps.len() {
             return Err("the read cursor block is outside the selected record");
+        }
+        if self.latest && !ps.is_empty() {
+            self.latest = false;
+            self.at.block = ps.len() - 1;
+            let last = &ps[self.at.block];
+            let label = last
+                .label
+                .as_deref()
+                .map_or(0, |label| label.chars().count());
+            let prefix = match (last.kind, &last.label) {
+                ("tool_call", Some(_)) => label + 4,
+                ("tool_result", Some(_)) => label + 3,
+                _ => 0,
+            };
+            let heading = if self.at.block == 0 {
+                heading.chars().count() + usize::from(self.at.message > 0)
+            } else {
+                0
+            };
+            self.at.character =
+                (heading + prefix + last.text.chars().count() + 1).saturating_sub(self.budget);
         }
         while self.at.block < ps.len() {
             let p = &ps[self.at.block];
@@ -170,6 +263,29 @@ impl Pager {
                     self.attachments.push(annotation.reference.clone());
                 }
             }
+            if take > 0 {
+                self.first.get_or_insert(self.at);
+                let text_length = p.text.chars().count();
+                let from = self.at.character.saturating_sub(prefix).min(text_length);
+                let until = (self.at.character + take)
+                    .saturating_sub(prefix)
+                    .min(text_length);
+                self.slices.push(BlockSlice {
+                    message: self.header.clone(),
+                    block: self
+                        .source_blocks
+                        .get(self.at.block)
+                        .copied()
+                        .unwrap_or(current),
+                    kind: p.kind.into(),
+                    label: p.label.clone(),
+                    outcome: None,
+                    text: p.text.chars().skip(from).take(until - from).collect(),
+                    from,
+                    until,
+                    more: until < text_length,
+                });
+            }
             self.text
                 .extend(body.chars().skip(self.at.character).take(take));
             self.used += take;
@@ -194,6 +310,7 @@ impl Pager {
             text: self.text,
             next: self.next,
             attachments: self.attachments,
+            slices: self.slices,
         })
     }
 }
@@ -219,6 +336,7 @@ impl BlockPager {
         mut block: polylogue_model::Block,
     ) -> Result<ControlFlow<()>, &'static str> {
         self.stream.masker.block(&mut block);
+        self.stream.source_blocks = vec![self.stream.message];
         let ps = if self.stream.view.keeps_block(false, &block) {
             crate::block(&block).into_iter().collect()
         } else {

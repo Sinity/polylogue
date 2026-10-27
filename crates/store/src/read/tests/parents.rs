@@ -309,3 +309,60 @@ fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches(
         );
     }
 }
+
+#[test]
+fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(&mut fixture, "a", &["shared first", "shared second"]);
+    session(&mut fixture, "b", &["branch b"]);
+    session(&mut fixture, "c", &["branch c"]);
+    session(&mut fixture, "d", &["joint session"]);
+    fork(&mut fixture, "a", "b", Some("claude-code:a-0"));
+    fork(&mut fixture, "a", "c", Some("claude-code:a-1"));
+    fork(&mut fixture, "b", "d", Some("claude-code:b-0"));
+    fork(&mut fixture, "c", "d", Some("claude-code:c-0"));
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let id = SessionId::parse("claude-code:d").unwrap();
+    let selected = reader.select_messages(&id, true).unwrap();
+    let expected = [
+        "claude-code:a-0",
+        "claude-code:b-0",
+        "claude-code:a-1",
+        "claude-code:c-0",
+        "claude-code:d-0",
+    ];
+    let entries = selected.outline(0, 100).unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.message.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        selected
+            .outline(2, 2)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.message.as_str())
+            .collect::<Vec<_>>(),
+        expected[2..4]
+    );
+    let anchor = polylogue_model::MessageId::parse("claude-code:a-1").unwrap();
+    assert_eq!(selected.locate(Some(&anchor)).unwrap().unwrap().message, 2);
+    assert!(
+        reader
+            .select_messages(&id, false)
+            .unwrap()
+            .locate(Some(&anchor))
+            .unwrap()
+            .is_none()
+    );
+    let last = selected
+        .latest(&[polylogue_model::BlockKind::Text], true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(last.message, 4);
+}

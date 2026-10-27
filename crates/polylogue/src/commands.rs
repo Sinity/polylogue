@@ -480,6 +480,28 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "outline",
+        help: "Page prompt, tool failure, compaction and branch references without loading message bodies",
+        args: &[
+            pos("session", Kind::Text, "Session ID"),
+            opt(
+                "with_parents",
+                Kind::Bool,
+                "Include inherited parent messages",
+            ),
+            opt(
+                "page_size",
+                Kind::Integer,
+                "Number of outline entries per page (default 50)",
+            ),
+            CURSOR,
+        ],
+        action: Action::Request(requests::outline),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
         name: "read",
         help: "Read one session, text document or event",
         args: &[
@@ -500,9 +522,15 @@ const WRITTEN: &[Command] = &[
             opt(
                 "budget",
                 Kind::Integer,
-                "Pages sized for a model, at most this many tokens each",
+                "Page budget in estimated tokens; JSON also returns masked block slices",
             ),
             CURSOR,
+            opt(
+                "message",
+                Kind::Text,
+                "Start at this message in the selected session",
+            ),
+            opt("latest", Kind::Bool, "Start at the latest message"),
             opt(
                 "with_parents",
                 Kind::Bool,
@@ -587,6 +615,15 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::export),
         output: Some(crate::cli::write_export),
+        ..CLI
+    },
+    Command {
+        name: "note read",
+        help: "Read one exact note revision, including an older or withdrawn revision",
+        args: &[pos("id", Kind::Text, "The exact note revision ID")],
+        action: Action::Request(requests::note_read),
+        mcp: true,
+        http: true,
         ..CLI
     },
     Command {
@@ -826,7 +863,8 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Local(crate::cli::changes::run),
+        action: Action::Request(requests::changes),
+        http: true,
         ..CLI
     },
     Command {

@@ -216,5 +216,21 @@ pub fn scrub(text: &str, root: &Path) -> String {
     text.replace(root.as_ref(), "[archive]")
 }
 
+/// Only one declared media type is accepted; parameters such as UTF-8 do
+/// not change the body format. Duplicate headers cannot select a parser.
+pub(super) fn content_type(headers: &axum::http::HeaderMap, expected: &str) -> bool {
+    let mut values = headers.get_all(axum::http::header::CONTENT_TYPE).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    values.next().is_none()
+        && value.to_str().ok().is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
+        })
+}
+
 #[cfg(test)]
 mod tests;

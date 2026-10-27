@@ -2,7 +2,7 @@
 //! Lists of notes are `notes` queries; writing goes through the writer
 //! ([`crate::user_writes`]).
 
-use crate::{Reader, Result};
+use crate::{Reader, Result, StoreError};
 use polylogue_model::{Author, Note, NoteKind, Relation, Target, Timestamp};
 
 impl Reader<'_> {
@@ -31,19 +31,26 @@ impl Reader<'_> {
         self.finish(raw)
     }
 
-    /// Turns a row into a note; a row whose stored names this version does
-    /// not know is skipped rather than shown wrong.
+    /// Refuse unsupported recorded values instead of inventing note metadata.
     fn finish(&self, raw: RawNote) -> Result<Option<Note>> {
-        let (Some(kind), Ok(author)) = (NoteKind::parse(&raw.kind), Author::parse(&raw.author))
-        else {
-            return Ok(None);
-        };
+        let kind = NoteKind::parse(&raw.kind)
+            .ok_or_else(|| StoreError::Invalid("the note has an unsupported kind".into()))?;
+        let author = Author::parse(&raw.author)
+            .map_err(|_| StoreError::Invalid("the note has an unsupported author".into()))?;
+        let created_at = Timestamp::from_unix_ms(raw.created_at).ok_or_else(|| {
+            StoreError::Invalid("the note creation time is outside the supported range".into())
+        })?;
         let conn = self.conn()?;
         let targets = conn
             .prepare_cached("SELECT ref FROM a.note_target WHERE note_id = ?1 ORDER BY ref")?
             .query_map([&raw.id], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok().and_then(|t| Target::parse(&t).ok()))
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|target| {
+                Target::parse(&target)
+                    .map_err(|_| StoreError::Invalid("the note has an unsupported target".into()))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let relations = conn
             .prepare_cached(
                 "SELECT kind, other FROM a.note_relation
@@ -52,11 +59,16 @@ impl Reader<'_> {
             .query_map([&raw.id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
-            .filter_map(|r| {
-                r.ok()
-                    .and_then(|(k, o)| Relation::parse(&k).map(|k| (k, o)))
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|(kind, other)| {
+                Relation::parse(&kind)
+                    .map(|kind| (kind, other))
+                    .ok_or_else(|| {
+                        StoreError::Invalid("the note has an unsupported relation".into())
+                    })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(Some(Note {
             id: raw.id,
             first_note: raw.first_note,
@@ -64,8 +76,7 @@ impl Reader<'_> {
             key: raw.key,
             value: raw.value,
             author,
-            created_at: Timestamp::from_unix_ms(raw.created_at)
-                .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("epoch")),
+            created_at,
             valid_until: raw.valid_until.and_then(Timestamp::from_unix_ms),
             targets,
             relations,

@@ -176,6 +176,9 @@ says. Hermes activity records are events, read with `read event:ID`.
 
 The web reader shows sessions, documents, a usage and cost page (`/cost`,
 the same report as `measure usage`) and the links between related sessions.
+Sessions and documents page their content. Message links open at the selected
+message, and the session outline pages prompt, failure and branch references.
+See [the shared reader contract](docs/web-reader.md) for API and access details.
 
 ## Repository layout
 

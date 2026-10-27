@@ -192,3 +192,134 @@ fn masking_context_continues_from_a_tool_label_into_its_body() {
         assert!(output.contains("visible"));
     }
 }
+
+#[test]
+fn structured_slices_reconstruct_masked_blocks_with_source_indices_at_every_budget() {
+    use crate::tests::message;
+    use polylogue_model::{Block, Role};
+    let text = " λ🙂\n\n   visible <script> ".repeat(100);
+    let messages = vec![message(
+        "slice",
+        Role::Assistant,
+        None,
+        vec![
+            Block::Thinking {
+                text: Some("reason".into()),
+                redacted: false,
+                signature: None,
+            },
+            Block::Text { text: text.clone() },
+        ],
+    )];
+    for budget in [1, 7, 4096] {
+        let mut position = None;
+        let mut collected = String::new();
+        let mut offset = 0;
+        loop {
+            let mut pager = Pager::new(View::Full, budget, position);
+            for message in &messages {
+                if pager.push(message.clone()).unwrap().is_break() {
+                    break;
+                }
+            }
+            let page = pager.finish().unwrap();
+            for slice in page.slices.iter().filter(|s| s.kind == "text") {
+                assert_eq!(slice.block, 1);
+                assert_eq!(slice.message.as_ref().unwrap().id, messages[0].id);
+                assert_eq!(slice.from, offset);
+                assert_eq!(slice.until - slice.from, slice.text.chars().count());
+                offset = slice.until;
+                collected.push_str(&slice.text);
+            }
+            position = page.next;
+            if position.is_none() {
+                break;
+            }
+        }
+        assert_eq!(collected, text);
+    }
+}
+
+#[test]
+fn one_large_tool_result_is_reachable_without_embedding_it_in_one_page() {
+    use crate::tests::message;
+    use polylogue_model::{Block, Role, ToolOutcome};
+    let text = "large output λ🙂\n".repeat(65536);
+    let message = message(
+        "large",
+        Role::Assistant,
+        None,
+        vec![Block::ToolResult {
+            call_id: None,
+            outcome: ToolOutcome::Ok,
+            output: Some(text.clone()),
+            data: None,
+            attachments: vec![],
+        }],
+    );
+    let mut position = None;
+    let mut collected = String::new();
+    let mut pages = 0;
+    loop {
+        let mut pager = Pager::new(View::Full, 8192, position);
+        let _ = pager.push(message.clone()).unwrap();
+        let page = pager.finish().unwrap();
+        assert!(
+            page.slices
+                .iter()
+                .map(|s| s.text.chars().count())
+                .sum::<usize>()
+                <= 32768
+        );
+        for slice in &page.slices {
+            collected.push_str(&slice.text);
+        }
+        position = page.next;
+        pages += 1;
+        if position.is_none() {
+            break;
+        }
+    }
+    assert!(pages > 20);
+    assert_eq!(collected, text);
+}
+
+#[test]
+fn latest_selects_a_bounded_tail_after_masking_all_source_blocks() {
+    use crate::tests::message;
+    use polylogue_model::{Block, Role};
+    let source = message(
+        "tail",
+        Role::Assistant,
+        None,
+        vec![
+            Block::Text {
+                text: "-----BEGIN PRIVATE KEY-----hidden-first".into(),
+            },
+            Block::Text {
+                text: format!(
+                    "hidden-tail-----END PRIVATE KEY----- {}visible-tail λ🙂",
+                    "visible ".repeat(1000)
+                ),
+            },
+        ],
+    );
+    let mut pager = Pager::new(View::Full, 16, None).at_latest();
+    let _ = pager.push(source.clone()).unwrap();
+    let position = pager.first_position().unwrap();
+    let page = pager.finish().unwrap();
+    assert!(page.text.chars().count() <= 64);
+    assert!(page.text.ends_with("visible-tail λ🙂\n"));
+    assert!(!page.text.contains("hidden"));
+    assert_eq!(page.slices[0].block, 1);
+    assert!(page.slices[0].from > 0);
+    assert!(page.next.is_none());
+    let mut reopened = Pager::resume(
+        View::Full,
+        16,
+        position,
+        PageEnd::new(0, MessageMasker::default()),
+    );
+    let _ = reopened.push(source).unwrap();
+    assert_eq!(reopened.finish().unwrap(), page);
+}

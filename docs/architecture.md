@@ -188,6 +188,10 @@ the state reached by masking only the marked messages from the first that
 does. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
+Budgeted reads return both text and structured masked block slices. The web
+reader uses these pages, with shared message anchors, latest selection and
+metadata outlines; [the reader contract](web-reader.md) describes the API,
+route ownership and authentication.
 The budget limits output size, not
 memory: a session page may decode one whole message, a document page one
 block. See the [read operation](../crates/polylogue/src/daemon/service/read.rs),

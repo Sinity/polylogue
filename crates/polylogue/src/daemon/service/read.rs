@@ -20,6 +20,7 @@ pub(super) struct Options<'a> {
     pub with_parents: bool,
     pub budget: Option<usize>,
     pub cursor: Option<&'a str>,
+    pub start: Option<&'a crate::daemon::ReadStart>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +90,12 @@ pub(super) fn run(
     cache: &page_ends::Cache,
     epoch: u64,
 ) -> Response {
+    if options.start.is_some() && (options.cursor.is_some() || options.budget.is_none()) {
+        return error(
+            "bad_request",
+            "a read start requires a budget and cannot be combined with a cursor",
+        );
+    }
     let Some(view) = polylogue_render::View::parse(options.view) else {
         return error("bad_request", format!("unknown view {:?}", options.view));
     };
@@ -218,6 +225,61 @@ pub(super) fn run(
     } else {
         None
     };
+    let count = match selected.len() {
+        Ok(count) => count,
+        Err(e) => return store_error(&e),
+    };
+    let latest = matches!(options.start, Some(crate::daemon::ReadStart::Latest));
+    let position = match (position, options.start) {
+        (None, Some(start)) => {
+            use polylogue_model::BlockKind as Kind;
+            let located = match start {
+                crate::daemon::ReadStart::Message(message) => selected.locate(Some(message)),
+                crate::daemon::ReadStart::Latest => {
+                    let kinds: &[Kind] = match view {
+                        polylogue_render::View::Full => &[
+                            Kind::Text,
+                            Kind::Thinking,
+                            Kind::ToolCall,
+                            Kind::ToolResult,
+                            Kind::Image,
+                            Kind::File,
+                            Kind::Other,
+                        ],
+                        polylogue_render::View::Dialogue => &[Kind::Text, Kind::Thinking],
+                        polylogue_render::View::Prompts => &[Kind::Text],
+                        polylogue_render::View::Actions => &[Kind::ToolCall, Kind::ToolResult],
+                    };
+                    selected.latest(kinds, view == polylogue_render::View::Prompts)
+                }
+            };
+            match located {
+                Ok(Some(at)) => Some((
+                    Position {
+                        message: at.message,
+                        block: 0,
+                        character: 0,
+                    },
+                    at.key,
+                )),
+                Ok(None) if latest => {
+                    let mut value = serde_json::json!({"session":session,"display_title":title,"text":"","slices":[],"next":null,"cursor":null,"content_version":content,"generation":generation,"position":{"message":0,"total_messages":count}});
+                    if options.with_parents {
+                        value["parents"] = serde_json::json!(selected.parents());
+                    }
+                    return ok(value);
+                }
+                Ok(None) => {
+                    return error(
+                        "not_found",
+                        "the message is not in the selected session and parent view",
+                    );
+                }
+                Err(e) => return store_error(&e),
+            }
+        }
+        (position, _) => position,
+    };
     let (position, message_key) = match position {
         Some((position, key)) => (Some(position), key),
         None => (None, None),
@@ -232,7 +294,17 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
-    let selected = selected.for_text();
+    use polylogue_model::BlockKind as Kind;
+    let selected = match view {
+        polylogue_render::View::Full => selected.for_text(),
+        polylogue_render::View::Dialogue => {
+            selected.for_blocks(&[Kind::Text, Kind::Thinking], false)
+        }
+        polylogue_render::View::Prompts => selected.for_blocks(&[Kind::Text], true),
+        polylogue_render::View::Actions => {
+            selected.for_blocks(&[Kind::ToolCall, Kind::ToolResult], false)
+        }
+    };
     // A read resumes at its cursor's message, from the masking state
     // remembered at that page end or else the state the selection gives
     // there. The epoch taken when the read began stops a read that overlaps
@@ -255,6 +327,11 @@ pub(super) fn run(
         (Some(at), Some(page_end)) => Pager::resume(view, budget, at, page_end),
         _ => Pager::new(view, budget, position),
     };
+    if latest {
+        pager = pager.at_latest();
+    } else if options.start.is_some() {
+        pager = pager.at_anchor();
+    }
     let mut failure = None;
     let mut attachment_error = None;
     let mut shown = std::collections::HashMap::new();
@@ -286,6 +363,7 @@ pub(super) fn run(
             return ControlFlow::Break(());
         }
         match result {
+            Ok(_) if latest => ControlFlow::Break(()),
             Ok(flow) => flow,
             Err(error) => {
                 failure = Some(error);
@@ -304,12 +382,36 @@ pub(super) fn run(
         return error("bad_request", e);
     }
     let page_end = pager.page_end();
-    let page = match pager.finish() {
+    let first = pager.first_position();
+    let mut page = match pager.finish() {
         Ok(page) => page,
         Err(e) => return error("bad_request", e),
     };
     if let Some(page_end) = page_end {
         cache.put(key, epoch, page_end);
+    }
+    let mut outcomes = std::collections::HashMap::new();
+    for slice in page
+        .slices
+        .iter_mut()
+        .filter(|slice| slice.kind == "tool_call")
+    {
+        if let Some(message) = &slice.message {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                outcomes.entry(message.id.clone())
+            {
+                match reader.tool_outcomes(&message.id) {
+                    Ok(found) => {
+                        entry.insert(found);
+                    }
+                    Err(e) => return store_error(&e),
+                }
+            }
+            slice.outcome = outcomes[&message.id]
+                .iter()
+                .find(|(block, _)| *block == slice.block)
+                .map(|(_, outcome)| *outcome);
+        }
     }
     let mut descriptors = Vec::new();
     for reference in &page.attachments {
@@ -317,14 +419,39 @@ pub(super) fn run(
             descriptors.push(descriptor);
         }
     }
+    let current = match (
+        first,
+        page.slices.first().and_then(|slice| slice.message.as_ref()),
+    ) {
+        (Some(at), Some(message)) => {
+            let message_key = match selected.message_key(&message.id) {
+                Ok(key) => key,
+                Err(e) => return store_error(&e),
+            };
+            let cursor = Cursor {
+                version: CURSOR_VERSION,
+                binding: binding.clone(),
+                content: content.clone(),
+                generation: generation.clone(),
+                position: [at.message, at.block, at.character],
+                message_key,
+                seal: String::new(),
+            };
+            match cursor.seal(&cursor_key) {
+                Ok(token) => Some(token),
+                Err(e) => return error("internal", e),
+            }
+        }
+        _ => None,
+    };
     let next = match page.next {
         Some(position) => {
             // A page breaks in the last message it visited.
             let cursor = Cursor {
                 version: CURSOR_VERSION,
-                binding,
-                content,
-                generation,
+                binding: binding.clone(),
+                content: content.clone(),
+                generation: generation.clone(),
                 position: [position.message, position.block, position.character],
                 message_key: last_key,
                 seal: String::new(),
@@ -336,7 +463,9 @@ pub(super) fn run(
         }
         None => None,
     };
-    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next});
+    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "slices": page.slices, "next": next, "cursor":current,
+        "position": {"message": first.or(position).map_or(0, |at| at.message), "total_messages": count},
+        "content_version": content, "generation": generation});
     if !descriptors.is_empty() {
         value["attachments"] = serde_json::json!(descriptors);
     }
@@ -354,6 +483,9 @@ pub(super) fn document(
     id: &polylogue_model::DocumentId,
     options: Options<'_>,
 ) -> Response {
+    if options.start.is_some() {
+        return error("bad_request", "documents have no message starting point");
+    }
     let Some(view) = polylogue_render::View::parse(options.view) else {
         return error("bad_request", "unknown document view");
     };
@@ -434,7 +566,13 @@ pub(super) fn document(
         Ok(value) => value,
         Err(e) => return store_error(&e),
     };
-    ok(serde_json::json!({"document":metadata,"text":page.text,"next":next}))
+    let sources = match selected.sources() {
+        Ok(sources) => sources,
+        Err(e) => return store_error(&e),
+    };
+    ok(
+        serde_json::json!({"document":metadata,"sources":sources,"text":page.text,"slices":page.slices,"next":next}),
+    )
 }
 
 fn content_position(
@@ -489,6 +627,9 @@ fn content_next(
 }
 
 pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Response {
+    if options.start.is_some() {
+        return error("bad_request", "events have no message starting point");
+    }
     let Some(view) = polylogue_render::View::parse(options.view) else {
         return error("bad_request", "unknown event view");
     };
@@ -566,4 +707,78 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
     };
     let next = content_next(page.next, &cursor_key, binding, content, generation);
     ok(serde_json::json!({"event":metadata,"sources":sources,"text":page.text,"next":next}))
+}
+
+/// The outline's cursor binds its metadata continuation to the same selected
+/// session content as a read. It carries no transcript text or private state.
+pub(super) fn outline(
+    reader: &Reader<'_>,
+    id: &SessionId,
+    with_parents: bool,
+    size: usize,
+    cursor: Option<&str>,
+) -> Response {
+    if size == 0 {
+        return error("bad_request", "outline page size must be positive");
+    }
+    match reader.session(id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return error("not_found", "the session is not available"),
+        Err(e) => return store_error(&e),
+    }
+    let selected = match reader.select_messages(id, with_parents) {
+        Ok(s) => s,
+        Err(e) => return store_error(&e),
+    };
+    let content = match selected.fingerprint() {
+        Ok(s) => s,
+        Err(e) => return store_error(&e),
+    };
+    let key = match reader.cursor_key() {
+        Ok(s) => s,
+        Err(e) => return store_error(&e),
+    };
+    let generation = match reader.change_position() {
+        Ok(s) => s.generation,
+        Err(e) => return store_error(&e),
+    };
+    let binding = blake3::hash(
+        serde_json::json!(["outline", id, with_parents])
+            .to_string()
+            .as_bytes(),
+    )
+    .to_hex()
+    .to_string();
+    let options = Options {
+        view: "full",
+        format: "json",
+        with_parents,
+        budget: Some(size),
+        cursor,
+        start: None,
+    };
+    let from = match content_position(&options, &key, &binding, &content, &generation) {
+        Ok(p) => p.map_or(0, |p| p.message),
+        Err(e) => return e,
+    };
+    let mut entries = match selected.outline(from, size.saturating_add(1)) {
+        Ok(s) => s,
+        Err(e) => return store_error(&e),
+    };
+    let more = entries.len() > size;
+    if more {
+        entries.pop();
+    }
+    let next = content_next(
+        more.then_some(Position {
+            message: from + entries.len(),
+            block: 0,
+            character: 0,
+        }),
+        &key,
+        binding,
+        content,
+        generation,
+    );
+    ok(serde_json::json!({"entries":entries,"next":next,"parents":selected.parents()}))
 }

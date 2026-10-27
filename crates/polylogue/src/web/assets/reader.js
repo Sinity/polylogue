@@ -37,13 +37,20 @@ function focusItem(i) {
   target.focus({ preventScroll: true });
 }
 
+document.addEventListener("focusin", (event) => {
+  const item = event.target.closest("tr.hit, section.message");
+  if (item) current = items().indexOf(item);
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const typing = e.target.matches("input, textarea, [contenteditable]");
+  if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+  const typing = e.target.closest("input, textarea, [contenteditable]:not([contenteditable=false])");
   if (typing) {
     if (e.key === "Escape") e.target.blur();
     return;
   }
+  if (document.getSelection()?.toString()) return;
+  if (!document.getElementById("shortcuts")?.checked) return;
   switch (e.key) {
     case "/": {
       e.preventDefault();
@@ -62,6 +69,26 @@ document.addEventListener("keydown", (e) => {
       const el = items()[current];
       const d = el && el.querySelector("details");
       if (d) d.open = !d.open;
+      else el?.querySelector("a")?.click();
+      break;
+    }
+    case "Escape": {
+      const details = e.target.closest("details");
+      if (details) {
+        details.open = false;
+        details.querySelector("summary")?.focus();
+      }
+      break;
+    }
+    case "[":
+      document.querySelector("[data-previous]")?.click();
+      break;
+    case "]":
+      document.querySelector("[data-next]")?.click();
+      break;
+    case "?": {
+      const help = document.getElementById("key-help");
+      if (help) help.open = !help.open;
       break;
     }
     case "y":
@@ -73,11 +100,22 @@ document.addEventListener("keydown", (e) => {
 function copyCli() {
   const button = document.querySelector("button.copy-cli");
   if (!button) return;
-  navigator.clipboard.writeText(button.dataset.cli).then(() => {
+  Promise.resolve().then(() => navigator.clipboard.writeText(button.dataset.cli)).then(() => {
     const was = button.textContent;
     button.textContent = "copied";
     setTimeout(() => (button.textContent = was), 1200);
+  }).catch(() => {
+    const command = document.createElement("pre");
+    command.textContent = button.dataset.cli;
+    button.after(command);
+    button.textContent = "Select and copy the command below";
   });
 }
 
 document.querySelector("button.copy-cli")?.addEventListener("click", copyCli);
+
+for (const button of document.querySelectorAll("[data-previous]")) {
+  button.hidden = false;
+  button.disabled = history.length < 2;
+  button.addEventListener("click", () => history.back());
+}
