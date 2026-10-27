@@ -79,7 +79,7 @@ pub struct UsageReport {
     pub hidden_sessions: u64,
 }
 
-pub(super) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
+pub(crate) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
  AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
  AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')";
 
