@@ -273,7 +273,7 @@ impl Archive {
             return Ok(false);
         }
         Ok(found != schema::INDEX_VERSION
-            || !schema::same_schema(&index, &[schema::INDEX])?
+            || !schema::same_index_schema(&index)?
             || schema::unsynced(&index)?
             || crate::excise::index_behind(archive, &index)?)
     }

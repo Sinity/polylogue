@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
+const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// A different version rebuilds the index into a new file. Raise it when the
@@ -48,6 +49,7 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    conn.execute_batch(READ_INDEXES)?;
     crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
@@ -60,12 +62,32 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     match version(conn)? {
         0 => create_index(conn),
-        v if v == INDEX_VERSION => Ok(()),
+        v if v == INDEX_VERSION => {
+            conn.execute_batch(READ_INDEXES)?;
+            Ok(())
+        }
         found => Err(StoreError::IndexVersion {
             found,
             wanted: INDEX_VERSION,
         }),
     }
+}
+
+/// Read indexes can be added in place without rebuilding parsed rows.
+pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    let base = shape(&expected)?;
+    expected.execute_batch(READ_INDEXES)?;
+    let added: Vec<_> = shape(&expected)?
+        .into_iter()
+        .filter(|entry| !base.contains(entry))
+        .collect();
+    let found: Vec<_> = shape(conn)?
+        .into_iter()
+        .filter(|entry| !added.contains(entry))
+        .collect();
+    Ok(found == base)
 }
 
 /// Whether the index was being built without syncs and never finished
