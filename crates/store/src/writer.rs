@@ -297,7 +297,9 @@ impl Writer {
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
         let excisions = crate::excise::any_excision(&archive_conn)?;
-        let first_build = building.then(|| crate::first_build::FirstBuild::load(&index)).transpose()?;
+        let first_build = building
+            .then(|| crate::first_build::FirstBuild::load(&index))
+            .transpose()?;
         let mut inner = Inner {
             archive: archive_conn,
             index,
@@ -898,7 +900,9 @@ impl Inner {
             .pragma_query_value(None, "synchronous", |r| r.get(0))?;
         self.archive
             .pragma_update(None, "synchronous", previous.max(2))?;
-        let index_sync: i64 = self.index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
+        let index_sync: i64 = self
+            .index
+            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
         self.index.pragma_update(None, "synchronous", 2)?;
         let lock = crate::write_lock::hold(&self.archive)?;
         // Pages the excision frees are overwritten with zeros, so no removed
@@ -933,7 +937,8 @@ impl Inner {
         self.archive
             .pragma_update(None, "synchronous", previous)
             .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        self.index.pragma_update(None, "synchronous", index_sync)
+        self.index
+            .pragma_update(None, "synchronous", index_sync)
             .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
         if result.is_ok() {
             self.excisions = true;

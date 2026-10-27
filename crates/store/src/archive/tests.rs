@@ -113,9 +113,28 @@ fn refused_index_keeps_the_archive(change: &str) {
     drop(archive_conn);
     drop(lock);
     let error = Archive::open_or_create(dir.path()).unwrap_err();
-    assert!(matches!(error, StoreError::IndexVersion { .. } | StoreError::NoMigration { database: "index", .. }), "{error}");
+    assert!(
+        matches!(
+            error,
+            StoreError::IndexVersion { .. }
+                | StoreError::NoMigration {
+                    database: "index",
+                    ..
+                }
+        ),
+        "{error}"
+    );
     let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(index.query_row("SELECT value FROM meta WHERE key='previous-index-marker'", [], |r| r.get::<_, String>(0)).unwrap(), "present");
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT value FROM meta WHERE key='previous-index-marker'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "present"
+    );
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         archive_conn
@@ -284,7 +303,13 @@ fn a_build_from_another_boot_is_refused_without_removing_rows() {
     let error = Archive::open_or_create(dir.path()).unwrap_err();
     assert!(error.to_string().contains("another boot"), "{error}");
     let conn = open_read(&archive.index_db()).unwrap();
-    assert_eq!(conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| r.get::<_, String>(0)).unwrap(), "present");
+    assert_eq!(
+        conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "present"
+    );
 }
 
 #[test]
@@ -294,19 +319,41 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
         let (archive, _lock) = Archive::open_or_create(Path::new(&path)).unwrap();
         let writer = crate::Writer::start(&archive).unwrap();
         let output = polylogue_model::Output {
-            sessions: vec![polylogue_model::Session::new(crate::fixture::writer::sid("resume"), polylogue_model::SessionKind::Main)],
-            messages: vec![polylogue_model::MessageRow { offset: 0, end: 1, message: crate::fixture::writer::prose("resume", 0, 1, "kept message").remove(0) }],
+            sessions: vec![polylogue_model::Session::new(
+                crate::fixture::writer::sid("resume"),
+                polylogue_model::SessionKind::Main,
+            )],
+            messages: vec![polylogue_model::MessageRow {
+                offset: 0,
+                end: 1,
+                message: crate::fixture::writer::prose("resume", 0, 1, "kept message").remove(0),
+            }],
             ..Default::default()
         };
-        writer.send(crate::fixture::writer::step("resume-input", "claude-code", "/synthetic", output, 0, 1)).unwrap();
+        writer
+            .send(crate::fixture::writer::step(
+                "resume-input",
+                "claude-code",
+                "/synthetic",
+                output,
+                0,
+                1,
+            ))
+            .unwrap();
         assert!(writer.flush().unwrap().errors.is_empty());
         // Exit without dropping the writer, as a stopped process does.
         std::process::exit(0);
     }
     let dir = tempfile::tempdir().unwrap();
     let status = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "archive::tests::a_stopped_process_resumes_its_committed_parse_positions", "--nocapture"])
-        .env(CHILD, dir.path()).status().unwrap();
+        .args([
+            "--exact",
+            "archive::tests::a_stopped_process_resumes_its_committed_parse_positions",
+            "--nocapture",
+        ])
+        .env(CHILD, dir.path())
+        .status()
+        .unwrap();
     assert!(status.success());
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let pool = crate::ReadPool::open(&archive).unwrap();

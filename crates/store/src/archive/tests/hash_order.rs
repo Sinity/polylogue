@@ -79,7 +79,9 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     // The test explicitly requests a fresh derived index.
     for suffix in ["", "-wal", "-shm"] {
         let path = archive.root.join(format!("index.db{suffix}"));
-        if path.exists() { std::fs::remove_file(path).unwrap(); }
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
     }
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();

@@ -321,7 +321,13 @@ pub(crate) fn catch_up(archive: &Connection, index: &Connection) -> Result<()> {
         let atx = archive.unchecked_transaction()?;
         let tx = index.unchecked_transaction()?;
         let counter = crate::archive::bump_counter(&tx)?;
-        let t = Transactions { archive: &atx, index: &tx, embeddings: None, seq: 0, counter };
+        let t = Transactions {
+            archive: &atx,
+            index: &tx,
+            embeddings: None,
+            seq: 0,
+            counter,
+        };
         let mut texts = BTreeSet::new();
         let mut blobs = BTreeSet::new();
         let mut statement = atx.prepare("SELECT DISTINCT kind,value FROM excised WHERE kind IN ('session','document','input') ORDER BY CASE kind WHEN 'session' THEN 0 WHEN 'document' THEN 1 ELSE 2 END,value")?;
@@ -330,13 +336,19 @@ pub(crate) fn catch_up(archive: &Connection, index: &Connection) -> Result<()> {
             let kind: String = row.get(0)?;
             let id: String = row.get(1)?;
             match kind.as_str() {
-                "session" => if let Some(pk) = index_rows::session_pk(&tx, &id)? {
-                    index_rows::remove_session(&t, pk, &id, &mut texts, &mut blobs)?;
-                },
+                "session" => {
+                    if let Some(pk) = index_rows::session_pk(&tx, &id)? {
+                        index_rows::remove_session(&t, pk, &id, &mut texts, &mut blobs)?;
+                    }
+                }
                 "document" => {
-                    let pk: Option<i64> = tx.query_row("SELECT pk FROM document WHERE id=?1", [&id], |r| r.get(0)).optional()?;
-                    if let Some(pk) = pk { index_rows::remove_document(&t, pk, &mut texts, &mut blobs)?; }
-                },
+                    let pk: Option<i64> = tx
+                        .query_row("SELECT pk FROM document WHERE id=?1", [&id], |r| r.get(0))
+                        .optional()?;
+                    if let Some(pk) = pk {
+                        index_rows::remove_document(&t, pk, &mut texts, &mut blobs)?;
+                    }
+                }
                 "input" => index_rows::remove_index_input(&tx, &id)?,
                 _ => unreachable!(),
             }
@@ -344,7 +356,10 @@ pub(crate) fn catch_up(archive: &Connection, index: &Connection) -> Result<()> {
         mark_applied(&atx, &tx)?;
         tx.commit()?;
         for table in ["text_fts", "output_fts", "tool_call_trigram"] {
-            index.execute(&format!("INSERT INTO {table}({table}) VALUES ('optimize')"), [])?;
+            index.execute(
+                &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
+                [],
+            )?;
         }
         index.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())

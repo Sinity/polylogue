@@ -248,16 +248,23 @@ impl Archive {
         let building = schema::unsynced(&index)?;
         if building {
             let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-            let previous: Option<String> = index.query_row(
-                "SELECT value FROM meta WHERE key='build_boot_id'", [], |r| r.get(0)
-            ).optional()?;
+            let previous: Option<String> = index
+                .query_row(
+                    "SELECT value FROM meta WHERE key='build_boot_id'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
             if previous.as_deref() != Some(boot.trim()) {
                 return Err(StoreError::Invalid(
                     "the interrupted index build is from another boot; an explicit rebuild is required".into()
                 ));
             }
         } else if !schema::same_schema(&index, &[schema::INDEX])? {
-            return Err(StoreError::NoMigration { database: "index", found: schema::version(&index)? });
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found: schema::version(&index)?,
+            });
         }
         crate::fault::check("index.after_creation", "")?;
         if fresh {

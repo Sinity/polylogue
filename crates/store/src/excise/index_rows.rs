@@ -421,8 +421,7 @@ pub(super) fn remove_input(
 /// Removes only an input's indexed rows, including its saved parse position.
 pub(super) fn remove_index_input(index: &Connection, input: &str) -> Result<()> {
     crate::assets::invalidate_metadata(index, input)?;
-    index
-        .execute("DELETE FROM import_member WHERE input = ?1", [input])?;
+    index.execute("DELETE FROM import_member WHERE input = ?1", [input])?;
     if let Some(pk) = input_pk(index, input)? {
         // Rows of other kinds the input owns (events without a session,
         // parse progress), after the rows that refer to them.
@@ -445,11 +444,9 @@ pub(super) fn remove_index_input(index: &Connection, input: &str) -> Result<()> 
                     }
                 }
             }
-            index
-                .execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
+            index.execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
         }
-        index
-            .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
+        index.execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
     }
     Ok(())
 }

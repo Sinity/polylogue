@@ -194,28 +194,21 @@ fn row_hash(row: &Value) -> blake3::Hash {
     blake3::hash(&serde_json::to_vec(&fields).expect("JSON row values serialize"))
 }
 
-fn value(v: ValueRef<'_>) -> Result<Value, ExportError> {
-    Ok(match v {
+fn value(v: ValueRef<'_>) -> Value {
+    match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => i.into(),
         ValueRef::Real(f) => serde_json::Number::from_f64(f)
             .map(Value::Number)
-            .ok_or_else(|| {
-                ExportError::Invalid(
-                    "non-finite SQLite REAL cannot be represented in a row dump".into(),
-                )
-            })?,
-        ValueRef::Text(t) => std::str::from_utf8(t)
-            .map_err(|_| {
-                ExportError::Invalid(
-                    "non-UTF-8 SQLite TEXT cannot be represented in a row dump".into(),
-                )
-            })?
-            .into(),
+            .unwrap_or_else(|| json!({"real_bits": format!("{:016x}", f.to_bits())})),
+        ValueRef::Text(t) => match std::str::from_utf8(t) {
+            Ok(text) => text.into(),
+            Err(_) => json!({"text_base64": base64::engine::general_purpose::STANDARD.encode(t)}),
+        },
         ValueRef::Blob(b) => {
             json!({ "base64": base64::engine::general_purpose::STANDARD.encode(b) })
         }
-    })
+    }
 }
 
 struct Table {
@@ -224,6 +217,7 @@ struct Table {
     columns: Vec<String>,
     /// Primary-key column positions; empty when the rowid is the key.
     key: Vec<usize>,
+    rowid: Option<String>,
 }
 
 fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
@@ -245,32 +239,46 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
             "PRAGMA table_xinfo(\"{}\")",
             name.replace('"', "\"\"")
         ))?;
-        let cols: Vec<(String, i64)> = info
+        let cols: Vec<(String, i64, bool, String)> = info
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(1)?,
                     r.get::<_, i64>(5)?,
                     r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(3)? != 0,
+                    r.get::<_, String>(2)?,
                 ))
             })?
             .filter_map(|row| match row {
-                Ok((_, _, 1)) => None,
-                Ok((name, key, _)) => Some(Ok((name, key))),
+                Ok((_, _, 1, _, _)) => None,
+                Ok((name, key, _, not_null, kind)) => Some(Ok((name, key, not_null, kind))),
                 Err(error) => Some(Err(error)),
             })
             .collect::<rusqlite::Result<_>>()?;
         let mut key: Vec<(i64, usize)> = cols
             .iter()
             .enumerate()
-            .filter(|(_, (_, pk))| *pk > 0)
-            .map(|(i, (_, pk))| (*pk, i))
+            .filter(|(_, (_, pk, _, _))| *pk > 0)
+            .map(|(i, (_, pk, _, _))| (*pk, i))
             .collect();
         key.sort_unstable();
+        let without_rowid: bool = conn.query_row(
+            "SELECT wr FROM pragma_table_list WHERE schema='main' AND name=?1", [&name], |r| r.get(0)
+        )?;
+        // SQLite permits duplicate NULL primary keys in ordinary rowid
+        // tables. Only enforced non-null keys identify every row uniquely.
+        if !without_rowid && key.iter().any(|(_, i)| {
+            !cols[*i].2 && !(key.len() == 1 && cols[*i].3.eq_ignore_ascii_case("INTEGER"))
+        }) {
+            key.clear();
+        }
+        let rowid = (!without_rowid).then(|| ["rowid", "_rowid_", "oid"].into_iter().find(|name| !cols.iter().any(|c| c.0.eq_ignore_ascii_case(name))).map(str::to_owned)).flatten();
         out.push(Table {
             name,
             sql,
             columns: cols.into_iter().map(|(c, _)| c).collect(),
             key: key.into_iter().map(|(_, i)| i).collect(),
+            rowid,
         });
     }
     Ok(out)
@@ -349,16 +357,7 @@ fn write_export(
             continue;
         }
         let quoted = table.name.replace('"', "\"\"");
-        let select = if table.key.is_empty() {
-            let rowid = ["rowid", "_rowid_", "oid"]
-                .into_iter()
-                .find(|name| !table.columns.iter().any(|c| c.eq_ignore_ascii_case(name)))
-                .ok_or_else(|| {
-                    ExportError::Invalid(format!(
-                        "table {} shadows all SQLite rowid names",
-                        table.name
-                    ))
-                })?;
+        let select = if table.key.is_empty() && let Some(rowid) = &table.rowid {
             format!(r#"SELECT {rowid}, * FROM "{quoted}""#)
         } else {
             format!(r#"SELECT NULL, * FROM "{quoted}""#)
@@ -390,15 +389,21 @@ fn write_export(
         };
         let mut statement = source.prepare(&select).map_err(sql_err)?;
         let mut rows = statement.query([]).map_err(sql_err)?;
+        let mut position = 0_u64;
         while let Some(row) = rows.next().map_err(sql_err)? {
+            position += 1;
             stopped()?;
             done.visited += 1;
             let mut values = Map::new();
             for (i, column) in table.columns.iter().enumerate() {
-                values.insert(column.clone(), value(row.get_ref(i + 1).map_err(sql_err)?)?);
+                values.insert(column.clone(), value(row.get_ref(i + 1).map_err(sql_err)?));
             }
             let key = if table.key.is_empty() {
-                json!([value(row.get_ref(0).map_err(sql_err)?)?])
+                if table.rowid.is_some() {
+                    json!([value(row.get_ref(0).map_err(sql_err)?)])
+                } else {
+                    json!({"position":position})
+                }
             } else {
                 Value::Array(
                     table
@@ -419,7 +424,7 @@ fn write_export(
             }
             let encoded = Value::Object(values);
             if catalog.changed(&table.name, &key, &encoded, full)? {
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"r":encoded}))
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"r":encoded,"at_ms":at_ms,"encoding":"sqlite"}))
                     .map_err(std::io::Error::from)?;
                 bytes.push(b'\n');
                 done.rows += 1;
@@ -432,7 +437,7 @@ fn write_export(
         if full {
             catalog.gone(&table.name, &mut |key| {
                 stopped()?;
-                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"gone":true}))
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"gone":true,"at_ms":at_ms}))
                     .map_err(std::io::Error::from)?;
                 bytes.push(b'\n');
                 done.gone += 1;
@@ -464,7 +469,7 @@ fn write_export(
         &tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         &mut |table, key| {
             stopped()?;
-            serde_json::to_writer(&mut bytes, &json!({"t":table,"k":key,"gone":true}))
+            serde_json::to_writer(&mut bytes, &json!({"t":table,"k":key,"gone":true,"at_ms":at_ms}))
                 .map_err(std::io::Error::from)?;
             bytes.push(b'\n');
             done.gone += 1;

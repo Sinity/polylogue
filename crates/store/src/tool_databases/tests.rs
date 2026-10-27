@@ -160,15 +160,35 @@ fn comparison_uses_complete_keys_and_generated_columns() {
 }
 
 #[test]
-fn duplicate_nullable_keys_and_invalid_text_are_refused() {
-    for sql in [
-        "CREATE TABLE t(k TEXT PRIMARY KEY); INSERT INTO t VALUES(NULL),(NULL);",
-        "CREATE TABLE t(body TEXT); INSERT INTO t VALUES(CAST(x'ff' AS TEXT));",
-        "CREATE TABLE t(rowid TEXT,_rowid_ TEXT,oid TEXT); INSERT INTO t VALUES('a','b','c');",
-    ] {
-        let mut t = Test::new(sql);
-        assert!(t.export(&mut Exporter::default()).is_err(), "{sql}");
+fn nullable_keys_and_every_sqlite_storage_class_keep_their_values() {
+    let mut t = Test::new("CREATE TABLE t(k TEXT PRIMARY KEY,body,acquired AS(body)); INSERT INTO t VALUES(NULL,CAST(x'ff00' AS TEXT)),(NULL,1e999),(NULL,-1e999),(NULL,x'ff00'),(NULL,1),(NULL,1.0),(NULL,NULL);");
+    t.export(&mut Exporter::default()).unwrap();
+    let rows: Vec<_> = t.lines().into_iter().filter(|r| r["t"] == "t").collect();
+    assert_eq!(rows.len(), 7);
+    for (i,row) in rows.iter().enumerate() {
+        assert_eq!(row["k"], json!([i+1]));
+        assert_eq!(row["r"]["body"], row["r"]["acquired"]);
+        assert!(row["at_ms"].as_i64().is_some());
+        assert_eq!(row["encoding"], "sqlite");
     }
+    assert_eq!(rows[0]["r"]["body"], json!({"text_base64":"/wA="}));
+    assert_eq!(rows[1]["r"]["body"], json!({"real_bits":"7ff0000000000000"}));
+    assert_eq!(rows[2]["r"]["body"], json!({"real_bits":"fff0000000000000"}));
+    assert_eq!(rows[3]["r"]["body"], json!({"base64":"/wA="}));
+    assert!(rows[4]["r"]["body"].is_i64());
+    assert!(rows[5]["r"]["body"].is_f64());
+    assert!(rows[6]["r"]["body"].is_null());
+}
+
+#[test]
+fn rows_shadowing_every_rowid_alias_keep_their_observed_positions() {
+    let mut t = Test::new("CREATE TABLE t(rowid TEXT,_rowid_ TEXT,oid TEXT); INSERT INTO t VALUES('a','b','c'),('a','b','c');");
+    t.export(&mut Exporter::default()).unwrap();
+    let rows: Vec<_> = t.lines().into_iter().filter(|r| r["t"] == "t").collect();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["k"], json!({"position":1}));
+    assert_eq!(rows[1]["k"], json!({"position":2}));
+    assert_eq!(rows[0]["r"], rows[1]["r"]);
 }
 
 #[test]

@@ -104,10 +104,15 @@ fn loading_committed_rows_restores_every_key_map() {
     let conn = index();
     insert_event(&conn, "event");
     let hash = *blake3::hash(b"kept text").as_bytes();
-    conn.execute("INSERT INTO text(hash,body) VALUES (?1,X'00')", [&hash[..]]).unwrap();
+    conn.execute("INSERT INTO text(hash,body) VALUES (?1,X'00')", [&hash[..]])
+        .unwrap();
     conn.execute("INSERT INTO message(id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk) VALUES ('claude-code:message',1,1,'input',0,'user','human',1)", []).unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
-    assert!(keys.message(&conn, "claude-code:message").unwrap().is_some());
+    assert!(
+        keys.message(&conn, "claude-code:message")
+            .unwrap()
+            .is_some()
+    );
     assert!(keys.event(&conn, "event").unwrap().is_some());
     assert!(keys.text(&conn, &hash).unwrap().is_some());
 }

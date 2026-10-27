@@ -146,7 +146,9 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
 fn replace_index(archive: &Archive) {
     for suffix in ["", "-wal", "-shm"] {
         let path = archive.root.join(format!("index.db{suffix}"));
-        if path.exists() { std::fs::remove_file(path).unwrap(); }
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
     }
     archive.prepare_index().unwrap();
 }
