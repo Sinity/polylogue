@@ -669,31 +669,33 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             session,
             cwd,
             text,
-        } => write(
-            d,
-            request_id,
-            UserWrite::DeliveredAdvice(Delivery {
-                recipient_kind: if session.is_some() {
-                    "session"
-                } else {
-                    "operator"
-                }
-                .into(),
-                recipient_id: session.map(|s| s.to_string()),
-                sender: "hook".into(),
-                event: "advice".into(),
-                cwd: Some(cwd.to_string_lossy().into_owned()),
-                text,
-                refs: vec![],
-                left_out: vec![],
-            }),
-        ),
+        } => {
+            drop(reader);
+            write(
+                d,
+                request_id,
+                UserWrite::DeliveredAdvice(Delivery {
+                    recipient_kind: if session.is_some() {
+                        "session"
+                    } else {
+                        "operator"
+                    }
+                    .into(),
+                    recipient_id: session.map(|s| s.to_string()),
+                    sender: "hook".into(),
+                    event: "advice".into(),
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                    text,
+                    refs: vec![],
+                    left_out: vec![],
+                }),
+            )
+        }
         Request::DeliveryEvent {
             delivery,
             what,
             detail,
         } => {
-            drop(reader);
             drop(reader);
             write(
                 d,
