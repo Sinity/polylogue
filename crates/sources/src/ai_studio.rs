@@ -181,6 +181,10 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
 ]);
 
 impl ExportParser for AiStudio {
+    fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
+        (message.role == Role::System).then_some(0..self.state.length)
+    }
+
     fn scan(
         &mut self,
         _input: &str,
