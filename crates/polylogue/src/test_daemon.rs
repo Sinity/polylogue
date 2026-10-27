@@ -121,3 +121,4 @@ impl Drop for TestDaemon {
 }
 
 pub mod assets;
+mod embeddings;

@@ -196,7 +196,6 @@ fn saved_queries_and_kept_results_use_existing_idempotent_writes() {
 
 #[test]
 fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
-    use std::io::{Read, Write};
     let r = reader();
     std::fs::write(
         r.w.home.join(".claude/projects/-p/other.jsonl"),
@@ -204,67 +203,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
     )
     .unwrap();
     r.w.wait_for(|s| s["store"]["messages"] == 2 && s["store"]["search_pending"] == 0);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    r.w.set(
-        "embed.endpoint",
-        &format!("http://{}", listener.local_addr().unwrap()),
-    );
-    r.w.set("embed.provider", "local");
-    r.w.set("embed.model", "synthetic");
-    let provider = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
-        peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
-            .unwrap();
-        let mut bytes = Vec::new();
-        let mut chunk = [0; 1024];
-        loop {
-            let n = peer.read(&mut chunk).unwrap();
-            assert!(n > 0);
-            bytes.extend_from_slice(&chunk[..n]);
-            if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
-                let size: usize = headers
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length:"))
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .unwrap();
-                if bytes.len() >= end + 4 + size {
-                    break;
-                }
-            }
-        }
-        let body = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#;
-        write!(peer,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
-    });
-    {
-        let reader = r.web.daemon.reads.reader().unwrap();
-        let rows = reader.query("SELECT hex(t.hash) AS h, EXISTS(SELECT 1 FROM block b JOIN session s ON s.pk=b.session_pk WHERE b.text_id=t.id AND s.id='claude-code:s1') AS high FROM text t",&[]).unwrap();
-        let vectors = rows
-            .iter()
-            .map(|row| {
-                let h = row["h"].as_str().unwrap();
-                polylogue_store::vectors::Vector {
-                    text_hash: (0..h.len())
-                        .step_by(2)
-                        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
-                        .collect(),
-                    chunk: 0,
-                    values: if row["high"] == 1 {
-                        vec![1.0, 0.0]
-                    } else {
-                        vec![0.0, 1.0]
-                    },
-                }
-            })
-            .collect::<Vec<_>>();
-        reader
-            .vectors_writer()
-            .unwrap()
-            .put("local/synthetic/2/document/unit", &vectors)
-            .unwrap();
-    }
+    let provider = r.w.local_embeddings();
     rt().block_on(async {
         for source in [
             "sessions where -id:claude-code:s1 near:\"parser\"",
