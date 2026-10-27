@@ -1,8 +1,8 @@
 //! Tool-database reads run independently of file discovery and parsing.
 //! Only the writer's bounded byte queue applies backpressure to a reader.
 use crate::*;
-use polylogue_store::tool_databases::{ExportError, Exporter, SavedDatabase};
-use polylogue_store::{Batch, ParseStep, staging::PreparedBatch};
+use polylogue_store::tool_databases::{DatabaseError, DatabaseReader};
+use polylogue_store::{Batch, staging::PreparedBatch};
 use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, sync_channel};
 use std::thread::JoinHandle;
@@ -22,14 +22,14 @@ pub(super) struct Completed {
 }
 struct Worker {
     thread: JoinHandle<()>,
-    result: Receiver<(Exporter, Completed)>,
+    result: Receiver<(DatabaseReader, Completed)>,
     progress: Receiver<()>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     bytes: Arc<std::sync::atomic::AtomicU64>,
 }
 #[derive(Default)]
 pub(super) struct Databases {
-    exporter: Option<Exporter>,
+    reader: Option<DatabaseReader>,
     worker: Option<Worker>,
 }
 impl Databases {
@@ -46,14 +46,14 @@ impl Databases {
         if self.pending() || inputs.is_empty() {
             return Ok(());
         }
-        let mut exporter = self
-            .exporter
+        let mut reader = self
+            .reader
             .take()
-            .unwrap_or_else(|| Exporter::with_cursor(polylogue_sources::origin::table_cursor));
+            .unwrap_or_default();
         let (tx, result) = sync_channel(1);
         let (notify, progress) = sync_channel(1);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        exporter.stop_when(Arc::clone(&stop));
+        reader.stop_when(Arc::clone(&stop));
         let cancelled = Arc::clone(&stop);
         let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let captured = Arc::clone(&bytes);
@@ -67,7 +67,7 @@ impl Databases {
                     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
-                    let Some(due) = exporter.observe(&source.path) else {
+                    let Some(due) = reader.observe(&source.path) else {
                         continue;
                     };
                     completed.inputs_seen += 1;
@@ -88,19 +88,19 @@ impl Databases {
                         }
                     };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        exporter.read(
+                        reader.read(
                             &source.path,
                             &archive,
                             &source.input,
                             &source.observation,
                             due,
-                            |bytes, update| queue.append(bytes, update),
+                            |bytes| queue.append(bytes),
                         )
                     }));
                     match outcome {
                         Ok(Ok(_)) => completed.changed = true,
                         Ok(Err(error)) => {
-                            exporter.forget(&source.path);
+                            reader.forget(&source.path);
                             completed.changed = true;
                             completed
                                 .errors
@@ -112,9 +112,8 @@ impl Databases {
                                 "read database {}: worker panicked",
                                 source.path.display()
                             ));
-                            exporter =
-                                Exporter::with_cursor(polylogue_sources::origin::table_cursor);
-                            exporter.stop_when(Arc::clone(&cancelled));
+                            reader = DatabaseReader::default();
+                            reader.stop_when(Arc::clone(&cancelled));
                         }
                     }
                     // Another source can be read while these groups commit.
@@ -122,14 +121,14 @@ impl Databases {
                 }
                 for (source, mut queue) in pending {
                     if let Err(error) = queue.finish() {
-                        exporter.forget(&source.path);
+                        reader.forget(&source.path);
                         completed.changed = true;
                         completed
                             .errors
                             .push(format!("write database {}: {error}", source.path.display()));
                     }
                 }
-                let _ = tx.send((exporter, completed));
+                let _ = tx.send((reader, completed));
                 if let Some(wake) = wake {
                     let _ = wake.send(LoopMsg::Changed);
                 }
@@ -155,10 +154,10 @@ impl Databases {
         };
         let bytes_stored = worker.bytes.swap(0, std::sync::atomic::Ordering::Relaxed);
         match result {
-            Ok((exporter, completed)) => {
+            Ok((reader, completed)) => {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
-                self.exporter = Some(exporter);
+                self.reader = Some(reader);
                 Completed {
                     finished: true,
                     changed: changed || completed.changed,
@@ -218,7 +217,7 @@ impl<'a> InputWriter<'a> {
         notify: SyncSender<()>,
         wake: Option<Sender<LoopMsg>>,
         captured: Arc<std::sync::atomic::AtomicU64>,
-    ) -> Result<Self, ExportError> {
+    ) -> Result<Self, DatabaseError> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
         let progress = reader.input_progress(&source.input.id)?;
@@ -237,7 +236,7 @@ impl<'a> InputWriter<'a> {
         };
         Ok(out)
     }
-    fn append(&mut self, bytes: Vec<u8>, saved: Option<SavedDatabase>) -> Result<(), ExportError> {
+    fn append(&mut self, bytes: Vec<u8>) -> Result<(), DatabaseError> {
         let size = bytes.len() as u64;
         self.length += size;
         let (new_blob, files) = if bytes.is_empty() {
@@ -265,10 +264,7 @@ impl<'a> InputWriter<'a> {
             new_blob,
             blobs: vec![],
             length: self.length,
-            parse: saved
-                .map(|saved| ParseStep::database_state(self.length, saved))
-                .into_iter()
-                .collect(),
+            parse: vec![],
             release: Default::default(),
         };
         self.exists = true;
@@ -289,7 +285,7 @@ impl<'a> InputWriter<'a> {
         &mut self,
         size: u64,
         results: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
-    ) -> Result<(), ExportError> {
+    ) -> Result<(), DatabaseError> {
         self.bytes -= size;
         if self.notify.try_send(()).is_ok()
             && let Some(wake) = &self.wake
@@ -303,7 +299,7 @@ impl<'a> InputWriter<'a> {
             .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    fn acknowledge_ready(&mut self) -> Result<(), ExportError> {
+    fn acknowledge_ready(&mut self) -> Result<(), DatabaseError> {
         while let Some((_, ack)) = self.waiting.front() {
             match ack.try_recv() {
                 Ok(results) => {
@@ -318,7 +314,7 @@ impl<'a> InputWriter<'a> {
         }
         Ok(())
     }
-    fn acknowledge(&mut self) -> Result<(), ExportError> {
+    fn acknowledge(&mut self) -> Result<(), DatabaseError> {
         if let Some((size, ack)) = self.waiting.pop_front() {
             let results = ack
                 .recv()
@@ -327,7 +323,7 @@ impl<'a> InputWriter<'a> {
         }
         Ok(())
     }
-    fn finish(&mut self) -> Result<(), ExportError> {
+    fn finish(&mut self) -> Result<(), DatabaseError> {
         let mut error = None;
         while !self.waiting.is_empty() {
             if let Err(e) = self.acknowledge() {
@@ -352,7 +348,7 @@ impl Engine {
                 .insert(f.path.clone(), f.origin.name)
                 .is_none();
         }
-        let completed = self.exporter.completed(false);
+        let completed = self.captures.completed(false);
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
         pass.errors.extend(completed.errors);
@@ -369,7 +365,7 @@ impl Engine {
                 .capture_checked
                 .is_none_or(|at| at.elapsed() >= self.config.live_every);
         let mut deferred_database = false;
-        if capture_due && !self.exporter.pending() {
+        if capture_due && !self.captures.pending() {
             deferred_database = self.databases.keys().any(|path| {
                 !self.refused.contains(path)
                     && self.inputs.get(path).is_some_and(|state| {
@@ -401,14 +397,14 @@ impl Engine {
                     observation: self.observation(path, None),
                 })
                 .collect();
-            self.exporter.start(
+            self.captures.start(
                 databases,
                 self.archive.clone(),
                 self.writer.sender()?,
                 self.wake.clone(),
             )?;
         }
-        pass.capture_pending |= self.exporter.pending() || deferred_database;
+        pass.capture_pending |= self.captures.pending() || deferred_database;
         Ok((deferred_database, completed.changed))
     }
 }

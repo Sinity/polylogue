@@ -14,9 +14,6 @@ pub(super) fn write_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
-    if p.database_state.is_some() {
-        return Ok(0);
-    }
     p.prepared.validate(&p.output)?;
     tx.prepare_cached("INSERT INTO input_ref(id,format) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
         .execute(params![&b.input.id,&b.input.format])?;

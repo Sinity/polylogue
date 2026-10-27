@@ -65,9 +65,9 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     source
         .execute("UPDATE threads SET name='after'", [])
         .unwrap();
-    engine.exporter = Databases::default();
+    engine.captures = Databases::default();
     engine
-        .exporter
+        .captures
         .start(
             vec![databases::DatabaseInput {
                 path: db.clone(),

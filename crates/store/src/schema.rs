@@ -142,6 +142,20 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
     Ok(shape(conn)? == shape(&expected)?)
 }
 
+/// A pending first build may lack only the indexes the writer deferred.
+pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    let found = shape(conn)?;
+    let mut wanted = shape(&expected)?;
+    wanted.retain(|(kind, name, _)| {
+        kind != "index"
+            || !crate::writer::deferred_index_names().any(|deferred| deferred == name)
+            || found.iter().any(|(_, present, _)| present == name)
+    });
+    Ok(found == wanted)
+}
+
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     Ok(conn
         .prepare(

@@ -142,7 +142,7 @@ changed records directly to the writer as an input's appended bytes, while
 file discovery and parsing continue. A long file pass consumes watcher changes
 and committed database records on its live check, giving them priority over
 remaining bulk work. Stopping the loop ends the reads between rows and waits for groups already queued. There is no export file. The writer
-commits the records' comparison hashes and byte position in `index.db`.
+commits the records' comparison hashes, schema and byte position in `index.db`.
 Domain parsing reads the stored input through the ordinary parse path. Each row records its capture time (`at_ms`) and SQLite value encoding. Null,
 integers, finite reals and UTF-8 text use JSON scalars; blobs use `base64`,
 other text uses `text_base64`, and non-finite reals use their 16-digit IEEE-754
@@ -152,13 +152,11 @@ the row's observed position, preserving identical rows separately.
 
 An ordinary restart reads this comparison state directly. The ordinary
 stored-input parse finishes any records left between the archive and index
-commits before another database read. Comparison hashes commit with that
-parse; source cursors wait until it reaches the captured length. An index
-rebuild loses the comparison state and the next read compares the source in full. An origin
-may declare a monotonic integer change column for a table; other tables compare
-complete rows. Cursor tables are read every three minutes and verified in full
-daily, when their schema changes, and when the source file is replaced or returns after being missing. A cursor needs the file's creation time as well as its device and inode; when creation time is unavailable, that read verifies every row.
-Comparison waits for quiet files, with an hourly read during continuous writes.
+commits before another database read. Comparison hashes and schema commit with that
+parse. A deliberate index rebuild loses the comparison state and the next read compares
+the source in full. Every source read compares complete rows. Comparison waits
+for quiet files, with an hourly read during continuous writes. Unchanged files
+need no scheduled read.
 The parse workers enqueue byte groups and keep working; an acknowledgment
 reader delivers their committed progress to the loop.
 

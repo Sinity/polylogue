@@ -257,7 +257,13 @@ impl Archive {
             if previous.as_deref() != Some(boot.trim()) {
                 return Err(StoreError::IndexBuildBoot);
             }
-        } else if !schema::same_schema(&index, &[schema::INDEX])? {
+        }
+        let matches = if building {
+            schema::same_build_schema(&index)?
+        } else {
+            schema::same_schema(&index, &[schema::INDEX])?
+        };
+        if !matches {
             return Err(StoreError::NoMigration {
                 database: "index",
                 found: schema::version(&index)?,

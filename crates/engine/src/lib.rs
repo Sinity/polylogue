@@ -261,7 +261,7 @@ pub struct Engine {
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     failed_writes: HashSet<String>,
     loaded: bool,
-    exporter: Databases,
+    captures: Databases,
     wake: Option<Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
     databases: BTreeMap<PathBuf, &'static str>,
@@ -328,7 +328,7 @@ impl Engine {
             inputs: HashMap::new(),
             failed_writes: HashSet::new(),
             loaded: false,
-            exporter: Databases::default(),
+            captures: Databases::default(),
             wake: None,
             watcher: None,
             databases: BTreeMap::new(),

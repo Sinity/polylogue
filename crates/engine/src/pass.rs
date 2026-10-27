@@ -90,7 +90,7 @@ impl Engine {
         let started = Instant::now();
         let mut total = self.run_turn()?;
         while total.capture_pending {
-            let completed = self.exporter.completed(true);
+            let completed = self.captures.completed(true);
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
             total.errors.extend(completed.errors);
@@ -284,7 +284,7 @@ impl Engine {
         self.execute(plans, &mut pass)?;
         self.restore_failed_writes()?;
         if deferred_database && !pass.errors.is_empty() {
-            pass.capture_pending = self.exporter.pending();
+            pass.capture_pending = self.captures.pending();
         }
         if !pass.capture_pending {
             pass.sessions_derived = self.derive()?;
@@ -1007,7 +1007,7 @@ impl Engine {
                     pass
                 }
                 Err(e) => {
-                    pending = self.exporter.pending();
+                    pending = self.captures.pending();
                     Pass {
                         full_scans: u64::from(discover),
                         errors: vec![e.to_string()],
@@ -1047,7 +1047,7 @@ impl Engine {
             loop {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                        self.exporter = Databases::default();
+                        self.captures = Databases::default();
                         self.wake = None;
                         self.watcher = None;
                         self.pass_open = false;

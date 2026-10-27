@@ -35,7 +35,7 @@ fn missing_roots_advance_without_watching_unrelated_subtrees_or_reads() {
 }
 
 #[test]
-fn repeated_paths_are_coalesced_and_watch_failures_request_reconciliation() {
+fn repeated_paths_are_coalesced_and_watch_failures_request_a_full_scan() {
     use notify::event::{CreateKind, Flag};
     let mut changes = Changes::default();
     let event = notify::Event::new(notify::EventKind::Create(CreateKind::Folder))

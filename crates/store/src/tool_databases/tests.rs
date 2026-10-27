@@ -40,14 +40,14 @@ impl Test {
             length: 0,
         }
     }
-    fn export(&mut self, exporter: &mut Exporter) -> Result<Option<Exported>, ExportError> {
+    fn capture(&mut self, reader: &mut DatabaseReader) -> Result<Option<ReadReport>, DatabaseError> {
         let archive = &self.archive;
         let blobs = std::sync::Arc::new(archive.blobs().unwrap());
         let input = &self.input;
         let observation = &self.observation;
         let writer = &self.writer;
         let mut length = self.length;
-        let result = exporter.export(&self.db, archive, input, observation, |bytes, saved| {
+        let result = reader.capture(&self.db, archive, input, observation, |bytes| {
             let first = length == 0;
             let from = length;
             length += bytes.len() as u64;
@@ -58,7 +58,6 @@ impl Test {
                 true,
             );
             parse.compare_records(&bytes)?;
-            parse.comparison.as_mut().unwrap().saved = saved;
             let (new_blob, files) = if bytes.is_empty() {
                 (None, vec![])
             } else {
@@ -117,27 +116,23 @@ impl Test {
             .unwrap();
     }
 }
-fn cursor(_: &Path, table: &str) -> Option<&'static str> {
-    (table == "items").then_some("id")
-}
-
 #[test]
 fn changed_deleted_and_dropped_rows_keep_their_records_without_an_export_file() {
     let mut t = Test::new(
         "CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,data BLOB,n REAL); CREATE TABLE notes(body TEXT); INSERT INTO threads VALUES('a','first',x'00ff',1.5),('b','second',NULL,NULL); INSERT INTO notes VALUES('kept');",
     );
-    let mut exporter = Exporter::default();
-    assert_eq!(t.export(&mut exporter).unwrap().unwrap().rows, 3);
+    let mut reader = DatabaseReader::default();
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 3);
     let rows = t.lines();
     assert_eq!(rows[0]["source"]["machine"], "test-machine");
     assert!(
         rows.iter()
             .any(|row| row["r"]["data"]["base64"] == "AP8=" && row["r"]["n"] == 1.5)
     );
-    assert!(t.export(&mut exporter).unwrap().is_none());
+    assert!(t.capture(&mut reader).unwrap().is_none());
     t.sql("UPDATE threads SET title='renamed' WHERE id='a'; DELETE FROM threads WHERE id='b'; DROP TABLE notes;");
-    assert!(t.export(&mut exporter).unwrap().is_none());
-    let done = t.export(&mut exporter).unwrap().unwrap();
+    assert!(t.capture(&mut reader).unwrap().is_none());
+    let done = t.capture(&mut reader).unwrap().unwrap();
     assert_eq!((done.rows, done.gone), (1, 2));
     assert_eq!(t.lines().iter().filter(|r| r["gone"] == true).count(), 2);
     assert!(!t.archive.root.join("exports").exists());
@@ -146,17 +141,19 @@ fn changed_deleted_and_dropped_rows_keep_their_records_without_an_export_file() 
 
 #[test]
 fn comparison_uses_complete_keys_and_generated_columns() {
-    let mut t = Test::new(
-        "CREATE TABLE pair(a TEXT,b INTEGER,title TEXT,PRIMARY KEY(a,b)) WITHOUT ROWID; INSERT INTO pair VALUES('x',1,'one'),('x',2,'two'); CREATE TABLE generated(id INTEGER PRIMARY KEY,n INTEGER,twice INTEGER GENERATED ALWAYS AS(n*2)); INSERT INTO generated(id,n) VALUES(1,3); CREATE TABLE shadow(rowid TEXT,value TEXT); INSERT INTO shadow VALUES('name','body');",
-    );
-    t.export(&mut Exporter::default()).unwrap();
-    let rows = t.lines();
-    assert!(rows.iter().any(|r| r["k"] == json!(["x", 2])));
-    assert!(rows.iter().any(|r| r["r"]["twice"] == 6));
-    assert!(
-        rows.iter()
-            .any(|r| r["t"] == "shadow" && r["k"] == json!([1]))
-    );
+    for storage in ["VIRTUAL", "STORED"] {
+        for suffix in ["", " WITHOUT /* table option */ ROWID"] {
+            let mut t = Test::new(&format!(
+                "CREATE TABLE pair(a TEXT,b INTEGER,title TEXT,PRIMARY KEY(a,b)) WITHOUT ROWID; INSERT INTO pair VALUES('x',1,'one'),('x',2,'two'); CREATE TABLE generated(id INTEGER PRIMARY KEY,n INTEGER,twice INTEGER GENERATED ALWAYS AS(n*2) {storage}){suffix}; INSERT INTO generated(id,n) VALUES(1,3); CREATE TABLE shadow(ROWID TEXT,value TEXT DEFAULT 'WITHOUT ROWID'); INSERT INTO shadow VALUES('name','body'); CREATE TABLE sqlitex_kept(value TEXT); INSERT INTO sqlitex_kept VALUES('captured');",
+            ));
+            t.capture(&mut DatabaseReader::default()).unwrap();
+            let rows = t.lines();
+            assert!(rows.iter().any(|r| r["k"] == json!(["x", 2])));
+            assert!(rows.iter().any(|r| r["r"]["twice"] == 6));
+            assert!(rows.iter().any(|r| r["t"] == "shadow" && r["k"] == json!([1])));
+            assert!(rows.iter().any(|r| r["t"] == "sqlitex_kept" && r["r"]["value"] == "captured"));
+        }
+    }
 }
 
 #[test]
@@ -164,7 +161,7 @@ fn nullable_keys_and_every_sqlite_storage_class_keep_their_values() {
     let mut t = Test::new(
         "CREATE TABLE t(k TEXT PRIMARY KEY,body,acquired AS(body)); INSERT INTO t VALUES(NULL,CAST(x'ff00' AS TEXT)),(NULL,1e999),(NULL,-1e999),(NULL,x'ff00'),(NULL,1),(NULL,1.0),(NULL,NULL);",
     );
-    t.export(&mut Exporter::default()).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let rows: Vec<_> = t.lines().into_iter().filter(|r| r["t"] == "t").collect();
     assert_eq!(rows.len(), 7);
     for (i, row) in rows.iter().enumerate() {
@@ -193,7 +190,7 @@ fn rows_shadowing_every_rowid_alias_keep_their_observed_positions() {
     let mut t = Test::new(
         "CREATE TABLE t(rowid TEXT,_rowid_ TEXT,oid TEXT); INSERT INTO t VALUES('a','b','c'),('a','b','c');",
     );
-    t.export(&mut Exporter::default()).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let rows: Vec<_> = t.lines().into_iter().filter(|r| r["t"] == "t").collect();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["k"], json!({"position":1}));
@@ -202,74 +199,61 @@ fn rows_shadowing_every_rowid_alias_keep_their_observed_positions() {
 }
 
 #[test]
-fn restart_reads_only_new_rows_after_a_declared_cursor() {
+fn restart_compares_source_rows_without_reading_stored_history() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES(printf('%02000000d',1));",
     );
-    t.export(&mut Exporter::with_cursor(cursor)).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let length = t.length;
     t.sql("INSERT INTO items(body) VALUES('new');");
     let done = t
-        .export(&mut Exporter::with_cursor(cursor))
+        .capture(&mut DatabaseReader::default())
         .unwrap()
         .unwrap();
-    assert_eq!((done.rows, done.visited), (1, 1));
+    assert_eq!((done.rows, done.visited), (1, 2));
     assert!(t.length - length < 200);
     let done = t
-        .export(&mut Exporter::with_cursor(cursor))
+        .capture(&mut DatabaseReader::default())
         .unwrap()
         .unwrap();
-    assert_eq!((done.rows, done.visited), (0, 0));
+    assert_eq!((done.rows, done.visited), (0, 2));
 }
 
 #[test]
-fn daily_verification_finds_updates_deletions_and_reused_keys() {
-    let mut t = Test::new(
-        "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES('first'),('second');",
-    );
-    let mut exporter = Exporter::with_cursor(cursor);
-    t.export(&mut exporter).unwrap();
-    t.sql("UPDATE items SET body='changed' WHERE id=1; DELETE FROM items WHERE id=2; INSERT INTO items(body) VALUES('third');");
-    exporter.dbs.get_mut(&t.db).unwrap().cursor_at = None;
-    let done = t.export(&mut exporter).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone, done.visited), (1, 0, 1));
-    let conn = Connection::open(t.archive.index_db()).unwrap();
-    let mut saved: SavedDatabase = serde_json::from_str(
-        &conn
-            .query_row("SELECT state FROM tool_database", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .unwrap(),
-    )
-    .unwrap();
-    saved.cursors.get_mut("items").unwrap().verified_at = 0;
-    conn.execute(
-        "UPDATE tool_database SET state=?1",
-        [serde_json::to_string(&saved).unwrap()],
-    )
-    .unwrap();
-    exporter.dbs.get_mut(&t.db).unwrap().cursor_at = None;
-    let done = t.export(&mut exporter).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (1, 1));
-}
-
-#[test]
-fn replacement_schema_change_and_missing_source_verify_every_row() {
+fn a_changed_source_finds_updates_deletions_and_reused_keys() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');",
     );
-    t.export(&mut Exporter::with_cursor(cursor)).unwrap();
+    let mut reader = DatabaseReader::default();
+    t.capture(&mut reader).unwrap();
+    t.sql("UPDATE items SET body='changed' WHERE id=1; DELETE FROM items WHERE id=2; INSERT INTO items VALUES(3,'third');");
+    assert!(t.capture(&mut reader).unwrap().is_none());
+    let done = t.capture(&mut reader).unwrap().unwrap();
+    assert_eq!((done.rows, done.gone, done.visited), (2, 1, 2));
+    t.sql("DELETE FROM items WHERE id=1; INSERT INTO items VALUES(1,'reused');");
+    assert!(t.capture(&mut reader).unwrap().is_none());
+    let done = t.capture(&mut reader).unwrap().unwrap();
+    assert_eq!((done.rows, done.gone), (1, 0));
+    assert!(t.lines().iter().any(|row| row["r"]["body"] == "reused"));
+}
+
+#[test]
+fn replacement_schema_change_and_missing_source_compare_every_row() {
+    let mut t = Test::new(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');",
+    );
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let replacement = t.dir.path().join("replacement");
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'replacement');").unwrap();
     fs::rename(replacement, &t.db).unwrap();
     let done = t
-        .export(&mut Exporter::with_cursor(cursor))
+        .capture(&mut DatabaseReader::default())
         .unwrap()
         .unwrap();
     assert_eq!((done.rows, done.gone), (1, 1));
     t.sql("ALTER TABLE items ADD COLUMN tail INTEGER DEFAULT 42;");
     assert_eq!(
-        t.export(&mut Exporter::with_cursor(cursor))
+        t.capture(&mut DatabaseReader::default())
             .unwrap()
             .unwrap()
             .rows,
@@ -278,30 +262,30 @@ fn replacement_schema_change_and_missing_source_verify_every_row() {
     assert!(t.lines().iter().any(|r| r["r"]["tail"] == 42));
     let length = t.length;
     fs::remove_file(&t.db).unwrap();
-    assert!(t.export(&mut Exporter::default()).unwrap().is_none());
+    assert!(t.capture(&mut DatabaseReader::default()).unwrap().is_none());
     assert_eq!(t.length, length);
 }
 
 #[test]
-fn smallest_cursor_and_empty_table_have_no_synthetic_zero() {
+fn an_empty_table_accepts_the_smallest_integer_key() {
     let mut t = Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT);");
-    let mut exporter = Exporter::with_cursor(cursor);
-    t.export(&mut exporter).unwrap();
+    let mut reader = DatabaseReader::default();
+    t.capture(&mut reader).unwrap();
     Connection::open(&t.db)
         .unwrap()
         .execute("INSERT INTO items VALUES(?1,'first')", [i64::MIN])
         .unwrap();
-    exporter.dbs.get_mut(&t.db).unwrap().cursor_at = None;
-    assert_eq!(t.export(&mut exporter).unwrap().unwrap().rows, 1);
+    assert!(t.capture(&mut reader).unwrap().is_none());
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 1);
     assert!(t.lines().iter().any(|r| r["k"] == json!([i64::MIN])));
 }
 
 #[test]
-fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
+fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_schema() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES('first');",
     );
-    t.export(&mut Exporter::with_cursor(cursor)).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let old: Vec<u8> = t
         .lines()
         .iter()
@@ -309,23 +293,22 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
         .collect();
     let earlier = t.length;
     t.sql("UPDATE items SET body='newer'; INSERT INTO items(body) VALUES('second');");
-    // A new schema forces verification below the cursor too.
     t.sql("ALTER TABLE items ADD COLUMN n INTEGER DEFAULT 42;");
-    t.export(&mut Exporter::with_cursor(cursor)).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let conn = Connection::open(t.archive.index_db()).unwrap();
     let before: String = conn
-        .query_row("SELECT state FROM tool_database", [], |r| r.get(0))
+        .query_row("SELECT schema FROM tool_database", [], |r| r.get(0))
         .unwrap();
     let pk: i64 = conn
         .query_row("SELECT pk FROM input_ref WHERE id=?1", [&t.input.id], |r| {
             r.get(0)
         })
         .unwrap();
-    let mut update = Comparison::records(&old, None).unwrap();
+    let mut update = Comparison::records(&old).unwrap();
     update.length = earlier;
     update.write(&conn, pk).unwrap();
     assert_eq!(
-        conn.query_row("SELECT state FROM tool_database", [], |r| r
+        conn.query_row("SELECT schema FROM tool_database", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
         before
@@ -342,7 +325,7 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
     update.length = t.length;
     update.write(&conn, pk).unwrap();
     assert_eq!(
-        conn.query_row("SELECT state FROM tool_database", [], |r| r
+        conn.query_row("SELECT schema FROM tool_database", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
         before
@@ -354,28 +337,28 @@ fn a_column_order_change_does_not_repeat_unchanged_named_values() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');",
     );
-    t.export(&mut Exporter::default()).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let replacement = t.dir.path().join("replacement");
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(body TEXT,id INTEGER PRIMARY KEY); INSERT INTO items VALUES('same',1);").unwrap();
     fs::rename(replacement, &t.db).unwrap();
-    let done = t.export(&mut Exporter::default()).unwrap().unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.gone), (0, 0));
     assert_eq!(t.lines().iter().filter(|r| r.get("r").is_some()).count(), 1);
 }
 
 #[test]
-fn a_returned_database_verifies_rows_below_its_cursor() {
+fn a_returned_database_compares_updates_and_deletions() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');",
     );
-    let mut exporter = Exporter::with_cursor(cursor);
-    t.export(&mut exporter).unwrap();
+    let mut reader = DatabaseReader::default();
+    t.capture(&mut reader).unwrap();
     let away = t.dir.path().join("away.sqlite");
     fs::rename(&t.db, &away).unwrap();
-    assert!(t.export(&mut exporter).unwrap().is_none());
+    assert!(t.capture(&mut reader).unwrap().is_none());
     Connection::open(&away).unwrap().execute_batch("UPDATE items SET body='changed while absent' WHERE id=1; DELETE FROM items WHERE id=2;").unwrap();
     fs::rename(away, &t.db).unwrap();
-    let done = t.export(&mut exporter).unwrap().unwrap();
+    let done = t.capture(&mut reader).unwrap().unwrap();
     assert_eq!((done.rows, done.gone), (1, 1));
 }
 
@@ -385,29 +368,29 @@ fn a_stopped_read_needs_no_archive_and_can_be_retried() {
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'kept');",
     );
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let mut exporter = Exporter::default();
-    exporter.stop_when(std::sync::Arc::clone(&stop));
-    let result = exporter.export(
+    let mut reader = DatabaseReader::default();
+    reader.stop_when(std::sync::Arc::clone(&stop));
+    let result = reader.capture(
         &t.db,
         &Archive::at(&t.dir.path().join("absent")),
         &t.input,
         &t.observation,
-        |_, _| panic!("stopped read sent bytes"),
+        |_| panic!("stopped read sent bytes"),
     );
-    assert!(matches!(result, Err(ExportError::Stopped)));
+    assert!(matches!(result, Err(DatabaseError::Stopped)));
     stop.store(false, std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(t.export(&mut exporter).unwrap().unwrap().rows, 1);
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 1);
 }
 
 #[test]
-fn unchanged_compare_tables_do_not_wake_for_a_cursor_interval() {
+fn unchanged_sources_do_not_need_a_scheduled_read() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');",
     );
-    let mut exporter = Exporter::default();
-    t.export(&mut exporter).unwrap();
-    exporter.dbs.get_mut(&t.db).unwrap().cursor_at = Some(Instant::now() - CURSOR_EXPORT);
-    assert!(exporter.observe(&t.db).is_none());
+    let mut reader = DatabaseReader::default();
+    t.capture(&mut reader).unwrap();
+    reader.dbs.get_mut(&t.db).unwrap().read_at = Some(Instant::now() - BUSY_READ);
+    assert!(reader.observe(&t.db).is_none());
 }
 
 #[test]
@@ -415,7 +398,7 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');",
     );
-    t.export(&mut Exporter::default()).unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
     let conn = Connection::open(t.archive.index_db()).unwrap();
     let (pk, before): (i64, Vec<u8>) = conn
         .query_row(
@@ -429,7 +412,6 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
     let mut update = Comparison::records(
         br#"{"t":"items","k":[1],"r":{"id":1,"body":"changed"}}
 "#,
-        None,
     )
     .unwrap();
     update.from = t.length;

@@ -88,10 +88,14 @@ fn an_index_applies_missing_excisions_and_marked_blobs_go_on_open() {
 #[test]
 fn an_incompatible_index_is_refused_without_removing_its_rows() {
     for change in [
-        "PRAGMA user_version = 26",
-        "CREATE TABLE synthetic_older(value)",
+        "PRAGMA user_version = 26".to_owned(),
+        "CREATE TABLE synthetic_older(value)".to_owned(),
+        format!(
+            "INSERT INTO meta VALUES ('unsynced','1'),('build_boot_id','{}'); CREATE TABLE synthetic_older(value)",
+            std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap().trim(),
+        ),
     ] {
-        refused_index_keeps_the_archive(change);
+        refused_index_keeps_the_archive(&change);
     }
 }
 

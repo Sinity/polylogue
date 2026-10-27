@@ -20,7 +20,7 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
         fault::clear();
         let w = Morrow::lay_out(Set::Main);
         let db = database(&w);
-        fault::arm("tool_export.after_row", "kept_rows", action, 9, 1);
+        fault::arm("database.after_row", "kept_rows", action, 9, 1);
         {
             let (mut engine, _lock) = w.engine();
             let first = engine.run_pass().unwrap();

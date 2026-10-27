@@ -568,5 +568,5 @@ CREATE TABLE tool_row (
 CREATE TABLE tool_database (
     input_pk INTEGER PRIMARY KEY REFERENCES input_ref(pk) ON DELETE CASCADE,
     length INTEGER NOT NULL,
-    state TEXT NOT NULL
+    schema TEXT NOT NULL
 );

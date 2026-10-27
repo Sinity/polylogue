@@ -223,14 +223,16 @@ const QUEUE: usize = 4;
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
+pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
+    KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
+}
+
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs: every row in it can be
-    /// recomputed, and syncing a first build of tens of GB through a busy
-    /// drive costs more than the build. The first derive (the end of the
-    /// pass), or an excision, ends the build: it builds what the build
-    /// deferred, syncs the index and clears the mark; an index still marked
-    /// when the archive is next opened is set aside and rebuilt.
+    /// An empty index is built without syncs because its rows can be
+    /// recomputed. The first derive builds deferred indexes and syncs the
+    /// index. An interrupted build resumes its committed rows on the same
+    /// boot; opening it after another boot refuses.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -278,7 +280,7 @@ impl Writer {
             let expected = Connection::open_in_memory()?;
             expected.execute_batch(crate::schema::INDEX)?;
             let mut defs = Vec::new();
-            for name in KEY_INDEXES.iter().chain(READ_ONLY_INDEXES) {
+            for name in deferred_index_names() {
                 let sql: Option<String> = expected
                     .query_row(
                         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
@@ -304,7 +306,6 @@ impl Writer {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            database_states: HashMap::new(),
             first_build,
             deferred_indexes,
             derive_due: true,
@@ -562,7 +563,6 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    database_states: HashMap<String, (i64, u64, crate::tool_databases::SavedDatabase)>,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
     first_build: Option<crate::first_build::FirstBuild>,
@@ -1271,22 +1271,7 @@ impl Inner {
         for (b, chain) in batches.zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    if let Some(saved) = &p.database_state {
-                        self.database_states
-                            .insert(b.input.id.clone(), (chain, p.parsed_upto, saved.clone()));
-                    }
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
-                }
-                if let Some((saved_chain, length, saved)) = self.database_states.get(&b.input.id)
-                    && *saved_chain == chain
-                {
-                    crate::tool_databases::save_when_parsed(
-                        &itx,
-                        &b.input.id,
-                        chain,
-                        *length,
-                        saved,
-                    )?;
                 }
             }
             stats.0 += 1;

@@ -61,7 +61,7 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     source.execute("UPDATE kept SET n=1", []).unwrap();
     engine.capture_checked = None;
     engine.one_pass(false, &changed).unwrap();
-    engine.exporter.completed(true);
+    engine.captures.completed(true);
     home.append("other.jsonl", &claude_user("one", "other", "other"));
     let other = [home.file("other.jsonl")].into_iter().collect();
     engine.one_pass(false, &other).unwrap();
@@ -69,11 +69,11 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     source.execute("UPDATE kept SET n=2", []).unwrap();
     engine.capture_checked = None;
     engine.one_pass(false, &changed).unwrap();
-    engine.exporter.completed(true);
+    engine.captures.completed(true);
     assert_eq!(length(&engine), before);
     engine.capture_checked = None;
     engine.one_pass(false, &Default::default()).unwrap();
-    let completed = engine.exporter.completed(true);
+    let completed = engine.captures.completed(true);
     assert!(completed.errors.is_empty(), "{:?}", completed.errors);
     assert!(length(&engine) > before);
 }

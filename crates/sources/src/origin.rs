@@ -72,11 +72,8 @@ pub enum Capture {
 /// ID, or `None` when that session cannot be resumed on its own.
 pub type Resume = fn(&str) -> Option<Vec<String>>;
 
-pub type TableCursor = fn(&Path, &str) -> Option<&'static str>;
-
 pub struct Database {
     pub is_input: fn(&Path) -> bool,
-    pub cursor: Option<TableCursor>,
 }
 
 pub struct OriginSpec {
@@ -88,7 +85,7 @@ pub struct OriginSpec {
     /// writes. Empty for imports.
     pub locations: &'static [&'static str],
     pub capture: Capture,
-    /// Which inputs are row dumps and which tables have a change cursor.
+    /// Which inputs are row dumps.
     pub database: Option<Database>,
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// before the origin is decided; a suffix alone never decides it.
@@ -321,7 +318,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::RowDump,
         database: Some(Database {
             is_input: crate::codex::database::is_row_dump,
-            cursor: None,
         }),
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
@@ -361,7 +357,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::RowDump,
         database: Some(Database {
             is_input: crate::hermes::is_database,
-            cursor: None,
         }),
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
@@ -702,19 +697,6 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
             .as_ref()
             .is_some_and(|w| w.extension_names.contains(&name))
     })
-}
-
-/// The origin's declared change cursor, or complete comparison for an undeclared table.
-pub fn table_cursor(db: &Path, table: &str) -> Option<&'static str> {
-    ORIGINS
-        .iter()
-        .filter_map(|origin| {
-            origin
-                .database
-                .as_ref()
-                .and_then(|database| database.cursor)
-        })
-        .find_map(|cursor| cursor(db, table))
 }
 
 #[cfg(test)]
