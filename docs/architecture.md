@@ -63,6 +63,21 @@ rebuilds an index that holds fewer excisions than the archive. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
 
+Parser state is committed with each parse position in `parse_state`, with
+its stored length and tail hash. A growing file after restart loads this
+state only after matching its chain and file identity and checking the tail;
+it reads appended bytes rather than reconstructing state from the history.
+The index format version is 47; opening an earlier format rebuilds it once.
+
+A completed pass records the archive revision counter it checked in the
+index. If it is unchanged at restart, stored revision chains need no scan.
+The derivation runner likewise records its completed index write counter
+and rule versions, so restarting with unchanged data and rules does not
+visit every session. Later derivations select changed sessions through the
+session-change index. Repository lookups similarly visit only changed
+sessions and are collected before the pass ends. These markers belong to the disposable index and
+disappear with it; interrupted or failed work leaves them behind the data.
+
 A first build, into an empty index, writes without syncs, without copying
 its write-ahead log into the database file until its rows are written, and
 without the
@@ -115,6 +130,24 @@ A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
 is done in turns, so other inputs are served between them.
+
+The comparison rows stay in a disk-backed `.rows` SQLite file beside the
+dump. Its completed record binds the source database and WAL facts to the
+dump and completed-marker facts, source identity and a hash of the dump's
+last 4 KiB. An unchanged restart checks that record without replaying the
+dump or reading provider rows. A changed dump is fully verified before it
+is accepted; a missing or stale comparison file is rebuilt from the dump.
+Opening changed captures after restart still verifies their completed
+prefix before appending to it.
+
+Local collection uses file notifications. Startup scans the declared
+locations once; later file events check their paths, and new directories
+are walked without visiting unchanged siblings. A watcher error or overflow
+requests another full scan. Idle time alone never scans the roots. A database
+observed changing gets one more look after one second, so it is captured
+after writes stop. Enabled remote collectors check once a minute and inspect
+their spools. During a long pass the live-input checks described above still
+run every two seconds; they stop with the pass.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An
@@ -226,7 +259,8 @@ running daemon in either mode. It keeps [warm state](../crates/polylogue/src/dae
 between requests: the vectors `near:` ranks by (reloaded after a commit
 stores or removes vectors), the provider's vectors of recent `near:` texts,
 recent query answers by read position, completion data, and the archive
-counts `status` shows. A write moves the read position and so retires what
+counts `status` shows. These load on first use, including vectors and counts.
+A write moves the read position and so retires what
 was read before it. Counts that take more than 50 ms are counted again by a
 worker of their own, so `status` answers from memory during a long pass and
 says which read position its counts are from (`counted`). The application runtime owns the loop, signal workers,

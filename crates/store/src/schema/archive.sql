@@ -95,6 +95,7 @@ CREATE TABLE observation (
 CREATE INDEX observation_input ON observation(input, seen_at);
 CREATE INDEX observation_commit_seq ON observation(commit_seq);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
+CREATE INDEX observation_location ON observation(machine, path);
 
 -- Notes, tags, titles, saved queries, withdrawals and everything else people
 -- and agents add.

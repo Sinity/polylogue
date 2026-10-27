@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn changed_paths_visit_only_the_named_file_or_new_subtree() {
+    let home = tempfile::tempdir().unwrap();
+    let config = config(home.path());
+    let project = home.path().join(".claude/projects/p");
+    fs::create_dir_all(&project).unwrap();
+    let a = project.join("a.jsonl");
+    let b = project.join("b.jsonl");
+    fs::write(&a, "{}\n").unwrap();
+    fs::write(&b, "{}\n").unwrap();
+    let paths = |changed: &[PathBuf]| {
+        let (found, unreadable) = scan_changed(&config, changed);
+        assert!(unreadable.is_empty());
+        found.into_iter().map(|f| f.path).collect::<Vec<_>>()
+    };
+    assert_eq!(paths(std::slice::from_ref(&a)), [a.clone()]);
+    assert_eq!(paths(std::slice::from_ref(&project)), [a.clone(), b]);
+    let unrelated = home.path().join("notes.jsonl");
+    fs::write(&unrelated, "{}\n").unwrap();
+    assert!(paths(&[unrelated]).is_empty());
+    fs::remove_file(&a).unwrap();
+    assert!(paths(&[a]).is_empty());
+}
+
+#[test]
+fn sqlite_wal_changes_find_the_database_and_deep_directory_moves_find_sessions() {
+    let home = tempfile::tempdir().unwrap();
+    let config = config(home.path());
+    let codex = home.path().join(".codex");
+    fs::create_dir_all(codex.join("sessions/2026/10/27")).unwrap();
+    let db = codex.join("state_5.sqlite");
+    fs::write(&db, b"SQLite format 3\0").unwrap();
+    let (found, _) = scan_changed(&config, &[codex.join("state_5.sqlite-wal")]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, db);
+    let session = codex.join("sessions/2026/10/27/rollout-x.jsonl");
+    fs::write(&session, "{}\n").unwrap();
+    let (found, _) = scan_changed(&config, &[codex.join("sessions/2026")]);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, session);
+}
+
+#[test]
 fn read_access_does_not_wake_collection_but_changes_and_unknown_events_do() {
     use notify::EventKind;
     use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
@@ -56,7 +98,6 @@ fn config(home: &Path) -> Config {
         machine: "m".into(),
         host: "h".into(),
         chunk: 1 << 20,
-        rescan_every: std::time::Duration::from_secs(60),
         live_every: std::time::Duration::from_secs(2),
     }
 }

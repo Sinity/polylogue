@@ -21,10 +21,22 @@ pub struct ImportedAs {
 }
 
 impl Reader<'_> {
+    pub(super) fn inputs_checked(&self) -> Result<bool> {
+        Ok(self.conn()?.query_row(
+            "SELECT coalesce((SELECT value FROM meta WHERE key='inputs_checked'), '-1')
+                = CAST((SELECT coalesce(max(commit_seq),0) FROM a.revision) AS TEXT)",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Every chain of every input whose index is behind its stored bytes,
     /// by input and chain. A chain that ends in an incomplete record the
     /// parser is waiting on is not behind.
     pub fn chains_behind_index(&self) -> Result<Vec<BehindChain>> {
+        if self.inputs_checked()? {
+            return Ok(Vec::new());
+        }
         let mut stmt = self.conn()?.prepare(
             "WITH chains AS (
                 SELECT input, chain, max(length) AS length, max(produced = 'imported') AS imported

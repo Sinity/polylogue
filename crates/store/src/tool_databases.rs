@@ -58,7 +58,7 @@ pub enum ExportError {
 }
 
 /// The database file and its WAL: either changing is a change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct DbFacts {
     db: Option<FileFacts>,
     wal: Option<FileFacts>,
@@ -122,10 +122,26 @@ impl Exporter {
         }
         let requested = observation.map(binding::Binding::observed).transpose()?;
         let st = self.dbs.entry(db.to_path_buf()).or_default();
+        let now = DbFacts::of(db);
+        let saved = if st.synced.is_none() {
+            catalog::saved(out)?
+        } else {
+            None
+        };
+        if let Some(saved) = &saved {
+            st.exported = Some(saved.source);
+            if saved.source == now && saved.binding == requested {
+                st.last_seen = Some(now);
+                st.exported_at = Some(Instant::now());
+                return Ok(None);
+            }
+        }
         if st.synced.as_ref().is_none_or(|p| !p.current(out)) {
             st.catalog = None;
             st.synced = None;
-            st.exported = None;
+            if saved.is_none() {
+                st.exported = None;
+            }
             let mut synced = SyncedPrefix::open(out, checkpoint)?;
             let mut catalog = Catalog::load(out, checkpoint)?;
             catalog.bind(requested.clone())?;
@@ -137,7 +153,6 @@ impl Exporter {
             .as_mut()
             .expect("loaded catalog")
             .bind(requested)?;
-        let now = DbFacts::of(db);
         let quiet = st.last_seen == Some(now);
         st.last_seen = Some(now);
         let changed = st.exported != Some(now);
@@ -156,6 +171,10 @@ impl Exporter {
                 return Err(e);
             }
         };
+        st.catalog
+            .as_ref()
+            .expect("loaded catalog")
+            .save(out, now)?;
         st.exported = Some(now);
         st.exported_at = Some(Instant::now());
         Ok(Some(done))

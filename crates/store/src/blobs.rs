@@ -69,7 +69,7 @@ pub const INLINE_LIMIT: usize = 128 * 1024;
 pub const LEVEL: i32 = 3;
 
 /// What one look at a file found. Equal facts mean nothing is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileFacts {
     pub device: u64,
     pub inode: u64,

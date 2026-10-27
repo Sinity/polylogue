@@ -140,6 +140,25 @@ everything that depends on them.
 
 ## Benchmarks
 
+For daemon start and unchanged restart measurements, use a private copy of
+the `xtask bench` sample:
+
+```sh
+agentctl job start polylogue measure --workspace <worktree> -- python3 tools/measure-startup.py --sample /realm/project/polylogue/bench/sample/home --out /realm/tmp/work/codex/pl-startup/<run>
+```
+
+The driver builds once outside the measurement interval, copies session files
+from the sample into 50 MB and 200 MB homes, adds a synthetic tool database,
+and measures a first build and an unchanged restart in separate daemon
+processes. It records startup wall time, physical and read-call bytes,
+process peak RSS, anonymous memory at readiness, and ten minutes of idle
+read rate and CPU for the larger home. `last_pass.stages` separates cursor
+loads, root discovery, stored-input checks, captures, planning, execution
+derivation and repository lookups. Polling `status` ends at readiness during the idle interval.
+Keep private samples and raw results outside Git. Report the sample size,
+host load and AgentCTL limits with the numbers; process RSS excludes the
+kernel's page cache.
+
 `agentctl job start polylogue bench --workspace <worktree> -- run` measures a
 first build and incremental updates; `-- reads --repetitions 3` measures
 interactive reads. `agentctl job start polylogue measure --workspace

@@ -418,6 +418,14 @@ fn run(
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }
+                    if !parser.is_document() && let Some(last) = parsed.last_mut() {
+                        last.parser_state = out.parser_state.as_ref().map(serde_json::to_string).transpose()
+                            .expect("parser state was already serialized to JSON");
+                        if job.end == job.length {
+                            last.tail_hash = Some(blake3::hash(&out.tail).as_bytes().to_vec());
+                            last.tail_length = Some(out.tail.len() as u64);
+                        }
+                    }
                     parsed
                 }
                 Err(e) => {

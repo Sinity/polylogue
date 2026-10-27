@@ -75,8 +75,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     use std::time::Duration;
     let w = ClaudeHome::new();
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
-    let mut config = w.config(64 << 20);
-    config.rescan_every = Duration::MAX;
+    let config = w.config(64 << 20);
     let mut engine = Engine::new(config, archive).unwrap();
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());

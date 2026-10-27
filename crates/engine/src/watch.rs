@@ -13,11 +13,23 @@ pub(super) struct Roots {
 
 impl Roots {
     pub fn new(config: &Config, wake: Sender<LoopMsg>) -> notify::Result<Self> {
-        let watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-            if result.as_ref().is_ok_and(collect::requires_scan) {
-                let _ = wake.send(LoopMsg::Changed);
-            }
-        })?;
+        let watcher =
+            notify::recommended_watcher(
+                move |result: notify::Result<notify::Event>| match result {
+                    Ok(event) if collect::requires_scan(&event) => {
+                        let paths = if event.need_rescan() {
+                            Vec::new()
+                        } else {
+                            event.paths
+                        };
+                        let _ = wake.send(LoopMsg::Changed(paths));
+                    }
+                    Err(_) => {
+                        let _ = wake.send(LoopMsg::Changed(Vec::new()));
+                    }
+                    _ => {}
+                },
+            )?;
         let mut roots = Self {
             watcher,
             active: BTreeMap::new(),

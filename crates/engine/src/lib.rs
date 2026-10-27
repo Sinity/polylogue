@@ -8,9 +8,9 @@
 //! exist. There is no to-do list and no repair path; `status` calls the
 //! same comparison.
 //!
-//! Parser state lives in memory. After a restart it is rebuilt lazily: an
-//! input's state is rebuilt by parsing its bytes again only when that input
-//! next changes, never all at start-up.
+//! Parser state is committed with the parsed rows. After a restart it is
+//! loaded only when that input grows; unchanged inputs load only file facts
+//! and parse positions.
 
 pub mod collect;
 pub mod pool;
@@ -73,9 +73,6 @@ pub struct Config {
     /// is stored and parsed in steps. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
-    /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (a minute).
-    pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
     /// remaining work (two seconds).
@@ -169,7 +166,6 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(60),
             live_every: Duration::from_secs(2),
         }
     }
@@ -191,6 +187,7 @@ pub struct Pass {
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
     pub seconds: f64,
+    pub stages: BTreeMap<String, f64>,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
     /// A SQLite capture has more cooperative work to do.
@@ -235,7 +232,8 @@ pub struct UserStateReport {
 /// Messages the loop thread waits on.
 pub enum LoopMsg {
     /// Something changed under a watched location.
-    Changed,
+    Changed(Vec<PathBuf>),
+    CollectorsChanged,
     Import {
         paths: Vec<PathBuf>,
         reply: SyncSender<Result<ImportReport, String>>,
@@ -261,13 +259,12 @@ pub struct Engine {
     /// Paths on this machine an excision removed: never collected again.
     refused: HashSet<PathBuf>,
     lookups: repo_lookup::Cache,
-    /// When repository lookups were last refreshed; at most once a minute.
-    lookups_at: Option<Instant>,
     /// In primary mode, the Sinex that holds the archive: sessions go to it
     /// as events once derived.
     sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
     /// No pass has run since the engine started.
     first_pass: bool,
+    collectors_on: bool,
 }
 
 fn now_ms() -> i64 {
@@ -321,9 +318,9 @@ impl Engine {
             exporter: Captures::default(),
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
-            lookups_at: None,
             sinex,
             first_pass: true,
+            collectors_on: false,
         })
     }
 
@@ -377,7 +374,7 @@ impl Engine {
                 self.refused.insert(PathBuf::from(path));
             }
         }
-        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let known: Vec<KnownInput> = reader.resume_watched_inputs(&self.config.machine)?;
         drop(reader);
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {

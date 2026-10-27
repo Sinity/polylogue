@@ -43,6 +43,74 @@ pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
     scan_origins(config, collected())
 }
 
+/// Find only the files named by watcher events. New directories are walked
+/// from their path, so a newly moved tree is collected without visiting its
+/// unchanged siblings. SQLite WAL events name the database they belong to.
+pub(crate) fn scan_changed(config: &Config, changed: &[PathBuf]) -> (Vec<Found>, Vec<PathBuf>) {
+    let mut found = Vec::new();
+    let mut unreadable = Vec::new();
+    for origin in collected() {
+        let root = config.root(origin.root);
+        for path in changed {
+            let path = if origin.capture == polylogue_sources::Capture::RowDump {
+                path.to_str()
+                    .and_then(|s| s.strip_suffix("-wal"))
+                    .map_or_else(|| path.clone(), PathBuf::from)
+            } else {
+                path.clone()
+            };
+            for pattern in origin.locations {
+                let segs: Vec<_> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+                if root.starts_with(&path) && path.is_dir() {
+                    let mut paths = Vec::new();
+                    walk(&root, &segs, &mut paths, &mut unreadable);
+                    found.extend(paths.into_iter().map(|path| Found { path, origin }));
+                    continue;
+                }
+                let Ok(relative) = path.strip_prefix(&root) else {
+                    continue;
+                };
+                let names: Vec<_> = relative.iter().filter_map(|s| s.to_str()).collect();
+                let mut rest = Vec::new();
+                after_prefix(&names, &segs, &mut rest);
+                for remaining in rest {
+                    if remaining.is_empty() && path.is_file() {
+                        found.push(Found {
+                            path: path.clone(),
+                            origin,
+                        });
+                    } else if path.is_dir() {
+                        let mut paths = Vec::new();
+                        walk(&path, remaining, &mut paths, &mut unreadable);
+                        found.extend(paths.into_iter().map(|path| Found { path, origin }));
+                    }
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found.dedup_by(|a, b| a.path == b.path);
+    unreadable.sort();
+    unreadable.dedup();
+    (found, unreadable)
+}
+
+fn after_prefix<'a>(names: &[&str], segs: &'a [&'a str], out: &mut Vec<&'a [&'a str]>) {
+    if names.is_empty() {
+        out.push(segs);
+        return;
+    }
+    let Some((seg, rest)) = segs.split_first() else {
+        return;
+    };
+    if *seg == "**" {
+        after_prefix(names, rest, out);
+        after_prefix(&names[1..], segs, out);
+    } else if (seg.contains('*') && wildcard(seg, names[0])) || *seg == names[0] {
+        after_prefix(&names[1..], rest, out);
+    }
+}
+
 /// Every file in Polylogue's own spools (hook events, browser captures,
 /// collectors' output): small directories, read again while a long pass
 /// runs so what arrives there is not left behind it.

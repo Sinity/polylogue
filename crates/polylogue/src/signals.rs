@@ -482,7 +482,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
     let Some(writes) = &d.writes else {
         return;
     };
-    let mut eval = Evaluator::new(&history(d));
+    let mut eval: Option<Evaluator> = None;
     loop {
         if !matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
             return;
@@ -558,7 +558,13 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             *s = summary(&usable, &unusable);
             s["held"] = json!(held);
         }
-        for h in eval.step(now, &usable, &matches, |t| day.local_hour(t)) {
+        let handoffs = if usable.is_empty() && eval.is_none() {
+            Vec::new()
+        } else {
+            eval.get_or_insert_with(|| Evaluator::new(&history(d)))
+                .step(now, &usable, &matches, |t| day.local_hour(t))
+        };
+        for h in handoffs {
             let Some(rule) = usable.iter().find(|r| r.id == h.rule) else {
                 continue;
             };
@@ -609,7 +615,8 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             }
         }
         let wait = eval
-            .next_due()
+            .as_ref()
+            .and_then(Evaluator::next_due)
             .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
         if !matches!(
             stop.recv_timeout(std::time::Duration::from_millis(wait as u64)),

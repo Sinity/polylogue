@@ -69,6 +69,10 @@ pub struct ParseStep {
     pub parsed_upto: u64,
     /// The parse observed source EOF; an unconsumed suffix waits for growth.
     pub at_end: bool,
+    /// Serialized on the parse worker, committed with the rows it describes.
+    pub parser_state: Option<String>,
+    pub tail_hash: Option<Vec<u8>>,
+    pub tail_length: Option<u64>,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
     pub(crate) prepared: PreparedRows,
@@ -95,6 +99,9 @@ impl ParseStep {
             start: range.start,
             parsed_upto: range.end,
             at_end,
+            parser_state: None,
+            tail_hash: None,
+            tail_length: None,
             prepared: PreparedRows::default(),
         }
     }

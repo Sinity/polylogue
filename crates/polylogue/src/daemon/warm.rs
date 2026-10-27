@@ -13,7 +13,7 @@
 //! - **Completion data**: unit and field names, values seen and recent
 //!   session IDs, rebuilt on the first request after a write.
 //! - **Archive counts** for `status`: counted by a worker of their own when
-//!   the daemon starts and whenever a `status` finds them older than its
+//!   a `status` first needs them or finds them older than its
 //!   read, while `status` answers from memory (no counts until the first
 //!   count ends), so it stays fast during a long pass. Counts that take
 //!   under 50 ms are simply taken again inside the request. A count of a large
@@ -137,8 +137,8 @@ impl Default for Warm {
             vectors: Mutex::new(None),
             archive_counts: Mutex::new(None),
             recount: std::sync::Condvar::new(),
-            // The first count starts with the daemon.
-            recount_wanted: std::sync::atomic::AtomicBool::new(true),
+            // Counts start only when a status request needs them.
+            recount_wanted: std::sync::atomic::AtomicBool::new(false),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             answers: Mutex::new(Recent::new(ANSWERS)),
             completion: Mutex::new(None),

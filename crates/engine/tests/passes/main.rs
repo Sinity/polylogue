@@ -15,6 +15,7 @@ mod export_round_trip;
 mod large_sessions;
 mod live_first;
 mod older_chains;
+mod startup;
 mod tool_captures;
 
 #[test]
@@ -104,7 +105,7 @@ fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
 }
 
 #[test]
-fn after_a_restart_state_is_rebuilt_only_when_the_input_changes() {
+fn after_a_restart_saved_state_is_loaded_only_when_the_input_grows() {
     let w = ClaudeHome::new();
     w.append("s1.jsonl", &user("u1", "s1", "one"));
     w.append("s2.jsonl", &user("v1", "s2", "other"));
@@ -119,9 +120,10 @@ fn after_a_restart_state_is_rebuilt_only_when_the_input_changes() {
     w.append("s1.jsonl", &line);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert!(
-        pass.bytes_read > line.len() as u64,
-        "s1 was parsed again from the start"
+    assert_eq!(
+        pass.bytes_read,
+        line.len() as u64,
+        "s1 resumes at its stored position"
     );
     assert_eq!(w.texts("s1"), ["one", "two"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 3);

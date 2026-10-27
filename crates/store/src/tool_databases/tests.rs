@@ -1,5 +1,64 @@
 use super::*;
 
+#[test]
+fn unchanged_restart_opens_neither_the_dump_nor_the_provider_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state_5.sqlite");
+    let out = dir.path().join("state_5.sqlite.jsonl");
+    let conn = Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE t(id INTEGER PRIMARY KEY, body TEXT);
+        INSERT INTO t VALUES (1,'first');",
+    )
+    .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    let mut fresh = Exporter::default();
+    assert_eq!(
+        fresh
+            .export_with(&db, &out, None, &mut || panic!(
+                "unchanged capture read rows or prefix"
+            ))
+            .unwrap(),
+        None
+    );
+    assert!(fresh.dbs[&db].catalog.is_none());
+    assert!(fresh.dbs[&db].synced.is_none());
+    // The comparison rows are durable too: opening them never replays the dump.
+    let catalog = Catalog::load(&out, &mut || panic!("replayed a completed dump")).unwrap();
+    assert_eq!(
+        catalog
+            .conn
+            .query_row("SELECT count(*) FROM row_state", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute_batch("INSERT INTO t VALUES (2,'second');")
+        .unwrap();
+    // A changed provider settles on its next look.
+    assert_eq!(fresh.export(&db, &out, None).unwrap(), None);
+    assert_eq!(
+        fresh.export(&db, &out, None).unwrap(),
+        Some(Exported { rows: 1, gone: 0 })
+    );
+    assert_eq!(lines(&out).len(), 3);
+}
+
+#[test]
+fn an_edited_completed_dump_cannot_use_the_saved_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES (1);")
+        .unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
+    let mut bytes = fs::read(&out).unwrap();
+    bytes[0] ^= 1;
+    fs::write(&out, bytes).unwrap();
+    assert!(Exporter::default().export(&db, &out, None).is_err());
+}
+
 fn lines(p: &Path) -> Vec<Value> {
     fs::read_to_string(p)
         .unwrap()

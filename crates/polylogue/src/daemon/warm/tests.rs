@@ -2,6 +2,14 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn a_new_daemon_has_no_requested_counts_or_loaded_vectors() {
+    let warm = Warm::default();
+    assert!(!warm.recount_wanted.load(Ordering::Acquire));
+    assert!(warm.archive_counts.lock().unwrap().is_none());
+    assert_eq!(warm.summary()["vector_loads"], 0);
+}
+
+#[test]
 fn recent_keeps_the_most_recently_used() {
     let mut r = Recent::new(2);
     r.put("a".into(), 1);

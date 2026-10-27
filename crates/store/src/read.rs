@@ -48,6 +48,13 @@ struct PoolState {
     waiters: usize,
 }
 
+/// A saved parser position, loaded only for an input with new bytes.
+pub struct ParserCursor {
+    pub state: serde_json::Value,
+    pub tail_hash: Option<Vec<u8>>,
+    pub tail_length: Option<u64>,
+}
+
 /// One consistent read: a read transaction on `index.db` with `archive.db`
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
@@ -930,21 +937,29 @@ impl Reader<'_> {
     /// records archive housekeeping, never a fresh observation of the file.
     #[cfg(any(test, feature = "fixture"))]
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
-        self.known_inputs_at(machine, None, true)
+        self.known_inputs_at(machine, None, true, true)
     }
 
     /// Committed state of one source path after a rejected write.
     #[cfg(any(test, feature = "fixture"))]
     pub fn known_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
-        Ok(self.known_inputs_at(machine, Some(path), true)?.pop())
+        Ok(self.known_inputs_at(machine, Some(path), true, true)?.pop())
     }
 
     /// Mutable source observations used by discovery, excluding manual imports.
     pub fn known_watched_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
-        self.known_inputs_at(machine, None, false)
+        self.known_inputs_at(machine, None, false, true)
     }
     pub fn known_watched_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
-        Ok(self.known_inputs_at(machine, Some(path), false)?.pop())
+        Ok(self
+            .known_inputs_at(machine, Some(path), false, true)?
+            .pop())
+    }
+
+    /// Source cursors needed at restart. Deleted files are work only while
+    /// the index needs their stored bytes; completed history stays on disk.
+    pub fn resume_watched_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        self.known_inputs_at(machine, None, false, !self.inputs_checked()?)
     }
 
     fn known_inputs_at(
@@ -952,35 +967,42 @@ impl Reader<'_> {
         machine: &str,
         path: Option<&str>,
         include_imported: bool,
+        include_deleted: bool,
     ) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
                     (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
-             FROM a.observation o JOIN a.input i ON i.id = o.input
-             WHERE o.machine = ?1 AND (?2 IS NULL OR o.path = ?2) AND o.rowid = (
-                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
+             FROM (SELECT DISTINCT path FROM a.observation WHERE machine=?1 AND (?2 IS NULL OR path=?2)) paths
+             JOIN a.observation o ON o.rowid = (
+                 SELECT rowid FROM a.observation x WHERE x.machine=?1 AND x.path=paths.path
                  AND x.class <> 'excised' AND (?3 OR NOT EXISTS(
-                    SELECT 1 FROM a.revision r WHERE r.input=x.input AND r.produced='imported')))",
+                    SELECT 1 FROM a.revision r WHERE r.input=x.input AND r.produced='imported'))
+                 ORDER BY x.rowid DESC LIMIT 1)
+             JOIN a.input i ON i.id=o.input
+             WHERE ?4 OR o.class <> 'deleted'",
         )?;
-        let rows = stmt.query_map(params![machine, path, include_imported], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                [
-                    r.get::<_, Option<i64>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, Option<i64>>(8)?,
-                ],
-                r.get::<_, Option<i64>>(9)?,
-                r.get::<_, Option<i64>>(10)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![machine, path, include_imported, include_deleted],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    [
+                        r.get::<_, Option<i64>>(4)?,
+                        r.get::<_, Option<i64>>(5)?,
+                        r.get::<_, Option<i64>>(6)?,
+                        r.get::<_, Option<i64>>(7)?,
+                        r.get::<_, Option<i64>>(8)?,
+                    ],
+                    r.get::<_, Option<i64>>(9)?,
+                    r.get::<_, Option<i64>>(10)?,
+                ))
+            },
+        )?;
         let mut out = Vec::new();
         for row in rows {
             let (path, input_id, format, class, f, chain, length) = row?;
@@ -1030,6 +1052,29 @@ impl Reader<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// Parser state is read only when a file grows. It must describe the
+    /// exact chain, parse position and stored prefix the caller resumed.
+    pub fn parser_cursor(
+        &self,
+        id: &str,
+        chain: i64,
+        parsed_upto: u64,
+        length: u64,
+    ) -> Result<Option<ParserCursor>> {
+        let row: Option<(String, Option<Vec<u8>>, Option<u64>)> = self.conn()?.query_row(
+            "SELECT p.state_json,p.tail_hash,p.tail_length FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
+             WHERE i.id=?1 AND p.chain=?2 AND p.parsed_upto=?3 AND p.state_length=?4 AND p.state_json IS NOT NULL",
+            params![id, chain, parsed_upto as i64, length as i64], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        row.map(|(state, tail_hash, tail_length)| {
+            Ok(ParserCursor {
+                state: serde_json::from_str(&state)?,
+                tail_hash,
+                tail_length,
+            })
+        })
+        .transpose()
     }
 
     /// The input's latest revision and its chain's parser progress.

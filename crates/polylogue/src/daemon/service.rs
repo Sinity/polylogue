@@ -706,7 +706,11 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             machine,
         } => {
             drop(reader);
-            write(
+            let collector = polylogue_sources::ORIGINS
+                .iter()
+                .filter_map(|o| o.collector.as_ref())
+                .any(|c| c.setting == key);
+            let result = write(
                 d,
                 request_id.unwrap_or_else(user_writes::new_request_id),
                 UserWrite::SetSetting {
@@ -715,7 +719,14 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     author: Author::Operator,
                     machine: machine.then(machine_id),
                 },
-            )
+            );
+            if collector
+                && matches!(result, Response::Ok { .. })
+                && let Ok(tx) = d.loop_tx.lock()
+            {
+                let _ = tx.send(LoopMsg::CollectorsChanged);
+            }
+            result
         }
     }
 }
@@ -1133,20 +1144,6 @@ pub fn start(
             .name("polylogue-counts".into())
             .spawn(move || daemon.warm.count_worker(&daemon.reads, &stopped))?,
     );
-    // Load the vectors `near:` ranks by before the first query needs them.
-    let daemon = Arc::clone(&runtime.daemon);
-    std::thread::Builder::new()
-        .name("polylogue-warm".into())
-        .spawn(move || {
-            let Ok(reader) = daemon.reads.reader() else {
-                return;
-            };
-            if let Ok(Some(provider)) =
-                crate::embeddings::Provider::from_settings(&reader, &machine_id())
-            {
-                let _ = daemon.warm.vectors(&reader, &provider);
-            }
-        })?;
     Ok(runtime)
 }
 

@@ -118,7 +118,6 @@ pub(crate) fn engine(
         machine: "test-machine".into(),
         host: "test".into(),
         chunk,
-        rescan_every: std::time::Duration::from_secs(60),
         live_every: std::time::Duration::from_secs(2),
     };
     (Engine::new(config, archive).unwrap(), lock)

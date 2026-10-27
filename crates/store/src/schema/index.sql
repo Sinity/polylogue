@@ -313,6 +313,10 @@ CREATE TABLE parse_state (
                                             --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
   detail            TEXT,                   -- waiting: the stored length it waits at
+  state_json        TEXT,                   -- parser state at parsed_upto, loaded only on append
+  state_length      INTEGER,                -- stored length the parser state belongs to
+  tail_length       INTEGER,                -- bytes in the saved tail window
+  tail_hash         BLOB,                    -- BLAKE3 of the last read window, at most 4 KiB
   records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the

@@ -173,6 +173,42 @@ fn migration_4_counts_the_rows_it_finds_and_keeps_every_row() {
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
     CREATE TABLE added(value TEXT NOT NULL) STRICT;";
 
+#[test]
+fn migration_5_indexes_locations_and_keeps_every_observation_and_revision() {
+    let conn = archive_at(4);
+    conn.execute_batch("INSERT INTO input VALUES ('i','claude-code-jsonl');
+        INSERT INTO revision VALUES ('i',1,'first',1,10,1),('i',2,'appended',1,20,2);
+        INSERT INTO observation(id,input,machine,path,class,revision,length,polylogue_version,seen_at)
+        VALUES ('o1','i','machine','/synthetic/s.jsonl','first',1,10,'test',2),
+               ('o2','i','machine','/synthetic/s.jsonl','appended',2,20,'test',1);").unwrap();
+    let rows = |table: &str| {
+        let mut statement = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
+        statement
+            .query_map([], |r| {
+                Ok((0..r.as_ref().column_count())
+                    .map(|n| format!("{:?}", r.get_ref(n).unwrap()))
+                    .collect::<Vec<_>>())
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let before = [rows("input"), rows("revision"), rows("observation")];
+    ensure_archive(&conn).unwrap();
+    assert_eq!(
+        before,
+        [rows("input"), rows("revision"), rows("observation")]
+    );
+    assert!(
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='observation_location')",
+            [],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+}
+
 fn version_1_with_rows() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(

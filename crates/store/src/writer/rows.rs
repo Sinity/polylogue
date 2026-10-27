@@ -1151,18 +1151,20 @@ impl RowWriter<'_, '_> {
         let whole = p.reset;
         let sql = if whole {
             "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, skipped, unreadable, detail, state_json, state_length, tail_hash, tail_length)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(input_pk, chain) DO UPDATE SET
                  status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 state_json=excluded.state_json, state_length=excluded.state_length, tail_hash=excluded.tail_hash, tail_length=excluded.tail_length,
                  records = excluded.records, used = excluded.used,
                  skipped = excluded.skipped, unreadable = excluded.unreadable"
         } else {
             "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, skipped, unreadable, detail, state_json, state_length, tail_hash, tail_length)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(input_pk, chain) DO UPDATE SET
                  status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 state_json=excluded.state_json, state_length=excluded.state_length, tail_hash=excluded.tail_hash, tail_length=excluded.tail_length,
                  records = records + excluded.records, used = used + excluded.used,
                  skipped = skipped + excluded.skipped,
                  unreadable = unreadable + excluded.unreadable"
@@ -1177,6 +1179,10 @@ impl RowWriter<'_, '_> {
             skipped as i64,
             unreadable as i64,
             detail,
+            p.parser_state.as_deref(),
+            p.parser_state.as_ref().map(|_| b.length as i64),
+            p.tail_hash.as_deref(),
+            p.tail_length.map(|n| n as i64),
         ])?;
         if whole {
             self.tx

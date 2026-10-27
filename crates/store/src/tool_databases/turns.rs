@@ -15,6 +15,7 @@ enum Command {
 struct Updates {
     paths: Vec<(PathBuf, Option<PathBuf>)>,
     errors: Vec<String>,
+    retry: Vec<PathBuf>,
 }
 
 enum Reply {
@@ -36,11 +37,17 @@ pub struct Captures {
     worker: Option<Worker>,
     pending: bool,
     available: HashMap<PathBuf, PathBuf>,
+    retry: Vec<PathBuf>,
 }
 
 impl Captures {
     pub fn pending(&self) -> bool {
         self.pending
+    }
+
+    /// Databases observed changing get one further look after they settle.
+    pub fn retry_paths(&self) -> &[PathBuf] {
+        &self.retry
     }
 
     /// A finite discovery batch runs in order before another batch can start.
@@ -85,6 +92,7 @@ impl Captures {
                 updates
             }
         };
+        self.retry = updates.retry;
         for (db, out) in updates.paths {
             if let Some(out) = out {
                 self.available.insert(db, out);
@@ -212,6 +220,12 @@ fn run(commands: Receiver<Command>, replies: SyncSender<Reply>) {
                 return;
             }
         }
+        budget.updates.retry = exporter
+            .dbs
+            .iter()
+            .filter(|(_, state)| state.exported != state.last_seen)
+            .map(|(path, _)| path.clone())
+            .collect();
         if replies.send(Reply::Finished(budget.updates)).is_err() {
             return;
         }

@@ -19,7 +19,24 @@ impl Catalog {
         out: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
     ) -> Result<Self, ExportError> {
-        let conn = Connection::open("").map_err(|e| ExportError::Sqlite(out.into(), e))?;
+        let conn =
+            Connection::open(cache_path(out)).map_err(|e| ExportError::Sqlite(out.into(), e))?;
+        conn.execute_batch(
+            "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
+            CREATE TABLE IF NOT EXISTS row_state(t TEXT NOT NULL, k TEXT NOT NULL, kh TEXT NOT NULL,
+               h BLOB NOT NULL, seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(t,k)) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS row_hash ON row_state(t,kh);
+            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .map_err(|e| ExportError::Sqlite(out.into(), e))?;
+        if let Some(saved) = read_saved(&conn, out)? {
+            return Ok(Self {
+                conn,
+                schema: saved.schema,
+                binding: saved.binding,
+                unbound: saved.unbound,
+            });
+        }
         let mut catalog = Self {
             conn,
             schema: None,
@@ -29,13 +46,7 @@ impl Catalog {
         let sql_err = |e| ExportError::Sqlite(out.into(), e);
         catalog
             .conn
-            .execute_batch(
-                "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-             CREATE TABLE row_state(t TEXT NOT NULL, k TEXT NOT NULL, kh TEXT NOT NULL,
-               h BLOB NOT NULL, seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(t,k)) WITHOUT ROWID;
-             CREATE INDEX row_hash ON row_state(t,kh);
-             BEGIN;",
-            )
+            .execute_batch("BEGIN; DELETE FROM row_state; DELETE FROM meta;")
             .map_err(sql_err)?;
         match fs::File::open(out) {
             Ok(file) => {
@@ -60,6 +71,26 @@ impl Catalog {
         }
         catalog.conn.execute_batch("COMMIT").map_err(sql_err)?;
         Ok(catalog)
+    }
+
+    pub(super) fn save(&self, out: &Path, source: DbFacts) -> Result<(), ExportError> {
+        let state = Saved {
+            source,
+            output: DbFacts::of(out),
+            tail: tail_hash(out)?,
+            marker: DbFacts::of(&synced_prefix::checkpoint(out)),
+            schema: self.schema,
+            binding: self.binding.clone(),
+            unbound: self.unbound,
+        };
+        self.conn
+            .execute(
+                "INSERT INTO meta(key,value) VALUES ('completed',?1)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [serde_json::to_string(&state).map_err(std::io::Error::from)?],
+            )
+            .map_err(|e| ExportError::Sqlite(out.into(), e))?;
+        Ok(())
     }
 
     pub(super) fn bind(
@@ -130,6 +161,74 @@ impl Catalog {
         }
         Ok(())
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct Saved {
+    pub source: DbFacts,
+    output: DbFacts,
+    marker: DbFacts,
+    tail: String,
+    schema: Option<u64>,
+    pub binding: Option<super::binding::Binding>,
+    unbound: bool,
+}
+
+fn tail_hash(out: &Path) -> Result<String, ExportError> {
+    use std::io::Read;
+    let mut file = fs::File::open(out)?;
+    let length = file.metadata()?.len().min(4096) as usize;
+    file.seek(std::io::SeekFrom::End(-(length as i64)))?;
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn cache_path(out: &Path) -> PathBuf {
+    let mut name = out.as_os_str().to_owned();
+    name.push(".rows");
+    name.into()
+}
+
+fn read_saved(conn: &Connection, out: &Path) -> Result<Option<Saved>, ExportError> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| ExportError::Sqlite(out.into(), e))?;
+    if !exists {
+        return Ok(None);
+    }
+    let text: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key='completed'", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|e| ExportError::Sqlite(out.into(), e))?;
+    let saved: Option<Saved> = text.and_then(|s| serde_json::from_str(&s).ok());
+    match saved {
+        Some(saved)
+            if saved.output == DbFacts::of(out)
+                && saved.marker == DbFacts::of(&synced_prefix::checkpoint(out))
+                && saved.tail == tail_hash(out)? =>
+        {
+            Ok(Some(saved))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// This reads fixed-size metadata and a tail window, never provider rows or
+/// historical lines until the source or completed output changes.
+pub(super) fn saved(out: &Path) -> Result<Option<Saved>, ExportError> {
+    if !cache_path(out).exists() {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(cache_path(out), OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| ExportError::Sqlite(out.into(), e))?;
+    read_saved(&conn, out)
 }
 
 /// Mark a unique source key and compare its complete content hash.

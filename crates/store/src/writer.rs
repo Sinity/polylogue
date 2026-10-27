@@ -68,6 +68,8 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
+    InputsChecked(SyncSender<Result<()>>),
+    RepositoriesChecked(SyncSender<Result<()>>),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
@@ -320,6 +322,29 @@ impl Writer {
     /// Whether the index was empty when the writer started.
     pub fn started_empty(&self) -> bool {
         self.started_empty
+    }
+
+    /// A successful engine pass checked every stored chain. Only the
+    /// revision counter participates: unrelated user writes leave it valid.
+    pub fn inputs_checked(&self) -> Result<()> {
+        let (reply, done) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::InputsChecked(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        done.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Repository lookups have been collected for the sessions written so far.
+    pub fn repositories_checked(&self) -> Result<()> {
+        let (reply, done) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::RepositoriesChecked(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        done.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
@@ -578,6 +603,8 @@ impl Inner {
         let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
         let mut blobs = Vec::new();
+        let mut input_checks = Vec::new();
+        let mut repository_checks = Vec::new();
         loop {
             // While a log still holds excised text, the writer wakes to
             // empty it even when no work comes.
@@ -629,6 +656,14 @@ impl Inner {
                     }
                     Msg::StoreBlob(blob, reply) => {
                         blobs.push((blob, reply));
+                        false
+                    }
+                    Msg::RepositoriesChecked(reply) => {
+                        repository_checks.push(reply);
+                        false
+                    }
+                    Msg::InputsChecked(reply) => {
+                        input_checks.push(reply);
                         false
                     }
                     Msg::Stop => {
@@ -707,6 +742,34 @@ impl Inner {
             }
             for (excision, reply) in imported_excisions.drain(..) {
                 let _ = reply.send(self.import_excision(&excision));
+            }
+            for reply in repository_checks.drain(..) {
+                let result = (|| -> Result<()> {
+                    self.index.execute(
+                        "INSERT INTO meta(key,value) VALUES ('repositories_checked',
+                        (SELECT CAST(coalesce(max(changed),0) AS TEXT) FROM session))
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        [],
+                    )?;
+                    Ok(())
+                })();
+                let _ = reply.send(result);
+            }
+            for reply in input_checks.drain(..) {
+                let result = (|| -> Result<()> {
+                    let through: i64 = self.archive.query_row(
+                        "SELECT coalesce(max(commit_seq),0) FROM revision",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    self.index.execute(
+                        "INSERT INTO meta(key,value) VALUES ('inputs_checked',?1)
+                        ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        [through.to_string()],
+                    )?;
+                    Ok(())
+                })();
+                let _ = reply.send(result);
             }
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived

@@ -251,6 +251,65 @@ fn synthetic_catalog(version: &str) -> polylogue_model::Catalog {
 }
 
 #[test]
+fn completed_derivations_resume_after_reopen_and_find_later_session_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = rusqlite::Connection::open(&path).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO session(id,origin,native_id,kind,changed)
+        VALUES ('test:a','test','a','main',1),('test:b','test','b','main',1);
+        INSERT INTO meta VALUES ('write_counter','1');",
+        )
+        .unwrap();
+    let rules = [super::Derivation {
+        name: "synthetic",
+        version: super::Version::Rules(1),
+        after: &[],
+        run: |tx, pk, _| {
+            tx.execute(
+                "UPDATE session SET derived_title=coalesce(derived_title,'') || 'x' WHERE pk=?1",
+                [pk],
+            )?;
+            Ok(())
+        },
+        finish: None,
+    }];
+    let catalog = synthetic_catalog("same");
+    assert_eq!(super::run_all(&mut index, &catalog, &rules).unwrap(), 2);
+    drop(index);
+    let mut index = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(super::run_all(&mut index, &catalog, &rules).unwrap(), 0);
+    let tx = index.transaction().unwrap();
+    let counter = crate::archive::bump_counter(&tx).unwrap();
+    tx.execute("UPDATE session SET changed=?1 WHERE id='test:a'", [counter])
+        .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(super::run_all(&mut index, &catalog, &rules).unwrap(), 1);
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT derived_title FROM session WHERE id='test:a'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "xx"
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT derived_title FROM session WHERE id='test:b'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "x"
+    );
+}
+
+#[test]
 fn upstream_rule_change_invalidates_unchanged_dependents_only() {
     let mut index = rusqlite::Connection::open_in_memory().unwrap();
     crate::schema::create_index(&index).unwrap();

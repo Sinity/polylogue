@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
-/// (`parser_state`) is `None` until the input is next parsed after a restart.
+/// (`parser_state`) is loaded only when the input grows after a restart.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,

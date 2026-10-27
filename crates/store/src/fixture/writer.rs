@@ -267,6 +267,9 @@ pub fn step(
             start,
             parsed_upto: length,
             at_end: true,
+            parser_state: None,
+            tail_hash: None,
+            tail_length: None,
             prepared: Default::default(),
         }],
     }

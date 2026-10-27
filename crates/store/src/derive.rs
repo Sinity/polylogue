@@ -95,8 +95,43 @@ fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]
     // Resolve the whole declaration before writing any rows. Dependency rule
     // changes invalidate consumers even when their source session is unchanged.
     let versions = versions(derivations, catalog)?;
+    let signature = serde_json::to_string(
+        &derivations
+            .iter()
+            .zip(&versions)
+            .map(|(d, version)| (d.name, version))
+            .collect::<Vec<_>>(),
+    )?;
+    let counter = |index: &Connection| -> Result<String> {
+        Ok(index
+            .query_row(
+                "SELECT value FROM meta WHERE key='write_counter'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default())
+    };
+    let completed = |index: &Connection| -> Result<String> {
+        Ok(serde_json::to_string(&(counter(index)?, &signature))?)
+    };
+    let previous: Option<String> = index
+        .query_row(
+            "SELECT value FROM meta WHERE key='derived_through'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if previous.as_deref() == Some(&completed(index)?) {
+        return Ok(0);
+    }
+    let since = previous
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<(String, String)>(s).ok())
+        .filter(|(_, rules)| rules == &signature)
+        .and_then(|(counter, _)| counter.parse::<i64>().ok());
     let mut done = 0;
-    let todo = sessions_to_derive(index, derivations, &versions)?;
+    let todo = sessions_to_derive(index, derivations, &versions, since)?;
     for sessions in todo.chunks(SESSIONS_PER_TRANSACTION) {
         // Immediate, like the writer's and the search thread's: a deferred
         // transaction fails to upgrade while the search thread writes.
@@ -115,6 +150,11 @@ fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]
     if tx.total_changes() != before {
         crate::archive::bump_counter(&tx)?;
     }
+    tx.execute(
+        "INSERT INTO meta(key,value) VALUES ('derived_through',?1)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [completed(&tx)?],
+    )?;
     tx.commit()?;
     Ok(done)
 }
@@ -125,15 +165,21 @@ fn sessions_to_derive(
     index: &Connection,
     derivations: &[Derivation],
     versions: &[String],
+    since: Option<i64>,
 ) -> Result<Vec<i64>> {
     if derivations.is_empty() {
         return Ok(Vec::new());
     }
     let wanted = vec!["(?, ?)"; derivations.len()].join(", ");
+    let changed = if since.is_some() {
+        "s.changed > ? AND "
+    } else {
+        ""
+    };
     let sql = format!(
         "WITH wanted(name, version) AS (VALUES {wanted})
          SELECT s.pk FROM session s
-         WHERE (SELECT count(*) FROM wanted w JOIN derive_state d
+         WHERE {changed}(SELECT count(*) FROM wanted w JOIN derive_state d
                   ON d.name = w.name AND d.session_pk = s.pk
                  WHERE d.version = w.version AND d.from_changed = s.changed) < {}
          ORDER BY s.pk",
@@ -143,6 +189,9 @@ fn sessions_to_derive(
     for (d, version) in derivations.iter().zip(versions) {
         values.push(&d.name);
         values.push(version);
+    }
+    if let Some(since) = &since {
+        values.push(since);
     }
     Ok(index
         .prepare(&sql)?
