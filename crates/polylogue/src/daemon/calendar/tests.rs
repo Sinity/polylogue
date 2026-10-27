@@ -18,6 +18,7 @@ fn setup(root: &std::path::Path) -> Fixture {
         ("codex:c", Some("2024-03-31T01:59:59Z"), Some("test")),
         ("codex:d", Some("2024-03-31T02:00:00Z"), Some("test")),
         ("codex:unknown", None, None),
+        ("codex:unknown-time-model", None, Some("test")),
     ] {
         f.message(
             s,
@@ -74,7 +75,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     undated.undated = true;
     undated.unknown_model = true;
     let result = cost(&r, undated, 0).unwrap();
-    assert_eq!(result["usage"]["data"]["known_response_messages"], 1);
+    assert_eq!(result["usage"]["data"]["known_response_messages"], 2);
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:unknown");
 }
 
@@ -158,4 +159,47 @@ fn invalid_period_is_refused_before_semantic_selection_runs() {
     request.embeddings = true;
     request.near = Some(&near);
     assert_eq!(cost(&reader, request, 0).unwrap_err().kind, "bad_request");
+}
+
+#[test]
+fn all_time_model_drilldown_reaches_every_dated_and_undated_response() {
+    let temp = tempfile::tempdir().unwrap();
+    let f = setup(temp.path());
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut next = None;
+    let mut ids = Vec::new();
+    let mut count = None;
+    loop {
+        let mut request = options(None, next.as_deref());
+        request.model = Some("test");
+        let result = cost(&reader, request, 0).unwrap();
+        assert_eq!(result["unplaced"]["count"], 2);
+        count.get_or_insert(
+            result["usage"]["data"]["by_model"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["model"] == "test")
+                .unwrap()["messages"]
+                .as_u64()
+                .unwrap(),
+        );
+        ids.extend(
+            result["responses"]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap().to_owned()),
+        );
+        next = result["responses"]["next"].as_str().map(str::to_owned);
+        if next.is_none() {
+            break;
+        }
+    }
+    assert_eq!(ids.len() as u64, count.unwrap());
+    assert_eq!(ids.last().unwrap(), "codex:unknown-time-model");
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len() as u64, count.unwrap());
 }
