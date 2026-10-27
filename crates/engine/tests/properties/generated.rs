@@ -303,13 +303,13 @@ proptest! {
                 .iter()
                 .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["uuid"].as_str().unwrap().to_owned())
                 .collect();
-            let logical: Vec<String> = r
+            let messages: Vec<String> = r
                 .messages(&cid, true)
                 .unwrap()
                 .iter()
                 .map(|m| m.id.native().as_str().to_owned())
                 .collect();
-            prop_assert_eq!(logical, expected);
+            prop_assert_eq!(messages, expected);
         }
     }
 }

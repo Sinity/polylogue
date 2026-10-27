@@ -29,11 +29,17 @@ Times below are local. Working directory for agent sessions:
 | 8 | `claude-ai:0b9d4e6c-0008-4000-8000-000000000008` | claude-ai | chat | 2026-10-07 18:00–18:05 | "README wording" | not recorded in the export | 4 | 2 |
 
 Top-level sessions (excluding the subagent #3): 7. All sessions: 8.
-Message counting rules are in `README.md`. Codex message counts are item
+A subagent's session ID is `claude-code:agent-<agentId>`. Codex item IDs
+identify messages across files: copied parent messages keep their IDs, while
+distinct messages have distinct IDs. Codex message counts are item
 counts, including calls, results and commands recorded separately from their
 script calls, rather than model-response groups. Session #5 has ten response
 items and three command items; #6 has eight response items and two command
 items. Repeated user-message events add no messages.
+Usage observations do not combine items into model-response messages.
+The source story's prompts, calls and outcomes remain unchanged.
+Hook spool lines put `event_id`, `event_type` and `observed_at_ms` first,
+as current hook spool files do. Every field from the generated example is kept.
 The testkit and query tests read these files through the real parsers.
 
 ## What happened (the story the examples rely on)

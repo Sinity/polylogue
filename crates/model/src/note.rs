@@ -232,14 +232,6 @@ impl NoteKind {
     pub fn parse(text: &str) -> Option<Self> {
         serde_json::from_value(serde_json::Value::String(text.to_owned())).ok()
     }
-
-    /// Kinds a session-start brief carries when the operator wrote them.
-    pub fn briefed(self) -> bool {
-        matches!(
-            self,
-            Self::Lesson | Self::Handoff | Self::Decision | Self::Blocker | Self::Goal
-        )
-    }
 }
 
 /// How one note relates to something else.
