@@ -146,7 +146,7 @@ to finish its hashes before another comparison. An index rebuild loses the
 comparison state and the next read compares the source in full. An origin
 may declare a monotonic integer change column for a table; other tables compare
 complete rows. Cursor tables are read every three minutes and verified in full
-daily, when their schema changes, and when the source file is replaced.
+daily, when their schema changes, and when the source file is replaced or returns after being missing. A cursor needs the file's creation time as well as its device and inode; when creation time is unavailable, that read verifies every row.
 Comparison waits for quiet files, with an hourly read during continuous writes.
 The parse workers enqueue byte groups and keep working; an acknowledgment
 reader delivers their committed progress to the loop.

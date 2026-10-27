@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 #[serde(default)]
 pub struct SavedDatabase {
     pub schema: Option<Value>,
-    pub source_file: Option<(u64, u64)>,
+    pub source_file: Option<(u64, u64, i128)>,
     pub cursors: BTreeMap<String, Cursor>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

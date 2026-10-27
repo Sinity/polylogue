@@ -57,6 +57,7 @@ struct DbState {
     exported: Option<DbFacts>,
     exported_at: Option<Instant>,
     cursor_at: Option<Instant>,
+    missing: bool,
 }
 #[derive(Default)]
 pub struct Exporter {
@@ -84,7 +85,7 @@ impl Exporter {
         let facts = DbFacts::of(db);
         let st = self.dbs.entry(db.to_owned()).or_default();
         if facts.db.is_none() {
-            *st = DbState::default();
+            *st = DbState { missing: true, ..DbState::default() };
             return None;
         }
         let quiet = st.last_seen == Some(facts);
@@ -97,6 +98,7 @@ impl Exporter {
             facts,
             compare,
             cursor,
+            verify: st.missing,
         })
     }
     pub fn export(
@@ -132,9 +134,11 @@ impl Exporter {
             self.cursor,
             due.compare,
             due.cursor,
+            due.verify,
             &mut send,
         )?;
         let st = self.dbs.entry(db.to_owned()).or_default();
+        st.missing = false;
         if due.compare {
             st.exported = Some(due.facts);
             st.exported_at = Some(Instant::now());
@@ -150,6 +154,17 @@ pub struct DatabaseRead {
     facts: DbFacts,
     compare: bool,
     cursor: bool,
+    verify: bool,
+}
+
+fn file_identity(path: &Path) -> Option<(u64, u64, i128)> {
+    let metadata = fs::metadata(path).ok()?;
+    let facts = FileFacts::of(&metadata);
+    let created = match metadata.created().ok()?.duration_since(std::time::UNIX_EPOCH) {
+        Ok(value) => i128::try_from(value.as_nanos()).ok()?,
+        Err(error) => -i128::try_from(error.duration().as_nanos()).ok()?,
+    };
+    Some((facts.device, facts.inode, created))
 }
 
 /// The digest naming a row: its table and its key.
@@ -261,6 +276,7 @@ fn write_export(
     cursor: Option<TableCursor>,
     compare: bool,
     cursor_due: bool,
+    verify: bool,
     send: &mut dyn FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
     let _busy = crate::timing::enter(crate::timing::Stage::Database);
@@ -268,6 +284,7 @@ fn write_export(
     let facts = DbFacts::of(db).db.ok_or_else(|| {
         ExportError::Invalid("source database disappeared before its read".into())
     })?;
+    let source_file = file_identity(db);
     let source = Connection::open_with_flags(
         db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -280,7 +297,7 @@ fn write_export(
     let tables = tables(&source).map_err(sql_err)?;
     let catalog = catalog::Catalog::open(archive, &input.id)?;
     let mut saved = catalog.saved.clone();
-    let replaced = saved.source_file != Some((facts.device, facts.inode));
+    let replaced = verify || source_file.is_none() || saved.source_file != source_file;
     let schema: Map<String, Value> = tables
         .iter()
         .map(|t| (t.name.clone(), t.sql.clone().into()))
@@ -437,10 +454,10 @@ fn write_export(
         },
     )?;
     saved.schema = Some(schema);
-    let unchanged_file = DbFacts::of(db)
+    let unchanged_file = source_file.is_some() && file_identity(db) == source_file && DbFacts::of(db)
         .db
         .is_some_and(|now| now.device == facts.device && now.inode == facts.inode);
-    saved.source_file = unchanged_file.then_some((facts.device, facts.inode));
+    saved.source_file = if unchanged_file { source_file } else { None };
     if !unchanged_file {
         saved.cursors.clear();
     }
