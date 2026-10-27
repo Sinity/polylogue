@@ -81,11 +81,23 @@ fn million_message_measurements() {
         responses: Some(&usage),
         ..all(None, false, false)
     };
-    let selected = crate::measure::Selection { sessions:Some(vec![session]), ..Default::default() };
-    let selected_cost = Selection { responses:Some(&selected), ..all(None,false,false) };
+    let selected = crate::measure::Selection {
+        sessions: Some(vec![session]),
+        ..Default::default()
+    };
+    let selected_cost = Selection {
+        responses: Some(&selected),
+        ..all(None, false, false)
+    };
     let (source, params) = sources(&selected_cost);
-    let response_sql = format!("SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51", source[0], representable("at",false));
-    let response_plan = r.query(&format!("EXPLAIN QUERY PLAN {response_sql}"), &params).unwrap();
+    let response_sql = format!(
+        "SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51",
+        source[0],
+        representable("at", false)
+    );
+    let response_plan = r
+        .query(&format!("EXPLAIN QUERY PLAN {response_sql}"), &params)
+        .unwrap();
     let after = json!({"day":sample(||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample(||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample(||calendar(&r,&day,date).unwrap().len()),"cost_page":sample(||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample(||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_cost_page":response_plan,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
     let report = json!({"messages":1000000,"events":100000,"years":16,"page_size":50,"samples_per_action":5,"setup_ms":setup_ms,"index_ms":index_ms,"before":baseline,"after":after,"load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; "))});
     let path = std::env::var_os("POLYLOGUE_TIMELINE_REPORT")
