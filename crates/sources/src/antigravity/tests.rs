@@ -148,3 +148,25 @@ fn opaque_bytes_and_the_export_share_the_named_session() {
     );
     assert!(parsed.output.messages.is_empty());
 }
+
+#[test]
+fn large_multiline_commands_and_unclosed_markers_keep_all_their_content() {
+    let command = format!("cat <<EOF\n{}EOF", "body\n".repeat(50_000));
+    for closed in [false, true] {
+        let body = format!(
+            "*User accepted the command `{command}{}",
+            if closed { "`*" } else { "" }
+        );
+        let parsed = parse(&format!("### Planner Response\n{body}"));
+        assert_eq!(parsed.output.messages.len(), 1);
+        let blocks = &parsed.output.messages[0].message.blocks;
+        assert_eq!(blocks.len(), 1);
+        if closed {
+            assert!(
+                matches!(&blocks[0], Block::ToolCall { command: Some(found), .. } if found == &command)
+            );
+        } else {
+            assert!(matches!(&blocks[0], Block::Text { text } if text == &body));
+        }
+    }
+}

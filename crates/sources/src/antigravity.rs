@@ -238,10 +238,13 @@ fn runs(body: &str) -> Vec<(bool, Vec<Block>)> {
         // Only accepted commands may span lines in the vendor format.
         if candidate.starts_with("*User accepted the command `") && !candidate.ends_with("`*") {
             let mut trial = lines.clone();
-            while candidate.matches('`').count() < 2 {
+            // Count each line once; command bodies can be large.
+            let mut backticks = candidate.matches('`').count();
+            while backticks < 2 {
                 let Some(next) = trial.next() else {
                     break;
                 };
+                backticks += next.matches('`').count();
                 candidate.push('\n');
                 candidate.push_str(next);
             }
