@@ -77,7 +77,7 @@ impl Inner {
         let mut written = 0;
         let mut first = true;
         while reader.read_line(&mut line)? > 0 {
-            let mut step: ParseStep = serde_json::from_str(&line)?;
+            let mut step: ParseStep = crate::encoding::read_json(line.as_bytes())?;
             if first && !step.reset {
                 return Err(StoreError::Invalid(
                     "a chain replacement must start at its first record".into(),
@@ -107,6 +107,7 @@ impl Inner {
         }
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
+        crate::fault::check("reparse.commit", &batch.input.id)?;
         tx.commit()?;
         self.derive_due = true;
         self.search.wake();

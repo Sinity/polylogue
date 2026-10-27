@@ -77,11 +77,9 @@ impl Engine {
                 self.finish_plan(plan);
                 Ok(())
             }
-            Err(error) => {
-                plan.failed = true;
-                self.finish_plan(plan);
-                Err(error.into())
-            }
+            // The previous reading is still committed. A write failure can
+            // recover without changed source bytes, so the next pass retries it.
+            Err(error) => Err(error.into()),
         }
     }
 }

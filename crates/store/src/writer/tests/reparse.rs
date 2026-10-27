@@ -398,3 +398,40 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     );
     assert_eq!(natural_rows(&w), before);
 }
+
+#[test]
+fn a_chain_reading_preserves_deep_structured_values() {
+    let w = test_archive();
+    write(
+        &w,
+        [batch(
+            "a",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message("deep", "s", Role::User, "before", None),
+            )],
+            &["s"],
+        )],
+    );
+    let nested = (0..200).fold(json!("leaf"), |value, _| json!({"nested":value}));
+    let mut message = text_message("deep", "s", Role::User, "", None);
+    message.blocks = vec![Block::Other {
+        type_name: "nested".into(),
+        data: nested,
+    }];
+    let mut b = batch("a", 0, 0, vec![row(1, message.clone())], &["s"]);
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut b.parse[0]).unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(b.input, 1, b.length, reading)
+        .unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads.reader().unwrap().messages(&sid("s"), false).unwrap(),
+        [message]
+    );
+}

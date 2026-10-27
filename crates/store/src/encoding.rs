@@ -109,8 +109,16 @@ impl PreparedMessage {
     }
 }
 
+pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let mut reader = serde_json::Deserializer::from_slice(bytes);
+    reader.disable_recursion_limit();
+    let value = T::deserialize(&mut reader)?;
+    reader.end()?;
+    Ok(value)
+}
+
 pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
-    Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
+    read_json(&unpack_bytes(packed)?)
 }
 
 /// One independent frame per row; both encoders are reused for the batch.
