@@ -35,12 +35,21 @@ positions rather than a fabricated clock.
 | [ChatGPT](../crates/sources/src/chatgpt.rs) | Export or captured conversation mappings. Every branch is stored; active-path selection controls ordinary reads and counts. Attachments keep the direction and identifiers the conversation actually records. |
 | [claude.ai and Claude Design](../crates/sources/src/claude_ai.rs) | Export arrays or captured conversation JSON, with branches linked by `parent_message_uuid`. Tool results may occur inside the assistant message. Design chats have their own origin. |
 | [AI Studio](../crates/sources/src/ai_studio.rs) | Drive prompt JSON (`runSettings`, `systemInstruction`, `chunkedPrompt`), imported or collected into the Drive spool. A chunk without a native ID is identified by position, so editing it changes that message's shown version. |
+| [Gemini app](../crates/sources/src/gemini_app.rs) | Takeout `My Activity/Gemini Apps/MyActivity.html`. Prompt cells sharing a conversation link form a session; a cell without one has its own session. Responses stay as text, and other activity becomes events. |
 | [Grok](../crates/sources/src/grok.rs) | Account-export conversations, decoded individually and kept in supplied response order. |
 
 Instruction, context, memory and transcript documents are separate from
 conversation messages. Their [model](../crates/model/src/document.rs) keeps
 purpose, source time, authorship, blocks and metadata. Purpose alone does
 not establish who wrote a document. Empty later exports remove nothing.
+
+## Other imports
+
+| Origin | Stored form and reading |
+|---|---|
+| [OpenRouter](../crates/sources/src/openrouter.rs) | Chat-room JSON exports with messages keyed by ID and reply links. The first message in declared order names the session; matching message IDs unite repeated exports. |
+| [OpenAI chat JSON](../crates/sources/src/openai_chat.rs) | A message array or an object holding `messages`, optionally with an ID, model and title. One file is one session; messages without IDs keep their identity by position. |
+| [OTLP GenAI](../crates/sources/src/otel_genai.rs) | OTLP JSON `resourceSpans`, as a whole document or one document per line. A conversation ID, or the trace when absent, names the session. Repeated input history keeps its message positions; output messages carry the call's usage. Other spans are counted and skipped. |
 
 ## Polylogue spools
 
