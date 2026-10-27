@@ -26,7 +26,7 @@
       packages.${system} = { default = polylogue; inherit polylogue; };
       checks.${system}.polylogue = polylogue;
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server pkgs.mold ];
+        packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server pkgs.mold pkgs.sqlite ];
         # mold links the test binaries several times faster than the default
         # linker: on a cold test build the workspace's test binaries took
         # 169 s of linking with ld and 37 s with mold.

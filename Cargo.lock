@@ -4316,6 +4316,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "devkit",
+ "rusqlite",
  "serde_json",
  "tempfile",
 ]
