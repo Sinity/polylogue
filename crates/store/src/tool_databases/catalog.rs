@@ -58,7 +58,9 @@ impl Comparison {
         Ok(out)
     }
     pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
-        let length=i64::try_from(self.length).map_err(|_|crate::StoreError::Invalid("database comparison exceeds archive address space".into()))?;
+        let length = i64::try_from(self.length).map_err(|_| {
+            crate::StoreError::Invalid("database comparison exceeds archive address space".into())
+        })?;
         let previous: Option<i64> = conn
             .query_row(
                 "SELECT length FROM tool_database WHERE input_pk=?1",

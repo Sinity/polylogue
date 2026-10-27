@@ -92,7 +92,10 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
                 messages: rows,
                 ..Output::default()
             },
-            counts(n),start..start+100,true)],
+            counts(n),
+            start..start + 100,
+            true,
+        )],
         release: InFlight::default(),
     }
 }

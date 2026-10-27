@@ -258,6 +258,6 @@ pub fn step(
         blobs: vec![],
         length,
         release: Default::default(),
-        parse: vec![ParseStep::new(output,counts,start..length,true)],
+        parse: vec![ParseStep::new(output, counts, start..length, true)],
     }
 }
