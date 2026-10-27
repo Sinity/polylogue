@@ -134,7 +134,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         (result, pass)
     });
     waiting.recv_timeout(Duration::from_secs(10)).unwrap();
-    let fresh = home.file("fresh/record.jsonl");
+    let fresh = home.file("fresh/fresh.jsonl");
     std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
     std::fs::write(
         &fresh,
