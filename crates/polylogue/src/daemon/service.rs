@@ -254,6 +254,74 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "stream_required",
             "the change feed uses the finite socket stream",
         ),
+        Request::Timeline {
+            date,
+            across_years,
+            undated,
+            cursor,
+            page_size,
+        } => {
+            match super::calendar::timeline(
+                &reader,
+                super::calendar::Timeline {
+                    date: date.as_deref(),
+                    across_years,
+                    undated,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
+        Request::Cost {
+            month,
+            undated,
+            unknown_model,
+            query,
+            date,
+            model,
+            cursor,
+            page_size,
+        } => {
+            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+                .ok()
+                .flatten();
+            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+            let near = |q: &str| match &provider {
+                Some(provider) => d.warm.similarity(&reader, provider, q),
+                None => Err("embeddings are off".into()),
+            };
+            match super::calendar::cost(
+                &reader,
+                super::calendar::Cost {
+                    embeddings,
+                    near: Some(&near),
+                    month: month.as_deref(),
+                    query: &query,
+                    date: date.as_deref(),
+                    model: model.as_deref(),
+                    undated,
+                    unknown_model,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),

@@ -80,6 +80,29 @@ pub enum Request {
         ids: Vec<String>,
     },
     Status,
+    /// Chronological recorded activity and a logical-day calendar.
+    Timeline {
+        date: Option<String>,
+        #[serde(default)]
+        across_years: bool,
+        #[serde(default)]
+        undated: bool,
+        cursor: Option<String>,
+        page_size: Option<u64>,
+    },
+    /// Session-scoped usage, optionally bounded by a logical day, with response pages.
+    Cost {
+        month: Option<String>,
+        #[serde(default)]
+        undated: bool,
+        #[serde(default)]
+        unknown_model: bool,
+        query: String,
+        date: Option<String>,
+        model: Option<String>,
+        cursor: Option<String>,
+        page_size: Option<u64>,
+    },
     /// Completions for one word of a query being typed.
     Complete {
         word: String,
@@ -279,6 +302,8 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::Timeline { .. }
+            | Self::Cost { .. }
             | Self::Complete { .. }
             | Self::Attachment { .. }
             | Self::Query { .. }
