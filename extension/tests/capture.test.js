@@ -474,3 +474,20 @@ it("keeps unchanged conversation fingerprints across a browser restart", async (
   expect((await after.captureTab(1, "sweep")).outcome).toBe("unchanged");
   expect(host.stored).toHaveLength(1);
 });
+
+it.each(["missing", "unknown"])("captures cached content when the daemon reports it as %s", async (state) => {
+  const host = storingHost([]);
+  const page = chatgptPage();
+  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const before = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
+  host.stored.length = 0;
+  host.routes["POST /v1/conversations"] = () => ({ json: {
+    daemon: state === "missing" ? "running" : "unknown",
+    conversations: [{ id: "c1", state, downloading: false }],
+  } });
+  await chrome.storage.session.clear();
+  const after = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await after.captureTab(1, "sweep")).outcome).toBe("stored");
+  expect(host.stored).toHaveLength(1);
+});

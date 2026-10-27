@@ -162,10 +162,12 @@ export class Capturer {
     const now = await fingerprint(raw, info.session);
     const seenKey = `seen ${key}`;
     const known = await this.seen.get({ [seenKey]: null });
-    const unchanged = !force && known[seenKey] === now;
+    let unchanged = !force && known[seenKey] === now;
     if (unchanged) {
       const held = (await this.host.conversations(provider, [conversation])).conversations[0];
-      if (!held?.downloading || this.downloading.has(key)) {
+      if (!["archived", "spooled"].includes(held?.state)) {
+        unchanged = false;
+      } else if (!held.downloading || this.downloading.has(key)) {
         return { outcome: "unchanged", provider, conversation };
       }
     }
