@@ -188,3 +188,77 @@ fn zero_usage_is_unknown_until_observed_zero_and_projection_can_breach() {
     assert!(q.breach_day.is_some());
     assert_eq!(q.actual_overage, Some(0.0));
 }
+
+#[test]
+fn units_remain_separate_and_user_only_days_do_not_prove_usage_coverage() {
+    let mut fixture = crate::fixture::writer::WriterArchive::new();
+    let mut message = crate::fixture::writer::message(
+        "a",
+        "units",
+        polylogue_model::Role::Assistant,
+        START,
+        vec![polylogue_model::Block::Text {
+            text: "Reply".into(),
+        }],
+    );
+    message.model = Some("gpt-6.1-sol".into());
+    message.usage = polylogue_model::Usage {
+        input: Some(100),
+        output: Some(20),
+        cached_input: Some(0),
+        cache_write: Some(0),
+        reasoning: Some(0),
+        ..Default::default()
+    };
+    message.reported_cost_usd = Some(7.0);
+    fixture.write(
+        "units",
+        vec![
+            message,
+            crate::fixture::writer::message(
+                "u",
+                "units",
+                polylogue_model::Role::User,
+                START + DAY,
+                vec![polylogue_model::Block::Text {
+                    text: "Prompt only".into(),
+                }],
+            ),
+        ],
+    );
+    fixture.writer.derive().unwrap();
+    let pool = crate::ReadPool::open(&fixture.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let report = usage(&r, &Selection::default()).unwrap();
+    let units = amounts(&report);
+    assert_eq!(units["reported_usd"], 7.0);
+    assert_eq!(units["input_tokens"], 100.0);
+    assert_eq!(units["output_tokens"], 20.0);
+    assert!(units["api_usd"] > 0.0 && units["api_usd"] < 7.0);
+    drop(r);
+    drop(pool);
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    setting(&mut f, None, None, Some(1));
+    let s = f
+        .session(SessionFacts {
+            id: "codex:user",
+            ..Default::default()
+        })
+        .unwrap();
+    f.message(
+        s,
+        MessageFacts {
+            id: "u",
+            role: "user",
+            written_by: "human",
+            at: Some(START),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
+    assert_eq!(x.coverage_ratio, Some(0.0));
+}

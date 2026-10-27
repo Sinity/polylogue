@@ -28,12 +28,11 @@ fn pearson_keeps_translation_scale_and_order_and_undefined_cases() {
 fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_scores() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
-    for (id, origin, text) in [
-        ("codex:a", "codex", "one"),
-        ("codex:b", "codex", "one two"),
-        ("chatgpt:c", "chatgpt", "one two three"),
+    for (id, text) in [
+        ("codex:a", "one"),
+        ("codex:b", "one two"),
+        ("chatgpt:c", "one two three"),
     ] {
-        let _ = origin;
         let pk = f
             .session(SessionFacts {
                 id,
@@ -70,6 +69,14 @@ fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_sc
     b.facts.workflow_shape = "unknown".into();
     b.tags.clear();
     assert!(similarity(a, &b).is_none());
+    let mut reference = reader_profile(&r, "codex:a");
+    reference.facts.first_at = Some(0);
+    b.facts.first_at = Some(3 * 86_400_000);
+    assert_eq!(similarity(&reference, &b).unwrap().score, 2);
+    b.facts.first_at = Some(14 * 86_400_000);
+    assert_eq!(similarity(&reference, &b).unwrap().score, 1);
+    b.facts.first_at = Some(15 * 86_400_000);
+    assert!(similarity(&reference, &b).is_none());
     let c = correlation(
         &r,
         &Selection::default(),
