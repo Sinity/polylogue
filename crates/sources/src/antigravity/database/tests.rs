@@ -505,3 +505,34 @@ fn steps_without_metadata_are_not_reported_as_an_empty_trajectory() {
             .any(|e| e.kind == "antigravity_trajectory_empty")
     );
 }
+
+#[test]
+fn null_step_ids_use_the_distinct_row_indices() {
+    let parsed = parse(vec![
+        header(),
+        row("trajectory_meta", 1, json!({"trajectory_id":"one","cascade_id":"alias"})),
+        row("steps", 1, json!({"step_id":null,"id":null,"idx":0,"step_type":"user","step_format":"v1","step_payload":{"text":"first"}})),
+        row("steps", 2, json!({"step_id":null,"id":null,"idx":1,"step_type":"user","step_format":"v1","step_payload":{"text":"second"}})),
+    ]).unwrap();
+    assert_eq!(parsed.output.messages.len(), 2);
+    assert_ne!(
+        parsed.output.messages[0].message.id,
+        parsed.output.messages[1].message.id
+    );
+}
+
+#[test]
+fn colon_containing_session_and_step_ids_remain_distinct() {
+    let parsed = parse(vec![
+        header(),
+        row("trajectory_meta", 1, json!({"trajectory_id":"a","cascade_id":"first"})),
+        row("trajectory_meta", 2, json!({"trajectory_id":"a:step:b","cascade_id":"second"})),
+        row("steps", 1, json!({"trajectory_id":"a","step_id":"b:step:c","idx":0,"step_type":"user","step_format":"v1","step_payload":{"text":"first"}})),
+        row("steps", 2, json!({"trajectory_id":"a:step:b","step_id":"c","idx":0,"step_type":"user","step_format":"v1","step_payload":{"text":"second"}})),
+    ]).unwrap();
+    assert_eq!(parsed.output.messages.len(), 2);
+    assert_ne!(
+        parsed.output.messages[0].message.id,
+        parsed.output.messages[1].message.id
+    );
+}
