@@ -17,7 +17,7 @@ fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
                 .map_err(|error| error.to_string())
         })
         .as_ref()
-        .map_err(io::Error::other)
+        .map_err(|error| io::Error::other(error.clone()))
 }
 
 pub fn send(socket: &Path, request: &Request) -> io::Result<Response> {

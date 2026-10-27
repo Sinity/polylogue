@@ -92,7 +92,7 @@ fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
     assert!(text.contains("`cargo test` failed 2 times here"), "{text}");
     assert!(text.contains("claude-code:advised"), "{text}");
     let count = || {
-        json(&cli(&env, &["--json", "query", "deliveries"]))["count"]
+        json(&cli(&env, &["--json", "deliveries"]))["count"]
             .as_u64()
             .unwrap()
     };
@@ -115,7 +115,7 @@ fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
     drop(reader);
     assert_eq!(count(), 1);
     assert_eq!(send(ask())["prepared"]["empty"], true);
-    let outcome = json(&cli(&env, &["--json", "query", "deliveries"]));
+    let outcome = json(&cli(&env, &["--json", "deliveries"]));
     assert_eq!(outcome["rows"][0]["outcome"], "delivered");
     std::fs::write(project.join("advised.jsonl"), failing_session(cwd, 3)).unwrap();
     wait_status(&env, |s| s["store"]["tool_calls"].as_u64() >= Some(3));
