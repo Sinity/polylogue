@@ -342,7 +342,8 @@ struct MessageContent<'a> {
 impl Reader<'_> {
     /// Row-dump byte position whose comparison hashes have committed.
     pub fn tool_database_length(&self, input: &str) -> Result<Option<u64>> {
-        Ok(self.conn()?.query_row("SELECT length FROM tool_database JOIN input_ref ON input_ref.pk=tool_database.input_pk WHERE input_ref.id=?1", [input], |r|r.get(0)).optional()?)
+        let length:Option<i64> = self.conn()?.query_row("SELECT length FROM tool_database JOIN input_ref ON input_ref.pk=tool_database.input_pk WHERE input_ref.id=?1", [input], |r|r.get(0)).optional()?;
+        length.map(|value|u64::try_from(value).map_err(|_|StoreError::Invalid("negative database comparison length".into()))).transpose()
     }
 
     /// The optional embeddings read connection shares this reader's slot and

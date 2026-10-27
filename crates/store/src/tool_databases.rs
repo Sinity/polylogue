@@ -134,7 +134,8 @@ fn row_key(table: &str, key: &Value) -> u64 {
 fn row_hash(row: &Value) -> blake3::Hash {
     // SQLite values are scalars or one-key blob objects. Column order is
     // schema metadata, not a change to the row's named values.
-    let fields: std::collections::BTreeMap<_,_> = row.as_object().expect("row object").iter().collect();
+    let fields: std::collections::BTreeMap<_, _> =
+        row.as_object().expect("row object").iter().collect();
     blake3::hash(&serde_json::to_vec(&fields).expect("JSON row values serialize"))
 }
 

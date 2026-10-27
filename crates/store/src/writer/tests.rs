@@ -83,11 +83,8 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         new_blob: None,
         blobs: vec![],
         length: start + 100,
-        parse: vec![ParseStep {
-            order_from: None,
-            reset: start == 0,
-            repeats_whole_conversations: false,
-            output: Output {
+        parse: vec![ParseStep::new(
+            Output {
                 sessions: sessions
                     .iter()
                     .map(|s| Session::new(sid(s), SessionKind::Main))
@@ -95,12 +92,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
                 messages: rows,
                 ..Output::default()
             },
-            counts: counts(n),
-            start,
-            parsed_upto: start + 100,
-            at_end: true,
-            prepared: Default::default(),
-        }],
+            counts(n),start..start+100,true)],
         release: InFlight::default(),
     }
 }

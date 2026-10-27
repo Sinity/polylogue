@@ -319,12 +319,14 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_cursors() {
 
 #[test]
 fn a_column_order_change_does_not_repeat_unchanged_named_values() {
-    let mut t=Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');");
+    let mut t = Test::new(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'same');",
+    );
     t.export(&mut Exporter::default()).unwrap();
-    let replacement=t.dir.path().join("replacement");
+    let replacement = t.dir.path().join("replacement");
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(body TEXT,id INTEGER PRIMARY KEY); INSERT INTO items VALUES('same',1);").unwrap();
-    fs::rename(replacement,&t.db).unwrap();
-    let done=t.export(&mut Exporter::default()).unwrap().unwrap();
-    assert_eq!((done.rows,done.gone),(0,0));
-    assert_eq!(t.lines().iter().filter(|r|r.get("r").is_some()).count(),1);
+    fs::rename(replacement, &t.db).unwrap();
+    let done = t.export(&mut Exporter::default()).unwrap().unwrap();
+    assert_eq!((done.rows, done.gone), (0, 0));
+    assert_eq!(t.lines().iter().filter(|r| r.get("r").is_some()).count(), 1);
 }

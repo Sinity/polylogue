@@ -58,7 +58,8 @@ impl Comparison {
         Ok(out)
     }
     pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
-        let previous: Option<u64> = conn
+        let length=i64::try_from(self.length).map_err(|_|crate::StoreError::Invalid("database comparison exceeds archive address space".into()))?;
+        let previous: Option<i64> = conn
             .query_row(
                 "SELECT length FROM tool_database WHERE input_pk=?1",
                 [input_pk],
@@ -67,8 +68,8 @@ impl Comparison {
             .optional()?;
         // Domain parsing may finish after newer row-dump bytes. Its older
         // values must not move the comparison state backwards.
-        if previous.is_some_and(|length| {
-            length > self.length || (length == self.length && self.saved.is_none())
+        if previous.is_some_and(|previous| {
+            previous > length || (previous == length && self.saved.is_none())
         }) {
             return Ok(());
         }
@@ -98,7 +99,7 @@ impl Comparison {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
-        conn.execute("INSERT INTO tool_database(input_pk,length,state) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,state=COALESCE(?3,tool_database.state)", params![input_pk,self.length,saved])?;
+        conn.execute("INSERT INTO tool_database(input_pk,length,state) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,state=COALESCE(?3,tool_database.state)", params![input_pk,length,saved])?;
         Ok(())
     }
 }
