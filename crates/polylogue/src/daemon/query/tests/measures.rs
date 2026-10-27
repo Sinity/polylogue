@@ -249,7 +249,11 @@ fn measures_over_near_ranked_sessions_keep_page_counts() {
     archive.fx.derive().unwrap();
     let vectors = super::generated::vectors_for(&archive, |_| true);
     let near = |_: &str| Ok(std::sync::Arc::clone(&vectors));
-    for (name, field) in [("profiles", "profiles"), ("compare", "profiles"), ("pace", "gaps")] {
+    for (name, field) in [
+        ("profiles", "profiles"),
+        ("compare", "profiles"),
+        ("pace", "gaps"),
+    ] {
         let text = format!("sessions where near:\"synthetic ranking\" | measure {name}");
         let mut request = ask(&text);
         request.embeddings = true;
