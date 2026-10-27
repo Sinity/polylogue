@@ -30,7 +30,7 @@ export function failureOutcome(value, retryAfterSeconds = null) {
   return { outcome: "network_error", retry_after_seconds: retryAfterSeconds, detail };
 }
 
-// Passes an attachment's bytes into the page in pieces, where they become
+// Appends an attachment's bytes in the page, where they become
 // a File for the composer. The files belong to one action run (`actionId`,
 // `runId`); another run's files are never touched.
 export function attachmentInPage(actionId, runId, command, item = null, offset = 0, encoded = "") {

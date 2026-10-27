@@ -231,20 +231,20 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     );
     let current = fixture_query(&fixture, "sessions | sort by id", None, 100).unwrap();
     assert_eq!(current["rows"][0]["title"], "derived a");
-    let settled = changes["read_at"].clone();
+    let finished = changes["read_at"].clone();
     assert_eq!(fixture.derive().unwrap(), 0);
     let after = fixture_query(
         &fixture,
         &format!(
             "changes where after:{}",
-            settled["cursor"].as_str().unwrap()
+            finished["cursor"].as_str().unwrap()
         ),
         None,
         100,
     )
     .unwrap();
     assert_eq!(after["count"], 0);
-    assert_eq!(after["read_at"], settled);
+    assert_eq!(after["read_at"], finished);
 }
 
 #[test]

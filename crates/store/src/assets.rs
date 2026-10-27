@@ -61,19 +61,19 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
             })
         {
             return Err(StoreError::Invalid(
-                "the asset's stored extents are incomplete".into(),
+                "the asset's stored byte ranges are incomplete".into(),
             ));
         }
         let bytes: Vec<u8> = row.get(2)?;
         let current = polylogue_model::BlobHash(
             bytes
                 .try_into()
-                .map_err(|_| StoreError::Invalid("invalid asset extent hash".into()))?,
+                .map_err(|_| StoreError::Invalid("invalid asset byte range hash".into()))?,
         );
         count += 1;
         end = end
             .checked_add(size as u64)
-            .ok_or_else(|| StoreError::Invalid("asset extent overflow".into()))?;
+            .ok_or_else(|| StoreError::Invalid("asset byte range overflow".into()))?;
         hash.update(&offset.to_le_bytes());
         hash.update(&size.to_le_bytes());
         hash.update(&current.0);
@@ -91,7 +91,7 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
     }
     if end != length || count == 0 {
         return Err(StoreError::Invalid(
-            "the asset's stored extents are incomplete".into(),
+            "the asset's stored byte ranges are incomplete".into(),
         ));
     }
     Ok(Some(AssetSource {

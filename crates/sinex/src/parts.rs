@@ -43,7 +43,7 @@ pub(crate) async fn send(client: &mut Client, part: &Part, bytes: &mut dyn Read)
         .rows
         .extent
         .as_ref()
-        .ok_or_else(|| Error::Invalid("a part needs an extent".into()))?;
+        .ok_or_else(|| Error::Invalid("appended bytes need a stored byte range".into()))?;
     let name = format!(
         "part:{}:{}:{}:{}",
         part.rows.input, extent.chain, extent.offset, part.hash
@@ -88,7 +88,7 @@ pub(crate) async fn send(client: &mut Client, part: &Part, bytes: &mut dyn Read)
         .await?
         .material
         .map(|m| m.to_string())
-        .ok_or_else(|| Error::Invalid(format!("{name} registered no material")))
+        .ok_or_else(|| Error::Invalid(format!("{name} stored no material")))
 }
 
 /// What one held material is to Polylogue: a part with the rows that place
@@ -120,7 +120,9 @@ pub(crate) fn held(store: &hashed_blobs::Reader, held: ProducerMaterial) -> Resu
             .details
             .get("polylogue")
             .cloned()
-            .ok_or_else(|| Error::Invalid(format!("{} has no register rows", held.frame)))?,
+            .ok_or_else(|| {
+                Error::Invalid(format!("{} has no input or user-state rows", held.frame))
+            })?,
     )?;
     Ok(Held::Part {
         number: held.number,

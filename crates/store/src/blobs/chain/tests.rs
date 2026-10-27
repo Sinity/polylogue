@@ -86,7 +86,7 @@ fn independent_sequential_and_range_readers_preserve_shared_slices_and_short_rea
 }
 
 #[test]
-fn many_inline_pieces_stay_compressed_on_disk_and_clones_share_one_selected_view() {
+fn many_inline_blobs_stay_compressed_on_disk_and_clones_share_one_selected_view() {
     let w = Fixture::new(512 * 16384);
     for n in 0u64..512 {
         let mut bytes = vec![b'x'; 16384];

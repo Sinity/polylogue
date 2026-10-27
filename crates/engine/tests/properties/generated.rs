@@ -208,8 +208,8 @@ proptest! {
     #[test]
     fn append_equivalence(s in shape(), pick in 0usize..8, cut in 0usize..8) {
         let c = corpus(&s);
-        let (whole_world, whole) = run_all_at_once(&c);
-        let whole_search = search_index(&whole_world);
+        let (whole_archive, whole) = run_all_at_once(&c);
+        let whole_search = search_index(&whole_archive);
         prop_assert!(whole_search.iter().any(|v| v["idx"] == "text_fts"));
         let f = pick % c.files.len();
         let (name, lines) = &c.files[f];

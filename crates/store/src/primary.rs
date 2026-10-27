@@ -155,8 +155,9 @@ pub(crate) fn next_part(
         .optional()?;
     Ok(match last {
         Some((part, id)) => (
-            u32::try_from(part + 1)
-                .map_err(|_| StoreError::Invalid("too many parts in one chain".into()))?,
+            u32::try_from(part + 1).map_err(|_| {
+                StoreError::Invalid("too many appended byte ranges for one input history".into())
+            })?,
             Some(id),
         ),
         None => (0, None),
@@ -200,7 +201,7 @@ pub(crate) fn part_material(
     let extent = rows
         .extent
         .as_ref()
-        .ok_or_else(|| StoreError::Invalid("a part needs an extent".into()))?;
+        .ok_or_else(|| StoreError::Invalid("appended bytes need a stored byte range".into()))?;
     conn.prepare_cached(
         "INSERT OR REPLACE INTO material(input, chain, offset, part, id) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?

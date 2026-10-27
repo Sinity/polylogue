@@ -779,7 +779,7 @@ impl Engine {
                         plan.failed = true;
                     }
                 }
-                self.settle(plan);
+                self.finish_plan(plan);
             } else {
                 ordinary.push(plan);
             }
@@ -826,7 +826,7 @@ impl Engine {
                 && let Some(mut plan) = waiting.pop_front()
             {
                 if plan.finished() {
-                    self.settle(plan);
+                    self.finish_plan(plan);
                     continue;
                 }
                 // Stored bytes are loaded as their plan starts, so a pass
@@ -859,7 +859,7 @@ impl Engine {
             let parsed = plan.origin.support == Support::Parsed;
             plan.apply(d, parsed);
             if plan.finished() {
-                self.settle(plan);
+                self.finish_plan(plan);
             } else {
                 // The next part of the same input keeps its place.
                 waiting.push_front(plan);
@@ -875,7 +875,7 @@ impl Engine {
     /// Records what a finished plan leaves for the next pass. Parser state
     /// is kept in memory only for files written recently; an older file's
     /// state is rebuilt by parsing it again if it ever grows.
-    fn settle(&mut self, plan: Plan) {
+    fn finish_plan(&mut self, plan: Plan) {
         if !plan.tracked {
             if let Change::Reparse { chain } = plan.change
                 && let Some(st) = self.inputs.get_mut(&plan.path)

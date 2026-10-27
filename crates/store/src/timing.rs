@@ -23,7 +23,7 @@ pub enum Stage {
     TrigramIndex,
     /// A first build's secondary indexes, created at its end.
     SecondaryIndexes,
-    /// Making the index durable when a first build settles.
+    /// Making the index durable when a first build finishes.
     Sync,
     /// Deriving session facts from written rows.
     Derive,

@@ -179,7 +179,7 @@ impl Database {
             ),
         }
     }
-    fn settle(&mut self) {
+    fn order_messages(&mut self) {
         // Ancestors precede their children. A genuine cycle is kept as a
         // source relationship; the reader reports its parents as incomplete.
         for session in self.sessions.keys() {
@@ -359,7 +359,7 @@ impl ExportParser for Database {
                 "Hermes row dump names no native profile; original rows stay unbound".into(),
             );
         }
-        self.settle();
+        self.order_messages();
         reader
             .rewind()
             .map_err(|error| ScanError::Input(serde_json::Error::io(error)))?;

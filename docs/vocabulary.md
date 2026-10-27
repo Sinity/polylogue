@@ -70,6 +70,20 @@ the same change.
   **row dump** (JSON lines) up to the **synced prefix** named by the tool's
   checkpoint, and parses the dump.
 
+## Builds and prepared writes
+
+- **first build**: building an empty index from all available inputs. The
+  writer delays search entries and secondary indexes until the build ends.
+  **Bulk mode** means this first-build write mode, with deferred indexes and
+  syncing; it ends by making the index durable. Prefer "first build".
+- **prepared batch** (`store::staging::PreparedBatch`): parsed rows together
+  with private files of new bytes, ready for the writer to store. The
+  `store::staging` module prepares bytes off the writer thread; its
+  **stored input** (`StoredInput`) identifies where a committed batch's
+  bytes can be read, including their chain and length.
+- **Morrow**: the synthetic example archive in `examples/morrow/`, laid out
+  by Testkit and read through the real loop in tests.
+
 ## Reading sources
 
 - **format**: which parser reads an input.
@@ -105,6 +119,15 @@ the same change.
   holds; it orders messages that share an input and byte offset.
 - **derivation**: a product computed from parsed rows, with a rule version
   (cost, the work graph, session facts, measures).
+
+- **parsed** (index table): links each input chain to the sessions its
+  parser produced, so a session can be rebuilt from all its inputs.
+- **unused** (index table): counts skipped records, unreadable records and
+  fields the parser did not read, per input chain and format.
+- **run by script** (`run_by_script`): a command run inside a script call
+  rather than through its own tool call. **Counts as action**
+  (`counts_as_action`) excludes a script call from action counts when its
+  commands are already counted separately.
 
 ## What people and agents add
 
@@ -173,6 +196,10 @@ the same change.
 
 ## Queries and output
 
+- **logical day**: the day in `day.zone` (the machine's time zone unless
+  set), starting at `day.logical_start` (default `04:00`). Dates, `today`
+  and `group by day` use these boundaries rather than midnight.
+
 - **query**, **unit** (what a query lists: sessions, messages, ...),
   **field**, **condition**, **measure**.
 - **saved query** (`query:NAME`) and its **parameters** (`$word` in its
@@ -239,7 +266,7 @@ the same change.
 | staging, staged (in the extension) | outbox, or nothing |
 | freshness | changed, captured again |
 | fidelity | complete, or say what is missing |
-| invocation, settlement | call, finished |
+| invocation, settle, settlement | call, finished |
 | ledger, mission control, intelligence, ambient surface | the popup, the in-page button, or say what it is |
 
 Excision, epoch and sealed are kept. **Receipt** is only the provider's

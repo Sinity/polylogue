@@ -711,7 +711,7 @@ impl Inner {
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
-                let result = self.settle().and_then(|()| self.derive());
+                let result = self.finish_build().and_then(|()| self.derive());
                 for reply in derives.drain(..) {
                     let _ = reply.send(match &result {
                         Ok(n) => Ok(*n),
@@ -748,7 +748,7 @@ impl Inner {
                 break;
             }
         }
-        let _ = self.settle();
+        let _ = self.finish_build();
     }
 
     fn empty_logs_or_report(&mut self) {
@@ -781,7 +781,7 @@ impl Inner {
 
     /// Ends an unsynced build: makes the index durable, then clears the mark
     /// and returns to normal syncing.
-    fn settle(&mut self) -> Result<()> {
+    fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() {
             return Ok(());
         }
@@ -863,7 +863,7 @@ impl Inner {
         }
         // An excision is written with WAL syncs even during a first build,
         // and the archive's rows are durable before blob files are deleted.
-        self.settle()?;
+        self.finish_build()?;
         let previous: i64 = self
             .archive
             .pragma_query_value(None, "synchronous", |r| r.get(0))?;
@@ -1076,7 +1076,7 @@ impl Inner {
     /// One user request in its own `archive.db` transaction.
     /// A blob row, then its file, then `present`: a stop between them
     /// leaves a `writing` row nothing refers to, which opening the archive
-    /// settles.
+    /// finishes.
     fn store_blob(
         &mut self,
         new_blob: crate::NewBlob,

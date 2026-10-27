@@ -266,7 +266,7 @@ pub fn session_with_attachments(
 }
 
 /// Export JSON uses the model's importable Document codec, including fields
-/// such as links that have no prose rendering. It never serializes Pieces.
+/// such as links that have no prose rendering. It never serializes rendered blocks.
 pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io::Result<Value> {
     doc.validate().map_err(io::Error::other)?;
     for session in &mut doc.sessions {

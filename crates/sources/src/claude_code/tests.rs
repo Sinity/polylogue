@@ -104,7 +104,7 @@ fn a_response_split_over_records_is_one_message() {
 }
 
 #[test]
-fn parsing_in_pieces_equals_parsing_at_once() {
+fn parsing_in_appended_bytes_equals_parsing_at_once() {
     let bytes = jsonl(&conversation());
     let whole = {
         let mut parser_state = ParserState::default();

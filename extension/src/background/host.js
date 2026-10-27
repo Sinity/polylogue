@@ -6,7 +6,7 @@
 // per `response_next` until `response_end`. A refusal is an `error` frame.
 
 export const HOST_NAME = "com.polylogue.browser_capture";
-const PIECE_BYTES = 64 * 1024;
+const APPENDED_BYTES = 64 * 1024;
 
 export class HostError extends Error {
   constructor(code, status = null, message = code) {
@@ -39,7 +39,7 @@ export function exchange(runtime, method, path, body = null) {
     const content = body === null ? null : body instanceof Blob ? body : new Blob([body]);
     let sent = 0;
     let answer = null;
-    const pieces = [];
+    const responseBytes = [];
     let done = false;
     const finish = (error, value) => {
       if (done) return;
@@ -54,9 +54,9 @@ export function exchange(runtime, method, path, body = null) {
         port.postMessage({ type: "body_end" });
         return;
       }
-      const piece = new Uint8Array(await content.slice(sent, sent + PIECE_BYTES).arrayBuffer());
-      port.postMessage({ type: "body", sequence: Math.floor(sent / PIECE_BYTES), data: encode(piece) });
-      sent += piece.length;
+      const appendedBytes = new Uint8Array(await content.slice(sent, sent + APPENDED_BYTES).arrayBuffer());
+      port.postMessage({ type: "body", sequence: Math.floor(sent / APPENDED_BYTES), data: encode(appendedBytes) });
+      sent += appendedBytes.length;
     };
     const onMessage = (frame) => {
       if (frame?.type === "error") return finish(new HostError(frame.error));
@@ -67,12 +67,12 @@ export function exchange(runtime, method, path, body = null) {
         return;
       }
       if (frame?.type === "response_body" && answer) {
-        pieces.push(decode(frame.data));
+        responseBytes.push(decode(frame.data));
         port.postMessage({ type: "response_next" });
         return;
       }
       if (frame?.type === "response_end" && answer) {
-        return finish(null, { ...answer, body: new Blob(pieces) });
+        return finish(null, { ...answer, body: new Blob(responseBytes) });
       }
       finish(new HostError("host_answer_unreadable"));
     };

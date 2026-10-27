@@ -141,7 +141,10 @@ pub(crate) fn mark_for_deletion(archive: &rusqlite::Connection, hash: &BlobHash)
 /// written only after it is `present`: it is marked `deleting`, and parsing
 /// its record again stores it again. Rows marked `deleting` then go with
 /// their files ([`delete_marked`]). The caller holds the archive writer.
-pub(crate) fn settle(archive: &rusqlite::Connection, store: &hashed_blobs::Store) -> Result<u64> {
+pub(crate) fn finish_pending(
+    archive: &rusqlite::Connection,
+    store: &hashed_blobs::Store,
+) -> Result<u64> {
     let tx = archive.unchecked_transaction()?;
     tx.execute(
         "UPDATE blob SET state = 'deleting' WHERE state = 'writing'
@@ -175,7 +178,7 @@ pub(crate) fn settle(archive: &rusqlite::Connection, store: &hashed_blobs::Store
 }
 
 /// Deletes the files of blobs marked for deletion, then their rows. The
-/// writer runs it after each excision, and [`settle`] runs it when the
+/// writer runs it after each excision, and [`finish_pending`] runs it when the
 /// archive opens, so a stop between the commit and the file deletion leaves
 /// nothing behind. Without a `store` (primary mode, where Sinex holds the
 /// files and excised them) only the rows go.

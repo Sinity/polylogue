@@ -12,7 +12,7 @@ The extension talks only to its native messaging host,
 starts the host only for the extension IDs its manifest names, so there is no
 token or pairing step.
 
-- When a conversation page settles after a change (and is not still
+- When a conversation page stops changing (and is not still
   answering), the extension fetches the conversation, asks the host which
   files it names, fetches their bytes through the page and hands the host one
   capture. The host appends it to the conversation's capture log in the spool,

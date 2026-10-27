@@ -253,7 +253,7 @@ fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
 }
 
 #[test]
-fn parsing_in_pieces_equals_parsing_at_once() {
+fn parsing_in_appended_bytes_equals_parsing_at_once() {
     let input = jsonl(&turn());
     let mut whole_carry = ParserState::default();
     let whole = final_messages(&[run(&rollout(), &mut whole_carry, &input, 0).unwrap()]);

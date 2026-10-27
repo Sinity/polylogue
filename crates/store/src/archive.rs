@@ -155,7 +155,7 @@ impl Archive {
         let store = archive.blobs()?;
         let blob_lock = crate::write_lock::hold(&a)?;
         clear_directory(&archive.blobs_dir().join("tmp"))?;
-        crate::blobs::settle(&a, &store)?;
+        crate::blobs::finish_pending(&a, &store)?;
         drop(blob_lock);
         archive.finish_open()?;
         Ok((archive, lock))

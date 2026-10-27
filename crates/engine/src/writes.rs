@@ -10,7 +10,7 @@ impl Engine {
         Ok(report)
     }
 
-    /// Runs after the plans settle, so parser state from the failed write is
+    /// Runs after the plans finish, so parser state from the failed write is
     /// not kept.
     pub(super) fn restore_failed_writes(&mut self) -> Result<(), EngineError> {
         if self.failed_writes.is_empty() {

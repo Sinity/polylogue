@@ -119,7 +119,7 @@ describe("the Gemini page script", () => {
 });
 
 describe("the shared page script", () => {
-  it("answers through a port with the facts, then the body in pieces", async () => {
+  it("answers through a port with the facts, then the body in appended bytes", async () => {
     const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
     const big = "x".repeat(5 * 1024 * 1024);
     window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });
@@ -129,26 +129,26 @@ describe("the shared page script", () => {
     port.onMessage.fire({ type: "conversation" });
     await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
     expect(received[0]).toMatchObject({ type: "facts", status: 200, info: { id: "c1" }, size: big.length });
-    const pieces = received.filter((m) => m.type === "piece");
-    expect(pieces.length).toBe(2);
-    expect(pieces.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
+    const appendedBytes = received.filter((m) => m.type === "appended_bytes");
+    expect(appendedBytes.length).toBe(2);
+    expect(appendedBytes.map((p) => Buffer.from(p.data, "base64").toString()).join("")).toBe(big);
   });
 
   it("tells the background when the conversation's text changes, not when the markup does", async () => {
     const { window, sent } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"], {
       html: "<body><main><p>first answer</p></main><div id='menu'></div></body>",
     });
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 3300));
-    await settle();
+    const waitForPause = () => new Promise((resolve) => setTimeout(resolve, 3300));
+    await waitForPause();
     expect(sent).toEqual([{ type: "polylogue.changed", provider: "claude-ai", reason: "opened" }]);
     // A menu opening and closing, as pages do all the time.
     window.document.getElementById("menu").append(window.document.createElement("span"));
-    await settle();
+    await waitForPause();
     window.document.getElementById("menu").replaceChildren();
-    await settle();
+    await waitForPause();
     expect(sent).toHaveLength(1);
     window.document.querySelector("main").append(window.document.createTextNode(" and a new turn"));
-    await settle();
+    await waitForPause();
     expect(sent).toHaveLength(2);
     expect(sent[1].reason).toBe("changed");
   }, 20_000);

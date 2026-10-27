@@ -1,7 +1,7 @@
 //! Bytes into the archive in one order: the blob's row first, in state
 //! `writing`, then the file under its content name, then the row `present`.
 //! A stop between them leaves `writing` rows, which [`Inner::finish_writing`]
-//! settles. In primary mode the bytes go to Sinex before the transaction
+//! finishes. In primary mode the bytes go to Sinex before the transaction
 //! that writes their rows commits, and those rows are `present` at once.
 use super::*;
 use crate::staging::{Finished, PreparedBatch, PreparedBytes, StoredInput};
@@ -157,10 +157,7 @@ impl Inner {
                     continue;
                 }
                 let crate::staging::Prepared::Local { prepared, .. } = file.file else {
-                    failed.insert(
-                        hash,
-                        "a part to send to Sinex reached the blob store".into(),
-                    );
+                    failed.insert(hash, "bytes to send to Sinex reached the blob store".into());
                     continue;
                 };
                 let added = crate::fault::check("import.install", &subject)
@@ -324,8 +321,9 @@ impl Inner {
                 b.new_blob = None;
             }
             let (chain, rows) = write_bytes(&tx, b, seq)?;
-            let chain = chain
-                .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
+            let chain = chain.ok_or_else(|| {
+                StoreError::Invalid("stored bytes produced no input history".into())
+            })?;
             if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
                 let new_blob = b.new_blob.as_ref().map(|new_blob| new_blob.hash);
                 let file = new_blob.and_then(|hash| files.iter().find(|f| f.hash() == hash));
@@ -421,12 +419,12 @@ impl Inner {
         Ok(())
     }
 
-    /// Settles the blob rows a stop or a failed install left behind
-    /// ([`crate::blobs::settle`]) and reports the inputs whose bytes are
+    /// Finishes the blob rows a stop or a failed install left behind
+    /// ([`crate::blobs::finish_pending`]) and reports the inputs whose bytes are
     /// still `writing` without a file; the loop reads them again.
     pub(super) fn finish_writing(&mut self, store: &hashed_blobs::Store) -> Result<Finished> {
         let write = crate::write_lock::hold(&self.archive)?;
-        let completed = crate::blobs::settle(&self.archive, store)?;
+        let completed = crate::blobs::finish_pending(&self.archive, store)?;
         drop(write);
         if completed > 0 {
             self.report.transactions += 1;
@@ -484,7 +482,7 @@ pub(super) fn send_to_sinex(
             }
             _ => {
                 return Err(StoreError::Invalid(
-                    "a part for Sinex has no bytes to send".into(),
+                    "Sinex input has no bytes to send".into(),
                 ));
             }
         };

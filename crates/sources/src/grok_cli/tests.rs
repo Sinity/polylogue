@@ -64,7 +64,7 @@ fn reasoning_joins_the_next_answer_and_messages_are_named_by_offset() {
 }
 
 #[test]
-fn appending_in_pieces_gives_the_same_messages() {
+fn appending_bytes_gives_the_same_messages() {
     let input = lines(&history());
     let whole = run(&grok(), &mut ParserState::default(), &input, 0).unwrap();
     for cut in [1, 40, 120, input.len() / 2, input.len() - 3] {
