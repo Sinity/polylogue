@@ -29,6 +29,53 @@ fn workbench_measurements() {
     r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
     let provider = r.w.local_embeddings();
     let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    for (name, text) in [
+        (
+            "live",
+            "sessions where -live:ended | sort by live_rank, last_event_at desc",
+        ),
+        ("text", "sessions where origin:claude-code parser"),
+        (
+            "facets",
+            "sessions where origin:claude-code parser | group by origin | count",
+        ),
+        (
+            "semantic",
+            "messages where origin:claude-code near:\"parser\"",
+        ),
+        (
+            "mixed",
+            "messages where origin:claude-code parser near:\"parser\"",
+        ),
+    ] {
+        let request = Request::Query {
+            text: text.into(),
+            cursor: None,
+            page_size: Some(50),
+            why: true,
+            session: None,
+            fields: vec![],
+        };
+        let started = Instant::now();
+        assert!(matches!(
+            handle(request.clone(), &r.web.daemon),
+            Response::Ok { .. }
+        ));
+        let first_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mut samples = Vec::new();
+        for _ in 0..30 {
+            let started = Instant::now();
+            assert!(matches!(
+                handle(request.clone(), &r.web.daemon),
+                Response::Ok { .. }
+            ));
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!(
+            "WORKBENCH_DAEMON={}",
+            serde_json::json!({"name":name,"query":text,"page_size":50,"first_ms":first_ms,"samples_ms":samples})
+        );
+    }
     let output = std::process::Command::new("python3")
         .arg(
             std::env::var("POLYLOGUE_WORKBENCH_DRIVER")
@@ -50,45 +97,6 @@ fn workbench_measurements() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for (name, text) in [
-        (
-            "live",
-            "sessions where -live:ended | sort by live_rank, last_event_at desc",
-        ),
-        ("text", "sessions where origin:claude-code parser"),
-        (
-            "semantic",
-            "messages where origin:claude-code near:\"parser\"",
-        ),
-        (
-            "mixed",
-            "messages where origin:claude-code parser near:\"parser\"",
-        ),
-    ] {
-        let mut samples = Vec::new();
-        for _ in 0..30 {
-            let started = Instant::now();
-            assert!(matches!(
-                handle(
-                    Request::Query {
-                        text: text.into(),
-                        cursor: None,
-                        page_size: Some(50),
-                        why: true,
-                        session: None,
-                        fields: vec![]
-                    },
-                    &r.web.daemon
-                ),
-                Response::Ok { .. }
-            ));
-            samples.push(started.elapsed().as_secs_f64() * 1000.0);
-        }
-        eprintln!(
-            "WORKBENCH_DAEMON={}",
-            serde_json::json!({"name":name,"query":text,"page_size":50,"samples_ms":samples})
-        );
-    }
     let provider_ms = provider.join().unwrap();
     eprintln!("WORKBENCH_SYNTHETIC_PROVIDER_RESPONSE_MS={provider_ms}");
     server.shutdown().unwrap();
