@@ -17,10 +17,10 @@
 //! an export provides it, its events wait on a placeholder that reads do
 //! not show, and a transcript a payload carries is not read.
 //!
-//! An event is one hook invocation: the line's own time (`at_ns`, taken by
-//! the hook process) and process are part of its identity, so two
-//! invocations with the same payload are two events, and storing the same
-//! file again adds none.
+//! An event is one hook invocation. The producer gives each invocation its
+//! own `event_id`, so equal payloads and timestamps still name two events.
+//! That ID, the line's time and its process stay in its data; storing the
+//! same file again adds none.
 
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule};

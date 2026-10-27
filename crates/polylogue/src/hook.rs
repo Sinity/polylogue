@@ -116,6 +116,7 @@ pub fn append_to_spool(
         extra.remove("conversation_history");
     }
     let mut line = json!({
+        "event_id": uuid::Uuid::now_v7().to_string(),
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
