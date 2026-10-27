@@ -10,6 +10,17 @@ use std::path::{Path, PathBuf};
 mod parse;
 
 /// The events Codex calls hooks on.
+const GEMINI_EVENTS: &[&str] = &[
+    "SessionStart",
+    "BeforeAgent",
+    "BeforeTool",
+    "AfterTool",
+    "AfterAgent",
+    "Notification",
+    "PreCompress",
+    "SessionEnd",
+];
+
 const CODEX_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
@@ -26,6 +37,7 @@ pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
             .root(polylogue_sources::claude_code::ROOT)
             .join("settings.json")),
         Harness::Codex => Ok(config.root(polylogue_sources::codex::ROOT).join("hooks.json")),
+        Harness::GeminiCli => Ok(config.root(polylogue_sources::origin::Root::HOME).join(".gemini/settings.json")),
         Harness::Hermes => Err(
             "Hermes reads its hooks from config.yaml: add `hooks: {pre_llm_call: [{command: \"polylogue hook pre_llm_call --harness hermes\"}]}`"
                 .into(),
@@ -36,6 +48,7 @@ pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
 fn harness_events(harness: Harness) -> &'static [&'static str] {
     match harness {
         Harness::Codex => CODEX_EVENTS,
+        Harness::GeminiCli => GEMINI_EVENTS,
         _ => EVENTS,
     }
 }
@@ -112,7 +125,9 @@ fn ours(hook: &Value) -> bool {
         ["--harness", name] => Harness::parse(name).is_some(),
         _ => false,
     };
-    hook["type"] == "command" && EVENTS.contains(&event) && harness_ok
+    hook["type"] == "command"
+        && (EVENTS.contains(&event) || GEMINI_EVENTS.contains(&event))
+        && harness_ok
 }
 
 /// Merge Polylogue's commands, keeping other hooks and entry metadata.
@@ -152,7 +167,7 @@ pub(super) fn merge_hooks(
             events.entry(*event).or_insert_with(|| json!([]))
                 .as_array_mut().expect("validated event array").push(json!({
                     "hooks": [{"type":"command", "command":command(harness, event),
-                        "timeout":if *event=="SessionStart" || *event=="UserPromptSubmit" {10} else {2}}]
+                        "timeout": (if *event=="SessionStart" || *event=="UserPromptSubmit" || *event=="BeforeAgent" {10} else {2}) * if harness == Harness::GeminiCli {1000} else {1}}]
                 }));
         }
     }

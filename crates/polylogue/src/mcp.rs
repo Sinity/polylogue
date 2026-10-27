@@ -86,9 +86,7 @@ impl ServerHandler for Polylogue {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("polylogue", env!("CARGO_PKG_VERSION")))
-            .with_instructions(
-                "Polylogue: the archive of your past AI sessions. Use brief at the start of work, recall to find earlier work, takeover to continue another session.",
-            )
+            .with_instructions(crate::manual::text())
     }
 
     async fn list_tools(

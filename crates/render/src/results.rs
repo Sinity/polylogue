@@ -25,6 +25,9 @@ fn render_with_links(
     out: &mut dyn Write,
     target: Option<&LinkTarget<'_>>,
 ) -> io::Result<()> {
+    if matches!(format, Format::Csv | Format::Org | Format::Yaml) {
+        return write!(out, "{}", crate::data::text(data, format)?);
+    }
     if format == Format::Json {
         return writeln!(out, "{data}");
     }
