@@ -38,28 +38,14 @@
       return;
     }
     const reader = body.body.getReader();
-    let held = [];
-    let size = 0;
-    const flush = () => {
-      if (!size) return;
-      const appendedBytes = new Uint8Array(size);
-      let at = 0;
-      for (const chunk of held) {
-        appendedBytes.set(chunk, at);
-        at += chunk.length;
-      }
-      port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
-      held = [];
-      size = 0;
-    };
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      held.push(value);
-      size += value.length;
-      if (size >= APPENDED_BYTES) flush();
+      for (let at = 0; at < value.length; at += APPENDED_BYTES) {
+        const appendedBytes = value.subarray(at, at + APPENDED_BYTES);
+        port.postMessage({ type: "appended_bytes", data: base64(appendedBytes) });
+      }
     }
-    flush();
   }
 
   async function answer(request) {
