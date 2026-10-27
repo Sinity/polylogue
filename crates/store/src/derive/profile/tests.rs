@@ -15,3 +15,59 @@ fn topic_strips_known_prefixes_and_preserves_unicode() {
     assert_eq!(clean_topic("   ", 120), None);
     assert_eq!(clean_topic("ééé", 2).as_deref(), Some("éé"));
 }
+
+#[test]
+fn profile_reads_prose_without_decoding_tool_output() {
+    use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let session = f
+        .session(SessionFacts {
+            id: "codex:output",
+            ..Default::default()
+        })
+        .unwrap();
+    let message = f
+        .message(
+            session,
+            MessageFacts {
+                id: "a",
+                role: "assistant",
+                written_by: "model",
+                text: Some("A substantive reply"),
+                at: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.tool_call(
+        session,
+        message,
+        CallFacts {
+            tool: "Bash",
+            action: "shell",
+            outcome: "ok",
+            at: Some(0),
+            output: Some("synthetic output"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut conn =
+        crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    // Reading this block would fail decoding; no profile fact depends on it.
+    conn.execute("UPDATE block SET body=X'FF' WHERE kind='tool_result'", [])
+        .unwrap();
+    let tx = conn.transaction().unwrap();
+    run(&tx, session).unwrap();
+    let facts: String = tx
+        .query_row(
+            "SELECT facts FROM session_profile WHERE session_pk=?1",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let facts: Facts = serde_json::from_str(&facts).unwrap();
+    assert_eq!(facts.tool_call_count, 1);
+    assert_eq!(facts.message_count, 1);
+}
