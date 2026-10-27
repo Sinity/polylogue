@@ -37,6 +37,11 @@ function commit() {
     }
   }
   list.replaceChildren(...pending.childNodes);
+  for (const button of list.querySelectorAll("[data-previous]")) {
+    button.hidden = false;
+    button.disabled = history.length < 2;
+    button.addEventListener("click", () => history.back());
+  }
   if (focused) [...list.querySelectorAll("[data-session]")].find(row => row.dataset.session === focused)?.querySelector("a")?.focus();
   pending = undefined;
   apply.hidden = true;
@@ -57,12 +62,17 @@ async function refresh() {
     const next = new DOMParser().parseFromString(await response.text(), "text/html").getElementById("session-list");
     if (!next) throw new Error("Session list unavailable");
     refreshNotices();
-    if (next.innerHTML === list.innerHTML) return;
+    if (next.innerHTML === list.innerHTML) {
+      if (pending) announcement.textContent = "Sessions are current.";
+      pending = undefined;
+      apply.hidden = true;
+      return;
+    }
     const oldRows = new Map([...list.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.innerHTML]));
     const newRows = new Map([...next.querySelectorAll("[data-session]")].map(row => [row.dataset.session, row.innerHTML]));
     updated = [...new Set([...oldRows.keys(), ...newRows.keys()])].filter(id => oldRows.get(id) !== newRows.get(id)).length;
     pending = next;
-    if (list.contains(document.activeElement)) {
+    if (list.contains(document.activeElement) || document.activeElement === apply) {
       apply.hidden = false;
       announcement.textContent = updated + " sessions updated. Apply updates when ready.";
     } else commit();
