@@ -518,6 +518,7 @@ fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
         || match host.ask(&crate::daemon::Request::Read {
+            slices: true,
             start: None,
             target: crate::daemon::ReadTarget::Session(session.clone()),
             view: "full".into(),

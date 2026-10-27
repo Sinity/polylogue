@@ -108,6 +108,7 @@ fn native_documents_search_and_read_through_http_with_masked_sources() {
         );
         let Response::Ok { data } = handle(
             Request::Read {
+                slices: true,
                 start: None,
                 target: crate::daemon::ReadTarget::Document(
                     polylogue_model::DocumentId::parse(id).unwrap(),

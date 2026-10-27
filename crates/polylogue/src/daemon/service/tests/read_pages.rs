@@ -10,6 +10,7 @@ fn page(
 ) -> Response {
     handle(
         Request::Read {
+            slices: true,
             start: None,
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse(session).unwrap(),
@@ -169,6 +170,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 &pool.reader().unwrap(),
                 &id,
                 super::super::read::Options {
+                    slices: true,
                     start: None,
                     view: "full",
                     format: "json",
@@ -363,6 +365,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
                     &pool.reader().unwrap(),
                     &id,
                     super::super::read::Options {
+                        slices: true,
                         start: None,
                         view: "full",
                         format: "json",
@@ -425,6 +428,7 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
     daemon.wait_for(|data| data["store"]["messages"] == 3);
     let request = |start, view: &str| Request::Read {
+        slices: true,
         target: crate::daemon::ReadTarget::Session(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         ),
@@ -437,7 +441,7 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     };
     let response = handle(
         request(
-            crate::daemon::ReadStart::Message(
+            crate::daemon::ReadSelection::Message(
                 polylogue_model::MessageId::parse("claude-code:anchor-1").unwrap(),
             ),
             "full",
@@ -452,7 +456,7 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     assert!(!data.to_string().contains("private-tail"));
     assert_eq!(data["position"]["message"], 1);
     let Response::Ok { data } = handle(
-        request(crate::daemon::ReadStart::Latest, "full"),
+        request(crate::daemon::ReadSelection::Latest, "full"),
         &daemon.daemon,
     ) else {
         panic!("latest failed")
@@ -462,13 +466,13 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     // An anchor whose message is hidden by this view is a valid empty read.
     assert!(matches!(
         handle(
-            request(crate::daemon::ReadStart::Latest, "actions"),
+            request(crate::daemon::ReadSelection::Latest, "actions"),
             &daemon.daemon
         ),
         Response::Ok { .. }
     ));
     assert!(
-        matches!(handle(request(crate::daemon::ReadStart::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
+        matches!(handle(request(crate::daemon::ReadSelection::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
     );
 }
 
@@ -513,11 +517,12 @@ fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters()
     let pool = fixture.reads().unwrap();
     let id = polylogue_model::SessionId::parse("claude-code:large").unwrap();
     let cache = super::super::read::page_ends::Cache::default();
-    let render = |cursor: Option<&str>, start: Option<&crate::daemon::ReadStart>| {
+    let render = |cursor: Option<&str>, start: Option<&crate::daemon::ReadSelection>| {
         super::super::read::run(
             &pool.reader().unwrap(),
             &id,
             super::super::read::Options {
+                slices: true,
                 view: "full",
                 format: "json",
                 with_parents: true,
@@ -571,12 +576,15 @@ fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters()
     }
     for (start, expected) in [
         (
-            crate::daemon::ReadStart::Message(
+            crate::daemon::ReadSelection::Message(
                 polylogue_model::MessageId::parse("claude-code:large-50000").unwrap(),
             ),
             "claude-code:large-50000",
         ),
-        (crate::daemon::ReadStart::Latest, "claude-code:large-99999"),
+        (
+            crate::daemon::ReadSelection::Latest,
+            "claude-code:large-99999",
+        ),
     ] {
         let Response::Ok { data } = render(None, Some(&start)) else {
             panic!("jump failed")
@@ -718,6 +726,7 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
             &pool.reader().unwrap(),
             &id,
             super::super::read::Options {
+                slices: true,
                 view,
                 format: "json",
                 with_parents: true,
@@ -729,7 +738,7 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
             cache.epoch(),
         )
     };
-    let latest = crate::daemon::ReadStart::Latest;
+    let latest = crate::daemon::ReadSelection::Latest;
     let Response::Ok { data } = read("prompts", Some(&latest), None) else {
         panic!("latest prompt decoded a hidden body")
     };

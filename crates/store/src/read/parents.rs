@@ -60,6 +60,9 @@ pub struct VisitStart {
     pub key: Option<i64>,
 }
 
+pub(super) const PROMPT_SQL: &str =
+    "m.role='user' AND (m.prompt_kind IS NULL OR m.prompt_kind NOT IN ('harness','model'))";
+
 pub(super) struct Visibility {
     pub(super) kinds: String,
     pub(super) prompts: bool,

@@ -30,15 +30,17 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             Ok(request @ Request::Attachment { reveal: true, .. }) => {
                 super::attachment::socket(&out, request, d)
             }
-            Ok(Request::Changes { since }) => match service::change_feed(d, since.as_deref()) {
-                Ok(mut file) => {
-                    if std::io::copy(&mut file, &mut out).is_err() {
-                        return;
+            Ok(Request::Changes { since }) => {
+                match service::change_feed(d, since.as_deref(), false) {
+                    Ok(mut file) => {
+                        if std::io::copy(&mut file, &mut out).is_err() {
+                            return;
+                        }
+                        continue;
                     }
-                    continue;
+                    Err(response) => response,
                 }
-                Err(response) => response,
-            },
+            }
             Ok(r) => handle(r, d),
             Err(e) => error("bad_request", e),
         };

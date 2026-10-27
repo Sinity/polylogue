@@ -1,21 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-
 const source = await readFile(new URL("../live.js", import.meta.url), "utf8");
 let serial = 0;
-const flush = () => new Promise(resolve => setImmediate(resolve));
+const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
 const envelope = data => JSON.stringify({ result: "ok", data }) + "\n";
 const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(envelope(begin) + envelope(change) + envelope(complete(position)));
-
+const snapshot = (next = null) => Response.json({ rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0" }, next });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
-  const timers = new Map();
-  const intervals = new Map();
-  const events = new Map();
+  const timers = new Map(), intervals = new Map(), events = new Map();
   let next = 0;
   globalThis.document = { hidden: false, addEventListener: (name, fn) => events.set(name, fn) };
   globalThis.window = { addEventListener() {} };
@@ -26,78 +23,68 @@ async function environment(t, fetch) {
   globalThis.clearInterval = id => intervals.delete(id);
   t.after(() => { for (const [key, value] of saved) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
   const module = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64") + "#" + serial++);
-  return {
-    ...module, events, timers, intervals,
-    async tick() {
-      assert.equal(timers.size, 1);
-      const [id, fn] = timers.entries().next().value;
-      timers.delete(id);
-      await fn();
-      await flush();
-    },
-  };
+  return { ...module, events, timers, intervals, async tick() {
+    assert.equal(timers.size, 1);
+    const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); await flush();
+  }};
 }
-
-test("an interrupted batch repeats references without advancing its position", async t => {
-  const requests = [];
-  const applied = [];
-  const errors = [];
+test("an interrupted batch repeats references from the last completed position", async t => {
+  const requests = [], applied = [], errors = [];
   const env = await environment(t, async url => {
+    if (url.startsWith("/api/v1/query")) return snapshot();
     requests.push(url);
-    if (requests.length === 2) return new Response(envelope(begin) + envelope(change));
-    return batch("synthetic:1:0");
+    return requests.length === 2 ? new Response(envelope(begin) + envelope(change)) : batch("synthetic:1:0");
   });
   const stop = env.watchChanges({ apply: line => applied.push(line.change.ref), error: error => errors.push(error.message) });
-  await flush();
-  await env.tick();
-  await env.tick();
-  assert.deepEqual(requests, ["/api/v1/changes", "/api/v1/changes?since=synthetic%3A1%3A0", "/api/v1/changes?since=synthetic%3A1%3A0"]);
-  assert.equal(applied.length, 3);
-  assert.match(errors[0], /interrupted/);
-  stop();
+  await flush(); await env.tick(); await env.tick();
+  assert.deepEqual(requests, ["/api/v1/changes?since=synthetic%3A0%3A0", "/api/v1/changes?since=synthetic%3A1%3A0", "/api/v1/changes?since=synthetic%3A1%3A0"]);
+  assert.equal(applied.length, 4); assert.match(errors[0], /interrupted/); stop();
 });
-
-test("one active request serves a visible tab and hidden tabs abort it", async t => {
+test("joining reads every current page without resetting the shared position", async t => {
+  const requests = [], pages = [];
+  let snapshots = 0;
+  const env = await environment(t, async url => {
+    requests.push(url);
+    if (url.startsWith("/api/v1/query")) return snapshot(++snapshots % 2 ? "next-page" : null);
+    return batch("synthetic:5:0");
+  });
+  const stopA = env.watchChanges({}); await flush();
+  const stopB = env.watchChanges({ snapshot: page => pages.push(page) }); await flush();
+  assert.equal(pages.length, 2);
+  assert.equal(requests.filter(url => url.startsWith("/api/v1/query")).length, 4);
+  const feeds = requests.filter(url => url.startsWith("/api/v1/changes"));
+  assert.equal(feeds.length, 2);
+  assert.equal(feeds[1], "/api/v1/changes?since=synthetic%3A5%3A0");
+  stopA(); stopB();
+});
+test("one active change request serves the tab and hidden tabs abort it", async t => {
   let calls = 0;
   const env = await environment(t, async (url, { signal }) => {
+    if (url.startsWith("/api/v1/query")) return snapshot();
     calls++;
     return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("hidden", "AbortError"))));
   });
-  const stopA = env.watchChanges({});
-  const stopB = env.watchChanges({});
+  const stopA = env.watchChanges({}), stopB = env.watchChanges({}); await flush();
   assert.equal(calls, 1);
-  document.hidden = true;
-  env.events.get("visibilitychange")();
-  await flush();
-  assert.equal(env.timers.size, 0);
-  assert.equal(env.intervals.size, 0);
-  document.hidden = false;
-  env.events.get("visibilitychange")();
-  assert.equal(calls, 2);
-  stopA(); stopB();
-  await flush();
+  document.hidden = true; env.events.get("visibilitychange")(); await flush();
+  assert.equal(env.timers.size, 0); assert.equal(env.intervals.size, 0);
+  document.hidden = false; env.events.get("visibilitychange")(); assert.equal(calls, 2);
+  stopA(); stopB(); await flush();
 });
-
-test("rotated authentication stops requests and clock refreshes", async t => {
-  const errors = [];
-  let calls = 0;
-  const env = await environment(t, async () => { calls++; return new Response("expired", { status: 401 }); });
-  const stop = env.watchChanges({ error: error => errors.push(error.message) });
-  await flush();
-  env.events.get("visibilitychange")();
-  await flush();
-  assert.equal(calls, 1);
-  assert.equal(env.timers.size, 0);
-  assert.equal(env.intervals.size, 0);
-  assert.match(errors[0], /Reopen with polylogue web/);
-  stop();
+test("expired authentication stops requests and clock refreshes", async t => {
+  let calls = 0; const errors = [];
+  const env = await environment(t, async url => {
+    if (url.startsWith("/api/v1/query")) return snapshot();
+    calls++; return new Response("expired", { status: 401 });
+  });
+  const stop = env.watchChanges({ error: error => errors.push(error.message) }); await flush();
+  env.events.get("visibilitychange")(); await flush();
+  assert.equal(calls, 1); assert.equal(env.timers.size, 0); assert.equal(env.intervals.size, 0);
+  assert.match(errors[0], /Reopen with polylogue web/); stop();
 });
-
-test("generation replacement reaches the view before its reference changes", async t => {
+test("a generation change reaches views before replacement references", async t => {
   const seen = [];
-  const env = await environment(t, async () => new Response(envelope({ ...begin, replacement: true, generation_changed: true }) + envelope(change) + envelope(complete("new:1:0"))));
+  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? snapshot() : new Response(envelope({ ...begin, replacement: true, generation_changed: true }) + envelope(change) + envelope(complete("new:1:0"))));
   const stop = env.watchChanges({ begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
-  await flush();
-  assert.deepEqual(seen, [true, "change", "complete"]);
-  stop();
+  await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });

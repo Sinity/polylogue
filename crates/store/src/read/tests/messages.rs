@@ -208,7 +208,7 @@ fn visible_tool_outcomes_use_original_source_block_indices() {
     let selected = reader
         .select_messages(&SessionId::parse("claude-code:outcome").unwrap(), false)
         .unwrap();
-    let outline = selected.outline(0, 10).unwrap();
+    let outline = selected.outline(None, 10).unwrap();
     assert_eq!(outline.len(), 1);
     assert_eq!(outline[0].kinds, vec!["tool failure", "compaction"]);
     assert_eq!(outline[0].events.len(), 1);

@@ -7,11 +7,11 @@
 use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
 use polylogue_render::{results, shell_quote};
 mod cost;
-mod live;
+mod overview;
 pub(crate) mod reader;
 mod search;
 pub use cost::cost;
-pub use live::home;
+pub use overview::home;
 pub use search::search;
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -38,7 +38,7 @@ pub fn layout(title: &str, query: &str, cli: &str, body: &str) -> String {
 </header>
 <details id="key-help"><summary>Keyboard help (?)</summary>
 <label><input id="shortcuts" type="checkbox" checked> Single-character shortcuts</label>
-<p>/ Search; j/k Move focus; o Expand; [ Previous visited page; ] Next page; y Copy CLI; ? Help.</p></details>
+<p>/ Search; j/k Move focus; o Expand; [ Previous page; ] Next page; y Copy CLI; ? Help.</p></details>
 <main id="main" tabindex="-1">{body}</main>
 </body></html>
 "##,
