@@ -485,3 +485,125 @@ fn no_sort_key_holds_bytes() {
     }
     assert!(checked > 100, "{checked}");
 }
+
+/// Each page of `text` by `size`, read now, continuing after `cursor`.
+fn next_page(w: &TestArchive, text: &str, size: u64, cursor: Option<&str>) -> Value {
+    let mut request = ask(text);
+    request.page_size = Some(size);
+    request.cursor = cursor;
+    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+}
+
+/// The `id` of each row: a session's or a message's.
+fn row_ids(v: &Value) -> Vec<String> {
+    v["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Sessions written between pages, one sorting before every row and one
+/// after, in each order (time, a number, a random order) and page sizes
+/// 1, 2 and 7: every row there on the first page appears exactly once, no
+/// new row that sorts before the last row shown appears, and each page
+/// counts the rows there now.
+#[test]
+fn rows_written_between_pages_continue_after_the_last_row_shown() {
+    for text in [
+        "sessions where kind:*",
+        "sessions where kind:* | sort by messages desc",
+        "sessions where kind:* | sort by random(5)",
+        "messages where active:*",
+        "messages where active:* | sort by at desc",
+    ] {
+        for size in [1, 2, 7] {
+            let mut w = morrow();
+            let before = row_ids(&q(&w, text));
+            let first = next_page(&w, text, size, None);
+            let mut shown = row_ids(&first);
+            let Some(mut cursor) = first["next"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            for (name, day, messages) in [("new-early", -5, 9), ("new-late", 20, 1)] {
+                let s =
+                    w.fx.session(SessionFacts {
+                        id: &format!("claude-code:{name}"),
+                        started: at(day, 9),
+                        last: at(day, 10),
+                        ..SessionFacts::default()
+                    })
+                    .unwrap();
+                for n in 0..messages {
+                    w.fx.message(
+                        s,
+                        msg(&format!("{name}-{n}"), "user", "human", "new", at(day, 9)),
+                    )
+                    .unwrap();
+                }
+            }
+            let now = row_ids(&q(&w, text));
+            let anchor = now.iter().position(|id| Some(id) == shown.last()).unwrap();
+            loop {
+                let page = next_page(&w, text, size, Some(&cursor));
+                assert_eq!(page["count"], now.len() as u64, "{text} by {size}");
+                shown.extend(row_ids(&page));
+                match page["next"].as_str() {
+                    Some(next) => cursor = next.to_owned(),
+                    None => break,
+                }
+            }
+            for id in &before {
+                let times = shown.iter().filter(|s| *s == id).count();
+                assert_eq!(times, 1, "{text} by {size}: {id} shown {times} times");
+            }
+            for id in now[..anchor].iter().filter(|id| !before.contains(id)) {
+                assert!(
+                    !shown.contains(id),
+                    "{text} by {size}: {id} sorts before the last row shown"
+                );
+            }
+        }
+    }
+}
+
+/// Pages of a query with relative times, each requested a little later
+/// and across midnight, concatenate to the answer at the first page's
+/// time: the cursor carries the time the first page resolved.
+#[test]
+fn pages_of_relative_times_keep_the_first_pages_clock() {
+    let w = morrow();
+    // 2026-10-07 23:00 UTC.
+    let first_now = OCT1 + 6 * DAY + 11 * 3_600_000;
+    for text in [
+        "since:7d",
+        "messages where since:3d",
+        "today",
+        "yesterday",
+        "tool_calls where since:7d",
+    ] {
+        let mut whole = ask(text);
+        whole.now = first_now;
+        whole.page_size = Some(1000);
+        let whole = run_q(&w, whole).unwrap();
+        let mut rows = vec![];
+        let mut cursor: Option<String> = None;
+        let mut now = first_now;
+        loop {
+            let mut request = ask(text);
+            request.now = now;
+            request.page_size = Some(1);
+            request.cursor = cursor.as_deref();
+            let page = run_q(&w, request).unwrap();
+            assert_eq!(page["count"], whole["count"], "{text}");
+            rows.extend(page["rows"].as_array().unwrap().iter().cloned());
+            cursor = page["next"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+            now += 2 * 3_600_000;
+        }
+        assert_eq!(&rows, whole["rows"].as_array().unwrap(), "{text}");
+    }
+}

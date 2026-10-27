@@ -1096,13 +1096,18 @@ fn the_work_unit_reads_the_derived_graph() {
     );
 }
 
+mod agent_input;
 mod combine;
 mod day;
 mod evidence;
+mod generated;
 mod live;
 mod modes;
 mod morrow_examples;
 mod references;
+mod sequences;
+mod surfaces;
+mod unknowns;
 
 #[test]
 fn failed_saved_result_storage_is_not_an_empty_catalog() {

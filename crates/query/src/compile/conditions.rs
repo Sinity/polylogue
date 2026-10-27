@@ -185,17 +185,29 @@ impl<'a> Compiler<'a> {
                 let p = self.text_param(&me);
                 format!("{s}.id = {p}")
             }
-            id => {
-                let p = self.text_param(&like_prefix(id));
-                self.id_checks.push(IdCheck {
-                    word: id.to_owned(),
-                    sql: "SELECT id FROM session WHERE native_id LIKE ?1 ESCAPE '\\' LIMIT 5"
-                        .into(),
-                    params: vec![Param::Text(like_prefix(id))],
-                });
-                format!("{s}.native_id LIKE {p} ESCAPE '\\'")
-            }
+            id => self.one_session(&s, "native_id", id),
         })
+    }
+
+    /// The one session whose `column` is `id`, or else starts with it: the
+    /// caller checks that exactly one does before the query runs, so a
+    /// prefix two sessions share is refused rather than answered with both.
+    pub(super) fn one_session(&mut self, s: &str, column: &str, id: &str) -> String {
+        let exact = self.text_param(id);
+        let prefix = self.text_param(&like_prefix(id));
+        self.id_checks.push(IdCheck {
+            word: id.to_owned(),
+            sql: format!(
+                "SELECT id FROM session WHERE {column} = ?1 UNION \
+                 SELECT id FROM session WHERE {column} LIKE ?2 ESCAPE '\\' \
+                 AND NOT EXISTS (SELECT 1 FROM session WHERE {column} = ?1) LIMIT 5"
+            ),
+            params: vec![Param::Text(id.to_owned()), Param::Text(like_prefix(id))],
+        });
+        format!(
+            "({s}.{column} = {exact} OR (NOT EXISTS (SELECT 1 FROM session WHERE {column} = {exact}) \
+             AND {s}.{column} LIKE {prefix} ESCAPE '\\'))"
+        )
     }
 
     /// A provider URL pasted as a reference.
@@ -283,11 +295,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
-        let exact = self.text_param(id);
-        let prefix = self.text_param(&like_prefix(id));
-        Ok(format!(
-            "({s}.id = {exact} OR {s}.id LIKE {prefix} ESCAPE '\\')"
-        ))
+        Ok(self.one_session(&s, "id", id))
     }
 
     /// The alias of the session a row of this unit belongs to.
@@ -415,6 +423,10 @@ impl<'a> Compiler<'a> {
             return Err(self.unknown_field(field, scope.unit, span));
         };
         let def = fields::lookup(unit, &lower).expect("checked");
+        // `F:*` names a field without restricting it, whatever its rule.
+        if matches!(op, FieldOp::Match(Value::Any)) {
+            return Ok("1".into());
+        }
         if let Some(compile) = def.compile {
             let call = custom_fields::Call {
                 unit,
@@ -562,6 +574,16 @@ impl<'a> Compiler<'a> {
             position: span.start,
             message,
         };
+        // A closed set naming `unknown` stores the word for a value nobody
+        // knows: it is matched as unknown, never as one more value.
+        let stores_unknown = def.values.is_some_and(|set| set.contains(&"unknown"));
+        let known;
+        let expr = if stores_unknown {
+            known = format!("NULLIF(lower({expr}), 'unknown')");
+            known.as_str()
+        } else {
+            expr
+        };
         match (def.kind, op) {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
             (
@@ -584,11 +606,19 @@ impl<'a> Compiler<'a> {
                         }
                     }
                 }
+                let (unknown, values): (Vec<&String>, Vec<&String>) = values
+                    .iter()
+                    .partition(|x| stores_unknown && x.eq_ignore_ascii_case("unknown"));
                 let ps: Vec<String> = values
                     .iter()
                     .map(|x| self.text_param(&x.to_lowercase()))
                     .collect();
-                Ok(format!("lower({expr}) IN ({})", ps.join(", ")))
+                let listed = format!("lower({expr}) IN ({})", ps.join(", "));
+                Ok(match (unknown.is_empty(), ps.is_empty()) {
+                    (true, _) => listed,
+                    (false, true) => format!("({expr}) IS NULL"),
+                    (false, false) => format!("({listed} OR ({expr}) IS NULL)"),
+                })
             }
             (Kind::Match, FieldOp::Compare(op, value)) => {
                 let p = self.text_param(&value.to_lowercase());

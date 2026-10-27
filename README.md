@@ -127,12 +127,14 @@ Words in a query match full text and rank the rows by relevance. With
 embeddings built, `near:TEXT` ranks rows by similarity to TEXT: the query's
 other conditions choose the rows first and every row they keep is ranked,
 and with words in the same query both orders are fused (reciprocal rank
-fusion). `| union (…)` adds another query's rows; when either side is
-ranked, the rows rank by fusing every list's order, and `found_in` names
-the lists that ranked each row. `| fuse (…)` ranks the rows also by another
-query's order without adding any. Ranked answers page by cursor like any
-other. `recall` is one such query: every word in prose, every word in tool
-output and similarity to the whole text, with the current directory's
+fusion). Rows without a vector follow the ranked ones, unranked, and the
+answer counts them (`unknown.near`); a count or grouping after `near:`
+computes no similarity. `| union (…)` adds another query's rows; when either
+side is ranked, the rows rank by fusing every list's order, and `found_in`
+names the lists that ranked each row. `| fuse (…)` ranks the rows also by
+another query's order without adding any. Ranked answers page by cursor like
+any other. `recall` is one such query: every word in prose, every word in
+tool output and similarity to the whole text, with the current directory's
 sessions ranked in one more list.
 
 The daemon keeps warm what common answers need: the vectors in memory, the

@@ -196,7 +196,13 @@ impl<'a> Compiler<'a> {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
-                    where_sql.push(self.cond(cond, &scope, false)?);
+                    // A later filter is one more condition on the same rows:
+                    // its words rank them as they would in the `where`,
+                    // unless a sort already ordered them.
+                    self.in_stage = true;
+                    let sql = self.cond(cond, &scope, order.is_none());
+                    self.in_stage = false;
+                    where_sql.push(sql?);
                 }
                 StageKind::Where { cond } => {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
@@ -349,6 +355,29 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        // An answer of groups, a summary, match rows or a measurement uses
+        // only which rows match, so `near:` computes no similarity for it,
+        // unless a selection already chose rows by the ranking.
+        let rows_answer =
+            matched.is_none() && group.is_none() && aggs.is_none() && measure.is_none();
+        // A fused ranking already read the similarities.
+        if self.near_rank.is_some()
+            && !rows_answer
+            && !self.ranking_chose_rows
+            && self.fusion.is_none()
+        {
+            self.ctes.drain(self.near_ctes.clone());
+            self.near_rank = None;
+            self.near_join = None;
+            self.near = None;
+        }
+        if let Some(note) = self.near_disabled.take()
+            && !rows_answer
+            && !self.ranking_chose_rows
+        {
+            self.incomplete.remove(note);
+        }
+
         self.fuse_pending(
             std::mem::take(&mut pending),
             &scope,
@@ -368,6 +397,7 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
+        let mut count_without_vectors = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
@@ -504,6 +534,9 @@ impl<'a> Compiler<'a> {
                 self.apply_selection(&scope, &mut where_sql, &order, selection.take());
             }
             let wh = and_all(&where_sql);
+            count_without_vectors = self.near_rank.as_ref().map(|near| {
+                format!("{ctes}SELECT count(*) FROM {from} WHERE {wh} AND ({near}) IS NULL")
+            });
             let order = order.unwrap_or_else(|| self.default_order(&scope));
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
             if !self.opts.fields.is_empty() {
@@ -628,6 +661,7 @@ impl<'a> Compiler<'a> {
             page_size,
             near: self.near,
             definitions: self.definitions,
+            count_without_vectors,
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
@@ -687,6 +721,9 @@ impl<'a> Compiler<'a> {
             return;
         };
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        if order.is_none() && (self.ranking().is_some() || self.near_disabled.is_some()) {
+            self.ranking_chose_rows = true;
+        }
         let order = order.clone().unwrap_or_else(|| self.default_order(scope));
         let from = self.from(scope).unwrap_or_default();
         let inner = format!(
@@ -741,12 +778,20 @@ impl<'a> Compiler<'a> {
         let spec = units::spec(scope.unit);
         let time = a.expand(spec.time);
         if let Some(rank) = self.ranking() {
-            return vec![
+            // Equal ranks at equal times still need one order, or a page
+            // continuing after one of them would skip the others.
+            let mut o = vec![
                 format!("{rank} IS NULL"),
                 rank,
                 format!("{time} IS NULL"),
                 format!("{time} DESC"),
             ];
+            o.extend(
+                spec.identity
+                    .iter()
+                    .map(|term| format!("{} DESC", a.expand(term))),
+            );
+            return o;
         }
         let desc = if spec.newest_first { " DESC" } else { "" };
         let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];
