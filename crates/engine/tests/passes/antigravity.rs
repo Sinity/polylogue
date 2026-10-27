@@ -21,7 +21,7 @@ fn antigravity_exports_and_trajectory_databases_are_read_by_the_real_loop_and_re
         let (mut engine, _lock) = w.engine(64 << 20);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-        let pool = ReadPool::new(&w.root);
+        let pool = w.reads();
         let reader = pool.reader().unwrap();
         let exported = reader
             .messages(&SessionId::parse("antigravity:exported").unwrap())
@@ -44,7 +44,7 @@ fn antigravity_exports_and_trajectory_databases_are_read_by_the_real_loop_and_re
     let (mut engine, _lock) = w.engine(64 << 20);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    let pool = ReadPool::new(&w.root);
+    let pool = w.reads();
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
