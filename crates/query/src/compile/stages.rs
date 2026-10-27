@@ -224,9 +224,8 @@ impl<'a> Compiler<'a> {
             let s = &scope.a.s;
             let unpriced = |sessions: &str| {
                 format!(
-                    "EXISTS (SELECT 1 FROM message xp WHERE xp.session_pk IN ({sessions}) \
-                     AND xp.duplicate_of IS NULL AND COALESCE(xp.on_active_path, 1) = 1 \
-                     AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)"
+                    "EXISTS (SELECT 1 FROM message xp WHERE {} AND xp.role = 'assistant' AND xp.cost_nusd IS NULL)",
+                    fields::own_messages("xp", Some(&format!("IN ({sessions})")))
                 )
             };
             let partial = match field {

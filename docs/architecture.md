@@ -176,7 +176,14 @@ query ranked by `near:` pages the same way: its similarities come from the
 vectors held in memory, through `pl_similarity(text_hash)` while the query
 runs, so its other conditions choose the rows before any ranking; with
 words in the same query the two orders are fused (reciprocal rank fusion).
-Its cursor is refused once vectors were stored or removed. A query inside a
+Its cursor is refused once vectors were stored or removed. Semantic setup runs
+only when the answer needs ranking, including a limit that selects rows before
+a count. The final row query keeps each row's similarity in a hidden column,
+so one statement counts both the answer and its rows without a vector, after
+stages such as `distinct`. Session `has:errors` and `has:tool_calls` inspect
+its own messages: duplicates and abandoned branches are excluded. Every field
+that names a session resolves an exact ID before a unique prefix and refuses
+an ambiguous prefix. A query inside a
 query (a combining stage, `FIELD in (…)`) is compiled on its own over the
 outer query's parameters and read as a subquery of the one statement; a
 union with a ranked side ranks by fusing every list's order, computed once
