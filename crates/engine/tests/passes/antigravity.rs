@@ -91,14 +91,20 @@ fn opaque_conversation_files_and_conversion_events_share_a_session_and_rebuild()
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     let pool = w.reads();
     let reader = pool.reader().unwrap();
-    let mut events = reader
+    let events = reader
         .events(&SessionId::parse("antigravity:not-converted").unwrap())
         .unwrap();
-    events.sort_by(|a, b| a.kind.cmp(&b.kind));
     assert_eq!(events.len(), 2, "{events:?}");
-    assert_eq!(events[0].kind, "antigravity_conversion");
-    assert_eq!(events[0].data["status"], "server_unavailable");
-    assert_eq!(events[1].kind, "antigravity_conversation_bytes");
+    let conversion = events
+        .iter()
+        .find(|event| event.kind == "antigravity_conversion")
+        .unwrap();
+    assert_eq!(conversion.data["status"], "server_unavailable");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == "antigravity_conversation_bytes")
+    );
     let sessions = reader
         .query(
             "SELECT id FROM session WHERE id='antigravity:not-converted'",
