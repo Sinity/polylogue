@@ -53,24 +53,26 @@ impl Engine {
         .map_err(|e| format!("repository lookups in {}: {e}", dir.display()))
     }
 
-    /// Runs the collector of every origin that has one and whose setting
-    /// the operator turned on. Returns the errors to report on the pass.
+    /// Runs each origin's collector, honoring its declared setting.
     fn run_collectors(&self) -> Vec<String> {
         let mut errors = Vec::new();
+        let state_dir = self.config.state_dir();
         for origin in ORIGINS {
             let Some(collector) = &origin.collector else {
                 continue;
             };
-            let on = self
-                .reads
-                .reader()
-                .and_then(|r| r.setting(collector.setting, &self.config.machine));
-            match on {
-                Ok(Some(value)) if value == "on" => {}
-                Ok(_) => continue,
-                Err(e) => {
-                    errors.push(format!("{} collector: {e}", origin.name));
-                    continue;
+            if let Some(setting) = collector.setting {
+                let on = self
+                    .reads
+                    .reader()
+                    .and_then(|r| r.setting(setting, &self.config.machine));
+                match on {
+                    Ok(Some(value)) if value == "on" => {}
+                    Ok(_) => continue,
+                    Err(e) => {
+                        errors.push(format!("{} collector: {e}", origin.name));
+                        continue;
+                    }
                 }
             }
             let spool = self.config.root(origin.root).join(
@@ -78,9 +80,16 @@ impl Engine {
                     .spool_dir()
                     .expect("an origin with a collector has a spool"),
             );
-            if let Err(e) = (collector.sync)(&self.config.state_dir(), &spool) {
-                errors.push(format!("{} collector: {e}", origin.name));
-            }
+            let paths = polylogue_sources::origin::CollectorPaths {
+                home: &self.config.home,
+                state_dir: &state_dir,
+                spool: &spool,
+            };
+            errors.extend(
+                (collector.sync)(&paths)
+                    .into_iter()
+                    .map(|e| format!("{} collector: {e}", origin.name)),
+            );
         }
         errors
     }
@@ -118,10 +127,6 @@ impl Engine {
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
             let mut errors = self.run_collectors();
-            errors.extend(polylogue_sources::antigravity::server::sync(
-                &self.config.home,
-                &self.config.spool_dir("antigravity-exports"),
-            ));
             errors.extend(self.refresh_lookups().err());
             let (found, unreadable) = collect::scan(&self.config);
             (found, unreadable, errors)

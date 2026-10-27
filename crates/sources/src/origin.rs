@@ -111,14 +111,19 @@ pub struct OriginSpec {
     pub collector: Option<Collector>,
 }
 
-/// Fetches an origin's files into its spool, each pass while its setting
-/// is `on`. The files it writes change a watched location, so the loop
-/// collects them like any other.
+/// Fetches an origin's files into its spool before the loop reads it.
 pub struct Collector {
-    pub setting: &'static str,
-    /// Writes what is new into the spool (second argument); the state
-    /// directory (first) holds the credentials the operator gave it.
-    pub sync: fn(&Path, &Path) -> Result<(), String>,
+    /// None runs every pass; Some runs only when this setting is `on`.
+    pub setting: Option<&'static str>,
+    /// Writes new inputs into the spool and returns the errors for the pass.
+    pub sync: fn(&CollectorPaths<'_>) -> Vec<String>,
+}
+
+/// Configured directories a collector reads from and writes to.
+pub struct CollectorPaths<'a> {
+    pub home: &'a Path,
+    pub state_dir: &'a Path,
+    pub spool: &'a Path,
 }
 
 /// An export's asset files: the member files that hold attachment bytes,
@@ -333,7 +338,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         agent_env: &[],
         web: None,
         assets: None,
-        collector: None,
+        collector: Some(crate::antigravity::server::COLLECTOR),
     },
     OriginSpec {
         name: "antigravity-database",

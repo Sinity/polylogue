@@ -5,6 +5,13 @@ use std::net::TcpListener;
 use std::thread;
 
 fn server(replies: Vec<(String, Json, u16, Json)>) -> (Server, thread::JoinHandle<()>) {
+    server_with_change(replies, None)
+}
+
+fn server_with_change(
+    replies: Vec<(String, Json, u16, Json)>,
+    change: Option<PathBuf>,
+) -> (Server, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let task = thread::spawn(move || {
@@ -37,6 +44,11 @@ fn server(replies: Vec<(String, Json, u16, Json)>) -> (Server, thread::JoinHandl
             let mut body = vec![0; length.unwrap()];
             reader.read_exact(&mut body).unwrap();
             assert_eq!(serde_json::from_slice::<Json>(&body).unwrap(), expected);
+            if method == "ConvertTrajectoryToMarkdown"
+                && let Some(path) = &change
+            {
+                fs::write(path, b"changed during conversion").unwrap();
+            }
             let body = serde_json::to_vec(&reply).unwrap();
             write!(socket,"HTTP/1.1 {status} Reply\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n",body.len()).unwrap();
             socket.write_all(&body).unwrap();
@@ -68,16 +80,16 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
     let path = temp.path().join("one.pb");
     fs::write(&path, b"synthetic opaque bytes").unwrap();
     let spool = temp.path().join("spool");
-    let (server, task) = server(vec![
+    let (client, task) = server(vec![
         search(1),
         markdown(
             "one",
             json!({"markdown":"### User Input\nQuestion\n### Planner Response\nAnswer"}),
         ),
     ]);
-    assert!(server.agent.config().proxy().is_none());
-    assert_eq!(server.agent.config().max_redirects(), 0);
-    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[server]).is_empty());
+    assert!(client.agent.config().proxy().is_none());
+    assert_eq!(client.agent.config().max_redirects(), 0);
+    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[client]).is_empty());
     task.join().unwrap();
     let file = fs::read_dir(&spool)
         .unwrap()
@@ -100,7 +112,18 @@ fn converts_vendor_markdown_and_keeps_it_for_offline_rebuild() {
             .unwrap()
             .contains("synthetic-token")
     );
-    assert!(sync_paths(&[path], &spool, &[]).is_empty());
+    assert!(sync_paths(std::slice::from_ref(&path), &spool, &[]).is_empty());
+    let second = temp.path().join("two.pb");
+    fs::write(&second, b"another trajectory").unwrap();
+    let (client, task) = server(vec![
+        search(2),
+        markdown(
+            "two",
+            json!({"markdown":"### User Input\nAnother question"}),
+        ),
+    ]);
+    assert!(sync_paths(&[path, second], &spool, &[client]).is_empty());
+    task.join().unwrap();
 }
 
 #[test]
@@ -184,4 +207,24 @@ fn duplicate_conversation_ids_are_reported_without_conversion() {
             .iter()
             .all(|e| e.contains("duplicate conversation identity"))
     );
+}
+
+#[test]
+fn refuses_an_export_if_the_trajectory_changes_during_conversion() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("one.pb");
+    fs::write(&path, b"original trajectory").unwrap();
+    let spool = temp.path().join("spool");
+    let (client, task) = server_with_change(
+        vec![
+            search(1),
+            markdown("one", json!({"markdown":"### Planner Response\nAnswer"})),
+        ],
+        Some(path.clone()),
+    );
+    let errors = sync_paths(&[path], &spool, &[client]);
+    task.join().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("trajectory changed during conversion"));
+    assert!(!spool.exists());
 }
