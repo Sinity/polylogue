@@ -129,7 +129,11 @@ fn profiles_comparison_pace_and_similarity_page_with_the_query_cursor() {
                 assert!(ids.insert(id));
             }
             match page["next"].as_str() {
-                Some(next) => cursor = Some(next.into()),
+                Some(next) => {
+                    let command = crate::commands::command("query").unwrap();
+                    assert!((command.print)(&page).contains(&format!("--cursor {next}")));
+                    cursor = Some(next.into());
+                }
                 None => break page["count"].as_u64().unwrap(),
             }
         };
