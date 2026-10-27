@@ -334,6 +334,7 @@ pub(super) fn unknown_scope(reader: &Reader<'_>, selection: &Selection) -> Resul
     let selection = Selection {
         since: None,
         until: None,
+        undated: false,
         ..selection.clone()
     };
     let (cond, params) = selection.condition();

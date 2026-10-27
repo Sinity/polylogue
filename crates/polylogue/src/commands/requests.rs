@@ -570,3 +570,25 @@ pub fn note_read(_: &Command, v: &Values, _: &Caller) -> Built {
         id: v.text("id").ok_or("id is required")?,
     })
 }
+
+pub fn timeline(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Timeline {
+        date: v.text("date").filter(|s| !s.is_empty()),
+        across_years: v.flag("across_years"),
+        undated: v.flag("undated"),
+        cursor: v.text("cursor"),
+        page_size: v.integer("limit"),
+    })
+}
+pub fn cost(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Cost {
+        month: v.text("month").filter(|s| !s.is_empty()),
+        undated: v.flag("undated"),
+        unknown_model: v.flag("unknown_model"),
+        query: v.text("query").unwrap_or_else(|| "sessions".into()),
+        date: v.text("date").filter(|s| !s.is_empty()),
+        model: v.text("model").filter(|s| !s.is_empty()),
+        cursor: v.text("cursor"),
+        page_size: v.integer("limit"),
+    })
+}
