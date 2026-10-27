@@ -544,3 +544,55 @@ fn title_topic_masks_before_truncation_without_rewriting_recorded_title() {
     assert_eq!(profile.title.as_deref(), Some(title.as_str()));
     assert!(!profile.facts.topic.unwrap().contains("sk-ant"));
 }
+
+#[test]
+fn profiles_include_repositories_from_every_recorded_working_directory() {
+    let mut fixture = WriterArchive::new();
+    fixture.lookups = vec![
+        polylogue_model::RepoLookup {
+            path: "/synthetic/one".into(),
+            remote: Some("https://example.test/team/one.git".into()),
+            root_commit: Some("root-one".into()),
+        },
+        polylogue_model::RepoLookup {
+            path: "/synthetic/two".into(),
+            remote: Some("https://example.test/team/two.git".into()),
+            root_commit: Some("root-two".into()),
+        },
+    ];
+    let mut session = Session::new(sid("repositories"), SessionKind::Main);
+    session.cwd = vec![
+        "/synthetic/one".into(),
+        "/synthetic/two".into(),
+        "/synthetic/unknown".into(),
+    ];
+    fixture.write_session(
+        session,
+        vec![message(
+            "u",
+            "repositories",
+            Role::User,
+            0,
+            vec![Block::Text {
+                text: "Inspect both repositories".into(),
+            }],
+        )],
+    );
+    let pool = crate::ReadPool::open(&fixture.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let profile = reader
+        .session_profiles(&Selection::default())
+        .unwrap()
+        .remove(0);
+    assert_eq!(profile.working_directories.len(), 3);
+    assert_eq!(profile.repositories.len(), 2);
+    assert_eq!(
+        profile.repositories[0].identity.as_deref(),
+        Some("root-one")
+    );
+    assert_eq!(
+        profile.repositories[1].identity.as_deref(),
+        Some("root-two")
+    );
+    assert_eq!(profile.repositories[0].paths, vec!["/synthetic/one"]);
+}
