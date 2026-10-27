@@ -503,7 +503,8 @@ pub(crate) fn error_status(kind: &str, detail: &Option<serde_json::Value>) -> St
         .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
     named.unwrap_or(match kind {
         "not_found" => StatusCode::NOT_FOUND,
-        "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
+        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
+        | "not_a_query" => StatusCode::BAD_REQUEST,
         "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
         "not_built" => StatusCode::NOT_IMPLEMENTED,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
