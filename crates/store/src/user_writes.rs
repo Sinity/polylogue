@@ -130,9 +130,7 @@ impl UserWrite {
     /// Hashes client intent without the data resolved when the write runs.
     pub fn intent_hash(&self) -> Result<blake3::Hash> {
         let mut intent = match self {
-            Self::KeepResult {
-                name, query, ..
-            } => Self::KeepResult {
+            Self::KeepResult { name, query, .. } => Self::KeepResult {
                 name: name.clone(),
                 query: query.clone(),
                 rows_json: String::new(),
