@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 mod assertions;
 mod retract;
+pub(super) use retract::prune_sessions;
 
 /// Writes a parse step's rows; returns the number of message rows written.
 pub(super) fn write_rows(
@@ -150,6 +151,12 @@ pub(super) fn write_rows(
         };
         rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence)?;
         if let Some(session_pk) = session_pk {
+            if e.kind.starts_with("hook_") {
+                tx.prepare_cached(
+                    "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
+                )?
+                .execute(params![session_pk, ms(e.at)])?;
+            }
             let mut event = e.clone();
             event.data = crate::encoding::unpack_json(&packed.1)?;
             crate::live::apply(tx, session_pk, &event, counter)?;
@@ -187,9 +194,6 @@ pub(super) fn write_rows(
         .execute(params![input_pk, chain, pk])?;
     }
     rows.write_parse_state(b, p)?;
-    if p.at_end {
-        retract::prune_sessions(tx)?;
-    }
     Ok(written)
 }
 
@@ -432,6 +436,7 @@ impl RowWriter<'_, '_> {
              VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
              source_end=excluded.source_end,complete=excluded.complete,version_hash=excluded.version_hash,
+             shown=CASE WHEN message_source.version_hash=excluded.version_hash THEN message_source.shown ELSE 0 END,
              session_pk=excluded.session_pk,main=excluded.main,arrival_rank=excluded.arrival_rank,
              seq=excluded.seq,record_position=excluded.record_position"
         )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;

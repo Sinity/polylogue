@@ -1,9 +1,12 @@
 //! Event and link values shared by compact per-chain membership rows.
 use super::*;
+use polylogue_model::MessageId;
 use serde::Serialize;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
+        self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?
+            .execute(params![pk,self.counter])?;
         let winner=self.tx.prepare_cached(
             "SELECT s.input_pk,s.chain,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,v.body
              FROM event_source s JOIN input_ref i ON i.pk=s.input_pk JOIN event_value v ON v.pk=s.value_pk
@@ -13,6 +16,9 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
         };
+        self.tx
+            .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
+            .execute(params![session, self.counter])?;
         let after = after_id
             .as_ref()
             .map(|id| self.message_pk(id))
@@ -54,18 +60,22 @@ impl RowWriter<'_, '_> {
     }
 
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
-        let values = self.tx.prepare_cached(
+        let winner = self.tx.prepare_cached(
             "SELECT s.input_pk,s.chain,v.body FROM link_source s JOIN input_ref i ON i.pk=s.input_pk
              JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1
-             ORDER BY s.arrival_rank,i.id,s.chain DESC"
-        )?.query_map([pk], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let Some((input, chain, body)) = values.first() else {
+             ORDER BY s.arrival_rank,i.id,s.chain DESC LIMIT 1"
+        )?.query_row([pk], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?))).optional()?;
+        let Some((input, chain, body)) = winner else {
             self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
             return Ok(());
         };
-        let mut link: Link = crate::encoding::unpack_json(body)?;
-        for (_, _, body) in values.iter().skip(1) {
-            let other: Link = crate::encoding::unpack_json(body)?;
+        let mut link: Link = crate::encoding::unpack_json(&body)?;
+        let mut statement = self.tx.prepare_cached(
+            "SELECT DISTINCT v.pk,v.body FROM link_source s JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1",
+        )?;
+        let values = statement.query_map([pk], |r| r.get::<_, Vec<u8>>(1))?;
+        for body in values {
+            let other: Link = crate::encoding::unpack_json(&body?)?;
             link.at = link.at.into_iter().chain(other.at).min();
             link.call_id = link.call_id.into_iter().chain(other.call_id).min();
         }
@@ -97,8 +107,48 @@ impl RowWriter<'_, '_> {
             merged.call_id = merged.call_id.into_iter().chain(other.call_id).min();
             merged.evidence = merged.evidence.min(other.evidence);
         }
+        let (rank, input, chain, branch, call): (Option<i64>, String, i64, Option<String>, Option<String>) = self.tx.prepare_cached(
+            "SELECT s.arrival_rank,i.id,l.source_chain,l.branch_point,l.spawning_call FROM link l
+             JOIN input_ref i ON i.pk=l.input_pk LEFT JOIN link_source s
+             ON s.link_pk=l.pk AND s.input_pk=l.input_pk AND s.chain=l.source_chain WHERE l.pk=?1",
+        )?.query_row([pk], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        let wins = rank.is_none_or(|rank| {
+            (self.rank, self.input_id, std::cmp::Reverse(self.chain))
+                <= (rank, input.as_str(), std::cmp::Reverse(chain))
+        });
         self.store_assertion("link", pk, &merged)?;
-        self.refresh_link(pk)
+        if input == self.input_id
+            && chain == self.chain
+            && rank.is_some_and(|rank| rank != self.rank)
+        {
+            return self.refresh_link(pk);
+        }
+        // Adding a statement can only lower these merged fields. Retraction
+        // recomputes them from the surviving statements instead.
+        let branch = branch
+            .as_deref()
+            .map(MessageId::parse)
+            .transpose()
+            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let at = merged.at.into_iter().chain(branch).min();
+        let call = merged.call_id.into_iter().chain(call).min();
+        self.tx
+            .prepare_cached(
+                "UPDATE link SET branch_point=?2,spawning_call=?3,
+            evidence=CASE WHEN ?4 THEN ?5 ELSE evidence END,
+            input_pk=CASE WHEN ?4 THEN ?6 ELSE input_pk END,
+            source_chain=CASE WHEN ?4 THEN ?7 ELSE source_chain END WHERE pk=?1",
+            )?
+            .execute(params![
+                pk,
+                at.as_ref().map(ToString::to_string),
+                call,
+                wins,
+                merged.evidence,
+                self.input_pk,
+                self.chain
+            ])?;
+        Ok(())
     }
 
     pub(super) fn store_event_value(

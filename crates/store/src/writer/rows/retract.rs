@@ -14,9 +14,9 @@ impl RowWriter<'_, '_> {
 
     pub(super) fn retract(&self) -> Result<()> {
         self.tx.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS reparse_session(pk INTEGER PRIMARY KEY)",
+            "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
         )?;
-        self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
+        self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
         let messages = self.touched("message_source", "message_pk")?;
         let documents = self.touched("document_source", "document_pk")?;
         let events = self.touched("event_source", "event_pk")?;
@@ -67,23 +67,27 @@ impl RowWriter<'_, '_> {
 }
 
 /// Drop sessions whose last statement disappeared, after the replacement rows exist.
-pub(super) fn prune_sessions(tx: &Transaction<'_>) -> Result<()> {
-    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS reparse_session(pk INTEGER PRIMARY KEY)")?;
+pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> Result<()> {
+    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID")?;
     let sessions = tx
         .prepare(
             "SELECT s.pk,s.id FROM session s JOIN temp.reparse_session r ON r.pk=s.pk
-        WHERE NOT EXISTS(SELECT 1 FROM session_record f WHERE f.session_pk=s.pk)
+        WHERE r.input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND r.chain=?2
+        AND NOT EXISTS(SELECT 1 FROM session_record f WHERE f.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM parsed p WHERE p.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM message m WHERE m.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM message_source v WHERE v.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=s.pk)
+        AND NOT EXISTS(SELECT 1 FROM event_source e WHERE e.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM link l WHERE l.child_id=s.id OR l.parent_id=s.id)",
         )?
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .query_map(params![input, chain], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (pk, id) in sessions {
         crate::session_row::remove_with_references(tx, pk, &id, |_| Ok(()))?;
     }
-    tx.execute("DELETE FROM temp.reparse_session", [])?;
+    tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
     Ok(())
 }

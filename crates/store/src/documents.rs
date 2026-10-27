@@ -1,5 +1,5 @@
-//! Text documents: one shown version each, chosen like a message's, and
-//! reads in the reader's read transaction.
+//! Text documents: one shown version each, with source time before arrival
+//! rank, and reads in the reader's read transaction.
 use crate::encoding::hex;
 use crate::encoding::{
     PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,

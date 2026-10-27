@@ -105,6 +105,7 @@ impl Inner {
                 "a chain replacement has no reading".into(),
             ));
         }
+        rows::prune_sessions(&tx, &batch.input.id, chain)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

@@ -732,7 +732,7 @@ impl Engine {
     /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).
     /// False while they are still being written: the plan waits for a later
     /// pass.
-    fn load_stored(&self, plan: &mut Plan) -> Result<bool, EngineError> {
+    pub(crate) fn load_stored(&self, plan: &mut Plan) -> Result<bool, EngineError> {
         let pool::Bytes::Unloaded {
             chain,
             length,
@@ -912,7 +912,7 @@ impl Engine {
     /// Records what a finished plan leaves for the next pass. Parser state
     /// is kept in memory only for files written recently; an older file's
     /// state is rebuilt by parsing it again if it ever grows.
-    fn finish_plan(&mut self, plan: Plan) {
+    pub(crate) fn finish_plan(&mut self, plan: Plan) {
         if let Change::Reparse { chain } = plan.change
             && let Some(st) = self.inputs.get_mut(&plan.path)
             && st.input_id == plan.input.id

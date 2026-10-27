@@ -129,9 +129,18 @@ fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     })?;
     tx.execute("UPDATE session SET live_last_event=NULL,live_last_event_at=NULL,live_open_tool_pk=NULL,
         live_waiting_on=NULL,live_waiting_since=NULL,live_todo=NULL,live_task=NULL,live_task_evidence=NULL,live_reparse=0,live_changed=?2 WHERE pk=?1",rusqlite::params![pk,counter])?;
-    let events=tx.prepare("SELECT kind,at,data FROM event WHERE session_pk=?1 AND kind LIKE 'hook_%' ORDER BY at,id")?
-        .query_map([pk],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,Vec<u8>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for (kind, at, data) in events {
+    let mut statement = tx.prepare(
+        "SELECT kind,at,data FROM event WHERE session_pk=?1 AND kind LIKE 'hook_%' ORDER BY at,id",
+    )?;
+    let events = statement.query_map([pk], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<i64>>(1)?,
+            r.get::<_, Vec<u8>>(2)?,
+        ))
+    })?;
+    for event in events {
+        let (kind, at, data) = event?;
         crate::live::apply(
             tx,
             pk,

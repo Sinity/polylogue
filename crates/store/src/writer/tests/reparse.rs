@@ -435,3 +435,187 @@ fn a_chain_reading_preserves_deep_structured_values() {
         [message]
     );
 }
+
+#[test]
+fn a_later_complete_conversation_updates_its_shown_message_body() {
+    let w = test_archive();
+    write(
+        &w,
+        [batch(
+            "a",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message(
+                    "same",
+                    "s",
+                    Role::Assistant,
+                    "first reading",
+                    Some("end_turn"),
+                ),
+            )],
+            &["s"],
+        )],
+    );
+    let mut appended = batch(
+        "a",
+        0,
+        100,
+        vec![row(
+            120,
+            text_message(
+                "same",
+                "s",
+                Role::Assistant,
+                "later reading",
+                Some("end_turn"),
+            ),
+        )],
+        &["s"],
+    );
+    appended.parse[0].repeats_whole_conversations = true;
+    write(&w, [appended]);
+    assert_eq!(texts(&w, "s"), ["later reading"]);
+}
+
+#[test]
+fn hook_event_times_produce_the_same_live_state_in_both_input_orders() {
+    let make = |input, kind: &str, at, data| {
+        let mut b = batch(input, 0, 0, Vec::new(), &["s"]);
+        b.parse[0].output.events.push(Event {
+            session: Some(sid("s")),
+            kind: kind.into(),
+            at: Timestamp::from_unix_ms(at),
+            after: None,
+            range: Some((1, 2)),
+            data,
+        });
+        b
+    };
+    for end_at in [1000, 2000] {
+        let batches = [
+            make("a", "hook_permission_request", 1000, json!({})),
+            make("b", "hook_stop", end_at, json!({})),
+            make(
+                "c",
+                "hook_notification",
+                3000,
+                json!({"notification_type":"other"}),
+            ),
+        ];
+        let first = test_archive();
+        write(&first, batches.clone());
+        let reverse = test_archive();
+        write(&reverse, batches.into_iter().rev());
+        assert_eq!(natural_rows(&first), natural_rows(&reverse));
+    }
+}
+
+#[test]
+fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
+    let w = test_archive();
+    let original = batch(
+        "a",
+        0,
+        0,
+        vec![row(
+            1,
+            text_message("same", "s", Role::User, "retained", None),
+        )],
+        &["s"],
+    );
+    write(
+        &w,
+        [original.clone(), batch("b", 0, 0, Vec::new(), &["other"])],
+    );
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let before = pool
+        .reader()
+        .unwrap()
+        .query("SELECT pk FROM session WHERE id='claude-code:s'", &[])
+        .unwrap();
+    let mut reading = ChainReading::new().unwrap();
+    reading
+        .push(&mut ParseStep::new(
+            Output::default(),
+            RecordCounts::default(),
+            0..0,
+            true,
+        ))
+        .unwrap();
+    let mut replacement = original;
+    reading.push(&mut replacement.parse[0]).unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(replacement.input, 1, replacement.length, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT pk FROM session WHERE id='claude-code:s'", &[])
+            .unwrap(),
+        before
+    );
+    assert_eq!(texts(&w, "s"), ["retained"]);
+}
+
+#[test]
+fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
+    let w = test_archive();
+    let make = |input, session, rank, limit| {
+        let mut b = batch(input, rank, 0, Vec::new(), &[session]);
+        b.parse[0].output.events.push(Event {
+            session: Some(sid(session)),
+            kind: "quota_report".into(),
+            at: Timestamp::from_unix_ms(1000),
+            after: None,
+            range: Some((1, 2)),
+            data: json!({"report_id":"shared","limit":limit}),
+        });
+        b
+    };
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let changed = || {
+        pool.reader()
+            .unwrap()
+            .query("SELECT changed FROM session WHERE id='claude-code:b'", &[])
+            .unwrap()[0]["changed"]
+            .as_i64()
+            .unwrap()
+    };
+    write(&w, [make("b", "b", 1, 100)]);
+    let before = changed();
+    let winner = make("a", "a", 0, 90);
+    write(&w, [winner.clone()]);
+    let moved = changed();
+    assert!(moved > before);
+    let mut reading = ChainReading::new().unwrap();
+    reading
+        .push(&mut ParseStep::new(
+            Output::default(),
+            RecordCounts::default(),
+            0..100,
+            true,
+        ))
+        .unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(winner.input, 1, winner.length, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert!(changed() > moved);
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query(
+                "SELECT s.id FROM event e JOIN session s ON s.pk=e.session_pk",
+                &[]
+            )
+            .unwrap()[0]["id"],
+        "claude-code:b"
+    );
+}

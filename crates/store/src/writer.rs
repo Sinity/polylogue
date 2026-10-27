@@ -1278,6 +1278,9 @@ impl Inner {
                 for p in &b.parse {
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
                 }
+                if b.parse.iter().any(|p| p.at_end) {
+                    rows::prune_sessions(&itx, &b.input.id, chain)?;
+                }
             }
             stats.0 += 1;
         }
