@@ -88,11 +88,20 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "compare",
-        help: "Selected profiles, varying fields and pairwise metadata similarity",
+        help: "Selected profiles and their varying fields",
         whole_archive: false,
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::comparison::compare(r, &x.selection)),
+        text: text::json,
+    },
+    Measure {
+        name: "similar",
+        help: "One selected reference session compared by metadata with every other session in the archive",
+        whole_archive: false,
+        argument: None,
+        metrics: &[],
+        run: |r, x| json(measure::comparison::similar(r, &x.selection)),
         text: text::json,
     },
     Measure {

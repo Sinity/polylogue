@@ -520,3 +520,27 @@ fn primary_model_uses_output_share_rather_than_input_or_first_model() {
         Some("claude-opus-5-5")
     );
 }
+
+#[test]
+fn title_topic_masks_before_truncation_without_rewriting_recorded_title() {
+    let title = format!(
+        "{}sk-ant-api03-{}-{}",
+        "x ".repeat(55),
+        "A".repeat(94),
+        "A".repeat(8)
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    f.session(SessionFacts {
+        id: "codex:title",
+        title: Some(&title),
+        ..Default::default()
+    })
+    .unwrap();
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let profile = r.session_profiles(&Selection::default()).unwrap().remove(0);
+    assert_eq!(profile.title.as_deref(), Some(title.as_str()));
+    assert!(!profile.facts.topic.unwrap().contains("sk-ant"));
+}
