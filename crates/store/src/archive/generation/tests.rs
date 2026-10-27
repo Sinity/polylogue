@@ -76,7 +76,9 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     drop(conn);
     for suffix in ["", "-wal", "-shm"] {
         let path = archive.root.join(format!("index.db{suffix}"));
-        if path.exists() { std::fs::remove_file(path).unwrap(); }
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
     }
     archive.prepare_index().unwrap();
     let conn = super::super::open_read(&archive.index_db()).unwrap();

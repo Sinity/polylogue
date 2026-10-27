@@ -363,9 +363,7 @@ fn write_export(
             continue;
         }
         let quoted = table.name.replace('"', "\"\"");
-        let select = if table.key.is_empty()
-            && let Some(rowid) = &table.rowid
-        {
+        let select = if let Some(rowid) = &table.rowid {
             format!(r#"SELECT {rowid}, * FROM "{quoted}""#)
         } else {
             format!(r#"SELECT NULL, * FROM "{quoted}""#)
@@ -409,12 +407,25 @@ fn write_export(
             // Non-null primary keys keep their declared identities. A NULL
             // key is not unique in SQLite, so that row names its rowid.
             let key = if !table.key.is_empty()
-                && table.key.iter().all(|&i| !values[&table.columns[i]].is_null())
+                && table
+                    .key
+                    .iter()
+                    .all(|&i| !values[&table.columns[i]].is_null())
             {
-                Value::Array(table.key.iter().map(|&i| values[&table.columns[i]].clone()).collect())
+                Value::Array(
+                    table
+                        .key
+                        .iter()
+                        .map(|&i| values[&table.columns[i]].clone())
+                        .collect(),
+                )
             } else if table.rowid.is_some() {
                 let rowid = value(row.get_ref(0).map_err(sql_err)?);
-                if table.key.is_empty() { json!([rowid]) } else { json!({"rowid":rowid}) }
+                if table.key.is_empty() {
+                    json!([rowid])
+                } else {
+                    json!({"rowid":rowid})
+                }
             } else {
                 json!({"position":position})
             };
