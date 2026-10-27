@@ -55,6 +55,7 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
+                    let Some(due)=exporter.observe(&source.path) else { continue; };
                     let mut queue = match InputWriter::new(
                         &archive,
                         &writer,
@@ -71,16 +72,17 @@ impl Databases {
                         }
                     };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        exporter.export(
+                        exporter.read(
                             &source.path,
                             &archive,
                             &source.input,
                             &source.observation,
+                            due,
                             |bytes, update| queue.append(bytes, update),
                         )
                     }));
                     match outcome {
-                        Ok(Ok(done)) => completed.changed |= done.is_some(),
+                        Ok(Ok(_)) => completed.changed = true,
                         Ok(Err(error)) => {
                             exporter.forget(&source.path);
                             completed.changed = true;

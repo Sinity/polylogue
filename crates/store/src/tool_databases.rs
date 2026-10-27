@@ -79,52 +79,39 @@ impl Exporter {
     pub fn forget(&mut self, path: &Path) {
         self.dbs.remove(path);
     }
-    /// `send` queues a complete group without waiting for its commit. The
-    /// caller waits for all acknowledgments before starting another read of
-    /// this input. Its queue bounds bytes awaiting the writer.
-    pub fn export(
-        &mut self,
-        db: &Path,
-        archive: &Archive,
-        input: &InputKey,
-        observation: &Observation,
-        mut send: impl FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
-    ) -> Result<Option<Exported>, ExportError> {
-        let now = DbFacts::of(db);
+    /// File facts decide whether any source or archive read is needed.
+    pub fn observe(&mut self, db: &Path) -> Option<DatabaseRead> {
+        let facts = DbFacts::of(db);
         let st = self.dbs.entry(db.to_owned()).or_default();
-        if now.db.is_none() {
-            *st = DbState::default();
-            return Ok(None);
-        }
-        let quiet = st.last_seen == Some(now);
-        st.last_seen = Some(now);
-        let compare = st.exported.is_none()
-            || (st.exported != Some(now)
-                && (quiet || st.exported_at.is_some_and(|at| at.elapsed() >= BUSY_EXPORT)));
-        let cursor_due = st.cursor_at.is_none_or(|at| at.elapsed() >= CURSOR_EXPORT);
-        if !compare && !cursor_due {
-            return Ok(None);
-        }
-        let done = write_export(
-            db,
-            archive,
-            input,
-            observation,
-            self.cursor,
-            compare,
-            cursor_due,
-            &mut send,
-        )?;
-        if compare {
-            st.exported = Some(now);
-            st.exported_at = Some(Instant::now());
-        }
-        if cursor_due {
-            st.cursor_at = Some(Instant::now());
-        }
-        Ok(Some(done))
+        if facts.db.is_none() { *st=DbState::default(); return None; }
+        let quiet=st.last_seen==Some(facts);
+        st.last_seen=Some(facts);
+        let compare=st.exported.is_none() || (st.exported!=Some(facts) && (quiet || st.exported_at.is_some_and(|at|at.elapsed()>=BUSY_EXPORT)));
+        let cursor=st.cursor_at.is_none_or(|at|at.elapsed()>=CURSOR_EXPORT);
+        (compare || cursor).then_some(DatabaseRead { facts,compare,cursor })
+    }
+    pub fn export(
+        &mut self, db:&Path, archive:&Archive, input:&InputKey, observation:&Observation,
+        send:impl FnMut(Vec<u8>,Comparison)->Result<(),ExportError>,
+    ) -> Result<Option<Exported>,ExportError> {
+        let Some(due)=self.observe(db) else { return Ok(None); };
+        self.read(db,archive,input,observation,due,send).map(Some)
+    }
+    /// Queue complete groups while their predecessors commit. The caller
+    /// waits for acknowledgment before reading the same input again.
+    pub fn read(
+        &mut self, db:&Path, archive:&Archive, input:&InputKey, observation:&Observation,
+        due:DatabaseRead, mut send:impl FnMut(Vec<u8>,Comparison)->Result<(),ExportError>,
+    ) -> Result<Exported,ExportError> {
+        let done=write_export(db,archive,input,observation,self.cursor,due.compare,due.cursor,&mut send)?;
+        let st=self.dbs.entry(db.to_owned()).or_default();
+        if due.compare { st.exported=Some(due.facts); st.exported_at=Some(Instant::now()); }
+        if due.cursor { st.cursor_at=Some(Instant::now()); }
+        Ok(done)
     }
 }
+
+pub struct DatabaseRead { facts:DbFacts, compare:bool, cursor:bool }
 
 /// The digest naming a row: its table and its key.
 fn row_key(table: &str, key: &Value) -> u64 {
