@@ -271,3 +271,6 @@ configuration path and the error, reads and queries work, and archive writes
 return `sinex_unavailable`. Fix the cause and restart the daemon.
 [docs/architecture.md](docs/architecture.md#sinex-primary-mode) describes
 how primary mode stores the archive and how a standalone archive moves to it.
+
+[Session measures](docs/measures.md) cover IDF facets, explicit-plan cost
+outlooks, pacing, session profiles and comparisons through the measure registry.
