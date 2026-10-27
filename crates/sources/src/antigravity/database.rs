@@ -7,18 +7,25 @@ use polylogue_model::{Event, Link, LinkKind, SessionId, ToolOutcome, UnknownReas
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
+pub const FORMAT: &str = "antigravity-database";
+
 pub const LOCATIONS: &[&str] = &[
     ".gemini/antigravity/**/*.db",
     ".gemini/antigravity/**/*.sqlite",
     ".gemini/antigravity/**/*.sqlite3",
 ];
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
+    let captured = path.components().any(|part| part.as_os_str() == FORMAT);
+    let trajectory_schema = String::from_utf8_lossy(head).contains("\"trajectory_meta\"");
     path.file_name().is_some_and(|name| {
         let name = name.to_string_lossy();
         [".db.jsonl", ".sqlite.jsonl", ".sqlite3.jsonl"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
-    }) && String::from_utf8_lossy(head).contains("trajectory_meta")
+    }) && matches!(
+        crate::document::first_key(head),
+        Some("at_ms" | "db" | "schema" | "source")
+    ) && (captured || trajectory_schema)
 }
 pub fn open(path: &Path) -> Option<Parse> {
     Some(Parse::Export(Box::new(Database {

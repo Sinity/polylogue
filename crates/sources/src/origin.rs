@@ -341,7 +341,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: Some(crate::antigravity::server::COLLECTOR),
     },
     OriginSpec {
-        name: "antigravity-database",
+        name: crate::antigravity::database::FORMAT,
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,

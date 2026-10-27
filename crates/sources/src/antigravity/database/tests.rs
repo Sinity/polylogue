@@ -536,3 +536,28 @@ fn colon_containing_session_and_step_ids_remain_distinct() {
         parsed.output.messages[1].message.id
     );
 }
+
+#[test]
+fn current_store_headers_are_recognized_before_the_schema_is_visible() {
+    let mut value = header();
+    value["db"] = json!("trajectory.db");
+    value["at_ms"] = json!(1700000000000_i64);
+    value["source"] = json!({"machine":"synthetic","path":"/example/trajectory.db"});
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let head = &bytes[..64];
+    assert!(!String::from_utf8_lossy(head).contains("trajectory_meta"));
+    let path = Path::new("exports/antigravity-database/source/trajectory.db.jsonl");
+    assert!(recognize(path, head));
+    assert!(recognize(Path::new("trajectory.db.jsonl"), &bytes));
+    assert!(!recognize(path, b"not JSON"));
+    assert!(!recognize(
+        Path::new("exports/hermes/source/state.db.jsonl"),
+        head
+    ));
+    assert!(!recognize(
+        Path::new("exports/antigravity-database/source/notes.jsonl"),
+        head
+    ));
+    assert!(parse(vec![value]).is_ok());
+    assert!(parse(vec![json!({"schema":{}})]).is_err());
+}

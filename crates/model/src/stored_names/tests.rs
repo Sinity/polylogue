@@ -80,7 +80,7 @@ fn link_names_cover_every_kind_once() {
     assert_eq!(LINK_KIND_NAMES, ["continuation", "subagent"]);
     assert_eq!(
         LINK_HOW_NAMES,
-        ["fork", "fresh", "after_compaction", "resume"]
+        ["parent", "fork", "fresh", "after_compaction", "resume"]
     );
     for k in LinkKind::ALL {
         let (kind, how) = k.columns();
