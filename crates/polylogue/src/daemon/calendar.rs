@@ -200,22 +200,30 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
     } = options;
     let now = clock(cursor, now)?;
     let day = query::logical_day(reader)?;
-    let (mut selection, question) = query::usage_selection(reader, scope, now, embeddings, near)?;
     if undated && text.is_some() {
         return Err(invalid("undated records cannot be placed within a date"));
     }
     if unknown_model && model.is_some() {
         return Err(invalid("choose a recorded model or unknown model"));
     }
-    selection.undated = undated;
+    if size == Some(0) {
+        return Err(invalid("page size must be positive"));
+    }
     let chosen = text.map(|s| date(Some(s), &day, now)).transpose()?;
-    if let Some(date) = chosen {
-        let (since, until) = day.day(date);
-        if until <= since {
-            return Err(invalid(
-                "this date has no representable logical-day interval",
-            ));
-        }
+    let bounds = chosen.map(|date| day.day(date));
+    if bounds.is_some_and(|(since, until)| until <= since) {
+        return Err(invalid(
+            "this date has no representable logical-day interval",
+        ));
+    }
+    let month = date(month.or(text), &day, now)?.first_of_month();
+    let month_bounds = day.month(month);
+    if month_bounds.1 <= month_bounds.0 {
+        return Err(invalid("calendar month has no representable interval"));
+    }
+    let (mut selection, question) = query::usage_selection(reader, scope, now, embeddings, near)?;
+    selection.undated = undated;
+    if let Some((since, until)) = bounds {
         selection.since = Some(since);
         selection.until = Some(until);
     }
@@ -240,7 +248,6 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         unknown_model,
     };
     let responses = activity(reader, &day, &selected, context, cursor, size, now)?;
-    let month = date(month.or(text), &day, now)?.first_of_month();
     let days = timeline::costs_by_day(reader, &day, month, &selection)?;
     let previous_month = month
         .yesterday()

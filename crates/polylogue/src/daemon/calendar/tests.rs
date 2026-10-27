@@ -143,3 +143,19 @@ fn logical_day_settings_bind_timeline_continuation_and_leap_days_remain_real() {
         .is_err()
     );
 }
+
+#[test]
+fn invalid_period_is_refused_before_semantic_selection_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let f = setup(temp.path());
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
+        panic!("invalid period must not request semantic work")
+    };
+    let mut request = options(Some("not-a-date"), None);
+    request.query = "sessions near:synthetic";
+    request.embeddings = true;
+    request.near = Some(&near);
+    assert_eq!(cost(&reader, request, 0).unwrap_err().kind, "bad_request");
+}
