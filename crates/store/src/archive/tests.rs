@@ -29,13 +29,21 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
             .unwrap()
     };
     let before = completion_plan(&index);
-    assert!(before.iter().any(|step| step.contains("SCAN message")), "{before:?}");
-    assert!(before.iter().any(|step| step.contains("TEMP B-TREE")), "{before:?}");
+    assert!(
+        before.iter().any(|step| step.contains("SCAN message")),
+        "{before:?}"
+    );
+    assert!(
+        before.iter().any(|step| step.contains("TEMP B-TREE")),
+        "{before:?}"
+    );
     index
         .execute("INSERT INTO meta VALUES ('example', 'kept')", [])
         .unwrap();
     let generation: String = index
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| r.get(0))
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     drop(index);
     drop(lock);
@@ -46,14 +54,24 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
         for (key, expected) in [("example", "kept"), ("generation", generation.as_str())] {
             assert_eq!(
                 index
-                    .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get::<_, String>(0))
+                    .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r
+                        .get::<_, String>(0))
                     .unwrap(),
                 expected
             );
         }
         let plan = completion_plan(&index);
-        assert!(plan.iter().any(|step| step.contains("COVERING INDEX message_model")), "{plan:?}");
-        assert!(!plan.iter().any(|step| step.contains("SCAN message") || step.contains("TEMP B-TREE")), "{plan:?}");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("COVERING INDEX message_model")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step.contains("SCAN message") || step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
         drop(index);
         drop(lock);
     }
@@ -165,10 +183,7 @@ fn replaced_index_keeps_the_archive(change: &str) {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
-    assert!(
-        schema::same_index_schema(&index).unwrap(),
-        "{change}"
-    );
+    assert!(schema::same_index_schema(&index).unwrap(), "{change}");
     assert_eq!(
         index
             .query_row(

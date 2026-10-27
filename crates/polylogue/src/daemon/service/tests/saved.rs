@@ -106,7 +106,10 @@ fn search_retries_keep_the_original_population_and_do_not_revise_newer_saved_que
     assert_eq!(repeat["repeat"], true);
     let repeat = ok(&d, save("second", "example", "sessions where title:absent"));
     assert_eq!(repeat["repeat"], true);
-    assert_eq!(ok(&d, query("query:example"))["definitions"][0]["revision"], latest["id"]);
+    assert_eq!(
+        ok(&d, query("query:example"))["definitions"][0]["revision"],
+        latest["id"]
+    );
     assert_eq!(ok(&d, query("query:example"))["count"], 0);
     let keep = || Request::Keep {
         request_id: "keep".into(),

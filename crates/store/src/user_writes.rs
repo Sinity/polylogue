@@ -131,7 +131,9 @@ impl UserWrite {
     pub fn intent_hash(&self) -> Result<blake3::Hash> {
         let mut intent = self.clone();
         match &mut intent {
-            Self::KeepResult { rows_json, read_at, .. } => {
+            Self::KeepResult {
+                rows_json, read_at, ..
+            } => {
                 rows_json.clear();
                 read_at.clear();
             }
@@ -420,7 +422,9 @@ pub(crate) fn first_note_of_request(
     r: &UserRequest,
 ) -> Result<Option<String>> {
     match &r.write {
-        UserWrite::AddNote { .. } | UserWrite::SaveQuery { .. } => first_note_of(tx, &r.id).map(Some),
+        UserWrite::AddNote { .. } | UserWrite::SaveQuery { .. } => {
+            first_note_of(tx, &r.id).map(Some)
+        }
         UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
         _ => Ok(None),
     }

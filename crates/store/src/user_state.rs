@@ -22,9 +22,7 @@ impl Reader<'_> {
             .optional()?;
         packed
             .map(|packed| {
-                let packed = packed.ok_or_else(|| {
-                    StoreError::Invalid(format!("request {id} has no recorded content"))
-                })?;
+                let packed = packed.ok_or_else(|| StoreError::Conflict(id.into()))?;
                 Ok(serde_json::from_str(&crate::encoding::unpack_text(
                     &packed,
                 )?)?)

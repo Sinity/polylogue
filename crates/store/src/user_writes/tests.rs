@@ -9,6 +9,21 @@ fn request_ids_are_uuid_v7() {
 }
 
 #[test]
+fn a_request_without_recorded_content_conflicts() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    let conn = crate::archive::open_archive_writer(&w.archive).unwrap();
+    conn.execute(
+        "INSERT INTO client_request(id, content_hash, created_at, commit_seq) VALUES ('missing', x'00', 0, 1)",
+        [],
+    ).unwrap();
+    let reads = crate::ReadPool::open(&w.archive).unwrap();
+    assert!(matches!(
+        reads.reader().unwrap().user_request("missing"),
+        Err(StoreError::Conflict(id)) if id == "missing"
+    ));
+}
+
+#[test]
 fn repeated_search_writes_keep_the_first_resolved_rows_and_revision() {
     use crate::fixture::writer::WriterArchive;
     let w = WriterArchive::new();
@@ -76,22 +91,38 @@ fn repeated_search_writes_keep_the_first_resolved_rows_and_revision() {
         panic!()
     };
     w.writer
-        .user(UserRequest::now("explicit".into(), UserWrite::AddNote { note: explicit.clone() }))
+        .user(UserRequest::now(
+            "explicit".into(),
+            UserWrite::AddNote {
+                note: explicit.clone(),
+            },
+        ))
         .unwrap();
     let mut changed = explicit;
     changed.revises = Some("save".into());
     assert!(matches!(
-        w.writer.user(UserRequest::now("explicit".into(), UserWrite::AddNote { note: changed })),
+        w.writer.user(UserRequest::now(
+            "explicit".into(),
+            UserWrite::AddNote { note: changed }
+        )),
         Err(StoreError::Conflict(_))
     ));
 
     w.writer
-        .user(UserRequest::now("revision".into(), note(Some("save".into()))))
+        .user(UserRequest::now(
+            "revision".into(),
+            note(Some("save".into())),
+        ))
         .unwrap();
-    assert!(w.writer
-        .user(UserRequest::now("revision".into(), note(Some("explicit".into()))))
-        .unwrap()
-        .repeat);
+    assert!(
+        w.writer
+            .user(UserRequest::now(
+                "revision".into(),
+                note(Some("explicit".into()))
+            ))
+            .unwrap()
+            .repeat
+    );
     let reader = pool.reader().unwrap();
     let saved = reader.note("revision").unwrap().unwrap();
     let requests = ["save", "revision"].map(|id| reader.user_request(id).unwrap().unwrap());
@@ -100,5 +131,13 @@ fn repeated_search_writes_keep_the_first_resolved_rows_and_revision() {
         replay.writer.user(request).unwrap();
     }
     let replay_reads = crate::ReadPool::open(&replay.archive).unwrap();
-    assert_eq!(replay_reads.reader().unwrap().note("revision").unwrap().unwrap(), saved);
+    assert_eq!(
+        replay_reads
+            .reader()
+            .unwrap()
+            .note("revision")
+            .unwrap()
+            .unwrap(),
+        saved
+    );
 }
