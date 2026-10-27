@@ -408,7 +408,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
             match_columns: vec![],
         },
     );
-    let reference = format!("result:{}", serde_json::to_string(id).unwrap());
+    let reference = r#"result:"source:λ | \"reader\".matches""#;
     let program = compile(&format!("{reference} | sort by id"), &options).unwrap();
     assert!(
         program
