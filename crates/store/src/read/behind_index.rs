@@ -53,10 +53,16 @@ impl Reader<'_> {
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE c.length > 0
+              AND (p.input_pk IS NULL
+                OR (p.status <> 'waiting' AND p.parsed_upto < c.length)
+                OR EXISTS(SELECT 1 FROM json_each(?1) expected
+                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
+                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))
             ORDER BY 5,(SELECT max(o.seen_at) FROM a.observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
         )?;
-        let all = stmt
-            .query_map([], |r| {
+        let versions_json = serde_json::to_string(versions)?;
+        Ok(stmt
+            .query_map([versions_json], |r| {
                 let imported: bool = r.get(4)?;
                 Ok(BehindChain {
                     input: r.get(0)?,
@@ -87,14 +93,6 @@ impl Reader<'_> {
                     },
                 })
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(all
-            .into_iter()
-            .filter(|c| {
-                c.reading_changed
-                    || (!c.progress.waiting && c.progress.parsed_upto < c.progress.length)
-                    || !c.progress.parsed
-            })
-            .collect())
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }

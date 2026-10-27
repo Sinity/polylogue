@@ -152,6 +152,76 @@ fn write(w: &TestArchive, batches: impl IntoIterator<Item = Batch>) {
     w.writer.derive().unwrap();
 }
 
+#[test]
+fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
+    let w = test_archive();
+    write(
+        &w,
+        [
+            "current",
+            "waiting",
+            "partial",
+            "unparsed",
+            "changed",
+            "unrelated",
+        ]
+        .into_iter()
+        .map(|input| {
+            let mut b = batch(input, 0, 0, vec![], &[]);
+            b.parse[0].reading_version = "synthetic=1".into();
+            if input == "unrelated" {
+                b.input.format = "other".into();
+            }
+            b
+        }),
+    );
+    let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    index
+        .execute_batch(
+            "UPDATE parse_state SET status='waiting',parsed_upto=40
+            WHERE input_pk=(SELECT pk FROM input_ref WHERE id='waiting');
+         UPDATE parse_state SET status='parsing',parsed_upto=40
+            WHERE input_pk=(SELECT pk FROM input_ref WHERE id='partial');
+         UPDATE parse_state SET reading_version='older'
+            WHERE input_pk=(SELECT pk FROM input_ref WHERE id='changed');
+         DELETE FROM parse_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id='unparsed');",
+        )
+        .unwrap();
+    drop(index);
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let selected = |version: Option<&str>| {
+        let versions = version
+            .map(|v| vec![("claude-code".into(), v.into())])
+            .unwrap_or_default();
+        let mut chains: Vec<_> = pool
+            .reader()
+            .unwrap()
+            .chains_behind_index(&versions)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.input, c.reading_changed))
+            .collect();
+        chains.sort();
+        chains
+    };
+    assert_eq!(
+        selected(Some("synthetic=1")),
+        [
+            ("changed".into(), true),
+            ("partial".into(), false),
+            ("unparsed".into(), true)
+        ]
+    );
+    assert_eq!(
+        selected(None),
+        [("partial".into(), false), ("unparsed".into(), false)]
+    );
+    assert_eq!(
+        selected(Some("synthetic=2")),
+        ["changed", "current", "partial", "unparsed", "waiting"].map(|input| (input.into(), true))
+    );
+}
+
 fn natural_rows(w: &TestArchive) -> Json {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
