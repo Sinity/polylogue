@@ -339,12 +339,14 @@ impl<'a> InputWriter<'a> {
 }
 
 impl Engine {
-    pub(super) fn capture_databases(&mut self, found: &[collect::Found], force: bool, pass: &mut Pass) -> Result<(bool, bool), EngineError> {
+    pub(super) fn capture_databases(
+        &mut self,
+        found: &[collect::Found],
+        force: bool,
+        pass: &mut Pass,
+    ) -> Result<(bool, bool), EngineError> {
         let mut new_database = false;
-        for f in found
-            .iter()
-            .filter(|f| f.origin.is_row_dump(&f.path))
-        {
+        for f in found.iter().filter(|f| f.origin.is_row_dump(&f.path)) {
             new_database |= self
                 .databases
                 .insert(f.path.clone(), f.origin.name)

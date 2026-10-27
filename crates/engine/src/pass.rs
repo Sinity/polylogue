@@ -154,7 +154,8 @@ impl Engine {
             errors,
             ..Pass::default()
         };
-        let (deferred_database, database_changed) = self.capture_databases(&found, discover, &mut pass)?;
+        let (deferred_database, database_changed) =
+            self.capture_databases(&found, discover, &mut pass)?;
         let mut found: Vec<_> = found
             .into_iter()
             .filter(|f| !f.origin.is_row_dump(&f.path))
@@ -359,7 +360,11 @@ impl Engine {
     /// in the spools, and the known files of live origins written in the
     /// last minutes (a session being written). They run ahead of the
     /// pass's bulk work. Paths with work in flight are left to it.
-    fn live_plans(&mut self, busy: &HashMap<PathBuf, Plan>, pass: &mut Pass) -> Result<Vec<Plan>, EngineError> {
+    fn live_plans(
+        &mut self,
+        busy: &HashMap<PathBuf, Plan>,
+        pass: &mut Pass,
+    ) -> Result<Vec<Plan>, EngineError> {
         let mut changes = watch::Changes::default();
         if let Some(watcher) = &mut self.watcher {
             if let Err(error) = watcher.refresh(&self.config) {
@@ -371,7 +376,11 @@ impl Engine {
             changes.paths = latest.paths;
             pass.errors.extend(latest.errors);
         }
-        let paths = changes.paths.into_iter().map(|path| collect::database_path(&self.config, &path).unwrap_or(path)).collect();
+        let paths = changes
+            .paths
+            .into_iter()
+            .map(|path| collect::database_path(&self.config, &path).unwrap_or(path))
+            .collect();
         let (mut found, unreadable) = if changes.full {
             pass.full_scans += 1;
             collect::scan(&self.config)
@@ -396,8 +405,8 @@ impl Engine {
                     origin: st.origin,
                 }),
         );
-        found.sort_by(|left,right|left.path.cmp(&right.path));
-        found.dedup_by(|left,right|left.path==right.path);
+        found.sort_by(|left, right| left.path.cmp(&right.path));
+        found.dedup_by(|left, right| left.path == right.path);
         let mut plans = Vec::new();
         for f in found {
             if self.refused.contains(&f.path) || busy.contains_key(&f.path) {
@@ -418,7 +427,12 @@ impl Engine {
                 plans.push(plan);
             }
         }
-        let databases: Vec<_> = self.inputs.iter().filter(|(path,state)| state.origin.is_row_dump(path) && !busy.contains_key(*path)).map(|(path,_)|path.clone()).collect();
+        let databases: Vec<_> = self
+            .inputs
+            .iter()
+            .filter(|(path, state)| state.origin.is_row_dump(path) && !busy.contains_key(*path))
+            .map(|(path, _)| path.clone())
+            .collect();
         for path in databases {
             if let Some(mut plan) = self.stored_plan(&path)? {
                 plan.priority = Priority::Live;
