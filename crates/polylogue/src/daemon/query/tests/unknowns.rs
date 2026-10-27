@@ -171,6 +171,23 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
 }
 
 #[test]
+fn near_selects_sessions_before_a_measurement() {
+    let w = morrow();
+    let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let mut request = ask("near:dates | limit 1 | measure sessions");
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["outcome"], "measure", "{answer}");
+    assert_eq!(answer["data"].as_array().unwrap().len(), 1, "{answer}");
+    assert_eq!(
+        answer["data"][0]["session"], "claude-code:7f3a2c10-0002-4000-8000-000000000002",
+        "{answer}"
+    );
+}
+
+#[test]
 fn session_has_calls_and_errors_reads_only_its_own_messages() {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();

@@ -366,6 +366,7 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         for text in [
             "near:dates",
             "near:dates | limit 1 | count",
+            "near:dates | limit 1 | measure sessions",
             "near:dates | union (origin:codex)",
         ] {
             let program = compile(text, &options).unwrap();

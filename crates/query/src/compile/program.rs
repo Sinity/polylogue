@@ -322,6 +322,9 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     }
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
                     measure = Some(Measure {
                         what: what.clone(),
                         everything: wheres.is_empty(),
