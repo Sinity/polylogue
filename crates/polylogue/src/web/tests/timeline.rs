@@ -68,3 +68,27 @@ fn invalid_controls_do_not_echo_secret_like_input() {
         }
     });
 }
+
+#[test]
+fn invalid_cost_scope_has_the_same_status_on_html_and_api() {
+    let r = reader();
+    rt().block_on(async {
+        let (html_status, _, html) = send(
+            &r,
+            authed(get("/cost?q=messages")).body(Body::empty()).unwrap(),
+        )
+        .await;
+        let (api_status, _, api) = send(
+            &r,
+            authed(get("/api/v1/cost?query=messages"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(html_status, StatusCode::BAD_REQUEST);
+        assert_eq!(api_status, html_status);
+        let api: serde_json::Value = serde_json::from_str(&api).unwrap();
+        assert_eq!(api["error"], "invalid_query");
+        assert!(html.contains("invalid_query"));
+    });
+}
