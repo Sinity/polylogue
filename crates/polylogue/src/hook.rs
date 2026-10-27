@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long a hook that brings context waits for the daemon: a brief
 /// during a first build over a large archive takes a few seconds. The
@@ -149,26 +149,7 @@ fn ask_daemon(request: &Request, budget: Duration) -> Option<Response> {
 }
 
 fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Response> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let deadline = Instant::now().checked_add(budget)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .ok()?;
-    runtime.block_on(async {
-        tokio::time::timeout_at(deadline.into(), async {
-            let mut stream = tokio::net::UnixStream::connect(socket).await.ok()?;
-            let mut line = serde_json::to_vec(request).ok()?;
-            line.push(b'\n');
-            stream.write_all(&line).await.ok()?;
-            let mut reply = String::new();
-            BufReader::new(stream).read_line(&mut reply).await.ok()?;
-            serde_json::from_str(&reply).ok()
-        })
-        .await
-        .ok()
-        .flatten()
-    })
+    crate::client::send_with_budget(socket, request, budget).ok()
 }
 
 /// The session a hook payload names, as Polylogue names it.

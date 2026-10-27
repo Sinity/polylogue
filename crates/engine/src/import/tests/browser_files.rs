@@ -84,25 +84,30 @@ fn pending_files_live_in_the_daemon_and_known_hashes_can_be_reused() {
 }
 
 #[test]
-fn an_unknown_hash_is_refused_before_any_attachment_names_it() {
+fn an_unknown_hash_keeps_the_conversation_and_leaves_the_file_not_fetched() {
     let w = ClaudeHome::new();
     let (mut engine, _lock) = engine(&w, 64 << 20);
     let path = w.dir.path().join("capture.json");
     let file = json!({"provider_attachment_id":"file1", "message_provider_id":"m1", "blob":BlobHash::of(b"absent").to_string()});
     std::fs::write(&path, capture(file, "2026-10-27T00:00:00Z")).unwrap();
-    let result = engine.import(std::slice::from_ref(&path));
-    let error = match result {
-        Ok(report) => format!("{:?}", report.pass.errors),
-        Err(error) => error.to_string(),
-    };
-    assert!(error.contains("unknown blob"), "{error}");
+    let report = engine.import(std::slice::from_ref(&path)).unwrap();
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    let reader = engine.reads.reader().unwrap();
+    let session = SessionId::parse("gemini-app:files").unwrap();
+    assert_eq!(
+        reader
+            .captured_sessions(std::slice::from_ref(&session))
+            .unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .messages,
+        1
+    );
+    assert!(reader.stored_files(&session).unwrap().is_empty());
+    let messages = reader.messages(&session, false).unwrap();
     assert!(
-        engine
-            .reads
-            .reader()
-            .unwrap()
-            .stored_files(&SessionId::parse("gemini-app:files").unwrap())
-            .unwrap()
-            .is_empty()
+        messages[0].blocks.iter().any(
+            |block| matches!(block, polylogue_model::Block::File(file) if file.blob.is_none())
+        )
     );
 }

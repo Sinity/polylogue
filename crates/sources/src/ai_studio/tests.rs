@@ -320,7 +320,7 @@ fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
     let mut chunks = chunks;
     chunks.push(json!({"role":"model", "text":"usable", "branchParent":{"promptId":"another"}}));
     let step = parse("child", &prompt(chunks));
-    assert_eq!(step.output.links.len(), 2);
+    assert!(step.output.links.is_empty());
     assert_eq!(step.output.messages.len(), 2);
     assert_eq!(step.output.messages[0].message.role, Role::System);
     assert_eq!(
@@ -331,4 +331,15 @@ fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
         step.output.messages[1].message.model.as_deref(),
         Some("gemini-3-pro-preview")
     );
+}
+
+#[test]
+fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_make_none() {
+    for (parents, count) in [(["parent", "parent"], 1), (["first", "second"], 0)] {
+        let chunks = parents.into_iter().map(|parent| {
+            json!({"role":"user", "text":"continue", "branchParent":{"promptId":parent}})
+        }).collect();
+        let step = parse("child", &prompt(chunks));
+        assert_eq!(step.output.links.len(), count);
+    }
 }

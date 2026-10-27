@@ -24,6 +24,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod attachments;
 mod batch;
 mod bytes;
 mod excluded;
@@ -1207,35 +1208,6 @@ impl Inner {
                     "a ZIP member is stored with its ZIP's group".into(),
                 ));
             }
-            if b.input.format == "browser-capture" {
-                for p in &b.parse {
-                    for row in &p.output.messages {
-                        for block in &row.message.blocks {
-                            let attachments = match block {
-                                polylogue_model::Block::Image(a)
-                                | polylogue_model::Block::File(a) => std::slice::from_ref(a),
-                                polylogue_model::Block::ToolResult { attachments, .. } => {
-                                    attachments.as_slice()
-                                }
-                                _ => &[],
-                            };
-                            for a in attachments {
-                                if let Some(hash) = a.blob {
-                                    let inline = b.blobs.iter().any(|b| b.hash == hash);
-                                    let present = self.archive.query_row(
-                                        "SELECT EXISTS(SELECT 1 FROM blob WHERE hash = ?1 AND state = 'present')",
-                                        [&hash.0[..]], |r| r.get::<_, bool>(0))?;
-                                    if !inline && !present {
-                                        return Err(StoreError::Invalid(format!(
-                                            "capture names unknown blob {hash}; attachment bytes must be fetched"
-                                        )));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             crate::fault::check("write.input", &b.input.id)?;
             for p in &b.parse {
                 p.counts.check()?;
@@ -1255,12 +1227,15 @@ impl Inner {
         crate::write_lock::commit(atx)?;
         crate::fault::check("write.between_commits", "")?;
 
+        let indexed = batches
+            .map(|b| attachments::with_stored_blobs(b, &self.archive))
+            .collect::<Result<Vec<_>>>()?;
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&itx)?;
         let mut stats = (0u64, 0u64);
-        for (b, chain) in batches.zip(chains) {
+        for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;

@@ -64,7 +64,8 @@
           "provider_meta": {
             "capture_fidelity": "native_full"
           },
-          "schema_version": 1
+          "schema_version": 1,
+          "attachments": []
         },
         "kind": "browser_capture",
         "range": [

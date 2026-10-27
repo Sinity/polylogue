@@ -26,9 +26,9 @@ fn answer(archive: &Archive, surface: &str, text: &str) -> Result<Value, (String
                 json: true,
             };
             let request = build(command, &values, &caller).unwrap();
-            crate::cli::send(&archive.socket(), &request).unwrap()
+            crate::client::send(&archive.socket(), &request).unwrap()
         }
-        "socket" => crate::cli::send(
+        "socket" => crate::client::send(
             &archive.socket(),
             &Request::Query {
                 text: text.to_owned(),

@@ -110,6 +110,8 @@ struct PromptState {
     ambiguous_calls: bool,
     position: usize,
     started: bool,
+    parent: Option<polylogue_model::SessionId>,
+    ambiguous_parent: bool,
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
@@ -258,14 +260,15 @@ impl ExportParser for AiStudio {
             .and_then(Json::as_str)
             .and_then(|p| session_id(ORIGIN, p))
         {
-            sink.out.links.push(Link {
-                kind: LinkKind::Fork,
-                parent,
-                child: sid.clone(),
-                at: None,
-                call_id: None,
-                evidence: "branchParent.promptId".into(),
-            });
+            if self
+                .state
+                .parent
+                .as_ref()
+                .is_some_and(|known| known != &parent)
+            {
+                self.state.ambiguous_parent = true;
+            }
+            self.state.parent = Some(parent);
         }
         match self.message(&sid, i, chunk, sink) {
             Ok(mut message) => {
@@ -329,6 +332,20 @@ impl ExportParser for AiStudio {
                 self.state.ambiguous_calls = false;
                 sink.records.record(&kind, &d);
             }
+        }
+        // The whole prompt must agree on its parent before a fork is emitted.
+        if self.state.position as u64 == self.state.chunks
+            && !self.state.ambiguous_parent
+            && let Some(parent) = self.state.parent.take()
+        {
+            sink.out.links.push(Link {
+                kind: LinkKind::Fork,
+                parent,
+                child: sid,
+                at: None,
+                call_id: None,
+                evidence: "branchParent.promptId".into(),
+            });
         }
         if !self.state.emitted && self.state.position as u64 == self.state.chunks {
             sink.records

@@ -103,6 +103,16 @@ fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
     };
     send(record());
     send(record());
+    let reads = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
+    let reader = reads.reader().unwrap();
+    let delivery = reader
+        .delivery(prepared["delivery"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivery.0.recipient_id.as_deref(), Some("claude-code:next"));
+    assert_eq!(delivery.0.events, ["delivered"]);
+    assert_eq!(delivery.1, text);
+    drop(reader);
     assert_eq!(count(), 1);
     assert_eq!(send(ask())["prepared"]["empty"], true);
     let outcome = json(&cli(&env, &["--json", "query", "deliveries"]));
