@@ -64,7 +64,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     let substantive_count: u64 = tx.query_row("SELECT count(*) FROM message m
         WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND m.role IN ('user','assistant')
         AND m.written_by<>'harness' AND m.words>2
-        AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ('tool_call','tool_result','thinking'))", [pk], |r| r.get(0))?;
+        AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ('tool_call','tool_result','thinking'))", [pk], |r| r.get::<_,i64>(0).map(|n|n as u64))?;
     let last_text: Option<(String,String,Option<String>)> = tx.prepare_cached("SELECT id,role,stop_reason FROM message
         WHERE session_pk=?1 AND duplicate_of IS NULL AND role IN ('user','assistant') AND written_by<>'harness' AND words>0
         ORDER BY order_input_id DESC,seq DESC,record_position DESC,id DESC LIMIT 1")?.query_row([pk],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;

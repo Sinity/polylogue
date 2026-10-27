@@ -152,3 +152,38 @@ fn facets_use_the_selection_units_default_population() {
             > ordinary["count"].as_u64().unwrap()
     );
 }
+
+#[test]
+fn paged_measures_preserve_query_order_when_display_fields_omit_the_id() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let mut request = ask("sessions | sort by id desc");
+    request.page_size = Some(2);
+    let ordinary = run_q(&archive, request).unwrap();
+    let expected: Vec<_> = ordinary["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    let fields = vec!["title".into()];
+    for name in ["profiles", "compare", "pace"] {
+        let text = format!("sessions | sort by id desc | measure {name}");
+        let mut request = ask(&text);
+        request.page_size = Some(2);
+        request.fields = &fields;
+        let measured = run_q(&archive, request).unwrap();
+        let rows = &measured["data"][if name == "pace" {
+            "sessions"
+        } else {
+            "profiles"
+        }];
+        let ids: Vec<_> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["session"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, expected, "{name}");
+    }
+}
