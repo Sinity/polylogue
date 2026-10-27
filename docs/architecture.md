@@ -51,6 +51,13 @@ the transaction being written.
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
+`Archive::scanner_key()` creates `scanner.key` beside `archive.db` on first
+use: 32 random bytes, mode 0600, kept across index rebuilds and archive
+backups. An existing key is never replaced; an invalid key is refused.
+Credential fingerprints are comparable only within that archive. Scanned
+findings must record the shared `SCANNER_VERSION` and recompute when it
+changes.
+
 A rebuild parses the stored inputs, including imports whose original files
 are gone; notes live in `archive.db` and survive it. A
 message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
