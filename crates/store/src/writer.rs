@@ -298,6 +298,7 @@ impl Writer {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
+            database_states: HashMap::new(),
             first_build: empty.then(crate::first_build::FirstBuild::default),
             deferred_indexes,
             derive_due: true,
@@ -555,6 +556,7 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
+    database_states: HashMap<String, (i64, u64, crate::tool_databases::SavedDatabase)>,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
     first_build: Option<crate::first_build::FirstBuild>,
@@ -1257,7 +1259,15 @@ impl Inner {
         for (b, chain) in batches.zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
+                    if let Some(saved) = &p.database_state {
+                        self.database_states.insert(b.input.id.clone(), (chain, p.parsed_upto, saved.clone()));
+                    }
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
+                }
+                if let Some((saved_chain, length, saved)) = self.database_states.get(&b.input.id)
+                    && *saved_chain == chain
+                {
+                    crate::tool_databases::save_when_parsed(&itx, &b.input.id, chain, *length, saved)?;
                 }
             }
             stats.0 += 1;

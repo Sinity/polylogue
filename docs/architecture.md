@@ -140,10 +140,11 @@ file discovery and parsing continue. Stopping the loop ends the reads between ro
 commits the records' comparison hashes and byte position in `index.db`.
 Domain parsing reads the stored input through the ordinary parse path.
 
-An ordinary restart reads this comparison state directly. A stop between the
-archive commit and the comparison commit leaves a suffix, which is read once
-to finish its hashes before another comparison. An index rebuild loses the
-comparison state and the next read compares the source in full. An origin
+An ordinary restart reads this comparison state directly. The ordinary
+stored-input parse finishes any records left between the archive and index
+commits before another database read. Comparison hashes commit with that
+parse; source cursors wait until it reaches the captured length. An index
+rebuild loses the comparison state and the next read compares the source in full. An origin
 may declare a monotonic integer change column for a table; other tables compare
 complete rows. Cursor tables are read every three minutes and verified in full
 daily, when their schema changes, and when the source file is replaced or returns after being missing. A cursor needs the file's creation time as well as its device and inode; when creation time is unavailable, that read verifies every row.

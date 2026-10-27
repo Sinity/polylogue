@@ -15,6 +15,7 @@ use std::{
 
 mod catalog;
 pub use catalog::{Comparison, SavedDatabase};
+pub(crate) use catalog::save_when_parsed;
 
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 const CURSOR_EXPORT: Duration = Duration::from_secs(180);
@@ -116,7 +117,7 @@ impl Exporter {
         archive: &Archive,
         input: &InputKey,
         observation: &Observation,
-        send: impl FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
+        send: impl FnMut(Vec<u8>, Option<SavedDatabase>) -> Result<(), ExportError>,
     ) -> Result<Option<Exported>, ExportError> {
         let Some(due) = self.observe(db) else {
             return Ok(None);
@@ -133,7 +134,7 @@ impl Exporter {
         input: &InputKey,
         observation: &Observation,
         due: DatabaseRead,
-        mut send: impl FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
+        mut send: impl FnMut(Vec<u8>, Option<SavedDatabase>) -> Result<(), ExportError>,
     ) -> Result<Exported, ExportError> {
         let done = write_export(
             db,
@@ -292,7 +293,7 @@ fn write_export(
     cursor_due: bool,
     verify: bool,
     stop: Option<&std::sync::atomic::AtomicBool>,
-    send: &mut dyn FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
+    send: &mut dyn FnMut(Vec<u8>, Option<SavedDatabase>) -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
     let stopped = || {
         if stop.is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed)) {
@@ -430,8 +431,7 @@ fn write_export(
                 crate::fault::check("tool_export.after_row", &table.name)?;
             }
             if bytes.len() >= APPEND_BYTES {
-                let update = Comparison::records(&bytes, None)?;
-                send(std::mem::take(&mut bytes), update)?;
+                send(std::mem::take(&mut bytes), None)?;
             }
         }
         if full {
@@ -440,7 +440,7 @@ fn write_export(
                 serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"kh":format!("{:016x}", row_key(&table.name, &key)),"gone":true})).map_err(std::io::Error::from)?;
                 bytes.push(b'\n'); done.gone += 1;
                 crate::fault::check("tool_export.after_gone", &table.name)?;
-                if bytes.len() >= APPEND_BYTES { let update = Comparison::records(&bytes, None)?; send(std::mem::take(&mut bytes), update)?; }
+                if bytes.len() >= APPEND_BYTES { send(std::mem::take(&mut bytes), None)?; }
                 Ok(())
             })?;
         }
@@ -473,8 +473,7 @@ fn write_export(
             bytes.push(b'\n');
             done.gone += 1;
             if bytes.len() >= APPEND_BYTES {
-                let update = Comparison::records(&bytes, None)?;
-                send(std::mem::take(&mut bytes), update)?;
+                send(std::mem::take(&mut bytes), None)?;
             }
             Ok(())
         },
@@ -494,8 +493,7 @@ fn write_export(
         .cursors
         .retain(|table, _| tables.iter().any(|t| &t.name == table));
     if !bytes.is_empty() || saved != catalog.saved {
-        let update = Comparison::records(&bytes, Some(saved))?;
-        send(bytes, update)?;
+        send(bytes, Some(saved))?;
     }
     Ok(done)
 }

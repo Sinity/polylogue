@@ -58,6 +58,19 @@ impl Comparison {
         }
         Ok(out)
     }
+    pub fn read(mut reader: impl std::io::BufRead) -> crate::Result<Self> {
+        let mut out = Self::default();
+        let mut line = Vec::new();
+        while reader.read_until(b'\n', &mut line)? > 0 {
+            let part = Self::records(&line, None)?;
+            out.rows.extend(part.rows);
+            if part.schema.is_some() {
+                out.schema = part.schema;
+            }
+            line.clear();
+        }
+        Ok(out)
+    }
     pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
         let length = i64::try_from(self.length).map_err(|_| {
             crate::StoreError::Invalid("database comparison exceeds archive address space".into())
@@ -114,6 +127,18 @@ impl Comparison {
         conn.execute("INSERT INTO tool_database(input_pk,length,state) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,state=COALESCE(?3,tool_database.state)", params![input_pk,length,saved])?;
         Ok(())
     }
+}
+
+pub(crate) fn save_when_parsed(conn: &Connection, input: &str, chain: i64, length: u64, saved: &SavedDatabase) -> crate::Result<()> {
+    let parsed: Option<(i64, i64)> = conn.query_row(
+        "SELECT i.pk,p.parsed_upto FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.parsed_upto>=?3",
+        params![input,chain,i64::try_from(length).map_err(|_| crate::StoreError::Invalid("database state exceeds archive address space".into()))?],
+        |r| Ok((r.get(0)?,r.get(1)?))
+    ).optional()?;
+    if let Some((pk, position)) = parsed {
+        Comparison { from: position as u64, length: position as u64, saved: Some(saved.clone()), ..Comparison::default() }.write(conn,pk)?;
+    }
+    Ok(())
 }
 
 pub(super) struct Catalog {

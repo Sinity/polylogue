@@ -73,19 +73,17 @@ pub struct ParseStep {
     /// Default leaves the complete parsed values available for writer fallback.
     pub(crate) prepared: PreparedRows,
     pub(crate) comparison: Option<crate::tool_databases::Comparison>,
-    pub(crate) comparison_only: bool,
+    pub(crate) database_state: Option<crate::tool_databases::SavedDatabase>,
 }
 
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
-    /// Row-dump comparison state, committed without changing the origin's
-    /// parse position. Domain parsing reads these stored bytes separately.
-    pub fn comparison(update: crate::tool_databases::Comparison) -> Self {
-        let mut step = Self::new(Output::default(), RecordCounts::default(), 0..0, false);
-        step.comparison = Some(update);
-        step.comparison_only = true;
+    /// Source cursors wait for the stored records' ordinary parse to commit.
+    pub fn database_state(length: u64, saved: crate::tool_databases::SavedDatabase) -> Self {
+        let mut step = Self::new(Output::default(), RecordCounts::default(), 0..length, false);
+        step.database_state = Some(saved);
         step.reset = false;
         step
     }
@@ -93,6 +91,15 @@ impl ParseStep {
     /// The comparison hashes of the row-dump records parsed in this step.
     pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
         let mut update = crate::tool_databases::Comparison::records(bytes, None)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
+    /// Whole row-dump parsers commit their comparison with completion.
+    pub fn compare_reader(&mut self, reader: impl std::io::BufRead) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::read(reader)?;
         update.from = self.start;
         update.length = self.parsed_upto;
         self.comparison = Some(update);
@@ -118,7 +125,7 @@ impl ParseStep {
             at_end,
             prepared: PreparedRows::default(),
             comparison: None,
-            comparison_only: false,
+            database_state: None,
         }
     }
 }

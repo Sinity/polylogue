@@ -221,10 +221,11 @@ fn seed_restart(dir: &Path) {
             .into_iter()
             .map(|s| ParseStep::new(s.output, s.counts, from + s.start..from + s.consumed, true))
             .collect();
-        let mut update =
-            polylogue_store::tool_databases::Comparison::records(&bytes, None).unwrap();
-        update.length = length;
-        parse.push(ParseStep::comparison(update));
+        for step in &mut parse {
+            let start = (step.start - from) as usize;
+            let end = (step.parsed_upto - from) as usize;
+            step.compare_records(&bytes[start..end]).unwrap();
+        }
         let (blob, file) = archive.prepare_blob(&bytes).unwrap();
         let batch = Batch {
             input: input.clone(),

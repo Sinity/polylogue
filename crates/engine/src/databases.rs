@@ -1,7 +1,7 @@
 //! Tool-database reads run independently of file discovery and parsing.
 //! Only the writer's bounded byte queue applies backpressure to a reader.
 use crate::*;
-use polylogue_store::tool_databases::{Comparison, ExportError, Exporter};
+use polylogue_store::tool_databases::{SavedDatabase, ExportError, Exporter};
 use polylogue_store::{Batch, ParseStep, staging::PreparedBatch};
 use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, sync_channel};
@@ -234,67 +234,11 @@ impl<'a> InputWriter<'a> {
             wake,
             captured,
         };
-        if let Some(progress) = progress {
-            let from = reader
-                .tool_database_length(&source.input.id)?
-                .unwrap_or(if progress.parsed { progress.length } else { 0 });
-            if from < progress.length {
-                // Only a stop between the byte commit and the comparison
-                // commit leaves this suffix. An ordinary restart reads none.
-                let chain =
-                    reader.stored_chain(&source.input.id, progress.chain, progress.length)?;
-                let mut start = from;
-                let mut pending = Vec::new();
-                while start < progress.length {
-                    let end = progress
-                        .length
-                        .min(start + polylogue_store::tool_databases::APPEND_BYTES as u64);
-                    pending.extend(chain.read_range(&out.blobs, start, end)?);
-                    if let Some(last) = pending.iter().rposition(|b| *b == b'\n') {
-                        let mut update = Comparison::records(&pending[..=last], None)?;
-                        update.length = end - (pending.len() - last - 1) as u64;
-                        update.from = update.length - (last + 1) as u64;
-                        let batch = Batch {
-                            input: source.input.clone(),
-                            change: Change::Reparse {
-                                chain: progress.chain,
-                            },
-                            observation: None,
-                            continues: false,
-                            new_blob: None,
-                            blobs: vec![],
-                            length: progress.length,
-                            parse: vec![ParseStep::comparison(update)],
-                            release: Default::default(),
-                        };
-                        out.writer
-                            .store_group(
-                                vec![PreparedBatch {
-                                    batch,
-                                    files: vec![],
-                                }],
-                                Arc::clone(&out.blobs),
-                            )?
-                            .into_iter()
-                            .collect::<polylogue_store::Result<Vec<_>>>()?;
-                        pending.drain(..=last);
-                    }
-                    start = end;
-                }
-                if !pending.is_empty() {
-                    return Err(ExportError::Invalid(
-                        "stored row dump has an incomplete record".into(),
-                    ));
-                }
-            }
-        }
         Ok(out)
     }
-    fn append(&mut self, bytes: Vec<u8>, mut update: Comparison) -> Result<(), ExportError> {
+    fn append(&mut self, bytes: Vec<u8>, saved: Option<SavedDatabase>) -> Result<(), ExportError> {
         let size = bytes.len() as u64;
-        update.from = self.length;
         self.length += size;
-        update.length = self.length;
         let (new_blob, files) = if bytes.is_empty() {
             (None, Vec::new())
         } else {
@@ -320,7 +264,7 @@ impl<'a> InputWriter<'a> {
             new_blob,
             blobs: vec![],
             length: self.length,
-            parse: vec![ParseStep::comparison(update)],
+            parse: saved.map(|saved|ParseStep::database_state(self.length,saved)).into_iter().collect(),
             release: Default::default(),
         };
         self.exists = true;

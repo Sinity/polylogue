@@ -278,6 +278,13 @@ impl Engine {
         parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;
+        if done && plan.origin.capture == polylogue_sources::Capture::RowDump {
+            let pool::Bytes::Stored(chain) = &plan.source else {
+                return Err(std::io::Error::other("a row dump must be stored before comparison").into());
+            };
+            parse.compare_reader(std::io::BufReader::new(chain.reader(Arc::clone(&self.blobs))))?;
+            pass.bytes_read += plan.size;
+        }
         parse.prepare();
         let batch = Batch {
             input: plan.input.clone(),

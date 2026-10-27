@@ -52,11 +52,13 @@ impl Test {
             archive,
             input,
             observation,
-            |bytes, mut update| {
+            |bytes, saved| {
                 let first = length == 0;
-                update.from = length;
+                let from = length;
                 length += bytes.len() as u64;
-                update.length = length;
+                let mut parse = ParseStep::new(polylogue_model::Output::default(), polylogue_model::RecordCounts::default(), from..length, true);
+                parse.compare_records(&bytes)?;
+                parse.comparison.as_mut().unwrap().saved = saved;
                 let (new_blob, files) = if bytes.is_empty() {
                     (None, vec![])
                 } else {
@@ -79,7 +81,7 @@ impl Test {
                     new_blob,
                     blobs: vec![],
                     length,
-                    parse: vec![ParseStep::comparison(update)],
+                    parse: vec![parse],
                     release: Default::default(),
                 };
                 for done in writer.sender()?.store_group(

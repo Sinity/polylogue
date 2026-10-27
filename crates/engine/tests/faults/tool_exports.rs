@@ -48,12 +48,12 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
 }
 
 #[test]
-fn stopped_comparison_commit_reads_only_the_unacknowledged_suffix() {
+fn a_stopped_parse_recovers_stored_database_rows_before_reading_the_source() {
     fault::clear();
     let w = Morrow::lay_out(Set::Main);
     let db = database(&w);
-    // Fail both attempts to write this group's index rows; its bytes already
-    // committed. The next reader reconstructs only their comparison hashes.
+    // Raw bytes commit first. A failed parse must finish through the ordinary
+    // stored-input path before another source read compares the same rows.
     fault::arm(
         "tool_database.comparison_commit",
         "kept_rows",

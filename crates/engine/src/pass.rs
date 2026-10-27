@@ -96,7 +96,9 @@ impl Engine {
             total.errors.extend(completed.errors);
             self.loaded = false;
             self.load()?;
-            self.capture_checked = Some(Instant::now());
+            if completed.finished && self.capture_checked.is_some() {
+                self.capture_checked = Some(Instant::now());
+            }
             let next = self.one_pass(false, &Default::default(), true)?;
             total.full_scans += next.full_scans;
             total.inputs_seen += next.inputs_seen;
@@ -167,7 +169,7 @@ impl Engine {
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
         pass.errors.extend(completed.errors);
-        if completed.finished {
+        if completed.finished && self.capture_checked.is_some() {
             self.capture_checked = Some(Instant::now());
         }
         if completed.changed {
@@ -179,12 +181,17 @@ impl Engine {
             || self
                 .capture_checked
                 .is_none_or(|at| at.elapsed() >= self.config.live_every);
+        let mut deferred_database = false;
         if capture_due && !self.exporter.pending() {
-            self.capture_checked = Some(Instant::now());
+            deferred_database = self.databases.keys().any(|path| {
+                !self.refused.contains(path) && self.inputs.get(path).is_some_and(|state| state.stored > 0 && (!state.parsed || state.parsed_upto < state.stored))
+            });
+            self.capture_checked = (!deferred_database).then(Instant::now);
             let databases = self
                 .databases
                 .iter()
                 .filter(|(path, _)| !self.refused.contains(*path))
+                .filter(|(path, _)| self.inputs.get(*path).is_none_or(|state| state.stored == 0 || (state.parsed && state.parsed_upto == state.stored)))
                 .map(|(path, origin)| databases::DatabaseInput {
                     path: path.clone(),
                     input: InputKey {
@@ -207,7 +214,7 @@ impl Engine {
                 self.wake.clone(),
             )?;
         }
-        pass.capture_pending = self.exporter.pending();
+        pass.capture_pending = self.exporter.pending() || deferred_database;
         let mut found: Vec<_> = found
             .into_iter()
             .filter(|f| f.origin.capture != Capture::RowDump)
@@ -335,6 +342,9 @@ impl Engine {
         }
         self.execute(plans, &mut pass)?;
         self.restore_failed_writes()?;
+        if deferred_database && !pass.errors.is_empty() {
+            pass.capture_pending = self.exporter.pending();
+        }
         if !pass.capture_pending {
             pass.sessions_derived = self.derive()?;
         }
