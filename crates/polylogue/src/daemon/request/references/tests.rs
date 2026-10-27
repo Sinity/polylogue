@@ -76,3 +76,21 @@ fn exact_numbers_and_raw_json_keep_their_types() {
         serde_json::to_value(answer).unwrap()
     );
 }
+
+#[test]
+fn typed_references_survive_masked_map_keys_and_key_collisions() {
+    let secret = "AKIAIOSFODNN7EXAMPLE";
+    let id = MessageId::parse(&format!("claude-code:{secret}")).unwrap();
+    let label = polylogue_render::mask(secret);
+    let map = std::collections::BTreeMap::from([
+        (secret.to_owned(), id.clone()),
+        (label.clone(), id.clone()),
+    ]);
+    let response = References::default().response(map).masked();
+    let super::super::Response::Ok { data, .. } = response else {
+        panic!()
+    };
+    assert_eq!(data[&label], id.to_string());
+    assert_eq!(data[format!("{label} #2")], id.to_string());
+    assert!(data.get(secret).is_none());
+}

@@ -409,7 +409,7 @@ impl Response {
 
 /// Values whose meaning is declared by the constructor, never inferred from JSON shape.
 #[derive(Debug, Clone, Default)]
-pub struct References(Vec<(String, serde_json::Value)>);
+pub struct References(Vec<String>);
 
 impl References {
     pub(crate) fn response(mut self, data: impl Serialize) -> Response {
@@ -429,11 +429,8 @@ impl References {
         references::observe(self, path, data);
     }
 
-    pub(crate) fn add(&mut self, path: impl Into<String>, value: &impl Serialize) {
-        self.0.push((
-            path.into(),
-            serde_json::to_value(value).expect("reference serializes"),
-        ));
+    pub(crate) fn add(&mut self, path: impl Into<String>, _value: &impl Serialize) {
+        self.0.push(path.into());
     }
 
     pub(crate) fn opaque_field(&mut self, value: &serde_json::Value, path: impl Into<String>) {
@@ -458,12 +455,11 @@ impl References {
     }
 
     fn clean(&self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
-        polylogue_model::masking::mask_json_values(value, string);
-        for (path, original) in &self.0 {
-            if let Some(value) = value.pointer_mut(path) {
-                *value = original.clone();
-            }
-        }
+        polylogue_model::masking::mask_json_values_except(
+            value,
+            string,
+            self.0.iter().map(String::as_str),
+        );
     }
 }
 

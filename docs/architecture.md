@@ -231,7 +231,8 @@ The [masker](../crates/model/src/masking.rs) runs over content in source
 order before views, pages or encoding, so titles and
 [search snippets](../crates/store/src/search/tests/masking.rs) mask the same
 way. Every application response also masks strings, metadata, errors and
-object keys. Stored bytes never change.
+object keys. Typed identifiers and continuation tokens keep their exact bytes;
+authored JSON fields with the same names are masked. Stored bytes never change.
 [Masking tests](../crates/model/src/masking/tests.rs) and
 [CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
 

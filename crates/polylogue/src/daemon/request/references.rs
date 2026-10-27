@@ -94,7 +94,7 @@ impl<'a> Serializer for Collect<'a> {
     ) -> Result<Value> {
         if name == "polylogue_reference" {
             let value = serde_json::to_value(value)?;
-            self.references.0.push((self.path, value.clone()));
+            self.references.0.push(self.path);
             Ok(value)
         } else {
             value.serialize(self)
