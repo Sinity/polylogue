@@ -37,7 +37,69 @@ fn the_producer_connects_with_the_password_from_its_file() {
     let file = dir.path().join("password");
     // Secret files usually end in a newline; it is not part of the password.
     std::fs::write(&file, format!("{PASSWORD}\n")).unwrap();
-    connect(&config(&server, Some(&file))).unwrap();
+    let url = server.url().to_string();
+    let (ready, started) = std::sync::mpsc::channel();
+    let responder = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use futures_util::StreamExt;
+            let client = async_nats::ConnectOptions::with_user_and_password(
+                "daemon".into(),
+                "synthetic-daemon-password".into(),
+            )
+            .connect(&url)
+            .await
+            .unwrap();
+            async_nats::jetstream::new(client.clone())
+                .get_or_create_stream(async_nats::jetstream::stream::Config {
+                    name: "AUTH_INGRESS".into(),
+                    subjects: vec!["auth.ingress.*".into()],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let mut incoming = client.subscribe("auth.ingress.polylogue").await.unwrap();
+            client.flush().await.unwrap();
+            ready.send(()).unwrap();
+            let message = incoming.next().await.unwrap();
+            let sinex_protocol::Ingress::RegisterKinds {
+                frame,
+                declarations,
+            } = serde_json::from_slice(&message.payload).unwrap()
+            else {
+                panic!("registration first")
+            };
+            let registered: Vec<_> = declarations
+                .iter()
+                .map(|d| (d.kind.clone(), d.definition_hash()))
+                .collect();
+            let ack = sinex_protocol::Acknowledgment {
+                frame,
+                material: None,
+                admitted: vec![],
+                outcome: serde_json::json!({"registered_kinds":registered}),
+                refusal: None,
+                commit_seq: None,
+            };
+            client
+                .publish(
+                    "auth.ack.polylogue",
+                    serde_json::to_vec(&ack).unwrap().into(),
+                )
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+        });
+    });
+    started.recv().unwrap();
+    let mut config = config(&server, Some(&file));
+    config.store = dir.path().join("store");
+    std::fs::create_dir(&config.store).unwrap();
+    connect(&config).unwrap();
+    responder.join().unwrap();
 }
 
 #[test]

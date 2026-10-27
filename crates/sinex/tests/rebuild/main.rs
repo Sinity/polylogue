@@ -250,6 +250,51 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         1
     );
 
+    // Re-read the complete note material and replace its repeat-policy reading.
+    let saved = running._pg.sql("sinex", "SELECT json_build_object('id',e.id,'event',json_build_object('kind',json_build_object('name',e.event_type,'version',e.kind_version),'payload',e.payload,'location',json_build_object('material',e.material_id,'anchor',e.anchor),'output_index',e.output_index,'parents','[]'::json,'reading_order',0,'class',e.class))::text FROM core.events e WHERE event_type='polylogue.note' AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").unwrap();
+    let saved: serde_json::Value = serde_json::from_str(saved.trim()).unwrap();
+    let event: sinex_protocol::ProducerEvent =
+        serde_json::from_value(saved["event"].clone()).unwrap();
+    let material = event.location.unwrap().material;
+    let scope = sinex_protocol::ReplayScopeQuery {
+        materials: vec![material],
+        event_types: Some(vec!["polylogue.note".into()]),
+        from: None,
+        until: None,
+    };
+    let selection = sinex
+        .replay_scope(&scope)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(selection.rows, 1);
+    let operation = sinex_model::OperationId::new();
+    let batches = vec![sinex_protocol::ReplayBatch {
+        events: vec![event],
+        failures: vec![],
+    }];
+    let replaced = sinex
+        .replay_sequence(operation, selection.clone(), scope.clone(), batches.clone())
+        .unwrap();
+    assert_eq!(replaced.admitted.len(), 1);
+    assert_ne!(
+        replaced.admitted[0].to_string(),
+        saved["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        replaced,
+        sinex
+            .replay_sequence(operation, selection, scope, batches)
+            .unwrap()
+    );
+    assert_eq!(
+        sinex_rows(&running.socket, "events where event_type = polylogue.note"),
+        1
+    );
+    assert_eq!(answers(&on_sinex), (sessions.clone(), notes.clone()));
+    phase("note replay acknowledged");
+
     // Delete the local copy and the index; rebuild with no provider file.
     for name in [
         "sinex.db",

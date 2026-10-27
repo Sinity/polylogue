@@ -5,12 +5,12 @@
 //! the change as JSON. A note, setting, kept result, delivery or excision
 //! also becomes its typed event, anchored at the material's start.
 use crate::client::Client;
+use crate::kinds as event;
 use crate::parts::{REGISTER, parser_version};
 use crate::{Error, Result};
 use polylogue_model::Timestamp;
 use polylogue_store::primary::RegisterChange;
 use polylogue_store::user_writes::{UserRequest, UserWrite};
-use sinex_model::event_types::polylogue as event;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Ingress, MaterialFrame, ProducerEvent};
 
@@ -96,9 +96,15 @@ pub(crate) async fn send(
     };
     client
         .send(Ingress::Events {
-            frame: format!("{name}:event"),
+            frame: format!(
+                "{name}:event:{}",
+                crate::kinds::definition_hash(client.producer())
+            ),
             events: vec![ProducerEvent {
-                event_type: event_type.into(),
+                kind: sinex_model::KindRef {
+                    name: event_type.into(),
+                    version: 2,
+                },
                 payload,
                 location: Some(RecordLocation {
                     material,

@@ -382,3 +382,13 @@ unset. JSON uses JSON Unicode escapes and round trips the original values.
 HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
+
+The Sinex producer owns its ten `polylogue.*` payload types and declares their
+exact version, schema, keys, times and class minima on connection. Registration
+must be acknowledged before material or event publication. Content-named event
+frames include declaration hashes. `Sinex::replay_scope` obtains a metadata
+snapshot; `Sinex::replay_sequence` checks the stored raw bytes, saves a complete
+replacement frame in Sinex's frame storage and waits for atomic acknowledgment.
+The caller updates its index after that acknowledgment.
+A different parse or build uses a new operation, including after a refused
+replacement.
