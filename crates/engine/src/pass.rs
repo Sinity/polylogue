@@ -189,8 +189,12 @@ impl Engine {
                     observation: self.observation(path, None),
                 })
                 .collect();
-            self.exporter
-                .start(databases, self.archive.clone(), self.writer.sender()?)?;
+            self.exporter.start(
+                databases,
+                self.archive.clone(),
+                self.writer.sender()?,
+                self.wake.clone(),
+            )?;
         }
         pass.capture_pending = self.exporter.pending();
         let mut found: Vec<_> = found

@@ -55,17 +55,21 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
-                    let mut queue =
-                        match InputWriter::new(&archive, &writer, source, notify.clone(), wake.clone()) {
-                            Ok(queue) => queue,
-                            Err(error) => {
-                                completed.errors.push(format!(
-                                    "read database {}: {error}",
-                                    source.path.display()
-                                ));
-                                continue;
-                            }
-                        };
+                    let mut queue = match InputWriter::new(
+                        &archive,
+                        &writer,
+                        source,
+                        notify.clone(),
+                        wake.clone(),
+                    ) {
+                        Ok(queue) => queue,
+                        Err(error) => {
+                            completed
+                                .errors
+                                .push(format!("read database {}: {error}", source.path.display()));
+                            continue;
+                        }
+                    };
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         exporter.export(
                             &source.path,
@@ -107,7 +111,9 @@ impl Databases {
                     }
                 }
                 let _ = tx.send((exporter, completed));
-                if let Some(wake) = wake { let _ = wake.send(LoopMsg::Changed); }
+                if let Some(wake) = wake {
+                    let _ = wake.send(LoopMsg::Changed);
+                }
             })?;
         self.worker = Some(Worker {
             thread,
@@ -302,7 +308,9 @@ impl<'a> InputWriter<'a> {
         results: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
     ) -> Result<(), ExportError> {
         self.bytes -= size;
-        if self.notify.try_send(()).is_ok() && let Some(wake) = &self.wake {
+        if self.notify.try_send(()).is_ok()
+            && let Some(wake) = &self.wake
+        {
             let _ = wake.send(LoopMsg::Changed);
         }
         for result in results {
