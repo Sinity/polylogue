@@ -1,13 +1,46 @@
 //! Outside replay submits a complete parse, with the input bytes checked again
 //! before its saved frame is published. The connection serializes publication.
-use crate::{Error, Result, Sinex};
+use crate::{Error, Result, Sinex, client::Client};
 use sinex_protocol::{
     Acknowledgment, DeclarationHash, Ingress, ProducerReplay, ReplayBatch, ReplayScopeQuery,
     ReplaySelection,
 };
+use std::sync::MutexGuard;
+
+/// Holds publication while a caller selects materials and prepares their parse.
+/// Dropping it allows the producer's other publication calls to proceed.
+pub struct Replay<'a> {
+    runtime: &'a tokio::runtime::Runtime,
+    client: MutexGuard<'a, Option<Client>>,
+}
 
 impl Sinex {
-    pub fn replay_scope(&self, query: &ReplayScopeQuery) -> Result<Vec<ReplaySelection>> {
+    /// Other connection calls wait until the returned replay is dropped.
+    pub fn replay(&self) -> Result<Replay<'_>> {
+        let client = self
+            .client
+            .lock()
+            .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
+        if client.is_none() {
+            return Err(Error::Invalid("the Sinex connection is closed".into()));
+        }
+        Ok(Replay {
+            runtime: &self.runtime,
+            client,
+        })
+    }
+}
+
+impl Replay<'_> {
+    fn with<T>(&mut self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Error::Invalid("the Sinex connection is closed".into()))?;
+        self.runtime.block_on(work(client))
+    }
+
+    pub fn scope(&mut self, query: &ReplayScopeQuery) -> Result<Vec<ReplaySelection>> {
         self.with(async |client| client.replay_scope(query).await)
     }
 
@@ -15,8 +48,8 @@ impl Sinex {
     /// An empty replacement is valid only when the completed parse has no
     /// readings in this scope. The caller updates its index after this returns.
     /// A different parse or build needs a new operation.
-    pub fn replay_sequence(
-        &self,
+    pub fn sequence(
+        &mut self,
         operation: sinex_model::OperationId,
         selection: ReplaySelection,
         scope: ReplayScopeQuery,

@@ -98,7 +98,15 @@ fn the_producer_connects_with_the_password_from_its_file() {
     let mut config = config(&server, Some(&file));
     config.store = dir.path().join("store");
     std::fs::create_dir(&config.store).unwrap();
-    connect(&config).unwrap();
+    let sinex = Sinex::connect(&config, dir.path()).unwrap();
+    let replay = sinex.replay().unwrap();
+    assert!(matches!(
+        sinex.client.try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ));
+    drop(replay);
+    assert!(sinex.client.try_lock().is_ok());
+    drop(sinex);
     responder.join().unwrap();
 }
 

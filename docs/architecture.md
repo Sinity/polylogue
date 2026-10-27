@@ -386,9 +386,10 @@ the requested format.
 The Sinex producer owns its ten `polylogue.*` payload types and declares their
 exact version, schema, keys, times and class minima on connection. Registration
 must be acknowledged before material or event publication. Content-named event
-frames include declaration hashes. `Sinex::replay_scope` obtains a metadata
-snapshot; `Sinex::replay_sequence` checks the stored raw bytes, saves a complete
-replacement frame in Sinex's frame storage and waits for atomic acknowledgment.
-The caller updates its index after that acknowledgment.
+frames include declaration hashes. `Sinex::replay` holds publication while the
+caller selects a metadata snapshot with `Replay::scope` and prepares its parse.
+`Replay::sequence` checks the stored raw bytes, saves a complete replacement
+frame in Sinex's frame storage and waits for atomic acknowledgment. The caller
+updates its index after that acknowledgment and releases the publication hold.
 A different parse or build uses a new operation, including after a refused
 replacement.
