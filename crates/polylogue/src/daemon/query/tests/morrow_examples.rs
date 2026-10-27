@@ -24,7 +24,7 @@ const GAPS: &[(&str, &str)] = &[
         "34",
         "an empty repo: result does not yet list the known repositories",
     ),
-    ("38", "tree_cost is not built"),
+    ("38", "tree cost differs from the historical example prices"),
 ];
 
 fn archive_with_notes() -> Morrow {
@@ -142,7 +142,7 @@ fn group_key(r: &Value) -> String {
 
 /// Compares one example's result with its expected value; `Err` says how
 /// they differ.
-fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(), String> {
+fn compare(reader: &Reader<'_>, number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
             let _ = f;
@@ -166,6 +166,27 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
                 .to_string(),
             n.to_string(),
         ),
+        Value::Array(items) if number == "31" => {
+            use polylogue_model::{Block, Target};
+            let mut got: Vec<_> = rows(v).iter().map(|note| {
+                json!([note["value"], note["target"]]).to_string()
+            }).collect();
+            let mut wanted = Vec::new();
+            for item in items {
+                let number = item[1].as_str().unwrap().strip_prefix('#').unwrap()
+                    .parse::<u8>().unwrap();
+                let prompt = item[2].as_str().unwrap();
+                let message = reader.messages(&polylogue_testkit::session(number), false)
+                    .map_err(|error| error.to_string())?.into_iter().find(|message| {
+                        message.blocks.iter().any(|block| matches!(block,
+                            Block::Text { text } if text == prompt))
+                    }).ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
+                wanted.push(json!([item[0], Target::Message(message.id).to_string()]).to_string());
+            }
+            got.sort();
+            wanted.sort();
+            differ(format!("{got:?}"), format!("{wanted:?}"))
+        }
         Value::Array(items) if items.iter().all(Value::is_string) => {
             let got: Vec<String> = rows(v).iter().map(row_session).collect();
             let want: Vec<String> = items.iter().map(s).collect();
@@ -200,7 +221,6 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
                     match number {
                         "15" => format!("{} {} {}", s(&i[0]), i[1].as_str().unwrap(), i[2]),
                         "36" => format!("{} {} {}", s(&i[0]), s(&i[1]), i[2].as_str().unwrap()),
-                        "31" => s(&i[1]),
                         _ => s(&i[0]),
                     }
                 })
@@ -313,7 +333,7 @@ fn the_query_examples_match_on_the_real_archive() {
         };
         let mut failures = Vec::new();
         for (q, want) in &cases {
-            if let Err(why) = compare(number, &run(&r, ask(q)), want) {
+            if let Err(why) = compare(&r, number, &run(&r, ask(q)), want) {
                 failures.push(format!("{q}: {why}"));
             }
         }
