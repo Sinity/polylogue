@@ -1,6 +1,6 @@
 //! Completed batches shared by subscribers at the same position.
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 
 #[derive(Default)]
 pub(super) struct Cache {
@@ -25,27 +25,36 @@ impl Cache {
             self.position = position;
         }
         let key = (since.map(str::to_owned), web);
-        if !self.files.contains_key(&key) {
-            let file =
-                tempfile::NamedTempFile::new_in(&d.archive.root).map_err(|e| error("io", e))?;
-            let output = file.reopen().map_err(|e| error("io", e))?;
-            super::super::query::feed::prepare_with(&reader, since, now_ms(), output, |value| {
-                if web {
-                    super::super::request::output_values(value, |text| {
-                        crate::web::access::scrub(text, &d.archive.root)
-                    });
-                }
-            })
-            .map_err(|f| {
-                Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                }
-                .masked()
-            })?;
-            self.files.insert(key.clone(), file);
-        }
-        self.files[&key].reopen().map_err(|e| error("io", e))
+        let file = match self.files.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let file =
+                    tempfile::NamedTempFile::new_in(&d.archive.root).map_err(|e| error("io", e))?;
+                let output = file.reopen().map_err(|e| error("io", e))?;
+                super::super::query::feed::prepare_with(
+                    &reader,
+                    since,
+                    now_ms(),
+                    output,
+                    |value| {
+                        if web {
+                            super::super::request::output_values(value, |text| {
+                                crate::web::access::scrub(text, &d.archive.root)
+                            });
+                        }
+                    },
+                )
+                .map_err(|f| {
+                    Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    }
+                    .masked()
+                })?;
+                entry.insert(file)
+            }
+        };
+        file.reopen().map_err(|e| error("io", e))
     }
 }
