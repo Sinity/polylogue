@@ -2,6 +2,7 @@
 //! whole BLAKE3 check out. The temporary file is private and removed on failure.
 use super::*;
 use base64::Engine as _;
+use std::io::Write;
 
 pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     if !values.flag("reveal") {
