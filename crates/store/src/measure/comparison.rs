@@ -122,10 +122,17 @@ pub fn similarity_query(reference_sql: &str) -> String {
 }
 
 #[derive(Debug, Serialize)]
+pub struct MetricValue {
+    pub name: String,
+    pub value: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ComparedSession {
     pub session: String,
     pub origin: String,
     pub facts: Option<Facts>,
+    pub metric: Option<MetricValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -135,7 +142,12 @@ pub struct Comparison {
     pub underived_sessions: usize,
 }
 
-pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison> {
+pub fn compare(reader: &Reader<'_>, selection: &Selection, name: &str) -> Result<Comparison> {
+    if !name.is_empty() && !profiles::METRICS.contains(&name) {
+        return Err(StoreError::Invalid(format!(
+            "unknown profile metric `{name}`"
+        )));
+    }
     let (condition, params) = selection.session_condition("s.pk")?;
     let conn = reader.conn()?;
     let mut statement = conn.prepare(&format!(
@@ -151,10 +163,25 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
     let mut profiles = vec![];
     for row in rows {
         let (pk, session, origin) = row?;
+        let facts = profiles::facts(conn, pk)?;
+        let metric = if name.is_empty() {
+            None
+        } else {
+            let cost = if name == "cost_usd" {
+                own_cost(reader, pk)?
+            } else {
+                None
+            };
+            Some(MetricValue {
+                name: name.into(),
+                value: profiles::metric(facts.as_ref(), cost, name)?,
+            })
+        };
         profiles.push(ComparedSession {
             session,
             origin,
-            facts: profiles::facts(conn, pk)?,
+            facts,
+            metric,
         });
     }
     let mut differences = BTreeMap::new();
@@ -162,12 +189,13 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
     // of structural facts needs neither pricing nor parent message history.
     for field in ["origin", "workflow_shape", "final_observed_state"]
         .into_iter()
-        .chain(
-            profiles::METRICS
-                .iter()
-                .copied()
-                .filter(|m| *m != "cost_usd"),
-        )
+        .chain(profiles::METRICS.iter().copied().filter(|m| {
+            if name.is_empty() {
+                *m != "cost_usd"
+            } else {
+                *m == name
+            }
+        }))
     {
         let mut values = BTreeMap::new();
         for profile in &profiles {
@@ -183,7 +211,10 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection) -> Result<Comparison>
                     .as_ref()
                     .map(|p| Value::String(p.final_observed_state.clone()))
                     .unwrap_or(Value::Null),
-                _ => serde_json::to_value(profiles::metric(profile.facts.as_ref(), None, field)?)?,
+                _ => serde_json::to_value(match &profile.metric {
+                    Some(metric) if metric.name == field => metric.value,
+                    _ => profiles::metric(profile.facts.as_ref(), None, field)?,
+                })?,
             };
             values.entry(value.to_string()).or_insert(value);
         }
@@ -222,10 +253,7 @@ fn metrics(reader: &Reader<'_>, selection: &Selection, names: &[&str]) -> Result
         let mut values = vec![];
         for (i, name) in names.iter().enumerate() {
             values.push(if *name == "cost_usd" {
-                let own = super::usage::own_session(reader, row.get(0)?)?;
-                (own.api_cost.unpriced_messages == 0 && !own.api_cost.response_total_unknown)
-                    .then_some(own.api_cost.known_usd)
-                    .flatten()
+                own_cost(reader, row.get(0)?)?
             } else {
                 row.get(i + 2)?
             });
@@ -236,6 +264,15 @@ fn metrics(reader: &Reader<'_>, selection: &Selection, names: &[&str]) -> Result
         });
     }
     Ok(result)
+}
+
+fn own_cost(reader: &Reader<'_>, pk: i64) -> Result<Option<f64>> {
+    let own = super::usage::own_session(reader, pk)?;
+    Ok(
+        (own.api_cost.unpriced_messages == 0 && !own.api_cost.response_total_unknown)
+            .then_some(own.api_cost.known_usd)
+            .flatten(),
+    )
 }
 
 fn metric_sql(name: &str) -> Result<String> {

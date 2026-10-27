@@ -179,7 +179,9 @@ measurement. Existing session query fields keep their existing definitions.
 
 `profiles` and `compare` page selected sessions through the query cursor.
 `compare` returns structural facts and the varying fields within that page;
-it reads no usage or parent history. Identity and title are excluded from
+it reads no parent history. Its optional numeric metric can be selected as
+`compare:cost_usd` (CLI `measure compare --metric cost_usd`) to include own
+usage cost. Without a metric it compares structural facts and reads no usage. Identity and title are excluded from
 varying-field differences. Usage is read for full profiles and only for an
 explicit `cost_usd` aggregate metric. `similar` takes a query selecting one
 reference session and pages matches from every other session in the archive:

@@ -99,12 +99,12 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "compare",
-        help: "Selected profiles and their varying fields",
+        help: "Selected structural facts and their varying fields; optional numeric metric, including cost_usd",
         whole_archive: false,
         paging: Some(Paging::Sessions),
-        argument: None,
+        argument: Some("metric"),
         metrics: &[],
-        run: |r, x| json(measure::comparison::compare(r, &x.selection)),
+        run: |r, x| json(measure::comparison::compare(r, &x.selection, x.metric)),
         text: text::json,
     },
     Measure {
