@@ -13,6 +13,9 @@ unset = ["PYTHONPATH", "PYTHONHOME"]
 # Two builds run at once under the host cargo cap; -j8 each keeps them
 # inside their memory ceilings instead of each spawning one rustc per thread.
 CARGO_BUILD_JOBS = "8"
+# Incremental state is half of each target directory and the drive is write-bound;
+# agent builds rarely reuse it across commits.
+CARGO_INCREMENTAL = "0"
 
 [operations.fast]
 description = "Formatting, crate boundaries and strict Clippy in the development queue"
