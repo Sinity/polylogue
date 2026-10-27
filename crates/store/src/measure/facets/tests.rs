@@ -8,12 +8,14 @@ fn distinct_sessions_global_idf_and_optional_families_share_one_reader() {
     let a = f
         .session(SessionFacts {
             id: "codex:a",
+            repo: Some("https://example.test/team/one.git"),
             ..Default::default()
         })
         .unwrap();
     let b = f
         .session(SessionFacts {
             id: "codex:b",
+            repo: Some("alternate repository label"),
             ..Default::default()
         })
         .unwrap();

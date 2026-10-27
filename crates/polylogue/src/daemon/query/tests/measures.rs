@@ -21,6 +21,7 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
         &archive,
         "sessions where workflow_shape:chat | measure profiles",
     );
+    assert!(!profiles["data"].as_array().unwrap().is_empty());
     assert!(
         profiles["data"]
             .as_array()
