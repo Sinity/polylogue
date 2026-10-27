@@ -414,25 +414,45 @@ fn copy_sample(directory: &Path, chosen: &[SampleFile]) -> Result<Vec<SampleFile
         .map(|file| {
             let path = directory.join(&file.rel);
             fs::create_dir_all(path.parent().unwrap_or(directory)).map_err(|e| e.to_string())?;
-            let copied = Command::new("cp")
-                .args(["--reflink=auto", "--preserve=timestamps"])
-                .arg(&file.path)
-                .arg(&path)
-                .output()
-                .map_err(|e| e.to_string())?;
-            if !copied.status.success() {
-                return Err(format!(
-                    "copy {}: {}",
-                    file.path.display(),
-                    String::from_utf8_lossy(&copied.stderr)
-                ));
-            }
+            copy_input(&file.path, &path, file.stratum == "codex/database")?;
             let mut file = file.clone();
             file.size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
             file.path = path;
             Ok(file)
         })
         .collect()
+}
+
+/// A database copy must include committed WAL rows from one read transaction.
+fn copy_input(source: &Path, destination: &Path, database: bool) -> Result<(), String> {
+    let copied = if database {
+        match fs::remove_file(destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let destination_sql = destination.to_string_lossy().replace('\'', "''");
+        Command::new("sqlite3")
+            .arg("-readonly")
+            .arg(source)
+            .arg(format!("VACUUM INTO '{destination_sql}'"))
+            .output()
+    } else {
+        Command::new("cp")
+            .args(["--reflink=auto", "--preserve=timestamps"])
+            .arg(source)
+            .arg(destination)
+            .output()
+    }
+    .map_err(|error| error.to_string())?;
+    if !copied.status.success() {
+        return Err(format!(
+            "copy {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&copied.stderr)
+        ));
+    }
+    Ok(())
 }
 
 fn first_build_binary() -> Result<PathBuf, String> {
