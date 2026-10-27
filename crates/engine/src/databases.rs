@@ -73,11 +73,10 @@ impl Databases {
                         Ok(Err(error)) => {
                             exporter.forget(&source.path);
                             completed.changed = true;
-                            Completed { finished:true, ..completed }
-                                .errors
-                                .push(format!("read database {}: {error}", source.path.display()));
+                            completed.errors.push(format!("read database {}: {error}", source.path.display()));
                         }
                         Err(_) => {
+                            completed.changed = true;
                             completed.errors.push(format!(
                                 "read database {}: worker panicked",
                                 source.path.display()
@@ -106,7 +105,7 @@ impl Databases {
                 let worker = self.worker.take().expect("active worker");
                 let _ = worker.thread.join();
                 self.exporter = Some(exporter);
-                completed
+                Completed { finished:true, ..completed }
             }
             Err(TryRecvError::Empty) => Completed::default(),
             Err(TryRecvError::Disconnected) => {

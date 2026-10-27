@@ -162,7 +162,9 @@ impl Engine {
         }
         let completed = self.exporter.completed(false);
         pass.errors.extend(completed.errors);
-        if completed.finished { self.capture_checked = Some(Instant::now()); }
+        if completed.finished {
+            self.capture_checked = Some(Instant::now());
+        }
         if completed.changed {
             self.loaded = false;
             self.load()?;
