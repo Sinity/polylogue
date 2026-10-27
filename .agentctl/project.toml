@@ -9,6 +9,11 @@ command = ["env"]
 inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"]
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
+[environment.values]
+# Two builds run at once under the host cargo cap; -j8 each keeps them
+# inside their memory ceilings instead of each spawning one rustc per thread.
+CARGO_BUILD_JOBS = "8"
+
 [operations.fast]
 description = "Formatting, crate boundaries and strict Clippy in the development queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
@@ -145,4 +150,13 @@ arguments = "required"
 pool = "normal"
 result = "exit"
 timeout_seconds = 900
+cache = "none"
+
+[operations.codex]
+description = "Run one Codex worker in this checkout: codex-worker <effort> <prompt-file> <output-schema> <output-dir> [model]"
+exec = ["codex-worker"]
+arguments = "required"
+pool = "codex"
+result = "exit"
+timeout_seconds = 14400
 cache = "none"
