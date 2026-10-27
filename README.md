@@ -1,7 +1,7 @@
 # Polylogue
 
 Polylogue keeps every AI conversation and agent session your tools leave
-behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, and exports from
+behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, Antigravity exports, and exports from
 ChatGPT, claude.ai, AI Studio, the Gemini app, Grok account exports and others)
 in one local archive, exactly as written, and lets you and your agents search, read,
 measure and annotate it from the command line, over MCP or in a web reader.
@@ -85,8 +85,9 @@ it.
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
 | `setting KEY [VALUE]` | Read or set a setting. `day.zone` (an IANA zone; the machine's unless set) and `day.logical_start` (default `04:00`) define the logical day that dates, `today` and `group by day` mean. |
 | `web` | Open the web reader. |
-| `mcp` | Serve MCP over stdio. |
-| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`) and Hermes: live state, the session-start brief and takeovers. |
+| `mcp` | Serve MCP over stdio with the standing agent manual. |
+| `manual` | Print agent guidance and the current MCP command reference without a daemon. |
+| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`), Gemini CLI (`--harness gemini-cli`) and Hermes: live state, the session-start brief and takeovers. |
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
@@ -142,13 +143,14 @@ failed there with no later pass (the `xtask` check and test runs devkit
 records for the checkout, which AgentCTL's jobs run, and test, build and
 lint commands sessions ran), and the last day's signal notices.
 It stays within `briefing.budget` tokens (default 2000) and names what it
-left out with the command that shows it. A session ID pasted into a prompt
+left out with the command that shows it. A session ID or supported conversation link pasted into a prompt
 brings that session's takeover context.
 
 | Harness | Hook entries |
 |---|---|
 | Claude Code | `polylogue hooks install` writes them into `settings.json`. |
 | Codex | `polylogue hooks install --harness codex` writes them into `hooks.json`. |
+| Gemini CLI | `polylogue hooks install --harness gemini-cli` writes `SessionStart`, `BeforeAgent` and observation hooks into `~/.gemini/settings.json`. |
 | Hermes | In `config.yaml`: `hooks: {pre_llm_call: [{command: "polylogue hook pre_llm_call --harness hermes"}]}` and `hooks_auto_accept: true`; the brief comes with the first turn. |
 
 A signal is a note of kind `signal` whose body names a watched query, such
@@ -271,3 +273,28 @@ configuration path and the error, reads and queries work, and archive writes
 return `sinex_unavailable`. Fix the cause and restart the daemon.
 [docs/architecture.md](docs/architecture.md#sinex-primary-mode) describes
 how primary mode stores the archive and how a standalone archive moves to it.
+
+## Antigravity and agent guidance
+
+Antigravity language-server JSON exports (`source: antigravity_language_server`,
+`cascadeId`, `markdown`) parse as sessions with user and planner turns. Known
+activity markers become assistant tool calls, including markers placed inside
+user sections. Unknown Markdown stays prose; missing times stay unknown.
+Native `.pb` conversations under `~/.gemini/antigravity/conversations/` are
+stored as bytes and converted through the running language server's loopback
+RPC with its CSRF token, bypassing proxies and redirects. Conversion runs in a
+worker with a five-second timeout per request, keyed by file size and mtime.
+The original bytes and conversion status belong to the same session as its
+export. An unavailable server produces a session event; unchanged status is
+written once. Converted exports rebuild the index without the server.
+
+The standing [agent manual](docs/agent-manual.md) is shared by `manual` and MCP
+server instructions, with its command reference generated from the command
+table. Supported pasted links use the same hosts and conversation paths as
+browser capture: ChatGPT, claude.ai, AI Studio, Gemini app and Grok. They resolve
+to archived sessions; hooks do not fetch linked pages.
+
+Gemini CLI `SessionStart` injects the brief and `BeforeAgent` injects
+pasted-session takeover context through `hookSpecificOutput.additionalContext`.
+Hook timeouts in its settings are milliseconds. `PreCompress` records an event
+because Gemini does not accept context from that event.

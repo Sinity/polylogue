@@ -12,6 +12,7 @@ mod demo;
 mod embeddings;
 mod explain;
 mod hook;
+mod manual;
 mod mcp;
 mod resume;
 mod row_numbers;

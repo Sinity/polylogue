@@ -111,14 +111,21 @@ pub struct OriginSpec {
     pub collector: Option<Collector>,
 }
 
-/// Fetches an origin's files into its spool, each pass while its setting
-/// is `on`. The files it writes change a watched location, so the loop
-/// collects them like any other.
+/// Fetches an origin's files into its spool before the loop reads it.
 pub struct Collector {
-    pub setting: &'static str,
-    /// Writes what is new into the spool (second argument); the state
-    /// directory (first) holds the credentials the operator gave it.
-    pub sync: fn(&Path, &Path) -> Result<(), String>,
+    /// None runs every pass; Some runs only when this setting is `on`.
+    pub setting: Option<&'static str>,
+    /// Run outside the loop thread when requests can wait on another process.
+    pub background: bool,
+    /// Writes new inputs into the spool and returns the errors for the pass.
+    pub sync: fn(&CollectorPaths<'_>) -> Vec<String>,
+}
+
+/// Configured directories a collector reads from and writes to.
+pub struct CollectorPaths<'a> {
+    pub home: &'a Path,
+    pub state_dir: &'a Path,
+    pub spool: &'a Path,
 }
 
 /// An export's asset files: the member files that hold attachment bytes,
@@ -196,31 +203,6 @@ fn never(_: &Path, _: &[u8]) -> bool {
 
 fn none(_: &Path) -> Option<Parse> {
     None
-}
-
-macro_rules! declared {
-    ($name:literal, $arrival:ident, [$($loc:literal),*]) => {
-        declared!($name, $arrival, Root::HOME, [$($loc),*])
-    };
-    ($name:literal, $arrival:ident, $root:expr, [$($loc:literal),*]) => {
-        OriginSpec {
-            name: $name,
-            support: Support::Declared,
-            arrival: Arrival::$arrival,
-            root: $root,
-            locations: &[$($loc),*],
-            capture: Capture::Bytes,
-            recognize: never,
-            open: none,
-            resume: None,
-            bare_uuid_ids: false,
-            quota: None,
-            agent_env: &[],
-            web: None,
-            assets: None,
-            collector: None,
-        }
-    };
 }
 
 pub static ORIGINS: &[OriginSpec] = &[
@@ -326,7 +308,40 @@ pub static ORIGINS: &[OriginSpec] = &[
         assets: None,
         collector: None,
     },
-    declared!("antigravity", Live, [".gemini/antigravity/**"]),
+    OriginSpec {
+        name: "antigravity",
+        support: Support::Parsed,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: crate::antigravity::LOCATIONS,
+        capture: Capture::Bytes,
+        recognize: crate::antigravity::recognize,
+        open: crate::antigravity::open,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "antigravity-exports",
+        support: Support::Parsed,
+        arrival: Arrival::Spool,
+        root: Root::STATE,
+        locations: &["polylogue/antigravity/*.json"],
+        capture: Capture::Bytes,
+        recognize: crate::antigravity::recognize,
+        open: crate::antigravity::open,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: Some(crate::antigravity::server::COLLECTOR),
+    },
     OriginSpec {
         name: "hermes",
         support: Support::Parsed,

@@ -36,6 +36,12 @@ command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
 rules are checked by [xtask](../xtask/src/main.rs).
 
+An origin's collector receives the configured home, state and spool directories.
+It runs automatically or when its declared setting is on. Antigravity's
+loopback collector runs in an engine-owned worker; the loop reads its spool on
+subsequent passes and joins the worker at shutdown. The optional AI Studio
+Drive import runs before the pass. Both are declared in the origin table.
+
 ## Databases
 
 [Archive](../crates/store/src/archive.rs) owns the directory, the archive lock
