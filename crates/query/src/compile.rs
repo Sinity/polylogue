@@ -220,6 +220,8 @@ pub struct Program {
     pub page_size: u64,
     /// `near:`: the text to embed and rank by.
     pub near: Option<Near>,
+    /// The answer rows have their own semantic similarities to count.
+    pub counts_near: bool,
     /// The saved queries it ran, each at the revision its name resolved
     /// to when it was compiled.
     pub definitions: Vec<Definition>,
@@ -344,7 +346,7 @@ impl Program {
     pub fn count_sql(&self) -> String {
         format!(
             "SELECT count(*), {} FROM ({})",
-            if self.shape == Shape::Rows && self.near.is_some() {
+            if self.counts_near {
                 "count(*) FILTER (WHERE _near IS NULL)"
             } else {
                 "0"
@@ -496,7 +498,6 @@ pub(crate) struct Compiler<'a> {
 struct Fusion {
     join: String,
     rank: String,
-    near: Option<String>,
 }
 
 impl<'a> Compiler<'a> {

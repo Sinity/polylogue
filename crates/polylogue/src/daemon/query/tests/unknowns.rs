@@ -232,19 +232,28 @@ fn session_has_calls_and_errors_reads_only_its_own_messages() {
 }
 
 #[test]
-fn a_combining_stage_preserves_which_rows_have_semantic_similarity() {
+fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
     let w = morrow();
     let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
+    let mut request = ask("messages where chrono near:dates | union (messages where chrono)");
+    request.embeddings = true;
+    request.near = Some(&near);
+    let answer = run_q(&w, request).unwrap();
+    assert_eq!(answer["count"], 4, "{answer}");
+    assert_eq!(answer["unknown"]["near"], 2, "{answer}");
+
+    let similarity = super::generated::vectors_for(&w, |_| true);
+    let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
     for text in [
-        "messages where chrono near:dates | union (messages where chrono)",
         "messages where chrono | union (messages where chrono near:dates)",
+        "messages where chrono | union (messages where id:m2p0 near:dates)",
+        "near:dates | limit 2 | messages where chrono",
     ] {
         let mut request = ask(text);
         request.embeddings = true;
         request.near = Some(&near);
         let answer = run_q(&w, request).unwrap();
-        assert_eq!(answer["count"], 4, "{text}: {answer}");
-        assert_eq!(answer["unknown"]["near"], 2, "{text}: {answer}");
+        assert!(answer["unknown"]["near"].is_null(), "{text}: {answer}");
     }
 }
