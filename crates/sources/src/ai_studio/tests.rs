@@ -38,6 +38,9 @@ fn chunks_become_messages_with_thoughts_split_out() {
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 6);
     assert_eq!(msgs[0].role, Role::System);
+    assert_eq!(step.output.messages[0].offset, 0);
+    assert_eq!(step.output.messages[0].end, bytes.len() as u64);
+    assert_eq!(step.output.events[0].range, Some((0, bytes.len() as u64)));
     assert_eq!(msgs[1].text(), "what is an electron");
     assert_eq!(msgs[1].usage.input, Some(6));
     assert!(msgs[1].at.is_some());
