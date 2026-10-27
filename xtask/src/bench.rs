@@ -384,6 +384,9 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         Target::Sample => bench::select(&all, bytes, seed),
         Target::Largest => largest(&all),
     };
+    // Hash copies, so a session that keeps growing cannot invalidate the
+    // sample between drawing it and starting the measured build.
+    let chosen = copy_sample(&drawn.dir().join("source"), &chosen)?;
     let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed, cut)
         .map_err(|e| format!("hash the sample: {e}"))?;
     let path = drawn.manifest();
@@ -401,6 +404,35 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         .unwrap_or_default()
     );
     Ok(())
+}
+
+/// Copies the selected files before the manifest hashes them. Its source
+/// paths then name these fixed bytes, rather than files writers still change.
+fn copy_sample(directory: &Path, chosen: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
+    chosen
+        .iter()
+        .map(|file| {
+            let path = directory.join(&file.rel);
+            fs::create_dir_all(path.parent().unwrap_or(directory)).map_err(|e| e.to_string())?;
+            let copied = Command::new("cp")
+                .args(["--reflink=auto", "--preserve=timestamps"])
+                .arg(&file.path)
+                .arg(&path)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !copied.status.success() {
+                return Err(format!(
+                    "copy {}: {}",
+                    file.path.display(),
+                    String::from_utf8_lossy(&copied.stderr)
+                ));
+            }
+            let mut file = file.clone();
+            file.size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            file.path = path;
+            Ok(file)
+        })
+        .collect()
 }
 
 fn first_build_binary() -> Result<PathBuf, String> {

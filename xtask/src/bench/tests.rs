@@ -38,3 +38,29 @@ fn a_pair_needs_two_labelled_builds() {
         assert!(labelled(bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_drawn_sample_keeps_its_bytes_when_the_source_grows() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("session.jsonl");
+    fs::write(&source, "first\n").unwrap();
+    let chosen = [SampleFile {
+        path: source.clone(),
+        rel: ".claude/projects/session.jsonl".into(),
+        stratum: "claude/main@2026".into(),
+        size: 6,
+        grows: true,
+    }];
+    let copied = copy_sample(&directory.path().join("copies"), &chosen).unwrap();
+    fs::write(&source, "first\nnext\n").unwrap();
+    let manifest = Manifest::build("polylogue", &chosen, &copied, 6, 1, 1.0).unwrap();
+    let home = directory.path().join("home");
+    manifest.materialize(&home).unwrap();
+    assert_eq!(
+        fs::read_to_string(home.join(&chosen[0].rel)).unwrap(),
+        "first\n"
+    );
+    assert_eq!(copied[0].size, 6);
+    assert_eq!(copied[0].stratum, chosen[0].stratum);
+    assert!(copied[0].grows);
+}

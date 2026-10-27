@@ -167,7 +167,9 @@ assertions.
 `POLYLOGUE_BENCH_HOME` selects where sample copies and output archives go;
 `POLYLOGUE_BENCH_MANIFEST_DIR` selects the manifest directory. Defaults are
 `/realm/project/polylogue/bench` and `/realm/project/polylogue/analysis/bench`.
-Use private directories for operator data.
+Use private directories for operator data. Drawing a sample first copies the
+selected files there, then hashes those copies, so continued writes to a live
+session do not invalidate a later run.
 
 A single sample's estimate assumes time is linear in input bytes. Samples
 of two or more sizes (`bench sample --name NAME --mb MB`, then `bench run
