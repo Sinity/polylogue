@@ -57,7 +57,7 @@ fn response_boundary_masks_errors_and_nested_details_without_erasing_empty_data(
 fn identifiers_and_cursors_survive_output_masking_but_authored_strings_do_not() {
     let token = "AKIAIOSFODNN7EXAMPLE";
     let id = format!("claude-code:{token}");
-    let mut value = serde_json::json!({"session":{"id":id,"title":{"text":token}},"cursor":token,"next":token,"rows":[{"id":id,"text":token}]});
+    let mut value = serde_json::json!({"session":{"id":id,"title":{"text":token}},"cursor":token,"next":token,"columns":[{"name":"id","reference":"message"},{"name":"text"}],"rows":[{"id":id,"text":token}],"value":{"id":id,"ref":id,"cursor":token}});
     output_values(&mut value, polylogue_render::mask);
     assert_eq!(value["session"]["id"], id);
     assert_eq!(value["rows"][0]["id"], id);
@@ -65,4 +65,7 @@ fn identifiers_and_cursors_survive_output_masking_but_authored_strings_do_not() 
     assert_eq!(value["next"], token);
     assert_ne!(value["session"]["title"]["text"], token);
     assert_ne!(value["rows"][0]["text"], token);
+    assert_ne!(value["value"]["id"], id);
+    assert_ne!(value["value"]["ref"], id);
+    assert_ne!(value["value"]["cursor"], token);
 }
