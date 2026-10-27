@@ -118,6 +118,10 @@ impl Engine {
         self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
             let mut errors = self.run_collectors();
+            errors.extend(polylogue_sources::antigravity::server::sync(
+                &self.config.home,
+                &self.config.spool_dir("antigravity-exports"),
+            ));
             errors.extend(self.refresh_lookups().err());
             let (found, unreadable) = collect::scan(&self.config);
             (found, unreadable, errors)
