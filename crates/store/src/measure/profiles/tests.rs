@@ -79,7 +79,7 @@ fn zero_latency_round_trips_and_distribution_keeps_missing_sessions_apart() {
         .find(|p| p.session == "claude-code:s0")
         .unwrap();
     let restored: Facts =
-        serde_json::from_value(serde_json::to_value(&zero.facts.clone().unwrap()).unwrap())
+        serde_json::from_value(serde_json::to_value(zero.facts.as_ref().unwrap()).unwrap())
             .unwrap();
     assert_eq!(restored.tool_latency.median_ms, Some(0));
 }
