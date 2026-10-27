@@ -589,6 +589,7 @@ impl Inner {
     }
 
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
+        let _worker=crate::timing::worker();
         let mut flushes = Vec::new();
         let mut excisions = Vec::new();
         let mut imported_excisions = Vec::new();

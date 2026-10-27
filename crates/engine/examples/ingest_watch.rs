@@ -83,10 +83,12 @@ fn watch(dir: &Path, seconds: u64) {
     let reads = polylogue_store::ReadPool::open(&engine.archive).unwrap();
     let before = io();
     polylogue_store::timing::reset();
+    let measurement_clock=polylogue_store::timing::clock_seconds();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let recorded = samples.clone();
     let (stop_sample, sample_stop) = channel();
     let sampler = std::thread::spawn(move || {
+        let before = thread_io();
         let started = Instant::now();
         loop {
             recorded.lock().unwrap().push(json!({"seconds":started.elapsed().as_secs_f64(),"threads":threads(),"stages":stages(),"queues":polylogue_store::timing::queues()}));
@@ -94,6 +96,7 @@ fn watch(dir: &Path, seconds: u64) {
                 break;
             }
         }
+        json!({"before_io":before,"after_io":thread_io()})
     });
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = status.clone();
@@ -147,12 +150,17 @@ fn watch(dir: &Path, seconds: u64) {
     }
     let after = io();
     stop_sample.send(()).unwrap();
-    sampler.join().unwrap();
+    let sampling_io=sampler.join().unwrap();
     tx.send(LoopMsg::Stop).unwrap();
     thread.join().unwrap();
-    fs::write(dir.join("result.json"), json!({"seconds":seconds,"before_io":before,"after_io":after,"memory":fs::read_to_string("/proc/self/status").unwrap().lines().filter(|line| line.starts_with("VmHWM:") || line.starts_with("VmRSS:")).collect::<Vec<_>>(),"load":fs::read_to_string("/proc/loadavg").unwrap(),"status":*status.lock().unwrap(),"samples":*samples.lock().unwrap(),"stages":stages(),"producer":serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join("producer.json")).unwrap()).unwrap()}).to_string()).unwrap();
+    fs::write(dir.join("result.json"), json!({"seconds":seconds,"before_io":before,"after_io":after,"memory":fs::read_to_string("/proc/self/status").unwrap().lines().filter(|line| line.starts_with("VmHWM:") || line.starts_with("VmRSS:")).collect::<Vec<_>>(),"load":fs::read_to_string("/proc/loadavg").unwrap(),"status":*status.lock().unwrap(),"sampling_io":sampling_io,"measurement_clock":measurement_clock,"workers":polylogue_store::timing::workers(),"samples":*samples.lock().unwrap(),"stages":stages(),"producer":serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join("producer.json")).unwrap()).unwrap()}).to_string()).unwrap();
 }
 
+fn thread_io() -> serde_json::Value {
+    fs::read_to_string("/proc/thread-self/io").unwrap().lines().filter_map(|line| {
+        let (name,value)=line.split_once(':')?; Some((name.to_owned(),json!(value.trim().parse::<u64>().unwrap())))
+    }).collect::<serde_json::Map<_,_>>().into()
+}
 fn stages() -> serde_json::Value {
     polylogue_store::timing::stage_seconds()
         .into_iter()

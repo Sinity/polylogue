@@ -100,6 +100,7 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
 }
 
 pub fn reset() {
+    if let Ok(mut times)=WORKER_TIMES.lock() { times.clear(); }
     for n in &NANOS {
         n.store(0, Ordering::Relaxed);
     }
@@ -137,3 +138,38 @@ pub fn queues() -> [(&'static str, i64); 2] {
         ("writer", WRITER_WAITING.load(Ordering::Relaxed)),
     ]
 }
+
+/// Completed worker lifetimes include threads shorter than the sampler period.
+#[derive(Clone, serde::Serialize)]
+pub struct WorkerTime {
+    pub name: String,
+    pub started: f64,
+    pub seconds: f64,
+    pub cpu_seconds: Option<f64>,
+    pub run_queue_seconds: Option<f64>,
+}
+static WORKER_TIMES: std::sync::Mutex<Vec<WorkerTime>> = std::sync::Mutex::new(Vec::new());
+static CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+pub fn clock_seconds() -> f64 { CLOCK.get_or_init(Instant::now).elapsed().as_secs_f64() }
+fn scheduled() -> Option<(u64,u64)> {
+    let text=std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    let mut fields=text.split_whitespace();
+    Some((fields.next()?.parse().ok()?,fields.next()?.parse().ok()?))
+}
+pub struct WorkerTimeGuard(Option<(String,f64,Option<(u64,u64)>)>);
+pub fn worker() -> WorkerTimeGuard {
+    WorkerTimeGuard(std::env::var_os("POLYLOGUE_TIMING_WORKERS").map(|_|(
+        std::thread::current().name().unwrap_or("unnamed").to_owned(),clock_seconds(),scheduled()
+    )))
+}
+impl Drop for WorkerTimeGuard {
+    fn drop(&mut self) {
+        if let Some((name,started,before))=self.0.take() {
+            let elapsed=scheduled().zip(before);
+            let cpu_seconds=elapsed.map(|(after,before)|after.0.saturating_sub(before.0) as f64/1e9);
+            let run_queue_seconds=elapsed.map(|(after,before)|after.1.saturating_sub(before.1) as f64/1e9);
+            if let Ok(mut times)=WORKER_TIMES.lock() { times.push(WorkerTime{name,started,seconds:clock_seconds()-started,cpu_seconds,run_queue_seconds}); }
+        }
+    }
+}
+pub fn workers() -> Vec<WorkerTime> { WORKER_TIMES.lock().map(|v|v.clone()).unwrap_or_default() }

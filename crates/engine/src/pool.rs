@@ -219,6 +219,7 @@ fn work(
     done: &Sender<Done>,
     acknowledge: &Sender<PendingGroup>,
 ) {
+    let _worker = polylogue_store::timing::worker();
     let mut group = Group {
         waiting: Vec::new(),
         bytes: 0,
