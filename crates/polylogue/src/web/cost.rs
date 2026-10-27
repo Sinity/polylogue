@@ -59,7 +59,14 @@ pub async fn cost(State(web): State<Arc<Web>>, Query(mut options): Query<Options
 }
 
 pub fn render(scope: &str, options: &Options, data: &Value) -> String {
-    let mut body = summary(scope, &data["usage"]["data"]);
+    let mut body = if data["usage"]["error"].is_string() {
+        format!(
+            "<h1>Cost of selected sessions</h1><p><a href=\"/search?q={}\">Browse selected sessions</a></p>",
+            encode(scope)
+        )
+    } else {
+        summary(scope, &data["usage"]["data"])
+    };
     let _ = write!(
         body,
         "<p><a href=\"/cost?q={}\">All source record times</a> <a href=\"/cost?q={}&amp;undated=true\">Usage with unknown source record times</a></p>",
