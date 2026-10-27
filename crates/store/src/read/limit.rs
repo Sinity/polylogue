@@ -109,7 +109,7 @@ impl ReadLimit {
                 limit.steps.fetch_add(1000, Ordering::Relaxed);
                 limit.check().is_err()
             }),
-        );
+        )?;
         conn.busy_handler(Some(|_| {
             std::thread::sleep(Duration::from_millis(5));
             Self::current().is_some_and(|limit| limit.check().is_ok())

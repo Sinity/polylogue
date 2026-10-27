@@ -368,8 +368,8 @@ deadline. Continuation pages start new requests.
 A request shares one deadline across every reader it opens. SQLite progress
 handlers stop long statements, and slot and write-lock waits check the same
 deadline and cancellation signal. Socket and HTTP disconnects cancel the
-request; MCP cancellation and EOF close its daemon socket. Progress handlers
-are removed before a connection returns to the pool. Requests cancelled while
+request; MCP cancellation and EOF close its daemon socket. Provider HTTP waits and in-memory vector ranking observe the same limit.
+Progress handlers are removed before a connection returns to the pool. Requests cancelled while
 waiting for a slot never acquire one.
 
 A read that runs out of time returns `deadline_exceeded` (CLI exit 7); one its

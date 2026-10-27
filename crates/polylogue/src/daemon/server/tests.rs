@@ -1,6 +1,5 @@
 use super::*;
 use crate::daemon::Response;
-use crate::daemon::service::handle;
 
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {

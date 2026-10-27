@@ -99,31 +99,55 @@ impl Provider {
 
     /// Embeds `inputs`, returning one unit vector each.
     pub fn embed(&self, inputs: &[String], query: bool) -> Result<Vec<Vec<f32>>, EmbedError> {
+        let limit = polylogue_store::read::limit::ReadLimit::current()
+            .unwrap_or_else(|| crate::daemon::execution::limit(None, Default::default()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| EmbedError::Transport(error.to_string()))?;
+        let result = runtime.block_on(async {
+            let request = self.request(inputs, query);
+            tokio::pin!(request);
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(5));
+            loop {
+                tokio::select! {
+                    result = &mut request => {
+                        limit.check()?;
+                        return result;
+                    }
+                    _ = tick.tick() => { limit.check()?; }
+                }
+            }
+        });
+        // Name resolution can use an OS worker; it must not keep this reader
+        // waiting after its request future has been cancelled.
+        runtime.shutdown_background();
+        result
+    }
+
+    async fn request(&self, inputs: &[String], query: bool) -> Result<Vec<Vec<f32>>, EmbedError> {
         let mut body = json!({ "model": self.model, "input": inputs });
         if self.kind == ProviderKind::Voyage {
             body["input_type"] = json!(if query { "query" } else { "document" });
         }
         let url = format!("{}/embeddings", self.endpoint.trim_end_matches('/'));
-        let mut req = ureq::post(&url).header("content-type", "application/json");
-        let auth;
+        let failed = |error: reqwest::Error| EmbedError::Transport(error.to_string());
+        let client = reqwest::Client::new();
+        let mut request = client.post(&url).json(&body);
         if self.kind == ProviderKind::Voyage {
             let key = std::env::var("VOYAGE_API_KEY")
                 .map_err(|_| EmbedError::Config("VOYAGE_API_KEY is not set".into()))?;
-            auth = format!("Bearer {key}");
-            req = req.header("authorization", &auth);
+            request = request.bearer_auth(key);
         }
-        let resp = req.send_json(&body);
-        let mut resp = match resp {
-            Ok(r) => r,
-            Err(ureq::Error::StatusCode(code)) if (400..500).contains(&code) && code != 429 => {
-                return Err(EmbedError::Rejected(format!("HTTP {code}")));
-            }
-            Err(e) => return Err(EmbedError::Transport(e.to_string())),
-        };
-        let v: Value = resp
-            .body_mut()
-            .read_json()
-            .map_err(|e| EmbedError::Transport(e.to_string()))?;
+        let response = request.send().await.map_err(failed)?;
+        let code = response.status().as_u16();
+        if (400..500).contains(&code) && code != 429 {
+            return Err(EmbedError::Rejected(format!("HTTP {code}")));
+        }
+        if response.status().is_client_error() || response.status().is_server_error() {
+            return Err(EmbedError::Transport(format!("HTTP {code}")));
+        }
+        let v: Value = response.json().await.map_err(failed)?;
         let data = v["data"]
             .as_array()
             .ok_or_else(|| EmbedError::Transport(format!("no `data` in the answer: {v}")))?;

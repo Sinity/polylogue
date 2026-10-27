@@ -2,6 +2,7 @@
 //! access rules, the reader's pages and its JSON API.
 
 use super::*;
+use crate::daemon::service::handle;
 use crate::test_daemon::{self, TestDaemon};
 use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;

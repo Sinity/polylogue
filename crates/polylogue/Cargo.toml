@@ -13,7 +13,7 @@ sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
 atomicwrites.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
 polylogue-model.workspace = true
@@ -39,7 +39,7 @@ blake3.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 unicode-normalization.workspace = true
-ureq.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 zip.workspace = true

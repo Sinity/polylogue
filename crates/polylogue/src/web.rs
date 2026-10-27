@@ -132,7 +132,7 @@ struct OwnerListener {
 
 impl axum::serve::Listener for OwnerListener {
     type Io = connection::Connection;
-    type Addr = connection::Peer;
+    type Addr = std::net::SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
@@ -145,7 +145,7 @@ impl axum::serve::Listener for OwnerListener {
             };
             if access::socket_owner(peer, server) == Some(self.uid) {
                 if let Ok(connection) = connection::Connection::new(stream) {
-                    return connection;
+                    return (connection, peer);
                 }
             }
         }

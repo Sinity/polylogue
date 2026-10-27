@@ -307,9 +307,13 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
-            if self.limit.is_some() {
-                conn.progress_handler(0, None::<fn() -> bool>);
-                let _ = conn.busy_timeout(std::time::Duration::from_secs(30));
+            if self.limit.is_some()
+                && (conn.progress_handler(0, None::<fn() -> bool>).is_err()
+                    || conn
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .is_err())
+            {
+                return false;
             }
             matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
                 && conn.execute_batch("ROLLBACK").is_ok()

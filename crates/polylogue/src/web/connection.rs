@@ -1,5 +1,4 @@
 //! A connection carries its disconnect signal into each HTTP request.
-use crate::daemon::disconnect;
 use axum::extract::connect_info::Connected;
 use polylogue_store::read::limit::ReadCancellation;
 use std::io;
@@ -13,7 +12,7 @@ pub(super) struct Peer(pub ReadCancellation);
 
 impl Connected<axum::serve::IncomingStream<'_, super::OwnerListener>> for Peer {
     fn connect_info(stream: axum::serve::IncomingStream<'_, super::OwnerListener>) -> Self {
-        stream.remote_addr().clone()
+        stream.io().peer.clone()
     }
 }
 
@@ -24,28 +23,32 @@ pub(super) struct Connection {
 }
 
 impl Connection {
-    pub(super) fn new(stream: tokio::net::TcpStream) -> io::Result<(Self, Peer)> {
-        let fd = stream.as_fd().try_clone_to_owned()?;
+    pub(super) fn new(stream: tokio::net::TcpStream) -> io::Result<Self> {
+        let fd = tokio::io::unix::AsyncFd::new(stream.as_fd().try_clone_to_owned()?)?;
         let peer = Peer(ReadCancellation::default());
         let cancellation = peer.0.clone();
         let watch = tokio::spawn(async move {
-            let mut tick = tokio::time::interval(disconnect::INTERVAL);
             loop {
-                tick.tick().await;
-                if disconnect::closed(&fd) {
-                    cancellation.cancel();
-                    break;
+                match fd.readable().await {
+                    Ok(mut ready) => {
+                        if ready.ready().is_read_closed() || ready.ready().is_error() {
+                            cancellation.cancel();
+                            break;
+                        }
+                        ready.clear_ready();
+                    }
+                    Err(_) => {
+                        cancellation.cancel();
+                        break;
+                    }
                 }
             }
         });
-        Ok((
-            Self {
-                stream,
-                peer: peer.clone(),
-                watch,
-            },
+        Ok(Self {
+            stream,
             peer,
-        ))
+            watch,
+        })
     }
 }
 
