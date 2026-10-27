@@ -2,7 +2,7 @@ use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
 #[test]
-fn threshold_boundary_model_work_idle_negative_missing_and_pages() {
+fn threshold_boundary_model_work_idle_negative_and_missing() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let s = f
@@ -45,9 +45,8 @@ fn threshold_boundary_model_work_idle_negative_missing_and_pages() {
         sessions: Some(vec![s]),
         ..Default::default()
     };
-    let x = pace(&r, &scope, "60:0:1").unwrap();
+    let x = pace(&r, &scope, "60").unwrap();
     assert_eq!(x.total_gaps, 3);
-    assert_eq!(x.next_offset, Some(1));
     let report = &x.sessions[0];
     assert_eq!(report.active_ms, 60_000);
     assert_eq!(report.model_work_ms, 60_001);
@@ -57,14 +56,11 @@ fn threshold_boundary_model_work_idle_negative_missing_and_pages() {
     assert_eq!(x.gaps[0].to_position, 4);
     assert_eq!(report.user_gaps, 0);
     assert_eq!(report.burstiness, None);
-    let page = pace(&r, &scope, "60:1:2").unwrap();
-    assert_eq!(page.gaps.len(), 2);
-    assert_eq!(page.next_offset, None);
     assert_eq!(
         pace(&r, &Selection::default(), "").unwrap().sessions.len(),
         2
     );
-    assert!(pace(&r, &scope, "60:0:0").is_err());
+    assert!(pace(&r, &scope, "-1").is_err());
 }
 
 #[test]
@@ -101,4 +97,18 @@ fn burstiness_uses_population_sigma_and_requires_ten_user_gaps() {
     let x = pace(&r, &Selection::default(), "").unwrap();
     assert_eq!(x.sessions[0].burstiness, Some(-1.0));
     assert_eq!(x.sessions[0].user_gaps, 10);
+}
+
+#[test]
+fn harness_tool_result_does_not_count_as_user_idle() {
+    let mut f = crate::fixture::writer::WriterArchive::new();
+    let mut calls = crate::fixture::writer::bash("long", 1, 0, "synthetic", true, "ok");
+    calls[1].at = polylogue_model::Timestamp::from_unix_ms(720_000);
+    f.write("long", calls);
+    let pool = crate::ReadPool::open(&f.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let x = pace(&r, &Selection::default(), "").unwrap();
+    assert_eq!(x.sessions[0].turns, 1);
+    assert_eq!(x.sessions[0].user_idle_ms, 0);
+    assert!(x.gaps.is_empty());
 }

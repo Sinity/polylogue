@@ -441,7 +441,7 @@ impl MessageSelection<'_, '_> {
         Ok(Some(masker))
     }
 
-    pub(super) fn keys(&self) -> Result<Vec<i64>> {
+    pub(crate) fn keys(&self) -> Result<Vec<i64>> {
         match &self.with_parents {
             Some(keys) => Ok(keys.iter().map(|key| key.message_pk).collect()),
             None => match &self.own {

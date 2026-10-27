@@ -1,5 +1,5 @@
 //! Billing estimates from explicit settings and recorded usage, in UTC days.
-use super::{Selection, UsageReport, usage};
+use super::{RecordedUsage, Selection, usage};
 use crate::{Reader, Result, StoreError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -64,7 +64,8 @@ pub struct Outlook {
     pub coverage_ratio: Option<f64>,
     pub incomplete_days: Vec<i64>,
     pub incomplete_usage: bool,
-    pub usage: Option<UsageReport>,
+    pub recorded_usage: Option<RecordedUsage>,
+    pub untimed_responses: u64,
 }
 
 /// A setting is a JSON object keyed by plan name; there are no default plans.
@@ -92,7 +93,8 @@ pub fn outlook(
         coverage_ratio: None,
         incomplete_days: vec![],
         incomplete_usage: false,
-        usage: None,
+        recorded_usage: None,
+        untimed_responses: 0,
     };
     let Some(setting) = reader
         .setting("cost.plans", machine)?
@@ -128,36 +130,94 @@ pub fn outlook(
     }
     scope.since = Some(window.start);
     scope.until = Some(now.min(window.end));
-    let total = usage(reader, &scope)?;
-    answer.incomplete_usage = total.api_cost.unpriced_messages > 0
-        || total.api_cost.response_total_unknown
-        || total.reported_cost.unpriced_messages > 0
-        || total.recorded_usage.untimed_observations > 0
-        || total.recorded_usage.unconfirmed_observations > 0;
     let unbounded = Selection {
         since: None,
         until: None,
         ..scope.clone()
     };
-    let (condition, params) = unbounded.condition();
-    let untimed:u64=reader.conn()?.query_row(&format!("SELECT count(*) FROM message m WHERE {condition} AND m.at IS NULL AND m.role='assistant'"),rusqlite::params_from_iter(params.iter()),|r|r.get::<_, i64>(0).map(|n|n as u64))?;
-    answer.incomplete_usage |= untimed > 0;
+    let (condition, mut params) = unbounded.condition();
+    params.push(window.start.into());
+    let start = format!("?{}", params.len());
+    params.push(now.min(window.end).into());
+    let end = format!("?{}", params.len());
     let mut daily: BTreeMap<String, BTreeMap<i64, f64>> = BTreeMap::new();
     let mut observed_days = std::collections::BTreeSet::new();
-    let mut day = window.start;
-    while day < now && day < window.end {
-        scope.since = Some(day);
-        scope.until = Some((day + DAY).min(now).min(window.end));
-        let report = usage(reader, &scope)?;
-        let amounts = amounts(&report);
-        if !amounts.is_empty() {
-            observed_days.insert(day);
+    let mut statement = reader.conn()?.prepare(&format!("SELECT (m.at-{start})/{DAY} AS day,
+        {response} AS known_response,
+        sum(m.cost_nusd)/1e9, sum(m.provider_cost_nusd)/1e9,
+        sum(m.input_tokens), sum(m.cache_read_tokens), sum(m.cache_write_tokens), sum(m.output_tokens), sum(m.reasoning_tokens),
+        max(m.cost_nusd IS NULL OR m.provider_cost_nusd IS NULL),count(*)
+        FROM message m WHERE {condition} AND m.role='assistant' AND m.written_by='model'
+        AND (m.at IS NULL OR (m.at>={start} AND m.at<{end})) GROUP BY day,known_response", response=usage::RESPONSE_ROWS))?;
+    let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
+    while let Some(row) = rows.next()? {
+        let known: bool = row.get(1)?;
+        let day: Option<i64> = row.get(0)?;
+        if !known {
+            answer.incomplete_usage = true;
+            continue;
         }
-        for (unit, amount) in amounts {
-            daily.entry(unit).or_default().insert(day, amount);
+        let Some(day) = day else {
+            // Only response rows have a response denominator; unknown-boundary
+            // items above are accounted for separately.
+            answer.untimed_responses = row.get(10)?;
+            answer.incomplete_usage = true;
+            continue;
+        };
+        answer.incomplete_usage |= row.get::<_, bool>(9)?;
+        let day = window.start + day * DAY;
+        for (i, unit) in [
+            "api_usd",
+            "reported_usd",
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+        ]
+        .iter()
+        .enumerate()
+        {
+            if let Some(amount) = row.get::<_, Option<f64>>(i + 2)? {
+                observed_days.insert(day);
+                daily.entry((*unit).into()).or_default().insert(day, amount);
+            }
         }
-        day += DAY;
     }
+    // Codex reports usage independently and does not put it on response rows.
+    // Only confirmed readings enter sums; their source record time places them.
+    let recorded = usage::recorded_with(reader, &scope, |at, value, cost| {
+        let Some(at) = at else {
+            return Ok(());
+        };
+        let day = window.start + (at - window.start) / DAY * DAY;
+        let mut add = |unit: &str, amount: Option<f64>| {
+            if let Some(amount) = amount {
+                observed_days.insert(day);
+                *daily
+                    .entry(unit.into())
+                    .or_default()
+                    .entry(day)
+                    .or_default() += amount;
+            }
+        };
+        add("api_usd", cost.map(|n| n as f64 / 1e9));
+        for (unit, n) in [
+            ("input_tokens", value.usage.input),
+            ("cached_input_tokens", value.usage.cached_input),
+            ("cache_write_tokens", value.usage.cache_write),
+            ("output_tokens", value.usage.output),
+            ("reasoning_tokens", value.usage.reasoning),
+        ] {
+            add(unit, n.map(|n| n as f64));
+        }
+        Ok(())
+    })?;
+    answer.incomplete_usage |= recorded.untimed_observations > 0
+        || recorded.unconfirmed_observations > 0
+        || recorded.unpriced_observations > 0
+        || usage::unknown_scope(reader, &scope)?;
+    answer.recorded_usage = Some(recorded);
     for (unit, days) in &daily {
         answer.units.insert(
             unit.clone(),
@@ -186,12 +246,13 @@ pub fn outlook(
         if let Some(days) = daily.get(unit) {
             for (day, amount) in days {
                 running += amount;
-                if running >= quota && breach.is_none() {
+                if quota > 0.0 && running >= quota && breach.is_none() {
                     breach = Some(*day);
                 }
             }
         }
-        if breach.is_none()
+        if quota > 0.0
+            && breach.is_none()
             && let Some(p) = projection
             && p.projected >= quota
             && p.burn_per_day > 0.0
@@ -221,16 +282,15 @@ pub fn outlook(
         answer.quota_reason = Some("no_quota_configured");
     }
     answer.window = Some(window);
-    answer.usage = Some(total);
     Ok(answer)
 }
 
 fn validate_method(method: &str) -> Result<()> {
-    if matches!(method, "linear" | "trailing-7d-mean" | "eom-naive") {
+    if matches!(method, "linear" | "trailing-7d-mean") {
         Ok(())
     } else {
         Err(StoreError::Invalid(
-            "outlook method is linear, trailing-7d-mean or eom-naive".into(),
+            "outlook method is linear or trailing-7d-mean".into(),
         ))
     }
 }
@@ -252,45 +312,6 @@ fn validate_plan(plan: &Plan) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn amounts(report: &UsageReport) -> BTreeMap<String, f64> {
-    let mut values = BTreeMap::new();
-    if let Some(n) = report.api_cost.known_usd {
-        values.insert("api_usd".into(), n);
-    }
-    if let Some(n) = report.reported_cost.known_usd {
-        values.insert("reported_usd".into(), n);
-    }
-    for (unit, tokens) in [
-        ("input_tokens", &report.tokens.input),
-        ("cached_input_tokens", &report.tokens.cached_input),
-        ("cache_write_tokens", &report.tokens.cache_write),
-        ("output_tokens", &report.tokens.output),
-        ("reasoning_tokens", &report.tokens.reasoning),
-    ] {
-        if report.known_response_messages > tokens.unknown_messages {
-            values.insert(unit.into(), tokens.tokens as f64);
-        }
-    }
-    // The existing usage reader has already separated independent observations
-    // from response rows and refused unconfirmed observations from known sums.
-    if let Some(n) = report.recorded_usage.known_api_cost_usd {
-        *values.entry("api_usd".into()).or_default() += n;
-    }
-    let recorded = &report.recorded_usage.known_usage;
-    for (unit, amount) in [
-        ("input_tokens", recorded.input),
-        ("cached_input_tokens", recorded.cached_input),
-        ("cache_write_tokens", recorded.cache_write),
-        ("output_tokens", recorded.output),
-        ("reasoning_tokens", recorded.reasoning),
-    ] {
-        if let Some(n) = amount {
-            *values.entry(unit.into()).or_default() += n as f64;
-        }
-    }
-    values
 }
 
 pub fn project(daily: &[f64], elapsed: f64, total: f64, method: &str) -> Result<Projection> {

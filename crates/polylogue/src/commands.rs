@@ -231,6 +231,7 @@ const MEASURE_ARGS: &[Arg] = &[
         Kind::Words,
         "A sessions query (default: every session)",
     ),
+    opt("limit", Kind::Integer, "Sessions or matches per page"),
     WHY,
     CURSOR,
     FIELDS,
@@ -344,9 +345,17 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
 fn measure_command(m: &'static Measure) -> Command {
     let mut args: Vec<Arg> = Vec::new();
     if let Some(help) = m.argument {
-        args.push(opt("metric", Kind::Text, help));
+        args.push(opt(
+            if help.starts_with("metric") {
+                "metric"
+            } else {
+                "option"
+            },
+            Kind::Text,
+            help,
+        ));
     } else if !m.metrics.is_empty() {
-        args.push(pos("metric", Kind::Choice(m.metrics), "The series"));
+        args.push(opt("metric", Kind::Choice(m.metrics), "The series"));
     }
     args.extend_from_slice(if m.whole_archive {
         MEASURE_ALL

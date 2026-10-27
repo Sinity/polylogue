@@ -46,7 +46,7 @@ fn projections_preserve_history_zero_elapsed_and_recent_spike() {
         2700.0
     );
     assert_eq!(
-        project(&spike, 10.0, 30.0, "eom-naive").unwrap().projected,
+        project(&spike, 10.0, 30.0, "linear").unwrap().projected,
         2100.0
     );
 }
@@ -229,8 +229,12 @@ fn units_remain_separate_and_user_only_days_do_not_prove_usage_coverage() {
     fixture.writer.derive().unwrap();
     let pool = crate::ReadPool::open(&fixture.archive).unwrap();
     let r = pool.reader().unwrap();
-    let report = usage(&r, &Selection::default()).unwrap();
-    let units = amounts(&report);
+    let report = super::super::usage(&r, &Selection::default()).unwrap();
+    let mut units = std::collections::BTreeMap::new();
+    units.insert("reported_usd", report.reported_cost.known_usd.unwrap());
+    units.insert("api_usd", report.api_cost.known_usd.unwrap());
+    units.insert("input_tokens", report.tokens.input.tokens as f64);
+    units.insert("output_tokens", report.tokens.output.tokens as f64);
     assert_eq!(units["reported_usd"], 7.0);
     assert_eq!(units["input_tokens"], 100.0);
     assert_eq!(units["output_tokens"], 20.0);
@@ -261,4 +265,92 @@ fn units_remain_separate_and_user_only_days_do_not_prove_usage_coverage() {
     let r = pool.reader().unwrap();
     let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
     assert_eq!(x.coverage_ratio, Some(0.0));
+}
+
+#[test]
+fn zero_quota_has_no_breach_and_removed_method_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    setting(&mut f, Some(0.0), Some("api_usd"), Some(1));
+    let pk = f
+        .session(SessionFacts {
+            id: "codex:zero",
+            ..Default::default()
+        })
+        .unwrap();
+    observed(&mut f, pk, 0, 1.0);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let x = outlook(&reader, &Selection::default(), START + DAY, "sample", "x").unwrap();
+    assert_eq!(x.quota_pressure.unwrap().breach_day, None);
+    assert!(project(&[1.0], 1.0, 31.0, "eom-naive").is_err());
+}
+
+#[test]
+fn grouped_units_preserve_zero_and_untimed_count_uses_response_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    setting(&mut f, None, None, Some(1));
+    let pk = f
+        .session(SessionFacts {
+            id: "codex:grouped",
+            ..Default::default()
+        })
+        .unwrap();
+    let timed = f
+        .message(
+            pk,
+            MessageFacts {
+                id: "timed",
+                role: "assistant",
+                written_by: "model",
+                at: Some(START),
+                cost_nusd: Some(7_000_000_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.usage(
+        timed,
+        &polylogue_model::Usage {
+            input: Some(100),
+            cached_input: Some(0),
+            cache_write: Some(0),
+            output: Some(20),
+            reasoning: Some(0),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    for (id, author) in [
+        ("unknown-boundaries", "model"),
+        ("untimed-response", "model"),
+        ("harness", "harness"),
+    ] {
+        f.message(
+            pk,
+            MessageFacts {
+                id,
+                role: "assistant",
+                written_by: author,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let conn = crate::archive::open_write(&f.archive.index_db(), 64).unwrap();
+    conn.execute(
+        "UPDATE message SET attrs_json=?1 WHERE id='unknown-boundaries'",
+        [r#"{"production":{"response_boundary_unknown":true}}"#],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let result = outlook(&reader, &Selection::default(), START + DAY, "sample", "x").unwrap();
+    assert_eq!(result.untimed_responses, 1);
+    assert_eq!(result.units["api_usd"].used, 7.0);
+    assert_eq!(result.units["input_tokens"].used, 100.0);
+    assert_eq!(result.units["cached_input_tokens"].used, 0.0);
+    assert_eq!(result.units["output_tokens"].used, 20.0);
 }

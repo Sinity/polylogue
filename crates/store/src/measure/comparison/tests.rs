@@ -24,8 +24,20 @@ fn pearson_keeps_translation_scale_and_order_and_undefined_cases() {
     );
 }
 
+fn matches(r: &Reader<'_>, reference: &str) -> Vec<serde_json::Value> {
+    r.query(
+        &format!(
+            "{} ORDER BY score DESC,session",
+            similarity_query("SELECT pk AS _pk FROM session WHERE id=?1")
+        ),
+        &[crate::SqlValue::Text(reference.into())],
+    )
+    .unwrap()
+}
+
 #[test]
-fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_scores() {
+fn comparisons_and_similarity_read_facts_without_message_usage_or_parent_walks() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     for (id, text) in [
@@ -50,81 +62,103 @@ fn comparisons_diff_only_varying_fields_and_similarity_excludes_self_and_zero_sc
             },
         )
         .unwrap();
-        f.note("tag", None, Some("shared"), &format!("session:{id}"))
+        f.note("tag", None, Some("Shared"), &format!("session:{id}"))
             .unwrap();
     }
     f.derive().unwrap();
     let pool = f.reads().unwrap();
-    let r = pool.reader().unwrap();
-    let reference_pk: i64 = r
+    let reader = pool.reader().unwrap();
+    reader
         .conn()
         .unwrap()
-        .query_row("SELECT pk FROM session WHERE id='codex:a'", [], |r| {
-            r.get(0)
-        })
+        .authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name: "message" | "link" | "block" | "tool_call",
+                ..
+            } => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))
         .unwrap();
-    let matches = similar(
-        &r,
-        &Selection {
-            sessions: Some(vec![reference_pk]),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(matches.len(), 2);
-    assert_eq!(matches[0].session, "codex:b");
-    assert_eq!(matches[0].score, 5);
+    let rows = matches(&reader, "codex:a");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session"], "codex:b");
+    assert_eq!(rows[0]["score"], 5);
     assert!(
-        matches
-            .iter()
-            .all(|m| m.reference == "codex:a" && m.session != "codex:a")
+        rows.iter()
+            .all(|r| r["reference"] == "codex:a" && r["session"] != "codex:a")
     );
-    assert!(similar(&r, &Selection::default()).is_err());
-    assert!(
-        similar(
-            &r,
-            &Selection {
-                sessions: Some(vec![]),
-                ..Default::default()
-            }
-        )
-        .is_err()
-    );
-    let x = compare(&r, &Selection::default()).unwrap();
+    let x = compare(&reader, &Selection::default()).unwrap();
     assert!(x.differences.contains_key("word_count"));
     assert!(!x.differences.contains_key("workflow_shape"));
-    assert!(!x.differences.contains_key("session"));
-    let a = x.profiles.iter().find(|p| p.session == "codex:a").unwrap();
-    let b = x.profiles.iter().find(|p| p.session == "codex:b").unwrap();
-    assert!(similarity(a, a).is_none());
-    assert_eq!(similarity(a, b).unwrap().score, 5);
-    let mut b = reader_profile(&r, "codex:b");
-    b.origin = "other".into();
-    b.facts.workflow_shape = "unknown".into();
-    b.tags.clear();
-    assert!(similarity(a, &b).is_none());
-    let mut reference = reader_profile(&r, "codex:a");
-    reference.facts.first_at = Some(0);
-    b.facts.first_at = Some(3 * 86_400_000);
-    assert_eq!(similarity(&reference, &b).unwrap().score, 2);
-    b.facts.first_at = Some(14 * 86_400_000);
-    assert_eq!(similarity(&reference, &b).unwrap().score, 1);
-    b.facts.first_at = Some(15 * 86_400_000);
-    assert!(similarity(&reference, &b).is_none());
+    assert!(!x.differences.contains_key("cost_usd"));
+    assert_eq!(x.underived_sessions, 0);
     let c = correlation(
-        &r,
+        &reader,
         &Selection::default(),
         "message_count:median_tool_call_ms",
     )
     .unwrap();
     assert_eq!(c.sample_count, 0);
     assert_eq!(c.missing_pairs, 3);
-    assert!(correlation(&r, &Selection::default(), "word_count:unknown").is_err());
+    assert!(correlation(&reader, &Selection::default(), "word_count:unknown").is_err());
 }
-fn reader_profile(r: &Reader<'_>, id: &str) -> Profile {
-    r.session_profiles(&Selection::default())
-        .unwrap()
-        .into_iter()
-        .find(|p| p.session == id)
-        .unwrap()
+
+#[test]
+fn similarity_time_weights_include_boundaries_and_exclude_zero_scores() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for (id, day) in [
+        ("codex:ref", 0),
+        ("chatgpt:three", 3),
+        ("chatgpt:fourteen", 14),
+        ("chatgpt:fifteen", 15),
+    ] {
+        f.session(SessionFacts {
+            id,
+            started: Some(day * 86_400_000),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = matches(&reader, "codex:ref");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session"], "chatgpt:three");
+    assert_eq!(rows[0]["score"], 2);
+    assert_eq!(rows[1]["session"], "chatgpt:fourteen");
+    assert_eq!(rows[1]["score"], 1);
+}
+
+#[test]
+fn underived_sessions_keep_null_facts_and_do_not_fail_aggregates_or_similarity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    f.session(SessionFacts {
+        id: "codex:new",
+        ..Default::default()
+    })
+    .unwrap();
+    f.session(SessionFacts {
+        id: "codex:other",
+        ..Default::default()
+    })
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let p = reader.session_profiles(&Selection::default()).unwrap();
+    assert!(p.iter().all(|p| p.facts.is_none()));
+    let c = compare(&reader, &Selection::default()).unwrap();
+    assert_eq!(c.underived_sessions, 2);
+    let d = distribution(&reader, &Selection::default(), "message_count").unwrap();
+    assert_eq!(d.underived_sessions, 2);
+    assert_eq!(d.missing_sessions, 2);
+    assert_eq!(d.median, None);
+    let c = correlation(&reader, &Selection::default(), "message_count:word_count").unwrap();
+    assert_eq!(c.underived_sessions, 2);
+    assert_eq!(c.sample_count, 0);
+    let rows = matches(&reader, "codex:new");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["score"], 1);
 }

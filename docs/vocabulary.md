@@ -305,9 +305,12 @@ record of a chat action's result, as the extension saw it.
   Goh–Barabási coefficient of consecutive user-message gaps.
 - **session profile**: recorded session facts together with named timing and
   classification calculations, each with its rule version.
-- **message-clustered time** (`engaged_duration_ms`): summed intervals within
+- **message-clustered time** (`message_clustered_duration_ms`): summed intervals within
   a five-minute gap threshold. **Tool-active time**: summed timestamped paired
   tool-call/result intervals. Neither measures attention.
 - **workflow shape**: the threshold label over observed tool/message counts.
-  **Final observed state** (`terminal_state`): the last structural activity,
+  **final observed state** (`final_observed_state`): the last structural activity,
   without a task-success judgment.
+
+- **unpaired tools past the gap** (`unpaired_tools_past_gap`): tool starts without
+  a paired result more than five minutes before the last observed time.

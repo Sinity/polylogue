@@ -560,6 +560,44 @@ CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_coun
 -- Profile rules and clustering threshold live in the facts they produced. Usage
 -- and cost are read from their own rows, rather than copied into this product.
 CREATE TABLE session_profile (
-  session_pk INTEGER PRIMARY KEY REFERENCES session(pk),
-  facts TEXT NOT NULL
+    session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+    rule_version INTEGER NOT NULL,
+    cluster_gap_ms INTEGER NOT NULL,
+    timestamped_messages INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    word_count INTEGER NOT NULL,
+    substantive_count INTEGER NOT NULL,
+    compaction_count INTEGER NOT NULL,
+    total_duration_ms INTEGER,
+    thinking_count INTEGER NOT NULL,
+    message_clustered_duration_ms INTEGER NOT NULL,
+    tool_active_duration_ms INTEGER NOT NULL,
+    tool_latency_measured_pairs INTEGER NOT NULL,
+    tool_latency_median_ms INTEGER,
+    tool_latency_p90_ms INTEGER,
+    tool_latency_max_ms INTEGER,
+    agent_response_latency_measured_pairs INTEGER NOT NULL,
+    agent_response_latency_median_ms INTEGER,
+    agent_response_latency_p90_ms INTEGER,
+    agent_response_latency_max_ms INTEGER,
+    user_response_latency_measured_pairs INTEGER NOT NULL,
+    user_response_latency_median_ms INTEGER,
+    user_response_latency_p90_ms INTEGER,
+    user_response_latency_max_ms INTEGER,
+    unpaired_tools_past_gap INTEGER NOT NULL,
+    tools TEXT NOT NULL,
+    tool_call_count INTEGER NOT NULL,
+    actions TEXT NOT NULL,
+    workflow_shape TEXT NOT NULL,
+    workflow_features TEXT NOT NULL,
+    final_observed_state TEXT NOT NULL,
+    final_observed_state_method TEXT NOT NULL,
+    final_message TEXT
 ) STRICT;
+
+CREATE TABLE session_facet (
+  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  family TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY(session_pk,family,value)
+) WITHOUT ROWID, STRICT;

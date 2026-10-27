@@ -357,5 +357,8 @@ and blob handles, including while the daemon holds the archive lock. `xtask sche
 
 Session [measures](measures.md) include selected/global IDF facets, configured
 billing outlooks, pacing, and profile comparisons. The versioned `profile`
-derivation stores timing and classification facts in `session_profile`; usage
-and cost remain owned by their existing rows and are joined at read time.
+derivation stores typed timing and classification facts in `session_profile`
+and distinct deep facets in `session_facet`. Profiles reuse the title and
+`session_survival` derivations. Usage is read only for a full profile or an
+explicit cost metric. Profile, comparison, pacing and similarity pages use
+the ordinary query cursor.

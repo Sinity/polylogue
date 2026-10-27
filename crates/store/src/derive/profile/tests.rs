@@ -10,13 +10,6 @@ fn five_minute_clustering_uses_interval_bounds_and_absolute_gaps() {
 }
 
 #[test]
-fn topic_strips_known_prefixes_and_preserves_unicode() {
-    assert_eq!(clean_topic("[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code. Fix the parser.",120).as_deref(),Some("Fix the parser."));
-    assert_eq!(clean_topic("   ", 120), None);
-    assert_eq!(clean_topic("ééé", 2).as_deref(), Some("éé"));
-}
-
-#[test]
 fn profile_reads_prose_without_decoding_tool_output() {
     use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
@@ -60,14 +53,13 @@ fn profile_reads_prose_without_decoding_tool_output() {
         .unwrap();
     let tx = conn.transaction().unwrap();
     run(&tx, session).unwrap();
-    let facts: String = tx
+    let (calls, messages): (u64, u64) = tx
         .query_row(
-            "SELECT facts FROM session_profile WHERE session_pk=?1",
+            "SELECT tool_call_count,message_count FROM session_profile WHERE session_pk=?1",
             [session],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    let facts: Facts = serde_json::from_str(&facts).unwrap();
-    assert_eq!(facts.tool_call_count, 1);
-    assert_eq!(facts.message_count, 1);
+    assert_eq!(calls, 1);
+    assert_eq!(messages, 1);
 }
