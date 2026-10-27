@@ -138,12 +138,13 @@ the same change.
   briefing can cite them.
 - **setting**: a value the operator or an agent sets, kept with its history.
 - **delivery**: exactly what was put into a model's context.
+- **verification**: a test, build or lint command in the work graph.
 - **check run**: one `xtask` check or test run, as devkit's machine-wide
   run history records it with its checkout and outcome.
 - **brief**: the session-start context for a directory; it fits its
   **budget** (`briefing.budget`, tokens).
 - **advice**: a delivery just before a command runs, given only when the
-  command is a check that failed in that checkout more than once since it
+  command is a verification that failed in that checkout more than once since it
   last passed.
 - **judgment**: the operator's `accepted` or `rejected` on one revision of
   an agent's note, itself a note of kind `judgment`.
@@ -158,8 +159,6 @@ the same change.
   them. The request is recorded once with its **target** (an input, a session or a
   document), with the identities it removed (**excised**); a stop
   part way needs no recovery.
-
-- **verification**: a test, build or lint command in the work graph. A **check run** is a run recorded by the development tooling.
 
 ## The daemon
 
