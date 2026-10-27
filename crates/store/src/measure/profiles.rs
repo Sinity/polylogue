@@ -48,6 +48,7 @@ pub struct Facts {
     pub message_count: u64,
     pub word_count: u64,
     pub substantive_count: u64,
+    pub compaction_count: u64,
     pub total_duration_ms: Option<i64>,
     pub thinking_count: u64,
     pub wall_duration_ms: Option<i64>,

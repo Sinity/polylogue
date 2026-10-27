@@ -58,7 +58,7 @@ are bounded by the exact as-of instant before daily aggregation. The logical
 day setting does not move billing boundaries. The window, clock, method,
 observed-day coverage and missing full UTC days accompany every estimate.
 The current partial day is excluded from the coverage denominator. Coverage
-means a day had an observation, not that every response or usage unit was
+means a day had a known usage amount, not that every response or usage unit was
 measured. Unknown source times and incomplete usage are reported separately.
 
 Units stay separate: `api_usd`, `reported_usd`, `input_tokens`,
@@ -132,7 +132,7 @@ Tool latency and response latency each report measured pair count, median, p90
 survives storage and percentiles. User-to-assistant gaps include intervening
 tool execution. Assistant-to-user gaps over 30 minutes are excluded. Negative
 response/tool deltas are clamped to zero, as in the predecessor's latency rules.
-Unpaired tool starts at least five minutes before the session's last timestamp
+Unpaired tool starts more than five minutes before the session's last timestamp
 contribute to `stuck_tool_count`.
 
 `workflow_shape` is the predecessor's threshold classifier: delegation takes
@@ -164,7 +164,7 @@ known workflow shape, 1 for origin, 2 for first timestamps within three UTC days
 (or 1 within fourteen), and 1 per shared tag. Reasons accompany scores, sorted
 by score and IDs. This is metadata-shape similarity, not semantic similarity.
 
-`correlation:X:Y` returns Pearson r, selected total, measured pair count, missing
+`correlation:X:Y` returns Pearson r rounded to four decimals, selected total, measured pair count, missing
 pair count and an explicit reason when fewer than three pairs or zero variance
 makes it undefined. It skips sessions missing either metric. `distribution:X`
 reports selected/measured/missing sessions, median, nearest-rank p90 and maximum;

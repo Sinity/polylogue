@@ -149,10 +149,11 @@ pub fn outlook(
         scope.since = Some(day);
         scope.until = Some((day + DAY).min(now).min(window.end));
         let report = usage(reader, &scope)?;
-        if report.sessions > 0 {
+        let amounts = amounts(&report);
+        if !amounts.is_empty() {
             observed_days.insert(day);
         }
-        for (unit, amount) in amounts(&report) {
+        for (unit, amount) in amounts {
             daily.entry(unit).or_default().insert(day, amount);
         }
         day += DAY;
