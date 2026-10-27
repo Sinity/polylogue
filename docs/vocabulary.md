@@ -66,11 +66,11 @@ the same change.
   Studio Drive collector).
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
-- **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
-  **row dump** (JSON lines) up to the **synced prefix** named by the tool's
-  checkpoint, and parses the dump. Its **catalog** keeps row comparison state
-  beside the export. An origin's **table cursor** names a monotonic change
-  column; undeclared tables compare their complete rows.
+- **tool database**: a tool's SQLite file. Its **row dump** is an ordinary
+  input of typed JSON records, stored directly through the writer. Its
+  **catalog** keeps comparison hashes and cursors in the index. An origin's
+  **table cursor** names a monotonic change column; undeclared tables compare
+  complete rows.
 
 ## Builds and prepared writes
 

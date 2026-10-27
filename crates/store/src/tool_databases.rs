@@ -1,230 +1,73 @@
-//! Tool databases as typed row dumps: a database
-//! that disappears must not take archived rows with it, but every version
-//! of its pages is not needed.
-//!
-//! A tool's SQLite database (Codex `state`, `goals`, `memories` and
-//! thread history; Hermes `state.db`) is never stored as page images.
-//! Each export reads it inside one read transaction, which sees a
-//! consistent state including the WAL, and appends to an append-only
-//! JSON Lines file in the archive:
-//!
-//! - `{"db", "at_ms", "schema": {table: sql}}` when the schema changes;
-//! - `{"t": table, "k": key, "r": row, "h": digest}` for a row that is new
-//!   or changed since the last export;
-//! - `{"t": table, "k": key, "kh": key digest, "gone": true}` for a row no
-//!   longer there; `kh` is the hex digest of its table and key.
-//!
-//! The file is an ordinary input: the loop stores its appended bytes and
-//! the origin's parser reads the lines. A row the tool deletes stays in
-//! the export. Values keep their SQLite types; blobs are base64.
-//!
-//! Exports wait for quiet files, with an hourly capture during continuous
-//! writes. Comparison state persists in a SQLite catalog beside the export.
-//! Declared table cursors read changes every three minutes and verify every
-//! row daily; undeclared tables compare complete rows. Changed rows are staged
-//! privately, then a synced marker naming the
-//! completed prefix commits them, every 64 MB of rows and at the end, so a
-//! large database's capture becomes input while it is read. Bytes beyond
-//! that marker are removed on the next open.
-
-use crate::FileFacts;
+//! Tool databases read in one SQLite transaction and emitted as row-dump
+//! records. The writer stores these bytes as an ordinary input. Comparison
+//! hashes and declared cursors live in the index, beside the parsed rows.
+use crate::{Archive, FileFacts, InputKey, Observation};
 use base64::Engine as _;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Seek, Write};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::{collections::HashMap, fs, path::{Path, PathBuf}, time::{Duration, Instant}};
 
-/// While a database keeps changing, it is still exported this often.
+mod catalog;
+pub use catalog::{Comparison, SavedDatabase};
+
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 const CURSOR_EXPORT: Duration = Duration::from_secs(180);
 const VERIFY_EVERY_MS: i64 = 24 * 3600 * 1000;
-
-/// An origin declares a column to read after, or comparison for the table.
+/// A batching threshold, never a record-size limit.
+pub const APPEND_BYTES: usize = 8 << 20;
 pub type TableCursor = fn(&Path, &str) -> Option<&'static str>;
-
-mod binding;
-mod catalog;
-mod prefix_hash;
-mod synced_prefix;
-mod turns;
-use catalog::Catalog;
-use synced_prefix::SyncedPrefix;
-pub use turns::{CaptureTurn, Captures};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error("{0}: {1}")]
-    Sqlite(PathBuf, rusqlite::Error),
-    #[error("{0}")]
-    Invalid(String),
+    #[error(transparent)] Io(#[from] std::io::Error),
+    #[error(transparent)] Store(#[from] crate::StoreError),
+    #[error("{0}: {1}")] Sqlite(PathBuf, rusqlite::Error),
+    #[error("{0}")] Invalid(String),
 }
 
-/// The database file and its WAL: either changing is a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DbFacts {
-    db: Option<FileFacts>,
-    wal: Option<FileFacts>,
-}
-
+struct DbFacts { db: Option<FileFacts>, wal: Option<FileFacts> }
 impl DbFacts {
     fn of(db: &Path) -> Self {
         let facts = |p: &Path| fs::metadata(p).ok().map(|m| FileFacts::of(&m));
-        let mut wal = db.as_os_str().to_owned();
-        wal.push("-wal");
-        Self {
-            db: facts(db),
-            wal: facts(Path::new(&wal)),
-        }
+        let mut wal = db.as_os_str().to_owned(); wal.push("-wal");
+        Self { db: facts(db), wal: facts(Path::new(&wal)) }
     }
 }
-
 #[derive(Default)]
 struct DbState {
-    /// Facts seen at the previous pass, and at the last export.
-    last_seen: Option<DbFacts>,
-    exported: Option<DbFacts>,
-    exported_at: Option<Instant>,
-    catalog: Option<Catalog>,
-    synced: Option<SyncedPrefix>,
-    cursor_at: Option<Instant>,
+    last_seen: Option<DbFacts>, exported: Option<DbFacts>,
+    exported_at: Option<Instant>, cursor_at: Option<Instant>,
 }
-
 #[derive(Default)]
-pub struct Exporter {
-    dbs: HashMap<PathBuf, DbState>,
-    cursor: Option<TableCursor>,
-}
-
-/// What one export call did.
+pub struct Exporter { dbs: HashMap<PathBuf, DbState>, cursor: Option<TableCursor> }
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Exported {
-    pub rows: u64,
-    pub gone: u64,
-}
-
+pub struct Exported { pub rows: u64, pub gone: u64, pub visited: u64 }
 impl Exporter {
-    pub fn with_cursor(cursor: TableCursor) -> Self {
-        Self {
-            cursor: Some(cursor),
-            ..Self::default()
-        }
-    }
-    /// Exports `db` into `out` when due. Returns `None` when nothing was
-    /// due.
+    pub fn with_cursor(cursor: TableCursor) -> Self { Self { cursor: Some(cursor), ..Self::default() } }
+    pub fn forget(&mut self, path: &Path) { self.dbs.remove(path); }
+    /// `send` queues a complete group without waiting for its commit. The
+    /// caller waits for all acknowledgments before starting another read of
+    /// this input. Its queue bounds bytes awaiting the writer.
     pub fn export(
-        &mut self,
-        db: &Path,
-        out: &Path,
-        observation: Option<&crate::Observation>,
+        &mut self, db: &Path, archive: &Archive, input: &InputKey, observation: &Observation,
+        mut send: impl FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
     ) -> Result<Option<Exported>, ExportError> {
-        self.export_with(db, out, observation, &mut || Ok(()))
-    }
-
-    fn export_with(
-        &mut self,
-        db: &Path,
-        out: &Path,
-        observation: Option<&crate::Observation>,
-        checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
-    ) -> Result<Option<Exported>, ExportError> {
-        if let Some(dir) = out.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let requested = observation.map(binding::Binding::observed).transpose()?;
-        let st = self.dbs.entry(db.to_path_buf()).or_default();
-        if st.synced.as_ref().is_none_or(|p| !p.current(out)) {
-            st.catalog = None;
-            st.synced = None;
-            st.exported = None;
-            let (mut catalog, synced) = Catalog::load(out, checkpoint)?;
-            catalog.bind(requested.clone())?;
-            catalog.save(&synced)?;
-            st.synced = Some(synced);
-            st.catalog = Some(catalog);
-        }
-        st.catalog
-            .as_mut()
-            .expect("loaded catalog")
-            .bind(requested)?;
         let now = DbFacts::of(db);
-        if now.db.is_none() {
-            st.last_seen = Some(now);
-            st.exported = None;
-            st.exported_at = None;
-            let catalog = st.catalog.as_mut().expect("loaded catalog");
-            if catalog.source_file.take().is_some() {
-                catalog.save(st.synced.as_ref().expect("verified prefix"))?;
-            }
-            return Ok(None);
-        }
+        let st = self.dbs.entry(db.to_owned()).or_default();
+        if now.db.is_none() { *st = DbState::default(); return Ok(None); }
         let quiet = st.last_seen == Some(now);
         st.last_seen = Some(now);
-        let changed = st.exported != Some(now);
-        let first = st.exported.is_none();
-        let overdue = st.exported_at.is_none_or(|at| at.elapsed() >= BUSY_EXPORT);
+        let compare = st.exported.is_none() || (st.exported != Some(now) &&
+            (quiet || st.exported_at.is_some_and(|at| at.elapsed() >= BUSY_EXPORT)));
         let cursor_due = st.cursor_at.is_none_or(|at| at.elapsed() >= CURSOR_EXPORT);
-        let compare = changed && (first || quiet || overdue);
-        if !compare && !cursor_due {
-            return Ok(None);
-        }
-        let source_file = now.db.map(|facts| (facts.device, facts.inode));
-        let replaced = st.catalog.as_ref().expect("loaded catalog").source_file != source_file;
-        let done = match write_export(
-            db,
-            out,
-            st,
-            self.cursor,
-            Due {
-                compare,
-                cursor: cursor_due,
-                replaced,
-                source_file,
-            },
-            checkpoint,
-        ) {
-            Ok(done) => done,
-            Err(e) => {
-                // The marker may have been written before a local cache failure.
-                // Rebuild both from the verified synced prefix next time.
-                st.catalog = None;
-                st.synced = None;
-                return Err(e);
-            }
-        };
-        if compare {
-            st.exported = Some(now);
-            st.exported_at = Some(Instant::now());
-        }
+        if !compare && !cursor_due { return Ok(None); }
+        let done = write_export(db, archive, input, observation, self.cursor, compare, cursor_due, &mut send)?;
+        if compare { st.exported = Some(now); st.exported_at = Some(Instant::now()); }
         st.cursor_at = Some(Instant::now());
         Ok(Some(done))
     }
-}
-
-/// Rows staged before they are appended to the capture, so a large
-/// database's capture becomes input in parts while it is read.
-const APPEND_BYTES: u64 = 64 << 20;
-
-/// Appends the staged rows to the capture's synced prefix and empties the
-/// staging file.
-fn append_staged(
-    w: &mut BufWriter<fs::File>,
-    synced: Option<&mut SyncedPrefix>,
-    out: &Path,
-) -> Result<(), ExportError> {
-    w.flush()?;
-    let staged = w.get_mut();
-    synced
-        .expect("verified synced prefix")
-        .append(out, staged)?;
-    staged.set_len(0)?;
-    staged.seek(std::io::SeekFrom::Start(0))?;
-    Ok(())
 }
 
 /// The digest naming a row: its table and its key.
@@ -319,231 +162,92 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     Ok(out)
 }
 
-struct Due {
-    compare: bool,
-    cursor: bool,
-    replaced: bool,
-    source_file: Option<(u64, u64)>,
-}
 
+#[allow(clippy::too_many_arguments)]
 fn write_export(
-    db: &Path,
-    out: &Path,
-    st: &mut DbState,
-    cursor: Option<TableCursor>,
-    due: Due,
-    checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
+    db: &Path, archive: &Archive, input: &InputKey, observation: &Observation,
+    cursor: Option<TableCursor>, compare: bool, cursor_due: bool,
+    send: &mut dyn FnMut(Vec<u8>, Comparison) -> Result<(), ExportError>,
 ) -> Result<Exported, ExportError> {
-    let sql_err = |e| ExportError::Sqlite(db.to_path_buf(), e);
-    let conn = Connection::open_with_flags(
-        db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(sql_err)?;
-    conn.busy_timeout(Duration::from_secs(10))
-        .map_err(sql_err)?;
-    // One read transaction: every table from the same moment, WAL
-    // included, without blocking the tool's writer.
-    conn.execute_batch("BEGIN").map_err(sql_err)?;
-    let tables = tables(&conn).map_err(sql_err)?;
-    let catalog = st.catalog.as_mut().expect("loaded catalog");
-    let transaction = catalog.conn.transaction().map_err(sql_err)?;
-    transaction.execute_batch("CREATE TEMP TABLE IF NOT EXISTS present_table(t TEXT PRIMARY KEY); DELETE FROM present_table;
-        CREATE TEMP TABLE IF NOT EXISTS compared_table(t TEXT PRIMARY KEY); DELETE FROM compared_table;").map_err(sql_err)?;
-    let at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
-    let mut w = BufWriter::new(tempfile::tempfile()?);
-    let schema: Map<String, Value> = tables
-        .iter()
-        .map(|t| (t.name.clone(), Value::String(t.sql.clone())))
-        .collect();
+    let _busy = crate::timing::enter(crate::timing::Stage::Database);
+    let sql_err = |e| ExportError::Sqlite(db.to_owned(), e);
+    let source = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(sql_err)?;
+    source.busy_timeout(Duration::from_secs(10)).map_err(sql_err)?;
+    source.execute_batch("BEGIN").map_err(sql_err)?;
+    let tables = tables(&source).map_err(sql_err)?;
+    let catalog = catalog::Catalog::open(archive, &input.id)?;
+    let mut saved = catalog.saved.clone();
+    let facts = DbFacts::of(db).db.expect("source exists");
+    let replaced = saved.source_file != Some((facts.device, facts.inode));
+    let schema: Map<String,Value> = tables.iter().map(|t| (t.name.clone(), t.sql.clone().into())).collect();
     let schema = Value::Object(schema);
-    let schema_digest = digest(&schema.to_string());
-    if catalog.schema != Some(schema_digest) {
-        let at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as i64);
-        let name = db.file_name().map(|n| n.to_string_lossy().into_owned());
-        let mut header = json!({ "db": name, "at_ms": at_ms, "schema": schema });
-        if let Some(binding) = &catalog.binding {
-            header["source"] = serde_json::to_value(binding).map_err(std::io::Error::from)?;
-        }
-        serde_json::to_writer(&mut w, &header).map_err(std::io::Error::from)?;
-        w.write_all(b"\n")?;
+    let changed_schema = saved.schema.as_ref() != Some(&schema);
+    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let mut bytes = Vec::new();
+    if changed_schema {
+        serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;
+        bytes.push(b'\n');
     }
     let mut done = Exported::default();
-    let mut staged_bytes = 0;
-    for t in &tables {
-        transaction
-            .execute("INSERT INTO present_table VALUES(?1)", [&t.name])
-            .map_err(sql_err)?;
-        let declared = cursor.and_then(|cursor| cursor(db, &t.name));
-        let previous: Option<(String, Option<i64>, i64)> = transaction
-            .query_row(
-                "SELECT column_name,value,verified_at FROM table_cursor WHERE t=?1",
-                [&t.name],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(sql_err)?;
-        let full = due.replaced
-            || declared.is_none()
-            || previous.as_ref().is_none_or(|(column, value, verified)| {
-                Some(column.as_str()) != declared
-                    || value.is_none()
-                    || at_ms.saturating_sub(*verified) >= VERIFY_EVERY_MS
-            })
-            || catalog.schema != Some(schema_digest);
-        if (declared.is_none() && !due.compare)
-            || (declared.is_some()
-                && !due.cursor
-                && !due.replaced
-                && catalog.schema == Some(schema_digest))
-        {
-            continue;
+    for table in &tables {
+        let declared = cursor.and_then(|c| c(db, &table.name));
+        let previous = saved.cursors.get(&table.name).cloned();
+        let full = replaced || changed_schema || declared.is_none() || previous.as_ref().is_none_or(|p| Some(p.column.as_str()) != declared || p.value.is_none() || at_ms.saturating_sub(p.verified_at) >= VERIFY_EVERY_MS);
+        if !replaced && !changed_schema && ((declared.is_none() && !compare) || (declared.is_some() && !cursor_due)) { continue; }
+        let quoted = table.name.replace('"', "\"\"");
+        let select = if table.key.is_empty() {
+            let rowid = ["rowid","_rowid_","oid"].into_iter().find(|name| !table.columns.iter().any(|c| c.eq_ignore_ascii_case(name))).ok_or_else(|| ExportError::Invalid(format!("table {} shadows all SQLite rowid names", table.name)))?;
+            format!(r#"SELECT {rowid}, * FROM "{quoted}""#)
+        } else { format!(r#"SELECT NULL, * FROM "{quoted}""#) };
+        if let Some(column) = declared && !table.columns.iter().any(|c| c == column) { return Err(ExportError::Invalid(format!("declared cursor {column} is missing in {}", table.name))); }
+        let select = if let Some(column) = declared.filter(|_| !full) {
+            format!(r#"{select} WHERE "{}">{}"#, column.replace('"', "\"\""), previous.as_ref().and_then(|p| p.value).expect("stored cursor"))
+        } else { select };
+        let mut high = if full { None } else { previous.as_ref().and_then(|p| p.value) };
+        let mut statement = source.prepare(&select).map_err(sql_err)?;
+        let mut rows = statement.query([]).map_err(sql_err)?;
+        while let Some(row) = rows.next().map_err(sql_err)? {
+            done.visited += 1;
+            let mut values = Map::new();
+            for (i, column) in table.columns.iter().enumerate() { values.insert(column.clone(), value(row.get_ref(i+1).map_err(sql_err)?)?); }
+            let key = if table.key.is_empty() { json!([value(row.get_ref(0).map_err(sql_err)?)?]) } else { Value::Array(table.key.iter().map(|&i| values[&table.columns[i]].clone()).collect()) };
+            if let Some(column) = declared {
+                let value = values.get(column).and_then(Value::as_i64).ok_or_else(|| ExportError::Invalid(format!("declared cursor {column} in {} is not an integer",table.name)))?;
+                high = Some(high.map_or(value, |old:i64| old.max(value)));
+            }
+            let encoded = Value::Object(values);
+            if catalog.changed(&table.name, &key, &encoded, full)? {
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"h":format!("{:016x}",digest(&encoded.to_string())),"r":encoded})).map_err(std::io::Error::from)?;
+                bytes.push(b'\n'); done.rows += 1;
+                crate::fault::check("tool_export.after_row", &table.name)?;
+            }
+            if bytes.len() >= APPEND_BYTES {
+                let update = Comparison::records(&bytes, None)?;
+                send(std::mem::take(&mut bytes), update)?;
+            }
         }
         if full {
-            transaction
-                .execute("UPDATE row_state SET seen=0 WHERE t=?1", [&t.name])
-                .map_err(sql_err)?;
-            transaction
-                .execute("INSERT INTO compared_table VALUES(?1)", [&t.name])
-                .map_err(sql_err)?;
+            catalog.gone(&table.name, &mut |key| {
+                serde_json::to_writer(&mut bytes, &json!({"t":table.name,"k":key,"kh":format!("{:016x}", row_key(&table.name, &key)),"gone":true})).map_err(std::io::Error::from)?;
+                bytes.push(b'\n'); done.gone += 1;
+                crate::fault::check("tool_export.after_gone", &table.name)?;
+                if bytes.len() >= APPEND_BYTES { let update = Comparison::records(&bytes, None)?; send(std::mem::take(&mut bytes), update)?; }
+                Ok(())
+            })?;
         }
-        let quoted = t.name.replace('"', "\"\"");
-        let select = if t.key.is_empty() {
-            let rowid = ["rowid", "_rowid_", "oid"]
-                .into_iter()
-                .find(|name| !t.columns.iter().any(|c| c.eq_ignore_ascii_case(name)))
-                .ok_or_else(|| {
-                    ExportError::Invalid(format!("table {} shadows all SQLite rowid names", t.name))
-                })?;
-            format!("SELECT {rowid}, * FROM \"{quoted}\"")
-        } else {
-            format!("SELECT NULL, * FROM \"{quoted}\"")
-        };
-        if let Some(column) = declared
-            && !t.columns.iter().any(|c| c == column)
-        {
-            return Err(ExportError::Invalid(format!(
-                "declared cursor {column} is missing in {}",
-                t.name
-            )));
-        }
-        let select = if let Some(column) = declared.filter(|_| !full) {
-            format!(
-                "{select} WHERE \"{}\">{}",
-                column.replace('"', "\"\""),
-                previous
-                    .as_ref()
-                    .expect("stored cursor")
-                    .1
-                    .expect("populated cursor")
-            )
-        } else {
-            select
-        };
-        let mut high = if full {
-            None
-        } else {
-            previous.as_ref().and_then(|(_, value, _)| *value)
-        };
-        let mut stmt = conn.prepare(&select).map_err(sql_err)?;
-        let mut q = stmt.query([]).map_err(sql_err)?;
-        while let Some(r) = q.next().map_err(sql_err)? {
-            let mut row = Map::new();
-            for (i, c) in t.columns.iter().enumerate() {
-                row.insert(c.clone(), value(r.get_ref(i + 1).map_err(sql_err)?)?);
-            }
-            let k = if t.key.is_empty() {
-                json!([value(r.get_ref(0).map_err(sql_err)?)?])
-            } else {
-                Value::Array(t.key.iter().map(|&i| row[&t.columns[i]].clone()).collect())
-            };
-            let row = Value::Object(row);
-            if let Some(column) = declared {
-                let value = row.get(column).and_then(Value::as_i64).ok_or_else(|| {
-                    ExportError::Invalid(format!(
-                        "declared cursor {column} in {} is not an integer",
-                        t.name
-                    ))
-                })?;
-                high = Some(high.map_or(value, |old: i64| old.max(value)));
-            }
-            let encoded = row.to_string();
-            let hash = blake3::hash(encoded.as_bytes());
-            let h = digest(&encoded);
-            if catalog::changed(&transaction, &t.name, &k, &hash, full).map_err(sql_err)? {
-                serde_json::to_writer(
-                    &mut w,
-                    &json!({ "t": t.name, "k": k, "r": row, "h": format!("{h:016x}") }),
-                )
-                .map_err(std::io::Error::from)?;
-                w.write_all(b"\n")?;
-                crate::fault::check("tool_export.after_row", &t.name)
-                    .map_err(std::io::Error::other)?;
-                done.rows += 1;
-                staged_bytes += encoded.len() as u64;
-                if staged_bytes >= APPEND_BYTES {
-                    // The rows so far become input now, so the loop can
-                    // store and parse a large database's capture while the
-                    // rest is still read.
-                    append_staged(&mut w, st.synced.as_mut(), out)?;
-                    staged_bytes = 0;
-                }
-            }
-            checkpoint()?;
-        }
-        if let Some(column) = declared {
-            let verified = if full {
-                at_ms
-            } else {
-                previous.as_ref().expect("stored cursor").2
-            };
-            transaction.execute("INSERT INTO table_cursor VALUES(?1,?2,?3,?4) ON CONFLICT(t) DO UPDATE SET column_name=excluded.column_name,value=excluded.value,verified_at=excluded.verified_at", rusqlite::params![t.name,column,high,verified]).map_err(sql_err)?;
-        } else {
-            transaction
-                .execute("DELETE FROM table_cursor WHERE t=?1", [&t.name])
-                .map_err(sql_err)?;
-        }
+        if let Some(column) = declared { saved.cursors.insert(table.name.clone(), catalog::Cursor { column: column.into(), value: high, verified_at:if full { at_ms } else { previous.expect("stored cursor").verified_at } }); }
+        else { saved.cursors.remove(&table.name); }
     }
-    // Only fully compared tables and dropped tables can have removals.
-    {
-        let mut query = transaction
-            .prepare("SELECT t,k,kh FROM row_state WHERE (seen=0 AND t IN compared_table) OR t NOT IN present_table ORDER BY t,k")
-            .map_err(sql_err)?;
-        let mut gone = query.query([]).map_err(sql_err)?;
-        while let Some(row) = gone.next().map_err(sql_err)? {
-            let table: String = row.get(0).map_err(sql_err)?;
-            let key: String = row.get(1).map_err(sql_err)?;
-            let kh: String = row.get(2).map_err(sql_err)?;
-            let key: Value = serde_json::from_str(&key).map_err(std::io::Error::from)?;
-            serde_json::to_writer(&mut w, &json!({"t":table,"k":key,"kh":kh,"gone":true}))
-                .map_err(std::io::Error::from)?;
-            w.write_all(b"\n")?;
-            crate::fault::check("tool_export.after_gone", &table).map_err(std::io::Error::other)?;
-            done.gone += 1;
-            checkpoint()?;
-        }
-    }
-    transaction
-        .execute("DELETE FROM row_state WHERE (seen=0 AND t IN compared_table) OR t NOT IN present_table", [])
-        .map_err(sql_err)?;
-    conn.execute_batch("COMMIT").map_err(sql_err)?;
-    append_staged(&mut w, st.synced.as_mut(), out)?;
-    crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
-    catalog::save(
-        &transaction,
-        Some(schema_digest),
-        &catalog.binding,
-        catalog.binding.is_none(),
-        due.source_file,
-        st.synced.as_ref().expect("verified prefix"),
-    )?;
-    transaction.commit().map_err(sql_err)?;
-    catalog.schema = Some(schema_digest);
-    catalog.source_file = due.source_file;
+    catalog.dropped(&tables.iter().map(|t|t.name.as_str()).collect::<Vec<_>>(), &mut |table,key| {
+        serde_json::to_writer(&mut bytes,&json!({"t":table,"k":key,"kh":format!("{:016x}",row_key(table,&key)),"gone":true})).map_err(std::io::Error::from)?;
+        bytes.push(b'\n'); done.gone += 1;
+        if bytes.len() >= APPEND_BYTES { let update = Comparison::records(&bytes,None)?; send(std::mem::take(&mut bytes),update)?; } Ok(())
+    })?;
+    saved.schema = Some(schema);
+    saved.source_file = Some((facts.device,facts.inode));
+    saved.cursors.retain(|table,_|tables.iter().any(|t| &t.name==table));
+    let update = Comparison::records(&bytes, Some(saved))?;
+    send(bytes,update)?;
     Ok(done)
 }
 

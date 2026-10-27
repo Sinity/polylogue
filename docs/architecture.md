@@ -132,23 +132,24 @@ at startup and every four hours for reconciliation; database sidecars wake the
 capture scheduler. Capture work continues within a time slice, with asset
 refresh and derivation performed once for the pass.
 
-A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
-dump (JSON lines) from one SQLite read of the tool's file; complete changes
-are synced before their catalog transaction commits. Its identity is the
-machine and the file's path. The SQLite catalog beside the dump keeps row
-hashes, declared table cursors, the source file identity and the synced prefix's
-BLAKE3 state. A restart checks the saved file facts and completed length before reusing it. Changed or
-interrupted exports are verified and the catalog rebuilt from their completed
-bytes. The prefix hash stays the ordinary BLAKE3 of those bytes. A restart resumes
-declared cursors when the source file identity is unchanged; a replacement
-requires full verification.
+A [tool database](../crates/store/src/tool_databases.rs) is read as row-dump
+records from one SQLite read transaction, including its WAL. Its identity is
+the machine and native file path. A separate database reader sends groups of
+changed records directly to the writer as an input's appended bytes, while
+file discovery and parsing continue. There is no export file. The writer
+commits the records' comparison hashes and byte position in `index.db`.
+Domain parsing reads the stored input through the ordinary parse path.
 
-An origin may declare a monotonic integer change column for a table; other
-tables compare their complete rows. Cursor tables are read every three minutes
-and verified in full daily, when their schema changes, and when the source file
-is replaced. Comparison waits for quiet files, with an hourly capture during
-continuous writes. Reading proceeds in time slices so other inputs and client
-requests are served between them.
+An ordinary restart reads this comparison state directly. A stop between the
+archive commit and the comparison commit leaves a suffix, which is read once
+to finish its hashes before another comparison. An index rebuild loses the
+comparison state and the next read compares the source in full. An origin
+may declare a monotonic integer change column for a table; other tables compare
+complete rows. Cursor tables are read every three minutes and verified in full
+daily, when their schema changes, and when the source file is replaced.
+Comparison waits for quiet files, with an hourly read during continuous writes.
+The parse workers enqueue byte groups and keep working; an acknowledgment
+reader delivers their committed progress to the loop.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An

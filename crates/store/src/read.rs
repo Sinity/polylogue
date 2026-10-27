@@ -340,6 +340,11 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    /// Row-dump byte position whose comparison hashes have committed.
+    pub fn tool_database_length(&self, input: &str) -> Result<Option<u64>> {
+        Ok(self.conn()?.query_row("SELECT length FROM tool_database JOIN input_ref ON input_ref.pk=tool_database.input_pk WHERE input_ref.id=?1", [input], |r|r.get(0)).optional()?)
+    }
+
     /// The optional embeddings read connection shares this reader's slot and
     /// cannot outlive it. Only one vector guard can be held.
     pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {

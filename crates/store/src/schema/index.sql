@@ -556,3 +556,17 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
+
+-- Recomputed comparison state for ordinary tool-database inputs.
+CREATE TABLE tool_row (
+    input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
+    tbl TEXT NOT NULL,
+    key TEXT NOT NULL,
+    hash BLOB NOT NULL,
+    PRIMARY KEY(input_pk,tbl,key)
+) WITHOUT ROWID;
+CREATE TABLE tool_database (
+    input_pk INTEGER PRIMARY KEY REFERENCES input_ref(pk) ON DELETE CASCADE,
+    length INTEGER NOT NULL,
+    state TEXT NOT NULL
+);

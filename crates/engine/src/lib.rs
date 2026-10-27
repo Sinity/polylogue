@@ -21,7 +21,7 @@ mod watch;
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
-use polylogue_store::tool_databases::Captures;
+use databases::Databases;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -33,6 +33,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod databases;
 mod import;
 mod pass;
 mod plan;
@@ -260,7 +261,7 @@ pub struct Engine {
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     failed_writes: HashSet<String>,
     loaded: bool,
-    exporter: Captures,
+    exporter: Databases,
     databases: BTreeMap<PathBuf, &'static str>,
     live_checked: Instant,
     pass_open: bool,
@@ -327,7 +328,7 @@ impl Engine {
             inputs: HashMap::new(),
             failed_writes: HashSet::new(),
             loaded: false,
-            exporter: Captures::with_cursor(polylogue_sources::origin::table_cursor),
+            exporter: Databases::default(),
             databases: BTreeMap::new(),
             live_checked: Instant::now(),
             pass_open: false,
@@ -401,6 +402,9 @@ impl Engine {
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
+            if origin.capture != Capture::RowDump && self.inputs.contains_key(Path::new(&k.path)) {
+                continue;
+            }
             self.inputs.insert(
                 PathBuf::from(&k.path),
                 InputState {

@@ -367,7 +367,6 @@ fn main() {
             "written_over_kept": write_bytes.map(|n|n as f64 / (index + stored).max(1) as f64),
             "written_mb": wchar.map(|n|n as f64 / 1e6),
             "written_over_input": wchar.map(|n|n as f64 / input.max(1) as f64),
-            "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
             // Seconds per stage; pool stages are thread-seconds.
             "stages": polylogue_store::timing::stage_seconds()

@@ -172,7 +172,7 @@ impl Inner {
                 }
             }
         }
-        match files.commit() {
+        match crate::timing::time(crate::timing::Stage::Sync,|| files.commit()) {
             Ok(_) => installed = adding,
             Err(error) => {
                 for hash in adding {

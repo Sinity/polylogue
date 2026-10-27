@@ -90,6 +90,11 @@ impl Engine {
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let mut total = self.run_turn()?;
         while total.capture_pending {
+            let completed = self.exporter.completed(true);
+            total.errors.extend(completed.errors);
+            self.loaded = false;
+            self.load()?;
+            self.capture_checked = Some(Instant::now());
             let next = self.one_pass(false, &Default::default(), true)?;
             total.full_scans += next.full_scans;
             total.inputs_seen += next.inputs_seen;
@@ -116,7 +121,7 @@ impl Engine {
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
-        slice: bool,
+        _slice: bool,
     ) -> Result<Pass, EngineError> {
         let continuing = self.pass_open;
         self.pass_open = false;
@@ -155,47 +160,24 @@ impl Engine {
                 .insert(f.path.clone(), f.origin.name)
                 .is_none();
         }
-        let databases = self
-            .databases
-            .iter()
-            .filter_map(|(path, origin)| {
-                let name = polylogue_sources::origin::export_name(path)?;
-                Some((
-                    path.clone(),
-                    self.archive
-                        .exports_dir()
-                        .join(origin)
-                        .join(self.location_id(path))
-                        .join(name),
-                    Some(self.observation(path, None)),
-                ))
-            })
-            .collect();
-        // A first build captures tool databases whole while it reads the
-        // files, and parses each capture's parts in the same pass as they are
-        // appended; afterwards a pass captures in turns of 1,024 rows, so
-        // other work goes between them.
-        let capture_due = discover
-            || new_database
-            || self.exporter.pending()
-            || self
-                .capture_checked
-                .is_none_or(|at| at.elapsed() >= self.config.live_every);
-        let whole_capture = if discover && self.first_pass && self.writer.started_empty() {
+        let completed = self.exporter.completed(false);
+        pass.errors.extend(completed.errors);
+        if completed.changed {
+            self.loaded = false;
+            self.load()?;
+        }
+        let capture_due = discover || new_database || self.capture_checked.is_none_or(|at|at.elapsed() >= self.config.live_every);
+        if capture_due && !self.exporter.pending() {
             self.capture_checked = Some(Instant::now());
-            Some(databases)
-        } else if capture_due {
-            self.capture_checked = Some(Instant::now());
-            self.capture_turn(databases, 1024, &mut pass);
-            None
-        } else {
-            None
-        };
-        let mut found: Vec<_> = found
-            .into_iter()
-            .filter(|f| f.origin.capture != Capture::RowDump)
-            .collect();
-        found.extend(self.capture_outputs());
+            let databases = self.databases.iter().filter(|(path,_)| !self.refused.contains(*path)).map(|(path,origin)| databases::DatabaseInput {
+                path:path.clone(),
+                input:InputKey {id:self.location_id(path),format:(*origin).into(),arrival_rank:0},
+                observation:self.observation(path,None),
+            }).collect();
+            self.exporter.start(databases,self.archive.clone(),self.writer.sender()?)?;
+        }
+        pass.capture_pending = self.exporter.pending();
+        let mut found: Vec<_> = found.into_iter().filter(|f| f.origin.capture != Capture::RowDump).collect();
         if !discover && self.live_checked.elapsed() >= self.config.live_every {
             self.live_checked = Instant::now();
             let now_ns = i128::from(now_ms()) * 1_000_000;
@@ -203,7 +185,7 @@ impl Engine {
             found.extend(
                 self.inputs
                     .iter()
-                    .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live)
+                    .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live && st.origin.capture != Capture::RowDump)
                     .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                     .map(|(path, st)| collect::Found {
                         path: path.clone(),
@@ -223,7 +205,7 @@ impl Engine {
                 .iter()
                 .any(|(p, st)| p.starts_with(path) && st.facts.is_some() && !p.exists())
         });
-        if !discover && !continuing && !changed && !disappeared && !pass.capture_pending {
+        if !discover && !continuing && !changed && !disappeared && !pass.capture_pending && !completed.changed {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok(pass);
         }
@@ -304,59 +286,11 @@ impl Engine {
             }
         }
         pass.inputs_changed = plans.len() as u64;
-        if plans.is_empty() && whole_capture.is_none() && !continuing {
+        if plans.is_empty() && !continuing {
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
-        if let Some(databases) = whole_capture {
-            let captures: Vec<PathBuf> = databases.iter().map(|(_, out, _)| out.clone()).collect();
-            let mut exporter = std::mem::take(&mut self.exporter);
-            let turn = std::thread::scope(|scope| {
-                let capture = scope.spawn(move || {
-                    let turn = exporter.turn(databases, usize::MAX);
-                    (exporter, turn)
-                });
-                let mut executed = self.execute(plans, &mut pass);
-                // A large database's capture becomes input in parts while it
-                // is read; each part is stored and parsed meanwhile.
-                while executed.is_ok() && !capture.is_finished() {
-                    let parts = captures
-                        .iter()
-                        .filter(|out| out.exists())
-                        .filter_map(|out| self.capture_found(out))
-                        .collect();
-                    executed = self
-                        .plan_found(parts, &mut pass, &mut seen)
-                        .and_then(|plans| {
-                            if plans.is_empty() {
-                                std::thread::sleep(std::time::Duration::from_secs(2));
-                                return Ok(());
-                            }
-                            pass.inputs_changed += plans.len() as u64;
-                            self.execute(plans, &mut pass)
-                        });
-                }
-                let (exporter, turn) = capture.join().expect("the capture thread does not panic");
-                self.exporter = exporter;
-                executed.map(|()| turn)
-            })?;
-            record_turn(turn, &mut pass);
-            let outputs = self.capture_outputs();
-            let plans = self.plan_found(outputs, &mut pass, &mut seen)?;
-            pass.inputs_changed += plans.len() as u64;
-            self.execute(plans, &mut pass)?;
-        } else {
-            self.execute(plans, &mut pass)?;
-        }
-        // Continue the capture within this time slice. Maintenance above and
-        // derivation below belong to the pass, not to each permit of 1,024 rows.
-        while slice && pass.capture_pending && started.elapsed() < self.config.live_every {
-            self.capture_turn(Vec::new(), 1024, &mut pass);
-            let outputs = self.capture_outputs();
-            let plans = self.plan_found(outputs, &mut pass, &mut seen)?;
-            pass.inputs_changed += plans.len() as u64;
-            self.execute(plans, &mut pass)?;
-        }
+        self.execute(plans, &mut pass)?;
         self.first_pass = false;
         self.restore_failed_writes()?;
         if !pass.capture_pending {
@@ -365,39 +299,6 @@ impl Engine {
         self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
-    }
-
-    /// One turn of the SQLite capture, of at most `limit` rows.
-    fn capture_turn(
-        &mut self,
-        databases: Vec<(PathBuf, PathBuf, Option<Observation>)>,
-        limit: usize,
-        pass: &mut Pass,
-    ) {
-        let turn = self.exporter.turn(databases, limit);
-        record_turn(turn, pass);
-    }
-
-    /// The captures of tool databases the capture accepted, as found inputs.
-    /// Accepted captures remain inputs even if their provider disappears
-    /// while a pinned source view is being read.
-    fn capture_outputs(&self) -> Vec<collect::Found> {
-        self.exporter
-            .paths()
-            .filter_map(|out| self.capture_found(out))
-            .collect()
-    }
-
-    /// A capture of a tool database as a found input.
-    fn capture_found(&self, out: &Path) -> Option<collect::Found> {
-        let origin = ORIGINS.iter().find(|o| {
-            o.capture == Capture::RowDump
-                && out.starts_with(self.archive.exports_dir().join(o.name))
-        })?;
-        Some(collect::Found {
-            path: out.into(),
-            origin,
-        })
     }
 
     /// Plans for found files; `seen` collects their paths.
@@ -472,7 +373,7 @@ impl Engine {
         found.extend(
             self.inputs
                 .iter()
-                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live)
+                .filter(|(_, st)| st.origin.arrival == polylogue_sources::Arrival::Live && st.origin.capture != Capture::RowDump)
                 .filter(|(_, st)| st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS))
                 .map(|(path, st)| collect::Found {
                     path: path.clone(),
@@ -1074,7 +975,7 @@ impl Engine {
             }
             discover = false;
             let delay = if pending {
-                Duration::ZERO
+                self.config.live_every
             } else {
                 self.config.live_every.min(
                     self.config
@@ -1088,7 +989,7 @@ impl Engine {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
                         self.exporter =
-                            Captures::with_cursor(polylogue_sources::origin::table_cursor);
+                            Databases::default();
                         self.pass_open = false;
                         return Ok(());
                     }
@@ -1131,22 +1032,6 @@ impl Engine {
                 }
             }
         }
-    }
-}
-
-fn record_turn(
-    turn: Result<
-        polylogue_store::tool_databases::CaptureTurn,
-        polylogue_store::tool_databases::ExportError,
-    >,
-    pass: &mut Pass,
-) {
-    match turn {
-        Ok(turn) => {
-            pass.capture_pending = turn.pending;
-            pass.errors.extend(turn.errors);
-        }
-        Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
     }
 }
 

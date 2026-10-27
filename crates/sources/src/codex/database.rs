@@ -1,5 +1,4 @@
-//! Codex's SQLite databases, read from their row dumps (the engine
-//! writes `<archive>/exports/codex-database/<db>.jsonl`).
+//! Codex SQLite databases, parsed from their stored row-dump records.
 //! Lines are a schema line, row lines `{t, k, r, h}` and gone lines
 //! `{t, k, gone}`.
 //!
@@ -59,7 +58,7 @@ pub fn is_database(path: &Path) -> bool {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    recognize(path, b"{").then(|| Parse::Lines(Box::new(Database)))
+    (is_database(path) || recognize(path, b"{")).then(|| Parse::Lines(Box::new(Database)))
 }
 
 pub struct Database;

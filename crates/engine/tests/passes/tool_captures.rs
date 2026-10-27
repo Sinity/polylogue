@@ -16,12 +16,12 @@ fn database(w: &ClaudeHome, rows: u32) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_first_build_captures_a_database_whole_in_its_pass() {
+fn a_pass_captures_a_database_while_serving_files() {
     let w = ClaudeHome::new();
     database(&w, 3000);
     w.append("live.jsonl", &user("u1", "live", "beside the capture"));
     let (mut engine, _lock) = w.engine(64 << 20);
-    let first = engine.run_turn().unwrap();
+    let first = engine.run_pass().unwrap();
     assert!(!first.capture_pending, "{first:?}");
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(w.texts("live"), ["beside the capture"]);
@@ -32,11 +32,10 @@ fn a_first_build_captures_a_database_whole_in_its_pass() {
 }
 
 #[test]
-fn ordinary_inputs_are_serviced_between_database_capture_turns() {
+fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     let w = ClaudeHome::new();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
     let (mut engine, _lock) = w.engine(64 << 20);
-    // A first build captures whole; later passes capture in turns.
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let db = database(&w, 3000);
     let first = engine.run_turn().unwrap();
@@ -45,7 +44,6 @@ fn ordinary_inputs_are_serviced_between_database_capture_turns() {
     assert_eq!(w.texts("live"), ["before capture"]);
     w.append("live.jsonl", &user("u2", "live", "during capture"));
     let second = engine.run_turn().unwrap();
-    assert!(second.capture_pending);
     assert!(second.errors.is_empty());
     assert_eq!(w.texts("live"), ["before capture", "during capture"]);
     // The active batch is independent of later discovery results.
@@ -57,12 +55,10 @@ fn ordinary_inputs_are_serviced_between_database_capture_turns() {
         w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
         1
     );
-    let out = fs::read_dir(w.root.join("exports/codex-database"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("state_5.sqlite.jsonl"))
-        .find(|path| path.is_file())
-        .unwrap();
-    assert_eq!(fs::read_to_string(out).unwrap().lines().count(), 3001);
+    let reader = w.reads();
+    let rows = reader.reader().unwrap().query("SELECT count(*) AS n FROM tool_row", &[]).unwrap();
+    assert_eq!(rows[0]["n"], 3000);
+    assert!(!w.root.join("exports").exists());
 }
 
 /// With no change reported and no rescan due, only the loop's own
@@ -102,7 +98,6 @@ fn daemon_continues_capture_without_a_watcher_event() {
     thread.join().unwrap().unwrap();
     assert!(finished.passes >= 1, "{finished:?}");
     assert_eq!(finished.full_scans, 1);
-    assert_eq!(finished.last_pass.inputs_seen, 1, "{finished:?}");
     assert!(finished.last_pass.errors.is_empty(), "{finished:?}");
     assert!(!finished.last_pass.capture_pending, "{finished:?}");
     assert_eq!(

@@ -72,12 +72,24 @@ pub struct ParseStep {
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
     pub(crate) prepared: PreparedRows,
+    pub(crate) comparison: Option<crate::tool_databases::Comparison>,
+    pub(crate) comparison_only: bool,
 }
 
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
+    /// Row-dump comparison state, committed without changing the origin's
+    /// parse position. Domain parsing reads these stored bytes separately.
+    pub fn comparison(update: crate::tool_databases::Comparison) -> Self {
+        let mut step = Self::new(Output::default(), RecordCounts::default(), 0..0, false);
+        step.comparison = Some(update);
+        step.comparison_only = true;
+        step.reset = false;
+        step
+    }
+
     /// An unprepared parse over this byte range. A range beginning at zero
     /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(
@@ -96,6 +108,8 @@ impl ParseStep {
             parsed_upto: range.end,
             at_end,
             prepared: PreparedRows::default(),
+            comparison: None,
+            comparison_only: false,
         }
     }
 }

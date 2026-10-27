@@ -128,13 +128,17 @@ impl WriterQueue {
     }
 
     fn send(&self, message: Msg) -> std::result::Result<(), ()> {
-        self.bulk
+        let counted = matches!(&message,Msg::StoreGroup(..) | Msg::Batch(..));
+        if counted { crate::timing::queue(crate::timing::Queue::Writer,1); }
+        let result = self.bulk
             .lock()
             .map_err(|_| ())?
             .as_ref()
             .ok_or(())?
             .send(message)
-            .map_err(|_| ())
+            .map_err(|_| ());
+        if result.is_err() && counted { crate::timing::queue(crate::timing::Queue::Writer,-1); }
+        result
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
@@ -474,11 +478,18 @@ impl WriterSender {
         group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<hashed_blobs::Store>,
     ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
+        self.enqueue_group(group, store)?.recv().map_err(|_| StoreError::WriterGone)
+    }
+
+    /// Queue a group; parsing can continue while the writer commits it.
+    pub fn enqueue_group(
+        &self,
+        group: Vec<crate::staging::PreparedBatch>,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
         let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::StoreGroup(group, store, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)
+        self.0.send(Msg::StoreGroup(group, store, reply)).map_err(|_| StoreError::WriterGone)?;
+        Ok(wait)
     }
 
     pub fn send(&self, batch: Batch) -> Result<()> {
@@ -596,6 +607,7 @@ impl Inner {
                     Err(_) => break,
                 }
             };
+            let _busy = crate::timing::enter(crate::timing::Stage::Writer);
             self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
@@ -612,6 +624,7 @@ impl Inner {
                         false
                     }
                     Msg::StoreGroup(items, store, reply) => {
+                        crate::timing::queue(crate::timing::Queue::Writer,-1);
                         for item in &items {
                             *rows += weight(&item.batch);
                             *bytes += input_bytes(&item.batch);
@@ -637,6 +650,7 @@ impl Inner {
                     }
                     Msg::Wake => false,
                     Msg::Batch(b) => {
+                        crate::timing::queue(crate::timing::Queue::Writer,-1);
                         *rows += weight(&b);
                         *bytes += input_bytes(&b);
                         group.push(b);
