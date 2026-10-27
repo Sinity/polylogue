@@ -273,21 +273,21 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     return error("bad_request", "expression is required for query");
                 };
                 super::query::with_ranking(&reader, &d.warm, |embeddings, _near| {
-                super::query::explain(
-                    &reader,
-                    super::query::Ask {
-                        text,
-                        cursor: None,
-                        page_size: None,
-                        why: false,
-                        session,
-                        now: now_ms(),
-                        day: None,
-                        embeddings,
-                        near: None,
-                        fields: &[],
-                    },
-                )
+                    super::query::explain(
+                        &reader,
+                        super::query::Ask {
+                            text,
+                            cursor: None,
+                            page_size: None,
+                            why: false,
+                            session,
+                            now: now_ms(),
+                            day: None,
+                            embeddings,
+                            near: None,
+                            fields: &[],
+                        },
+                    )
                 })
             } else {
                 crate::explain::answer(
@@ -342,8 +342,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             model,
             cursor,
             page_size,
-        } => {
-            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+        } => super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
             match super::calendar::cost(
                 &reader,
                 super::calendar::Cost {
@@ -367,8 +366,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                     detail: f.detail,
                 },
             }
-            })
-        }
+        }),
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),
@@ -419,29 +417,29 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 return Response::Ok { data };
             }
             super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: cursor.as_deref(),
-                page_size,
-                why,
-                session,
-                now: now_ms(),
-                day: None,
-                embeddings,
-                near: Some(near),
-                fields: &fields,
-            };
-            match super::query::run(&reader, ask) {
-                Ok(data) => {
-                    d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                    Response::Ok { data }
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                    why,
+                    session,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &fields,
+                };
+                match super::query::run(&reader, ask) {
+                    Ok(data) => {
+                        d.warm.keep_answer(key, position, cursor.is_none(), &data);
+                        Response::Ok { data }
+                    }
+                    Err(f) => Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    },
                 }
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
-            }
             })
         }
         Request::Complete { word } => {
@@ -576,23 +574,29 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             name,
         } => {
             let kept = super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: None,
-                page_size: None,
-                why: false,
-                session: None,
-                now: now_ms(),
-                day: None,
-                embeddings,
-                near: Some(near),
-                fields: &[],
-            };
-            super::query::keep(&reader, ask)
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: None,
+                    page_size: None,
+                    why: false,
+                    session: None,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &[],
+                };
+                super::query::keep(&reader, ask)
             });
             let kept = match kept {
                 Ok(k) => k,
-                Err(f) => return Response::Error { kind: f.kind, message: f.message, detail: f.detail },
+                Err(f) => {
+                    return Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    };
+                }
             };
             drop(reader);
             let read_at = serde_json::json!({ "now": kept["now"] }).to_string();

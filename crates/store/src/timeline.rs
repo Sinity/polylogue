@@ -29,21 +29,30 @@ fn bind(params: &mut Vec<SqlValue>, value: SqlValue) -> String {
 fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
     if let Some(responses) = selection.responses {
         let (condition, values) = responses.condition();
-        let mut params = values.into_iter().map(|value| match value {
-            rusqlite::types::Value::Integer(n) => SqlValue::Int(n),
-            rusqlite::types::Value::Text(s) => SqlValue::Text(s),
-            _ => unreachable!("measure selection uses integers and text"),
-        }).collect::<Vec<_>>();
+        let mut params = values
+            .into_iter()
+            .map(|value| match value {
+                rusqlite::types::Value::Integer(n) => SqlValue::Int(n),
+                rusqlite::types::Value::Text(s) => SqlValue::Text(s),
+                _ => unreachable!("measure selection uses integers and text"),
+            })
+            .collect::<Vec<_>>();
         let mut condition = format!("{} AND {condition}", crate::measure::RESPONSE_ROWS);
         if selection.unknown_model {
             condition.push_str(" AND m.model IS NULL");
         }
         if let Some(model) = selection.model {
-            condition.push_str(&format!(" AND m.model = {}", bind(&mut params, SqlValue::Text(model.to_owned()))));
+            condition.push_str(&format!(
+                " AND m.model = {}",
+                bind(&mut params, SqlValue::Text(model.to_owned()))
+            ));
         }
-        return (vec![format!(
-            "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m JOIN session s ON s.pk=m.session_pk WHERE {condition}"
-        )], params);
+        return (
+            vec![format!(
+                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m JOIN session s ON s.pk=m.session_pk WHERE {condition}"
+            )],
+            params,
+        );
     }
     (vec![
         "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m JOIN session s ON s.pk=m.session_pk WHERE 1".into(),
@@ -70,13 +79,27 @@ fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> R
         let (table, field) = column.rsplit_once('.').unwrap();
         let mut since = jiff::Timestamp::MIN.as_millisecond();
         loop {
-            let rows = reader.query(&format!("SELECT min({field}) AS at FROM {table} WHERE {field} >= ?1 AND {field} < ?2"), &[SqlValue::Int(since), SqlValue::Int(day.day(through).1)])?;
-            let Some(at) = rows.first().and_then(|row| row["at"].as_i64()) else { break };
+            let rows = reader.query(
+                &format!(
+                    "SELECT min({field}) AS at FROM {table} WHERE {field} >= ?1 AND {field} < ?2"
+                ),
+                &[SqlValue::Int(since), SqlValue::Int(day.day(through).1)],
+            )?;
+            let Some(at) = rows.first().and_then(|row| row["at"].as_i64()) else {
+                break;
+            };
             let year = day.date_of(at).year();
             years.insert(year);
-            let Some(next) = year.checked_add(1).and_then(|y| jiff::civil::Date::new(y, 1, 1).ok()) else { break };
+            let Some(next) = year
+                .checked_add(1)
+                .and_then(|y| jiff::civil::Date::new(y, 1, 1).ok())
+            else {
+                break;
+            };
             let next = day.start_of(next);
-            if next <= since || next <= at { break }
+            if next <= since || next <= at {
+                break;
+            }
             since = next;
         }
     }
@@ -93,34 +116,57 @@ fn rows(
 ) -> Result<Vec<Value>> {
     let (sources, params) = sources(selection);
     let mut found = Vec::new();
-    for source in sources {
+    for (index, source) in sources.into_iter().enumerate() {
+        let kind = ["message", "event", "note"][index];
         let mut params = params.clone();
         // The subquery is flattened, so its time conditions and order use the
         // source's (at, id) index before the session join and page limit.
         let mut conditions = vec![representable("at", undated)];
         if let Some((since, until)) = bounds {
-            conditions.push(format!("at >= {} AND at < {}", bind(&mut params, SqlValue::Int(since)), bind(&mut params, SqlValue::Int(until))));
+            conditions.push(format!(
+                "at >= {} AND at < {}",
+                bind(&mut params, SqlValue::Int(since)),
+                bind(&mut params, SqlValue::Int(until))
+            ));
         }
         if let Some(after) = after {
             if undated {
                 if after.undated {
-                    conditions.push(format!("(kind,id) > ({},{})", bind(&mut params, SqlValue::Text(after.kind.clone())), bind(&mut params, SqlValue::Text(after.id.clone()))));
+                    match kind.cmp(after.kind.as_str()) {
+                        std::cmp::Ordering::Less => continue,
+                        std::cmp::Ordering::Equal => conditions.push(format!("id > {}", bind(&mut params, SqlValue::Text(after.id.clone())))),
+                        std::cmp::Ordering::Greater => {},
+                    }
                 }
             } else if after.undated {
                 continue;
             } else {
-                // The at bound lets SQLite seek even when kinds differ.
                 let at = bind(&mut params, after.at.map_or(SqlValue::Null, SqlValue::Int));
-                conditions.push(format!("at >= {at} AND (at,kind,id) > ({at},{},{})", bind(&mut params, SqlValue::Text(after.kind.clone())), bind(&mut params, SqlValue::Text(after.id.clone()))));
+                conditions.push(match kind.cmp(after.kind.as_str()) {
+                    std::cmp::Ordering::Equal => format!("(at,id) > ({at},{})", bind(&mut params, SqlValue::Text(after.id.clone()))),
+                    std::cmp::Ordering::Less => format!("at > {at}"),
+                    std::cmp::Ordering::Greater => format!("at >= {at}"),
+                });
             }
         }
         let order = if undated { "kind,id" } else { "at,id" };
         let limit = bind(&mut params, SqlValue::Int(limit));
-        found.extend(reader.query(&format!("SELECT * FROM ({source}) WHERE {} ORDER BY {order} LIMIT {limit}", conditions.join(" AND ")), &params)?);
+        found.extend(reader.query(
+            &format!(
+                "SELECT * FROM ({source}) WHERE {} ORDER BY {order} LIMIT {limit}",
+                conditions.join(" AND ")
+            ),
+            &params,
+        )?);
     }
     found.sort_by(|a, b| {
-        let time = if undated { std::cmp::Ordering::Equal } else { a["at"].as_i64().cmp(&b["at"].as_i64()) };
-        time.then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str())).then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+        let time = if undated {
+            std::cmp::Ordering::Equal
+        } else {
+            a["at"].as_i64().cmp(&b["at"].as_i64())
+        };
+        time.then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
     });
     found.truncate(limit as usize);
     Ok(found)
@@ -135,43 +181,90 @@ pub fn page(
     after: Option<&Position>,
     size: u64,
 ) -> Result<Value> {
-    let limit = i64::try_from(size.checked_add(1).ok_or_else(|| crate::StoreError::Invalid("page size exceeds i64".into()))?).map_err(|_| crate::StoreError::Invalid("page size exceeds i64".into()))?;
+    let limit = i64::try_from(
+        size.checked_add(1)
+            .ok_or_else(|| crate::StoreError::Invalid("page size exceeds i64".into()))?,
+    )
+    .map_err(|_| crate::StoreError::Invalid("page size exceeds i64".into()))?;
     let mut found = Vec::new();
     if !selection.undated && !after.is_some_and(|p| p.undated) {
         let ranges = match selection.date {
-            Some(date) if selection.across_years => years(reader, day, date)?.into_iter().filter_map(|year| jiff::civil::Date::new(year, date.month(), date.day()).ok()).map(|date| Some(day.day(date))).collect(),
+            Some(date) if selection.across_years => years(reader, day, date)?
+                .into_iter()
+                .filter_map(|year| jiff::civil::Date::new(year, date.month(), date.day()).ok())
+                .map(|date| Some(day.day(date)))
+                .collect(),
             Some(date) => vec![Some(day.day(date))],
             None => vec![None],
         };
         for bounds in ranges {
-            found.extend(rows(reader, selection, bounds, after, limit - found.len() as i64, false)?);
-            if found.len() >= limit as usize { break }
+            found.extend(rows(
+                reader,
+                selection,
+                bounds,
+                after,
+                limit - found.len() as i64,
+                false,
+            )?);
+            if found.len() >= limit as usize {
+                break;
+            }
         }
     }
     let dated = found.len();
-    if found.len() < limit as usize && (selection.undated || (selection.responses.is_some() && selection.date.is_none())) {
-        found.extend(rows(reader, selection, None, after, limit - found.len() as i64, true)?);
+    if found.len() < limit as usize
+        && (selection.undated || (selection.responses.is_some() && selection.date.is_none()))
+    {
+        found.extend(rows(
+            reader,
+            selection,
+            None,
+            after,
+            limit - found.len() as i64,
+            true,
+        )?);
     }
     for (i, row) in found.iter_mut().enumerate() {
-        row["date"] = if i < dated { json!(day.day_label(row["at"].as_i64().unwrap())) } else { Value::Null };
+        row["date"] = if i < dated {
+            json!(day.day_label(row["at"].as_i64().unwrap()))
+        } else {
+            Value::Null
+        };
         row.as_object_mut().unwrap().remove("cost_nusd");
     }
     let more = found.len() as u64 > size;
-    if more { found.pop(); }
-    let next = if more { found.last().map(|row| json!({"undated":row["date"].is_null(),"at":row["at"],"kind":row["kind"],"id":row["id"]})) } else { None };
+    if more {
+        found.pop();
+    }
+    let next = if more {
+        found.last().map(|row| json!({"undated":row["date"].is_null(),"at":row["at"],"kind":row["kind"],"id":row["id"]}))
+    } else {
+        None
+    };
     Ok(json!({"rows":found,"after":next}))
 }
 
 /// A single calendar month. Each source is bounded before date conversion.
-pub fn calendar(reader: &Reader<'_>, day: &LogicalDay, date: jiff::civil::Date) -> Result<Vec<Value>> {
+pub fn calendar(
+    reader: &Reader<'_>,
+    day: &LogicalDay,
+    date: jiff::civil::Date,
+) -> Result<Vec<Value>> {
     dates(reader, day)?;
     let (since, until) = day.month(date);
-    if until <= since { return Err(crate::StoreError::Invalid("calendar month has no representable interval".into())); }
-    reader.query("SELECT pl_timeline_date(at) AS date,count(*) AS records FROM (
+    if until <= since {
+        return Err(crate::StoreError::Invalid(
+            "calendar month has no representable interval".into(),
+        ));
+    }
+    reader.query(
+        "SELECT pl_timeline_date(at) AS date,count(*) AS records FROM (
         SELECT at FROM message WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT at FROM event WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT created_at AS at FROM a.note WHERE created_at >= ?1 AND created_at < ?2
-    ) GROUP BY date ORDER BY date", &[SqlValue::Int(since), SqlValue::Int(until)])
+    ) GROUP BY date ORDER BY date",
+        &[SqlValue::Int(since), SqlValue::Int(until)],
+    )
 }
 
 fn dates(reader: &Reader<'_>, day: &LogicalDay) -> Result<()> {

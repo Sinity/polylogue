@@ -67,8 +67,17 @@ pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
 /// Uses the configured provider and warm vectors for every query client.
-pub(crate) fn with_ranking<T>(reader: &Reader<'_>, warm: &super::warm::Warm, run: impl FnOnce(bool, &NearFn<'_>) -> T) -> T {
-    let provider = crate::embeddings::Provider::from_settings(reader, &polylogue_store::user_writes::machine_id()).ok().flatten();
+pub(crate) fn with_ranking<T>(
+    reader: &Reader<'_>,
+    warm: &super::warm::Warm,
+    run: impl FnOnce(bool, &NearFn<'_>) -> T,
+) -> T {
+    let provider = crate::embeddings::Provider::from_settings(
+        reader,
+        &polylogue_store::user_writes::machine_id(),
+    )
+    .ok()
+    .flatten();
     let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
     let near = |text: &str| match &provider {
         Some(provider) => warm.similarity(reader, provider, text),
@@ -77,11 +86,24 @@ pub(crate) fn with_ranking<T>(reader: &Reader<'_>, warm: &super::warm::Warm, run
     run(available, &near)
 }
 
-fn with_similarity<T>(reader: &Reader<'_>, program: &Program, near: Option<&NearFn<'_>>, read: impl FnOnce() -> Result<T, Failure>) -> Result<T, Failure> {
+fn with_similarity<T>(
+    reader: &Reader<'_>,
+    program: &Program,
+    near: Option<&NearFn<'_>>,
+    read: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, Failure> {
     match &program.near {
         Some(request) => {
-            let near = near.ok_or_else(|| Failure { kind: "embed".into(), message: "semantic search unavailable".into(), detail: None })?;
-            let similarity = near(&request.text).map_err(|message| Failure { kind: "embed".into(), message, detail: None })?;
+            let near = near.ok_or_else(|| Failure {
+                kind: "embed".into(),
+                message: "semantic search unavailable".into(),
+                detail: None,
+            })?;
+            let similarity = near(&request.text).map_err(|message| Failure {
+                kind: "embed".into(),
+                message,
+                detail: None,
+            })?;
             reader.with_similarity(similarity, read)
         }
         None => read(),
@@ -248,7 +270,9 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     opts.page_size = None;
     let program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    let mut rows = with_similarity(reader, &program, ask.near, || Ok(reader.query(&program.sql, &values(&program.params))?))?;
+    let mut rows = with_similarity(reader, &program, ask.near, || {
+        Ok(reader.query(&program.sql, &values(&program.params))?)
+    })?;
     for row in &mut rows {
         present(&program, row)?;
     }
@@ -265,7 +289,9 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;
-        let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query(&m.sql, &values(&m.params))?))?;
+        let mut matches = with_similarity(reader, &m, ask.near, || {
+            Ok(reader.query(&m.sql, &values(&m.params))?)
+        })?;
         for row in &mut matches {
             present(&m, row)?;
         }
@@ -294,7 +320,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
         .transpose()?;
     let day = opts.clock.day.clone();
-    with_similarity(reader, &program, ask.near, || answer(reader, &program, &day, after, seed, question, ask.why))
+    with_similarity(reader, &program, ask.near, || {
+        answer(reader, &program, &day, after, seed, question, ask.why)
+    })
 }
 
 /// The answer to a compiled program: its count and one page after `after`.

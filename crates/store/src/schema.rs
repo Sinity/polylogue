@@ -70,7 +70,7 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
         v if v == INDEX_VERSION => {
             conn.execute_batch(READ_INDEXES)?;
             Ok(())
-        },
+        }
         found => Err(StoreError::IndexVersion {
             found,
             wanted: INDEX_VERSION,
@@ -167,7 +167,8 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
     let found = shape(conn)?;
     Ok(found.iter().all(|item| expected.contains(item))
         && expected.iter().all(|item| {
-            (item.0 == "index" && matches!(item.1.as_str(), "message_at" | "event_at")) || found.contains(item)
+            (item.0 == "index" && matches!(item.1.as_str(), "message_at" | "event_at"))
+                || found.contains(item)
         }))
 }
 

@@ -175,34 +175,90 @@ mod measurements;
 fn mixed_kinds_and_models_page_once_across_equal_times_and_undated_records() {
     let temp = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(temp.path()).unwrap();
-    let session = f.session(SessionFacts { id: "codex:ties", kind: "main", ..Default::default() }).unwrap();
+    let session = f
+        .session(SessionFacts {
+            id: "codex:ties",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
     let time = at("2024-03-31T12:00:00Z");
-    for (id, timestamp) in [("codex:a",Some(time)),("codex:b",Some(time)),("codex:no-time",None),("codex:bad-time",Some(i64::MIN))] { add(&mut f,session,id,timestamp); }
-    f.event(session,"synthetic",Some(time)).unwrap();
-    f.message(session,MessageFacts {id:"codex:no-model",at:Some(time),role:"assistant",written_by:"model",..Default::default()}).unwrap();
-    let pool=f.reads().unwrap();
-    let r=pool.reader().unwrap();
-    let day=LogicalDay::named("UTC",240).unwrap();
-    let collect=|selection:&Selection<'_>| {
-        let mut after=None;
-        let mut ids=Vec::new();
+    for (id, timestamp) in [
+        ("codex:a", Some(time)),
+        ("codex:b", Some(time)),
+        ("codex:no-time", None),
+        ("codex:bad-time", Some(i64::MIN)),
+    ] {
+        add(&mut f, session, id, timestamp);
+    }
+    f.event(session, "synthetic", Some(time)).unwrap();
+    f.message(
+        session,
+        MessageFacts {
+            id: "codex:no-model",
+            at: Some(time),
+            role: "assistant",
+            written_by: "model",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let day = LogicalDay::named("UTC", 240).unwrap();
+    let collect = |selection: &Selection<'_>| {
+        let mut after = None;
+        let mut ids = Vec::new();
         loop {
-            let result=page(&r,&day,selection,after.as_ref(),1).unwrap();
-            ids.extend(result["rows"].as_array().unwrap().iter().map(|row|row["id"].as_str().unwrap().to_owned()));
-            after=result.get("after").filter(|p|!p.is_null()).map(|p|serde_json::from_value(p.clone()).unwrap());
-            if after.is_none(){break}
+            let result = page(&r, &day, selection, after.as_ref(), 1).unwrap();
+            ids.extend(
+                result["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| row["id"].as_str().unwrap().to_owned()),
+            );
+            after = result
+                .get("after")
+                .filter(|p| !p.is_null())
+                .map(|p| serde_json::from_value(p.clone()).unwrap());
+            if after.is_none() {
+                break;
+            }
         }
         ids
     };
-    let mixed=collect(&all(Some("2024-03-31".parse().unwrap()),false,false));
-    assert_eq!(mixed.len(),4);
+    let mixed = collect(&all(Some("2024-03-31".parse().unwrap()), false, false));
+    assert_eq!(mixed.len(), 4);
     assert!(mixed[0].starts_with("event:"));
-    assert_eq!(&mixed[1..], &["codex:a","codex:b","codex:no-model"]);
-    let usage=crate::measure::Selection::default();
-    let responses=Selection{responses:Some(&usage),..all(None,false,false)};
-    assert_eq!(collect(&responses),["codex:a","codex:b","codex:no-model","codex:bad-time","codex:no-time"]);
-    let model=Selection{model:Some("synthetic"),..responses};
-    assert_eq!(collect(&model),["codex:a","codex:b","codex:bad-time","codex:no-time"]);
-    let unknown=Selection{unknown_model:true,model:None,..model};
-    assert_eq!(collect(&unknown),["codex:no-model"]);
+    assert_eq!(&mixed[1..], &["codex:a", "codex:b", "codex:no-model"]);
+    let usage = crate::measure::Selection::default();
+    let responses = Selection {
+        responses: Some(&usage),
+        ..all(None, false, false)
+    };
+    assert_eq!(
+        collect(&responses),
+        [
+            "codex:a",
+            "codex:b",
+            "codex:no-model",
+            "codex:bad-time",
+            "codex:no-time"
+        ]
+    );
+    let model = Selection {
+        model: Some("synthetic"),
+        ..responses
+    };
+    assert_eq!(
+        collect(&model),
+        ["codex:a", "codex:b", "codex:bad-time", "codex:no-time"]
+    );
+    let unknown = Selection {
+        unknown_model: true,
+        model: None,
+        ..model
+    };
+    assert_eq!(collect(&unknown), ["codex:no-model"]);
 }
