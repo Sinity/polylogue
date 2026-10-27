@@ -75,7 +75,7 @@ fn org_read_keeps_source_directives_literal() {
         Role::User,
         Some(PromptKind::Prose),
         vec![Block::Text {
-            text: "#+end_example\n* source heading\n,comma".into(),
+            text: "#+end_example\n* source heading\n,comma\n  #+end_example\n\t,* quoted heading\n,,#+quoted\n  ,comma".into(),
         }],
     )];
     let value = crate::session(
@@ -90,7 +90,7 @@ fn org_read_keeps_source_directives_literal() {
     let content = value["content"].as_str().unwrap();
     assert!(content.starts_with("#+TITLE: Example"));
     assert!(content.contains("* user"));
-    assert!(content.contains(",#+end_example\n,* source heading\n,,comma"));
+    assert!(content.contains("#+begin_example -i\n,#+end_example\n,* source heading\n,comma\n  ,#+end_example\n\t,,* quoted heading\n,,,#+quoted\n  ,comma\n#+end_example"));
 }
 
 #[test]

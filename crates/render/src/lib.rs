@@ -515,13 +515,16 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
 
 /// Source text stays literal even when it contains Org headings or directives.
 fn org_example(text: &str, out: &mut dyn Write) -> io::Result<()> {
-    writeln!(out, "#+begin_example")?;
+    writeln!(out, "#+begin_example -i")?;
     for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('*') || trimmed.starts_with("#+") || trimmed.starts_with(',') {
-            write!(out, ",")?;
+        let content = line.trim_start_matches([' ', '\t']);
+        let prefix = content.trim_start_matches(',');
+        if prefix.starts_with('*') || prefix.starts_with("#+") {
+            let indentation = &line[..line.len() - content.len()];
+            writeln!(out, "{indentation},{content}")?;
+        } else {
+            writeln!(out, "{line}")?;
         }
-        writeln!(out, "{line}")?;
     }
     writeln!(out, "#+end_example\n")
 }
