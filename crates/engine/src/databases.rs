@@ -1,7 +1,7 @@
 //! Tool-database reads run independently of file discovery and parsing.
 //! Only the writer's bounded byte queue applies backpressure to a reader.
 use crate::*;
-use polylogue_store::tool_databases::{SavedDatabase, ExportError, Exporter};
+use polylogue_store::tool_databases::{ExportError, Exporter, SavedDatabase};
 use polylogue_store::{Batch, ParseStep, staging::PreparedBatch};
 use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, sync_channel};
@@ -264,7 +264,10 @@ impl<'a> InputWriter<'a> {
             new_blob,
             blobs: vec![],
             length: self.length,
-            parse: saved.map(|saved|ParseStep::database_state(self.length,saved)).into_iter().collect(),
+            parse: saved
+                .map(|saved| ParseStep::database_state(self.length, saved))
+                .into_iter()
+                .collect(),
             release: Default::default(),
         };
         self.exists = true;

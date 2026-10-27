@@ -129,14 +129,26 @@ impl Comparison {
     }
 }
 
-pub(crate) fn save_when_parsed(conn: &Connection, input: &str, chain: i64, length: u64, saved: &SavedDatabase) -> crate::Result<()> {
+pub(crate) fn save_when_parsed(
+    conn: &Connection,
+    input: &str,
+    chain: i64,
+    length: u64,
+    saved: &SavedDatabase,
+) -> crate::Result<()> {
     let parsed: Option<(i64, i64)> = conn.query_row(
         "SELECT i.pk,p.parsed_upto FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.parsed_upto>=?3",
         params![input,chain,i64::try_from(length).map_err(|_| crate::StoreError::Invalid("database state exceeds archive address space".into()))?],
         |r| Ok((r.get(0)?,r.get(1)?))
     ).optional()?;
     if let Some((pk, position)) = parsed {
-        Comparison { from: position as u64, length: position as u64, saved: Some(saved.clone()), ..Comparison::default() }.write(conn,pk)?;
+        Comparison {
+            from: position as u64,
+            length: position as u64,
+            saved: Some(saved.clone()),
+            ..Comparison::default()
+        }
+        .write(conn, pk)?;
     }
     Ok(())
 }

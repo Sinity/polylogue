@@ -184,14 +184,21 @@ impl Engine {
         let mut deferred_database = false;
         if capture_due && !self.exporter.pending() {
             deferred_database = self.databases.keys().any(|path| {
-                !self.refused.contains(path) && self.inputs.get(path).is_some_and(|state| state.stored > 0 && (!state.parsed || state.parsed_upto < state.stored))
+                !self.refused.contains(path)
+                    && self.inputs.get(path).is_some_and(|state| {
+                        state.stored > 0 && (!state.parsed || state.parsed_upto < state.stored)
+                    })
             });
             self.capture_checked = (!deferred_database).then(Instant::now);
             let databases = self
                 .databases
                 .iter()
                 .filter(|(path, _)| !self.refused.contains(*path))
-                .filter(|(path, _)| self.inputs.get(*path).is_none_or(|state| state.stored == 0 || (state.parsed && state.parsed_upto == state.stored)))
+                .filter(|(path, _)| {
+                    self.inputs.get(*path).is_none_or(|state| {
+                        state.stored == 0 || (state.parsed && state.parsed_upto == state.stored)
+                    })
+                })
                 .map(|(path, origin)| databases::DatabaseInput {
                     path: path.clone(),
                     input: InputKey {

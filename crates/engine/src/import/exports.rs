@@ -280,9 +280,13 @@ impl Engine {
         parse.reset = reset;
         if done && plan.origin.capture == polylogue_sources::Capture::RowDump {
             let pool::Bytes::Stored(chain) = &plan.source else {
-                return Err(std::io::Error::other("a row dump must be stored before comparison").into());
+                return Err(
+                    std::io::Error::other("a row dump must be stored before comparison").into(),
+                );
             };
-            parse.compare_reader(std::io::BufReader::new(chain.reader(Arc::clone(&self.blobs))))?;
+            parse.compare_reader(std::io::BufReader::new(
+                chain.reader(Arc::clone(&self.blobs)),
+            ))?;
             pass.bytes_read += plan.size;
         }
         parse.prepare();

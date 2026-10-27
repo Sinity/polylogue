@@ -1260,14 +1260,21 @@ impl Inner {
             if let Some(chain) = chain {
                 for p in &b.parse {
                     if let Some(saved) = &p.database_state {
-                        self.database_states.insert(b.input.id.clone(), (chain, p.parsed_upto, saved.clone()));
+                        self.database_states
+                            .insert(b.input.id.clone(), (chain, p.parsed_upto, saved.clone()));
                     }
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
                 }
                 if let Some((saved_chain, length, saved)) = self.database_states.get(&b.input.id)
                     && *saved_chain == chain
                 {
-                    crate::tool_databases::save_when_parsed(&itx, &b.input.id, chain, *length, saved)?;
+                    crate::tool_databases::save_when_parsed(
+                        &itx,
+                        &b.input.id,
+                        chain,
+                        *length,
+                        saved,
+                    )?;
                 }
             }
             stats.0 += 1;

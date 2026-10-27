@@ -47,52 +47,51 @@ impl Test {
         let observation = &self.observation;
         let writer = &self.writer;
         let mut length = self.length;
-        let result = exporter.export(
-            &self.db,
-            archive,
-            input,
-            observation,
-            |bytes, saved| {
-                let first = length == 0;
-                let from = length;
-                length += bytes.len() as u64;
-                let mut parse = ParseStep::new(polylogue_model::Output::default(), polylogue_model::RecordCounts::default(), from..length, true);
-                parse.compare_records(&bytes)?;
-                parse.comparison.as_mut().unwrap().saved = saved;
-                let (new_blob, files) = if bytes.is_empty() {
-                    (None, vec![])
+        let result = exporter.export(&self.db, archive, input, observation, |bytes, saved| {
+            let first = length == 0;
+            let from = length;
+            length += bytes.len() as u64;
+            let mut parse = ParseStep::new(
+                polylogue_model::Output::default(),
+                polylogue_model::RecordCounts::default(),
+                from..length,
+                true,
+            );
+            parse.compare_records(&bytes)?;
+            parse.comparison.as_mut().unwrap().saved = saved;
+            let (new_blob, files) = if bytes.is_empty() {
+                (None, vec![])
+            } else {
+                let (blob, file) = archive.prepare_blob(&bytes)?;
+                (Some(blob), file.into_iter().collect())
+            };
+            let batch = Batch {
+                input: input.clone(),
+                change: if first {
+                    Change::First
+                } else if new_blob.is_some() {
+                    Change::Appended {
+                        from: length - bytes.len() as u64,
+                    }
                 } else {
-                    let (blob, file) = archive.prepare_blob(&bytes)?;
-                    (Some(blob), file.into_iter().collect())
-                };
-                let batch = Batch {
-                    input: input.clone(),
-                    change: if first {
-                        Change::First
-                    } else if new_blob.is_some() {
-                        Change::Appended {
-                            from: length - bytes.len() as u64,
-                        }
-                    } else {
-                        Change::Unchanged
-                    },
-                    observation: Some(observation.clone()),
-                    continues: false,
-                    new_blob,
-                    blobs: vec![],
-                    length,
-                    parse: vec![parse],
-                    release: Default::default(),
-                };
-                for done in writer.sender()?.store_group(
-                    vec![PreparedBatch { batch, files }],
-                    std::sync::Arc::clone(&blobs),
-                )? {
-                    done?;
-                }
-                Ok(())
-            },
-        );
+                    Change::Unchanged
+                },
+                observation: Some(observation.clone()),
+                continues: false,
+                new_blob,
+                blobs: vec![],
+                length,
+                parse: vec![parse],
+                release: Default::default(),
+            };
+            for done in writer.sender()?.store_group(
+                vec![PreparedBatch { batch, files }],
+                std::sync::Arc::clone(&blobs),
+            )? {
+                done?;
+            }
+            Ok(())
+        });
         self.length = length;
         result
     }

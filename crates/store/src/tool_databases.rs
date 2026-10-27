@@ -14,8 +14,8 @@ use std::{
 };
 
 mod catalog;
-pub use catalog::{Comparison, SavedDatabase};
 pub(crate) use catalog::save_when_parsed;
+pub use catalog::{Comparison, SavedDatabase};
 
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 const CURSOR_EXPORT: Duration = Duration::from_secs(180);
