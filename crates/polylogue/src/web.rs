@@ -481,17 +481,7 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
             detail,
         } => {
             // A browser request's refusal names its own status.
-            let named = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or(match kind.as_str() {
-                "not_found" => StatusCode::NOT_FOUND,
-                "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
-                "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-                "not_built" => StatusCode::NOT_IMPLEMENTED,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            let status = error_status(&kind, &detail);
             let message = access::scrub(&message, &web.daemon.archive.root);
             (
                 status,
@@ -503,6 +493,21 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .into_response()
         }
     }
+}
+
+/// Private HTML and JSON preserve the same typed failure status.
+pub(crate) fn error_status(kind: &str, detail: &Option<serde_json::Value>) -> StatusCode {
+    let named = detail
+        .as_ref()
+        .and_then(|d| d["http_status"].as_u64())
+        .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
+    named.unwrap_or(match kind {
+        "not_found" => StatusCode::NOT_FOUND,
+        "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
+        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
+        "not_built" => StatusCode::NOT_IMPLEMENTED,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    })
 }
 
 async fn timeline_css() -> HttpResponse {
