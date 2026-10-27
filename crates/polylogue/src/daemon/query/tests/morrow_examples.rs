@@ -142,7 +142,12 @@ fn group_key(r: &Value) -> String {
 
 /// Compares one example's result with its expected value; `Err` says how
 /// they differ.
-fn compare(reader: &Reader<'_>, number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(), String> {
+fn compare(
+    reader: &Reader<'_>,
+    number: &str,
+    got: &Result<Value, Failure>,
+    want: &Value,
+) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
             let _ = f;
@@ -168,19 +173,31 @@ fn compare(reader: &Reader<'_>, number: &str, got: &Result<Value, Failure>, want
         ),
         Value::Array(items) if number == "31" => {
             use polylogue_model::{Block, Target};
-            let mut got: Vec<_> = rows(v).iter().map(|note| {
-                json!([note["value"], note["target"]]).to_string()
-            }).collect();
+            let mut got: Vec<_> = rows(v)
+                .iter()
+                .map(|note| json!([note["value"], note["target"]]).to_string())
+                .collect();
             let mut wanted = Vec::new();
             for item in items {
-                let number = item[1].as_str().unwrap().strip_prefix('#').unwrap()
-                    .parse::<u8>().unwrap();
+                let number = item[1]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix('#')
+                    .unwrap()
+                    .parse::<u8>()
+                    .unwrap();
                 let prompt = item[2].as_str().unwrap();
-                let message = reader.messages(&polylogue_testkit::session(number), false)
-                    .map_err(|error| error.to_string())?.into_iter().find(|message| {
-                        message.blocks.iter().any(|block| matches!(block,
-                            Block::Text { text } if text == prompt))
-                    }).ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
+                let message = reader
+                    .messages(&polylogue_testkit::session(number), false)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|message| {
+                        message.blocks.iter().any(|block| {
+                            matches!(block,
+                            Block::Text { text } if text == prompt)
+                        })
+                    })
+                    .ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
                 wanted.push(json!([item[0], Target::Message(message.id).to_string()]).to_string());
             }
             got.sort();
