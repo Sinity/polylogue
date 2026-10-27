@@ -17,14 +17,20 @@ fn in_ignores_unknown_group_values_and_keeps_unknown_left_values_unknown() {
     let w = morrow();
     let set = "sessions where origin:codex | group by cwd";
     // Both Codex sessions have an unknown cwd. Known cwd values are not members.
-    assert_eq!(q(&w, &format!("sessions where kind:* cwd in ({set})"))["count"], 0);
+    assert_eq!(
+        q(&w, &format!("sessions where kind:* cwd in ({set})"))["count"],
+        0
+    );
     assert_eq!(
         ids(&q(&w, &format!("sessions where kind:* NOT cwd in ({set})"))),
         ["#4", "#2", "#1"]
     );
     let empty = "sessions where origin:codex repo:absent | group by cwd";
     assert_eq!(
-        ids(&q(&w, &format!("sessions where kind:* NOT cwd in ({empty})"))),
+        ids(&q(
+            &w,
+            &format!("sessions where kind:* NOT cwd in ({empty})")
+        )),
         ["#4", "#2", "#1"]
     );
 }
@@ -48,7 +54,6 @@ fn a_scoped_query_keeps_the_session_selection_and_discards_its_ranking() {
         assert_eq!(row_ids(&answer), row_ids(&selected), "{query}");
     }
 }
-
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
@@ -74,4 +79,13 @@ proptest::proptest! {
             }
         }
     }
+}
+
+#[test]
+fn membership_refuses_group_values_of_another_type() {
+    let w = morrow();
+    let query = "sessions where cwd in (sessions | group by cost)";
+    let error = run_q(&w, ask(query)).unwrap_err();
+    assert_eq!(error.kind, "invalid_query");
+    assert!(error.message.contains("same type"), "{}", error.message);
 }

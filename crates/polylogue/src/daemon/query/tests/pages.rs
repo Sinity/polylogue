@@ -574,13 +574,13 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
 #[test]
 fn pages_of_relative_times_keep_the_first_pages_clock() {
     let w = morrow();
-    // 2026-10-07 23:00 UTC.
-    let first_now = OCT1 + 6 * DAY + 11 * 3_600_000;
+    // 2026-10-02 23:00 UTC.
+    let first_now = OCT1 + DAY + 11 * 3_600_000;
     for text in [
         "since:7d",
         "messages where since:3d",
-        "today",
-        "yesterday",
+        "messages where at:today",
+        "messages where at:yesterday",
         "tool_calls where since:7d",
     ] {
         let mut whole = ask(text);
