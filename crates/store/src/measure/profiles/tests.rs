@@ -600,3 +600,61 @@ fn profiles_include_repositories_from_every_recorded_working_directory() {
     assert_eq!(facets.global.families["repositories"]["root-one"], 1);
     assert_eq!(facets.global.families["repositories"]["root-two"], 1);
 }
+
+#[test]
+fn incomplete_parents_keep_own_profile_usage_and_explain_missing_totals() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for id in ["claude-code:parent", "claude-code:child"] {
+        let pk = f
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        f.message(
+            pk,
+            MessageFacts {
+                id: &format!("{id}-reply"),
+                role: "assistant",
+                written_by: "model",
+                text: Some("A recorded reply"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    f.link(
+        "claude-code:parent",
+        "claude-code:child",
+        "continuation",
+        "fork",
+    )
+    .unwrap();
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = reader.session_profiles(&Selection::default()).unwrap();
+    let child = rows
+        .iter()
+        .find(|p| p.session == "claude-code:child")
+        .unwrap();
+    assert_eq!(child.facts.message_count, 1);
+    let usage = child.usage.as_ref().unwrap();
+    assert_eq!(usage.own.known_response_messages, 1);
+    assert!(usage.with_parents.is_none());
+    assert!(!usage.parents.complete);
+    assert!(matches!(
+        &usage.parents.issues[..],
+        [crate::read::ParentIssue::MissingAnchor { .. }]
+    ));
+    let parent = rows
+        .iter()
+        .find(|p| p.session == "claude-code:parent")
+        .unwrap();
+    assert!(parent.usage.as_ref().unwrap().with_parents.is_some());
+    assert!(matches!(
+        super::super::sessions(&reader, &Selection::default()),
+        Err(crate::StoreError::IncompleteParents(_))
+    ));
+}

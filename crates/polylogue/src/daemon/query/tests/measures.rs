@@ -18,6 +18,12 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
             .unwrap()
             < all["data"]["global"]["total_sessions"].as_u64().unwrap()
     );
+    let all_profiles = q(&archive, "sessions | measure profiles");
+    assert!(all_profiles["data"].as_array().unwrap().iter().any(
+        |p| p["usage"]["parents"]["complete"] == false
+            && p["usage"]["with_parents"].is_null()
+            && p["usage"]["own"].is_object()
+    ));
     let profiles = q(
         &archive,
         "sessions where workflow_shape:chat | measure profiles",
