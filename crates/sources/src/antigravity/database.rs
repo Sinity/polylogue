@@ -21,13 +21,17 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 pub fn open(path: &Path) -> Option<Parse> {
     Some(Parse::Export(Box::new(Database {
-        file: path.file_stem()?.to_string_lossy().into_owned(),
+        file: Path::new(path.file_name()?.to_str()?.strip_suffix(".jsonl")?)
+            .file_stem()?
+            .to_string_lossy()
+            .into_owned(),
         ..Default::default()
     })))
 }
 #[derive(Default)]
 pub struct Database {
     file: String,
+    unnamed: String,
     meta: BTreeMap<String, Json>,
     aliases: BTreeMap<String, String>,
     valid: bool,
@@ -91,6 +95,7 @@ impl ExportParser for Database {
         self.calls = 0;
         let mut seen = std::collections::HashSet::new();
         let mut references = BTreeMap::new();
+        let mut summaries = BTreeMap::new();
         let stats = lines(reader, |_, v, _| {
             if let Some(schema) = v.get("schema") {
                 self.valid = schema["trajectory_meta"]
@@ -100,17 +105,20 @@ impl ExportParser for Database {
                         tokens(s, &["idx", "step_type", "step_format", "step_payload"])
                     });
             }
-            if v["gone"] != true {
-                if let Some(key) = key(v) {
-                    if !seen.insert(key.clone()) {
-                        self.superseded += 1;
-                    }
-                    if v["t"] == "trajectory_meta" {
-                        self.meta.insert(key.clone(), v["r"].clone());
-                    }
-                    if v["t"] == "parent_references" {
-                        references.insert(key, v["r"].clone());
-                    }
+            if v["gone"] != true
+                && let Some(key) = key(v)
+            {
+                if !seen.insert(key.clone()) {
+                    self.superseded += 1;
+                }
+                if v["t"] == "trajectory_meta" {
+                    self.meta.insert(key.clone(), v["r"].clone());
+                }
+                if v["t"] == "parent_references" {
+                    references.insert(key.clone(), v["r"].clone());
+                }
+                if v["t"] == "conversation_summaries" {
+                    summaries.insert(key, v["r"].clone());
                 }
             }
             Ok(())
@@ -129,10 +137,27 @@ impl ExportParser for Database {
                 "multiple Antigravity trajectories have no stable identity".into(),
             ));
         }
+        let reserved: BTreeSet<String> = self
+            .meta
+            .values()
+            .flat_map(|row| [str_of(row, "trajectory_id"), str_of(row, "cascade_id")])
+            .flatten()
+            .chain(summaries.values().filter_map(summary_id))
+            .map(str::to_owned)
+            .collect();
+        self.unnamed = self.file.clone();
+        if reserved.contains(&self.unnamed) {
+            self.unnamed = format!("{}:trajectory", self.file);
+            let mut number = 0_u64;
+            while reserved.contains(&self.unnamed) {
+                number += 1;
+                self.unnamed = format!("{}:trajectory:{number}", self.file);
+            }
+        }
         for row in self.meta.values() {
             let native = str_of(row, "trajectory_id")
                 .or_else(|| str_of(row, "cascade_id"))
-                .unwrap_or(&self.file)
+                .unwrap_or(&self.unnamed)
                 .to_owned();
             for alias in [str_of(row, "trajectory_id"), str_of(row, "cascade_id")]
                 .into_iter()
@@ -150,15 +175,15 @@ impl ExportParser for Database {
             }
         }
         for row in references.values() {
-            if let Some(child) = self.native(row) {
-                if let Some(parent) = parent_id(row) {
-                    let parent = self
-                        .aliases
-                        .get(parent)
-                        .map_or(parent, String::as_str)
-                        .to_owned();
-                    self.parents.entry(child).or_default().insert(parent);
-                }
+            if let Some(child) = self.native(row)
+                && let Some(parent) = parent_id(row)
+            {
+                let parent = self
+                    .aliases
+                    .get(parent)
+                    .map_or(parent, String::as_str)
+                    .to_owned();
+                self.parents.entry(child).or_default().insert(parent);
             }
         }
         reader
@@ -204,7 +229,7 @@ impl ExportParser for Database {
         }
         let mut output = Output::default();
         if self.meta.is_empty() {
-            let sid = session_id(ORIGIN, &self.file).ok_or("invalid Antigravity file name")?;
+            let sid = session_id(ORIGIN, &self.unnamed).ok_or("invalid Antigravity file name")?;
             output
                 .sessions
                 .push(Session::new(sid.clone(), SessionKind::Main));
@@ -245,7 +270,7 @@ impl ExportParser for Database {
             "trajectory_meta" => {
                 let native = str_of(row, "trajectory_id")
                     .or_else(|| str_of(row, "cascade_id"))
-                    .unwrap_or(&self.file);
+                    .unwrap_or(&self.unnamed);
                 let sid = session_id(ORIGIN, native).ok_or("invalid trajectory identity")?;
                 sink.out
                     .sessions
@@ -253,6 +278,12 @@ impl ExportParser for Database {
                 event(sink.out, Some(sid), "antigravity_trajectory", row.clone());
             }
             "conversation_summaries" => {
+                let native = summary_id(row);
+                let matched = native.and_then(|id| self.aliases.get(id));
+                let sid = matched
+                    .map(String::as_str)
+                    .or(native)
+                    .and_then(|native| session_id(ORIGIN, native));
                 if let Some(sid) = &sid {
                     let mut session = Session::new(sid.clone(), SessionKind::Main);
                     if let Some(title) = ["title", "name", "summary"]
@@ -266,28 +297,30 @@ impl ExportParser for Database {
                 event(
                     sink.out,
                     sid,
-                    "antigravity_conversation_summary",
+                    if matched.is_some() {
+                        "antigravity_conversation_summary"
+                    } else {
+                        "antigravity_unmatched_summary"
+                    },
                     row.clone(),
                 );
             }
             "parent_references" => {
-                if let Some(child) = &sid {
-                    if let Some(parents) = self
+                if let Some(child) = &sid
+                    && let Some(parents) = self
                         .parents
                         .get(child.native().as_str())
                         .filter(|p| p.len() == 1)
-                    {
-                        if let Some(parent) = parents.first().and_then(|p| session_id(ORIGIN, p)) {
-                            sink.out.links.push(Link {
-                                kind: LinkKind::Parent,
-                                parent,
-                                child: child.clone(),
-                                at: None,
-                                call_id: None,
-                                evidence: "parent_references".into(),
-                            });
-                        }
-                    }
+                    && let Some(parent) = parents.first().and_then(|p| session_id(ORIGIN, p))
+                {
+                    sink.out.links.push(Link {
+                        kind: LinkKind::Parent,
+                        parent,
+                        child: child.clone(),
+                        at: None,
+                        call_id: None,
+                        evidence: "parent_references".into(),
+                    });
                 }
                 event(sink.out, sid, "antigravity_parent_reference", row.clone());
             }
@@ -467,11 +500,11 @@ impl Database {
                 Some(
                     str_of(r, "trajectory_id")
                         .or_else(|| str_of(r, "cascade_id"))
-                        .unwrap_or(&self.file)
+                        .unwrap_or(&self.unnamed)
                         .into(),
                 )
             }
-            None if self.meta.is_empty() => Some(self.file.clone()),
+            None if self.meta.is_empty() => Some(self.unnamed.clone()),
             _ => None,
         }
     }
@@ -549,6 +582,12 @@ static PAYLOAD_FIELDS: Fields = Fields::new(&[
     ("user_modified", Rule::Kept("native edit input")),
     ("userModified", Rule::Kept("native edit input")),
 ]);
+
+fn summary_id(row: &Json) -> Option<&str> {
+    ["cascade_id", "trajectory_id", "id"]
+        .iter()
+        .find_map(|key| str_of(row, key))
+}
 
 fn parent_id(row: &Json) -> Option<&str> {
     [
