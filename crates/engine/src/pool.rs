@@ -310,7 +310,10 @@ fn flush(
     acknowledge: &Sender<PendingGroup>,
 ) -> bool {
     let mut waiting = std::mem::take(&mut group.waiting);
-    let queued: Vec<bool> = waiting.iter().map(|(batch, _, _)| batch.is_some()).collect();
+    let queued: Vec<bool> = waiting
+        .iter()
+        .map(|(batch, _, _)| batch.is_some())
+        .collect();
     let mut batches = Vec::new();
     for (batch, _, size) in &mut waiting {
         if let Some(mut batch) = batch.take() {
@@ -325,7 +328,13 @@ fn flush(
     let results = writer.enqueue_group(batches, Arc::clone(store));
     group.bytes = 0;
     let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
-    acknowledge.send(PendingGroup { results, waiting, queued }).is_ok()
+    acknowledge
+        .send(PendingGroup {
+            results,
+            waiting,
+            queued,
+        })
+        .is_ok()
 }
 
 fn run(
