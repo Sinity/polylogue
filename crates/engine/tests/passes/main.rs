@@ -13,6 +13,7 @@ use std::path::Path;
 mod excision_selected;
 mod export_round_trip;
 mod large_sessions;
+mod hook_events;
 mod live_first;
 mod older_chains;
 mod tool_captures;

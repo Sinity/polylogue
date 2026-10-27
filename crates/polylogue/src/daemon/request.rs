@@ -79,6 +79,12 @@ pub enum Request {
         provider: String,
         ids: Vec<String>,
     },
+    /// The files of a web chat's conversation whose bytes the archive
+    /// holds, so the extension does not download them again.
+    StoredFiles {
+        provider: String,
+        conversation: String,
+    },
     Status,
     /// Completions for one word of a query being typed.
     Complete {
@@ -294,7 +300,8 @@ impl Request {
             | Self::ChatAction { .. }
             | Self::ChatAttachment { .. }
             | Self::BackfillJobs
-            | Self::Conversations { .. } => true,
+            | Self::Conversations { .. }
+            | Self::StoredFiles { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),

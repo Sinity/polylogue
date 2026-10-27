@@ -102,6 +102,8 @@ pub struct AiStudio {
 struct PromptState {
     metadata: Option<Json>,
     model: Option<String>,
+    usable: bool,
+    chunks: u64,
     previous: Option<polylogue_model::MessageId>,
     pending_call: Option<String>,
     ambiguous_calls: bool,
@@ -185,10 +187,23 @@ impl ExportParser for AiStudio {
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.state = PromptState::default();
+        let mut usable = false;
+        let sid = session_id(ORIGIN, &self.native)
+            .ok_or_else(|| ScanError::Callback("unusable file name".into()))?;
         let (metadata, stats) =
             crate::export::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
+                if !usable {
+                    let chunk: Json = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+                    let mut output = Output::default();
+                    let mut records = Records::default();
+                    let mut sink = Sink::new(&mut output, &mut records);
+                    usable = self.message(&sid, 0, &chunk, &mut sink).is_ok();
+                }
                 item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
+        self.state = PromptState::default();
+        self.state.usable = usable;
+        self.state.chunks = stats.elements;
         self.state.metadata = Some(metadata);
         Ok(stats)
     }
@@ -217,7 +232,17 @@ impl ExportParser for AiStudio {
                 session.offer_title(title, TitleSource::FileName);
             }
             sink.out.sessions.push(session);
-            sink.records.record("prompt", &RecordOutcome::Used);
+            let outcome = if !doc
+                .pointer("/chunkedPrompt/chunks")
+                .is_some_and(Json::is_array)
+            {
+                RecordOutcome::unreadable("no chunks array")
+            } else if self.state.chunks == 0 {
+                RecordOutcome::skipped("empty chunks array")
+            } else {
+                RecordOutcome::Used
+            };
+            sink.records.record("prompt", &outcome);
             let settings = doc.get("runSettings").cloned().unwrap_or(Json::Null);
             self.state.model = str_of(&settings, "model")
                 .map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
@@ -239,6 +264,11 @@ impl ExportParser for AiStudio {
                 });
                 self.state.previous = Some(id);
             }
+        }
+        // Settings and system text belong to a conversation only once a
+        // usable chunk provides one. Header-only prompts remain inputs.
+        if !self.state.usable {
+            out = Output::default();
         }
         Ok(Some(crate::parse::Step {
             output: out,
@@ -262,31 +292,31 @@ impl ExportParser for AiStudio {
         self.state.position += 1;
         let kind = chunk_role(chunk).unwrap_or("?").to_owned();
         sink.records.fields(&kind, chunk, &CHUNK_FIELDS);
-        if !self.state.started
-            && let Some(at) = chunk.get("createTime").and_then(time_of)
-        {
-            let mut session = Session::new(sid.clone(), SessionKind::Main);
-            session.offer_start(at);
-            sink.out.sessions.push(session);
-            self.state.started = true;
-        }
-        if i == 0
-            && let Some(parent) = chunk
-                .pointer("/branchParent/promptId")
-                .and_then(Json::as_str)
-                .and_then(|p| session_id(ORIGIN, p))
-        {
-            sink.out.links.push(Link {
-                kind: LinkKind::Fork,
-                parent,
-                child: sid.clone(),
-                at: None,
-                call_id: None,
-                evidence: "branchParent.promptId".into(),
-            });
-        }
         match self.message(&sid, i, chunk, sink) {
             Ok(message) => {
+                if !self.state.started
+                    && let Some(at) = chunk.get("createTime").and_then(time_of)
+                {
+                    let mut session = Session::new(sid.clone(), SessionKind::Main);
+                    session.offer_start(at);
+                    sink.out.sessions.push(session);
+                    self.state.started = true;
+                }
+                if i == 0
+                    && let Some(parent) = chunk
+                        .pointer("/branchParent/promptId")
+                        .and_then(Json::as_str)
+                        .and_then(|p| session_id(ORIGIN, p))
+                {
+                    sink.out.links.push(Link {
+                        kind: LinkKind::Fork,
+                        parent,
+                        child: sid.clone(),
+                        at: None,
+                        call_id: None,
+                        evidence: "branchParent.promptId".into(),
+                    });
+                }
                 self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {

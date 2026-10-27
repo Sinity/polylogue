@@ -52,11 +52,12 @@ function chatgptPage({ fileBytes = null } = {}) {
 
 describe("a capture", () => {
   it("holds the provider's JSON whole, with the bytes of the files it names", async () => {
-    const body = captureBody({
+    const body = await captureBody({
       provider: "chatgpt", conversation: "c1", url: "https://chatgpt.com/c/c1",
       raw: new Blob([JSON.stringify(CONVERSATION)]), reason: "changed", version: "1.0",
-      files: [{ id: "file-1", message: "m1", name: "a.png", media_type: "image/png", bytes: new Uint8Array([1, 2, 3]) },
-        { id: "file-2", message: "m1", error: "gone" }],
+      files: [{ id: "file-1", message: "m1", name: "a.png", media_type: "image/png", body: new Blob([new Uint8Array([1, 2, 3])]) },
+        { id: "file-2", message: "m1", error: "gone" },
+        { id: "file-3", message: "m1", blob: "ab".repeat(32), size: 12 }],
       now: new Date("2026-10-26T00:00:00Z"),
     });
     const capture = JSON.parse(await body.text());
@@ -66,10 +67,23 @@ describe("a capture", () => {
     expect(capture.session).toMatchObject({ provider: "chatgpt", provider_session_id: "c1", session_kind: "standard" });
     expect(capture.session.attachments[0]).toMatchObject({ provider_attachment_id: "file-1", message_provider_id: "m1", content_base64: "AQID" });
     expect(capture.session.attachments[1]).toMatchObject({ provider_attachment_id: "file-2", not_fetched: "gone" });
+    expect(capture.session.attachments[2]).toMatchObject({ provider_attachment_id: "file-3", blob: "ab".repeat(32), size_bytes: 12 });
+    expect(capture.session.attachments[2].content_base64).toBeUndefined();
   });
 
-  it("is stored once the host acknowledges it, and an unchanged conversation is not stored again", async () => {
-    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false }, { id: "inline", message: "m1", inline: true }]);
+  it("holds a file larger than one base64 part byte for byte", async () => {
+    const bytes = new Uint8Array(2 * 1024 * 1024 + 5).map((_, i) => (i * 31) % 251);
+    const body = await captureBody({
+      provider: "chatgpt", conversation: "c1", url: "https://chatgpt.com/c/c1", reason: "files", version: "1.0",
+      raw: new Blob([JSON.stringify(CONVERSATION)]),
+      files: [{ id: "big", message: "m1", body: new Blob([bytes]) }],
+    });
+    const capture = JSON.parse(await body.text());
+    expect(Buffer.from(capture.session.attachments[0].content_base64, "base64").equals(Buffer.from(bytes))).toBe(true);
+  });
+
+  it("is stored before its files download, then again with their bytes; an unchanged conversation is not stored again", async () => {
+    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }, { id: "inline", message: "m1", inline: true }]);
     const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
     const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
@@ -79,15 +93,109 @@ describe("a capture", () => {
     expect(host.stored).toHaveLength(1);
     const capture = JSON.parse(host.stored[0]);
     expect(capture.session.attachments.map((a) => a.provider_attachment_id)).toEqual(["file-1"]);
-    expect(capture.session.attachments[0].content_base64).toBe("CQk=");
+    expect(capture.session.attachments[0]).toMatchObject({ not_fetched: "downloading" });
+
+    await extension.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+    const withFiles = JSON.parse(host.stored[1]);
+    expect(withFiles.provenance.reason).toBe("files");
+    expect(withFiles.raw_provider_payload).toEqual(capture.raw_provider_payload);
+    expect(withFiles.session.attachments[0].content_base64).toBe("CQk=");
     expect(page.asked.filter((r) => r.type === "file")).toHaveLength(1);
     expect(await extension.outbox.count()).toBe(0);
 
     expect((await extension.captureTab(1, "changed")).outcome).toBe("unchanged");
-    expect(host.stored).toHaveLength(1);
+    expect(host.stored).toHaveLength(2);
     const state = await extension.pageState(await chrome.tabs.get(1));
     expect(state).toMatchObject({ provider: "chatgpt", conversation: "c1", state: "archived", messages: 1 });
     expect(state.last.outcome).toBe("unchanged");
+  });
+
+  it("names a file the archive holds by its hash instead of downloading it again", async () => {
+    const hash = "cd".repeat(32);
+    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: { blob: hash, size: 2 } }]);
+    const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    await extension.capturer.downloads();
+    expect(page.asked.filter((r) => r.type === "file")).toHaveLength(0);
+    expect(host.stored).toHaveLength(1);
+    expect(JSON.parse(host.stored[0]).session.attachments[0]).toMatchObject({ provider_attachment_id: "file-1", blob: hash, size_bytes: 2 });
+  });
+
+  it("downloads the files again after a restart cut their download off", async () => {
+    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
+    let hang = true;
+    const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
+    const answer = (request) => (request.type === "file" && hang ? new Promise(() => {}) : page.answer(request));
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const before = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
+    expect(host.stored).toHaveLength(1);
+
+    hang = false;
+    const restarted = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
+    await restarted.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+    expect(JSON.parse(host.stored[1]).session.attachments[0].content_base64).toBe("CQk=");
+    // Once they are in, an unchanged conversation is left alone again.
+    expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
+    await restarted.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+  });
+
+  it("keeps the newest conversation and its new files when it changes during a download", async () => {
+    const files = [{ id: "first", message: "m1", inline: false }];
+    const host = storingHost(files);
+    const original = chatgptPage();
+    let release;
+    let downloading;
+    const started = new Promise((resolve) => { downloading = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    let changed = false;
+    const asked = [];
+    const answer = async (request) => {
+      if (request.type === "file") {
+        asked.push(request.file.id);
+        if (request.file.id === "first") { downloading(); await held; }
+        return { status: 200, body: new Blob([request.file.id]) };
+      }
+      const reply = await original.answer(request);
+      if (changed && request.type === "conversation") {
+        reply.body = new Blob([JSON.stringify({ ...CONVERSATION, title: "Newest" })]);
+      }
+      return reply;
+    };
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    await extension.captureTab(1, "changed");
+    await started;
+    changed = true;
+    files.push({ id: "second", message: "m1", inline: false });
+    await extension.captureTab(1, "changed");
+    release();
+    await extension.capturer.downloads();
+    const final = JSON.parse(host.stored.at(-1));
+    expect(final.raw_provider_payload.title).toBe("Newest");
+    expect(final.session.attachments.map((file) => file.content_base64))
+      .toEqual([btoa("first"), btoa("second")]);
+    expect(asked).toEqual(["first", "second"]);
+    expect(host.stored.map((body) => JSON.parse(body).raw_provider_payload.title))
+      .toEqual(["Synthetic", "Newest", "Newest"]);
+  });
+
+  it("stores the conversation once when none of its files can be downloaded", async () => {
+    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
+    const page = chatgptPage();
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    await extension.capturer.downloads();
+    expect(host.stored).toHaveLength(1);
+    const { problems } = await chrome.storage.session.get({ problems: [] });
+    expect(problems[0].text).toContain("could not be downloaded");
   });
 
   it("is not stored again over several cycles when the provider only reorders its JSON or adds null keys", async () => {
@@ -110,6 +218,39 @@ describe("a capture", () => {
     // A restarted extension keeps what it last captured.
     const restarted = start(chrome, { indexedDB: new IDBFactory() });
     expect((await restarted.captureTab(1, "changed")).outcome).toBe("unchanged");
+  });
+
+  it("keeps raw bytes in the outbox when file discovery and delivery are offline", async () => {
+    const host = storingHost();
+    host.routes["POST /v1/captures/files"] = () => ({ status: 503, json: { error: "offline" } });
+    host.routes["POST /v1/captures"] = () => ({ status: 503, json: { error: "offline" } });
+    const page = chatgptPage();
+    const indexedDB = new IDBFactory();
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("waiting");
+    const [waiting] = await extension.outbox.all();
+    expect(JSON.parse(await waiting.body.text()).raw_provider_payload).toEqual(CONVERSATION);
+    expect(await new (extension.outbox.constructor)(indexedDB).count()).toBe(1);
+  });
+
+  it("captures reordered text parts as changed content", async () => {
+    const host = storingHost();
+    let parts = ["first", "second"];
+    const original = chatgptPage();
+    const answer = async (request) => {
+      const reply = await original.answer(request);
+      if (request.type === "conversation") {
+        reply.body = new Blob([JSON.stringify({ ...CONVERSATION, parts })]);
+      }
+      return reply;
+    };
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    parts = ["second", "first"];
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    expect(host.stored).toHaveLength(2);
   });
 
   it("waits in the outbox while the host refuses it, and survives a restart of the extension", async () => {
@@ -168,7 +309,8 @@ describe("a capture", () => {
     const state = await extension.popup(1);
     expect(state.status.host).toBe("missing");
     expect(state.page.host).toBe("missing");
-    expect(await extension.captureTab(1, "changed")).toBeNull();
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("waiting");
+    expect(await extension.outbox.count()).toBe(1);
     const { problems } = await chrome.storage.session.get({ problems: [] });
     expect(problems[0].text).toContain("host_missing");
   });

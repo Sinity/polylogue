@@ -142,6 +142,9 @@ the same change.
   run history records it with its checkout and outcome.
 - **brief**: the session-start context for a directory; it fits its
   **budget** (`briefing.budget`, tokens).
+- **advice**: a delivery just before a command runs, given only when the
+  command is a check that failed in that checkout more than once since it
+  last passed.
 - **judgment**: the operator's `accepted` or `rejected` on one revision of
   an agent's note, itself a note of kind `judgment`.
 - **notice**: a delivery a signal rule fired; an interrupting one is also

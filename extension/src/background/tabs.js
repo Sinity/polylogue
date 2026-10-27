@@ -33,7 +33,7 @@ function once(chrome, tabId, request) {
     const appendedBytes = [];
     port.onMessage.addListener((message) => {
       if (message.type === "facts") {
-        const { type: _type, size: _size, ...rest } = message;
+        const { type: _type, ...rest } = message;
         facts = rest;
       } else if (message.type === "appended_bytes") {
         appendedBytes.push(decode(message.data));

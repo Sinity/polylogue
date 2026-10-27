@@ -13,14 +13,21 @@
 //! the hook saw (tool input, permission mode, effort, working directory)
 //! is evidence the transcript does not always hold. The session ID is
 //! the harness's own, so the events land on the same session as its
-//! transcript.
+//! transcript. A hook line never makes a session: until the transcript or
+//! an export provides it, its events wait on a placeholder that reads do
+//! not show, and a transcript a payload carries is not read.
+//!
+//! An event is one hook invocation: the line's own time (`at_ns`, taken by
+//! the hook process) and process are part of its identity, so two
+//! invocations with the same payload are two events, and storing the same
+//! file again adds none.
 
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
 use crate::parse::{Output, Parse, Parser};
 use crate::{RecordOutcome, Records};
-use polylogue_model::{Event, Json, Session, SessionKind};
+use polylogue_model::{Event, Json};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -49,7 +56,7 @@ pub fn open(path: &Path) -> Option<Parse> {
 
 pub struct HookSpool;
 
-/// Session facts already sent, so each step resends them once.
+/// Each line stands alone; nothing carries from one step to the next.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {}
 
@@ -58,10 +65,7 @@ static FIELDS: Fields = Fields::new(&[
     ("event_type", Rule::Read),
     ("event", Rule::Read),
     ("at_ns", Rule::Read),
-    (
-        "harness_pid",
-        Rule::Kept("the harness process, which the file name also carries"),
-    ),
+    ("harness_pid", Rule::Read),
     ("observed_at_ms", Rule::Read),
     ("timestamp", Rule::Read),
     ("provider", Rule::Read),
@@ -146,14 +150,17 @@ impl Parser for HookSpool {
                     .or_else(|| ns.as_u64())?;
                 polylogue_model::Timestamp::from_unix_ms((ns / 1_000_000) as i64)
             });
-        let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(cwd) = value.pointer("/payload/cwd").and_then(Json::as_str) {
-            session.offer_cwd(cwd);
-        }
-        out.sessions.push(session);
-        let mut data = value.get("payload").cloned().unwrap_or(Json::Null);
-        if let (Some(id), Json::Object(map)) = (value.get("event_id"), &mut data) {
-            map.insert("event_id".into(), id.clone());
+        let mut data = match value.get("payload") {
+            Some(Json::Object(map)) => Json::Object(map.clone()),
+            Some(Json::Null) | None => Json::Object(Default::default()),
+            Some(other) => serde_json::json!({ "payload": other }),
+        };
+        if let Json::Object(map) = &mut data {
+            for key in ["event_id", "at_ns", "harness_pid"] {
+                if let Some(v) = value.get(key) {
+                    map.insert(key.into(), v.clone());
+                }
+            }
         }
         out.events.push(Event {
             session: Some(sid),
