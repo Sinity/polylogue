@@ -237,9 +237,20 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 
 /// Written whole or not at all, so the loop never stores half a revision.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write(|file| file.write_all(bytes))
-        .map_err(std::io::Error::from)?;
+    let mut file = tempfile::NamedTempFile::new_in(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| e.error)?;
+    std::fs::File::open(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?
+    .sync_all()?;
     Ok(())
 }
 

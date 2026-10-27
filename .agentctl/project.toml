@@ -10,8 +10,7 @@ inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
-# Two builds run at once under the host cargo cap; -j8 each keeps them
-# inside their memory ceilings instead of each spawning one rustc per thread.
+# Share CPU and memory with other builds.
 CARGO_BUILD_JOBS = "8"
 # Incremental state is half of each target directory and the drive is write-bound;
 # agent builds rarely reuse it across commits.
@@ -29,7 +28,7 @@ cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
-description = "Formatting, crate boundaries and the full workspace test suite (cargo nextest)"
+description = "Formatting, boundaries, clippy, default tests and affected Sinex tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
@@ -40,7 +39,7 @@ cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.baseline]
-description = "The full suite on the master-baseline checkout; the host queues it on each new master head"
+description = "Default checks on the master baseline; the host queues it on each new master head"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
@@ -165,3 +164,25 @@ pool = "codex"
 result = "exit"
 timeout_seconds = 28800
 cache = "none"
+
+[operations.sinex_client]
+description = "Build and test the Sinex client and primary-mode application"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "sinex-client"]
+pool = "bulk"
+result = "exit"
+timeout_seconds = 1200
+scratch = "tmpfs"
+cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
+
+[operations.test_build]
+description = "Build default test binaries and save Cargo timings"
+exec = ["nix", "develop", "--command", "cargo", "build", "--locked", "--tests", "--timings"]
+pool = "bulk"
+result = "exit"
+timeout_seconds = 1200
+scratch = "nvme"
+cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
