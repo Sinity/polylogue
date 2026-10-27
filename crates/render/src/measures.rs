@@ -286,16 +286,30 @@ pub fn drift(data: &Value) -> String {
 /// Billing projections keep units apart and label estimates and missing inputs.
 pub fn outlook(data: &Value) -> String {
     if let Some(reason) = data["reason"].as_str() {
-        return format!(
-            "Cost outlook unavailable: {reason}. Configure cost.plans and choose a plan with --metric plan_name:method.\n"
-        );
+        let detail = match reason {
+            "no_cycle_anchor" => "Set cycle_anchor_day for the plan in cost.plans.",
+            "plan_name_required" => "Choose a configured plan with --metric plan_name:method.",
+            _ => "Configure cost.plans and choose a plan with --metric plan_name:method.",
+        };
+        return format!("Cost outlook unavailable: {reason}. {detail}\n");
     }
+    let billing_time = |value: &Value| {
+        value
+            .as_i64()
+            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+            .map(|t| {
+                t.to_zoned(jiff::tz::TimeZone::UTC)
+                    .strftime("%Y-%m-%d %H:%M UTC")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "unknown".into())
+    };
     let mut out = format!(
         "{} (estimate), method {}\nUTC billing window {} to {}\n",
         data["plan_name"].as_str().unwrap_or(""),
         data["projection_method"].as_str().unwrap_or(""),
-        time(&data["window"]["start"]),
-        time(&data["window"]["end"])
+        billing_time(&data["window"]["start"]),
+        billing_time(&data["window"]["end"])
     );
     if let Some(units) = data["units"].as_object() {
         for (unit, values) in units {
