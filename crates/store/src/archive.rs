@@ -164,7 +164,8 @@ impl Archive {
 
     /// Opens the archive at `root` held by Sinex (primary mode), whose
     /// store root is `store`. A missing register, or one no migration brings
-    /// to this build's tables, is rebuilt from what Sinex holds, and the index with it; there is no local blob store.
+    /// to this build's tables, is rebuilt from what Sinex holds. The index
+    /// resumes from its committed positions; there is no local blob store.
     pub fn open_primary(
         root: &Path,
         store: &Path,
@@ -188,8 +189,6 @@ impl Archive {
             }
         }
         if !archive.archive_db().exists() {
-            // The index describes the register it was built from.
-            remove_database(&archive.index_db())?;
             let building = root.join("sinex.db.building");
             remove_database(&building)?;
             let mut a = open_write(&building, cache::SETUP)?;
@@ -274,6 +273,20 @@ impl Archive {
         }
         Ok(())
     }
+}
+
+/// Removes a regenerable primary-mode register and its journal files.
+fn remove_database(path: &Path) -> Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        match fs::remove_file(&name) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Deletes every file in `dir`. Blob files are written there before they

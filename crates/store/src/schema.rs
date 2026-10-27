@@ -15,7 +15,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// The index schema and row encoding version. Incompatible indexes refuse
 /// without removing their rows.
-pub const INDEX_VERSION: u32 = 48;
+pub const INDEX_VERSION: u32 = 46;
 
 /// The steps that bring `archive.db` forward: the first takes version 1 to
 /// version 2, and so on. A change to `archive.sql` appends one step, which

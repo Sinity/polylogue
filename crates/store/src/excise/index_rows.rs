@@ -419,7 +419,7 @@ pub(super) fn remove_input(
 }
 
 /// Removes only an input's indexed rows, including its saved parse position.
-pub(super) fn remove_index_input(index: &Connection, input: &str) -> Result<()> {
+pub(super) fn remove_index_input(index: &rusqlite::Transaction<'_>, input: &str) -> Result<()> {
     crate::assets::invalidate_metadata(index, input)?;
     index.execute("DELETE FROM import_member WHERE input = ?1", [input])?;
     if let Some(pk) = input_pk(index, input)? {

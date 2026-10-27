@@ -309,7 +309,7 @@ impl Writer {
             deferred_indexes,
             derive_due: true,
             derived_version: None,
-            logs_hold_excised: false,
+            logs_hold_excised: excisions,
             search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             excisions,
