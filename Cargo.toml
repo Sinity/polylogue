@@ -60,13 +60,44 @@ unimplemented = "deny"
 
 # Tests spend most of their CPU in SQLite, JSON and the credential masker.
 # Optimizing them cuts suite CPU by about three quarters; level 1 for the
-# workspace keeps incremental rebuilds about as cheap as unoptimized ones.
+# workspace keeps rebuilds about as cheap as unoptimized ones.
 # Line tables keep backtraces readable. Full debug info made each worktree's
 # target directory 12-19 GB and every test link a heavy disk write.
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
+
+[profile.dev.package."polylogue"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-engine"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-model"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-query"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-render"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-sinex"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-sources"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-store"]
+codegen-units = 256
+
+[profile.dev.package."polylogue-testkit"]
+codegen-units = 256
+
+[profile.dev.package."xtask"]
+codegen-units = 256
