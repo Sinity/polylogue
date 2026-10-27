@@ -85,7 +85,10 @@ impl Exporter {
         let facts = DbFacts::of(db);
         let st = self.dbs.entry(db.to_owned()).or_default();
         if facts.db.is_none() {
-            *st = DbState { missing: true, ..DbState::default() };
+            *st = DbState {
+                missing: true,
+                ..DbState::default()
+            };
             return None;
         }
         let quiet = st.last_seen == Some(facts);
@@ -160,7 +163,11 @@ pub struct DatabaseRead {
 fn file_identity(path: &Path) -> Option<(u64, u64, i128)> {
     let metadata = fs::metadata(path).ok()?;
     let facts = FileFacts::of(&metadata);
-    let created = match metadata.created().ok()?.duration_since(std::time::UNIX_EPOCH) {
+    let created = match metadata
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+    {
         Ok(value) => i128::try_from(value.as_nanos()).ok()?,
         Err(error) => -i128::try_from(error.duration().as_nanos()).ok()?,
     };
@@ -454,9 +461,11 @@ fn write_export(
         },
     )?;
     saved.schema = Some(schema);
-    let unchanged_file = source_file.is_some() && file_identity(db) == source_file && DbFacts::of(db)
-        .db
-        .is_some_and(|now| now.device == facts.device && now.inode == facts.inode);
+    let unchanged_file = source_file.is_some()
+        && file_identity(db) == source_file
+        && DbFacts::of(db)
+            .db
+            .is_some_and(|now| now.device == facts.device && now.inode == facts.inode);
     saved.source_file = if unchanged_file { source_file } else { None };
     if !unchanged_file {
         saved.cursors.clear();

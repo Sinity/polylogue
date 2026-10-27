@@ -333,14 +333,16 @@ fn a_column_order_change_does_not_repeat_unchanged_named_values() {
 
 #[test]
 fn a_returned_database_verifies_rows_below_its_cursor() {
-    let mut t=Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');");
-    let mut exporter=Exporter::with_cursor(cursor);
+    let mut t = Test::new(
+        "CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');",
+    );
+    let mut exporter = Exporter::with_cursor(cursor);
     t.export(&mut exporter).unwrap();
-    let away=t.dir.path().join("away.sqlite");
-    fs::rename(&t.db,&away).unwrap();
+    let away = t.dir.path().join("away.sqlite");
+    fs::rename(&t.db, &away).unwrap();
     assert!(t.export(&mut exporter).unwrap().is_none());
     Connection::open(&away).unwrap().execute_batch("UPDATE items SET body='changed while absent' WHERE id=1; DELETE FROM items WHERE id=2;").unwrap();
-    fs::rename(away,&t.db).unwrap();
-    let done=t.export(&mut exporter).unwrap().unwrap();
-    assert_eq!((done.rows,done.gone),(1,1));
+    fs::rename(away, &t.db).unwrap();
+    let done = t.export(&mut exporter).unwrap().unwrap();
+    assert_eq!((done.rows, done.gone), (1, 1));
 }
