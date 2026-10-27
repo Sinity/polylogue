@@ -37,28 +37,63 @@ fn archive_with_notes() -> Morrow {
     let decision = {
         let pool = archive.reads();
         let reader = pool.reader().unwrap();
-        reader.messages(&session(2), false).unwrap().into_iter().find(|message| {
-            message.blocks.iter().any(|block| matches!(block,
-                Block::Text { text } if text.contains("let's use chrono, not time")))
-        }).unwrap().id
+        reader
+            .messages(&session(2), false)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block,
+                Block::Text { text } if text.contains("let's use chrono, not time"))
+                })
+            })
+            .unwrap()
+            .id
     };
-    let mut runtime = service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+    let mut runtime =
+        service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
     for (id, kind, key, value, targets) in [
-        ("morrow-project", NoteKind::Tag, Some("project:morrow"), None,
-            [1, 2, 4, 5, 6].into_iter().map(|n| Target::Session(session(n))).collect()),
-        ("morrow-research", NoteKind::Tag, Some("research"), None,
-            vec![Target::Session(session(7))]),
-        ("morrow-decision", NoteKind::Decision, None, Some("decided: chrono, not time"),
-            vec![Target::Message(decision)]),
+        (
+            "morrow-project",
+            NoteKind::Tag,
+            Some("project:morrow"),
+            None,
+            [1, 2, 4, 5, 6]
+                .into_iter()
+                .map(|n| Target::Session(session(n)))
+                .collect(),
+        ),
+        (
+            "morrow-research",
+            NoteKind::Tag,
+            Some("research"),
+            None,
+            vec![Target::Session(session(7))],
+        ),
+        (
+            "morrow-decision",
+            NoteKind::Decision,
+            None,
+            Some("decided: chrono, not time"),
+            vec![Target::Message(decision)],
+        ),
     ] {
-        let response = service::handle(Request::AddNote {
-            request_id: id.into(),
-            note: NewNote {
-                kind, key: key.map(Into::into), value: value.map(Into::into),
-                author: Author::Operator, targets, relations: vec![], revises: None,
-                valid_until: None,
+        let response = service::handle(
+            Request::AddNote {
+                request_id: id.into(),
+                note: NewNote {
+                    kind,
+                    key: key.map(Into::into),
+                    value: value.map(Into::into),
+                    author: Author::Operator,
+                    targets,
+                    relations: vec![],
+                    revises: None,
+                    valid_until: None,
+                },
             },
-        }, &runtime.daemon);
+            &runtime.daemon,
+        );
         assert!(matches!(response, Response::Ok { .. }), "{response:?}");
     }
     runtime.shutdown().unwrap();

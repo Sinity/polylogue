@@ -253,6 +253,35 @@ transports and workers, then releases the archive lock. Writes already
 accepted finish. [TestDaemon](../crates/polylogue/src/daemon/service/tests.rs)
 uses the same lifetime.
 
+## Notes and context
+
+[Notes](../crates/model/src/note.rs) represent tags, decisions, titles,
+claims, saved queries and the other authored kinds. A revision joins the
+same `first_note` family; withdrawal removes the family from current views
+without deleting its history. A note names explicit targets and its author.
+Its creation time is the write time, not the time of its target message.
+`annotate` resolves a query's targets before writing one note on the set.
+An operator judgment is a separate note accepting or rejecting one exact
+agent-note revision. [Application tests](../crates/polylogue/src/daemon/service/tests/judgments.rs)
+cover judgments and bulk annotation through the public requests.
+
+The [context scheduler](../crates/polylogue/src/briefing.rs) prepares briefs,
+takeovers and recall pages. Briefs select operator notes and accepted agent
+notes, other live agents in the directory, claimed Beads, recent work,
+unresolved failed checks and notices. Resume reports what changed since the
+last brief; compaction includes the operator's prompts verbatim. Sections
+fit the configured budget and name omitted material and how to read it.
+Recall continues by cursor. Each handoff records the exact delivered text
+rather than reconstructing it from the current archive later.
+
+[Usage](../crates/model/src/usage.rs) keeps uncached input, cached input,
+cache writes, output and reasoning separately. An absent count stays
+unknown. [Cost](../crates/store/src/derive/cost.rs) applies the compiled
+price catalog to recorded usage; independent usage observations do not
+establish complete session totals. [Measures](../crates/polylogue/src/daemon/measure.rs)
+read the selected sessions and declare their definitions in one table.
+Offline structural observation is documented in [schema-tools.md](schema-tools.md).
+
 ## Excision
 
 [Excision](excision.md) removes whole stored inputs, with the sessions,
