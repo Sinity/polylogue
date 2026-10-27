@@ -88,3 +88,20 @@ test("a generation change reaches views before replacement references", async t 
   const stop = env.watchChanges({ begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
   await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });
+
+test("an initial query failure retries without requesting a replacement feed", async t => {
+  const requests = [], errors = [];
+  const env = await environment(t, async url => {
+    requests.push(url);
+    if (requests.length === 1) return new Response("temporarily unavailable", { status: 503 });
+    if (url.startsWith("/api/v1/query")) return snapshot();
+    return batch("synthetic:1:0");
+  });
+  const stop = env.watchChanges({ error: error => errors.push(error.message) });
+  await flush(); assert.match(errors[0], /unavailable/);
+  await env.tick();
+  assert.equal(requests.filter(url => url.startsWith("/api/v1/query")).length,2);
+  assert.equal(requests.filter(url => url === "/api/v1/changes").length,0);
+  assert.equal(requests.at(-1),"/api/v1/changes?since=synthetic%3A0%3A0");
+  stop();
+});
