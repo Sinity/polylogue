@@ -14,14 +14,37 @@ pub struct Options {
     pub undated: bool,
 }
 
-pub async fn timeline(State(web): State<Arc<Web>>, Query(options): Query<Options>) -> HttpResponse {
+pub async fn timeline(
+    State(web): State<Arc<Web>>,
+    controls: Result<Query<Options>, axum::extract::rejection::QueryRejection>,
+) -> HttpResponse {
+    let Query(options) = match controls {
+        Ok(controls) => controls,
+        Err(_) => {
+            return failed(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Timeline controls could not be read.",
+            );
+        }
+    };
     show(web, options).await
 }
 pub async fn day(
     State(web): State<Arc<Web>>,
     UrlPath(date): UrlPath<String>,
-    Query(mut options): Query<Options>,
+    controls: Result<Query<Options>, axum::extract::rejection::QueryRejection>,
 ) -> HttpResponse {
+    let Query(mut options) = match controls {
+        Ok(controls) => controls,
+        Err(_) => {
+            return failed(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "Timeline controls could not be read.",
+            );
+        }
+    };
     options.date = Some(date);
     show(web, options).await
 }
@@ -39,12 +62,12 @@ async fn show(web: Arc<Web>, options: Options) -> HttpResponse {
     .await
     {
         Response::Ok { data } => page(render(&scrubbed(&web, data))),
-        Response::Error { kind, message, .. } => failed(
-            if kind == "bad_request" {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
+        Response::Error {
+            kind,
+            message,
+            detail,
+        } => failed(
+            error_status(&kind, &detail),
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
         ),
