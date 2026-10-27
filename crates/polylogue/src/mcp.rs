@@ -11,6 +11,7 @@ use polylogue_store::Archive;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
@@ -30,7 +31,10 @@ pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
 
 pub fn tools() -> Vec<Tool> {
     tool_commands()
-        .map(|c| Tool::new(c.mcp_name(), c.help, Arc::new(commands::schema(c))))
+        .map(|c| {
+            Tool::new(c.mcp_name(), c.help, Arc::new(commands::schema(c)))
+                .with_annotations(ToolAnnotations::new().read_only(!c.writes))
+        })
         .collect()
 }
 

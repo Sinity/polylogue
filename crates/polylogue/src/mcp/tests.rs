@@ -63,3 +63,25 @@ mod events;
 mod attachments;
 
 mod explain;
+
+#[test]
+fn tool_annotations_follow_the_command_table() {
+    let tools = tools();
+    for command in tool_commands() {
+        let tool = tools.iter().find(|t| t.name == command.mcp_name()).unwrap();
+        let json = serde_json::to_value(tool).unwrap();
+        assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
+    }
+    for name in ["query", "read", "status"] {
+        let tool = tools.iter().find(|t| t.name == name).unwrap();
+        assert_eq!(
+            tool.annotations.as_ref().unwrap().read_only_hint,
+            Some(true)
+        );
+    }
+    let write = tools.iter().find(|t| t.name == "note_add").unwrap();
+    assert_eq!(
+        write.annotations.as_ref().unwrap().read_only_hint,
+        Some(false)
+    );
+}
