@@ -9,7 +9,13 @@ fn antigravity_exports_and_trajectory_databases_are_read_by_the_real_loop_and_re
     fs::write(dir.join("export.json"),serde_json::to_vec(&json!({"source":"antigravity_language_server","cascadeId":"exported", "markdown":"### User Input\nMarkdown prompt\n### Planner Response\nMarkdown answer"})).unwrap()).unwrap();
     let db = dir.join("trajectory.db");
     let connection = rusqlite::Connection::open(&db).unwrap();
-    connection.execute_batch("CREATE TABLE trajectory_meta(trajectory_id TEXT,cascade_id TEXT); CREATE TABLE steps(idx INTEGER,step_type TEXT,step_format TEXT,step_payload TEXT); INSERT INTO trajectory_meta VALUES('trajectory','cascade'); INSERT INTO steps VALUES(0,'user','v1','{\"text\":\"Database prompt\"}');").unwrap();
+    connection.execute_batch("CREATE TABLE trajectory_meta(trajectory_id TEXT,cascade_id TEXT); CREATE TABLE steps(idx INTEGER,step_type TEXT,step_format TEXT,step_payload TEXT); INSERT INTO trajectory_meta VALUES('trajectory','cascade');").unwrap();
+    connection
+        .execute(
+            "INSERT INTO steps VALUES(0,'user','v1',?1)",
+            [br#"{"text":"Database prompt"}"#.as_slice()],
+        )
+        .unwrap();
     drop(connection);
     {
         let (mut engine, _lock) = w.engine(64 << 20);

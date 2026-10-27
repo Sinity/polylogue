@@ -198,31 +198,6 @@ fn none(_: &Path) -> Option<Parse> {
     None
 }
 
-macro_rules! declared {
-    ($name:literal, $arrival:ident, [$($loc:literal),*]) => {
-        declared!($name, $arrival, Root::HOME, [$($loc),*])
-    };
-    ($name:literal, $arrival:ident, $root:expr, [$($loc:literal),*]) => {
-        OriginSpec {
-            name: $name,
-            support: Support::Declared,
-            arrival: Arrival::$arrival,
-            root: $root,
-            locations: &[$($loc),*],
-            capture: Capture::Bytes,
-            recognize: never,
-            open: none,
-            resume: None,
-            bare_uuid_ids: false,
-            quota: None,
-            agent_env: &[],
-            web: None,
-            assets: None,
-            collector: None,
-        }
-    };
-}
-
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
