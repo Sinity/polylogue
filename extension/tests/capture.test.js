@@ -71,6 +71,16 @@ describe("a capture", () => {
     expect(capture.session.attachments[2].content_base64).toBeUndefined();
   });
 
+  it("encodes an empty downloaded file as present bytes", async () => {
+    const body = await captureBody({
+      provider: "chatgpt", conversation: "c1", url: "https://chatgpt.com/c/c1", reason: "files", version: "1.0",
+      files: [{ id: "empty", message: "m1", body: new Blob([]) }],
+    });
+    const capture = JSON.parse(await body.text());
+    expect(capture.session.attachments[0].content_base64).toBe("");
+    expect(capture.session.attachments[0].not_fetched).toBeUndefined();
+  });
+
   it("holds a file larger than one base64 part byte for byte", async () => {
     const bytes = new Uint8Array(2 * 1024 * 1024 + 5).map((_, i) => (i * 31) % 251);
     const body = await captureBody({
