@@ -137,13 +137,23 @@ impl<'a> Compiler<'a> {
         let program = self.other_query(query, Unit::Sessions, span.start)?;
         let (expr, kind) = self.expr(field, scope, span.start)?;
         scalar(kind, field, span.start)?;
+        let grouped = &program.columns[0];
+        if grouped.kind != kind {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "`{field} in (…)` compares fields of the same type; {} has a different type",
+                    grouped.name
+                ),
+                position: span.start,
+            });
+        }
         let expr = match kind {
             ColKind::Money => format!("({expr}) / 1e9"),
             _ => expr,
         };
         let key = &program.columns[0].name;
         Ok(format!(
-            "({expr}) IN (SELECT \"{key}\" FROM ({}))",
+            "CASE WHEN ({expr}) IS NULL THEN NULL ELSE ({expr}) IN (SELECT \"{key}\" FROM ({}) WHERE \"{key}\" IS NOT NULL) END",
             program.sql
         ))
     }
