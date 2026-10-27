@@ -1,11 +1,23 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
+// Unit tests need this crate's Engine rather than the testkit's dependency.
+fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
+    let mut config = Config::from_env();
+    config.home = home.home.clone();
+    config.tool_dirs.clear();
+    config.workers = 3;
+    config.machine = "test-machine".into();
+    config.host = "test".into();
+    let (archive, lock) = Archive::open_or_create(&home.root).unwrap();
+    (Engine::new(config, archive).unwrap(), lock)
+}
+
 #[test]
 fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
     let home = ClaudeHome::new();
     home.append("first.jsonl", &claude_user("one", "first", "first"));
-    let (mut engine, _lock) = home.engine(64 << 20);
+    let (mut engine, _lock) = open_engine(&home);
     assert_eq!(engine.run_pass().unwrap().full_scans, 1);
     home.append("changed.jsonl", &claude_user("two", "changed", "changed"));
     home.append("missed.jsonl", &claude_user("three", "missed", "missed"));
@@ -31,7 +43,7 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let source = rusqlite::Connection::open(&db).unwrap();
     source.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE kept(id INTEGER PRIMARY KEY,n INTEGER); INSERT INTO kept VALUES(1,0);").unwrap();
-    let (mut engine, _lock) = home.engine(64 << 20);
+    let (mut engine, _lock) = open_engine(&home);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.config.live_every = Duration::from_secs(3600);
     let out = engine.capture_outputs().pop().unwrap().path;

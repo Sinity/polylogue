@@ -44,8 +44,11 @@ fn produce(dir: &Path, seconds: u64) {
         // Separate the two event bursts so unrelated file wakes cannot make
         // a continuously updated database appear quiet.
         std::thread::sleep(Duration::from_millis(250));
-        db.execute("UPDATE kept_rows SET n=?1 WHERE id=1", [n])
-            .unwrap();
+        db.execute(
+            "UPDATE kept_rows SET n=?1 WHERE id=1",
+            [i64::try_from(n).expect("measurement ordinal fits SQLite INTEGER")],
+        )
+        .unwrap();
         fs::write(
             dir.join("producer.json"),
             json!({"rollout_bytes":written,"database_updates":n}).to_string(),
@@ -69,7 +72,7 @@ fn watch(dir: &Path, seconds: u64) {
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE kept_rows(id INTEGER PRIMARY KEY,n INTEGER,body TEXT); INSERT INTO kept_rows VALUES(1,0,printf('%0128000d',1));").unwrap();
     drop(db);
     fs::write(dir.join("home/.codex/sessions/2026/10/27/rollout-measure.jsonl"), format!("{}\n", json!({"type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000042","source":"cli"}}))).unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.join("archive")).unwrap();
+    let (archive, lock) = Archive::open_or_create(&dir.join("archive")).unwrap();
     let mut config = Config::from_env();
     config.home = dir.join("home");
     config.tool_dirs.clear();
