@@ -507,11 +507,30 @@ impl WriterSender {
         length: u64,
         reading: ChainReading,
     ) -> Result<u64> {
+        self.queue_chain(input, chain, length, reading)?
+            .recv()
+            .map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Queue a chain without waiting for its transaction to commit.
+    pub fn queue_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        reading: ChainReading,
+    ) -> Result<Receiver<Result<u64>>> {
         let (reply, wait) = sync_channel(1);
-        self.0
+        crate::timing::reading_commit_queue(1);
+        if self
+            .0
             .send(Msg::ReplaceChain(input, chain, length, reading, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+            .is_err()
+        {
+            crate::timing::reading_commit_queue(-1);
+            return Err(StoreError::WriterGone);
+        }
+        Ok(wait)
     }
 
     /// As [`Writer::user`].
@@ -715,7 +734,10 @@ impl Inner {
             }
             self.store_groups(std::mem::take(&mut file_groups));
             for (input, chain, length, reading, reply) in replacements.drain(..) {
-                let _ = reply.send(self.replace_chain(input, chain, length, reading));
+                let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
+                    self.replace_chain(input, chain, length, reading)
+                }));
+                crate::timing::reading_commit_queue(-1);
                 self.serve_users(users);
             }
             for (store, reply) in finish_writing.drain(..) {

@@ -120,9 +120,10 @@ through those links and the [asset lookup](../crates/store/src/assets.rs).
 
 Each origin declares the parser modules it uses and their versions. Their
 ordered tuple is the chain's reading version, stored with its parse progress.
-A changed tuple re-parses that chain from its stored bytes. Parsing waits in
-private scratch until complete, then retraction and replacement commit in one
-index transaction. Other chains and readers keep their committed rows while
+A changed tuple re-parses that chain from its stored bytes. Parser workers prepare chains in parallel into
+private scratch. Each finished reading queues its own retraction and replacement
+transaction, and its worker keeps parsing while the writer commits. Decoded
+blobs become durable before the replacement rows commit. Other chains and readers keep their committed rows while
 it is parsed. Derivation runs after the round; a round with many deletions
 merges the full-text indexes once. The index still rebuilds on an
 `INDEX_VERSION` or schema change.

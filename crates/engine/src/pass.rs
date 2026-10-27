@@ -551,6 +551,7 @@ impl Engine {
                 .map(|o| (o.name.to_owned(), o.reading_version()))
                 .collect::<Vec<_>>(),
         )?;
+        let mut replacements = Vec::new();
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
         let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
         let watched: HashMap<String, PathBuf> = self
@@ -594,7 +595,7 @@ impl Engine {
                         == Some(&FailedChain {
                             length: state.length,
                         });
-                    if (c.current && !c.reading_changed) || failed {
+                    if (c.current && (!c.reading_changed || st.failed.is_some())) || failed {
                         continue;
                     }
                     (path.clone(), st.origin)
@@ -609,7 +610,7 @@ impl Engine {
                 reading_state.parsed = false;
                 reading_state.parsed_upto = 0;
             }
-            let plan = self.reparse_plan(
+            let mut plan = self.reparse_plan(
                 path,
                 origin,
                 InputKey {
@@ -625,10 +626,11 @@ impl Engine {
                 facts,
                 tracked,
             );
+            if c.current && origin.arrival == polylogue_sources::Arrival::Live {
+                plan.priority = Priority::Live;
+            }
             if state.parsed && c.reading_changed {
-                if let Err(error) = self.replace_reading(plan, pass) {
-                    pass.errors.push(format!("re-parse: {error}"));
-                }
+                replacements.push(plan);
                 continue;
             }
             let round = chains_per_path.entry(plan.path.clone()).or_default();
@@ -638,6 +640,7 @@ impl Engine {
             rounds[*round].push(plan);
             *round += 1;
         }
+        self.replace_readings(replacements, pass)?;
         for round in rounds {
             self.execute(round, pass)?;
         }
@@ -654,7 +657,12 @@ impl Engine {
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if st.origin.support != Support::Parsed || st.stored == 0 || !behind {
+        if st.origin.support != Support::Parsed
+            || st.stored == 0
+            || !behind
+            || st.failed.is_some()
+            || st.failed_history.get(&chain) == Some(&FailedChain { length: st.stored })
+        {
             return Ok(None);
         }
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
@@ -773,6 +781,7 @@ impl Engine {
         let mut plans = plans;
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
+        let mut replacements = Vec::new();
         for mut plan in plans {
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
@@ -786,9 +795,7 @@ impl Engine {
                     pass.errors.push(format!("store before re-parse: {error}"));
                     continue;
                 }
-                if let Err(error) = self.replace_reading(plan, pass) {
-                    pass.errors.push(format!("re-parse: {error}"));
-                }
+                replacements.push(plan);
                 continue;
             }
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
@@ -822,6 +829,7 @@ impl Engine {
             }
         }
         self.execute_pool(ordinary, pass)?;
+        self.replace_readings(replacements, pass)?;
         self.restore_failed_writes()
     }
 

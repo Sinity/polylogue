@@ -48,7 +48,7 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
 
 /// One message's identity and packed rows, prepared together before its parsed
 /// payloads are released. The writer borrows these bytes without repacking.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
     pub(crate) body: Vec<u8>,
@@ -56,7 +56,7 @@ pub(crate) struct PreparedMessage {
 }
 
 /// Encoded content rows shared by role-bearing messages and textual documents.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
@@ -81,7 +81,7 @@ impl std::ops::DerefMut for PreparedMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
     /// The document without its blocks, packed JSON.

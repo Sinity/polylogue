@@ -308,3 +308,32 @@ fn a_same_chain_document_cannot_override_a_newer_source_time() {
         }]
     );
 }
+
+#[test]
+fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
+    let w = test_archive();
+    w.writer
+        .send(doc_batch("a", document("ordered", "older", 1000), true))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut newer = doc_batch("a", document("ordered", "newer", 2000), true);
+    newer.change = Change::Reparse { chain: 1 };
+    newer.parse[0].reset = false;
+    newer.parse[0].output.documents[0].offset = 20;
+    newer.parse[0].output.documents[0].end = 30;
+    w.writer.send(newer).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .document(&DocumentId::parse("claude-ai:ordered").unwrap())
+            .unwrap()
+            .unwrap()
+            .blocks,
+        [Block::Text {
+            text: "newer".into()
+        }]
+    );
+}

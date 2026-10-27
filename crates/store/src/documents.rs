@@ -1,9 +1,7 @@
 //! Text documents: one shown version each, with source time before arrival
 //! rank, and reads in the reader's read transaction.
 use crate::encoding::hex;
-use crate::encoding::{
-    PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,
-};
+use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -44,16 +42,6 @@ pub(crate) fn write(
         )
         .optional()?;
     if let Some(pk) = existing {
-        let prior:Option<i64>=tx.query_row("SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,source.input_pk,source.chain],|r|r.get(0)).optional()?;
-        if prior.is_some_and(|start| {
-            if source.repeats_whole_conversations {
-                (row.offset as i64) < start
-            } else {
-                (row.offset as i64) > start
-            }
-        }) {
-            return Ok(());
-        }
         let earlier:Option<(Option<i64>,i64,Vec<u8>)>=tx.query_row(
             "SELECT source_time,arrival_rank,version_hash FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
             params![pk,source.input_pk,source.chain],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -190,11 +178,17 @@ fn insert_blocks(
         .zip(&prepared.data)
         .enumerate()
     {
-        let text = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(tx, text, 1, Some(source.packed), source.first_build)
+        let text = tx
+            .prepare_cached(
+                "SELECT text_id FROM document_version_text WHERE version_hash=?1 AND idx=?2",
+            )?
+            .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
+                r.get::<_, i64>(0)
             })
-            .transpose()?;
+            .optional()?;
+        if let Some(id) = text {
+            crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
+        }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
             _ => None,

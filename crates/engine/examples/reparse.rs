@@ -58,9 +58,45 @@ fn main() {
     let load_before = fs::read_to_string("/proc/loadavg").ok();
     let started = Instant::now();
     polylogue_store::timing::reset();
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let sample = std::thread::spawn(move || {
+        let began = Instant::now();
+        let mut samples = Vec::new();
+        loop {
+            let stages: BTreeMap<_, _> = polylogue_store::timing::stage_seconds()
+                .into_iter()
+                .map(|(stage, seconds)| (stage.name(), seconds))
+                .collect();
+            let threads: Vec<_> = fs::read_dir("/proc/self/task")
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let stat = fs::read_to_string(entry.path().join("stat")).ok()?;
+                    let (name, fields) = stat.rsplit_once(") ")?;
+                    let fields: Vec<_> = fields.split_whitespace().collect();
+                    Some(
+                        json!({"thread":entry.file_name().to_str(),"name":name.split_once('(')?.1,
+                    "cpu_ticks":fields[11].parse::<u64>().ok()? + fields[12].parse::<u64>().ok()?,
+                    "io_wait_ticks":fields.get(39).and_then(|v|v.parse::<u64>().ok()),
+                    "waiting_on":fs::read_to_string(entry.path().join("wchan")).ok()}),
+                    )
+                })
+                .collect();
+            samples.push(json!({"seconds":began.elapsed().as_secs_f64(),"queues":polylogue_store::timing::reading_pipeline(),"stages":stages,"threads":threads}));
+            if stopped
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok()
+            {
+                break;
+            }
+        }
+        samples
+    });
     let pass = engine.run_pass().unwrap();
     drop(engine);
     let seconds = started.elapsed().as_secs_f64();
+    let _ = stop.send(());
+    let pipeline = sample.join().unwrap();
     let after = io();
     assert!(
         pass.errors.is_empty(),
@@ -101,6 +137,6 @@ fn main() {
         json!({"mode":mode,"workers":workers,"peak_rss_mb":peak_rss_mb,"load_before":load_before,"load_after":fs::read_to_string("/proc/loadavg").ok(),"setup_seconds":setup_seconds,"seconds":seconds,"selected":selected,
         "read_bytes":after.get("read_bytes").zip(before.get("read_bytes")).map(|(a,b)|a-b),
         "write_bytes":after.get("write_bytes").zip(before.get("write_bytes")).map(|(a,b)|a-b),
-        "pass":pass,"stages":stages,"storage":storage,"storage_error":storage_error})
+        "pass":pass,"stages":stages,"pipeline":pipeline,"reading_pipeline":polylogue_store::timing::reading_pipeline(),"storage":storage,"storage_error":storage_error})
     );
 }

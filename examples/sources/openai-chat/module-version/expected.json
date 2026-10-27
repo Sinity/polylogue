@@ -1,0 +1,59 @@
+{
+  "counts": {
+    "records": 3,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "assistant": 1,
+      "chat": 1,
+      "user": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 44,
+        "message": {
+          "blocks": [
+            {
+              "text": "Read the module",
+              "type": "text"
+            }
+          ],
+          "id": "openai-chat:chat#0",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "openai-chat:chat"
+        },
+        "offset": 1
+      },
+      {
+        "end": 97,
+        "message": {
+          "blocks": [
+            {
+              "text": "Here is the module.",
+              "type": "text"
+            }
+          ],
+          "id": "openai-chat:chat#1",
+          "parent": "openai-chat:chat#0",
+          "role": "assistant",
+          "session": "openai-chat:chat"
+        },
+        "offset": 45
+      }
+    ],
+    "sessions": [
+      {
+        "id": "openai-chat:chat",
+        "kind": "main"
+      }
+    ]
+  }
+}

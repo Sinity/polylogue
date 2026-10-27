@@ -1,0 +1,35 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "prompt": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2023-11-14T22:13:20Z",
+        "data": {
+          "display": "Explain this",
+          "project": "/work/project",
+          "sessionId": "synthetic",
+          "timestamp": 1700000000000
+        },
+        "kind": "prompt_history",
+        "range": [
+          0,
+          102
+        ],
+        "session": "claude-code:synthetic"
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": []
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "user": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 43,
+        "message": {
+          "blocks": [
+            {
+              "text": "Read the module",
+              "type": "text"
+            }
+          ],
+          "id": "grok-cli:synthetic@0",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "grok-cli:synthetic"
+        },
+        "offset": 0
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/project"
+        ],
+        "id": "grok-cli:synthetic",
+        "kind": "main"
+      }
+    ]
+  }
+}

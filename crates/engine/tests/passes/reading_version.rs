@@ -9,7 +9,7 @@ fn changed_reading_replaces_its_chains_and_the_next_pass_is_quiet() {
     );
     let (mut engine, lock) = w.engine(64);
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    let before = w.export("main").messages;
+    let before = w.export("claude-code:main").messages;
     drop(engine);
     let archive = Archive::at(&w.root);
     let (chains, bytes) = polylogue_store::fixture::older_reading(&archive, "claude-code").unwrap();
@@ -20,7 +20,7 @@ fn changed_reading_replaces_its_chains_and_the_next_pass_is_quiet() {
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert!(pass.bytes_read > 0);
-    assert_eq!(w.export("main").messages, before);
+    assert_eq!(w.export("claude-code:main").messages, before);
     let quiet = engine.run_pass().unwrap();
     assert!(quiet.errors.is_empty());
     assert_eq!(quiet.bytes_read, 0);

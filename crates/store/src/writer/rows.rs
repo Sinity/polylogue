@@ -388,6 +388,7 @@ impl RowWriter<'_, '_> {
         let m = &row.message;
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
+        let new = pk.is_none();
         if let Some(pk) = pk {
             let prior: Option<i64> = self.tx.prepare_cached(
                 "SELECT source_start FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3"
@@ -431,6 +432,14 @@ impl RowWriter<'_, '_> {
                 pk
             }
         };
+        if new {
+            self.tx.prepare_cached(
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+                 VALUES (?1,?2,?3,?4,?5,1,?6,?7,?8,?9,?10,?11,?12)"
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;
+            self.insert_blocks(pk, session_pk, m, prepared)?;
+            return Ok(true);
+        }
         self.tx.prepare_cached(
             "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
              VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?11,?12)
@@ -732,7 +741,24 @@ impl RowWriter<'_, '_> {
                 body,
                 data: data.as_deref(),
             };
-            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
+            let text_id = self
+                .tx
+                .prepare_cached(
+                    "SELECT text_id FROM message_version_text WHERE version_hash=?1 AND idx=?2",
+                )?
+                .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?;
+            self.insert_block(
+                message_pk,
+                session_pk,
+                idx as i64,
+                block,
+                stored,
+                ms(m.at),
+                text_id,
+            )?;
         }
         Ok(())
     }
@@ -745,17 +771,16 @@ impl RowWriter<'_, '_> {
         block: &Block,
         StoredBlock { body, data }: StoredBlock<'_>,
         at: Option<i64>,
+        text_id: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
             2
         } else {
             1
         };
-        let text_id = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(self.tx, text, bit, Some(self.packed), self.first_build)
-            })
-            .transpose()?;
+        if let Some(id) = text_id {
+            crate::text_rows::activate(self.tx, id, bit, self.first_build.is_some())?;
+        }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
             Block::Thinking { .. } => ("thinking", None, None),

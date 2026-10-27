@@ -4,19 +4,21 @@ use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 
 /// Private scratch, deleted on drop. Only one parsed step is decoded at a time.
 pub struct ChainReading {
-    file: BufWriter<std::fs::File>,
+    file: zstd::stream::write::Encoder<'static, BufWriter<std::fs::File>>,
     first: bool,
+    decoded: Vec<crate::staging::PreparedBatch>,
 }
 
 impl ChainReading {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            file: BufWriter::new(tempfile::tempfile()?),
+            file: zstd::stream::write::Encoder::new(BufWriter::new(tempfile::tempfile()?), 1)?,
             first: true,
+            decoded: Vec::new(),
         })
     }
 
-    /// Append before preparing a step, while its structured values are complete.
+    /// Pack a complete step on its parser thread, then write it to private scratch.
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
@@ -30,12 +32,41 @@ impl ChainReading {
         }
         step.counts.check()?;
         step.reset = self.first;
-        serde_json::to_writer(&mut self.file, step)?;
+        step.prepare();
+        let texts: Vec<_> = step.prepared.texts.iter().collect();
+        serde_json::to_writer(
+            &mut self.file,
+            &(
+                &*step,
+                &step.prepared.messages,
+                &step.prepared.documents,
+                &step.prepared.events,
+                texts,
+                step.prepared.released,
+            ),
+        )?;
         self.file.write_all(b"\n")?;
         self.first = false;
         Ok(())
     }
 }
+
+impl ChainReading {
+    /// Decoded bytes stay private until this chain is ready to commit.
+    pub fn decoded(&mut self, batch: crate::staging::PreparedBatch) {
+        self.decoded.push(batch);
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct StoredStep(
+    ParseStep,
+    Vec<PreparedMessage>,
+    Vec<PreparedDocument>,
+    Vec<(String, Vec<u8>)>,
+    Vec<([u8; 32], Vec<u8>)>,
+    bool,
+);
 
 impl Inner {
     pub(super) fn replace_chain(
@@ -55,9 +86,19 @@ impl Inner {
                 "a chain replacement must name stored bytes".into(),
             ));
         }
-        reading.file.flush()?;
-        reading.file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::new(reading.file.into_inner().map_err(|e| e.into_error())?);
+        if !reading.decoded.is_empty() {
+            let store = Arc::new(self.location.blobs()?);
+            for result in self.store_group(std::mem::take(&mut reading.decoded), store) {
+                result?;
+            }
+        }
+        let mut file = reading
+            .file
+            .finish()?
+            .into_inner()
+            .map_err(|e| e.into_error())?;
+        file.seek(SeekFrom::Start(0))?;
+        let mut reader = BufReader::new(zstd::stream::read::Decoder::new(file)?);
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -77,7 +118,15 @@ impl Inner {
         let mut written = 0;
         let mut first = true;
         while reader.read_line(&mut line)? > 0 {
-            let mut step: ParseStep = crate::encoding::read_json(line.as_bytes())?;
+            let StoredStep(mut step, messages, documents, events, texts, released) =
+                crate::encoding::read_json(line.as_bytes())?;
+            step.prepared = batch::PreparedRows {
+                messages,
+                documents,
+                events,
+                texts: texts.into_iter().collect(),
+                released,
+            };
             if first && !step.reset {
                 return Err(StoreError::Invalid(
                     "a chain replacement must start at its first record".into(),
@@ -89,7 +138,6 @@ impl Inner {
                 ));
             }
             first = false;
-            step.prepare();
             written += write_rows(
                 &tx,
                 &batch,
@@ -109,7 +157,7 @@ impl Inner {
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
-        tx.commit()?;
+        crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
         self.derive_due = true;
         self.search.wake();
         self.report.transactions += 1;

@@ -154,7 +154,9 @@ Record the pool and resource limits with the timings.
 into a task's output directory for an isolated measurement. The
 `polylogue-engine` example `reparse` compares a fresh build (`--mode fresh`)
 with a re-parse of the largest stored origin (`--mode reparse`), using the
-same `--home` and `--archive` in separate processes.
+same `--home` and `--archive` in separate processes. Its time series records
+parse, prepared-reading and commit queue depths, worker CPU ticks and busy time,
+writer stage time, sync time and each thread's wait channel once a second.
 
 A first-build report gives wall time, time per stage (pool time in
 thread-seconds, which do not add up to wall time), input bytes, physical I/O,

@@ -98,6 +98,9 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     drop(rows);
     drop(statement);
     if inputs.is_empty() {
+        if !reset {
+            return Ok(());
+        }
         let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
             r.get(0)
         })?;

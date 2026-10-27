@@ -391,6 +391,9 @@ pub(crate) fn run(
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
+                        if step.consumed == step.start && !job.at_end {
+                            continue;
+                        }
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
                                 Ok((p, file)) => {
