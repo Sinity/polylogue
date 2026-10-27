@@ -49,43 +49,40 @@ impl Databases {
             .name("polylogue-databases".into())
             .spawn(move || {
                 let mut completed = Completed::default();
-                for source in inputs {
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                        || -> Result<bool, ExportError> {
-                            let mut queue = InputWriter::new(&archive, &writer, &source)?;
-                            let done = exporter.export(
-                                &source.path,
-                                &archive,
-                                &source.input,
-                                &source.observation,
-                                |bytes, update| queue.append(bytes, update),
-                            );
-                            // A stopped scan can still have acknowledged groups. Its
-                            // next attempt compares against those committed hashes.
-                            let written = queue.finish();
-                            let changed = done?.is_some();
-                            written?;
-                            Ok(changed)
-                        },
-                    ));
+                let mut pending = Vec::new();
+                for source in &inputs {
+                    let mut queue = match InputWriter::new(&archive, &writer, source) {
+                        Ok(queue) => queue,
+                        Err(error) => {
+                            completed.errors.push(format!("read database {}: {error}",source.path.display()));
+                            continue;
+                        }
+                    };
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        exporter.export(&source.path, &archive, &source.input, &source.observation,
+                            |bytes,update|queue.append(bytes,update))
+                    }));
                     match outcome {
-                        Ok(Ok(changed)) => completed.changed |= changed,
+                        Ok(Ok(done)) => completed.changed |= done.is_some(),
                         Ok(Err(error)) => {
                             exporter.forget(&source.path);
                             completed.changed = true;
-                            completed
-                                .errors
-                                .push(format!("read database {}: {error}", source.path.display()));
+                            completed.errors.push(format!("read database {}: {error}",source.path.display()));
                         }
                         Err(_) => {
                             completed.changed = true;
-                            completed.errors.push(format!(
-                                "read database {}: worker panicked",
-                                source.path.display()
-                            ));
-                            exporter =
-                                Exporter::with_cursor(polylogue_sources::origin::table_cursor);
+                            completed.errors.push(format!("read database {}: worker panicked",source.path.display()));
+                            exporter = Exporter::with_cursor(polylogue_sources::origin::table_cursor);
                         }
+                    }
+                    // Another source can be read while these groups commit.
+                    pending.push((source,queue));
+                }
+                for (source, mut queue) in pending {
+                    if let Err(error) = queue.finish() {
+                        exporter.forget(&source.path);
+                        completed.changed = true;
+                        completed.errors.push(format!("write database {}: {error}",source.path.display()));
                     }
                 }
                 let _ = tx.send((exporter, completed));
