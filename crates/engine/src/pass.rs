@@ -182,7 +182,8 @@ impl Engine {
                 .map(|(path, origin)| databases::DatabaseInput {
                     path: path.clone(),
                     input: InputKey {
-                        id: self.location_id(path),
+                        id: self.inputs.get(path).filter(|state|state.origin.name == *origin)
+                            .map(|state|state.input_id.clone()).unwrap_or_else(||self.location_id(path)),
                         format: (*origin).into(),
                         arrival_rank: 0,
                     },

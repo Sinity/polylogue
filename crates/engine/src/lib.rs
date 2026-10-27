@@ -392,8 +392,18 @@ impl Engine {
                 self.refused.insert(PathBuf::from(path));
             }
         }
-        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        for input in &mut known {
+            if ORIGINS.iter().any(|origin|origin.name == input.format && origin.capture == Capture::RowDump)
+                && let Some((machine,path)) = reader.tool_database_source(&input.input_id, &self.blobs)?
+                && machine == self.config.machine
+            {
+                input.path = path;
+                input.facts = None;
+            }
+        }
         drop(reader);
+        self.inputs.retain(|_,state|state.origin.capture != Capture::RowDump);
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {
                 continue;

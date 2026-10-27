@@ -134,7 +134,7 @@ refresh and derivation performed once for the pass.
 
 A [tool database](../crates/store/src/tool_databases.rs) is read as row-dump
 records from one SQLite read transaction, including its WAL. Its identity is
-the machine and native file path. A separate database reader sends groups of
+the machine and native file path. The source header lets a native observation continue an existing input even when its earlier observations named a capture file. A separate database reader sends groups of
 changed records directly to the writer as an input's appended bytes, while
 file discovery and parsing continue. There is no export file. The writer
 commits the records' comparison hashes and byte position in `index.db`.

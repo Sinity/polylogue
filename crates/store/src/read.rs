@@ -351,6 +351,31 @@ impl Reader<'_> {
             .transpose()
     }
 
+    /// A row dump names its native source independently of its observations.
+    pub fn tool_database_source(
+        &self,
+        input: &str,
+        blobs: &hashed_blobs::Store,
+    ) -> Result<Option<(String, String)>> {
+        let Some(progress) = self.input_progress(input)? else { return Ok(None); };
+        let chain = self.stored_chain(input, progress.chain, progress.length)?;
+        let mut bytes = Vec::new();
+        let mut offset = 0;
+        while offset < progress.length {
+            let end = progress.length.min(offset + 4096);
+            bytes.extend(chain.read_range(blobs, offset, end)?);
+            if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else { return Ok(None); };
+                return Ok(header.get("source").and_then(|source| Some((
+                    source.get("machine")?.as_str()?.to_owned(),
+                    source.get("path")?.as_str()?.to_owned(),
+                ))));
+            }
+            offset = end;
+        }
+        Ok(None)
+    }
+
     /// The optional embeddings read connection shares this reader's slot and
     /// cannot outlive it. Only one vector guard can be held.
     pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
