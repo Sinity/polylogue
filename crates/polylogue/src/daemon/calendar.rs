@@ -248,7 +248,13 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         unknown_model,
     };
     let responses = activity(reader, &day, &selected, context, cursor, size, now)?;
-    let days = timeline::costs_by_day(reader, &day, month, &selection)?;
+    let (days, days_error) = match timeline::costs_by_day(reader, &day, month, &selection) {
+        Ok(days) => (json!(days), Value::Null),
+        Err(error) => (
+            Value::Null,
+            json!({"error":"store","message":error.to_string()}),
+        ),
+    };
     let previous_month = month
         .yesterday()
         .ok()
@@ -267,7 +273,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };
     Ok(
-        json!({"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
+        json!({"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"days_error":days_error,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
     )
 }
 
