@@ -529,3 +529,13 @@ pub fn backfill_cancel(_: &Command, v: &Values, _: &Caller) -> Built {
         id: v.text("id").unwrap_or_default(),
     })
 }
+
+pub fn explain(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::Explain {
+        subject: v.text("subject").ok_or("`subject` is required")?,
+        expression: v.text("expression"),
+        unit: v.text("unit"),
+        limit: v.integer("limit"),
+        continuation: v.text("continuation"),
+    })
+}

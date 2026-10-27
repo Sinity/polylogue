@@ -204,7 +204,7 @@ fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Op
 }
 
 /// Every origin's web chat pages, for pasted conversation URLs.
-fn chat_pages() -> Vec<polylogue_query::ChatPage> {
+pub(crate) fn chat_pages() -> Vec<polylogue_query::ChatPage> {
     polylogue_sources::origin::ORIGINS
         .iter()
         .filter_map(|o| {

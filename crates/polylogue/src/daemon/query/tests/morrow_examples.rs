@@ -35,10 +35,6 @@ const GAPS: &[(&str, &str)] = &[
         "31",
         "notes: the example's annotation notes are not written by the fixture",
     ),
-    (
-        "11",
-        "Codex is stored one message per item, so #5 and #6 have more messages than FACTS counts",
-    ),
     ("21", "seq() does not yet take search words over tool calls"),
     (
         "34",
@@ -215,6 +211,26 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
         }
         _ => Err(format!("unexpected expected value {want}")),
     }
+}
+
+#[test]
+fn codex_message_counts_include_script_commands() {
+    let archive = Morrow::build(Set::Main);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let result = run(
+        &reader,
+        ask("messages where origin:codex | group by session | count"),
+    )
+    .unwrap();
+    let counts: BTreeMap<_, _> = rows(&result)
+        .iter()
+        .map(|row| (group_key(row), row["count"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        counts,
+        BTreeMap::from([("#5".into(), 13), ("#6".into(), 10)])
+    );
 }
 
 #[test]

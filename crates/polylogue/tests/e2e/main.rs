@@ -8,3 +8,5 @@ mod browser_host;
 mod cli;
 
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
+
+mod onboarding;

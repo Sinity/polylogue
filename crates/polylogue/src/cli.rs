@@ -392,7 +392,7 @@ pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Resp
     serde_json::from_str(&reply).map_err(std::io::Error::other)
 }
 
-fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
+pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
     if json {
         println!(
             "{}",

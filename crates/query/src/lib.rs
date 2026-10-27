@@ -5,6 +5,7 @@
 
 pub mod ast;
 pub mod compile;
+pub mod explain;
 pub mod fields;
 pub mod parse;
 pub mod time;
