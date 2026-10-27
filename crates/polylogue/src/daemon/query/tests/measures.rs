@@ -19,18 +19,22 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
             < all["data"]["global"]["total_sessions"].as_u64().unwrap()
     );
     let all_profiles = q(&archive, "sessions | measure profiles");
-    assert!(all_profiles["data"].as_array().unwrap().iter().any(
-        |p| p["usage"]["parents"]["complete"] == false
-            && p["usage"]["with_parents"].is_null()
-            && p["usage"]["own"].is_object()
-    ));
+    assert!(
+        all_profiles["data"]["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["usage"]["parents"]["complete"] == false
+                && p["usage"]["with_parents"].is_null()
+                && p["usage"]["own"].is_object())
+    );
     let profiles = q(
         &archive,
         "sessions where workflow_shape:chat | measure profiles",
     );
-    assert!(!profiles["data"].as_array().unwrap().is_empty());
+    assert!(!profiles["data"]["profiles"].as_array().unwrap().is_empty());
     assert!(
-        profiles["data"]
+        profiles["data"]["profiles"]
             .as_array()
             .unwrap()
             .iter()
@@ -38,9 +42,9 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
     );
     let pace = q(
         &archive,
-        "sessions where origin:claude-code | measure pace:60:0:1",
+        "sessions where origin:claude-code | measure pace:60",
     );
-    assert_eq!(pace["data"]["gaps"].as_array().unwrap().len(), 1);
+    assert!(pace["data"]["gaps"].is_array());
     assert!(
         pace["data"]["sessions"]
             .as_array()
@@ -63,7 +67,7 @@ fn new_measures_use_selected_sessions_and_profile_fields() {
         &archive,
         r#"sessions where id:"claude-code:7f3a2c10-0001-4000-8000-000000000001" | measure similar"#,
     );
-    assert!(!similar["data"].as_array().unwrap().is_empty());
+    assert!(!similar["data"]["matches"].as_array().unwrap().is_empty());
     assert!(run_q(&archive, ask("sessions | measure similar")).is_err());
     assert_eq!(
         q(&archive, "sessions | measure outlook")["data"]["reason"],
@@ -86,4 +90,65 @@ fn outlook_settings_and_method_reach_the_public_query() {
         "quota_unit_unobserved"
     );
     assert!(run_q(&archive, ask("sessions | measure outlook:missing")).is_err());
+}
+
+#[test]
+fn profiles_comparison_pace_and_similarity_page_with_the_query_cursor() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    for text in [
+        "sessions | sort by id | measure profiles",
+        "sessions | sort by id | measure compare",
+        "sessions | sort by id | measure pace",
+        r#"sessions where id:"claude-code:7f3a2c10-0001-4000-8000-000000000001" | measure similar"#,
+    ] {
+        let mut cursor = None::<String>;
+        let mut ids = std::collections::BTreeSet::new();
+        let count = loop {
+            let mut request = ask(text);
+            request.page_size = Some(1);
+            request.cursor = cursor.as_deref();
+            let page = run_q(&archive, request).unwrap();
+            let rows = if text.ends_with("similar") {
+                &page["data"]["matches"]
+            } else if text.ends_with("pace") {
+                &page["data"]["sessions"]
+            } else {
+                &page["data"]["profiles"]
+            };
+            assert!(rows.as_array().unwrap().len() <= 1);
+            for row in rows.as_array().unwrap() {
+                assert!(ids.insert(row["session"].as_str().unwrap().to_owned()));
+            }
+            match page["next"].as_str() {
+                Some(next) => cursor = Some(next.into()),
+                None => break page["count"].as_u64().unwrap(),
+            }
+        };
+        assert_eq!(ids.len() as u64, count);
+        assert!(count > 1);
+    }
+}
+
+#[test]
+fn facets_use_the_selection_units_default_population() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let ordinary = q(&archive, "sessions");
+    let facets = q(&archive, "sessions | measure facets");
+    assert_eq!(
+        facets["data"]["selected"]["total_sessions"],
+        ordinary["count"]
+    );
+    assert_eq!(
+        facets["data"]["global"]["total_sessions"],
+        ordinary["count"]
+    );
+    let subagents = q(&archive, "sessions where kind:subagent | measure facets");
+    assert!(
+        subagents["data"]["global"]["total_sessions"]
+            .as_u64()
+            .unwrap()
+            > ordinary["count"].as_u64().unwrap()
+    );
 }

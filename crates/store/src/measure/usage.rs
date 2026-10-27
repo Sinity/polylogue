@@ -280,6 +280,10 @@ pub(super) fn with_parents(
     own: &Totals,
 ) -> Result<Totals> {
     let keys = reader.message_keys_with_parents(sid)?;
+    with_keys(reader, &keys, own)
+}
+
+pub(super) fn with_keys(reader: &Reader<'_>, keys: &[i64], own: &Totals) -> Result<Totals> {
     let list = keys
         .iter()
         .map(i64::to_string)

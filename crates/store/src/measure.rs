@@ -30,6 +30,8 @@ use crate::{Reader, Result};
 pub struct Selection {
     /// Session primary keys, from a sessions query.
     pub sessions: Option<Vec<i64>>,
+    /// The sessions unit's default population, supplied by Query for global comparisons.
+    pub population: Option<Vec<i64>>,
     /// Unix ms bounds on a message's time, `since` inclusive.
     pub since: Option<i64>,
     pub until: Option<i64>,
@@ -125,10 +127,8 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
          WHERE {cond} AND EXISTS (
            SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
-             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = hn.first_note
-                             AND later.commit_seq > hn.commit_seq)
-             AND NOT EXISTS (SELECT 1 FROM a.note_relation w
-                             WHERE w.kind = 'withdraws' AND w.other = 'note:' || hn.first_note))"
+             AND {} )",
+        polylogue_model::note_sql::live_note("hn")
     );
     let n: i64 = reader
         .conn()?

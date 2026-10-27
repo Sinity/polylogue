@@ -13,9 +13,9 @@ fn tool_time_is_separate_from_clustered_time_and_latency_needs_pairs() {
     let pool = crate::ReadPool::open(&f.archive).unwrap();
     let r = pool.reader().unwrap();
     let rows = r.session_profiles(&Selection::default()).unwrap();
-    let p = &rows[0].facts;
+    let p = &rows[0].facts.clone().unwrap();
     assert_eq!(p.tool_active_duration_ms, 720_000);
-    assert_eq!(p.engaged_duration_ms, 0);
+    assert_eq!(p.message_clustered_duration_ms, 0);
     assert_eq!(p.tool_latency.median_ms, Some(720_000));
     assert_eq!(p.tool_latency.measured_pairs, 1);
     assert_eq!(p.rule_version, RULE_VERSION);
@@ -79,12 +79,13 @@ fn zero_latency_round_trips_and_distribution_keeps_missing_sessions_apart() {
         .find(|p| p.session == "claude-code:s0")
         .unwrap();
     let restored: Facts =
-        serde_json::from_value(serde_json::to_value(&zero.facts).unwrap()).unwrap();
+        serde_json::from_value(serde_json::to_value(&zero.facts.clone().unwrap()).unwrap())
+            .unwrap();
     assert_eq!(restored.tool_latency.median_ms, Some(0));
 }
 
 #[test]
-fn topic_comes_from_authored_prose_raw_title_and_usage_are_preserved() {
+fn shared_title_comes_from_authored_prose_recorded_title_and_usage_are_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let s = f
@@ -150,18 +151,27 @@ fn topic_comes_from_authored_prose_raw_title_and_usage_are_preserved() {
     let rows = r.session_profiles(&Selection::default()).unwrap();
     let p = &rows[0];
     assert_eq!(p.title.as_deref(), Some("raw title"));
-    assert_eq!(p.facts.topic.as_deref(), Some("project: Design the parser"));
-    assert_eq!(p.facts.topic_source, "repo_plus_first_user_turn");
-    assert_eq!(p.facts.workflow_shape, "chat");
-    assert_eq!(p.facts.terminal_state, "unknown");
-    assert_eq!(p.facts.timestamp_source, "absent");
-    assert_eq!(p.facts.wall_duration_ms, None);
-    assert_eq!(p.facts.agent_response_latency.median_ms, None);
+    assert_eq!(
+        r.query(
+            "SELECT derived_title FROM session WHERE id='codex:topic'",
+            &[]
+        )
+        .unwrap()[0]["derived_title"],
+        "Design the parser"
+    );
+    assert_eq!(p.facts.clone().unwrap().workflow_shape, "chat");
+    assert_eq!(p.facts.clone().unwrap().final_observed_state, "unknown");
+    assert_eq!(p.facts.clone().unwrap().timestamp_source, "absent");
+    assert_eq!(p.facts.clone().unwrap().wall_duration_ms, None);
+    assert_eq!(
+        p.facts.clone().unwrap().agent_response_latency.median_ms,
+        None
+    );
     let expected = super::super::sessions(&r, &Selection::default())
         .unwrap()
         .remove(0);
-    assert_eq!(p.usage.as_ref().unwrap().own, expected.own);
-    assert!(p.usage.as_ref().unwrap().own.api_cost.known_usd.unwrap() > 0.0);
+    assert_eq!(p.usage.own, expected.own);
+    assert!(p.usage.own.api_cost.known_usd.unwrap() > 0.0);
     let value = serde_json::to_value(p).unwrap();
     assert_eq!(value["usage"]["own"]["tokens"]["input"]["tokens"], 40_000);
 }
@@ -189,13 +199,15 @@ fn session_only_clock_never_invents_latency_or_clustered_time() {
         .session_profiles(&Selection::default())
         .unwrap()
         .remove(0)
-        .facts;
+        .facts
+        .clone()
+        .unwrap();
     assert_eq!(p.timestamp_source, "session_timestamp_fallback");
     assert_eq!(p.first_at, Some(5_000));
     assert_eq!(p.timestamped_messages, 0);
-    assert_eq!(p.engaged_duration_ms, 0);
+    assert_eq!(p.message_clustered_duration_ms, 0);
     assert_eq!(p.tool_latency.median_ms, None);
-    assert_eq!(p.terminal_state, "question_left");
+    assert_eq!(p.final_observed_state, "question_left");
 }
 
 #[test]
@@ -222,8 +234,10 @@ fn sparse_user_messages_are_neither_clustered_nor_tool_active() {
         .session_profiles(&Selection::default())
         .unwrap()
         .remove(0)
-        .facts;
-    assert_eq!(p.engaged_duration_ms, 0);
+        .facts
+        .clone()
+        .unwrap();
+    assert_eq!(p.message_clustered_duration_ms, 0);
     assert_eq!(p.tool_active_duration_ms, 0);
     assert_eq!(p.wall_duration_ms, Some(9 * 360_000));
 }
@@ -266,8 +280,10 @@ fn structural_errors_pending_calls_and_recovery_decide_final_state() {
             .find(|p| p.session == id)
             .unwrap()
             .facts
-            .terminal_state
-            .as_str()
+            .clone()
+            .unwrap()
+            .final_observed_state
+            .to_owned()
     };
     assert_eq!(state("claude-code:error"), "error_left");
     assert_eq!(state("claude-code:recovered"), "unknown");
@@ -316,7 +332,9 @@ fn agent_and_user_response_gaps_preserve_zero() {
         .session_profiles(&Selection::default())
         .unwrap()
         .remove(0)
-        .facts;
+        .facts
+        .clone()
+        .unwrap();
     assert_eq!(p.agent_response_latency.median_ms, Some(0));
     assert_eq!(p.user_response_latency.median_ms, Some(0));
 }
@@ -368,10 +386,12 @@ fn event_clock_is_labeled_and_does_not_fabricate_turn_latency() {
         .session_profiles(&Selection::default())
         .unwrap()
         .remove(0)
-        .facts;
+        .facts
+        .clone()
+        .unwrap();
     assert_eq!(p.timestamp_source, "session_events_fallback");
     assert_eq!(p.wall_duration_ms, Some(100_000));
-    assert_eq!(p.engaged_duration_ms, 100_000);
+    assert_eq!(p.message_clustered_duration_ms, 100_000);
     assert_eq!(p.timestamped_messages, 0);
     assert_eq!(p.compaction_count, 1);
     assert_eq!(p.agent_response_latency.median_ms, None);
@@ -432,14 +452,14 @@ fn workflow_rules_preserve_precedence_and_thresholds() {
     let r = pool.reader().unwrap();
     for profile in r.session_profiles(&Selection::default()).unwrap() {
         assert_eq!(
-            profile.facts.workflow_shape,
+            profile.facts.clone().unwrap().workflow_shape,
             profile.session.strip_prefix("codex:").unwrap()
         );
     }
 }
 
 #[test]
-fn stop_reasons_are_observed_states_and_topic_prefers_substantive_prompt() {
+fn stop_reasons_are_observed_states_and_title_uses_first_prompt() {
     let mut f = WriterArchive::new();
     for (name, reason) in [("refused", "refusal"), ("truncated", "max_tokens")] {
         let first = message(
@@ -475,11 +495,11 @@ fn stop_reasons_are_observed_states_and_topic_prefers_substantive_prompt() {
     let r = pool.reader().unwrap();
     for profile in r.session_profiles(&Selection::default()).unwrap() {
         assert_eq!(
-            profile.facts.terminal_state,
+            profile.facts.clone().unwrap().final_observed_state,
             profile.session.strip_prefix("claude-code:").unwrap()
         );
-        assert_eq!(profile.facts.topic.as_deref(), Some("Design the parser"));
-        assert_eq!(profile.facts.substantive_count, 2);
+        assert_eq!(profile.title.as_deref(), Some("yes"));
+        assert_eq!(profile.facts.clone().unwrap().substantive_count, 2);
     }
 }
 
@@ -522,7 +542,7 @@ fn primary_model_uses_output_share_rather_than_input_or_first_model() {
 }
 
 #[test]
-fn title_topic_masks_before_truncation_without_rewriting_recorded_title() {
+fn profiles_use_recorded_title_without_a_second_topic() {
     let title = format!(
         "{}sk-ant-api03-{}-{}",
         "x ".repeat(55),
@@ -542,7 +562,12 @@ fn title_topic_masks_before_truncation_without_rewriting_recorded_title() {
     let r = pool.reader().unwrap();
     let profile = r.session_profiles(&Selection::default()).unwrap().remove(0);
     assert_eq!(profile.title.as_deref(), Some(title.as_str()));
-    assert!(!profile.facts.topic.unwrap().contains("sk-ant"));
+    assert!(
+        serde_json::to_value(&profile.facts)
+            .unwrap()
+            .get("topic")
+            .is_none()
+    );
 }
 
 #[test]
@@ -639,8 +664,8 @@ fn incomplete_parents_keep_own_profile_usage_and_explain_missing_totals() {
         .iter()
         .find(|p| p.session == "claude-code:child")
         .unwrap();
-    assert_eq!(child.facts.message_count, 1);
-    let usage = child.usage.as_ref().unwrap();
+    assert_eq!(child.facts.clone().unwrap().message_count, 1);
+    let usage = &child.usage;
     assert_eq!(usage.own.known_response_messages, 1);
     assert!(usage.with_parents.is_none());
     assert!(!usage.parents.complete);
@@ -652,7 +677,7 @@ fn incomplete_parents_keep_own_profile_usage_and_explain_missing_totals() {
         .iter()
         .find(|p| p.session == "claude-code:parent")
         .unwrap();
-    assert!(parent.usage.as_ref().unwrap().with_parents.is_some());
+    assert!(parent.usage.with_parents.is_some());
     assert!(matches!(
         super::super::sessions(&reader, &Selection::default()),
         Err(crate::StoreError::IncompleteParents(_))

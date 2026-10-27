@@ -505,15 +505,14 @@ pub static FIELDS: &[Field] = &[
         "own cost plus every session below in the subagent tree",
     ).sql_fn(sessions_tree_cost),
     f(Sessions, "duration", Duration, "last_active - started").sql("({s}.last_activity_at - {s}.started_at)"),
-    f(Sessions, "profile_first", Time, "Profile first time, with its timestamp source").sql("(SELECT json_extract(sp.facts, '$.first_at') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "profile_last", Time, "Profile last time, with its timestamp source").sql("(SELECT json_extract(sp.facts, '$.last_at') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "wall_duration", Duration, "Profile elapsed time; message, event or session clock").sql("(SELECT json_extract(sp.facts, '$.wall_duration_ms') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "engaged_duration", Duration, "Message-clustered elapsed time, with a five-minute gap threshold").sql("(SELECT json_extract(sp.facts, '$.engaged_duration_ms') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "tool_active_duration", Duration, "Sum of paired timestamped tool intervals").sql("(SELECT json_extract(sp.facts, '$.tool_active_duration_ms') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "workflow_shape", Match, "Threshold rule over observed tool and message counts").sql("(SELECT json_extract(sp.facts, '$.workflow_shape') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "terminal_state", Match, "Final observed state, never task success").sql("(SELECT json_extract(sp.facts, '$.terminal_state') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "timestamp_source", Match, "Clock used by profile bounds").sql("(SELECT json_extract(sp.facts, '$.timestamp_source') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "topic", Substring, "Deterministic label from a substantive authored prompt").sql("(SELECT json_extract(sp.facts, '$.topic') FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
+    f(Sessions, "profile_first", Time, "First observed time").sql_fn(profile_first),
+    f(Sessions, "profile_last", Time, "Last observed time").sql_fn(profile_last),
+    f(Sessions, "wall_duration", Duration, "Profile elapsed time; message, event or session clock").sql_fn(profile_wall_duration),
+    f(Sessions, "message_clustered_duration", Duration, "Message-clustered elapsed time, with a five-minute gap threshold").sql("(SELECT sp.message_clustered_duration_ms FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
+    f(Sessions, "tool_active_duration", Duration, "Sum of paired timestamped tool intervals").sql("(SELECT sp.tool_active_duration_ms FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
+    f(Sessions, "workflow_shape", Match, "Threshold rule over observed tool and message counts").sql("(SELECT sp.workflow_shape FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
+    f(Sessions, "final_observed_state", Match, "Final observed state, never task success").sql("(SELECT sp.final_observed_state FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
+    f(Sessions, "timestamp_source", Match, "Clock used by profile bounds").sql_fn(profile_source),
     sp(Sessions, "near", "semantic similarity (a ranking)", custom::near),
     sp(Sessions, "output", "words in tool output", custom::output),
     sp(Sessions, "thinking", "words in thinking", custom::thinking),
@@ -1289,10 +1288,7 @@ fn work_goal_field(a: &Aliases) -> String {
     work_goal(&a.row)
 }
 
-/// A note that is its family's current revision and not withdrawn.
-pub fn live_note(n: &str) -> String {
-    format!("{} AND NOT {}", current_note(n), withdrawn_note(n))
-}
+pub use polylogue_model::note_sql::{current_note, live_note, withdrawn_note};
 
 /// When Polylogue first had message `m`'s bytes: the earliest observation,
 /// over every chain whose records hold a version of it, of a revision of
@@ -1335,19 +1331,6 @@ pub fn event_first_seen(a: &Aliases) -> String {
     )
 }
 
-pub fn current_note(n: &str) -> String {
-    format!(
-        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.first_note = {n}.first_note AND nr.commit_seq > {n}.commit_seq)"
-    )
-}
-
-/// Whether note `n`'s family is withdrawn: a withdrawal names its first note.
-pub fn withdrawn_note(n: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM a.note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.first_note)"
-    )
-}
-
 /// A current `hidden` note targets the session.
 pub fn hidden(s: &str) -> String {
     format!(
@@ -1369,6 +1352,19 @@ pub fn subtree(s: &str) -> String {
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
     )
+}
+
+fn profile_first(a: &Aliases) -> String {
+    polylogue_model::session_sql::first(&a.s)
+}
+fn profile_last(a: &Aliases) -> String {
+    polylogue_model::session_sql::last(&a.s)
+}
+fn profile_wall_duration(a: &Aliases) -> String {
+    polylogue_model::session_sql::wall_duration(&a.s)
+}
+fn profile_source(a: &Aliases) -> String {
+    polylogue_model::session_sql::source(&a.s)
 }
 
 #[cfg(test)]
