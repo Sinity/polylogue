@@ -114,7 +114,7 @@ pub fn refusal(
 }
 
 fn narrower(query: &str) -> Option<String> {
-    use polylogue_query::Source;
+    use polylogue_query::ast::Source;
     let parsed = polylogue_query::parse(query).ok()?;
     let suggestion = match parsed.source {
         Source::Empty => "since:1d".to_owned(),

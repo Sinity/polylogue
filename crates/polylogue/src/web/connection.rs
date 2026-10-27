@@ -24,7 +24,11 @@ pub(super) struct Connection {
 
 impl Connection {
     pub(super) fn new(stream: tokio::net::TcpStream) -> io::Result<Self> {
-        let fd = tokio::io::unix::AsyncFd::new(stream.as_fd().try_clone_to_owned()?)?;
+        let owned = stream.as_fd().try_clone_to_owned()?;
+        // SAFETY: this privately owned descriptor stays open and unchanged
+        // until AsyncFd is dropped.
+        #[allow(unsafe_code)]
+        let fd = unsafe { tokio::io::unix::AsyncFd::register(owned) }.map_err(io::Error::from)?;
         let peer = Peer(ReadCancellation::default());
         let cancellation = peer.0.clone();
         let watch = tokio::spawn(async move {
