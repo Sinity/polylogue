@@ -61,11 +61,13 @@ pub fn search(
         body.push_str("</div>");
     }
     if let Some(data) = data {
-        let count = data["rows"].as_array().map_or(0, Vec::len);
-        let _ = write!(
-            body,
-            "<p>{count} rows on this page. Continue to reach every match.</p>"
-        );
+        if let Some(rows) = data["rows"].as_array() {
+            let count = rows.len();
+            let _ = write!(
+                body,
+                "<p>{count} rows on this page. Continue to reach every match.</p>"
+            );
+        }
         body.push_str(&results_table(data));
         body.push_str(
             "<button type=\"button\" data-previous hidden>Previous visited page</button>",
