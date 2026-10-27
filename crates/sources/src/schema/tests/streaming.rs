@@ -1,5 +1,5 @@
 use super::*;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 
 struct Chunks<'a> {
     bytes: &'a [u8],
@@ -284,5 +284,44 @@ fn buffered_runs_validate_unicode_numbers_and_whitespace_across_reads() {
                 .is_err()
         );
         assert_eq!(observer.counts(), (0, 0));
+    }
+}
+
+#[test]
+fn capture_reader_stops_at_the_frame_end_and_preserves_input_errors() {
+    use polylogue_model::capture_log::Header;
+    let body = b"synthetic capture";
+    let header = Header::of(body);
+    let mut reader = io::Cursor::new([body.as_slice(), b"next frame"].concat());
+    {
+        let mut frame = CaptureReader {
+            reader: reader.by_ref().take(header.length),
+            verifier: header.verifier(),
+        };
+        let mut bytes = Vec::new();
+        frame.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, body);
+        assert!(frame.verifier.verifies());
+    }
+    let mut tail = Vec::new();
+    reader.read_to_end(&mut tail).unwrap();
+    assert_eq!(tail, b"next frame");
+
+    let mut frame = CaptureReader {
+        reader: io::repeat(0).take(1).chain(Fails).take(header.length),
+        verifier: header.verifier(),
+    };
+    let mut bytes = Vec::new();
+    assert_eq!(
+        frame.read_to_end(&mut bytes).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    assert!(!frame.verifier.verifies());
+}
+
+struct Fails;
+impl Read for Fails {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
     }
 }

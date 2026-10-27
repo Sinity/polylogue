@@ -368,9 +368,12 @@ impl Observer {
             let mut header = [0; HEADER_LEN];
             reader.read_exact(&mut header)?;
             let header = Header::decode(&header).map_err(io::Error::other)?;
-            let mut frame = header.verifier(&mut reader);
+            let mut frame = CaptureReader {
+                reader: reader.by_ref().take(header.length),
+                verifier: header.verifier(),
+            };
             whole.json(&mut frame).map_err(io::Error::other)?;
-            if !frame.verifies() {
+            if !frame.verifier.verifies() {
                 return Err(io::Error::other("invalid_capture"));
             }
         }
@@ -410,6 +413,19 @@ impl Observer {
             unreadable_records: self.unreadable,
             fields,
         }
+    }
+}
+
+struct CaptureReader<'a, R> {
+    reader: io::Take<R>,
+    verifier: polylogue_model::capture_log::Verifier<'a>,
+}
+
+impl<R: Read> Read for CaptureReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let length = self.reader.read(bytes)?;
+        self.verifier.update(&bytes[..length]);
+        Ok(length)
     }
 }
 
