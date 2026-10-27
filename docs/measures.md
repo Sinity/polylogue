@@ -19,7 +19,8 @@ polylogue query 'sessions | measure pace:60:0:100'
 `facets` returns selected and global session counts, message counts, and origin
 and tag families. Each session counts once per value, including repeated tags
 and repeated messages or actions of one kind. `facets:deep` also includes
-repositories (root commit identity when available), roles, authors (`written_by`),
+repositories from every recorded working directory (root commit identity when
+available), roles, authors (`written_by`),
 block kinds, actions and flags (thinking, tool calls and attachments).
 Repository display labels do not split a known root commit identity.
 The default result names the deeper families in `omitted`.

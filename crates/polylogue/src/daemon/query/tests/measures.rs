@@ -4,6 +4,7 @@ use super::*;
 fn new_measures_use_selected_sessions_and_profile_fields() {
     let mut archive = morrow();
     archive.fx.derive().unwrap();
+    assert!(run_q(&archive, ask("sessions | measure profiles:unsupported")).is_err());
     let all = q(&archive, "sessions | measure facets:deep");
     assert!(all["data"]["global"]["total_sessions"].as_u64().unwrap() > 1);
     let selected = q(

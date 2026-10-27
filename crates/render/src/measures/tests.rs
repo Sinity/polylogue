@@ -20,3 +20,13 @@ fn outlook_labels_estimates_units_coverage_and_missing_configuration() {
         assert!(text.contains(label), "{label}: {text}");
     }
 }
+
+#[test]
+fn outlook_renders_unobserved_usage_and_missing_prices_as_unknown() {
+    let text = outlook(
+        &json!({"plan_name":"sample","projection_method":"linear","window":{"start":0,"end":86400000},"units":{},"quota_pressure":{"unit":"credits","quota":10,"used":null,"projected":null,"projected_overage_cost_usd":null,"reason":"quota_unit_unobserved"},"plan":{"price_usd":null},"coverage_ratio":0}),
+    );
+    assert!(text.contains("used unknown"));
+    assert!(text.contains("Configured cycle price USD: unknown"));
+    assert!(!text.contains("null"));
+}
