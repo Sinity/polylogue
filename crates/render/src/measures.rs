@@ -296,6 +296,14 @@ fn drift_text(data: &Value) -> String {
     out
 }
 
+fn number(value: &Value) -> String {
+    if value.is_null() {
+        "unknown".into()
+    } else {
+        value.to_string()
+    }
+}
+
 /// Billing projections keep units apart and label estimates and missing inputs.
 pub fn outlook(data: &Value) -> String {
     if let Some(reason) = data["reason"].as_str() {
@@ -333,7 +341,9 @@ pub fn outlook(data: &Value) -> String {
             };
             out.push_str(&format!(
                 "{label}: used {}, burn {}/day, projected {} (estimate)\n",
-                values["used"], values["burn_per_day"], values["projected"]
+                number(&values["used"]),
+                number(&values["burn_per_day"]),
+                number(&values["projected"])
             ));
         }
     }
@@ -347,21 +357,22 @@ pub fn outlook(data: &Value) -> String {
         out.push_str(&format!(
             "Quota pressure ({}): used {}, projected {}, quota {}\n",
             pressure["unit"].as_str().unwrap_or(""),
-            pressure["used"],
-            pressure["projected"],
-            pressure["quota"]
+            number(&pressure["used"]),
+            number(&pressure["projected"]),
+            number(&pressure["quota"])
         ));
         if let Some(reason) = pressure["reason"].as_str() {
             out.push_str(&format!("{reason}\n"));
         }
         out.push_str(&format!(
             "Possible overage cost USD: {} (estimate)\n",
-            pressure["projected_overage_cost_usd"]
+            number(&pressure["projected_overage_cost_usd"])
         ));
     }
     out.push_str(&format!(
         "Configured cycle price USD: {}. Observed-day coverage: {}\n",
-        data["plan"]["price_usd"], data["coverage_ratio"]
+        number(&data["plan"]["price_usd"]),
+        number(&data["coverage_ratio"])
     ));
     out
 }

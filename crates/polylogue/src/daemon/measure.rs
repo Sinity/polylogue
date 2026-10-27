@@ -270,6 +270,9 @@ pub fn run(
     let Some((m, metric)) = find(what) else {
         return Err(bad_request(format!("no measurement `{what}`: {}", names())));
     };
+    if m.argument.is_none() && m.metrics.is_empty() && !metric.is_empty() {
+        return Err(bad_request(format!("{} takes no arguments", m.name)));
+    }
     if m.whole_archive && sessions.is_some() {
         return Err(bad_request(format!(
             "{0} covers every session; measure it without conditions (`sessions | measure {0}`)",
