@@ -53,7 +53,7 @@ async fn show(web: Arc<Web>, options: Options) -> HttpResponse {
 
 pub fn activity(data: &Value) -> String {
     let mut out = String::from(
-        "<table class=\"results\"><caption>Recorded activity. Each time source is named.</caption><thead><tr><th scope=\"col\">Logical day</th><th scope=\"col\">Time</th><th scope=\"col\">Time source</th><th scope=\"col\">Record</th></tr></thead>",
+        "<div class=\"activity\"><table class=\"results\"><caption>Recorded activity. Each time source is named.</caption><thead><tr><th scope=\"col\">Logical day</th><th scope=\"col\">Time</th><th scope=\"col\">Time source</th><th scope=\"col\">Record</th></tr></thead>",
     );
     let mut previous_day = None;
     for row in data["rows"].as_array().into_iter().flatten() {
@@ -106,7 +106,7 @@ pub fn activity(data: &Value) -> String {
     if previous_day.is_some() {
         out.push_str("</tbody>");
     }
-    out.push_str("</table>");
+    out.push_str("</table></div>");
     if data["rows"].as_array().is_some_and(Vec::is_empty) {
         out.push_str("<p>No recorded activity in this selection.</p>");
     }
@@ -207,18 +207,16 @@ pub fn render(data: &Value) -> String {
         }
         body.push_str("</section>");
     }
-    pages::layout_with_styles(
-        "/assets/timeline.css",
-        &title,
-        "",
-        &format!(
-            "polylogue timeline --date {}{}{}",
-            polylogue_render::shell_quote(date),
-            if across { " --across-years" } else { "" },
-            if undated { " --undated" } else { "" }
-        ),
-        &body,
-    )
+    let mut cli = format!(
+        "polylogue timeline --date {}{}{}",
+        polylogue_render::shell_quote(date),
+        if across { " --across-years" } else { "" },
+        if undated { " --undated" } else { "" }
+    );
+    if let Some(cursor) = data["cursor"].as_str() {
+        let _ = write!(cli, " --cursor {}", polylogue_render::shell_quote(cursor));
+    }
+    pages::layout_with_styles("/assets/timeline.css", &title, "", &cli, &body)
 }
 
 #[cfg(test)]

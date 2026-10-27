@@ -168,7 +168,7 @@ pub fn timeline(reader: &Reader<'_>, options: Timeline<'_>, now: i64) -> Result<
         }
     };
     Ok(
-        json!({"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"zone":day.zone_name().map(str::to_owned).unwrap_or_else(||format!("{:?}",day.zone)),"day_start_minutes":day.start_minutes,"since":since,"until":until,"activity":activity,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
+        json!({"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"zone":day.zone_name().map(str::to_owned).unwrap_or_else(||format!("{:?}",day.zone)),"day_start_minutes":day.start_minutes,"since":since,"until":until,"activity":activity,"cursor":cursor,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
     )
 }
 
