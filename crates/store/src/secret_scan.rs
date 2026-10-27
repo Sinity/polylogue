@@ -9,7 +9,7 @@ use serde_json::Value;
 pub struct Finding {
     pub session: String,
     pub target: String,
-    pub block: Option<usize>,
+    pub block: Option<i64>,
     /// Decoded field: arrays use indices, objects use sorted member numbers
     /// followed by key or value. Offsets count UTF-8 bytes in that string.
     pub field: String,
@@ -80,7 +80,7 @@ impl Reader<'_> {
              WHERE (?1 IS NULL OR s.origin=?1) AND
              (c.session_pk IS NULL OR c.version<>?2 OR c.from_changed<>s.changed)",
             params![origin, version()],
-            |r| r.get(0),
+            |r| r.get::<_, i64>(0).map(|count| count as u64),
         )?)
     }
 }
@@ -114,7 +114,7 @@ pub(crate) fn scan(index: &mut Connection, session: &str) -> Result<SessionScan>
     let mut rows = statement.query([pk])?;
     while let Some(row) = rows.next()? {
         let message = format!("message:{}", row.get::<_, String>(0)?);
-        let block_index = row.get::<_, Option<usize>>(1)?;
+        let block_index = row.get::<_, Option<i64>>(1)?;
         let mut block = crate::encoding::unpack_block(&row.get::<_, Vec<u8>>(2)?)?;
         if let Some(text) = row.get::<_, Option<Vec<u8>>>(3)? {
             crate::encoding::restore_text(&mut block, crate::encoding::unpack_text(&text)?);
@@ -184,7 +184,7 @@ fn scan_value(
     output: &mut SessionScan,
     session: &str,
     target: &str,
-    block: Option<usize>,
+    block: Option<i64>,
     name: &str,
     value: &Value,
 ) -> Result<()> {
@@ -223,7 +223,7 @@ fn scan_string(
     output: &mut SessionScan,
     session: &str,
     message: &str,
-    block: Option<usize>,
+    block: Option<i64>,
     field: &str,
     text: &str,
 ) -> Result<()> {
@@ -241,7 +241,7 @@ fn scan_string(
 
 fn append_findings(
     output: &mut SessionScan,
-    target: (&str, &str, Option<usize>),
+    target: (&str, &str, Option<i64>),
     field: &str,
     findings: Vec<polylogue_model::masking::SecretFinding>,
     offset: usize,
