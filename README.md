@@ -84,7 +84,7 @@ it.
 | `setting KEY [VALUE]` | Read or set a setting. `day.zone` (an IANA zone; the machine's unless set) and `day.logical_start` (default `04:00`) define the logical day that dates, `today` and `group by day` mean. |
 | `web` | Open the web reader. |
 | `mcp` | Serve MCP over stdio. |
-| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`) and Hermes: live state, the session-start brief, takeovers and advice before a check that keeps failing. |
+| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`) and Hermes: live state, the session-start brief, takeovers and advice before a verification that keeps failing. |
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
@@ -108,11 +108,12 @@ lint commands sessions ran), and the last day's signal notices.
 It stays within `briefing.budget` tokens (default 2000) and names what it
 left out with the command that shows it. A session ID pasted into a prompt
 brings that session's takeover context. Before Claude Code or Codex runs a
-shell command that is a check (a test, build or lint) and that check failed
+shell command that is a verification (a test, build or lint) that failed
 in this checkout more than once in the last week with no pass since, the
-agent is told so, with the session of the last failure; nothing else is
-said before a tool runs. The daemon has 20 ms to answer, and a tool call
-never waits longer.
+agent is told so, with the session of the last failure. Advice is given once
+per session and verification until its failures change. The hook waits up
+to 20 ms for read-only preparation, prints the advice, then has a separate
+20 ms budget to record it as delivered.
 
 | Harness | Hook entries |
 |---|---|

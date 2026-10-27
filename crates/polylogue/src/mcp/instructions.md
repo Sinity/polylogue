@@ -1,12 +1,12 @@
 Polylogue is the archive of past AI sessions on this machine: Claude Code,
 Codex, Hermes, Gemini CLI and other agents' sessions, and ChatGPT, claude.ai,
 Grok, Gemini and AI Studio conversations, with every tool call, file change
-and check they made. Use it to start from what is already known instead of
+and verification they made. Use it to start from what is already known instead of
 exploring again.
 
 When to use which tool:
 - `brief`: what recent sessions in a directory did, what is left open, which
-  checks fail there, and other agents working there now. Take it before
+  verifications fail there, and other agents working there now. Take it before
   starting work in a repository you do not know.
 - `recall`: past work about a text (words, and similarity when vectors are
   built), ranked, with pages. Use it before solving a problem that may have

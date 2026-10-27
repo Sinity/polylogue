@@ -57,7 +57,7 @@ fn pre_tool_use(env: &[(&str, &Path)], cwd: &str, command: &str) -> String {
 }
 
 #[test]
-fn a_check_that_keeps_failing_here_is_named_before_it_runs_again() {
+fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
