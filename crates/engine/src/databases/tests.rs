@@ -41,8 +41,18 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
     assert!(done.errors.is_empty(), "{:?}", done.errors);
     let reads = ReadPool::open(&archive).unwrap();
     let reader = reads.reader().unwrap();
-    assert_eq!(reader.query("SELECT count(*) AS n FROM tool_row", &[]).unwrap()[0]["n"], 0);
-    assert_eq!(reader.query("SELECT count(*) AS n FROM tool_database", &[]).unwrap()[0]["n"], 0);
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM tool_row", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM tool_database", &[])
+            .unwrap()[0]["n"],
+        0
+    );
     drop(reader);
     drop(reads);
 
