@@ -258,12 +258,16 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         Ok(report) => json!({"data":report}),
         Err(e) => json!({"error":"store","message":e.to_string()}),
     };
+    let unplaced = match timeline::undated_responses(reader, &selection) {
+        Ok(count) => json!({"count":count}),
+        Err(error) => json!({"error":"store","message":error.to_string()}),
+    };
     let quota = match super::measure::run(reader, "quota", None, now, &day) {
         Ok(data) => json!({"data":data}),
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };
     Ok(
-        json!({"quota":quota,"usage":report,"responses":responses,"days":days,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
+        json!({"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
     )
 }
 
