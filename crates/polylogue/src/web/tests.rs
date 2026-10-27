@@ -152,7 +152,11 @@ fn pages_and_api_never_carry_the_archive_path() {
         assert!(v.get("archive").is_none(), "{body}");
         assert!(!body.contains(&root), "{body}");
         assert_eq!(v["store"]["messages"], 1);
-        let (_, _, page) = send(&r, authed(get("/")).body(Body::empty()).unwrap()).await;
+        let (_, _, page) = send(
+            &r,
+            authed(get("/?recent=true")).body(Body::empty()).unwrap(),
+        )
+        .await;
         assert!(!page.contains(&root));
         assert!(page.contains("/s/claude-code%3As1"), "{page}");
     });
@@ -753,3 +757,6 @@ mod attachments;
 mod pages;
 
 mod benchmark;
+
+mod workbench;
+mod workbench_measurements;

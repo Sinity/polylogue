@@ -122,6 +122,33 @@ pub struct LeftOut {
     pub reason: String,
 }
 
+impl UserWrite {
+    /// Search writes resolve rows or the revision to replace when they run.
+    /// A retry keeps that first resolution even if the archive changed.
+    pub fn same_search_request(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::KeepResult { name, query, .. },
+                Self::KeepResult {
+                    name: other_name,
+                    query: other_query,
+                    ..
+                },
+            ) => name == other_name && query == other_query,
+            (Self::AddNote { note }, Self::AddNote { note: other })
+                if note.kind == NoteKind::SavedQuery && other.kind == NoteKind::SavedQuery =>
+            {
+                let mut note = note.clone();
+                let mut other = other.clone();
+                note.revises = None;
+                other.revises = None;
+                note == other
+            }
+            _ => false,
+        }
+    }
+}
+
 /// What a user write created, or found already created by the same
 /// request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,7 +221,23 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: true,
             });
         }
-        Some(_) => return Err(StoreError::Conflict(r.id.clone())),
+        Some(_) => {
+            let packed: Option<Vec<u8>> = tx.query_row(
+                "SELECT request FROM client_request WHERE id=?1",
+                [&r.id],
+                |row| row.get(0),
+            )?;
+            let prior: UserRequest = serde_json::from_str(&crate::encoding::unpack_text(
+                &packed.ok_or_else(|| StoreError::Conflict(r.id.clone()))?,
+            )?)?;
+            if r.write.same_search_request(&prior.write) {
+                return Ok(UserOutcome {
+                    id: r.id.clone(),
+                    repeat: true,
+                });
+            }
+            return Err(StoreError::Conflict(r.id.clone()));
+        }
         None => {}
     }
     tx.execute(

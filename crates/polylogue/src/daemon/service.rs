@@ -166,6 +166,18 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     }
 }
 
+fn repeated_search(
+    reader: &polylogue_store::Reader<'_>,
+    id: &str,
+    intended: &UserWrite,
+) -> Result<Option<UserWrite>, Response> {
+    match reader.user_request(id).map_err(|e| store_error(&e))? {
+        Some(previous) if intended.same_search_request(&previous.write) => Ok(Some(previous.write)),
+        Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
+        None => Ok(None),
+    }
+}
+
 /// Refuses new requests once the daemon is stopping.
 pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
@@ -522,6 +534,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             name,
         } => {
+            let intended = UserWrite::KeepResult {
+                name: name.clone(),
+                query: text.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+            };
+            match repeated_search(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
+            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+                .ok()
+                .flatten();
+            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+            let near = |q: &str| match &provider {
+                Some(p) => d.warm.similarity(&reader, p, q),
+                None => Err("embeddings are off".into()),
+            };
             let ask = super::query::Ask {
                 text: &text,
                 cursor: None,
@@ -530,8 +564,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 session: None,
                 now: now_ms(),
                 day: None,
-                embeddings: false,
-                near: None,
+                embeddings,
+                near: Some(&near),
                 fields: &[],
             };
             let kept = match super::query::keep(&reader, ask) {
@@ -563,6 +597,26 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             author,
         } => {
+            let intended = UserWrite::AddNote {
+                note: NewNote {
+                    kind: NoteKind::SavedQuery,
+                    key: Some(name.clone()),
+                    value: Some(text.clone()),
+                    author: author.clone(),
+                    targets: vec![],
+                    relations: vec![],
+                    revises: None,
+                    valid_until: None,
+                },
+            };
+            match repeated_search(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
             let revises = match saved_revision(&reader, &name, &text) {
                 Ok(revises) => revises,
                 Err(response) => return response,

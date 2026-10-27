@@ -26,6 +26,14 @@ async function batch() {
       clearInterval(clock);
       throw new Error("Sign-in expired. Reopen with polylogue web.");
     }
+    if (response.status === 409) {
+      const error = await response.json();
+      if (error.error === "resync_required") {
+        position = undefined;
+        for (const subscriber of audience) await subscriber.refresh?.();
+        return;
+      }
+    }
     if (!response.ok) throw new Error("Changes unavailable (" + response.status + ")");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

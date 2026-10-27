@@ -93,3 +93,31 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
         }
     }
 }
+
+#[test]
+fn search_retries_keep_the_original_population_and_do_not_revise_newer_saved_queries() {
+    let d = test_daemon::start("first prompt");
+    let original = ok(&d, save("first", "example", "sessions"));
+    let newer = ok(&d, save("second", "example", "sessions where title:absent"));
+    assert_ne!(original["id"], newer["id"]);
+    let repeat = ok(&d, save("first", "example", "sessions"));
+    assert_eq!(repeat["repeat"], true);
+    assert_eq!(ok(&d, query("query:example"))["count"], 0);
+    let keep = || Request::Keep {
+        request_id: "keep".into(),
+        text: "sessions".into(),
+        name: None,
+    };
+    ok(&d, keep());
+    std::fs::write(
+        d.home.join(".claude/projects/-p/other.jsonl"),
+        polylogue_testkit::claude_user("u-other", "other", "another prompt"),
+    )
+    .unwrap();
+    d.wait_for(|s| s["store"]["sessions"] == 2);
+    assert_eq!(ok(&d, keep())["repeat"], true);
+    assert_eq!(ok(&d, query("result:keep"))["count"], 1);
+    assert!(
+        matches!(answer(&d,Request::Keep {request_id:"keep".into(),text:"messages".into(),name:None}),Response::Error {kind,..} if kind=="conflict")
+    );
+}

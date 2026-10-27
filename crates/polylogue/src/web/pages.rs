@@ -7,12 +7,10 @@
 use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
 use polylogue_render::{results, shell_quote};
 mod cost;
-mod live;
+pub(crate) mod live;
 pub(crate) mod reader;
-mod search;
+pub(crate) mod search;
 pub use cost::cost;
-pub use live::home;
-pub use search::search;
 use serde_json::Value;
 use std::fmt::Write as _;
 

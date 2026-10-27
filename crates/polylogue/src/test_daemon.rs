@@ -81,6 +81,18 @@ impl TestDaemon {
         }
     }
 
+    /// Restarts the daemon over the same synthetic archive and home.
+    pub fn restart(&mut self) {
+        let root = self.daemon.archive.root.clone();
+        self.runtime.stop_accepting();
+        self.server.shutdown().unwrap();
+        self.runtime.shutdown().unwrap();
+        self.runtime =
+            service::start(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
+        self.daemon = Arc::clone(&self.runtime.daemon);
+        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
+    }
+
     /// Sets an archive setting through the daemon.
     pub fn set(&self, key: &str, value: &str) {
         let r = handle(

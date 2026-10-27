@@ -9,6 +9,29 @@ use crate::user_writes::UserRequest;
 use crate::{Reader, Result, StoreError};
 
 impl Reader<'_> {
+    /// One committed client request, including the rows or revision it resolved.
+    pub fn user_request(&self, id: &str) -> Result<Option<UserRequest>> {
+        use rusqlite::OptionalExtension;
+        let packed: Option<Option<Vec<u8>>> = self
+            .conn()?
+            .query_row(
+                "SELECT request FROM a.client_request WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        packed
+            .map(|packed| {
+                let packed = packed.ok_or_else(|| {
+                    StoreError::Invalid(format!("request {id} has no recorded content"))
+                })?;
+                Ok(serde_json::from_str(&crate::encoding::unpack_text(
+                    &packed,
+                )?)?)
+            })
+            .transpose()
+    }
+
     /// Every request and excision in this archive, in the order they were
     /// written.
     pub fn user_state(&self) -> Result<Vec<RegisterChange>> {

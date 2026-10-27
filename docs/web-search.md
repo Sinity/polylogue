@@ -1,0 +1,17 @@
+# Live sessions and search
+
+The reader's home page lists sessions using `sessions where -live:ended | sort by live_rank, last_event_at desc`. Waiting sessions come first. Recent sessions (`/?recent=true`) includes ended sessions and orders by last activity. Each row opens the shared session reader at its latest message. State and waiting evidence come from the daemon; the browser does not infer them from elapsed time.
+
+A visible page requests finite change batches through the shared authenticated adapter. A completed batch or a 30-second clock refresh asks the daemon for the current list. Updates wait behind an explicit Apply updates button while a row has keyboard focus. Applying restores focus by session reference; a focused session that left the list remains available until focus moves. Pause updates stops list refreshes. Hidden tabs stop the shared feed and clock. Refresh and Next remain ordinary links without script.
+
+Notices load independently through `status`. A failed notice request displays its reason, and each available notice links to its recorded delivery. Browse all notices uses the paged deliveries query. The list remains available while notices load.
+
+`/search?q=QUERY` sends the same query request as the CLI, MCP and JSON API. Ranked excerpts and reference links use the shared result renderer. Next carries the query and opaque cursor; Previous visited page uses browser history. Completion uses the daemon's `complete` operation, with delayed requests and cancellation when typing supersedes a request. Suggestions are distinct from counts.
+
+Facet controls offer the applicable fields from the shared field definitions: origin, repository, harness, model, since/until, live state and tags. They add a quoted literal to the parser's source-condition span and reset the cursor. Parenthesized expressions, ranking terms and sort clauses retain their meaning. Attached, combined, scoped and transformed queries remain editable in the query field; the controls explain why they cannot change those shapes. The field help states the existing query language's time semantics.
+
+Count full matching population runs a separate `group by FIELD | count` query over the filtered source. It removes ordering, keeps conditions, and pages all distinct choices. Fields without a groupable value, including tags and since/until conditions, return an explicit refusal. Count queries do not delay the first result page.
+
+Save query records a name that runs current data. Keep results records every matching row in its daemon order, including filtered semantic or mixed ranking. Both use the existing command-table writes. A failed browser write retains its form and request ID for retry. The daemon reuses the first committed rows or saved-query revision when that ID is retried, including after the archive changes; changing the intended name, query or author conflicts. No browser storage holds drafts or results.
+
+The view modules and their assets are `web/live.rs`, `web/search.rs`, `web/pages/live.rs`, `web/pages/search.rs`, `assets/sessions.*` and `assets/search.*`. They share the foundation's access guard, layout, result renderer and change-feed client. The opt-in `web::tests::workbench_measurements::workbench_measurements` test accepts a browser driver through `POLYLOGUE_WORKBENCH_DRIVER` and runs only through the AgentCTL measure operation.

@@ -65,3 +65,29 @@ fn values_with_spaces_are_quoted() {
     assert_eq!(quoted("polylogue"), "polylogue");
     assert_eq!(quoted("two words"), "\"two words\"");
 }
+
+#[test]
+fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
+    let data = Completion {
+        values: vec![
+            format!("repo:{}", quoted("two words")),
+            format!("repo:{}", quoted("path\\part \"λ\"")),
+        ],
+        ..Completion::default()
+    };
+    assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
+    assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
+    let value = &completions(&data, "repo:path")[0].0;
+    let parsed = polylogue_query::parse(value).unwrap();
+    let polylogue_query::ast::Source::Sessions { cond } = parsed.source else {
+        panic!()
+    };
+    let polylogue_query::ast::CondKind::Match {
+        value: polylogue_query::ast::Value::One { text, .. },
+        ..
+    } = cond.kind
+    else {
+        panic!()
+    };
+    assert_eq!(text, "path\\part \"λ\"");
+}
