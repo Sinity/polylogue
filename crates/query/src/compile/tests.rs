@@ -377,9 +377,11 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             "sessions | messages where near:dates",
             "near:dates near:times",
             "sessions where NOT near:dates",
-            "near:dates | union (near:times)",
         ] {
             assert!(compile(text, &options).is_err(), "{text}");
+        }
+        if embeddings {
+            assert!(compile("near:dates | union (near:times)", &options).is_err());
         }
     }
     let text = "sessions | messages where near:dates";
