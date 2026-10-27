@@ -27,8 +27,22 @@ fn date(
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
+    now: i64,
     context: Value,
     after: timeline::Position,
+}
+
+fn cursor(text: &str) -> Result<Cursor, Failure> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| invalid("invalid timeline cursor"))?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid("invalid timeline cursor"))
+}
+
+fn clock(text: Option<&str>, now: i64) -> Result<i64, Failure> {
+    text.map(cursor)
+        .transpose()
+        .map(|c| c.map_or(now, |c| c.now))
 }
 
 fn activity(
@@ -38,6 +52,7 @@ fn activity(
     context: Value,
     cursor: Option<&str>,
     size: Option<u64>,
+    now: i64,
 ) -> Result<Value, Failure> {
     let context = json!(
         blake3::hash(context.to_string().as_bytes())
@@ -48,14 +63,7 @@ fn activity(
     if size == 0 {
         return Err(invalid("page size must be positive"));
     }
-    let cursor: Option<Cursor> = cursor
-        .map(|s| {
-            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(s)
-                .map_err(|_| invalid("invalid timeline cursor"))?;
-            serde_json::from_slice(&bytes).map_err(|_| invalid("invalid timeline cursor"))
-        })
-        .transpose()?;
+    let cursor: Option<Cursor> = cursor.map(self::cursor).transpose()?;
     if cursor.as_ref().is_some_and(|c| c.context != context) {
         return Err(invalid(
             "cursor belongs to a different selection, logical day or index generation",
@@ -71,6 +79,7 @@ fn activity(
     result["next"] = match result.get("after").filter(|a| !a.is_null()) {
         Some(after) => {
             let cursor = Cursor {
+                now,
                 context,
                 after: serde_json::from_value(after.clone()).map_err(|e| invalid(e.to_string()))?,
             };
@@ -101,6 +110,7 @@ pub fn timeline(reader: &Reader<'_>, options: Timeline<'_>, now: i64) -> Result<
         cursor,
         page_size: size,
     } = options;
+    let now = clock(cursor, now)?;
     let day = query::logical_day(reader)?;
     let date = date(text, &day, now)?;
     let context = json!([
@@ -120,7 +130,7 @@ pub fn timeline(reader: &Reader<'_>, options: Timeline<'_>, now: i64) -> Result<
         model: None,
         unknown_model: false,
     };
-    let activity = activity(reader, &day, &selected, context, cursor, size)?;
+    let activity = activity(reader, &day, &selected, context, cursor, size, now)?;
     let counts = timeline::calendar(reader, &day, date)?;
     let mut calendar = Vec::new();
     let mut cell = date.first_of_month();
@@ -188,9 +198,9 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         cursor,
         page_size: size,
     } = options;
+    let now = clock(cursor, now)?;
     let day = query::logical_day(reader)?;
-    let (mut selection, vector_writes) =
-        query::usage_selection(reader, scope, now, embeddings, near)?;
+    let (mut selection, question) = query::usage_selection(reader, scope, now, embeddings, near)?;
     if undated && text.is_some() {
         return Err(invalid("undated records cannot be placed within a date"));
     }
@@ -216,7 +226,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         model,
         undated,
         unknown_model,
-        vector_writes,
+        question,
         format!("{:?}", day.zone),
         day.start_minutes,
         reader.change_position()?.generation
@@ -229,7 +239,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         model,
         unknown_model,
     };
-    let responses = activity(reader, &day, &selected, context, cursor, size)?;
+    let responses = activity(reader, &day, &selected, context, cursor, size, now)?;
     let month = date(month.or(text), &day, now)?.first_of_month();
     let days = timeline::costs_by_day(reader, &day, month, &selection)?;
     let previous_month = month
@@ -241,8 +251,12 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, now: i64) -> Result<Value, F
         Ok(report) => json!({"data":report}),
         Err(e) => json!({"error":"store","message":e.to_string()}),
     };
+    let quota = match super::measure::run(reader, "quota", None, now, &day) {
+        Ok(data) => json!({"data":data}),
+        Err(error) => json!({"error":error.kind,"message":error.message}),
+    };
     Ok(
-        json!({"usage":report,"responses":responses,"days":days,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
+        json!({"quota":quota,"usage":report,"responses":responses,"days":days,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"zone":day.zone_name(),"day_start_minutes":day.start_minutes,"since":selection.since,"until":selection.until}),
     )
 }
 

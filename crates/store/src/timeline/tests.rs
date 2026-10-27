@@ -105,8 +105,19 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
             Some(at(&format!("{year}-02-29T12:00:00Z"))),
         );
     }
+    add(
+        &mut f,
+        session,
+        "codex:ancient",
+        Some(
+            LogicalDay::named("UTC", 240)
+                .unwrap()
+                .start_of(jiff::civil::date(-400, 2, 29))
+                + 8 * 3_600_000,
+        ),
+    );
     add(&mut f, session, "codex:unknown", None);
-    add(&mut f, session, "codex:unrepresentable", Some(i64::MAX));
+    add(&mut f, session, "codex:a-unrepresentable", Some(i64::MAX));
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let day = LogicalDay::named("UTC", 240).unwrap();
@@ -130,9 +141,23 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
             break;
         }
     }
-    assert_eq!(ids.len(), 8);
-    assert_eq!(ids[0], "codex:1996");
-    assert_eq!(ids[7], "codex:2024");
+    assert_eq!(ids.len(), 9);
+    assert_eq!(ids[0], "codex:ancient");
+    assert_eq!(ids[8], "codex:2024");
+    let ancient = page(
+        &reader,
+        &day,
+        &all(Some(jiff::civil::date(-400, 2, 29)), true, false),
+        None,
+        50,
+    )
+    .unwrap();
+    assert_eq!(ancient["rows"].as_array().unwrap().len(), 1);
+    let first = page(&reader, &day, &all(None, false, true), None, 1).unwrap();
+    let next: Position = serde_json::from_value(first["after"].clone()).unwrap();
+    let second = page(&reader, &day, &all(None, false, true), Some(&next), 1).unwrap();
+    assert_eq!(first["rows"][0]["id"], "codex:a-unrepresentable");
+    assert_eq!(second["rows"][0]["id"], "codex:unknown");
     let unknown = page(&reader, &day, &all(None, false, true), None, 50).unwrap();
     assert_eq!(unknown["rows"].as_array().unwrap().len(), 2);
     assert!(

@@ -634,7 +634,7 @@ pub(crate) fn usage_selection(
     now: i64,
     embeddings: bool,
     near: Option<&NearFn<'_>>,
-) -> Result<(polylogue_store::measure::Selection, Option<u64>), Failure> {
+) -> Result<(polylogue_store::measure::Selection, String), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {
         text: &text,
@@ -651,6 +651,7 @@ pub(crate) fn usage_selection(
     let opts = options(reader, &ask, now, 0)?;
     let program = polylogue_query::compile(&text, &opts)?;
     validate(reader, &program)?;
+    let question = page::question(&program, &opts, false)?;
     let m = program.measure.as_ref().ok_or_else(|| Failure {
         kind: "bad_request".into(),
         message: "cost requires a sessions query".into(),
@@ -696,10 +697,7 @@ pub(crate) fn usage_selection(
             sessions,
             ..Default::default()
         },
-        program
-            .near
-            .as_ref()
-            .map(|_| polylogue_store::vectors::writes()),
+        question,
     ))
 }
 
