@@ -159,6 +159,22 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
             encode(next)
         );
     }
+    body.push_str("<details><summary>Archive-wide subscription quota</summary><p>Recorded subscription windows cover the whole archive, independent of the selected sessions and source-record period. Quota, API-equivalent prices and actual charges are separate.</p>");
+    if let Some(error) = data["quota"]["error"].as_str() {
+        let _ = write!(
+            body,
+            "<p>Quota unavailable: {}: {}</p>",
+            esc(error),
+            esc(data["quota"]["message"].as_str().unwrap_or(""))
+        );
+    } else if !data["quota"].is_null() {
+        let _ = write!(
+            body,
+            "<pre>{}</pre>",
+            esc(&polylogue_render::measures::quota(&data["quota"]["data"]))
+        );
+    }
+    body.push_str("</details>");
     pages::layout(
         "Cost and usage",
         "",
