@@ -97,7 +97,7 @@ of zero-length gaps has an undefined coefficient and stays unknown.
 ## Session profiles
 
 `profiles` combines raw title, a deterministic topic label, origin/harness,
-repository display and identity, tools, current tag notes, message/word/thinking
+working directories and their known repository labels/identities, tools, current tag notes, message/word/thinking
 counts (including substantive dialogue over ten characters, excluding tool,
 thinking and harness messages), dominant model by output tokens, timing facts, workflow shape, final observed state, and existing own and
 with-parents usage/cost totals. Usage fields retain their existing units and
@@ -107,7 +107,10 @@ versioned derivations. Each result stores `rule_version` and `cluster_gap_ms`.
 The topic prefers substantive authored prose, strips known context prefixes,
 and uses the recorded title only when no prompt supplies a label. Harness
 protocol text does not supply the topic. For Codex with repository evidence,
-the repository name prefixes the prompt label. Topics use up to 120 characters
+the first known repository name prefixes the prompt label. Repository facts use
+existing observations for every recorded working directory, with the longest
+matching repository path and distinct identities. An unknown directory stays
+in `working_directories` without inventing a repository. Topics use up to 120 characters
 (60 prompt characters with a repository prefix). The raw title stays unchanged.
 A topic is a scan label, not a semantic summary.
 

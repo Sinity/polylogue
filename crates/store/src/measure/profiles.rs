@@ -68,6 +68,74 @@ pub struct Facts {
     pub terminal_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct Repository {
+    pub identity: Option<String>,
+    pub label: Option<String>,
+    pub paths: Vec<String>,
+}
+
+/// Repository facts already observed for every recorded working directory.
+pub(crate) fn repositories(
+    conn: &rusqlite::Connection,
+    pk: i64,
+) -> Result<(Vec<Repository>, Vec<String>)> {
+    let (cwd, label, identity): (Option<String>, Option<String>, Option<String>) = conn.query_row(
+        "SELECT cwd_json,repo,repo_root FROM session WHERE pk=?1",
+        [pk],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let directories: Vec<String> = cwd
+        .map(|s| serde_json::from_str(&s))
+        .transpose()?
+        .unwrap_or_default();
+    let mut result = Vec::<Repository>::new();
+    let mut add = |identity: Option<String>, label: Option<String>, path: Option<String>| {
+        if identity.is_none() && label.is_none() {
+            return;
+        }
+        let same = |r: &Repository| match (&r.identity, &identity) {
+            (Some(a), Some(b)) => a == b,
+            _ => r
+                .label
+                .as_ref()
+                .zip(label.as_ref())
+                .is_some_and(|(a, b)| a == b),
+        };
+        if let Some(existing) = result.iter_mut().find(|r| same(r)) {
+            if identity.is_some() {
+                existing.identity = identity;
+            }
+            if label.is_some() {
+                existing.label = label;
+            }
+            if let Some(path) = path
+                && !existing.paths.contains(&path)
+            {
+                existing.paths.push(path);
+            }
+        } else {
+            result.push(Repository {
+                identity,
+                label,
+                paths: path.into_iter().collect(),
+            });
+        }
+    };
+    let mut lookup=conn.prepare_cached("SELECT root_commit,remote,path FROM repo_lookup
+        WHERE path=?1 OR substr(?1,1,length(path)+1)=path || '/' ORDER BY length(path) DESC LIMIT 1")?;
+    for directory in &directories {
+        let found: Option<(Option<String>, Option<String>, String)> = lookup
+            .query_row([directory], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        if let Some((identity, label, path)) = found {
+            add(identity, label, Some(path));
+        }
+    }
+    add(identity, label, None);
+    Ok((result, directories))
+}
+
 #[derive(Debug, Serialize)]
 pub struct Profile {
     pub session: String,
@@ -75,8 +143,8 @@ pub struct Profile {
     pub origin: String,
     pub primary_model: Option<String>,
     pub harness: Option<String>,
-    pub repository: Option<String>,
-    pub repository_identity: Option<String>,
+    pub repositories: Vec<Repository>,
+    pub working_directories: Vec<String>,
     pub tags: Vec<String>,
     pub facts: Facts,
     pub usage: Option<SessionUsage>,
@@ -91,14 +159,14 @@ impl Reader<'_> {
             .map(|u| (u.session.clone(), u))
             .collect();
         let mut statement = conn.prepare(&format!(
-            "SELECT s.pk,s.id,s.title,s.origin,s.harness,s.repo,s.repo_root,p.facts FROM session s
+            "SELECT s.pk,s.id,s.title,s.origin,s.harness,p.facts FROM session s
             LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition} ORDER BY s.id"
         ))?;
         let mut rows = statement.query(rusqlite::params_from_iter(params.iter()))?;
         let mut result = vec![];
         while let Some(row) = rows.next()? {
             let session: String = row.get(1)?;
-            let encoded: Option<String> = row.get(7)?;
+            let encoded: Option<String> = row.get(5)?;
             let encoded = encoded.ok_or_else(|| {
                 StoreError::Invalid(format!("session profile not derived for {session}"))
             })?;
@@ -106,7 +174,8 @@ impl Reader<'_> {
                 "SELECT value FROM ({}) WHERE pk=?1 AND value IS NOT NULL ORDER BY value",
                 super::facets::TAGS
             ))?;
-            result.push(Profile {session:session.clone(),title:row.get(2)?,origin:row.get(3)?,harness:row.get(4)?,repository:row.get(5)?,repository_identity:row.get(6)?,
+            let (repositories, working_directories) = repositories(conn, row.get(0)?)?;
+            result.push(Profile {session:session.clone(),title:row.get(2)?,origin:row.get(3)?,harness:row.get(4)?,repositories,working_directories,
                 tags:tags.query_map([row.get::<_,i64>(0)?],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?,
                 primary_model:conn.query_row("SELECT model FROM message WHERE session_pk=?1 AND role='assistant' AND written_by='model' AND model IS NOT NULL GROUP BY model ORDER BY sum(output_tokens) DESC NULLS LAST,count(*) DESC,model LIMIT 1",[row.get::<_,i64>(0)?],|r|r.get(0)).optional()?,
                 facts:serde_json::from_str(&encoded)?,usage:usage.remove(&session)});
