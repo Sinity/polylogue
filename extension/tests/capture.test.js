@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 import { start } from "../src/background/main.js";
 import { captureBody } from "../src/background/capture.js";
@@ -133,6 +133,28 @@ describe("a capture", () => {
     const state = await extension.pageState(await chrome.tabs.get(1));
     expect(state).toMatchObject({ provider: "chatgpt", conversation: "c1", state: "archived", messages: 1 });
     expect(state.last.outcome).toBe("unchanged");
+  });
+
+  it("keeps the conversation observation time when files finish later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-27T00:00:00Z"));
+      const host = storingHost([{ id: "file-1", message: "m1", inline: false }]);
+      const page = chatgptPage({ fileBytes: new Uint8Array([1]) });
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      const answer = (request) => request.type === "file" ? held.then(() => page.answer(request)) : page.answer(request);
+      const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+      const extension = start(chrome, { indexedDB: new IDBFactory() });
+      await extension.captureTab(1, "changed");
+      vi.setSystemTime(new Date("2026-10-28T00:00:00Z"));
+      release();
+      await extension.capturer.downloads();
+      expect(host.stored).toHaveLength(2);
+      expect(JSON.parse(host.stored[1]).provenance.captured_at).toBe("2026-10-27T00:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("names a file the archive holds by its hash instead of downloading it again", async () => {

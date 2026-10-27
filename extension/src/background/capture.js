@@ -152,6 +152,7 @@ export class Capturer {
    * lacks download afterwards (see `downloads`).
    */
   async capture(tabId, provider, { id = null, reason = "changed", force = false } = {}) {
+    const capturedAt = new Date();
     const page = await askPage(this.chrome, tabId, { type: "conversation", id });
     if (page.status !== 200) throw refused(page);
     const { info } = page;
@@ -171,7 +172,8 @@ export class Capturer {
     }
 
     const version = this.chrome.runtime.getManifest().version;
-    const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version };
+    // Later file delivery must not make this conversation's text look newer.
+    const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version, now: capturedAt };
     const downloading = this.downloading.get(key);
     if (downloading) downloading.latest = base;
     const files = [];
