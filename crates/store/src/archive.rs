@@ -255,9 +255,7 @@ impl Archive {
                 )
                 .optional()?;
             if previous.as_deref() != Some(boot.trim()) {
-                return Err(StoreError::Invalid(
-                    "the interrupted index build is from another boot; an explicit rebuild is required".into()
-                ));
+                return Err(StoreError::IndexBuildBoot);
             }
         } else if !schema::same_schema(&index, &[schema::INDEX])? {
             return Err(StoreError::NoMigration {

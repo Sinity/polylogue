@@ -207,7 +207,7 @@ fn seed_restart(dir: &Path) {
     };
     let line = format!(
         "{}\n",
-        json!({"t":"kept","k":[1],"r":{"id":1,"body":"synthetic ".repeat(800)},"h":"0000000000000000"})
+        json!({"t":"kept","k":[1],"r":{"id":1,"body":"synthetic ".repeat(800)},"at_ms":1,"encoding":"sqlite"})
     );
     let bytes = line.repeat((8 << 20) / line.len()).into_bytes();
     let mut length = 0;
