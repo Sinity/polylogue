@@ -130,7 +130,11 @@ impl<'a> Serializer for Collect<'a> {
         variant: &'static str,
         _: usize,
     ) -> Result<Sequence<'a>> {
-        self.path = format!("{}/{}", self.path, variant);
+        self.path = format!(
+            "{}/{}",
+            self.path,
+            variant.replace('~', "~0").replace('/', "~1")
+        );
         Ok(Sequence {
             collect: self,
             values: Vec::new(),
@@ -142,11 +146,17 @@ impl<'a> Serializer for Collect<'a> {
             collect: self,
             values: Map::new(),
             key: None,
+            json: false,
             variant: None,
         })
     }
-    fn serialize_struct(self, _: &'static str, len: usize) -> Result<Object<'a>> {
-        self.serialize_map(Some(len))
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Object<'a>> {
+        let mut object = self.serialize_map(Some(len))?;
+        object.json = matches!(
+            name,
+            "$serde_json::private::Number" | "$serde_json::private::RawValue"
+        );
+        Ok(object)
     }
     fn serialize_struct_variant(
         mut self,
@@ -155,11 +165,16 @@ impl<'a> Serializer for Collect<'a> {
         variant: &'static str,
         _: usize,
     ) -> Result<Object<'a>> {
-        self.path = format!("{}/{}", self.path, variant);
+        self.path = format!(
+            "{}/{}",
+            self.path,
+            variant.replace('~', "~0").replace('/', "~1")
+        );
         Ok(Object {
             collect: self,
             values: Map::new(),
             key: None,
+            json: false,
             variant: Some(variant),
         })
     }
@@ -211,6 +226,7 @@ struct Object<'a> {
     collect: Collect<'a>,
     values: Map<String, Value>,
     key: Option<String>,
+    json: bool,
     variant: Option<&'static str>,
 }
 impl Object<'_> {
@@ -219,16 +235,28 @@ impl Object<'_> {
         self.values.insert(key.into(), value);
         Ok(())
     }
-    fn finish(self) -> Value {
+    fn finish(self) -> Result<Value> {
         if self.collect.observe {
-            return Value::Null;
+            return Ok(Value::Null);
+        }
+        // Serde JSON represents exact numbers and raw JSON through named structs.
+        if self.json {
+            let text = self
+                .values
+                .values()
+                .next()
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    <serde_json::Error as ser::Error>::custom("JSON representation has no text")
+                })?;
+            return serde_json::from_str(text);
         }
         let value = Value::Object(self.values);
-        if let Some(variant) = self.variant {
+        Ok(if let Some(variant) = self.variant {
             Value::Object(Map::from_iter([(variant.into(), value)]))
         } else {
             value
-        }
+        })
     }
 }
 impl SerializeMap for Object<'_> {
@@ -251,7 +279,7 @@ impl SerializeMap for Object<'_> {
         self.field(&key, value)
     }
     fn end(self) -> Result<Value> {
-        Ok(self.finish())
+        self.finish()
     }
 }
 macro_rules! object {
@@ -267,7 +295,7 @@ macro_rules! object {
                 self.field(key, value)
             }
             fn end(self) -> Result<Value> {
-                Ok(self.finish())
+                self.finish()
             }
         }
     };

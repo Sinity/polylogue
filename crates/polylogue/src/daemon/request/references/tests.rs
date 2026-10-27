@@ -5,7 +5,11 @@ use polylogue_model::{MessageId, SessionId, Target};
 enum Example {
     Unit,
     Tuple(MessageId, String),
-    Object { target: Target, text: String },
+    #[serde(rename = "new/~")]
+    Object {
+        target: Target,
+        text: String,
+    },
     One(SessionId),
 }
 
@@ -46,11 +50,29 @@ fn nested_typed_references_survive_without_declaring_their_json_paths() {
     assert_eq!(data["newly_added_field"][0], message.to_string());
     assert_eq!(data["variants"][1]["Tuple"][0], message.to_string());
     assert_eq!(
-        data["variants"][2]["Object"]["target"],
+        data["variants"][2]["new/~"]["target"],
         Target::Message(message).to_string()
     );
     assert_eq!(data["variants"][3]["One"], session.to_string());
     assert_ne!(data["variants"][1]["Tuple"][1], secret);
     assert_ne!(data["authored"]["session"]["id"], session.to_string());
     assert_ne!(data["authored"]["polylogue_reference"], secret);
+}
+
+#[test]
+fn exact_numbers_and_raw_json_keep_their_types() {
+    #[derive(Serialize)]
+    struct Answer {
+        number: serde_json::Number,
+        raw: Box<serde_json::value::RawValue>,
+    }
+    let answer = Answer {
+        number: serde_json::from_str("123456789012345678901234567890.123456789").unwrap(),
+        raw: serde_json::from_str(r#"{"nested":[1,0.1234567890123456789,"authored"]}"#).unwrap(),
+    };
+    let mut references = References::default();
+    assert_eq!(
+        references.value("", &answer),
+        serde_json::to_value(answer).unwrap()
+    );
 }

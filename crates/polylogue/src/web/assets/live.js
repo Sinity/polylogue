@@ -68,6 +68,7 @@ async function batch() {
   } finally {
     controller = undefined;
     if (!stopped && !document.hidden && subscribers.size) {
+      clearTimeout(timer);
       timer = setTimeout(resume, 2000);
     }
   }

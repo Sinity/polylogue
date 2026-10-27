@@ -123,7 +123,7 @@ context available to the model. Branch points use their own index.
 A session Previous page seeks backward from its sealed position and derives
 message indexes from the range crossed. Parent reads start at the selected
 key, and private-key masking states are prepared once per backward request.
-Document Previous replays the prefix once to recover ordered masking, so its
+Document Previous replays the prefix to recover ordered masking, so its
 cost grows with the earlier block count; the HTML measurement reports that
 cost separately at 1,000 and 100,000 blocks.
 
