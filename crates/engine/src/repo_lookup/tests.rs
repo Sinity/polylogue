@@ -130,8 +130,21 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
     let linked = temp.path().join("linked");
     git(
         &repo,
-        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+        &[
+            "-c",
+            "branch.autoSetupMerge=always",
+            "worktree",
+            "add",
+            "-b",
+            "linked",
+            linked.to_str().unwrap(),
+        ],
     );
+    // Creating a tracked branch replaces config, so reopen its current file.
+    let mut config = fs::OpenOptions::new()
+        .append(true)
+        .open(repo.join(".git/config"))
+        .unwrap();
     let (git_dir, _) = git_directories(&linked).unwrap();
     fs::write(
         repo.join(".git/worktree-config"),
@@ -144,6 +157,10 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
         git_dir.display()
     )
     .unwrap();
+    assert_eq!(
+        git(&linked, &["config", "--get", "remote.origin.url"]),
+        "git@example.invalid:team/project.git"
+    );
     assert_eq!(
         read(&linked, &mut cache),
         Lookup {
