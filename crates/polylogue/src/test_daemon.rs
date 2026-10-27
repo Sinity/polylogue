@@ -110,9 +110,7 @@ impl TestDaemon {
                         Some(crate::daemon::execution::deadline(Duration::from_secs(2))),
                         Default::default(),
                     );
-                    limit
-                        .scope(|| reads.reader().unwrap().query("SELECT 42 AS n", &[]))
-                        .unwrap();
+                    limit.scope(|| reads.reader().map(drop)).unwrap();
                 })
                 .join()
                 .unwrap();

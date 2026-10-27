@@ -143,10 +143,10 @@ impl axum::serve::Listener for OwnerListener {
             let Ok(server) = stream.local_addr() else {
                 continue;
             };
-            if access::socket_owner(peer, server) == Some(self.uid) {
-                if let Ok(connection) = connection::Connection::new(stream) {
-                    return (connection, peer);
-                }
+            if access::socket_owner(peer, server) == Some(self.uid)
+                && let Ok(connection) = connection::Connection::new(stream)
+            {
+                return (connection, peer);
             }
         }
     }

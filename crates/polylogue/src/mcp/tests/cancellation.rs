@@ -5,6 +5,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 fn cancelled_read(disconnect: bool) {
     let daemon = test_daemon::start("MCP cancellation");
     let _held = daemon.daemon.reads.reader().unwrap();
+    let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
+    lock.lock().unwrap();
     let reads = daemon.watch_reads();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -37,11 +39,18 @@ fn cancelled_read(disconnect: bool) {
         tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut line)).await.unwrap().unwrap();
         assert!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["result"].is_object());
         client.get_mut().write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
-        let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sql","arguments":{"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}}});
+        let call = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"query":"sessions"}}});
         client.get_mut().write_all(format!("{call}\n").as_bytes()).await.unwrap();
     });
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
-    test_daemon::TestDaemon::wait_for_sql(&limit);
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while daemon.daemon.reads.checked_out() < 2 {
+        assert!(
+            std::time::Instant::now() < until,
+            "MCP never acquired its reader"
+        );
+        std::thread::yield_now();
+    }
     if disconnect {
         drop(client);
     } else {
@@ -55,6 +64,7 @@ fn cancelled_read(disconnect: bool) {
     let elapsed = daemon.assert_slot_freed();
     assert!(limit.cancellation.is_cancelled());
     eprintln!("MCP disconnect released reader in {elapsed:?}");
+    drop(lock);
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), service)
             .await

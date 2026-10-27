@@ -375,15 +375,15 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
     let Ok(mut stream) = UnixStream::connect(socket) else {
         return Vec::new();
     };
-    let wait = Some(std::time::Duration::from_millis(500));
-    let _ = stream.set_read_timeout(wait);
-    let _ = stream.set_write_timeout(wait);
+    let wait = std::time::Duration::from_millis(500);
+    let _ = stream.set_read_timeout(Some(wait));
+    let _ = stream.set_write_timeout(Some(wait));
     let request = Request::Complete {
         word: word.to_owned(),
     };
     let outgoing = crate::daemon::execution::Outgoing {
         request: &request,
-        deadline_ms: crate::daemon::execution::deadline(wait.unwrap()),
+        deadline_ms: crate::daemon::execution::deadline(wait),
     };
     let Ok(mut line) = serde_json::to_string(&outgoing) else {
         return Vec::new();

@@ -174,6 +174,11 @@ impl ReadPool {
         })
     }
 
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn checked_out(&self) -> usize {
+        self.state.lock().unwrap().owners.values().sum()
+    }
+
     /// Daemon readers without client metadata still have a fresh read deadline.
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = Some(timeout);

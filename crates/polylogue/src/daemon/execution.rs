@@ -123,10 +123,12 @@ fn narrower(query: &str) -> Option<String> {
             cond: Some(cond), ..
         } => {
             let span = cond.span;
+            let condition = &query[span.start..span.end];
+            let trimmed = condition.trim_end();
             format!(
-                "{}({}) since:1d{}",
+                "{}({trimmed}) since:1d{}{}",
                 &query[..span.start],
-                &query[span.start..span.end],
+                &condition[trimmed.len()..],
                 &query[span.end..]
             )
         }
