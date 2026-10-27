@@ -6,8 +6,10 @@
 
 pub mod access;
 mod api;
+mod cost;
 pub mod pages;
 mod reader;
+mod timeline;
 
 use crate::daemon::service::{Daemon, handle};
 use crate::daemon::{Request, Response};
@@ -157,7 +159,9 @@ pub fn router(web: Arc<Web>) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/search", get(search))
-        .route("/cost", get(cost))
+        .route("/cost", get(cost::cost))
+        .route("/timeline", get(timeline::timeline))
+        .route("/day/{date}", get(timeline::day))
         .route("/s/{id}", get(reader::session))
         .route("/d/{id}", get(reader::document))
         .route("/m/{id}", get(reader::message))
@@ -166,6 +170,7 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/assets/reader.css", get(css))
         .route("/assets/reader.js", get(js))
         .route("/assets/live.js", get(live_js))
+        .route("/assets/timeline.css", get(timeline_css))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
         .with_state(web)
@@ -369,48 +374,6 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     }
 }
 
-/// Cost uses the cost measure and its session selection, as the CLI does.
-async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
-    let scope = if p.q.trim().is_empty() {
-        "sessions"
-    } else {
-        p.q.trim()
-    };
-    let text = format!("{scope} | measure usage");
-    match ask(
-        &web,
-        Request::Query {
-            text,
-            cursor: None,
-            page_size: None,
-            why: false,
-            session: None,
-            fields: vec![],
-        },
-    )
-    .await
-    {
-        Response::Ok { data } => page(pages::cost(scope, &scrubbed(&web, data)["data"])),
-        Response::Error { kind, message, .. } => failed(
-            if matches!(
-                kind.as_str(),
-                "bad_request"
-                    | "query"
-                    | "invalid_query"
-                    | "unknown_field"
-                    | "bad_value"
-                    | "not_a_query"
-            ) {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
-            &kind,
-            &access::scrub(&message, &web.daemon.archive.root),
-        ),
-    }
-}
-
 async fn auth_page() -> HttpResponse {
     page(pages::auth())
 }
@@ -540,6 +503,14 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .into_response()
         }
     }
+}
+
+async fn timeline_css() -> HttpResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("web/assets/timeline.css"),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
