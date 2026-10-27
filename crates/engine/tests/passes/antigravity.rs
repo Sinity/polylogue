@@ -17,7 +17,15 @@ fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         let pool = w.reads();
         let reader = pool.reader().unwrap();
-        assert!(reader.query("SELECT id FROM session WHERE id='antigravity:home-only'", &[]).unwrap().is_empty());
+        assert!(
+            reader
+                .query(
+                    "SELECT id FROM session WHERE id='antigravity:home-only'",
+                    &[]
+                )
+                .unwrap()
+                .is_empty()
+        );
         let exported = reader
             .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
             .unwrap();
@@ -55,7 +63,11 @@ fn opaque_conversation_files_and_conversion_events_share_a_session_and_rebuild()
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         let spool = engine.config.spool_dir("antigravity-exports");
         // Wait for this fixture's worker before shutdown asks it to stop.
-        while !fs::read_dir(&spool).is_ok_and(|entries| entries.filter_map(Result::ok).any(|e| e.path().extension().is_some_and(|e| e == "json"))) {
+        while !fs::read_dir(&spool).is_ok_and(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.path().extension().is_some_and(|e| e == "json"))
+        }) {
             std::thread::yield_now();
         }
     }

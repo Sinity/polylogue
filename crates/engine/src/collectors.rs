@@ -1,7 +1,10 @@
 //! Collector workers belong to the engine and finish before it closes.
 use polylogue_sources::origin::{Collector, CollectorPaths};
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread::{JoinHandle, spawn};
 
 #[derive(Default)]
@@ -36,11 +39,14 @@ impl Collectors {
             self.tasks.insert(
                 name,
                 spawn(move || {
-                    (collector.sync)(&CollectorPaths {
-                        home: &home,
-                        state_dir: &state_dir,
-                        spool: &spool,
-                    }, &stop)
+                    (collector.sync)(
+                        &CollectorPaths {
+                            home: &home,
+                            state_dir: &state_dir,
+                            spool: &spool,
+                        },
+                        &stop,
+                    )
                 }),
             );
         } else {

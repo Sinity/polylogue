@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 const SERVICE: &str = "exa.language_server_pb.LanguageServerService";
 
@@ -34,7 +34,8 @@ impl Server {
     }
 
     fn post(&self, method: &str, value: Json) -> Result<Json, ConversionError> {
-        let body = serde_json::to_vec(&value).map_err(|e| ConversionError::NotConverted(e.to_string()))?;
+        let body =
+            serde_json::to_vec(&value).map_err(|e| ConversionError::NotConverted(e.to_string()))?;
         let mut response = self
             .agent
             .post(format!("http://127.0.0.1:{}/{SERVICE}/{method}", self.port))
@@ -174,8 +175,9 @@ impl ConversionError {
     fn request(method: &str, error: ureq::Error) -> Self {
         let text = format!("{method}: {error}");
         match error {
-            ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed =>
-                Self::ServerUnavailable(text),
+            ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed => {
+                Self::ServerUnavailable(text)
+            }
             _ => Self::NotConverted(text),
         }
     }
@@ -215,12 +217,18 @@ fn conversion_state(path: &Path, spool: &Path) -> Option<ConversionState> {
 
 fn failed_for(path: &Path, spool: &Path, state: FileState, pid: u64) -> bool {
     conversion_state(path, spool).is_some_and(|previous| {
-        previous.file == state && previous.status == "not_converted"
+        previous.file == state
+            && previous.status == "not_converted"
             && previous.server_pid == Some(pid)
     })
 }
 
-fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &AtomicBool) -> Vec<String> {
+fn sync_paths(
+    paths: &[PathBuf],
+    spool: &Path,
+    servers: &[Server],
+    stop: &AtomicBool,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let mut pending = Vec::new();
     let mut counts = std::collections::HashMap::new();
@@ -234,12 +242,18 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &Atomic
         let state = match FileState::read(path) {
             Ok(state) => state,
             Err(e) => {
-                errors.push(format!("Antigravity conversation file {} not converted: {e}", path.display()));
+                errors.push(format!(
+                    "Antigravity conversation file {} not converted: {e}",
+                    path.display()
+                ));
                 continue;
             }
         };
         if counts[&path.file_stem()] > 1 {
-            errors.push(format!("Antigravity conversation file {} not converted: duplicate conversation identity", path.display()));
+            errors.push(format!(
+                "Antigravity conversation file {} not converted: duplicate conversation identity",
+                path.display()
+            ));
             continue;
         }
         if !converted(path, spool, state) {
@@ -254,17 +268,31 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &Atomic
         if stop.load(Ordering::Relaxed) {
             return errors;
         }
-        if pending.iter().all(|(path, state)| failed_for(path, spool, *state, server.pid)) {
+        if pending
+            .iter()
+            .all(|(path, state)| failed_for(path, spool, *state, server.pid))
+        {
             continue;
         }
-        match server.post("SearchConversations", serde_json::json!({"query":"","limit":paths.len()})) {
+        match server.post(
+            "SearchConversations",
+            serde_json::json!({"query":"","limit":paths.len()}),
+        ) {
             Ok(value) if value["results"].is_array() => {
                 selected = Some((server, value));
                 break;
             }
             Err(ConversionError::ServerUnavailable(error)) => {
                 for (path, state) in pending {
-                    record_status(path, spool, state, Some(server.pid), "server_unavailable", Some(&error), &mut errors);
+                    record_status(
+                        path,
+                        spool,
+                        state,
+                        Some(server.pid),
+                        "server_unavailable",
+                        Some(&error),
+                        &mut errors,
+                    );
                 }
                 return errors;
             }
@@ -274,19 +302,38 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &Atomic
     let Some((server, listing)) = selected else {
         // A refusal remains useful while the same server process is present.
         for (path, state) in pending {
-            if !servers.iter().any(|server| failed_for(path, spool, state, server.pid)) {
-                record_status(path, spool, state, None, "server_unavailable", None, &mut errors);
+            if !servers
+                .iter()
+                .any(|server| failed_for(path, spool, state, server.pid))
+            {
+                record_status(
+                    path,
+                    spool,
+                    state,
+                    None,
+                    "server_unavailable",
+                    None,
+                    &mut errors,
+                );
             }
         }
         return errors;
     };
-    let mut unavailable = None;
+    let mut unavailable: Option<String> = None;
     for (path, state) in pending {
         if stop.load(Ordering::Relaxed) {
             break;
         }
         if let Some(error) = &unavailable {
-            record_status(path, spool, state, Some(server.pid), "server_unavailable", Some(error), &mut errors);
+            record_status(
+                path,
+                spool,
+                state,
+                Some(server.pid),
+                "server_unavailable",
+                Some(error),
+                &mut errors,
+            );
             continue;
         }
         if failed_for(path, spool, state, server.pid) {
@@ -298,9 +345,21 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &Atomic
             Err(ConversionError::ServerUnavailable(_)) => "server_unavailable",
             Err(ConversionError::NotConverted(_)) => "not_converted",
         };
-        record_status(path, spool, state, Some(server.pid), status, result.as_ref().err().map(|e| e.text()), &mut errors);
+        record_status(
+            path,
+            spool,
+            state,
+            Some(server.pid),
+            status,
+            result.as_ref().err().map(|e| e.text()),
+            &mut errors,
+        );
         if let Err(error) = result {
-            errors.push(format!("Antigravity conversation file {} not converted: {}", path.display(), error.text()));
+            errors.push(format!(
+                "Antigravity conversation file {} not converted: {}",
+                path.display(),
+                error.text()
+            ));
             if let ConversionError::ServerUnavailable(error) = error {
                 unavailable = Some(error);
             }
@@ -309,9 +368,20 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server], stop: &Atomic
     errors
 }
 
-fn record_status(path: &Path, spool: &Path, state: FileState, pid: Option<u64>, status: &str, error: Option<&str>, errors: &mut Vec<String>) {
+fn record_status(
+    path: &Path,
+    spool: &Path,
+    state: FileState,
+    pid: Option<u64>,
+    status: &str,
+    error: Option<&str>,
+    errors: &mut Vec<String>,
+) {
     if let Err(e) = write_conversion_state(path, spool, state, pid, status, error) {
-        errors.push(format!("Antigravity conversion state {}: {e}", path.display()));
+        errors.push(format!(
+            "Antigravity conversion state {}: {e}",
+            path.display()
+        ));
     }
 }
 
@@ -325,9 +395,8 @@ fn destination(path: &Path, spool: &Path) -> PathBuf {
 fn converted(path: &Path, spool: &Path, state: FileState) -> bool {
     // Conversion state stays small even when the Markdown export is large.
     destination(path, spool).exists()
-        && conversion_state(path, spool).is_some_and(|previous| {
-            previous.file == state && previous.status == "converted"
-        })
+        && conversion_state(path, spool)
+            .is_some_and(|previous| previous.file == state && previous.status == "converted")
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {

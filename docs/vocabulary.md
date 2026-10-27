@@ -59,6 +59,8 @@ the same change.
   **tool database**.
 - **native ID**: the ID an origin itself gives a session or message. Chrome's
   **native messaging** is the only other use of "native".
+- **link prefix**: an optional account or project path before a web chat's
+  conversation path, declared by its origin.
 - **web chat**: a provider's chat pages, which the browser extension captures
   from. **Chat action**: a turn the operator asks the extension to draft or
   submit in one.

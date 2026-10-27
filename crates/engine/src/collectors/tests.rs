@@ -60,9 +60,19 @@ fn dropping_collectors_signals_stop_before_joining_the_workers() {
     let socket = temp.path().join("collector.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let mut collectors = Collectors::default();
-    assert!(collectors.run("stopping", &STOPPING, &CollectorPaths {
-        home: temp.path(), state_dir: temp.path(), spool: &socket,
-    }).is_empty());
+    assert!(
+        collectors
+            .run(
+                "stopping",
+                &STOPPING,
+                &CollectorPaths {
+                    home: temp.path(),
+                    state_dir: temp.path(),
+                    spool: &socket,
+                }
+            )
+            .is_empty()
+    );
     let (mut request, _) = listener.accept().unwrap();
     drop(collectors);
     let mut stopped = [0];

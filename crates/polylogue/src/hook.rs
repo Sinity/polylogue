@@ -214,9 +214,12 @@ fn session_link(word: &str) -> Option<SessionId> {
             .is_some_and(|web| web.hosts.iter().any(|h| h.eq_ignore_ascii_case(host)))
     })?;
     let web = origin.web.as_ref()?;
-    if parts.len() == 4 && web.prefixes.iter().any(|prefix| {
-        parts[0] == prefix.path && (!prefix.numeric || parts[1].bytes().all(|b| b.is_ascii_digit()))
-    }) {
+    if parts.len() == 4
+        && web.prefixes.iter().any(|prefix| {
+            parts[0] == prefix.path
+                && (!prefix.numeric || parts[1].bytes().all(|b| b.is_ascii_digit()))
+        })
+    {
         parts.drain(..2);
     }
     if parts.len() != 2 || parts[0] != web.path {
