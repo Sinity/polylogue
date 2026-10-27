@@ -113,3 +113,44 @@ fn narrower_suggestions_preserve_quoted_pipes_and_pipeline_stages() {
         assert_eq!(narrower(query).as_deref(), Some(expected));
     }
 }
+
+#[test]
+fn a_write_command_whose_read_times_out_never_reaches_the_write() {
+    let daemon = test_daemon::start("keep deadline");
+    let first = daemon.daemon.reads.reader().unwrap();
+    let second = daemon.daemon.reads.reader().unwrap();
+    let application = std::sync::Arc::clone(&daemon.daemon);
+    let response = std::thread::spawn(move || {
+        let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
+        handle_with_limit(
+            Request::Keep {
+                request_id: "synthetic-deadline".into(),
+                text: "sessions".into(),
+                name: None,
+            },
+            &application,
+            &limit,
+        )
+    })
+    .join()
+    .unwrap();
+    let Response::Error {
+        kind,
+        detail: Some(detail),
+        ..
+    } = response
+    else {
+        panic!("expected a read refusal");
+    };
+    assert_eq!(kind, "deadline_exceeded");
+    assert!(detail["count"].is_null());
+    drop(second);
+    drop(first);
+    let reader = daemon.daemon.reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM a.kept_result", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+}

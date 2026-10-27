@@ -71,7 +71,7 @@ pub enum StoreError {
     #[error("input {input} has bytes still being written: {reason}")]
     InputPending { input: String, reason: String },
     #[error(transparent)]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(rusqlite::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -136,6 +136,20 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        if matches!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::OperationInterrupted | rusqlite::ErrorCode::DatabaseBusy)
+        ) && let Some(limit) = read::limit::ReadLimit::current()
+            && let Err(stopped) = limit.check()
+        {
+            return stopped;
+        }
+        Self::Sqlite(error)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

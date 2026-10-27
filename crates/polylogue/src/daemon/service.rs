@@ -242,7 +242,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(StoreError::ReadPoolClosed) => {
             return error("daemon_stopping", StoreError::ReadPoolClosed);
         }
-        Err(e) => return error("store", e),
+        Err(e) => return store_error(&e),
     };
     match request {
         Request::Attachment {

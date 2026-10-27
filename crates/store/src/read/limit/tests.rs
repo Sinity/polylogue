@@ -20,7 +20,7 @@ fn slow_statement_stops_at_its_deadline_and_the_slot_can_be_reused() {
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
     let start = Instant::now();
     let result = limit.scope(|| pool.reader().unwrap().query(SLOW, &[]));
-    assert!(result.is_err());
+    assert!(matches!(result, Err(StoreError::ReadDeadlineExceeded)));
     assert!(matches!(
         limit.check(),
         Err(StoreError::ReadDeadlineExceeded)
@@ -44,7 +44,10 @@ fn cancelling_a_running_statement_frees_its_only_slot() {
         started(&limit);
         let start = Instant::now();
         limit.cancellation.cancel();
-        assert!(worker.join().unwrap().is_err());
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(StoreError::ReadCancelled)
+        ));
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(matches!(limit.check(), Err(StoreError::ReadCancelled)));
         assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());

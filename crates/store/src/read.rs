@@ -264,7 +264,10 @@ impl ReadPool {
         let (conn, identity) = match idle {
             Some(connection) => connection,
             None => {
-                let conn = connect()?;
+                let conn = match &reader.limit {
+                    Some(limit) => limit.scope(connect),
+                    None => connect(),
+                }?;
                 let before = current?;
                 let after = index_identity(&self.archive)?;
                 if before != after {
