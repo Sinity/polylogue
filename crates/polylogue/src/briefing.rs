@@ -129,6 +129,8 @@ impl Ask {
 /// Prepared context, not yet delivered.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Prepared {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub advice_id: Option<String>,
     pub event: &'static str,
     pub text: String,
     /// References included, in order.
@@ -235,7 +237,12 @@ pub fn prepare(
             now,
             near,
         ),
-        Ask::ToolUse { cwd, command, .. } => advice::advice(reader, cwd, command, delivery_id, now),
+        Ask::ToolUse {
+            cwd,
+            command,
+            session,
+            ..
+        } => advice::advice(reader, cwd, command, session.as_ref(), now),
     }
 }
 
@@ -842,6 +849,7 @@ fn session_start(
     };
     let (text, refs, left_out) = fit.finish(closing);
     Ok(Prepared {
+        advice_id: None,
         event: match source {
             StartSource::Startup | StartSource::Clear => DeliveryEvent::SessionStart,
             StartSource::Resume => DeliveryEvent::Resume,
@@ -955,6 +963,7 @@ fn takeover(
         "\nThe full session: `polylogue read {id}`; its tool calls: `polylogue read {id} --view actions`."
     );
     Ok(Prepared {
+        advice_id: None,
         event: DeliveryEvent::Takeover.as_str(),
         text,
         refs,
@@ -1215,6 +1224,7 @@ fn recall(
         }
     );
     Ok(Prepared {
+        advice_id: None,
         event: DeliveryEvent::Recall.as_str(),
         text: out,
         refs,

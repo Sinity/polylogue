@@ -190,6 +190,10 @@ impl DocumentParser for Capture {
                     "schema_version": capture.get("schema_version"),
                     "provenance": provenance,
                     "provider_meta": capture.get("provider_meta"),
+                    "attachments": capture.pointer("/session/attachments").and_then(Json::as_array)
+                        .into_iter().flatten().map(|a| serde_json::json!({
+                            "id": a.get("provider_attachment_id"), "not_fetched": a.get("not_fetched")
+                        })).collect::<Vec<_>>(),
                 }),
             });
         }

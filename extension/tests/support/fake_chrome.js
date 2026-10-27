@@ -95,7 +95,7 @@ function pagePort(answer) {
       page.postMessage({ type: "facts", ...facts, has_body: body !== null });
       if (body) {
         const bytes = new Uint8Array(await body.arrayBuffer());
-        for (let at = 0; at < bytes.length; at += 1000) page.postMessage({ type: "appended_bytes", data: encode(bytes.subarray(at, at + 1000)) });
+        for (let at = 0; at < bytes.length; at += 1000) page.postMessage({ type: "chunk", data: encode(bytes.subarray(at, at + 1000)) });
       }
       page.postMessage({ type: "end" });
     } catch (error) {

@@ -27,6 +27,8 @@ pub enum UserWrite {
     },
     /// Context prepared for a recipient, with its exact text.
     Deliver(Delivery),
+    /// Advice already printed by a hook, recorded with its delivered outcome.
+    DeliveredAdvice(Delivery),
     /// What happened to a prepared delivery.
     DeliveryEvent {
         delivery: String,
@@ -231,7 +233,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: false,
             })
         }
-        UserWrite::Deliver(d) => {
+        UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => {
             let body = crate::encoding::pack_text(&d.text)?;
             tx.execute(
                 "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
@@ -253,6 +255,10 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                     seq,
                 ],
             )?;
+            if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
+                tx.execute("INSERT INTO delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)",
+                    params![r.id, at, "written to the harness hook output", seq])?;
+            }
             Ok(UserOutcome {
                 id: r.id.clone(),
                 repeat: false,

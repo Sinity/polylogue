@@ -301,3 +301,31 @@ fn native_ids_positions_and_the_system_header_cannot_name_the_same_message() {
         assert!(!ids.contains(&row.message.id.to_string()));
     }
 }
+
+#[test]
+fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
+    let chunks = vec![
+        json!({"role":"future", "branchParent":{"promptId":"parent"}}),
+        json!({"role":"user"}),
+    ];
+    let step = parse("child", &prompt(chunks.clone()));
+    assert!(step.output.sessions.is_empty());
+    assert!(step.output.messages.is_empty());
+    assert!(step.output.events.is_empty());
+    assert_eq!(step.output.links.len(), 1);
+    assert_eq!(step.counts.used.values().sum::<u64>(), 0);
+    let mut chunks = chunks;
+    chunks.push(json!({"role":"model", "text":"usable", "branchParent":{"promptId":"another"}}));
+    let step = parse("child", &prompt(chunks));
+    assert_eq!(step.output.links.len(), 2);
+    assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(step.output.messages[0].message.role, Role::System);
+    assert_eq!(
+        step.output.messages[1].message.parent,
+        Some(step.output.messages[0].message.id.clone())
+    );
+    assert_eq!(
+        step.output.messages[1].message.model.as_deref(),
+        Some("gemini-3-pro-preview")
+    );
+}

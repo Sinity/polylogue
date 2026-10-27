@@ -225,6 +225,13 @@ pub enum Request {
         #[serde(default)]
         sender: Option<String>,
     },
+    /// Advice printed by a hook. Preparation is read-only.
+    AdviceDelivered {
+        request_id: String,
+        session: Option<SessionId>,
+        cwd: PathBuf,
+        text: String,
+    },
     /// What happened to a delivery after it was handed out.
     DeliveryEvent {
         delivery: String,
@@ -321,6 +328,7 @@ impl Request {
             | Self::Save { .. }
             | Self::Watch { .. }
             | Self::Withdraw { .. }
+            | Self::AdviceDelivered { .. }
             | Self::DeliveryEvent { .. }
             | Self::Excise { .. } => false,
         }

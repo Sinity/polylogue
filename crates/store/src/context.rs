@@ -78,30 +78,19 @@ pub struct SessionWork {
     pub plan_open: Vec<String>,
 }
 
-/// A check (test, build, lint) that failed under a directory with no later
-/// pass of the same check there.
+/// A verification that failed under a directory since its last pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailingCommand {
-    /// The check as the work graph names it (`cargo test`).
     pub command: String,
-    /// The latest failing command as given.
     pub latest: Option<String>,
     pub exit_code: Option<i64>,
     pub at: Option<Timestamp>,
     pub session: String,
-    /// Failures since the window began.
-    pub times: u64,
-}
-
-/// Failures of one check under a directory since its last pass there.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct CheckFailures {
     pub times: u64,
     pub sessions: u64,
     pub first: Option<Timestamp>,
-    /// The latest failure's session and exit code.
-    pub session: String,
-    pub exit_code: Option<i64>,
+    /// The latest failure's work node key.
+    pub state: String,
 }
 
 /// A Bead whose latest claim under a directory is still open.
@@ -444,110 +433,68 @@ impl Reader<'_> {
         Ok(Some(work))
     }
 
-    /// Checks (tests, builds, lints: the work graph's verifications) that
-    /// failed since `since` in sessions under `dirs`, with no later pass of
-    /// the same check there, most recent first.
+    /// Verifications that failed since `since` under `dirs`, counting only
+    /// failures after the last pass of the same verification there.
     pub fn failing_commands(&self, dirs: &[String], since: i64) -> Result<Vec<FailingCommand>> {
         let conn = self.conn()?;
-        let under = |alias: &str| {
-            format!(
-                "EXISTS (SELECT 1 FROM json_each(?1) d WHERE {alias}.cwd = d.value \
-                 OR ({alias}.cwd >= d.value || '/' AND {alias}.cwd < d.value || '0'))"
-            )
-        };
-        let sql = format!(
-            "SELECT v.title, t.command, t.exit_code, v.at, s.id,
-                    (SELECT count(*) FROM work_node f JOIN session fs ON fs.pk = f.session_pk
-                      WHERE f.kind = 'verification' AND f.title = v.title AND f.state = 'error'
-                        AND f.at >= ?2 AND {fs})
-               FROM work_node v JOIN session s ON s.pk = v.session_pk
-               LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
-              WHERE v.kind = 'verification' AND v.state = 'error' AND v.at >= ?2 AND {s}
-                AND NOT EXISTS (
-                    SELECT 1 FROM work_node u JOIN session us ON us.pk = u.session_pk
-                     WHERE u.kind = 'verification' AND u.title = v.title AND u.state = 'ok'
-                       AND u.at > v.at AND {us})
-              ORDER BY v.at DESC, v.pk DESC",
-            fs = under("fs"),
-            s = under("s"),
-            us = under("us"),
-        );
-        let dirs = serde_json::to_string(dirs)?;
-        let mut stmt = conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![dirs, since], |r| {
-            Ok(FailingCommand {
-                command: r.get(0)?,
-                latest: r.get(1)?,
-                exit_code: r.get(2)?,
-                at: ts(r.get(3)?),
-                session: r.get(4)?,
-                times: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-            })
-        })?;
-        let mut out: Vec<FailingCommand> = Vec::new();
-        for row in rows {
-            let row = row?;
-            // The latest failure of each command shape stands for it.
-            if !out.iter().any(|o| o.command == row.command) {
-                out.push(row);
-            }
-        }
-        Ok(out)
-    }
-
-    /// The failures of the check `title` since `since` in sessions under
-    /// `dirs` that came after its last pass there; `None` when it has not
-    /// failed since passing.
-    pub fn check_failures(
-        &self,
-        dirs: &[String],
-        title: &str,
-        since: i64,
-    ) -> Result<Option<CheckFailures>> {
-        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT v.state, v.at, s.id, t.exit_code
+            "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state, v.key
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
-              WHERE v.kind = 'verification' AND v.title = ?2 AND v.at >= ?3
+              WHERE v.kind = 'verification' AND v.at >= ?2
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
               ORDER BY v.at DESC, v.pk DESC",
         )?;
-        let dirs = serde_json::to_string(dirs)?;
-        let mut found: Option<CheckFailures> = None;
-        let mut sessions: Vec<String> = Vec::new();
-        let rows = stmt.query_map(params![dirs, title, since], |r| {
+        let mut passed = std::collections::HashSet::new();
+        let mut sessions =
+            std::collections::HashMap::<String, std::collections::HashSet<String>>::new();
+        let mut out: Vec<FailingCommand> = Vec::new();
+        let rows = stmt.query_map(params![serde_json::to_string(dirs)?, since], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
                 r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?;
         for row in rows {
-            let (state, at, session, exit_code) = row?;
+            let (command, latest, exit_code, at, session, state, key) = row?;
             if state == "ok" {
-                break;
-            }
-            if state != "error" {
+                passed.insert(command);
                 continue;
             }
-            if !sessions.contains(&session) {
-                sessions.push(session.clone());
+            if state != "error" || passed.contains(&command) {
+                continue;
             }
-            let failures = found.get_or_insert(CheckFailures {
-                times: 0,
-                sessions: 0,
-                first: None,
-                session,
-                exit_code,
-            });
-            failures.times += 1;
-            failures.sessions = sessions.len() as u64;
-            failures.first = ts(at);
+            let seen = sessions.entry(command.clone()).or_default();
+            seen.insert(session.clone());
+            let index = match out.iter().position(|f| f.command == command) {
+                Some(i) => i,
+                None => {
+                    out.push(FailingCommand {
+                        command,
+                        latest,
+                        exit_code,
+                        at: ts(at),
+                        session,
+                        times: 0,
+                        sessions: 0,
+                        first: None,
+                        state: key,
+                    });
+                    out.len() - 1
+                }
+            };
+            let f = &mut out[index];
+            f.times += 1;
+            f.sessions = seen.len() as u64;
+            f.first = ts(at);
         }
-        Ok(found)
+        Ok(out)
     }
 
     /// Beads claimed since `since` whose latest claim by a session under

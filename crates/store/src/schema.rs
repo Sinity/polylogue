@@ -17,7 +17,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 /// A different version rebuilds the index into a new file. Raise it when the
 /// index schema, the row encoding, or what any parser produces from the same
 /// bytes changes.
-pub const INDEX_VERSION: u32 = 49;
+pub const INDEX_VERSION: u32 = 50;
 
 /// The steps that bring `archive.db` forward: the first takes version 1 to
 /// version 2, and so on. A change to `archive.sql` appends one step, which

@@ -203,6 +203,9 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
         .ok(),
         None => None,
     };
+    listed["downloading"] = stored
+        .as_ref()
+        .map_or(Value::Bool(false), |data| data["downloading"].clone());
     let stored = stored.as_ref().map_or(&[][..], |data| {
         data["files"].as_array().map_or(&[][..], Vec::as_slice)
     });
@@ -265,6 +268,7 @@ async fn conversations(
                 "session": row["session"],
                 "messages": messages,
                 "last_captured_at": row["last_captured_at"],
+                "downloading": row["downloading"],
             })
         })
         .collect();
