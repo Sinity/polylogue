@@ -1,7 +1,10 @@
 use super::*;
 use base64::Engine as _;
 
+static MEASUREMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 async fn measure(r: &Reader, label: &str, path: &str, size: usize) {
+    let load = std::fs::read_to_string("/proc/loadavg").ok();
     let mut times = Vec::new();
     let mut bytes = 0;
     for _ in 0..6 {
@@ -13,13 +16,14 @@ async fn measure(r: &Reader, label: &str, path: &str, size: usize) {
     }
     println!(
         "HTML_MEASUREMENT {}",
-        serde_json::json!({"label":label,"size":size,"milliseconds":times,"bytes":bytes})
+        serde_json::json!({"label":label,"size":size,"milliseconds":times,"bytes":bytes,"loadavg":load})
     );
 }
 
 #[test]
 #[ignore = "performance measurement through the measure operation"]
 fn hundred_thousand_message_html_cost() {
+    let _serial = MEASUREMENT.lock().unwrap();
     let r = reader();
     let conn = rusqlite::Connection::open(r.web.daemon.archive.index_db()).unwrap();
     conn.execute_batch("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<99999)
@@ -69,6 +73,7 @@ fn hundred_thousand_message_html_cost() {
 #[test]
 #[ignore = "performance measurement through the measure operation"]
 fn document_previous_cost() {
+    let _serial = MEASUREMENT.lock().unwrap();
     let r = reader();
     let source = r.w._dir.path().join("measured-document");
     std::fs::create_dir_all(source.join("projects")).unwrap();
