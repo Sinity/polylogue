@@ -1027,3 +1027,26 @@ fn a_user_write_goes_ahead_of_queued_batches() {
         "the setting committed at {setting}, the queued batches from {batches}"
     );
 }
+
+#[test]
+fn an_excision_does_not_finish_unrelated_first_build_work() {
+    let w = test_archive();
+    w.writer.send(batch("removed-input", 0, 0, vec![MessageRow {
+        offset: 0, end: 100, message: text_message("removed-message", "removed", Role::User, "removed text", None)
+    }], &["removed"])).unwrap();
+    w.writer.send(batch("kept-input", 0, 0, vec![MessageRow {
+        offset: 0, end: 100, message: text_message("kept-message", "kept", Role::User, "kept text", None)
+    }], &["kept"])).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let store = Arc::new(w.archive.blobs().unwrap());
+    w.writer.excise(crate::excise::ExciseRequest {
+        id: "remove-during-build".into(), target: crate::excise::ExciseTarget::Session(sid("removed")), reason: None, dry_run: false
+    }, store).unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.query("SELECT value FROM meta WHERE key='unsynced'", &[]).unwrap()[0]["value"], "1");
+    assert_eq!(reader.status().unwrap().messages, 1);
+    drop(reader);
+    w.writer.derive().unwrap();
+    assert_eq!(pool.reader().unwrap().status().unwrap().messages, 1);
+}
