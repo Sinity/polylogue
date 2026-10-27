@@ -50,3 +50,21 @@ fn timeline_day_and_cost_share_public_operations_and_access() {
         assert!(body.contains("Cost of selected sessions"));
     });
 }
+
+#[test]
+fn invalid_controls_do_not_echo_secret_like_input() {
+    let r = reader();
+    let secret = format!("sk-{}", "z".repeat(40));
+    rt().block_on(async {
+        for path in [
+            format!("/timeline?undated={secret}"),
+            format!("/day/2024-02-29?across_years={secret}"),
+            format!("/cost?unknown_model={secret}"),
+        ] {
+            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!body.contains(&secret));
+            assert!(body.contains("bad_request"));
+        }
+    });
+}
