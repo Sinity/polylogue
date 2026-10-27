@@ -103,7 +103,12 @@ fn discover(root: &Path, processes: &Path) -> Vec<Server> {
         .collect()
 }
 
-pub fn sync(home: &Path, spool: &Path) -> Vec<String> {
+pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
+    setting: None,
+    sync: |paths| sync(paths.home, paths.spool),
+};
+
+fn sync(home: &Path, spool: &Path) -> Vec<String> {
     let root = home.join(".gemini/antigravity");
     let mut paths = Vec::new();
     if let Err(e) = trajectories(&root.join("conversations"), &mut paths) {
@@ -135,6 +140,7 @@ fn trajectories(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
 }
 
 fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String> {
+    let trajectory_count = paths.len();
     let mut errors = Vec::new();
     let pending: Vec<_> = paths
         .iter()
@@ -170,7 +176,7 @@ fn sync_paths(paths: &[PathBuf], spool: &Path, servers: &[Server]) -> Vec<String
     for server in servers {
         match server.post(
             "SearchConversations",
-            serde_json::json!({"query":"","limit":paths.len()}),
+            serde_json::json!({"query":"","limit":trajectory_count}),
         ) {
             Ok(value) if value["results"].is_array() => {
                 selected = Some((server, value));
