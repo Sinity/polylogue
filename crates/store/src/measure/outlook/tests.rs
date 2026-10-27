@@ -210,7 +210,7 @@ fn units_remain_separate_and_user_only_days_do_not_prove_usage_coverage() {
         reasoning: Some(0),
         ..Default::default()
     };
-    message.reported_cost_usd = Some(7.0);
+    message.reported_cost_usd = Some(serde_json::Number::from(7));
     fixture.write(
         "units",
         vec![

@@ -27,7 +27,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
                 author: r.get(3)?,
                 prompt: r.get(4)?,
                 at: r.get(5)?,
-                words: r.get(6)?,
+                words: r.get::<_, i64>(6)? as u64,
                 stop: r.get(7)?,
                 duration: r.get(8)?,
             })
@@ -273,7 +273,7 @@ fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
     let compaction_count: u64 = tx.query_row(
         "SELECT count(*) FROM event WHERE session_pk=?1 AND kind='compaction'",
         [pk],
-        |r| r.get(0),
+        |r| r.get::<_, i64>(0).map(|n| n as u64),
     )?;
     let tool_active = durations.iter().sum();
     let facts = Facts {

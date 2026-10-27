@@ -78,7 +78,7 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
     let conn = reader.conn()?;
     let (total_sessions, total_messages) = conn.query_row(&format!(
         "SELECT count(*), coalesce(sum((SELECT count(*) FROM message m WHERE m.session_pk=s.pk AND m.duplicate_of IS NULL)),0) FROM session s WHERE {condition}"),
-        rusqlite::params_from_iter(params.iter()), |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)))?;
     let mut result = Buckets {
         total_sessions,
         total_messages,
@@ -101,7 +101,6 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
     ];
     if deep {
         families.extend([
-            ("repositories", "SELECT pk, coalesce(repo_root, record_repo, repo) AS value FROM session".into()),
             ("roles", "SELECT session_pk AS pk,role AS value FROM message WHERE duplicate_of IS NULL".into()),
             ("written_by", "SELECT session_pk AS pk,written_by AS value FROM message WHERE duplicate_of IS NULL".into()),
             ("block_kinds", "SELECT b.session_pk AS pk,b.kind AS value FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.duplicate_of IS NULL".into()),
@@ -111,12 +110,30 @@ fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buc
     } else {
         result.omitted = deeper.to_vec();
     }
+    if deep {
+        let keys: Vec<i64> = conn
+            .prepare(&format!("SELECT s.pk FROM session s WHERE {condition}"))?
+            .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut counts = Counts::new();
+        for pk in keys {
+            let values: std::collections::BTreeSet<_> = super::profiles::repositories(conn, pk)?
+                .0
+                .into_iter()
+                .filter_map(|r| r.identity.or(r.label))
+                .collect();
+            for value in values {
+                *counts.entry(value).or_default() += 1;
+            }
+        }
+        result.families.insert("repositories".into(), counts);
+    }
     for (name, sql) in families {
         let mut statement = conn.prepare(&format!(
             "SELECT f.value,count(DISTINCT s.pk) FROM session s JOIN ({sql}) f ON f.pk=s.pk WHERE {condition} AND f.value IS NOT NULL GROUP BY f.value ORDER BY f.value"))?;
         let counts = statement
             .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-                Ok((r.get(0)?, r.get(1)?))
+                Ok((r.get(0)?, r.get::<_, i64>(1)? as u64))
             })?
             .collect::<rusqlite::Result<Counts>>()?;
         result.families.insert(name.into(), counts);
