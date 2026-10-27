@@ -23,6 +23,7 @@ pub mod kinds;
 mod parts;
 mod register;
 mod replay;
+pub use replay::Replay;
 mod sessions;
 
 use client::Client;

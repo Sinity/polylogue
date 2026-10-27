@@ -262,20 +262,16 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         from: None,
         until: None,
     };
-    let selection = sinex
-        .replay_scope(&scope)
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap();
+    let mut replay = sinex.replay().unwrap();
+    let selection = replay.scope(&scope).unwrap().into_iter().next().unwrap();
     assert_eq!(selection.rows, 1);
     let operation = sinex_model::OperationId::new();
     let batches = vec![sinex_protocol::ReplayBatch {
         events: vec![event],
         failures: vec![],
     }];
-    let replaced = sinex
-        .replay_sequence(operation, selection.clone(), scope.clone(), batches.clone())
+    let replaced = replay
+        .sequence(operation, selection.clone(), scope.clone(), batches.clone())
         .unwrap();
     assert_eq!(replaced.admitted.len(), 1);
     assert_ne!(
@@ -284,10 +280,11 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     );
     assert_eq!(
         replaced,
-        sinex
-            .replay_sequence(operation, selection, scope, batches)
+        replay
+            .sequence(operation, selection, scope, batches)
             .unwrap()
     );
+    drop(replay);
     assert_eq!(
         sinex_rows(&running.socket, "events where event_type = polylogue.note"),
         1
