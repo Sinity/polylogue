@@ -55,7 +55,9 @@ impl Databases {
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {
-                    let Some(due)=exporter.observe(&source.path) else { continue; };
+                    let Some(due) = exporter.observe(&source.path) else {
+                        continue;
+                    };
                     let mut queue = match InputWriter::new(
                         &archive,
                         &writer,
@@ -354,3 +356,6 @@ impl<'a> InputWriter<'a> {
         error.map_or(Ok(()), Err)
     }
 }
+
+#[cfg(test)]
+mod tests;
