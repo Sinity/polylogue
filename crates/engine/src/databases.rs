@@ -50,7 +50,7 @@ impl Databases {
         let thread = std::thread::Builder::new()
             .name("polylogue-databases".into())
             .spawn(move || {
-                let _worker=polylogue_store::timing::worker();
+                let _worker = polylogue_store::timing::worker();
                 let mut completed = Completed::default();
                 let mut pending = Vec::new();
                 for source in &inputs {

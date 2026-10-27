@@ -231,6 +231,7 @@ fn write_export(
 ) -> Result<Exported, ExportError> {
     let _busy = crate::timing::enter(crate::timing::Stage::Database);
     let sql_err = |e| ExportError::Sqlite(db.to_owned(), e);
+    let facts = DbFacts::of(db).db.ok_or_else(||ExportError::Invalid("source database disappeared before its read".into()))?;
     let source = Connection::open_with_flags(
         db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -243,7 +244,6 @@ fn write_export(
     let tables = tables(&source).map_err(sql_err)?;
     let catalog = catalog::Catalog::open(archive, &input.id)?;
     let mut saved = catalog.saved.clone();
-    let facts = DbFacts::of(db).db.expect("source exists");
     let replaced = saved.source_file != Some((facts.device, facts.inode));
     let schema: Map<String, Value> = tables
         .iter()
