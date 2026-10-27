@@ -79,6 +79,19 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
             "<p>Only source records with unknown or unrepresentable times are selected.</p>",
         );
     }
+    if let Some(count) = data["unplaced"]["count"].as_u64() {
+        let _ = write!(
+            body,
+            "<p>{count} known physical response records across the selected sessions have unknown or unrepresentable source times. This is a subset of all-time usage and cannot be assigned to a day.</p>"
+        );
+    } else if let Some(error) = data["unplaced"]["error"].as_str() {
+        let _ = write!(
+            body,
+            "<p>Unknown-time count unavailable: {}: {}</p>",
+            esc(error),
+            esc(data["unplaced"]["message"].as_str().unwrap_or(""))
+        );
+    }
     let date = options.date.as_deref().unwrap_or("");
     let _ = write!(
         body,
@@ -139,7 +152,7 @@ pub fn render(scope: &str, options: &Options, data: &Value) -> String {
     if !options.undated {
         body.push_str(&daily(scope, options, data));
     }
-    body.push_str("<h2>Physical response details</h2><p>Unknown response boundaries and independent usage observations are excluded from this list and counted separately in the shared usage report. Totals include every selected model.</p>");
+    body.push_str("<h2>Physical response details</h2><p>Unknown response boundaries and independent usage observations are excluded from this list and counted separately in the shared usage report. Totals include every selected model. Without a source record period, dated response details are followed by undated response details.</p>");
     if options.unknown_model {
         body.push_str("<p>Response details without a recorded model name.</p>");
     }
