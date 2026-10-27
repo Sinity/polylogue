@@ -157,6 +157,10 @@ impl Exporter {
             st.last_seen = Some(now);
             st.exported = None;
             st.exported_at = None;
+            let catalog = st.catalog.as_mut().expect("loaded catalog");
+            if catalog.source_file.take().is_some() {
+                catalog.save(st.synced.as_ref().expect("verified prefix"))?;
+            }
             return Ok(None);
         }
         let quiet = st.last_seen == Some(now);
@@ -169,12 +173,8 @@ impl Exporter {
         if !compare && !cursor_due {
             return Ok(None);
         }
-        let replaced = first
-            || st
-                .exported
-                .and_then(|f| f.db)
-                .zip(now.db)
-                .is_some_and(|(old, new)| old.device != new.device || old.inode != new.inode);
+        let source_file = now.db.map(|facts| (facts.device, facts.inode));
+        let replaced = st.catalog.as_ref().expect("loaded catalog").source_file != source_file;
         let done = match write_export(
             db,
             out,
@@ -184,6 +184,7 @@ impl Exporter {
                 compare,
                 cursor: cursor_due,
                 replaced,
+                source_file,
             },
             checkpoint,
         ) {
@@ -322,6 +323,7 @@ struct Due {
     compare: bool,
     cursor: bool,
     replaced: bool,
+    source_file: Option<(u64, u64)>,
 }
 
 fn write_export(
@@ -500,6 +502,10 @@ fn write_export(
                 previous.as_ref().expect("stored cursor").2
             };
             transaction.execute("INSERT INTO table_cursor VALUES(?1,?2,?3,?4) ON CONFLICT(t) DO UPDATE SET column_name=excluded.column_name,value=excluded.value,verified_at=excluded.verified_at", rusqlite::params![t.name,column,high,verified]).map_err(sql_err)?;
+        } else {
+            transaction
+                .execute("DELETE FROM table_cursor WHERE t=?1", [&t.name])
+                .map_err(sql_err)?;
         }
     }
     // Only fully compared tables and dropped tables can have removals.
@@ -532,10 +538,12 @@ fn write_export(
         Some(schema_digest),
         &catalog.binding,
         catalog.binding.is_none(),
+        due.source_file,
         st.synced.as_ref().expect("verified prefix"),
     )?;
     transaction.commit().map_err(sql_err)?;
     catalog.schema = Some(schema_digest);
+    catalog.source_file = due.source_file;
     Ok(done)
 }
 

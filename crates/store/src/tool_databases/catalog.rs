@@ -7,6 +7,7 @@ pub(super) struct Catalog {
     pub conn: Connection,
     pub schema: Option<u64>,
     pub binding: Option<super::binding::Binding>,
+    pub source_file: Option<(u64, u64)>,
     unbound: bool,
 }
 
@@ -27,6 +28,7 @@ impl Catalog {
             conn,
             schema: None,
             binding: None,
+            source_file: None,
             unbound: false,
         };
         let sql_err = |e| ExportError::Sqlite(out.into(), e);
@@ -56,6 +58,7 @@ impl Catalog {
                 catalog.schema = saved.schema;
                 catalog.binding = saved.binding;
                 catalog.unbound = saved.unbound;
+                catalog.source_file = saved.source_file;
                 return Ok((catalog, synced));
             }
         }
@@ -94,7 +97,14 @@ impl Catalog {
     }
 
     pub fn save(&self, synced: &SyncedPrefix) -> Result<(), ExportError> {
-        save(&self.conn, self.schema, &self.binding, self.unbound, synced)
+        save(
+            &self.conn,
+            self.schema,
+            &self.binding,
+            self.unbound,
+            self.source_file,
+            synced,
+        )
     }
 
     pub(super) fn bind(
@@ -173,6 +183,7 @@ struct SavedCatalog {
     schema: Option<u64>,
     binding: Option<super::binding::Binding>,
     unbound: bool,
+    source_file: Option<(u64, u64)>,
 }
 
 pub(super) fn save(
@@ -180,6 +191,7 @@ pub(super) fn save(
     schema: Option<u64>,
     binding: &Option<super::binding::Binding>,
     unbound: bool,
+    source_file: Option<(u64, u64)>,
     synced: &SyncedPrefix,
 ) -> Result<(), ExportError> {
     let saved = serde_json::to_string(&SavedCatalog {
@@ -187,6 +199,7 @@ pub(super) fn save(
         schema,
         binding: binding.clone(),
         unbound,
+        source_file,
     })
     .map_err(std::io::Error::from)?;
     conn.execute("INSERT INTO catalog_meta VALUES('state',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [saved]).map_err(|e| ExportError::Sqlite(PathBuf::from("tool database catalog"), e))?;

@@ -43,18 +43,26 @@ fn an_empty_table_has_no_cursor_and_accepts_the_smallest_integer_key() {
 
 #[test]
 fn a_replaced_source_rechecks_rows_below_the_cursor() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("tool.sqlite");
-    let out = dir.path().join("tool.jsonl");
-    Connection::open(&db).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');").unwrap();
-    let mut exporter = Exporter::with_cursor(cursor);
-    exporter.export(&db, &out, None).unwrap();
-    let replacement = dir.path().join("replacement.sqlite");
-    Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'replacement');").unwrap();
-    fs::rename(replacement, &db).unwrap();
-    exporter.export(&db, &out, None).unwrap();
-    let rows = exporter.export(&db, &out, None).unwrap().unwrap();
-    assert_eq!(rows, Exported { rows: 1, gone: 1 });
+    for restart in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("tool.sqlite");
+        let out = dir.path().join("tool.jsonl");
+        Connection::open(&db).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'first'),(2,'second');").unwrap();
+        let mut exporter = Exporter::with_cursor(cursor);
+        exporter.export(&db, &out, None).unwrap();
+        let replacement = dir.path().join("replacement.sqlite");
+        Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'replacement');").unwrap();
+        fs::rename(replacement, &db).unwrap();
+        if restart {
+            exporter = Exporter::with_cursor(cursor);
+        }
+        let rows = exporter
+            .export(&db, &out, None)
+            .unwrap()
+            .or_else(|| exporter.export(&db, &out, None).unwrap())
+            .unwrap();
+        assert_eq!(rows, Exported { rows: 1, gone: 1 });
+    }
 }
 
 #[test]
@@ -136,7 +144,7 @@ fn undeclared_tables_compare_updates_and_reused_keys() {
 }
 
 #[test]
-fn restart_uses_the_saved_catalog_and_hash_without_reading_the_export() {
+fn restart_uses_the_saved_catalog_hash_and_cursor_without_reading_old_rows() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("tool.sqlite");
     let out = dir.path().join("tool.jsonl");
@@ -144,6 +152,23 @@ fn restart_uses_the_saved_catalog_and_hash_without_reading_the_export() {
     Exporter::with_cursor(cursor)
         .export(&db, &out, None)
         .unwrap();
+    Connection::open(&db)
+        .unwrap()
+        .execute("INSERT INTO items(body) VALUES('new row')", [])
+        .unwrap();
+    let mut visited = 0;
+    let done = Exporter::with_cursor(cursor)
+        .export_with(&db, &out, None, &mut || {
+            visited += 1;
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(done, Exported { rows: 1, gone: 0 });
+    assert_eq!(
+        visited, 1,
+        "only the new row was read, with no prefix verification or export replay"
+    );
     let mut visited = 0;
     let done = Exporter::with_cursor(cursor)
         .export_with(&db, &out, None, &mut || {
@@ -154,7 +179,7 @@ fn restart_uses_the_saved_catalog_and_hash_without_reading_the_export() {
         .unwrap();
     assert_eq!(done, Exported::default());
     assert_eq!(
-        visited, 1,
-        "only the source row was visited; neither prefix blocks nor export lines were read"
+        visited, 0,
+        "a second restart resumes after the saved cursor"
     );
 }

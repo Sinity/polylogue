@@ -136,10 +136,12 @@ A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes
 are synced before their catalog transaction commits. Its identity is the
 machine and the file's path. The SQLite catalog beside the dump keeps row
-hashes, declared table cursors and the synced prefix's BLAKE3 state. A restart
-checks the saved file facts and completed length before reusing it. Changed or
+hashes, declared table cursors, the source file identity and the synced prefix's
+BLAKE3 state. A restart checks the saved file facts and completed length before reusing it. Changed or
 interrupted exports are verified and the catalog rebuilt from their completed
-bytes. The prefix hash stays the ordinary BLAKE3 of those bytes.
+bytes. The prefix hash stays the ordinary BLAKE3 of those bytes. A restart resumes
+declared cursors when the source file identity is unchanged; a replacement
+requires full verification.
 
 An origin may declare a monotonic integer change column for a table; other
 tables compare their complete rows. Cursor tables are read every three minutes
