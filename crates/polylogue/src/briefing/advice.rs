@@ -33,9 +33,13 @@ pub(super) fn advice(
     };
     let dirs = scope_dirs(cwd);
     let Some(failures) = reader
-        .failing_commands(&dirs, now.unix_ms() - FAILING_WINDOW_MS)?
+        .failing_commands(
+            &dirs,
+            now.unix_ms() - FAILING_WINDOW_MS,
+            Some(&verification),
+        )?
         .into_iter()
-        .find(|f| f.command == verification)
+        .next()
     else {
         return Ok(prepared);
     };

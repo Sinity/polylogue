@@ -222,3 +222,13 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
         assert_eq!(calls, if printed { 2 } else { 1 });
     }
 }
+
+#[test]
+fn hermes_tool_events_do_not_request_or_print_advice() {
+    tool_advice(
+        Harness::Hermes,
+        &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
+        |_, _| panic!("a Hermes tool event requested advice"),
+        |_, _, _| panic!("a Hermes tool event printed advice"),
+    );
+}

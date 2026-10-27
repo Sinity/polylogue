@@ -435,22 +435,35 @@ impl Reader<'_> {
 
     /// Verifications that failed since `since` under `dirs`, counting only
     /// failures after the last pass of the same verification there.
-    pub fn failing_commands(&self, dirs: &[String], since: i64) -> Result<Vec<FailingCommand>> {
+    /// A title keeps advice on the verification index's title and time range.
+    pub fn failing_commands(
+        &self,
+        dirs: &[String],
+        since: i64,
+        title: Option<&str>,
+    ) -> Result<Vec<FailingCommand>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(
+        let title_condition = if title.is_some() {
+            "AND v.title = ?3"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state, v.key
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
               WHERE v.kind = 'verification' AND v.at >= ?2
+                {title_condition}
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
               ORDER BY v.at DESC, v.pk DESC",
-        )?;
+        );
+        let mut stmt = conn.prepare_cached(&sql)?;
         let mut passed = std::collections::HashSet::new();
         let mut sessions =
             std::collections::HashMap::<String, std::collections::HashSet<String>>::new();
         let mut out: Vec<FailingCommand> = Vec::new();
-        let rows = stmt.query_map(params![serde_json::to_string(dirs)?, since], |r| {
+        let read = |r: &rusqlite::Row<'_>| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
@@ -460,7 +473,12 @@ impl Reader<'_> {
                 r.get::<_, String>(5)?,
                 r.get::<_, String>(6)?,
             ))
-        })?;
+        };
+        let dirs = serde_json::to_string(dirs)?;
+        let rows = match title {
+            Some(title) => stmt.query_map(params![dirs, since, title], read)?,
+            None => stmt.query_map(params![dirs, since], read)?,
+        };
         for row in rows {
             let (command, latest, exit_code, at, session, state, key) = row?;
             if state == "ok" {

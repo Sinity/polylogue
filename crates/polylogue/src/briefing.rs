@@ -794,23 +794,28 @@ fn session_start(
                 }
             })
             .collect();
-    failing.extend(reader.failing_commands(&dirs, since)?.into_iter().map(|f| {
-        let mut text = format!("- `{}`", f.command);
-        if let Some(code) = f.exit_code {
-            let _ = write!(text, " exit {code}");
-        }
-        let _ = write!(text, ", last {} in {}", day(f.at), f.session);
-        if f.times > 1 {
-            let _ = write!(text, " ({} failures)", f.times);
-        }
-        if let Some(latest) = &f.latest {
-            let _ = write!(text, ": {}", one_line(latest, 120));
-        }
-        Item {
-            text,
-            refs: vec![format!("session:{}", f.session)],
-        }
-    }));
+    failing.extend(
+        reader
+            .failing_commands(&dirs, since, None)?
+            .into_iter()
+            .map(|f| {
+                let mut text = format!("- `{}`", f.command);
+                if let Some(code) = f.exit_code {
+                    let _ = write!(text, " exit {code}");
+                }
+                let _ = write!(text, ", last {} in {}", day(f.at), f.session);
+                if f.times > 1 {
+                    let _ = write!(text, " ({} failures)", f.times);
+                }
+                if let Some(latest) = &f.latest {
+                    let _ = write!(text, ": {}", one_line(latest, 120));
+                }
+                Item {
+                    text,
+                    refs: vec![format!("session:{}", f.session)],
+                }
+            }),
+    );
     fit.section(
         "Checks that failed here with no later pass:",
         failing,

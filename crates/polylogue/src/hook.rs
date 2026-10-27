@@ -15,8 +15,8 @@
 //!   pasted into it brings that session's takeover context.
 //! - a shell command about to run (`PreToolUse`, Claude Code and Codex):
 //!   advice, only when the command is a verification that failed here repeatedly
-//!   since it last passed. The daemon has [`ADVICE_BUDGET`] to answer; a
-//!   tool call never waits longer.
+//!   since it last passed. Read-only preparation has [`ADVICE_BUDGET`];
+//!   recording printed advice has [`ADVICE_DELIVERY_BUDGET`].
 //!
 //! Claude Code and Codex take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -229,17 +229,14 @@ fn is_uuid(w: &str) -> bool {
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
 fn context(ask: Ask) -> Option<(String, String)> {
-    let budget = budget_for(&ask);
     let request_id = polylogue_store::user_writes::new_request_id();
-    let sender = (!matches!(ask, Ask::ToolUse { .. }))
-        .then(|| polylogue_model::DeliverySender::Hook.as_str().into());
     let reply = ask_daemon(
         &Request::Context {
             request_id,
             ask,
-            sender,
+            sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
         },
-        budget,
+        CONTEXT_BUDGET,
     )?;
     let Response::Ok { data } = reply else {
         return None;
@@ -250,13 +247,6 @@ fn context(ask: Ask) -> Option<(String, String)> {
     let text = data["prepared"]["text"].as_str()?.to_owned();
     let delivery = data["delivery"].as_str()?.to_owned();
     Some((delivery, text))
-}
-
-fn budget_for(ask: &Ask) -> Duration {
-    match ask {
-        Ask::ToolUse { .. } => ADVICE_BUDGET,
-        _ => CONTEXT_BUDGET,
-    }
 }
 
 fn delivered(delivery: &str, budget: Duration) {
@@ -309,17 +299,6 @@ fn shell_command(payload: &Value) -> Option<String> {
     .filter(|command| !command.trim().is_empty())
 }
 
-/// Advice before a shell command runs.
-fn advice(harness: Harness, payload: &Value) -> Option<(String, String)> {
-    let cwd = payload["cwd"].as_str().map(PathBuf::from)?;
-    let command = shell_command(payload)?;
-    context(Ask::ToolUse {
-        cwd,
-        session: session_of(harness, payload),
-        command,
-    })
-}
-
 /// Takeover context for each session pasted into a prompt.
 fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String, String)> {
     let me = session_of(harness, payload);
@@ -343,8 +322,7 @@ fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String,
     Some((deliveries.join(","), texts.join("\n\n")))
 }
 
-/// What the hook does for one event, given its payload. Returns the
-/// deliveries and the context to emit, if any.
+/// Session-start and takeover context for an event, with its deliveries.
 pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String, String)> {
     match (harness, event) {
         (Harness::ClaudeCode | Harness::Codex, "SessionStart") => start(
@@ -355,7 +333,6 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit") => {
             takeovers(harness, payload, payload["prompt"].as_str()?)
         }
-        (Harness::ClaudeCode | Harness::Codex, "PreToolUse") => advice(harness, payload),
         // Hermes injects context only into a turn's prompt: the first
         // turn's carries the brief, and any turn's the takeovers it asks for.
         (Harness::Hermes, "pre_llm_call") => {
@@ -383,6 +360,9 @@ fn tool_advice(
     mut send: impl FnMut(&Request, Duration) -> Option<Response>,
     output: impl FnOnce(Harness, &str, &str) -> bool,
 ) {
+    if !matches!(harness, Harness::ClaudeCode | Harness::Codex) {
+        return;
+    }
     let Some(cwd) = payload["cwd"].as_str().map(PathBuf::from) else {
         return;
     };

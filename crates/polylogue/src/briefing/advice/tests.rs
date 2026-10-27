@@ -113,11 +113,43 @@ fn the_brief_and_advice_count_only_failures_after_the_last_pass() {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let failures = reader
-        .failing_commands(&["/home/op/proj".into()], T0)
+        .failing_commands(&["/home/op/proj".into()], T0, None)
         .unwrap();
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].times, 1);
     assert_eq!(failures[0].sessions, 1);
     assert_eq!(failures[0].session, "claude-code:s2");
     assert!(advise(&f, "cargo test").empty);
+}
+
+#[test]
+fn one_verification_has_the_same_failures_as_in_the_full_list() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo fmt", "error", 2),
+        ("claude-code:s2", "cargo test", "error", 3),
+        ("claude-code:s2", "cargo fmt", "error", 4),
+    ]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let dirs = ["/home/op/proj".into()];
+    let all = reader.failing_commands(&dirs, T0, None).unwrap();
+    let one = reader
+        .failing_commands(&dirs, T0, Some("cargo test"))
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].times, 2);
+    assert_eq!(
+        one,
+        all.into_iter()
+            .filter(|f| f.command == "cargo test")
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reader
+            .failing_commands(&dirs, T0, Some("cargo check"))
+            .unwrap()
+            .is_empty()
+    );
 }
