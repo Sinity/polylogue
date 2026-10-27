@@ -143,7 +143,7 @@ impl<'a> Compiler<'a> {
         };
         let key = &program.columns[0].name;
         Ok(format!(
-            "({expr}) IN (SELECT \"{key}\" FROM ({}))",
+            "CASE WHEN ({expr}) IS NULL THEN NULL ELSE ({expr}) IN (SELECT \"{key}\" FROM ({}) WHERE \"{key}\" IS NOT NULL) END",
             program.sql
         ))
     }

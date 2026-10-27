@@ -144,8 +144,20 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     }
-                    let sessions =
-                        format!("SELECT s.pk FROM session s WHERE {}", and_all(&where_sql));
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
+                    let sessions = format!(
+                        "SELECT s.pk FROM {} WHERE {}",
+                        self.from(&scope)?,
+                        and_all(&where_sql)
+                    );
+                    // The session ranking selects sessions; children have their own order.
+                    self.rank = None;
+                    self.near_rank = None;
+                    self.near_join = None;
+                    self.fusion = None;
+                    self.shown.clear();
                     let next = RowContext::plain(*unit);
                     let ntop = cond.as_ref().map(top_level).unwrap_or_default();
                     let mut w = self.defaults(&next, &ntop);
