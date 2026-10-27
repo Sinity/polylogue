@@ -52,6 +52,9 @@ pub struct MessageFacts<'a> {
     pub thinking: Option<&'a str>,
     pub cost_nusd: Option<i64>,
     pub on_active_path: Option<bool>,
+    /// The message's place in session order; by default after every
+    /// message written before it.
+    pub seq: Option<i64>,
 }
 
 /// A tool call's facts, with its result when `outcome` is not `unknown`.
@@ -196,7 +199,7 @@ impl Fixture {
     }
 
     pub fn message(&mut self, session_pk: i64, m: MessageFacts<'_>) -> Result<i64> {
-        self.seq += 1;
+        self.seq = m.seq.unwrap_or(self.seq + 1);
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,

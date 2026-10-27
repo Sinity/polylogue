@@ -223,6 +223,9 @@ pub struct Program {
     /// The saved queries it ran, each at the revision its name resolved
     /// to when it was compiled.
     pub definitions: Vec<Definition>,
+    /// With `near:`, counts the matching rows that have no vector: they
+    /// follow the ranked rows, unranked.
+    pub count_without_vectors: Option<String>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
     pub zone: String,
@@ -474,6 +477,16 @@ pub(crate) struct Compiler<'a> {
     fusion: Option<Fusion>,
     near: Option<Near>,
     definitions: Vec<Definition>,
+    /// The common table expressions `near:` added, removed again when the
+    /// answer needs no ranking.
+    near_ctes: std::ops::Range<usize>,
+    /// Where `incomplete` says `near:` could not rank, for the same reason.
+    near_disabled: Option<usize>,
+    /// A selection (`| limit`) chose rows by the ranking, so the ranking
+    /// is part of the answer even when only counts are returned.
+    ranking_chose_rows: bool,
+    /// Compiling a `| where` stage, where `near:` cannot appear.
+    in_stage: bool,
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -505,6 +518,10 @@ impl<'a> Compiler<'a> {
             fusion: None,
             near: None,
             definitions: vec![],
+            near_ctes: 0..0,
+            near_disabled: None,
+            ranking_chose_rows: false,
+            in_stage: false,
         }
     }
 
@@ -574,7 +591,7 @@ fn match_agg(
     let (name, kind) = match_column(rel, field, at)?;
     let unknown = (
         format!("unknown_{name}"),
-        format!("sum({name} IS NULL)"),
+        format!("count(*) - count({name})"),
         ColKind::Number,
     );
     Ok(match f {

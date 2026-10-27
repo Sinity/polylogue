@@ -48,7 +48,7 @@ impl StoredChain {
         })
     }
 
-    pub fn reader(&self, store: Arc<hashed_blobs::Store>) -> ChainReader {
+    pub fn reader<S: super::PlainBlobs>(&self, store: Arc<S>) -> ChainReader<S> {
         ChainReader::new(self.clone(), store)
     }
 

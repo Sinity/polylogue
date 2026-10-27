@@ -298,6 +298,10 @@ const CLI: Command = Command {
 
 pub const GROUPS: &[Group] = &[
     Group {
+        name: "schema",
+        help: "Offline structure and counts over explicitly selected stored revisions",
+    },
+    Group {
         name: "note",
         help: "Notes and tags on sessions, messages and tool calls",
     },
@@ -382,6 +386,63 @@ const WRITTEN: &[Command] = &[
         name: "manual",
         help: "Agent guidance and the current MCP command reference (available without a daemon)",
         action: Action::Local(local::manual),
+        ..CLI
+    },
+    Command {
+        name: "schema infer",
+        help: "Observe selected stored inputs without ingestion; dynamic map keys become *",
+        args: &[
+            pos("origin", Kind::Text, "The origin declaration"),
+            Arg {
+                required: true,
+                ..opt(
+                    "input",
+                    Kind::List,
+                    "Explicit stored input IDs (repeatable)",
+                )
+            },
+            opt(
+                "revision",
+                Kind::Integer,
+                "An exact revision number (default: latest for each selected input)",
+            ),
+            opt(
+                "field",
+                Kind::List,
+                "Force these names into paths even when they look like dynamic keys (repeatable)",
+            ),
+            opt(
+                "archive",
+                Kind::Text,
+                "Archive or primary index directory (default: Polylogue's data directory)",
+            ),
+            opt(
+                "sinex_store",
+                Kind::Text,
+                "Read bytes from this Sinex store using primary-mode typed Store reads",
+            ),
+            opt(
+                "output",
+                Kind::Text,
+                "Write the result only to this explicit path (default: stdout)",
+            ),
+        ],
+        action: Action::Local(crate::cli::schema::infer),
+        ..CLI
+    },
+    Command {
+        name: "schema diff",
+        help: "Compare explicit inferred schema files recursively, with sample differences labeled",
+        args: &[
+            pos("before", Kind::Text, "Earlier schema JSON file"),
+            pos("after", Kind::Text, "Later schema JSON file"),
+            opt(
+                "output",
+                Kind::Text,
+                "Write the result only to this explicit path (default: stdout)",
+            ),
+        ],
+        action: Action::Local(crate::cli::schema::diff),
         ..CLI
     },
     Command {

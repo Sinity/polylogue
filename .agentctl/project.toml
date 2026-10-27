@@ -101,6 +101,8 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.bench]
 description = "Run the corpus benchmark through the shared job queue"
@@ -127,7 +129,7 @@ cap = "cargo"
 [operations.fmt]
 description = "Format the workspace"
 exec = ["nix", "develop", "--command", "cargo", "fmt", "--all"]
-pool = "normal"
+pool = "interactive"
 result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
@@ -137,7 +139,7 @@ cache = "none"
 description = "Update selected Cargo.lock entries, e.g. -- -p serde"
 exec = ["nix", "develop", "--command", "cargo", "update"]
 arguments = "required"
-pool = "normal"
+pool = "interactive"
 result = "exit"
 timeout_seconds = 300
 scratch = "nvme"

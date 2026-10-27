@@ -226,7 +226,7 @@ fn a_file_range_uses_one_verification_pass_without_decoding_its_prefix_twice() {
     };
     let mut out = [0; 37];
     let start = bytes.len() as u64 - 100;
-    let stats = reader::file_range(&w.store, &extent, start, &mut out).unwrap();
+    let stats = reader::file_range(w.store.as_ref(), &extent, start, &mut out).unwrap();
     assert_eq!(out, bytes[start as usize..start as usize + 37]);
     assert_eq!(stats.decoded_bytes, bytes.len() as u64);
 }

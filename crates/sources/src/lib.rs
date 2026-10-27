@@ -34,6 +34,7 @@ pub mod parse;
 pub mod polylogue_export;
 mod records;
 pub mod repo_lookup;
+pub mod schema;
 pub mod time;
 
 pub use lines::Record;
