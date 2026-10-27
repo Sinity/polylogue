@@ -161,7 +161,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
             "UPDATE meta SET value=?1 WHERE key='generation'",
-            [uuid::Uuid::new_v4().to_string()],
+            [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
         let secret = "AKIAIOSFODNN7EXAMPLE";
