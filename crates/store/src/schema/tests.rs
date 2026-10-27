@@ -314,7 +314,7 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            47,
+            46,
             "76d4cc84ce668c29be9946b811d677d4532b0adeefad0bc2e7a46d0ba3ecb8ba".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),

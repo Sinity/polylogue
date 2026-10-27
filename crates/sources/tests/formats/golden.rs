@@ -2,8 +2,8 @@
 //! (`input.jsonl`, `input.json`),
 //! the path it would have under the home directory (`path`), and the
 //! expected rows and accounting (`expected.json`). A parser bug is fixed by
-//! adding its input as a case. `POLYLOGUE_BLESS=1` rewrites the expected
-//! files after a deliberate change.
+//! adding its input as a case. Expected rows are written from the format
+//! and reviewed independently of the parser.
 
 use polylogue_sources::origin::by_name;
 use std::fs;
@@ -40,19 +40,14 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
     let value = sorted(serde_json::json!({"output": step.output, "counts": step.counts}));
     let got = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n";
     let expected_path = dir.join("expected.json");
-    let bless = std::env::var_os("POLYLOGUE_BLESS").is_some();
-    compare_expected(&expected_path, &value, &got, bless)
+    compare_expected(&expected_path, &value, &got)
 }
 
 fn compare_expected(
     expected_path: &Path,
     value: &serde_json::Value,
     got: &str,
-    bless: bool,
 ) -> Result<(), String> {
-    if bless {
-        return fs::write(expected_path, got).map_err(|e| e.to_string());
-    }
     match fs::read_to_string(expected_path) {
         Ok(expected) => {
             // Compared as values: a workspace build can turn on serde_json's
@@ -64,7 +59,7 @@ fn compare_expected(
                 Ok(())
             } else {
                 Err(format!(
-                    "output differs from {}; rerun with POLYLOGUE_BLESS=1 if the change is intended\n{got}",
+                    "output differs from {}; compare with the input format and review the expected rows\n{got}",
                     expected_path.display()
                 ))
             }
@@ -78,20 +73,18 @@ fn missing_expectation_fails_without_creating_it() {
     let dir = tempfile::tempdir().unwrap();
     let expected = dir.path().join("expected.json");
     let value = serde_json::json!({"output": []});
-    assert!(compare_expected(&expected, &value, "{}\n", false).is_err());
+    assert!(compare_expected(&expected, &value, "{}\n").is_err());
     assert!(!expected.exists());
 }
 
 #[test]
-fn invalid_expectation_is_preserved_until_explicit_update() {
+fn invalid_expectation_is_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let expected = dir.path().join("expected.json");
     fs::write(&expected, "invalid JSON").unwrap();
     let value = serde_json::json!({});
-    assert!(compare_expected(&expected, &value, "{}\n", false).is_err());
+    assert!(compare_expected(&expected, &value, "{}\n").is_err());
     assert_eq!(fs::read_to_string(&expected).unwrap(), "invalid JSON");
-    compare_expected(&expected, &value, "{}\n", true).unwrap();
-    compare_expected(&expected, &value, "{}\n", false).unwrap();
 }
 
 #[test]
@@ -191,12 +184,8 @@ fn every_declaration_checks_its_reading_version() {
         }
         current.insert(origin.name.to_owned(), tuple);
     }
-    if std::env::var_os("POLYLOGUE_BLESS_VERSIONS").is_some() {
-        fs::write(path, serde_json::to_string_pretty(&current).unwrap() + "\n").unwrap();
-    } else {
-        assert_eq!(
-            current, saved,
-            "record a bumped reading version with POLYLOGUE_BLESS_VERSIONS=1"
-        );
-    }
+    assert_eq!(
+        current, saved,
+        "review changed output against the input format, bump its parser module version, and update reading_versions.json"
+    );
 }

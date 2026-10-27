@@ -1,19 +1,100 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
 use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::Block;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
+/// Each kind declares its source key, stored payload and shown-version order.
+#[derive(Clone, Copy)]
+pub(crate) enum VersionKind {
+    Message,
+    Document,
+    Event,
+    Link,
+}
+
+impl VersionKind {
+    pub(crate) const ALL: [Self; 4] = [Self::Message, Self::Document, Self::Event, Self::Link];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Document => "document",
+            Self::Event => "event",
+            Self::Link => "link",
+        }
+    }
+
+    fn content(self) -> bool {
+        matches!(self, Self::Message | Self::Document)
+    }
+
+    fn order(self) -> &'static str {
+        match self {
+            Self::Message => {
+                "s.main DESC,s.complete DESC,s.arrival_rank,s.version_hash,i.id,s.chain DESC"
+            }
+            Self::Document => {
+                "s.source_time IS NULL,s.source_time DESC,s.arrival_rank,s.version_hash DESC,i.id,s.chain DESC"
+            }
+            Self::Event | Self::Link => "s.arrival_rank,i.id,s.chain DESC",
+        }
+    }
+
+    /// Selection reads the stored source rank; codecs only read the selected value.
+    pub(crate) fn select<T>(
+        self,
+        conn: &Connection,
+        pk: i64,
+        columns: &str,
+        read: impl FnOnce(&Row<'_>) -> rusqlite::Result<T>,
+    ) -> Result<Option<T>> {
+        let name = self.name();
+        let (join, newest) = match self {
+            Self::Message => (
+                "".to_owned(),
+                "AND NOT EXISTS(SELECT 1 FROM message_source n WHERE n.message_pk=s.message_pk AND n.input_pk=s.input_pk AND n.chain>s.chain)",
+            ),
+            Self::Document => ("".to_owned(), ""),
+            Self::Event | Self::Link => (format!("JOIN {name}_value v ON v.pk=s.value_pk"), ""),
+        };
+        Ok(conn
+            .prepare_cached(&format!(
+                "SELECT {columns} FROM {name}_source s JOIN input_ref i ON i.pk=s.input_pk {join}
+             WHERE s.{name}_pk=?1 {newest} ORDER BY {} LIMIT 1",
+                self.order()
+            ))?
+            .query_row([pk], read)
+            .optional()?)
+    }
+
+    pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<Vec<i64>> {
+        let name = self.name();
+        let touched = conn
+            .prepare_cached(&format!(
+                "SELECT {name}_pk FROM {name}_source WHERE input_pk=?1 AND chain=?2"
+            ))?
+            .query_map(params![input, chain], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        conn.prepare_cached(&format!(
+            "DELETE FROM {name}_source WHERE input_pk=?1 AND chain=?2"
+        ))?
+        .execute(params![input, chain])?;
+        Ok(touched)
+    }
+}
+
 pub(crate) fn store(
     conn: &Connection,
-    kind: &str,
+    kind: VersionKind,
     hash: &[u8],
     body: &[u8],
     blocks: &[Block],
     packed: &HashMap<[u8; 32], Vec<u8>>,
     first_build: Option<&FirstBuild>,
 ) -> Result<()> {
+    let kind = kind.name();
     let inserted = conn
         .prepare_cached(&format!(
             "INSERT OR IGNORE INTO {kind}_version(version_hash,body) VALUES (?1,?2)"
@@ -46,7 +127,12 @@ pub(crate) fn store(
     Ok(())
 }
 
-pub(crate) fn read<T: DeserializeOwned>(conn: &Connection, kind: &str, hash: &[u8]) -> Result<T> {
+pub(crate) fn read<T: DeserializeOwned>(
+    conn: &Connection,
+    kind: VersionKind,
+    hash: &[u8],
+) -> Result<T> {
+    let kind = kind.name();
     let body: Vec<u8> = conn
         .prepare_cached(&format!(
             "SELECT body FROM {kind}_version WHERE version_hash=?1"
@@ -73,15 +159,17 @@ pub(crate) fn read<T: DeserializeOwned>(conn: &Connection, kind: &str, hash: &[u
 
 /// Recheck only readings whose source references changed, using their hash indexes.
 pub(crate) fn remove_readings(conn: &Connection) -> Result<()> {
-    for kind in ["message", "document"] {
-        conn.execute(&format!("DELETE FROM {kind}_version WHERE version_hash IN (SELECT version_hash FROM changed_version WHERE kind=?1)
-            AND NOT EXISTS(SELECT 1 FROM {kind}_source s WHERE s.version_hash={kind}_version.version_hash)"), [kind])?;
-        conn.execute("DELETE FROM changed_version WHERE kind=?1", [kind])?;
-    }
-    for kind in ["event", "link"] {
-        conn.execute(&format!("DELETE FROM {kind}_value WHERE pk IN (SELECT value_pk FROM changed_value WHERE kind=?1)
-            AND NOT EXISTS(SELECT 1 FROM {kind}_source s WHERE s.value_pk={kind}_value.pk)"), [kind])?;
-        conn.execute("DELETE FROM changed_value WHERE kind=?1", [kind])?;
+    for kind in VersionKind::ALL {
+        let name = kind.name();
+        let (table, key, changed) = if kind.content() {
+            (format!("{name}_version"), "version_hash", "changed_version")
+        } else {
+            (format!("{name}_value"), "value_pk", "changed_value")
+        };
+        let stored_key = if kind.content() { "version_hash" } else { "pk" };
+        conn.execute(&format!("DELETE FROM {table} WHERE {stored_key} IN (SELECT {key} FROM {changed} WHERE kind=?1)
+            AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}={table}.{stored_key})"), [name])?;
+        conn.execute(&format!("DELETE FROM {changed} WHERE kind=?1"), [name])?;
     }
     Ok(())
 }

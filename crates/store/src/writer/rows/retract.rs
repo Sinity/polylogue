@@ -2,27 +2,17 @@
 use super::*;
 
 impl RowWriter<'_, '_> {
-    fn touched(&self, table: &str, column: &str) -> Result<Vec<i64>> {
-        Ok(self
-            .tx
-            .prepare_cached(&format!(
-                "SELECT {column} FROM {table} WHERE input_pk=?1 AND chain=?2"
-            ))?
-            .query_map(params![self.input_pk, self.chain], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
     pub(super) fn retract(&self) -> Result<()> {
         self.tx.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
         )?;
         self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
-        let messages = self.touched("message_source", "message_pk")?;
-        let documents = self.touched("document_source", "document_pk")?;
-        let events = self.touched("event_source", "event_pk")?;
-        let links = self.touched("link_source", "link_pk")?;
+        let mut touched = Vec::new();
+        for kind in VersionKind::ALL {
+            touched.push((kind, kind.retract(self.tx, self.input_pk, self.chain)?));
+        }
         if self.first_build.is_none() {
-            let count = messages.len() + documents.len() + events.len() + links.len();
+            let count: usize = touched.iter().map(|(_, rows)| rows.len()).sum();
             self.tx.execute(
                 "INSERT INTO meta(key,value) VALUES ('reparse_deletions',?1)
                 ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+?1 AS TEXT)",
@@ -30,16 +20,7 @@ impl RowWriter<'_, '_> {
             )?;
         }
         self.tx.execute("UPDATE session SET changed=?3,live_reparse=1 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain,self.counter])?;
-        for table in [
-            "message_source",
-            "document_source",
-            "event_source",
-            "link_source",
-            "session_record",
-            "parsed",
-            "parse_state",
-            "unused",
-        ] {
+        for table in ["session_record", "parsed", "parse_state", "unused"] {
             self.tx
                 .prepare_cached(&format!(
                     "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
@@ -50,17 +31,19 @@ impl RowWriter<'_, '_> {
             "DELETE FROM repo_lookup WHERE input_pk=?1 AND chain=?2",
             params![self.input_pk, self.chain],
         )?;
-        for pk in messages {
-            self.refresh_message(pk)?;
-        }
-        for pk in documents {
-            crate::documents::refresh(self.tx, pk, self.counter, self.first_build)?;
-        }
-        for pk in events {
-            self.refresh_event(pk)?;
-        }
-        for pk in links {
-            self.refresh_link(pk)?;
+        for (kind, rows) in touched {
+            for pk in rows {
+                match kind {
+                    VersionKind::Message => {
+                        self.refresh_message(pk)?;
+                    }
+                    VersionKind::Document => {
+                        crate::documents::refresh(self.tx, pk, self.counter, self.first_build)?
+                    }
+                    VersionKind::Event => self.refresh_event(pk)?,
+                    VersionKind::Link => self.refresh_link(pk)?,
+                }
+            }
         }
         Ok(())
     }

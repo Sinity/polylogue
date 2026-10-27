@@ -7,11 +7,9 @@ impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?
             .execute(params![pk,self.counter])?;
-        let winner=self.tx.prepare_cached(
-            "SELECT s.input_pk,s.chain,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,v.body
-             FROM event_source s JOIN input_ref i ON i.pk=s.input_pk JOIN event_value v ON v.pk=s.value_pk
-             WHERE s.event_pk=?1 ORDER BY s.arrival_rank,i.id,s.chain DESC LIMIT 1"
-        )?.query_row([pk],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<i64>>(7)?,r.get::<_,Vec<u8>>(8)?))).optional()?;
+        let winner = VersionKind::Event.select(self.tx, pk,
+            "s.input_pk,s.chain,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,v.body",
+            |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<i64>>(7)?,r.get::<_,Vec<u8>>(8)?)))?;
         let Some((input, chain, session, seq, start, end, after_id, at, data)) = winner else {
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
@@ -40,7 +38,8 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    fn store_assertion<T: Serialize>(&self, kind: &str, pk: i64, value: &T) -> Result<()> {
+    fn store_assertion<T: Serialize>(&self, kind: VersionKind, pk: i64, value: &T) -> Result<()> {
+        let kind = kind.name();
         let mut sorted = serde_json::to_value(value)?;
         sorted.sort_all_objects();
         let bytes = serde_json::to_vec(&sorted)?;
@@ -61,11 +60,13 @@ impl RowWriter<'_, '_> {
 
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
         self.mark_link_sessions(pk)?;
-        let winner = self.tx.prepare_cached(
-            "SELECT s.input_pk,s.chain,v.body FROM link_source s JOIN input_ref i ON i.pk=s.input_pk
-             JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1
-             ORDER BY s.arrival_rank,i.id,s.chain DESC LIMIT 1"
-        )?.query_row([pk], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Vec<u8>>(2)?))).optional()?;
+        let winner = VersionKind::Link.select(self.tx, pk, "s.input_pk,s.chain,v.body", |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
         let Some((input, chain, body)) = winner else {
             self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
             return Ok(());
@@ -129,7 +130,7 @@ impl RowWriter<'_, '_> {
             (self.rank, self.input_id, std::cmp::Reverse(self.chain))
                 <= (rank, input.as_str(), std::cmp::Reverse(chain))
         });
-        self.store_assertion("link", pk, &merged)?;
+        self.store_assertion(VersionKind::Link, pk, &merged)?;
         if input == self.input_id
             && chain == self.chain
             && rank.is_some_and(|rank| rank != self.rank)

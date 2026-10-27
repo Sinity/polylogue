@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::first_build::FirstBuild;
+use crate::versions::VersionKind;
 use std::collections::BTreeMap;
 
 mod assertions;
@@ -403,7 +404,7 @@ impl RowWriter<'_, '_> {
         }
         crate::versions::store(
             self.tx,
-            "message",
+            VersionKind::Message,
             &prepared.hash,
             &prepared.body,
             &m.blocks,
@@ -459,13 +460,9 @@ impl RowWriter<'_, '_> {
         pk: i64,
         incoming: Option<(&Message, &PreparedMessage)>,
     ) -> Result<bool> {
-        let winner = self.tx.prepare_cached(
-            "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.main,s.complete,s.arrival_rank,s.version_hash,s.session_pk
-             FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
-             WHERE s.message_pk=?1 AND NOT EXISTS(SELECT 1 FROM message_source n
-                WHERE n.message_pk=s.message_pk AND n.input_pk=s.input_pk AND n.chain>s.chain)
-             ORDER BY s.main DESC,s.complete DESC,s.arrival_rank,s.version_hash,i.id,s.chain DESC LIMIT 1"
-        )?.query_row([pk],|r|Ok((Version { input_pk:r.get(0)?,chain:r.get(1)?,start:r.get(2)?,end:r.get(3)?,complete:r.get(5)?,rank:r.get(6)?,hash:r.get(7)?,pem:0 },r.get::<_,i64>(8)?))).optional()?;
+        let winner = VersionKind::Message.select(self.tx, pk,
+            "s.input_pk,s.chain,s.source_start,s.source_end,s.main,s.complete,s.arrival_rank,s.version_hash,s.session_pk",
+            |r|Ok((Version { input_pk:r.get(0)?,chain:r.get(1)?,start:r.get(2)?,end:r.get(3)?,complete:r.get(5)?,rank:r.get(6)?,hash:r.get(7)?,pem:0 },r.get::<_,i64>(8)?)))?;
         let Some((mut v, session_pk)) = winner else {
             self.clear_blocks(pk)?;
             self.update_event_anchors(pk, false)?;
@@ -502,7 +499,8 @@ impl RowWriter<'_, '_> {
             match incoming.filter(|(_, prepared)| prepared.hash.as_slice() == v.hash) {
                 Some(values) => values,
                 None => {
-                    let message: Message = crate::versions::read(self.tx, "message", &v.hash)?;
+                    let message: Message =
+                        crate::versions::read(self.tx, VersionKind::Message, &v.hash)?;
                     let prepared = PreparedMessage::new(&message)?;
                     restored = (message, prepared);
                     (&restored.0, &restored.1)

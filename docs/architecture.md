@@ -118,6 +118,9 @@ A ZIP import stores the ZIP itself and each file in it as inputs, linked by
 `observation_zip`. Export [attachments](attachments.md) are found
 through those links and the [asset lookup](../crates/store/src/assets.rs).
 
+Message, document, event and link source orders and chain retraction are
+declared by `VersionKind` in [versions](../crates/store/src/versions.rs).
+
 Each origin declares the parser modules it uses and their versions. Their
 ordered tuple is the chain's reading version, stored with its parse progress.
 A changed tuple re-parses that chain from its stored bytes. Parser workers prepare chains in parallel into

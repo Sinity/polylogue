@@ -2,6 +2,7 @@
 //! rank, and reads in the reader's read transaction.
 use crate::encoding::hex;
 use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
+use crate::versions::VersionKind;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -55,7 +56,7 @@ pub(crate) fn write(
     }
     crate::versions::store(
         tx,
-        "document",
+        VersionKind::Document,
         &prepared.hash,
         &prepared.body,
         &doc.blocks,
@@ -81,11 +82,22 @@ pub(crate) fn refresh(
     first_build: Option<&crate::first_build::FirstBuild>,
 ) -> Result<()> {
     // Source time is authoritative for documents, including within one input.
-    let winner=tx.query_row(
-        "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.arrival_rank,s.version_hash
-         FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.document_pk=?1
-         ORDER BY s.source_time IS NULL,s.source_time DESC,s.arrival_rank,s.version_hash DESC,i.id,s.chain DESC LIMIT 1",
-         [pk],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,Vec<u8>>(6)?))).optional()?;
+    let winner = VersionKind::Document.select(
+        tx,
+        pk,
+        "s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.arrival_rank,s.version_hash",
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+            ))
+        },
+    )?;
     let Some((input_pk, _input_id, chain, start, end, rank, hash)) = winner else {
         let texts = tx
             .prepare(
@@ -99,7 +111,7 @@ pub(crate) fn refresh(
         }
         return Ok(());
     };
-    let document: Document = crate::versions::read(tx, "document", &hash)?;
+    let document: Document = crate::versions::read(tx, VersionKind::Document, &hash)?;
     let prepared = PreparedDocument::new(&document)?;
     let packed = HashMap::new();
     let source = Source {
