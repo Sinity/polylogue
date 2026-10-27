@@ -64,7 +64,7 @@ it.
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
 | `import PATH` | Store files or the files inside an export ZIP, and parse the ones in a recognized format. |
 | `attachment MESSAGE BLOCK` | Describe a message attachment and the stored export files that match it. In a terminal, `--reveal --out FILE` writes the verified bytes to FILE ([attachments](docs/attachments.md)). |
-| `export SESSION…` | Write sessions, documents or events as JSON (read back by `import`), Markdown, HTML or terminal text. |
+| `export SESSION…` | Write sessions, documents or events as JSON (read back by `import`), Markdown, HTML, terminal text, CSV, Org or YAML. |
 | `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, documents, tool calls, repositories and directories, with revisions; `--query QUERY` notes every row a query returns. |
 | `note accept\|reject NOTE` | Judge a note an agent wrote: an accepted note reaches briefs as the operator's own. `note list --agents --judged none` lists the notes waiting. |
 | `save NAME QUERY` | Save a query to run as `query:NAME`; a `$word` in it is a parameter, given as `query:NAME(word=VALUE)`. |
@@ -183,8 +183,8 @@ the same report as `measure usage`) and the links between related sessions.
 - `crates/engine`: the loop that collects, stores, parses and derives, and
   its parse pool.
 - `crates/query`: the query language, compiled to SQL.
-- `crates/render`: one stream of rendered blocks in terminal, Markdown, HTML
-  and JSON, and pages sized for models.
+- `crates/render`: one stream of rendered blocks in terminal, Markdown, HTML,
+  JSON, CSV, Org and YAML, and pages sized for models.
 - `crates/polylogue`: the binary: daemon, CLI, MCP, web reader, hooks and the
   browser extension's host.
 - `crates/sinex`: primary mode on Sinex, behind the `sinex` feature.
@@ -231,8 +231,8 @@ how primary mode stores the archive and how a standalone archive moves to it.
 
 Reads and query/search results accept `--format csv|org|yaml`, alongside
 terminal, Markdown, HTML and JSON. CSV quotes multiline values and encodes
-nested values as JSON cells; continuation cursors and incompleteness notices
-go to stderr so stdout remains a CSV file. Org uses transcript headings for
+nested values as JSON cells. Query CSV sends continuation cursors and
+incompleteness notices to stderr; budgeted read CSV keeps the cursor in a field. Org uses transcript headings for
 complete reads and escaped tables with page metadata for queries and budgeted
 reads; YAML preserves typed values and page metadata. None of these
 formats shorten cell content. `--json` retains the typed response.

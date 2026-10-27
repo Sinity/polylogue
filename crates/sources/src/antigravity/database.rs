@@ -2,6 +2,7 @@
 //! Scan metadata first, then read ordered steps one at a time.
 use super::*;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
+use base64::Engine as _;
 use polylogue_model::{Event, Link, LinkKind, SessionId, ToolOutcome, UnknownReason};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -340,11 +341,7 @@ impl ExportParser for Database {
                     self.last_call = None;
                 }
                 self.call_session = Some(sid.clone());
-                let payload = match &row["step_payload"] {
-                    Json::String(s) => serde_json::from_str::<Json>(s).ok(),
-                    Json::Object(_) => Some(row["step_payload"].clone()),
-                    _ => None,
-                };
+                let payload = step_payload(row);
                 let kind = str_of(row, "step_type")
                     .unwrap_or("")
                     .trim()
@@ -583,6 +580,30 @@ static PAYLOAD_FIELDS: Fields = Fields::new(&[
     ("userModified", Rule::Kept("native edit input")),
 ]);
 
+fn step_payload(row: &Json) -> Option<Json> {
+    match &row["step_payload"] {
+        Json::String(text) => serde_json::from_str(text).ok(),
+        Json::Object(fields) if fields.len() == 1 && fields.contains_key("base64") => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(fields["base64"].as_str()?)
+                .ok()?;
+            serde_json::from_slice(&bytes).ok()
+        }
+        payload @ Json::Object(_) => Some(payload.clone()),
+        _ => None,
+    }
+}
+
+fn tool_id(payload: &Json) -> Option<String> {
+    ["tool_id", "toolId", "call_id", "callId"]
+        .iter()
+        .find_map(|key| match payload.get(*key)? {
+            Json::String(id) if !id.is_empty() => Some(id.clone()),
+            Json::Number(id) => Some(id.to_string()),
+            _ => None,
+        })
+}
+
 fn summary_id(row: &Json) -> Option<&str> {
     ["cascade_id", "trajectory_id", "id"]
         .iter()
@@ -650,11 +671,14 @@ fn step(
                 kind
             },
         );
-    let call = ["tool_id", "toolId", "call_id", "callId"]
-        .iter()
-        .find_map(|key| str_of(p, key));
-    if matches!(kind, "tool_result" | "tool_output" | "command_result") {
-        let call_id = call.map(str::to_owned).or_else(|| {
+    let source_role = str_of(p, "role")
+        .or_else(|| str_of(row, "role"))
+        .map(|role| role.trim().to_ascii_lowercase());
+    let call = tool_id(p);
+    if matches!(kind, "tool_result" | "tool_output" | "command_result")
+        || (kind == "message" && source_role.as_deref() == Some("tool"))
+    {
+        let call_id = call.or_else(|| {
             last.filter(|(_, _, name)| {
                 ["tool_name", "toolName", "name"]
                     .iter()
@@ -754,9 +778,8 @@ fn step(
         } else {
             ToolAction::Other
         };
-        let id = call
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{mid}:tool"));
+        let no_id = call.is_none();
+        let id = call.unwrap_or_else(|| format!("{mid}:tool"));
         return (
             Role::Assistant,
             None,
@@ -769,10 +792,10 @@ fn step(
                 path,
                 run_by_script: false,
             }],
-            call.is_none().then(|| (id, tool.into())),
+            no_id.then(|| (id, tool.into())),
         );
     }
-    let role = match str_of(p, "role").or_else(|| str_of(row, "role")) {
+    let role = match source_role.as_deref() {
         Some("user" | "human") => Role::User,
         Some("system") => Role::System,
         _ if matches!(kind, "user" | "human" | "prompt") => Role::User,

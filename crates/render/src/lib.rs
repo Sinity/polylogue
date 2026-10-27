@@ -75,18 +75,6 @@ pub enum View {
 impl View {
     pub const NAMES: &[&str] = &["full", "dialogue", "prompts", "actions"];
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Terminal => "terminal",
-            Self::Markdown => "markdown",
-            Self::Html => "html",
-            Self::Json => "json",
-            Self::Csv => "csv",
-            Self::Org => "org",
-            Self::Yaml => "yaml",
-        }
-    }
-
     pub fn parse(name: &str) -> Option<View> {
         Some(match name {
             "full" => View::Full,

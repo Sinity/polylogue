@@ -336,3 +336,60 @@ fn several_unnamed_trajectories_are_refused_instead_of_merged() {
         .is_err()
     );
 }
+
+#[test]
+fn utf8_json_blobs_use_the_current_sqlite_row_encoding() {
+    use base64::Engine as _;
+    for payload in [
+        base64::engine::general_purpose::STANDARD
+            .encode(br#"{"role":"user","text":"from a blob"}"#),
+        "not base64!".into(),
+    ] {
+        let valid = payload != "not base64!";
+        let parsed = parse(vec![header(), row("trajectory_meta",1,json!({"trajectory_id":"one","cascade_id":"alias"})),
+            row("steps",1,json!({"idx":0,"step_type":"message","step_format":"v1","step_payload":{"base64":payload}}))]).unwrap();
+        if valid {
+            assert_eq!(parsed.output.messages[0].message.text(), "from a blob");
+        } else {
+            assert!(parsed.output.messages.is_empty());
+            assert!(
+                parsed
+                    .output
+                    .events
+                    .iter()
+                    .any(|e| e.kind == "antigravity_unsupported_step")
+            );
+        }
+    }
+}
+
+#[test]
+fn numeric_tool_ids_pair_across_an_intervening_message() {
+    for id in [0, 7] {
+        let parsed = parse(vec![header(),row("trajectory_meta",1,json!({"trajectory_id":"one","cascade_id":"alias"})),
+            row("steps",1,json!({"idx":0,"step_type":"tool_call","step_format":"v1","step_payload":{"tool_name":"shell","tool_id":id,"command":"printf hi"}})),
+            row("steps",2,json!({"idx":1,"step_type":"assistant","step_format":"v1","step_payload":{"text":"waiting"}})),
+            row("steps",3,json!({"idx":2,"step_type":"tool_result","step_format":"v1","step_payload":{"tool_name":"shell","tool_id":id,"output":"hi","status":"success"}}))]).unwrap();
+        let expected = id.to_string();
+        assert!(
+            matches!(&parsed.output.messages[0].message.blocks[0],Block::ToolCall{call_id:Some(found),..} if found==&expected)
+        );
+        assert!(
+            matches!(&parsed.output.messages[2].message.blocks[0],Block::ToolResult{call_id:Some(found),..} if found==&expected)
+        );
+    }
+}
+
+#[test]
+fn an_explicit_tool_message_is_not_assistant_prose() {
+    for role in ["tool", "TOOL"] {
+        let parsed=parse(vec![header(),row("trajectory_meta",1,json!({"trajectory_id":"one","cascade_id":"alias"})),
+            row("steps",1,json!({"idx":0,"step_type":"message","step_format":"v1","step_payload":{"role":role,"text":"tool output"}}))]).unwrap();
+        let message = &parsed.output.messages[0].message;
+        assert_eq!(message.role, Role::User);
+        assert_eq!(message.prompt_kind, Some(PromptKind::Harness));
+        assert!(
+            matches!(&message.blocks[0],Block::ToolResult{output:Some(text),..} if text=="tool output")
+        );
+    }
+}
