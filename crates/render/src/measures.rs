@@ -295,3 +295,62 @@ fn drift_text(data: &Value) -> String {
     }
     out
 }
+
+/// Billing projections keep units apart and label estimates and missing inputs.
+pub fn outlook(data: &Value) -> String {
+    if let Some(reason) = data["reason"].as_str() {
+        return format!(
+            "Cost outlook unavailable: {reason}. Configure cost.plans and choose a plan with --metric plan_name:method.\n"
+        );
+    }
+    let mut out = format!(
+        "{} (estimate), method {}\nUTC billing window {} to {}\n",
+        data["plan_name"].as_str().unwrap_or(""),
+        data["projection_method"].as_str().unwrap_or(""),
+        time(&data["window"]["start"]),
+        time(&data["window"]["end"])
+    );
+    if let Some(units) = data["units"].as_object() {
+        for (unit, values) in units {
+            let label = match unit.as_str() {
+                "api_usd" => "USD (API-equivalent)",
+                "reported_usd" => "USD (tool-reported)",
+                other => other,
+            };
+            out.push_str(&format!(
+                "{label}: used {}, burn {}/day, projected {} (estimate)\n",
+                values["used"], values["burn_per_day"], values["projected"]
+            ));
+        }
+    }
+    if data["incomplete_usage"].as_bool() == Some(true) {
+        out.push_str("Usage is incomplete; estimates use recorded known values.\n");
+    }
+    if let Some(reason) = data["quota_reason"].as_str() {
+        out.push_str(&format!("Quota not configured: {reason}\n"));
+    }
+    if let Some(pressure) = data["quota_pressure"].as_object() {
+        out.push_str(&format!(
+            "Quota pressure ({}): used {}, projected {}, quota {}\n",
+            pressure["unit"].as_str().unwrap_or(""),
+            pressure["used"],
+            pressure["projected"],
+            pressure["quota"]
+        ));
+        if let Some(reason) = pressure["reason"].as_str() {
+            out.push_str(&format!("{reason}\n"));
+        }
+        out.push_str(&format!(
+            "Possible overage cost USD: {} (estimate)\n",
+            pressure["projected_overage_cost_usd"]
+        ));
+    }
+    out.push_str(&format!(
+        "Configured cycle price USD: {}. Observed-day coverage: {}\n",
+        data["plan"]["price_usd"], data["coverage_ratio"]
+    ));
+    out
+}
+
+#[cfg(test)]
+mod tests;

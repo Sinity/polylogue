@@ -556,3 +556,10 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
+
+-- Profile rules and clustering threshold live in the facts they produced. Usage
+-- and cost are read from their own rows, rather than copied into this product.
+CREATE TABLE session_profile (
+  session_pk INTEGER PRIMARY KEY REFERENCES session(pk),
+  facts TEXT NOT NULL
+) STRICT;

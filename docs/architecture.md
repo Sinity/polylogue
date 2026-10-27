@@ -382,3 +382,9 @@ unset. JSON uses JSON Unicode escapes and round trips the original values.
 HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
+
+Session [measures](measures.md) include selected/global IDF facets, configured
+billing outlooks, pacing, and profile comparisons. The versioned `profile`
+derivation stores timing and classification facts in `session_profile`; usage
+and cost remain owned by their existing rows and are joined at read time.
+
