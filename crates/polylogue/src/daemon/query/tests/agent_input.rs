@@ -76,7 +76,7 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
         "continues:claude-code:7f3a2c10-000",
         "continued_by:claude-code:7f3a2c10-000",
         "connected:claude-code:7f3a2c10-000",
-        "tool_calls where spawned_child:claude-code:7f3a2c10-000",
+        "tool_calls where child:claude-code:7f3a2c10-000",
         "links where parent:claude-code:7f3a2c10-000",
         "links where child:claude-code:7f3a2c10-000",
         "deliveries where recipient:claude-code:7f3a2c10-000",
