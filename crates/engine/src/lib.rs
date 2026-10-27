@@ -393,11 +393,16 @@ impl Engine {
             }
         }
         let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
-        let mut database_paths: HashMap<String, String> = self.inputs.iter()
-            .filter(|(_,state)|state.origin.capture == Capture::RowDump)
-            .map(|(path,state)|(state.input_id.clone(),path.display().to_string())).collect();
+        let mut database_paths: HashMap<String, String> = self
+            .inputs
+            .iter()
+            .filter(|(_, state)| state.origin.capture == Capture::RowDump)
+            .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
+            .collect();
         for input in &mut known {
-            if self.refused.contains(Path::new(&input.path)) { continue; }
+            if self.refused.contains(Path::new(&input.path)) {
+                continue;
+            }
             if ORIGINS
                 .iter()
                 .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
@@ -409,9 +414,9 @@ impl Engine {
                 }
                 if let Some((machine, path)) =
                     reader.tool_database_source(&input.input_id, &self.blobs)?
-                && machine == self.config.machine
+                    && machine == self.config.machine
                 {
-                    database_paths.insert(input.input_id.clone(),path.clone());
+                    database_paths.insert(input.input_id.clone(), path.clone());
                     input.path = path;
                     input.facts = None;
                 }
