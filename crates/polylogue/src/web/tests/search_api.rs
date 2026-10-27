@@ -76,8 +76,8 @@ fn search_writes_are_available_through_the_command_table() {
             &polylogue_store::Archive::at(&r.web.daemon.archive.root), "keep",
             json!({"request_id":"mcp-kept","query":"sessions where parser"}).as_object().unwrap().clone(),
         ).unwrap();
-        let receipt: Value = serde_json::from_str(&kept).unwrap();
-        assert_eq!(receipt["id"], "mcp-kept");
+        let outcome: Value = serde_json::from_str(&kept).unwrap();
+        assert_eq!(outcome["id"], "mcp-kept");
     });
 }
 
@@ -136,12 +136,12 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{raw}");
-            let receipt: Value = serde_json::from_str(&raw).unwrap();
+            let outcome: Value = serde_json::from_str(&raw).unwrap();
             let kept = data(
                 &r,
                 &format!(
                     "result:{}",
-                    serde_json::to_string(receipt["id"].as_str().unwrap()).unwrap()
+                    serde_json::to_string(outcome["id"].as_str().unwrap()).unwrap()
                 ),
                 None,
             );

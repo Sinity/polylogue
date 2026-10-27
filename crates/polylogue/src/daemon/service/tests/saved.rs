@@ -133,10 +133,13 @@ fn search_retries_keep_the_original_population_and_do_not_revise_newer_saved_que
 #[test]
 fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
     let d = test_daemon::start("synthetic prompt");
-    ok(&d, Request::Keep {
-        request_id: "quoted-pipe".into(),
-        text: "sessions where title:\"absent|reader\"".into(),
-        name: None,
-    });
+    ok(
+        &d,
+        Request::Keep {
+            request_id: "quoted-pipe".into(),
+            text: "sessions where title:\"absent|reader\"".into(),
+            name: None,
+        },
+    );
     assert_eq!(ok(&d, query("result:quoted-pipe.matches"))["count"], 0);
 }
