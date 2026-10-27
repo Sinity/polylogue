@@ -56,7 +56,7 @@ fn a_note_request_becomes_a_note_event_in_its_family() {
     assert_eq!(kind, "polylogue.note");
     assert_eq!(payload["first_note"], "first");
     assert_eq!(payload["relations"][0]["kind"], "revises");
-    let event: sinex_model::event_types::polylogue::Note = serde_json::from_value(payload).unwrap();
+    let event: crate::kinds::Note = serde_json::from_value(payload).unwrap();
     assert_eq!(event.note, note.id);
     assert!(
         request_event(&note, None).is_err(),

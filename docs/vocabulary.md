@@ -293,3 +293,7 @@ the same change.
 
 Excision, epoch and sealed are kept. **Receipt** is only the provider's
 record of a chat action's result, as the extension saw it.
+
+- **kind declaration**: the immutable schema and rules of one version of a
+  Sinex event type; Polylogue owns its `polylogue.*` declarations.
+- **kind version**: the exact numbered declaration a producer event selects.
