@@ -142,7 +142,7 @@ describe("the shared page script", () => {
   });
 
   it("distinguishes empty bodies from answers without a body", async () => {
-    for (const body of [null, new Blob([]), new Response("")]) {
+    for (const body of [null, new Blob([]), new Response(""), new Response(null, { status: 204 })]) {
       const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
       window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body });
       const received = await exchanged(window);
