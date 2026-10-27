@@ -236,53 +236,37 @@ impl Archive {
         generation::open(self)
     }
 
-    /// The caller holds the archive lock. An index built by another version
-    /// or with another schema, left unsynced by a stop in the middle of a
-    /// first build, or missing an excision the archive holds is deleted and
-    /// created again empty; the loop then rebuilds it from the stored inputs.
+    /// The caller holds the archive lock. Parse positions in the index
+    /// resume an interrupted build; incompatible indexes require an explicit
+    /// schema change rather than removing already indexed rows.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;
-        if self.index_db().exists() && self.index_out_of_date(&archive)? {
-            remove_database(&self.index_db())?;
-            File::open(&self.root)?.sync_all()?;
-        }
-        crate::fault::check("index.after_removal", "")?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
+        let building = schema::unsynced(&index)?;
+        if building {
+            let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let previous: Option<String> = index.query_row(
+                "SELECT value FROM meta WHERE key='build_boot_id'", [], |r| r.get(0)
+            ).optional()?;
+            if previous.as_deref() != Some(boot.trim()) {
+                return Err(StoreError::Invalid(
+                    "the interrupted index build is from another boot; an explicit rebuild is required".into()
+                ));
+            }
+        } else if !schema::same_schema(&index, &[schema::INDEX])? {
+            return Err(StoreError::NoMigration { database: "index", found: schema::version(&index)? });
+        }
         crate::fault::check("index.after_creation", "")?;
         if fresh {
             crate::excise::mark_applied(&archive, &index)?;
+        } else {
+            crate::excise::catch_up(&archive, &index)?;
         }
         Ok(())
     }
-
-    fn index_out_of_date(&self, archive: &Connection) -> Result<bool> {
-        let index = open_read(&self.index_db())?;
-        let found = schema::version(&index)?;
-        if found == 0 {
-            return Ok(false);
-        }
-        Ok(found != schema::INDEX_VERSION
-            || !schema::same_schema(&index, &[schema::INDEX])?
-            || schema::unsynced(&index)?
-            || crate::excise::index_behind(archive, &index)?)
-    }
-}
-
-/// Deletes a SQLite database and its journal files.
-fn remove_database(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        match fs::remove_file(&name) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
 }
 
 /// Deletes every file in `dir`. Blob files are written there before they

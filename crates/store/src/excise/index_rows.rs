@@ -411,13 +411,22 @@ pub(super) fn remove_input(
         .execute("DELETE FROM extent WHERE input = ?1", [input])?;
     t.archive
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
-    crate::assets::invalidate_metadata(t.index, input)?;
-    t.index
+    remove_index_input(t.index, input)?;
+    Ok(RemovedInput {
+        blobs: stored.iter().map(|h| blob_hash(h)).collect::<Result<_>>()?,
+        locations,
+    })
+}
+
+/// Removes only an input's indexed rows, including its saved parse position.
+pub(super) fn remove_index_input(index: &Connection, input: &str) -> Result<()> {
+    crate::assets::invalidate_metadata(index, input)?;
+    index
         .execute("DELETE FROM import_member WHERE input = ?1", [input])?;
-    if let Some(pk) = input_pk(t.index, input)? {
+    if let Some(pk) = input_pk(index, input)? {
         // Rows of other kinds the input owns (events without a session,
         // parse progress), after the rows that refer to them.
-        let tables = crate::schema::index_columns(t.index)?;
+        let tables = crate::schema::index_columns(index)?;
         for (table, cols) in &tables {
             if table == "input_ref" || !cols.contains("input_pk") {
                 continue;
@@ -426,7 +435,7 @@ pub(super) fn remove_input(
             if cols.contains("pk") {
                 for (other, other_cols) in &tables {
                     if other_cols.contains(&reference) {
-                        t.index.execute(
+                        index.execute(
                             &format!(
                                 "DELETE FROM {other} WHERE {reference} IN
                                  (SELECT pk FROM {table} WHERE input_pk = ?1)"
@@ -436,16 +445,13 @@ pub(super) fn remove_input(
                     }
                 }
             }
-            t.index
+            index
                 .execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
         }
-        t.index
+        index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
     }
-    Ok(RemovedInput {
-        blobs: stored.iter().map(|h| blob_hash(h)).collect::<Result<_>>()?,
-        locations,
-    })
+    Ok(())
 }
 
 /// Whether no stored input and no index row uses the blob.

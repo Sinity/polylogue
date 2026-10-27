@@ -143,15 +143,11 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
     );
 }
 
-fn mark_index_unsynced(archive: &Archive) {
-    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    let tx = conn.unchecked_transaction().unwrap();
-    tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
-    tx.commit().unwrap();
-    drop(conn);
-}
 fn replace_index(archive: &Archive) {
-    mark_index_unsynced(archive);
+    for suffix in ["", "-wal", "-shm"] {
+        let path = archive.root.join(format!("index.db{suffix}"));
+        if path.exists() { std::fs::remove_file(path).unwrap(); }
+    }
     archive.prepare_index().unwrap();
 }
 

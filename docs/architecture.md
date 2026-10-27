@@ -47,7 +47,7 @@ the transaction being written.
 | File | Holds |
 |---|---|
 | [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; chat actions and backfill jobs; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
-| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
+| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. A missing index is built from stored inputs. An incompatible version or schema refuses without removing indexed rows. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
@@ -72,9 +72,12 @@ rebuilds from stored imports.
 
 Derived products declare their inputs and rule version in
 [derive](../crates/store/src/derive.rs); a changed rule recomputes what depends
-on it. An index build in progress is marked on disk and starts over on
-reopen; [`Archive::prepare_index`](../crates/store/src/archive.rs) also
-rebuilds an index that holds fewer excisions than the archive. An index
+on it. An index build records its boot in index metadata. On the same boot it
+resumes from committed parse positions, loading the natural-key maps and
+continuing the deferred indexes. A build from another boot refuses and
+requires an explicit rebuild. [`Archive::prepare_index`](../crates/store/src/archive.rs)
+applies recorded excision identities to an index that missed their commit,
+without rebuilding unrelated rows. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
 

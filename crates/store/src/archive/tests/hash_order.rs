@@ -13,7 +13,7 @@ fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Value>> {
 }
 
 #[test]
-fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
+fn a_deliberate_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let archive_conn = open_archive_writer(&archive).unwrap();
@@ -76,6 +76,11 @@ fn an_index_rebuild_keeps_authored_rows_excisions_and_vectors() {
     drop(archive_conn);
     drop(lock);
 
+    // The test explicitly requests a fresh derived index.
+    for suffix in ["", "-wal", "-shm"] {
+        let path = archive.root.join(format!("index.db{suffix}"));
+        if path.exists() { std::fs::remove_file(path).unwrap(); }
+    }
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);

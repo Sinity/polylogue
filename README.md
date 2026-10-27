@@ -42,8 +42,8 @@ a file the tool deletes or rewrites stays in the archive.
 The archive is `$XDG_DATA_HOME/polylogue` (`~/.local/share/polylogue`). It
 holds `archive.db` (what cannot be recomputed: inputs and their revisions,
 notes, excisions, settings, delivery records), `index.db` (everything parsed
-and derived, rebuilt from the stored inputs when it is deleted or its format
-changes), `embeddings.db` and `blobs/`.
+and derived, built from stored inputs when missing; incompatible formats
+refuse without deleting indexed rows), `embeddings.db` and `blobs/`.
 Opening an `archive.db` written by an older build applies the migrations it
 lacks, in one transaction. The daemon refuses an archive newer than itself,
 or one whose tables match no version it knows, and exits with code 78; a
