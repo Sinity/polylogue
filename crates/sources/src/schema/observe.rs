@@ -1,20 +1,12 @@
 use super::{Node, field_name};
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-    io::Read,
-};
+use std::{collections::BTreeMap, fmt, io::Read};
 
-pub(super) fn read(reader: impl Read, names: &BTreeSet<String>) -> Result<Node, serde_json::Error> {
+pub(super) fn read(reader: impl Read) -> Result<Node, serde_json::Error> {
     let mut de = serde_json::Deserializer::from_reader(reader);
     de.disable_recursion_limit();
     let mut node = Node::default();
-    Seed {
-        node: &mut node,
-        names,
-    }
-    .deserialize(&mut de)?;
+    Seed { node: &mut node }.deserialize(&mut de)?;
     de.end()?;
     node.present = 1;
     Ok(node)
@@ -22,7 +14,6 @@ pub(super) fn read(reader: impl Read, names: &BTreeSet<String>) -> Result<Node, 
 
 struct Seed<'a> {
     node: &'a mut Node,
-    names: &'a BTreeSet<String>,
 }
 impl<'de> DeserializeSeed<'de> for Seed<'_> {
     type Value = ();
@@ -66,10 +57,7 @@ impl<'de> Visitor<'de> for Seed<'_> {
         self.node.kind("array");
         let mut child = Node::default();
         while array
-            .next_element_seed(Seed {
-                node: &mut child,
-                names: self.names,
-            })?
+            .next_element_seed(Seed { node: &mut child })?
             .is_some()
         {}
         if child.occurrences > 0 {
@@ -97,17 +85,17 @@ impl<'de> Visitor<'de> for Seed<'_> {
         let mut next = first;
         let mut children = BTreeMap::<String, Node>::new();
         while let Some(key) = next {
-            let name = if self.names.contains(&key.name) {
-                field_name(&key.name)
-            } else {
-                "*".into()
-            };
+            let name = field_name(&key.name);
             object.next_value_seed(Seed {
                 node: children.entry(name).or_default(),
-                names: self.names,
             })?;
             next = object.next_key::<Key>()?;
         }
+        *self
+            .node
+            .objects
+            .entry(children.keys().cloned().collect())
+            .or_default() += 1;
         for (key, mut child) in children {
             child.present = 1;
             self.node.children.entry(key).or_default().merge(child);

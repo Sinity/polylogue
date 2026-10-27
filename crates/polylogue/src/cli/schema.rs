@@ -77,11 +77,7 @@ fn observe(
             let chain = reader
                 .stored_chain(&stored.input, stored.chain, stored.length)
                 .map_err(|_| "stored_bytes_unavailable")?;
-            let blobs = Arc::new(
-                reader
-                    .blob_store()
-                    .map_err(|_| "stored_bytes_unavailable")?,
-            );
+            let blobs = Arc::new(reader.blob_reader());
             let mut bytes = BufReader::new(chain.reader(blobs));
             let framing = if matches!(spec.capture, polylogue_sources::Capture::RowDump) {
                 Framing::Lines

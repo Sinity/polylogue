@@ -837,6 +837,11 @@ impl Reader<'_> {
         self.pool.archive.blobs()
     }
 
+    /// Existing content, with no writable handle or directory setup.
+    pub fn blob_reader(&self) -> hashed_blobs::Reader {
+        self.pool.archive.blob_reader()
+    }
+
     /// Reads a range of the selected stored attachment in this reader's read.
     pub fn attachment_range(
         &self,

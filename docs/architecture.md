@@ -339,5 +339,6 @@ archive and import the file again.
 called by local commands in the application's command table. Store selects
 exact revisions and provides streaming byte reads in either mode. These
 commands run independently of the engine, parsing jobs and the daemon.
-Only caller-declared field names, structural paths and counts leave the
-observer. `xtask schema` delegates to the same command table.
+The observer reports field names, structural paths and counts, grouping dynamic
+map keys under `*`. Observed values stay out. Reads use read-only database
+and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.

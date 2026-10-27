@@ -199,11 +199,11 @@ the same change.
 - **schema artifact**: an offline report of observed field paths, types,
   presence and counts for an explicit input/revision selection.
 - **schema observer**: the pure Sources reader that counts structure without
-  storing observed values or unnamed object members' names.
+  storing observed values; dynamic map keys share the `*` path.
 - **schema diff**: added and removed paths, changed types and changed
   requiredness between explicit schema artifacts.
-- **named field**: a field name explicitly permitted in schema paths;
-  other object members share the `*` path.
+- **named field**: a field name forced into schema paths even when the dynamic-key
+  heuristic would group it under `*`.
 - **sample**: explicit inputs and revisions selected for schema observation,
   with no claim of full coverage of an origin.
 

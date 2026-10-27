@@ -15,6 +15,54 @@ pub use chain::{ChainReader, StoredChain};
 mod copy;
 pub(crate) use copy::copy_plain;
 
+/// The read operations used by stored chains, for writable and read-only stores.
+pub trait PlainBlobs {
+    fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64)
+    -> Result<hashed_blobs::PlainReader>;
+    fn verify_plain(
+        &self,
+        hash: &hashed_blobs::Hash,
+        size: u64,
+        visit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<hashed_blobs::VerificationStats>;
+}
+
+impl PlainBlobs for hashed_blobs::Store {
+    fn open_plain(
+        &self,
+        hash: &hashed_blobs::Hash,
+        size: u64,
+    ) -> Result<hashed_blobs::PlainReader> {
+        Ok(self.read_plain(hash, Some(size), || Ok(()))?)
+    }
+    fn verify_plain(
+        &self,
+        hash: &hashed_blobs::Hash,
+        size: u64,
+        visit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<hashed_blobs::VerificationStats> {
+        self.verify_plain(hash, size, visit)
+    }
+}
+
+impl PlainBlobs for hashed_blobs::Reader {
+    fn open_plain(
+        &self,
+        hash: &hashed_blobs::Hash,
+        size: u64,
+    ) -> Result<hashed_blobs::PlainReader> {
+        Ok(self.read_plain(hash, Some(size), || Ok(()))?)
+    }
+    fn verify_plain(
+        &self,
+        hash: &hashed_blobs::Hash,
+        size: u64,
+        visit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<hashed_blobs::VerificationStats> {
+        self.verify_plain(hash, size, visit)
+    }
+}
+
 pub const INLINE_LIMIT: usize = 128 * 1024;
 
 /// zstd level for stored bytes: about 300 MB/s per core.

@@ -2,28 +2,7 @@ use super::*;
 use serde_json::json;
 
 fn infer(bytes: &[u8], framing: Framing) -> Schema {
-    let mut observer = Observer::new(
-        [
-            "id",
-            "count",
-            "message",
-            "content",
-            "text",
-            "flag",
-            "items",
-            "mapping",
-            "r",
-            "schema",
-            "tables",
-            "title",
-            "added_column",
-            "a/b",
-            "*",
-            "[]",
-        ]
-        .map(str::to_owned)
-        .into(),
-    );
+    let mut observer = Observer::default();
     observer.read(io::Cursor::new(bytes), framing).unwrap();
     observer.finish("synthetic".into(), vec![])
 }
@@ -69,29 +48,91 @@ fn nested_arrays_mixed_types_null_and_missing_have_conditional_parent_counts() {
 }
 
 #[test]
-fn dynamic_names_are_collapsed_even_when_they_look_like_field_names() {
-    let bytes = br#"{"mapping":{"alice":{"text":"secret-a"},"550e8400-e29b-41d4-a716-446655440000":{"text":"secret-b"}}}
-{"mapping":{"bob":{"count":3}}}"#;
-    let schema = infer(bytes, Framing::Lines);
-    assert_eq!(schema.fields["/mapping/*"].present, 2);
-    assert_eq!(schema.fields["/mapping/*"].occurrences, 3);
+fn ordinary_names_are_reported_and_identifier_keys_are_grouped_without_values() {
+    let schema = infer(br#"{"mapping":{"alice":{"text":"secret-a"},"550e8400-e29b-41d4-a716-446655440000":{"text":"secret-b"},"0123456789abcdef":{"count":2},"1234567890":null,"2026-10-27T12:00:00Z":true,"/some/path":false}}
+{"mapping":{"bob":{"count":3}}}"#, Framing::Lines);
+    assert!(schema.fields.contains_key("/mapping/alice/text"));
+    assert!(schema.fields.contains_key("/mapping/bob/count"));
+    assert_eq!(schema.fields["/mapping/*"].present, 1);
+    assert_eq!(schema.fields["/mapping/*"].occurrences, 5);
     assert_eq!(schema.fields["/mapping/*/text"].missing, 1);
     let output = serde_json::to_string(&schema).unwrap();
-    for value in ["alice", "bob", "550e8400", "secret-a", "secret-b"] {
+    for value in [
+        "550e8400",
+        "0123456789abcdef",
+        "1234567890",
+        "2026-10-27",
+        "/some/path",
+        "secret-",
+    ] {
         assert!(!output.contains(value));
     }
-    assert_eq!(schema, infer(bytes, Framing::Lines));
+    assert!(compare(&schema, &schema).unwrap().changes.is_empty());
 }
 
 #[test]
-fn literal_path_markers_cannot_collide_with_dynamic_or_array_paths() {
-    let schema = infer(
-        br#"{"a/b":1,"*":true,"[]":[],"unknown":false}"#,
-        Framing::Json,
+fn sibling_names_across_records_and_observers_are_grouped_after_fifty() {
+    let mut combined = Observer::default();
+    for i in 0..51 {
+        let mut one = Observer::default();
+        one.json(
+            format!(r#"{{"mapping":{{"entry{i}":{{"text":"hidden"}},"fixed":{{"count":1}}}}}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        combined.merge(one).unwrap();
+    }
+    let schema = combined.finish("synthetic".into(), vec![]);
+    let field = &schema.fields["/mapping/*"];
+    assert_eq!(
+        (field.present, field.parents, field.occurrences),
+        (51, 51, 102)
     );
-    for path in ["/a~1b", "/~2", "/~3", "/*"] {
+    assert_eq!(schema.fields["/mapping/*/text"].missing, 51);
+    assert_eq!(schema.fields["/mapping/*/count"].missing, 51);
+    assert!(!serde_json::to_string(&schema).unwrap().contains("entry"));
+    assert!(compare(&schema, &schema).is_ok());
+
+    let mut observer = Observer::default();
+    for i in 0..50 {
+        observer
+            .json(format!(r#"{{"entry{i}":0}}"#).as_bytes())
+            .unwrap();
+    }
+    assert!(
+        observer
+            .finish("synthetic".into(), vec![])
+            .fields
+            .contains_key("/entry49")
+    );
+}
+
+#[test]
+fn forced_names_and_literal_path_markers_keep_their_paths() {
+    let mut observer = Observer::new(["a/b".into(), "1234567890".into(), "fixed".into()].into());
+    let mut object = serde_json::Map::new();
+    for i in 0..51 {
+        object.insert(format!("entry{i}"), json!(false));
+    }
+    object.extend(
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+            r#"{"a/b":1,"*":true,"[]":[],"1234567890":null,"fixed":true}"#,
+        )
+        .unwrap(),
+    );
+    observer
+        .json(serde_json::to_vec(&object).unwrap().as_slice())
+        .unwrap();
+    let schema = observer.finish("synthetic".into(), vec![]);
+    for path in ["/a~1b", "/1234567890", "/fixed", "/*"] {
         assert!(schema.fields.contains_key(path));
     }
+    assert_eq!(schema.fields["/*"].present, 1);
+    let schema = infer(br#"{"*":true,"[]":[],"~":false}"#, Framing::Json);
+    for path in ["/~2", "/~3", "/~0"] {
+        assert!(schema.fields.contains_key(path));
+    }
+    assert!(compare(&schema, &schema).is_ok());
 }
 
 #[test]
@@ -139,7 +180,7 @@ fn row_dumps_include_table_column_and_revision_structure_without_sql_or_values()
 {"t":"threads","k":"secret-id","r":{"title":"private-title","added_column":1}}"#,
         Framing::Lines,
     );
-    assert_eq!(before.fields["/schema/*"].types["string"], 1);
+    assert_eq!(before.fields["/schema/threads"].types["string"], 1);
     assert!(after.fields.contains_key("/r/added_column"));
     let diff = compare(&before, &after).unwrap();
     assert!(
@@ -148,7 +189,7 @@ fn row_dumps_include_table_column_and_revision_structure_without_sql_or_values()
             .any(|c| c.path == "/r/added_column" && c.kind == ChangeKind::Added)
     );
     let output = serde_json::to_string(&after).unwrap();
-    for value in ["CREATE TABLE", "threads", "private-title", "secret-id"] {
+    for value in ["CREATE TABLE", "private-title", "secret-id"] {
         assert!(!output.contains(value));
     }
 }
@@ -221,7 +262,7 @@ fn diff_labels_different_sample_populations_and_refuses_incompatible_rules() {
     after.rule_version += 1;
     assert!(compare(&before, &after).is_err());
     after = before.clone();
-    after.named_fields.clear();
+    after.named_fields.insert("forced".into());
     assert!(compare(&before, &after).is_err());
     let mut malformed = serde_json::to_value(&before).unwrap();
     malformed["examples"] = json!(["private"]);
@@ -229,7 +270,7 @@ fn diff_labels_different_sample_populations_and_refuses_incompatible_rules() {
 }
 
 #[test]
-fn diff_refuses_malformed_paths_counts_and_undeclared_names() {
+fn diff_refuses_malformed_paths_counts_and_escapes() {
     let before = infer(br#"{"id":1}"#, Framing::Json);
     for mutation in [0, 1, 2, 3] {
         let mut after = before.clone();
@@ -243,7 +284,7 @@ fn diff_refuses_malformed_paths_counts_and_undeclared_names() {
             }
             2 => {
                 let field = after.fields.remove("/id").unwrap();
-                after.fields.insert("/private-key".into(), field);
+                after.fields.insert("/invalid~4escape".into(), field);
             }
             _ => {
                 after.records += 1;
@@ -277,7 +318,10 @@ fn large_numbers_and_numeric_marker_keys_keep_their_json_types() {
     assert_eq!(schema.fields["/id"].types["integer"], 1);
     assert_eq!(schema.fields["/count"].types["number"], 1);
     assert_eq!(schema.fields["/message"].types["object"], 1);
-    assert_eq!(schema.fields["/message/*"].types["string"], 1);
+    assert_eq!(
+        schema.fields["/message/$serde_json::private::Number"].types["string"],
+        1
+    );
 }
 
 #[test]

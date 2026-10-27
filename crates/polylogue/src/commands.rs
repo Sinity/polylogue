@@ -375,7 +375,7 @@ fn query_help() -> &'static str {
 const WRITTEN: &[Command] = &[
     Command {
         name: "schema infer",
-        help: "Observe selected stored inputs without ingestion; unknown object names become *",
+        help: "Observe selected stored inputs without ingestion; dynamic map keys become *",
         args: &[
             pos("origin", Kind::Text, "The origin declaration"),
             Arg {
@@ -394,7 +394,7 @@ const WRITTEN: &[Command] = &[
             opt(
                 "field",
                 Kind::List,
-                "Field names permitted in paths (repeatable); all other names become *",
+                "Force these names into paths even when they look like dynamic keys (repeatable)",
             ),
             opt(
                 "archive",

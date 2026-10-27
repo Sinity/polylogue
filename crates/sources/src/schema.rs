@@ -1,4 +1,4 @@
-//! Offline structure and counts. Only caller-declared field names leave the observer.
+//! Offline structure and counts, with dynamic map keys grouped together.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Read};
@@ -7,7 +7,7 @@ mod diff;
 mod observe;
 pub use diff::{Change, ChangeKind, Diff, compare};
 
-pub const RULE_VERSION: u32 = 1;
+pub const RULE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +36,7 @@ pub struct Field {
 pub struct Schema {
     pub rule_version: u32,
     pub origin: String,
+    /// Names forced into paths even when they look like dynamic keys.
     pub named_fields: BTreeSet<String>,
     /// Explicit input selection is a sample, with no claim of origin coverage.
     pub sample: bool,
@@ -68,6 +69,8 @@ struct Node {
     occurrences: u64,
     present: u64,
     children: BTreeMap<String, Node>,
+    /// Counts of object member sets preserve presence when names are grouped later.
+    objects: BTreeMap<BTreeSet<String>, u64>,
 }
 
 impl Node {
@@ -82,8 +85,49 @@ impl Node {
         for (kind, count) in other.types {
             *self.types.entry(kind).or_default() += count;
         }
+        for (keys, count) in other.objects {
+            *self.objects.entry(keys).or_default() += count;
+        }
         for (key, child) in other.children {
             self.children.entry(key).or_default().merge(child);
+        }
+    }
+
+    fn group_names(&mut self, names: &BTreeSet<String>) {
+        let members: BTreeSet<_> = self
+            .children
+            .keys()
+            .filter(|key| *key != "[]")
+            .cloned()
+            .collect();
+        let collapsed: BTreeSet<_> = members
+            .iter()
+            .filter(|key| {
+                let name = key
+                    .replace("~3", "[]")
+                    .replace("~2", "*")
+                    .replace("~1", "/")
+                    .replace("~0", "~");
+                !names.contains(&name) && (members.len() > 50 || identifier(&name))
+            })
+            .cloned()
+            .collect();
+        if !collapsed.is_empty() {
+            let mut grouped = Node::default();
+            for key in &collapsed {
+                grouped.merge(self.children.remove(key).expect("observed member"));
+            }
+            grouped.present = self
+                .objects
+                .iter()
+                .filter(|(keys, _)| !keys.is_disjoint(&collapsed))
+                .map(|(_, count)| count)
+                .sum();
+            self.children.insert("*".into(), grouped);
+        }
+        self.objects.clear();
+        for child in self.children.values_mut() {
+            child.group_names(names);
         }
     }
 
@@ -118,7 +162,7 @@ impl Observer {
 
     /// A failed JSON record contributes no partial structure.
     pub fn json(&mut self, reader: impl Read) -> Result<(), serde_json::Error> {
-        let node = observe::read(reader, &self.names)?;
+        let node = observe::read(reader)?;
         self.root.merge(node);
         self.records += 1;
         Ok(())
@@ -214,7 +258,9 @@ impl Observer {
         selection.sort_by(|a, b| (&a.input, a.revision).cmp(&(&b.input, b.revision)));
         let mut fields = BTreeMap::new();
         if self.records > 0 {
-            self.root.flatten(String::new(), self.records, &mut fields);
+            let mut root = self.root;
+            root.group_names(&self.names);
+            root.flatten(String::new(), self.records, &mut fields);
         }
         Schema {
             rule_version: RULE_VERSION,
@@ -228,6 +274,33 @@ impl Observer {
             fields,
         }
     }
+}
+
+/// Identifier-shaped members describe map entries rather than fixed fields.
+fn identifier(name: &str) -> bool {
+    let hex = |text: &str| text.bytes().all(|c| c.is_ascii_hexdigit());
+    let uuid = name.len() == 36
+        && [8, 13, 18, 23].iter().all(|i| name.as_bytes()[*i] == b'-')
+        && name.split('-').all(hex);
+    let hash = name.len() >= 16 && hex(name);
+    let numeral = name.len() >= 6 && name.bytes().all(|c| c.is_ascii_digit());
+    let date = name.len() >= 10
+        && name.as_bytes()[..10].iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+        && (name.len() == 10 || matches!(name.as_bytes()[10], b'T' | b' '));
+    let path = name.starts_with(['/', '\\'])
+        || name.starts_with("~/")
+        || name.starts_with("./")
+        || name.starts_with("../")
+        || name.contains('\\')
+        || name.contains("://")
+        || name.contains('/');
+    uuid || hash || numeral || date || path
 }
 
 /// Escaped field names cannot collide with the wildcard or array markers.

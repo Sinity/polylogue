@@ -70,7 +70,7 @@ impl ExtentList {
     pub fn select(
         &self,
         at: u64,
-        store: &hashed_blobs::Store,
+        store: &impl super::super::PlainBlobs,
     ) -> Result<(Extent, Option<Box<dyn std::io::Read + Send>>)> {
         let conn = self
             .conn

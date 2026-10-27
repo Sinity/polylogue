@@ -81,9 +81,16 @@ fn offline_selection_reads_only_selected_stored_revisions_and_reports_failures()
 }
 
 #[test]
-fn commands_are_local_and_explicit_file_output_is_reusable_by_diff() {
+fn schema_infer_reads_while_the_daemon_archive_lock_is_held_and_diff_reuses_output() {
     let archive = WriterArchive::new();
     stored(&archive, false, b"{\"id\":\"secret\"}\n");
+    let bytes = format!(r#"{{"id":"{}"}}"#, "secret".repeat(30_000));
+    stored(&archive, true, bytes.as_bytes());
+    let blob_tmp = archive.archive.blobs_dir().join("tmp");
+    std::fs::remove_dir(&blob_tmp).unwrap();
+    assert!(archive.archive.lock_held());
+    let archive_before = std::fs::read(archive.archive.archive_db()).unwrap();
+    let index_before = std::fs::read(archive.archive.index_db()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("schema.json");
     let diff_output = dir.path().join("diff.json");
@@ -94,8 +101,6 @@ fn commands_are_local_and_explicit_file_output_is_reusable_by_diff() {
         "claude-code",
         "--input",
         "input:synthetic",
-        "--field",
-        "id",
         "--archive",
         archive.archive.root.to_str().unwrap(),
         "--output",
@@ -110,6 +115,17 @@ fn commands_are_local_and_explicit_file_output_is_reusable_by_diff() {
     assert!(!String::from_utf8_lossy(&bytes).contains("secret"));
     let schema: Schema = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(schema.records, 1);
+    assert!(schema.fields.contains_key("/id"));
+    assert!(!blob_tmp.exists());
+    assert!(archive.archive.lock_held());
+    assert_eq!(
+        std::fs::read(archive.archive.archive_db()).unwrap(),
+        archive_before
+    );
+    assert_eq!(
+        std::fs::read(archive.archive.index_db()).unwrap(),
+        index_before
+    );
     let (command, values) = crate::cli::parse(&[
         "polylogue",
         "schema",
@@ -164,6 +180,8 @@ fn primary_inference_reads_sinex_bytes_without_a_standalone_archive_or_blob_copy
     let (archive, _lock) = Archive::open_primary(&root, &bytes_root, sinex.as_ref()).unwrap();
     let writer = polylogue_store::Writer::start_on_sinex(&archive, sinex).unwrap();
     store(&archive, &writer, false, b"{\"id\":\"only-in-sinex\"}\n");
+    let blob_tmp = bytes_root.join("blobs/tmp");
+    std::fs::remove_dir(&blob_tmp).unwrap();
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let report = observe(
@@ -178,6 +196,7 @@ fn primary_inference_reads_sinex_bytes_without_a_standalone_archive_or_blob_copy
     assert_eq!(report.fields["/id"].types["string"], 1);
     assert!(!root.join("archive.db").exists());
     assert!(!root.join("blobs").exists());
+    assert!(!blob_tmp.exists());
 }
 
 #[test]

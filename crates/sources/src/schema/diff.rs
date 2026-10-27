@@ -95,14 +95,15 @@ fn validate(schema: &Schema) -> Result<(), String> {
             return Err("invalid schema field counts or types".into());
         }
         if path.split('/').skip(1).any(|part| {
-            part != "*"
-                && part != "[]"
-                && !schema
-                    .named_fields
-                    .iter()
-                    .any(|name| super::field_name(name) == part)
+            let mut chars = part.chars();
+            while let Some(c) = chars.next() {
+                if c == '~' && !matches!(chars.next(), Some('0' | '1' | '2' | '3')) {
+                    return true;
+                }
+            }
+            false
         }) {
-            return Err("schema path contains an undeclared field name".into());
+            return Err("schema path contains an invalid escape".into());
         }
     }
     if (schema.records == 0) != schema.fields.is_empty() {

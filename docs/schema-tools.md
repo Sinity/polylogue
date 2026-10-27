@@ -2,15 +2,14 @@
 
 `polylogue schema infer` reads explicit stored input revisions and writes a
 JSON artifact containing field paths, types, presence and counts. It runs
-without the daemon or ingestion. It never opens the original source files
-or tool databases. `schema diff` compares two such artifacts recursively.
+with or without the daemon running, without ingestion. Archive and stored-byte
+reads use read-only handles and do not take the daemon's archive lock. It
+never opens the original source files or tool databases. `schema diff` compares two such artifacts recursively.
 
 ```sh
 polylogue schema infer claude-code --input INPUT_ID --revision 1 \
-  --field type --field message --field content --field text \
   --output /path/to/schema-before.json
 polylogue schema infer claude-code --input INPUT_ID --revision 2 \
-  --field type --field message --field content --field text \
   --output /path/to/schema-after.json
 polylogue schema diff /path/to/schema-before.json /path/to/schema-after.json
 polylogue --json schema diff /path/to/schema-before.json /path/to/schema-after.json
@@ -38,12 +37,18 @@ artifact.
 
 ## Field names and counts
 
-There are no examples, observed value lists, enums or source paths in an
-artifact. `--field` declares each field name permitted in output paths, at
-any depth. Every other object member is grouped under `*`, including names
-that look like ordinary words. With no `--field`, all object names are
-hidden. This makes dynamic maps usable without disclosing their member
-names. Use the same declarations for artifacts you intend to compare.
+Values never appear as examples, lists or enums. Object member names appear
+by default. Identifier-shaped keys (UUIDs, hexadecimal hashes of at least
+16 characters, numerals of at least six digits, dates/timestamps and paths)
+are grouped under `*`. When a map has more than 50 distinct sibling names
+across the selected records, its members are grouped under `*` regardless
+of their spelling. Grouping uses the whole selected sample, including
+members seen in separate inputs. These rules change paths, not which
+records are read or counted.
+
+Use `--field NAME` to force a name into paths at every depth even when it
+would otherwise be grouped. The artifact's `named_fields` lists these
+overrides. Use the same overrides for artifacts you intend to compare.
 
 Paths start at the empty root path and use `/` between components. `[]`
 means an array element; `*` means an unnamed object member. In named fields,
