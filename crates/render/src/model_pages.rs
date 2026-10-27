@@ -185,8 +185,8 @@ impl Pager {
             .filter(|(_, block)| self.view.keeps(&message, block))
             .map(|(index, _)| index)
             .collect();
-        let ps = rendered_blocks(&message, self.view);
-        self.push_blocks(ps, header(&message), annotations)
+        let blocks = rendered_blocks(&message, self.view);
+        self.push_blocks(blocks, header(&message), annotations)
     }
 
     pub fn visible_attachments(&self) -> &[crate::AttachmentRef] {
@@ -195,7 +195,7 @@ impl Pager {
 
     fn push_blocks(
         &mut self,
-        ps: Vec<crate::RenderedBlock>,
+        blocks: Vec<crate::RenderedBlock>,
         heading: String,
         annotations: Vec<crate::attachments::Annotation>,
     ) -> Result<ControlFlow<()>, &'static str> {
@@ -205,13 +205,13 @@ impl Pager {
             return Ok(ControlFlow::Continue(()));
         }
 
-        if self.resumed && !self.validated && self.at.block >= ps.len() {
+        if self.resumed && !self.validated && self.at.block >= blocks.len() {
             return Err("the read cursor block is outside the selected record");
         }
-        if self.latest && !ps.is_empty() {
+        if self.latest && !blocks.is_empty() {
             self.latest = false;
-            self.at.block = ps.len() - 1;
-            let last = &ps[self.at.block];
+            self.at.block = blocks.len() - 1;
+            let last = &blocks[self.at.block];
             let label = last
                 .label
                 .as_deref()
@@ -229,8 +229,8 @@ impl Pager {
             self.at.character =
                 (heading + prefix + last.text.chars().count() + 1).saturating_sub(self.budget);
         }
-        while self.at.block < ps.len() {
-            let p = &ps[self.at.block];
+        while self.at.block < blocks.len() {
+            let p = &blocks[self.at.block];
             let mut body = match (p.kind, &p.label) {
                 ("tool_call", Some(l)) => format!("→ {l}: {}\n", p.text),
                 ("tool_result", Some(l)) => format!("← {l}\n{}\n", p.text),
@@ -337,18 +337,18 @@ impl BlockPager {
     ) -> Result<ControlFlow<()>, &'static str> {
         self.stream.masker.block(&mut block);
         self.stream.source_blocks = vec![self.stream.message];
-        let ps = if self.stream.view.keeps_block(false, &block) {
+        let blocks = if self.stream.view.keeps_block(false, &block) {
             crate::block(&block).into_iter().collect()
         } else {
             Vec::new()
         };
-        let heading = if !self.heading_emitted && !ps.is_empty() {
+        let heading = if !self.heading_emitted && !blocks.is_empty() {
             self.heading_emitted = true;
             self.heading.clone()
         } else {
             String::new()
         };
-        self.stream.push_blocks(ps, heading, Vec::new())
+        self.stream.push_blocks(blocks, heading, Vec::new())
     }
     pub fn finish(self) -> Result<Page, &'static str> {
         self.stream.finish()
