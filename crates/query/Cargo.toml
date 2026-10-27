@@ -15,10 +15,5 @@ serde.workspace = true
 jiff.workspace = true
 strsim.workspace = true
 
-[dev-dependencies]
-polylogue-store.workspace = true
-polylogue-testkit.workspace = true
-serde_json.workspace = true
-
 [lints]
 workspace = true

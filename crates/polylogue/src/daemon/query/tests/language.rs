@@ -12,10 +12,11 @@ fn options() -> Options {
             1_791_453_600_000,
             LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         ),
-        origins: ["claude-code", "codex", "chatgpt", "claude-ai"]
-            .map(str::to_owned)
-            .to_vec(),
-        command_words: vec![],
+        origins: polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect(),
+        command_words: crate::commands::command_words(),
         page_size: None,
         random_seed: Some(7),
         embeddings: false,

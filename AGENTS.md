@@ -10,7 +10,7 @@ is kept for reference; the rewrite uses its own archive.
 
 [docs/architecture.md](docs/architecture.md) describes current module boundaries.
 
-- `crates/model`: identity, value and outcome types; no I/O.
+- `crates/model`: identity, value and outcome types; shared durable file replacement.
 - `crates/sources`: one declaration and one parser per origin on the shared
   framework (`origin.rs`, `parse.rs`, `document.rs`).
 - `crates/store`: every SQLite connection and write; the blob store.

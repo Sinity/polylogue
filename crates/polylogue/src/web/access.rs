@@ -9,7 +9,7 @@
 
 use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -53,23 +53,7 @@ pub fn write_access_files(dir: &Path, token: &str, port: u16) -> io::Result<()> 
 }
 
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut file = tempfile::NamedTempFile::new_in(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?;
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(text.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
-    std::fs::File::open(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?
-    .sync_all()?;
-    Ok(())
+    polylogue_model::atomic_write::write_atomic(path, text.as_bytes(), None)
 }
 
 /// The running reader's authenticated entry point, as written by that

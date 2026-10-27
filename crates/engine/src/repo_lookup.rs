@@ -8,8 +8,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::SystemTime;
 
 /// What a repository directory says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,15 +20,17 @@ pub struct Lookup {
     pub root_commit: Option<String>,
 }
 
-/// Known roots are read again only when `HEAD` moves. Missing history is
-/// tried again because a fetch can fill it without moving `HEAD`.
+/// Repository results are reused while HEAD and the configuration files are
+/// unchanged. Missing history is retried because a fetch can fill it.
 #[derive(Default)]
 pub struct Cache {
-    /// Working directory to the repository directory above it (`None`: no
-    /// repository).
-    repos: HashMap<PathBuf, Option<PathBuf>>,
-    /// Repository directory to the `HEAD` id and root commit last read.
-    roots: HashMap<PathBuf, (String, Option<String>)>,
+    lookups: HashMap<PathBuf, Cached>,
+}
+
+struct Cached {
+    head: Option<String>,
+    files: Vec<(PathBuf, Option<(SystemTime, u64)>)>,
+    lookup: Lookup,
 }
 
 /// The nearest directory at or above `dir` holding `.git` (a directory, or
@@ -50,172 +54,117 @@ pub fn without_credentials(url: &str) -> String {
     }
 }
 
-/// The Git directory and the shared directory (different in linked worktrees).
-fn git_directories(repo_dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    let dot_git = repo_dir.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let text = fs::read_to_string(dot_git).ok()?;
-        repo_dir.join(text.trim().strip_prefix("gitdir: ")?)
+fn git(repo: &Path, args: &[&str]) -> Option<String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(args);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(name);
     }
-    .canonicalize()
-    .ok()?;
-    let common = match fs::read_to_string(git_dir.join("commondir")) {
-        Ok(path) => git_dir.join(path.trim()).canonicalize().ok()?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => git_dir.clone(),
-        Err(_) => return None,
-    };
-    Some((git_dir, common))
+    command
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_LAZY_FETCH", "1");
+    git_output(&mut command)
 }
 
-/// Resolves loose and packed references without starting a process each pass.
-fn head_id(git_dir: &Path, common: &Path) -> Option<String> {
-    let mut text = fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let mut seen = BTreeSet::new();
-    loop {
-        let value = text.trim();
-        let Some(name) = value.strip_prefix("ref: ") else {
-            return (matches!(value.len(), 40 | 64)
-                && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| value.to_owned());
-        };
-        if !name.starts_with("refs/")
-            || !Path::new(name)
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)))
-        {
-            return None;
-        }
-        if !seen.insert(name.to_owned()) {
-            return None;
-        }
-        text = fs::read_to_string(git_dir.join(name))
-            .or_else(|_| fs::read_to_string(common.join(name)))
-            .ok()
-            .or_else(|| {
-                fs::read_to_string(common.join("packed-refs"))
-                    .ok()?
-                    .lines()
-                    .filter_map(|line| line.split_once(' '))
-                    .find(|(_, reference)| *reference == name)
-                    .map(|(id, _)| id.to_owned())
-            })?;
-    }
+fn git_output(command: &mut Command) -> Option<String> {
+    let output = command.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
 }
 
-/// Read configuration files directly, keeping Git's quoting and include rules.
-fn remote_url(git_dir: &Path, common: &Path) -> Option<String> {
-    use gix_config::{
-        File, Source,
-        file::{Metadata, includes, init},
-        source::Kind,
+/// Reads one repository directory. Git's ownership refusal makes both fields
+/// unavailable, just like an unreadable repository.
+pub fn read(repo: &Path, cache: &mut Cache) -> Lookup {
+    read_with(repo, cache, |args| git(repo, args))
+}
+
+fn read_with(
+    repo: &Path,
+    cache: &mut Cache,
+    mut git: impl FnMut(&[&str]) -> Option<String>,
+) -> Lookup {
+    let unavailable = Lookup {
+        remote: None,
+        root_commit: None,
     };
-    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let branch = head.trim().strip_prefix("ref: ");
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut options = includes::Options::follow_without_conditional(home.as_deref());
-    options.conditional = includes::conditional::Context {
-        git_dir: Some(git_dir),
-        branch_name: branch.and_then(|name| name.try_into().ok()),
+    let Some(config) = git(&["config", "--null", "--show-origin", "--name-only", "--list"]) else {
+        cache.lookups.remove(repo);
+        return unavailable;
     };
-    let mut paths: Vec<Metadata> = [Kind::GitInstallation, Kind::System, Kind::Global]
-        .iter()
-        .flat_map(|kind| kind.sources())
-        .filter_map(|source| {
-            source
-                .storage_location(&mut |name| std::env::var_os(name))
-                .filter(|path| path.is_file())
-                .map(|path| Metadata::from(*source).at(path))
+    let head = git(&["rev-parse", "--verify", "HEAD"]).map(|text| text.trim().to_owned());
+    // Git supplies each included configuration file, including conditional
+    // includes, so changes outside the checkout invalidate the result too.
+    let mut paths: BTreeSet<PathBuf> = config
+        .split('\0')
+        .step_by(2)
+        .filter_map(|origin| origin.strip_prefix("file:").map(PathBuf::from))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                repo.join(path)
+            }
         })
         .collect();
-    let local = File::from_path_no_includes(common.join("config"), Source::Local).ok()?;
-    let worktree_config = local.boolean("extensions.worktreeConfig").ok().flatten() == Some(true);
-    paths.push(Metadata::from(Source::Local).at(common.join("config")));
-    if worktree_config && git_dir.join("config.worktree").is_file() {
-        paths.push(Metadata::from(Source::Worktree).at(git_dir.join("config.worktree")));
+    let shallow = git(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "shallow",
+    ])
+    .map(|text| PathBuf::from(text.trim()));
+    paths.extend(shallow.iter().cloned());
+    let files = paths
+        .into_iter()
+        .map(|path| {
+            let facts = fs::metadata(&path)
+                .ok()
+                .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+            (path, facts)
+        })
+        .collect::<Vec<_>>();
+    if let Some(old) = cache.lookups.get(repo)
+        && old.head == head
+        && old.files == files
+        && old.lookup.root_commit.is_some()
+    {
+        return old.lookup.clone();
     }
-    let mut config = File::from_paths_metadata(
-        paths,
-        init::Options {
-            includes: options,
-            ..Default::default()
-        },
-    )
-    .ok()??;
-    if let Ok(environment) = File::from_environment_overrides() {
-        config.append(environment).ok()?;
-    }
-    let url = config.strings("remote.origin.url")?.into_iter().next()?;
-    let url = String::from_utf8_lossy(&url);
-    let mut rewrite: Option<(usize, String)> = None;
-    for section in config.sections_by_name("url").into_iter().flatten() {
-        let header = section.header();
-        let Some(base) = header.subsection_name() else {
-            continue;
-        };
-        for prefix in section.values("insteadOf") {
-            let prefix = String::from_utf8_lossy(&prefix);
-            if let Some(rest) = url.strip_prefix(prefix.as_ref())
-                && rewrite
-                    .as_ref()
-                    .is_none_or(|(length, _)| prefix.len() > *length)
-            {
-                rewrite = Some((
-                    prefix.len(),
-                    format!("{}{rest}", String::from_utf8_lossy(base.as_ref())),
-                ));
-            }
-        }
-    }
-    Some(without_credentials(
-        rewrite.as_ref().map_or(url.as_ref(), |(_, url)| url),
-    ))
-}
-
-/// Reads one repository directory.
-pub fn read(repo_dir: &Path, cache: &mut Cache) -> Lookup {
-    let Some((git_dir, common)) = git_directories(repo_dir) else {
-        return Lookup {
-            remote: None,
-            root_commit: None,
-        };
-    };
-    let remote = remote_url(&git_dir, &common);
-    let root_commit = head_id(&git_dir, &common).and_then(|head| {
-        if let Some((seen, root)) = cache.roots.get(repo_dir)
-            && *seen == head
-            && root.is_some()
-        {
-            return root.clone();
-        }
-        let output = std::process::Command::new("git")
-            .arg("--git-dir")
-            .arg(&git_dir)
-            .args(["rev-list", "--first-parent", "--max-parents=0", &head])
-            .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_OBJECT_DIRECTORY")
-            .env("GIT_NO_REPLACE_OBJECTS", "1")
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .output()
-            .ok();
-        let root = output
-            .filter(|out| out.status.success())
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .and_then(|text| text.lines().next().map(str::to_owned))
-            .filter(|root| {
-                !fs::read_to_string(common.join("shallow"))
-                    .is_ok_and(|text| text.lines().any(|id| id == root))
-            });
-        cache
-            .roots
-            .insert(repo_dir.to_path_buf(), (head, root.clone()));
-        root
+    let remote = git(&["remote", "get-url", "origin"]).map(|text| without_credentials(text.trim()));
+    let root_commit = head.as_ref().and_then(|_| {
+        let root = git(&["rev-list", "--first-parent", "--max-parents=0", "HEAD"])?
+            .lines()
+            .next()?
+            .to_owned();
+        (!shallow
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .is_some_and(|text| text.lines().any(|id| id == root)))
+        .then_some(root)
     });
-    Lookup {
+    let lookup = Lookup {
         remote,
         root_commit,
-    }
+    };
+    cache.lookups.insert(
+        repo.to_path_buf(),
+        Cached {
+            head,
+            files,
+            lookup: lookup.clone(),
+        },
+    );
+    lookup
 }
 
 /// Writes the lookups for `cwds` into `dir`, one file per repository named
@@ -228,11 +177,7 @@ pub fn refresh(
 ) -> io::Result<usize> {
     let mut repos = BTreeSet::new();
     for cwd in cwds {
-        let repo = cache
-            .repos
-            .entry(cwd.clone())
-            .or_insert_with(|| repository_of(&cwd))
-            .clone();
+        let repo = repository_of(&cwd);
         repos.extend(repo);
     }
     let mut changed = 0;
@@ -259,11 +204,7 @@ pub fn refresh(
         });
         fs::create_dir_all(dir)?;
         let bytes = serde_json::to_vec(&doc)?;
-        let mut output = tempfile::NamedTempFile::new_in(dir)?;
-        output.write_all(&bytes)?;
-        output.as_file().sync_all()?;
-        output.persist(&file).map_err(|e| e.error)?;
-        fs::File::open(dir)?.sync_all()?;
+        polylogue_model::atomic_write::write_atomic(&file, &bytes, None)?;
         changed += 1;
     }
     Ok(changed)

@@ -4,7 +4,7 @@
 
 use super::{EVENTS, Harness};
 use serde_json::{Value, json};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 mod parse;
@@ -190,20 +190,6 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
         }
         Err(e) => return Err(e),
     };
-    let mut file = tempfile::NamedTempFile::new_in(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?;
-    file.as_file().set_permissions(permissions)?;
-    file.write_all(text.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
-    std::fs::File::open(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?
-    .sync_all()?;
+    polylogue_model::atomic_write::write_atomic(path, text.as_bytes(), Some(permissions))?;
     Ok(())
 }

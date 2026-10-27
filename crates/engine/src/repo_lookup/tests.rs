@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Write;
 
 #[test]
 fn credentials_never_reach_a_lookup() {
@@ -145,7 +146,7 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
         .append(true)
         .open(repo.join(".git/config"))
         .unwrap();
-    let (git_dir, _) = git_directories(&linked).unwrap();
+    let git_dir = git(&linked, &["rev-parse", "--absolute-git-dir"]);
     fs::write(
         repo.join(".git/worktree-config"),
         "[remote \"origin\"]\nurl = git@example.invalid:team/project.git\n",
@@ -154,7 +155,7 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
     writeln!(
         config,
         "[includeIf \"gitdir:{}\"]\npath = worktree-config",
-        git_dir.display()
+        git_dir
     )
     .unwrap();
     assert_eq!(
@@ -241,6 +242,98 @@ fn malformed_head_values_and_reference_paths_stay_unknown() {
         "ref: refs/../../outside",
     ] {
         fs::write(dir.join("HEAD"), head).unwrap();
-        assert_eq!(head_id(&dir, &dir), None, "{head}");
+        assert_eq!(
+            read(&repo, &mut Cache::default()).root_commit,
+            None,
+            "{head}"
+        );
     }
+}
+
+#[test]
+fn ownership_refusal_reports_the_repository_as_unavailable() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    repository(&repo);
+    git(
+        &repo,
+        &["remote", "add", "origin", "https://example.invalid/project"],
+    );
+    let mut cache = Cache::default();
+    assert!(read(&repo, &mut cache).remote.is_some());
+    let lookup = read_with(&repo, &mut cache, |args| {
+        git_output(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "safe.directory="])
+                .args(args)
+                .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"),
+        )
+    });
+    assert_eq!(
+        lookup,
+        Lookup {
+            remote: None,
+            root_commit: None
+        }
+    );
+    assert!(cache.lookups.is_empty());
+}
+
+#[test]
+fn unchanged_head_and_config_reuse_the_lookup_and_included_config_changes_refresh_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    repository(&repo);
+    git(&repo, &["config", "include.path", "remote-config"]);
+    let config = repo.join(".git/remote-config");
+    fs::write(
+        &config,
+        "[remote \"origin\"]\nurl = https://example.invalid/first\n",
+    )
+    .unwrap();
+    let mut cache = Cache::default();
+    assert_eq!(
+        read(&repo, &mut cache).remote.as_deref(),
+        Some("https://example.invalid/first")
+    );
+    let mut queries = Vec::new();
+    read_with(&repo, &mut cache, |args| {
+        queries.push(args.join(" "));
+        super::git(&repo, args)
+    });
+    assert!(
+        !queries
+            .iter()
+            .any(|query| query.starts_with("remote") || query.starts_with("rev-list"))
+    );
+    fs::write(
+        &config,
+        "[remote \"origin\"]\nurl = https://example.invalid/second-repository\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read(&repo, &mut cache).remote.as_deref(),
+        Some("https://example.invalid/second-repository")
+    );
+}
+
+#[test]
+fn repository_discovery_follows_new_and_removed_nested_repositories() {
+    let temp = tempfile::tempdir().unwrap();
+    let outer = temp.path().join("outer");
+    let inner = outer.join("inner");
+    let cwd = inner.join("src");
+    fs::create_dir_all(&cwd).unwrap();
+    let mut cache = Cache::default();
+    let out = temp.path().join("lookups");
+    assert_eq!(refresh([cwd.clone()], &out, &mut cache, "t1").unwrap(), 0);
+    repository(&outer);
+    assert_eq!(refresh([cwd.clone()], &out, &mut cache, "t2").unwrap(), 1);
+    repository(&inner);
+    assert_eq!(refresh([cwd.clone()], &out, &mut cache, "t3").unwrap(), 1);
+    fs::rename(inner.join(".git"), inner.join("retired-git")).unwrap();
+    assert_eq!(repository_of(&cwd), Some(outer));
+    assert_eq!(refresh([cwd], &out, &mut cache, "t4").unwrap(), 0);
 }

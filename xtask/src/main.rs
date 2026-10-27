@@ -31,7 +31,7 @@ enum Cli {
     /// Formatting, crate boundaries and clippy (warnings denied) of every
     /// target.
     Fast,
-    /// Formatting, crate boundaries, clippy, default tests and affected Sinex tests.
+    /// Formatting, crate boundaries, both clippy configurations and all tests.
     Check,
     /// The end-to-end tests: the real daemon, CLI and MCP server.
     Scenarios,
@@ -128,10 +128,7 @@ fn boundaries(metadata: &Value) -> Result<(), String> {
                 .ok_or("dependency name missing")?;
             // Tests may build archives with the testkit and open SQLite to
             // break an archive on purpose; product code may not.
-            if test_only
-                && (matches!(dependency, "polylogue-testkit" | "rusqlite")
-                    || (name == "polylogue-query" && dependency == "polylogue-store"))
-            {
+            if test_only && matches!(dependency, "polylogue-testkit" | "rusqlite") {
                 continue;
             }
             if (workspace.contains(&dependency) && !allowed.contains(&dependency))
@@ -160,85 +157,62 @@ fn boundaries_step(run: &mut Run) -> devkit::Result {
     })
 }
 
-/// Changes use the same merge base and package selection as `test --changed`.
-struct Changes {
-    application: bool,
-    sinex: bool,
-}
-
-impl Changes {
-    fn read(root: &Path) -> Result<Self, String> {
-        if devkit::select::changed(root, "origin/master")? == Selection::Nothing {
-            return Ok(Self {
-                application: false,
-                sinex: false,
-            });
+/// Whether Cargo's dependency graph makes a package affected by the selection.
+fn affected(selection: &Selection, metadata: &Value, target: &str) -> bool {
+    let (changed, binaries) = match selection {
+        Selection::Nothing => return false,
+        // Function filters are already narrowed by devkit. Checking both modes
+        // keeps their configuration independent of the filter's text syntax.
+        Selection::Workspace | Selection::Filter(_) => return true,
+        Selection::Packages(packages) => (packages.as_slice(), &[][..]),
+        Selection::Tests { packages, binaries } => (packages.as_slice(), binaries.as_slice()),
+    };
+    if binaries.iter().any(|(package, _)| package == target) {
+        return true;
+    }
+    let mut dependencies = std::collections::BTreeSet::new();
+    let mut pending = vec![target.to_owned()];
+    while let Some(name) = pending.pop() {
+        if !dependencies.insert(name.clone()) {
+            continue;
         }
-        let mut files = Vec::new();
-        for args in [
-            &["diff", "--name-only", "-z", "--merge-base", "origin/master"][..],
-            &["ls-files", "--others", "--exclude-standard", "-z"][..],
-        ] {
-            let output = std::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .map_err(|e| e.to_string())?;
-            if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-            }
-            files.extend(
-                output
-                    .stdout
-                    .split(|byte| *byte == 0)
-                    .filter(|file| !file.is_empty())
-                    .map(|file| String::from_utf8_lossy(file).into_owned()),
+        if let Some(package) = metadata["packages"].as_array().and_then(|packages| {
+            packages
+                .iter()
+                .find(|package| package["name"].as_str() == Some(&name))
+        }) {
+            pending.extend(
+                package["dependencies"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|dependency| dependency["name"].as_str().map(str::to_owned)),
             );
         }
-        Ok(Self {
-            application: files
-                .iter()
-                .any(|file| file.starts_with("crates/polylogue/")),
-            sinex: files.iter().any(|file| sinex_input(file)),
-        })
     }
+    changed.iter().any(|package| dependencies.contains(package))
 }
 
-fn sinex_input(path: &str) -> bool {
-    path.starts_with("crates/sinex/")
-        || path.starts_with("crates/polylogue/src/sinex/")
-        || path.starts_with("crates/polylogue/src/daemon/service/tests/mode/")
-        || path.starts_with("crates/store/src/primary/")
-        || matches!(
-            path,
-            "Cargo.toml"
-                | "Cargo.lock"
-                | "xtask/src/main.rs"
-                | "crates/polylogue/Cargo.toml"
-                | "crates/polylogue/src/main.rs"
-                | "crates/polylogue/src/sinex.rs"
-                | "crates/polylogue/src/daemon/server.rs"
-                | "crates/polylogue/src/daemon/service.rs"
-                | "crates/polylogue/src/daemon/service/tests.rs"
-                | "crates/polylogue/src/daemon/service/tests/mode.rs"
-                | "crates/store/Cargo.toml"
-                | "crates/store/src/primary.rs"
+fn clippy(run: &mut Run, full: bool) -> devkit::Result {
+    let (application, sinex) = if full {
+        (true, true)
+    } else {
+        let selection = devkit::select::changed(&run.root, "origin/master")?;
+        let metadata = metadata(&run.root)?;
+        (
+            affected(&selection, &metadata, "polylogue"),
+            affected(&selection, &metadata, "polylogue-sinex"),
         )
-}
-
-/// One workspace pass. A primary-mode pass needs the standalone application
-/// checked too only when application files changed.
-fn clippy(run: &mut Run) -> devkit::Result {
-    let changes = Changes::read(&run.root)?;
+    };
     let mut args = vec!["clippy", "--locked", "--workspace", "--all-targets"];
-    if changes.sinex {
+    if sinex {
         args.extend(["--features", "polylogue/sinex"]);
     } else {
         args.extend(["--exclude", "polylogue-sinex"]);
     }
     args.extend(["--", "-D", "warnings"]);
     run.cargo("clippy", &args)?;
-    if changes.sinex && changes.application {
+    if sinex && application {
         run.cargo(
             "clippy-standalone",
             &[
@@ -283,7 +257,11 @@ fn nextest(args: Vec<String>) -> Nextest {
 /// tests `args` select. `-p` packages and `-E` filtersets become one
 /// filterset, intersected with `required` (a changed-package selection, or
 /// the scenarios' own). Feature flags are refused: there is one feature set.
-fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<String>, String> {
+fn test_arguments(
+    args: &[String],
+    required: Option<String>,
+    mut sinex: bool,
+) -> Result<Vec<String>, String> {
     let mut packages = Vec::new();
     let mut filtersets = Vec::new();
     let mut rest = Vec::new();
@@ -323,7 +301,7 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
         }
     }
     if packages.iter().any(|package| package == "polylogue-sinex") {
-        return Err("use xtask sinex-client to build and test polylogue-sinex".into());
+        sinex = true;
     }
     let either = |sets: Vec<String>| {
         sets.into_iter()
@@ -350,12 +328,17 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
         "--locked",
         "--workspace",
         "--features",
-        TEST_FEATURES,
-        "--exclude",
-        "polylogue-sinex",
+        if sinex {
+            "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults"
+        } else {
+            TEST_FEATURES
+        },
     ]
     .map(String::from)
     .to_vec();
+    if !sinex {
+        arguments.extend(["--exclude".into(), "polylogue-sinex".into()]);
+    }
     if !terms.is_empty() {
         arguments.push("-E".to_owned());
         arguments.push(
@@ -381,28 +364,28 @@ fn main() -> ExitCode {
         Cli::Fast => run("fast", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
-            clippy(run)
+            clippy(run, false)
         }),
         Cli::Check => run("check", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
-            clippy(run)?;
-            let arguments = test_arguments(&[], None).expect("the full selection is valid");
+            clippy(run, true)?;
+            let arguments = test_arguments(&[], None, false).expect("the full selection is valid");
             run.nextest("test", &nextest(arguments))?;
-            if Changes::read(&run.root)?.sinex {
-                sinex_client(run)?;
-            }
+            sinex_client(run)?;
             Ok(())
         }),
         Cli::SinexClient => run("sinex-client", &[], sinex_client),
         Cli::Scenarios => run("scenarios", &[], |run| {
-            let arguments = test_arguments(&[], Some("package(=polylogue) & kind(test)".into()))
-                .expect("the scenario selection is valid");
+            let arguments =
+                test_arguments(&[], Some("package(=polylogue) & kind(test)".into()), false)
+                    .expect("the scenario selection is valid");
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { changed, args } => {
             let mut required = None;
+            let mut sinex = false;
             if changed {
                 let root = Path::new(".");
                 match devkit::select::changed(root, "origin/master") {
@@ -410,14 +393,24 @@ fn main() -> ExitCode {
                         eprintln!("no package changed since the merge base; nothing to test");
                         return ExitCode::SUCCESS;
                     }
-                    Ok(selection) => required = selection.filterset(),
+                    Ok(selection) => {
+                        let graph = match metadata(root) {
+                            Ok(graph) => graph,
+                            Err(error) => {
+                                eprintln!("{error}");
+                                return ExitCode::FAILURE;
+                            }
+                        };
+                        sinex = affected(&selection, &graph, "polylogue-sinex");
+                        required = selection.filterset();
+                    }
                     Err(error) => {
                         eprintln!("{error}");
                         return ExitCode::FAILURE;
                     }
                 }
             }
-            let arguments = match test_arguments(&args, required) {
+            let arguments = match test_arguments(&args, required, sinex) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     eprintln!("{error}");

@@ -12,7 +12,6 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The setting that turns the collector on.
@@ -184,7 +183,11 @@ impl Drive {
             };
             let url = format!("{rev_url}/{}", next.id);
             let bytes = get(&url, &[("alt", "media")])?;
-            write_atomic(&self.spool.join(format!("{id}.json")), &bytes)?;
+            polylogue_model::atomic_write::write_atomic(
+                &self.spool.join(format!("{id}.json")),
+                &bytes,
+                None,
+            )?;
             state.insert(id.to_owned(), next.id.clone());
             report.revisions_written += 1;
             report.pending += revisions.len() - start - 1;
@@ -232,26 +235,9 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
     if std::fs::read(path).is_ok_and(|old| old == bytes) {
         return Ok(());
     }
-    write_atomic(path, bytes)
-}
-
-/// Written whole or not at all, so the loop never stores half a revision.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
-    let mut file = tempfile::NamedTempFile::new_in(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|e| e.error)?;
-    std::fs::File::open(
-        path.parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new(".")),
-    )?
-    .sync_all()?;
-    Ok(())
+    Ok(polylogue_model::atomic_write::write_atomic(
+        path, bytes, None,
+    )?)
 }
 
 /// The origin's collector: Google's Drive, the token the operator

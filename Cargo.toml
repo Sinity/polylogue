@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
-default-members = ["crates/model", "crates/sources", "crates/store", "crates/engine", "crates/query", "crates/render", "crates/polylogue", "crates/testkit", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,7 +25,6 @@ serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 thiserror = "2"
 blake3 = "1"
 memchr = "2"
-gix-config = { version = "0.62", features = ["sha1"] }
 zstd = "0.13"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
@@ -67,37 +65,9 @@ unimplemented = "deny"
 opt-level = 1
 debug = "line-tables-only"
 incremental = false
+codegen-units = 256
 
 [profile.dev.package."*"]
+codegen-units = 16
 opt-level = 2
 debug = false
-
-[profile.dev.package."polylogue"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-engine"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-model"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-query"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-render"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-sinex"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-sources"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-store"]
-codegen-units = 256
-
-[profile.dev.package."polylogue-testkit"]
-codegen-units = 256
-
-[profile.dev.package."xtask"]
-codegen-units = 256

@@ -7,11 +7,10 @@ work and keeps its log.
 | Check | Command | When |
 | --- | --- | --- |
 | Compile | `agentctl job start polylogue compile --workspace <worktree> -- -p <crate>` | while editing |
-| Test build timings | `agentctl job start polylogue test_build --workspace <worktree>` | when measuring build cost |
 | Formatting | `agentctl job start polylogue fmt --workspace <worktree>` | before committing |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing |
 | Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing |
-| Full suite | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
+| Landing check (both modes) | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
 | Sinex client | `agentctl job start polylogue sinex_client --workspace <worktree>` | after client or primary-mode feature changes |
 | End-to-end scenarios | `agentctl job start polylogue scenarios --workspace <worktree>` | after daemon, CLI or MCP changes |
 | Package build | `agentctl job start polylogue package --workspace <worktree>` | after dependency or packaging changes |
@@ -26,9 +25,10 @@ suite) on each new master head in the reserved checkout
 (`agentctl job list --project polylogue`) to see whether a failure is already
 on master.
 
-- **Fast check:** formatting, crate boundaries (`xtask boundaries`) and Clippy over every target, tests included, with warnings denied. The default pass excludes the Sinex client. When client or feature wiring changed, it enables `polylogue/sinex`; a second pass over standalone `polylogue` runs only when application files changed too.
-- **Full suite:** the fast check, then the workspace tests excluding `polylogue-sinex`, with `polylogue-engine/faults,polylogue-store/faults` (configuration in `.config/nextest.toml`). Each test runs in its own process; one still running after two minutes fails. `focused` and `scenarios` build exactly the same selection. `xtask test` turns `-p` and `-E` into one filterset that chooses which tests run and refuses feature flags. The workspace's default members also exclude the Sinex client, so plain Cargo test builds do not compile its transport stack.
-- **Sinex client:** `xtask sinex-client`, exposed as the `sinex_client` operation, builds and tests `polylogue-sinex` and the primary-mode application. `check` adds it when the diff touches `crates/sinex`, `crates/store/src/primary.rs`, or feature wiring (workspace, application or store manifests, the lockfile, the test feature set, application files that select primary mode, and primary-mode tests). Changed-file selection uses the merge base with `origin/master`, as `test --changed` does. The real-server rebuild test remains ignored unless run in the Sinex environment described below.
+- **Fast check:** formatting, crate boundaries (`xtask boundaries`) and Clippy over every target, tests included, with warnings denied. Cargo's dependency graph and devkit's changed-package selection choose whether primary mode and the standalone application need separate passes.
+- **Landing check:** formatting, boundaries, Clippy with `polylogue/sinex`, Clippy for the standalone application, standalone workspace tests, and Sinex client and primary-mode application tests. Every run checks both configurations, including the master baseline. Each test runs in its own process; one still running after two minutes fails (configuration in `.config/nextest.toml`).
+- **Focused tests:** `xtask test` builds the standalone workspace with `polylogue-engine/faults,polylogue-store/faults` and excludes `polylogue-sinex`. `-p`, `-E` and test names choose which tests run. `test --changed` uses devkit's selection from the merge base with `origin/master`; when the Cargo dependency graph selects the Sinex client, it builds with `polylogue/sinex` too. Explicitly selecting `-p polylogue-sinex` also enables that configuration. Feature flags are refused so iteration checks reuse these two builds.
+- **Sinex client:** `xtask sinex-client`, exposed as the `sinex_client` operation, builds and tests `polylogue-sinex` and the primary-mode application. The landing check always runs it. The real-server rebuild test remains ignored unless run in the Sinex environment described below.
 - **Fault tests:** the `faults` features add a fault registry that starts
   empty; only a test's own `polylogue_store::fault::arm` call activates a
   point, in that process. They stop work between an excision's database
@@ -59,9 +59,10 @@ Tests that need realistic data use `polylogue-testkit`:
 `Morrow::build(Set::Main)` lays out the Morrow example archive
 (`examples/morrow/`, facts in its `FACTS.md`) where each tool writes, runs the
 loop over it and imports its exports. `view()` and `stored_bytes()` give what
-laws compare. Query-language invariants run directly against compiled SQL in
-`crates/query/tests/language/`; application query examples, paging and saved results
-remain in `crates/polylogue/src/daemon/query/tests/`.
+laws compare. Query-language invariants, application examples, paging and saved results live
+in `crates/polylogue/src/daemon/query/tests/`. The language invariants compile
+queries and run them through a Store reader, using the real origin and command
+declarations.
 
 Tests do not assert on elapsed time. A test that checks a deadline makes the
 peer stay silent until the client gives up, so only the deadline can end the
@@ -105,15 +106,13 @@ checkout builds every test binary; a new checkout's target starts as a
 reflink copy of the master baseline's warm target, so that build compiles
 only what differs from master.
 
-Incremental compilation is disabled, with 256 codegen units for each workspace
-package. The measured cold and edited check pair wrote 3,876,593,664 bytes
-versus 7,222,145,024 bytes with the previous profile (46.3% fewer); peak
-child RSS fell from 1,339,899,904 to 1,210,421,248 bytes. Optimization and
-debug settings stay unchanged. The edited check took 215.09 s versus
-174.49 s; changing host load means these runs do not establish a speedup.
+Incremental compilation is disabled. Workspace crates use 256 codegen units;
+external packages use 16. Optimization and debug settings stay unchanged.
 
-Repository lookups read Git configuration directly and run `git rev-list` when
-HEAD changes. Git is included in the dev shell and the packaged binary's path.
+Repository lookups use Git for configuration, remotes and root commits.
+Results are cached by HEAD and the modification times of configuration files,
+including conditional includes. Git is included in the dev shell and the
+packaged binary's path.
 
 The dev shell links with mold (`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`):
 on a cold test build the workspace's test binaries spent 169 s linking with

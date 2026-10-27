@@ -13,7 +13,6 @@ polylogue-sources.workspace = true
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
 blake3.workspace = true
-gix-config.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
