@@ -176,6 +176,8 @@ of two or more sizes (`bench sample --name NAME --mb MB`, then `bench run
 --name NAME`) let `bench estimate` fit each stage as fixed seconds plus
 seconds per input MB and predict the whole corpus stage by stage; `bench
 validate RESULT` compares that prediction with a full run, stage by stage.
+A fit that predicts a negative or non-finite wall time or stage time is refused;
+those sample timings do not support the extrapolation.
 `--binary PATH --build LABEL` runs a `first_build` built elsewhere, such as
 the commit a full run used. `bench tails --name NAME` times the last pages of
 the largest sessions in a sample run's archive, and of any `--session`.
