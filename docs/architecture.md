@@ -319,8 +319,11 @@ queries always read `index.db`.
   refused, so no password sits in the configuration file. Polylogue
   writes the bytes it sends under the store root, so the account it runs
   as needs the store's group. Before registering its owned kinds or writing
-  frame bytes, Polylogue sends the producer protocol hello and checks Sinex's
-  welcome. A refused hello returns the daemon's reason.
+  frame bytes, Polylogue sends an empty producer protocol hello and checks
+  Sinex's welcome. The initial hello checks protocol and sealing before any
+  producer-owned kinds exist; exact kind registration and its acknowledged
+  definition hashes validate those kinds before material or event publication.
+  A refused hello returns the daemon's reason.
 
 ### Moving to primary mode
 

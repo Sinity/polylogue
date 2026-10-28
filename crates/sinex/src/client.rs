@@ -215,7 +215,7 @@ impl Client {
         bytes: impl Read,
     ) -> Result<()> {
         frame_bytes::write(&self.store_root, &self.producer, name, blob, length, bytes)
-            .map_err(Error::Invalid)
+            .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     /// Sends `frame` and waits for its acknowledgment. A frame too large for
