@@ -14,8 +14,6 @@ pub enum Stage {
     Read,
     /// Reading and comparing tool-database rows.
     Database,
-    /// Writer work from dequeue through acknowledgment.
-    Writer,
     /// Hashing and compressing bytes and packing rows for the writer (pool).
     Store,
     /// Running the parser (pool).
@@ -38,10 +36,9 @@ pub enum Stage {
     Derive,
 }
 
-const STAGES: [Stage; 11] = [
+const STAGES: [Stage; 12] = [
     Stage::Read,
     Stage::Database,
-    Stage::Writer,
     Stage::Store,
     Stage::Parse,
     Stage::Rows,
@@ -54,7 +51,7 @@ const STAGES: [Stage; 11] = [
     Stage::Derive,
 ];
 
-static NANOS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+static NANOS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 static WRITERS_BUSY: AtomicU64 = AtomicU64::new(0);
 
 impl Stage {
@@ -62,7 +59,6 @@ impl Stage {
         match self {
             Stage::Read => "read",
             Stage::Database => "database",
-            Stage::Writer => "writer",
             Stage::Store => "store",
             Stage::Parse => "parse",
             Stage::Rows => "rows",
