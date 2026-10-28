@@ -184,8 +184,8 @@ daemon refuses to start; paths are absolute.
   optional notification command, the Sinex endpoint. The changeable settings
   catalog holds what any author may change at run time (quiet hours, the
   interrupt budget, enabled variants, briefing switches), each key with a
-  type, default and scope; unknown keys are refused. Keys and defaults are in
-  the generated settings reference ([`reference/`](reference/README.md)); how
+  type, default and scope; unknown keys are refused. Keys and defaults will
+  be listed in the [planned settings reference](reference/README.md#planned-pages); how
   they are loaded is in
   [operations](operations.md#configuration).
 - **Derived outputs and cursors record the settings they were made under**, so

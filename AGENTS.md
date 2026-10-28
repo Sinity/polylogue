@@ -26,8 +26,10 @@ the target and closing the difference is the work. `docs/README.md` indexes
 the pages and defines how the operator's rulings are cited and how laws are
 named. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
-the area you are changing. What exists in a build is shown by the generated
-pages in `docs/reference/` and by each module's own documentation.
+the area you are changing. CLI help, MCP tool schemas and module
+documentation describe the current build; the
+[reference index](docs/reference/README.md) separates current artifacts from
+planned generated pages.
 
 Plans, open questions, decisions and acceptance criteria live in Beads, the
 task tracker, outside this repository. A Bead points at the doc section it

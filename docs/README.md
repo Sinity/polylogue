@@ -2,8 +2,9 @@
 
 These pages are Polylogue's design: its behaviour, model, formats and laws, and
 the reasons for them. They describe the product as designed. What exists in a
-given build is shown by the generated pages in [`reference/`](reference/) and
-by each module's own documentation; the difference between the two is work,
+given build is described by CLI help, MCP tool schemas and module
+documentation. The [reference index](reference/README.md) distinguishes
+current artifacts from planned generated pages; the difference is work,
 tracked outside the repository. How work is done in this repository is in
 [`AGENTS.md`](../AGENTS.md).
 
@@ -95,11 +96,11 @@ and run against Polylogue's catalog too.
 
 ### Generated pages
 
-The pages in [`reference/`](reference/) are generated from the declarations
-in the code by `cargo xtask docs` and committed; the test suite renders them
-and compares them like any golden. They are never edited by hand. Until a
-generator exists for a reference, its table stays in the area page that owns
-the subject.
+The [planned pages](reference/README.md#planned-pages) will be rendered from
+the declarations by `cargo xtask docs`, committed and checked as goldens.
+That generator is not implemented yet. Until a reference generator exists,
+its table stays in the area page that owns the subject. Existing generated
+artifacts are changed through their declarations, not by hand.
 
 ### Links
 

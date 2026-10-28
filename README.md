@@ -68,8 +68,9 @@ MCP and HTTP too.
 
 - [`docs/`](docs/README.md): the design, one page per area, starting with
   [architecture](docs/architecture.md).
-- [`docs/reference/`](docs/reference/README.md): commands, settings, origins
-  and other references generated from the code.
+- [`docs/reference/`](docs/reference/README.md): current generated artifacts
+  and planned reference pages. Use `polylogue --help` and the MCP schemas for
+  commands available in the current build.
 - [`AGENTS.md`](AGENTS.md): how work is done in this repository, its layout and
   its commands.
 - [Python client](clients/python/README.md): the declared commands through CLI

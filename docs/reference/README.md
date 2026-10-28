@@ -7,10 +7,16 @@ the same code that serves them at run time. They will be committed, and a
 golden test will compare them with the rendered declarations. Change the
 declaration and regenerate these pages instead of editing them by hand.
 
-The generator is not implemented yet. The current derived-data reference is
+The generator is not implemented yet. Use `polylogue --help`,
+`polylogue explain` and MCP tool schemas for the current commands and fields.
+The current derived-data reference is
 [`../derived.md`](../derived.md), rendered from the declarations and checked
 by a golden test. The embedded [`../agent-manual.md`](../agent-manual.md)
 receives the current generated command reference at run time.
+
+## Planned pages
+
+These filenames are planned destinations, not existing pages.
 
 | Page | Generated from |
 |---|---|
