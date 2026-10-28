@@ -292,31 +292,44 @@ fn clustered_fields_print_the_parameter_in_query_output() {
 
 #[test]
 fn tool_time_aggregates_and_default_comparisons_report_unmeasured_calls() {
-    use polylogue_store::fixture::writer::{WriterArchive,bash};
-    let mut archive=WriterArchive::new();
-    let mut measured=bash("tool-times",1,0,"cargo test",true,"ok");
-    measured[1].at=polylogue_model::Timestamp::from_unix_ms(120);
-    let mut unmeasured=bash("tool-times",2,180,"cargo build",true,"ok");
-    unmeasured[1].at=polylogue_model::Timestamp::from_unix_ms(180);
+    use polylogue_store::fixture::writer::{WriterArchive, bash};
+    let mut archive = WriterArchive::new();
+    let mut measured = bash("tool-times", 1, 0, "cargo test", true, "ok");
+    measured[1].at = polylogue_model::Timestamp::from_unix_ms(120);
+    let mut unmeasured = bash("tool-times", 2, 180, "cargo build", true, "ok");
+    unmeasured[1].at = polylogue_model::Timestamp::from_unix_ms(180);
     measured.extend(unmeasured);
-    archive.write("tool-times",measured);
-    let pool=polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let reader=pool.reader().unwrap();
-    let answer=run(&reader,ask("sessions | agg sum:tool_time, sum:tool_time_union")).unwrap();
-    assert_eq!(answer["rows"][0]["sum_tool_time"],120);
-    assert_eq!(answer["rows"][0]["unmeasured_calls_tool_time"],1);
-    assert_eq!(answer["rows"][0]["unmeasured_calls_tool_time_union"],1);
-    let answer=run(&reader,ask("sessions | measure compare")).unwrap();
-    assert_eq!(answer["data"]["sessions"][0]["values"]["tool_untimed"],1);
+    archive.write("tool-times", measured);
+    let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let answer = run(
+        &reader,
+        ask("sessions | agg sum:tool_time, sum:tool_time_union"),
+    )
+    .unwrap();
+    assert_eq!(answer["rows"][0]["sum_tool_time"], 120);
+    assert_eq!(answer["rows"][0]["unmeasured_calls_tool_time"], 1);
+    assert_eq!(answer["rows"][0]["unmeasured_calls_tool_time_union"], 1);
+    let answer = run(&reader, ask("sessions | measure compare")).unwrap();
+    assert_eq!(answer["data"]["sessions"][0]["values"]["tool_untimed"], 1);
 }
 
 #[test]
 fn unknown_session_endings_and_clock_sources_match_unknown_conditions() {
-    let mut archive=morrow();
-    archive.fx.session(SessionFacts{id:"codex:untimed",..Default::default()}).unwrap();
+    let mut archive = morrow();
+    archive
+        .fx
+        .session(SessionFacts {
+            id: "codex:untimed",
+            ..Default::default()
+        })
+        .unwrap();
     archive.fx.derive().unwrap();
-    for field in ["ends_with","time_source"] {
-        let result=q(&archive,&format!(r#"sessions where id:"codex:untimed" {field}:unknown"#));
-        assert_eq!(result["count"],1);
+    for field in ["ends_with", "time_source"] {
+        let result = q(
+            &archive,
+            &format!(r#"sessions where id:"codex:untimed" {field}:unknown"#),
+        );
+        assert_eq!(result["count"], 1);
     }
 }
