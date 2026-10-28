@@ -4,7 +4,20 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-fn cancelled_read(disconnect: bool, context: bool) {
+const CONTEXT_TOOLS: &[&str] = &["brief", "recall", "takeover"];
+
+fn tool_call(name: &str) -> Value {
+    let arguments = match name {
+        "brief" => json!({"session":"claude-code:s1", "cwd":"/synthetic/project"}),
+        "recall" => json!({"query":"MCP context", "cwd":"/synthetic/project"}),
+        "takeover" => json!({"session":"claude-code:s1"}),
+        "query" => json!({"query":"sessions"}),
+        _ => panic!("no fixture for {name}"),
+    };
+    json!({"name":name, "arguments":arguments})
+}
+
+fn cancelled_read(disconnect: bool, name: &str) {
     let mut daemon = test_daemon::start("MCP cancellation");
     daemon.stop_count_worker();
     let _held = daemon.daemon.reads.reader().unwrap();
@@ -24,11 +37,7 @@ fn cancelled_read(disconnect: bool, context: bool) {
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
         assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
-        let params = if context {
-            json!({"name":"takeover", "arguments":{"session":"claude-code:s1"}})
-        } else {
-            json!({"name":"query", "arguments":{"query":"sessions"}})
-        };
+        let params = tool_call(name);
         writeln!(
             client,
             "{}",
@@ -64,20 +73,21 @@ fn cancelled_read(disconnect: bool, context: bool) {
         let _ = service.join().unwrap();
         assert!(
             released,
-            "MCP retained its reader after cancellation: cancelled={cancelled}, slots={slots}, limit={limit:?}"
+            "MCP {name} retained its reader after cancellation: cancelled={cancelled}, slots={slots}, limit={limit:?}"
         );
-        assert!(cancelled);
+        assert!(cancelled, "MCP {name} did not cancel its daemon read");
     });
+    assert_no_prepared(&daemon);
 }
 
 #[test]
 fn mcp_cancellation_interrupts_the_daemon_read() {
-    cancelled_read(false, false);
+    cancelled_read(false, "query");
 }
 
 #[test]
 fn mcp_disconnect_interrupts_the_daemon_read() {
-    cancelled_read(true, false);
+    cancelled_read(true, "query");
 }
 
 #[test]
@@ -127,8 +137,7 @@ fn stdio_tool_metadata_preserves_the_explicit_daemon_deadline() {
     });
 }
 
-#[test]
-fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
+fn context_deadline(name: &str) {
     let mut daemon = test_daemon::start("MCP context deadline");
     daemon.stop_count_worker();
     let held = daemon.daemon.reads.reader().unwrap();
@@ -148,7 +157,14 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
         let deadline = crate::daemon::execution::deadline(Duration::from_millis(50));
-        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"context", "method":"tools/call", "params":{"name":"takeover", "arguments":{"session":"claude-code:s1"}, "_meta":{"deadline_ms":deadline}}})).unwrap();
+        let mut params = tool_call(name);
+        params["_meta"] = json!({"deadline_ms":deadline});
+        writeln!(
+            client,
+            "{}",
+            json!({"jsonrpc":"2.0", "id":"context", "method":"tools/call", "params":params})
+        )
+        .unwrap();
         reads.recv_timeout(Duration::from_secs(5)).unwrap();
         line.clear();
         let answer = input.read_line(&mut line).map(|_| line);
@@ -168,7 +184,7 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
     });
     assert!(
         released,
-        "MCP context retained its daemon reader after the deadline"
+        "MCP {name} retained its daemon reader after the deadline"
     );
     let answer = answer.expect("MCP context did not answer its explicit deadline");
     let reply: Value = serde_json::from_str(&answer).unwrap();
@@ -180,6 +196,10 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
             .contains("deadline_exceeded"),
         "{reply}"
     );
+    assert_no_prepared(&daemon);
+}
+
+fn assert_no_prepared(daemon: &test_daemon::TestDaemon) {
     let response = crate::daemon::service::handle(
         crate::daemon::Request::Query {
             text: "deliveries".into(),
@@ -201,11 +221,22 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
 }
 
 #[test]
+fn mcp_context_deadline_releases_blocked_read_without_a_prepared_delivery() {
+    for name in CONTEXT_TOOLS {
+        context_deadline(name);
+    }
+}
+
+#[test]
 fn mcp_context_cancellation_interrupts_preparation_without_explicit_deadline() {
-    cancelled_read(false, true);
+    for name in CONTEXT_TOOLS {
+        cancelled_read(false, name);
+    }
 }
 
 #[test]
 fn mcp_context_disconnect_interrupts_preparation_without_explicit_deadline() {
-    cancelled_read(true, true);
+    for name in CONTEXT_TOOLS {
+        cancelled_read(true, name);
+    }
 }
