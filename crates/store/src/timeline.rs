@@ -57,7 +57,7 @@ fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
         );
     }
     (vec![
-        "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m JOIN session s ON s.pk=m.session_pk WHERE 1".into(),
+        "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE 1".into(),
         "SELECT e.at, 'event' AS kind, e.id, s.id AS session, e.kind AS label, 'Recorded event time' AS time_source FROM event e LEFT JOIN session s ON s.pk=e.session_pk WHERE 1".into(),
         "SELECT n.created_at AS at, 'note' AS kind, n.id, NULL AS session, n.kind AS label, 'Note writer clock' AS time_source FROM a.note n WHERE 1".into(),
     ], vec![])
@@ -121,32 +121,32 @@ fn rows(
     for (index, source) in sources.into_iter().enumerate() {
         let kind = ["message", "event", "note"][index];
         let mut params = params.clone();
-        // The subquery is flattened, so its time conditions and order use the
-        // source's (at, id) index before the session join and page limit.
-        let mut conditions = vec![representable("at", undated)];
-        if let Some((since, until)) = bounds {
-            conditions.push(format!(
-                "at >= {} AND at < {}",
-                bind(&mut params, SqlValue::Int(since)),
-                bind(&mut params, SqlValue::Int(until))
-            ));
-        }
-        if let Some(after) = after {
-            if undated {
-                if after.undated {
-                    match kind.cmp(after.kind.as_str()) {
-                        std::cmp::Ordering::Less => continue,
-                        std::cmp::Ordering::Equal => conditions.push(format!(
-                            "id > {}",
-                            bind(&mut params, SqlValue::Text(after.id.clone()))
-                        )),
-                        std::cmp::Ordering::Greater => {}
-                    }
+        let mut conditions = Vec::new();
+        if undated {
+            conditions.push(representable("at", true));
+            if let Some(after) = after.filter(|p| p.undated) {
+                match kind.cmp(after.kind.as_str()) {
+                    std::cmp::Ordering::Less => continue,
+                    std::cmp::Ordering::Equal => conditions.push(format!(
+                        "id > {}",
+                        bind(&mut params, SqlValue::Text(after.id.clone()))
+                    )),
+                    std::cmp::Ordering::Greater => {}
                 }
-            } else if after.undated {
+            }
+        } else {
+            // One lower bound lets SQLite seek directly to the requested day
+            // or continuation, rather than choosing the representable minimum.
+            let min = jiff::Timestamp::MIN.as_millisecond();
+            let max = jiff::Timestamp::MAX.as_millisecond();
+            let (since, through) = bounds.map_or((min, max), |(since, until)| {
+                (since.max(min), until.saturating_sub(1).min(max))
+            });
+            if since > through || after.is_some_and(|p| p.undated || p.at.is_none()) {
                 continue;
-            } else {
-                let at = bind(&mut params, after.at.map_or(SqlValue::Null, SqlValue::Int));
+            }
+            if let Some(after) = after.filter(|p| p.at.unwrap() >= since) {
+                let at = bind(&mut params, SqlValue::Int(after.at.unwrap()));
                 conditions.push(match kind.cmp(after.kind.as_str()) {
                     std::cmp::Ordering::Equal => format!(
                         "(at,id) > ({at},{})",
@@ -155,7 +155,16 @@ fn rows(
                     std::cmp::Ordering::Less => format!("at > {at}"),
                     std::cmp::Ordering::Greater => format!("at >= {at}"),
                 });
+            } else {
+                conditions.push(format!(
+                    "at >= {}",
+                    bind(&mut params, SqlValue::Int(since))
+                ));
             }
+            conditions.push(format!(
+                "at <= {}",
+                bind(&mut params, SqlValue::Int(through))
+            ));
         }
         let order = if undated { "kind,id" } else { "at,id" };
         let limit = bind(&mut params, SqlValue::Int(limit));
