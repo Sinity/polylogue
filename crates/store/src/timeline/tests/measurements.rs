@@ -88,25 +88,43 @@ fn million_message_measurements() {
         sessions: Some(vec![session + 999]),
         ..Default::default()
     };
-    let late_cost = Selection { responses: Some(&late_session), ..all(None, false, false) };
+    let late_cost = Selection {
+        responses: Some(&late_session),
+        ..all(None, false, false)
+    };
     let usage = crate::measure::Selection::default();
-    let rare_cost = Selection { responses: Some(&usage), model: Some("rare"), ..all(None, false, false) };
+    let rare_cost = Selection {
+        responses: Some(&usage),
+        model: Some("rare"),
+        ..all(None, false, false)
+    };
     let selected_rare = crate::measure::Selection {
         sessions: Some(vec![session + 998, session + 999]),
         ..Default::default()
     };
-    let selected_rare_cost = Selection { responses: Some(&selected_rare), model: Some("rare"), ..all(None, false, false) };
+    let selected_rare_cost = Selection {
+        responses: Some(&selected_rare),
+        model: Some("rare"),
+        ..all(None, false, false)
+    };
     // The reviewed narrow reads already had global time indexes, but still
     // walked them from the earliest response to find sparse matches.
     let global_index_clock = Instant::now();
-    conn.execute_batch("CREATE INDEX message_at ON message(at,id); CREATE INDEX event_at ON event(at,id);").unwrap();
+    conn.execute_batch(
+        "CREATE INDEX message_at ON message(at,id); CREATE INDEX event_at ON event(at,id);",
+    )
+    .unwrap();
     let global_index_ms = global_index_clock.elapsed().as_secs_f64() * 1000.0;
     let sparse_before = {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         let read = |name: &str, selection: &Selection<'_>| {
             let (source, params) = sources(selection, None);
-            let sql = format!("SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51", source[0].replace("m.session_pk IN", "+m.session_pk IN"), representable("at", false));
+            let sql = format!(
+                "SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51",
+                source[0].replace("m.session_pk IN", "+m.session_pk IN"),
+                representable("at", false)
+            );
             json!({"timing":sample(name, || r.query(&sql, &params).unwrap().len()), "plan":r.query(&format!("EXPLAIN QUERY PLAN {sql}"), &params).unwrap()})
         };
         json!({"late_session":read("before late session", &late_cost), "rare_model":read("before rare model", &rare_cost),"selected_rare_model":read("before selected rare model", &selected_rare_cost)})
@@ -114,7 +132,9 @@ fn million_message_measurements() {
     let index_clock = Instant::now();
     crate::schema::ensure_index(&conn).unwrap();
     let index_ms = index_clock.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("global time indexes: {global_index_ms:.1} ms; session and model indexes: {index_ms:.1} ms");
+    eprintln!(
+        "global time indexes: {global_index_ms:.1} ms; session and model indexes: {index_ms:.1} ms"
+    );
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let usage = crate::measure::Selection::default();
@@ -131,8 +151,13 @@ fn million_message_measurements() {
         ..all(None, false, false)
     };
     let plans = |selection: &Selection<'_>, bounds| {
-        row_queries(&r, selection, bounds, None, 51, false).unwrap().into_iter()
-            .map(|(sql, params)| r.query(&format!("EXPLAIN QUERY PLAN {sql}"), &params).unwrap())
+        row_queries(&r, selection, bounds, None, 51, false)
+            .unwrap()
+            .into_iter()
+            .map(|(sql, params)| {
+                r.query(&format!("EXPLAIN QUERY PLAN {sql}"), &params)
+                    .unwrap()
+            })
             .collect::<Vec<_>>()
     };
     let response_plan = plans(&selected_cost, None);

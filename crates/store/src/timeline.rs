@@ -120,10 +120,7 @@ struct Source {
 
 /// Session selections read one ordered range per session and merge their
 /// bounded pages. Selecting every session uses the global time order instead.
-fn page_sources(
-    reader: &Reader<'_>,
-    selection: &Selection<'_>,
-) -> Result<Vec<Source>> {
+fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<Source>> {
     if let Some(responses) = selection.responses
         && (responses.sessions.is_some() || responses.origins.is_some())
     {
@@ -149,7 +146,10 @@ fn page_sources(
         let keys = if sessions.len() as u64 == total[0]["n"].as_u64().unwrap() {
             vec![None]
         } else {
-            sessions.into_iter().map(|session| Some(session["pk"].as_i64().unwrap())).collect()
+            sessions
+                .into_iter()
+                .map(|session| Some(session["pk"].as_i64().unwrap()))
+                .collect()
         };
         let responses = crate::measure::Selection {
             sessions: None,
@@ -162,16 +162,29 @@ fn page_sources(
             responses: Some(&responses),
             ..*selection
         };
-        return Ok(keys.into_iter().map(|key| {
-            let (sources, params) = sources(&selection, key);
-            Source { kind: "message", sql: sources.into_iter().next().unwrap(), params }
-        }).collect());
+        return Ok(keys
+            .into_iter()
+            .map(|key| {
+                let (sources, params) = sources(&selection, key);
+                Source {
+                    kind: "message",
+                    sql: sources.into_iter().next().unwrap(),
+                    params,
+                }
+            })
+            .collect());
     }
 
     let (sources, params) = sources(selection, None);
-    Ok(sources.into_iter().enumerate().map(|(index, sql)| {
-        Source { kind: ["message", "event", "note"][index], sql, params: params.clone() }
-    }).collect())
+    Ok(sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, sql)| Source {
+            kind: ["message", "event", "note"][index],
+            sql,
+            params: params.clone(),
+        })
+        .collect())
 }
 
 fn row_queries(
@@ -192,9 +205,20 @@ fn row_queries(
         }
         responses
     });
-    let sources = page_sources(reader, &Selection { responses: responses.as_ref(), ..*selection })?;
+    let sources = page_sources(
+        reader,
+        &Selection {
+            responses: responses.as_ref(),
+            ..*selection
+        },
+    )?;
     let mut queries = Vec::new();
-    for Source { kind, sql: source, mut params } in sources {
+    for Source {
+        kind,
+        sql: source,
+        mut params,
+    } in sources
+    {
         let mut conditions = Vec::new();
         if undated {
             conditions.push(representable("at", true));
@@ -255,14 +279,14 @@ fn row_queries(
 }
 
 fn compare_rows(a: &Value, b: &Value, undated: bool) -> std::cmp::Ordering {
-        let time = if undated {
-            std::cmp::Ordering::Equal
-        } else {
-            a["at"].as_i64().cmp(&b["at"].as_i64())
-        };
-        time.then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
-            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
- }
+    let time = if undated {
+        std::cmp::Ordering::Equal
+    } else {
+        a["at"].as_i64().cmp(&b["at"].as_i64())
+    };
+    time.then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
+        .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+}
 
 fn rows(
     reader: &Reader<'_>,
@@ -402,14 +426,17 @@ pub fn costs_by_day(
     selected: &crate::measure::Selection,
 ) -> Result<Vec<Value>> {
     dates(reader, day)?;
-    let (sources, mut params) = sources(&Selection {
-        date: None,
-        across_years: false,
-        undated: false,
-        responses: Some(selected),
-        model: None,
-        unknown_model: false,
-    }, None);
+    let (sources, mut params) = sources(
+        &Selection {
+            date: None,
+            across_years: false,
+            undated: false,
+            responses: Some(selected),
+            model: None,
+            unknown_model: false,
+        },
+        None,
+    );
     let source = &sources[0];
     let (since, until) = day.month(month);
     if until <= since {
@@ -436,14 +463,17 @@ pub fn undated_responses(
         undated: true,
         ..selection.clone()
     };
-    let (sources, params) = sources(&Selection {
-        date: None,
-        across_years: false,
-        undated: true,
-        responses: Some(&selection),
-        model: None,
-        unknown_model: false,
-    }, None);
+    let (sources, params) = sources(
+        &Selection {
+            date: None,
+            across_years: false,
+            undated: true,
+            responses: Some(&selection),
+            model: None,
+            unknown_model: false,
+        },
+        None,
+    );
     let source = &sources[0];
     let rows = reader.query(
         &format!("SELECT count(*) AS records FROM ({source})"),

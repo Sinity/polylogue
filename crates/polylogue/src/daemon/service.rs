@@ -897,73 +897,73 @@ fn query_targets(
 ) -> Result<Vec<polylogue_model::Target>, Response> {
     use polylogue_model::Target;
     super::query::with_ranking(reader, &d.warm, |embeddings, near| {
-    let now = now_ms();
-    let mut targets = Vec::new();
-    let mut seen = HashSet::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let ask = super::query::Ask {
-            text: query,
-            cursor: cursor.as_deref(),
-            page_size: Some(1_000),
-            why: false,
-            session: None,
-            now,
-            day: None,
-            embeddings,
-            near: Some(near),
-            fields: &[],
-        };
-        let page = super::query::run(reader, ask).map_err(|f| Response::Error {
-            kind: f.kind,
-            message: f.message,
-            detail: f.detail,
-        })?;
-        let unit = page["unit"].as_str().unwrap_or("");
-        if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
-            || page["shape"] != "rows"
-        {
-            return Err(error(
-                "bad_request",
-                format!(
-                    "a note needs session, message, document or note rows; the query returned {unit} in another form"
-                ),
-            ));
-        }
-        for row in page["rows"].as_array().into_iter().flatten() {
-            let Some(id) = row["id"].as_str() else {
-                continue;
+        let now = now_ms();
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let ask = super::query::Ask {
+                text: query,
+                cursor: cursor.as_deref(),
+                page_size: Some(1_000),
+                why: false,
+                session: None,
+                now,
+                day: None,
+                embeddings,
+                near: Some(near),
+                fields: &[],
             };
-            let target = match unit {
-                "sessions" => polylogue_model::SessionId::parse(id)
-                    .map(Target::Session)
-                    .ok(),
-                "messages" => polylogue_model::MessageId::parse(id)
-                    .map(Target::Message)
-                    .ok(),
-                "documents" => polylogue_model::DocumentId::parse(id)
-                    .map(Target::Document)
-                    .ok(),
-                _ => Some(Target::Note(id.to_owned())),
-            };
-            if let Some(target) = target
-                && seen.insert(target.clone())
+            let page = super::query::run(reader, ask).map_err(|f| Response::Error {
+                kind: f.kind,
+                message: f.message,
+                detail: f.detail,
+            })?;
+            let unit = page["unit"].as_str().unwrap_or("");
+            if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
+                || page["shape"] != "rows"
             {
-                targets.push(target);
+                return Err(error(
+                    "bad_request",
+                    format!(
+                        "a note needs session, message, document or note rows; the query returned {unit} in another form"
+                    ),
+                ));
+            }
+            for row in page["rows"].as_array().into_iter().flatten() {
+                let Some(id) = row["id"].as_str() else {
+                    continue;
+                };
+                let target = match unit {
+                    "sessions" => polylogue_model::SessionId::parse(id)
+                        .map(Target::Session)
+                        .ok(),
+                    "messages" => polylogue_model::MessageId::parse(id)
+                        .map(Target::Message)
+                        .ok(),
+                    "documents" => polylogue_model::DocumentId::parse(id)
+                        .map(Target::Document)
+                        .ok(),
+                    _ => Some(Target::Note(id.to_owned())),
+                };
+                if let Some(target) = target
+                    && seen.insert(target.clone())
+                {
+                    targets.push(target);
+                }
+            }
+            match page["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
             }
         }
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => break,
+        if targets.is_empty() {
+            return Err(error(
+                "empty",
+                "the query returns no rows; nothing was noted",
+            ));
         }
-    }
-    if targets.is_empty() {
-        return Err(error(
-            "empty",
-            "the query returns no rows; nothing was noted",
-        ));
-    }
-    Ok(targets)
+        Ok(targets)
     })
 }
 

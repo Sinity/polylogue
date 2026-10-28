@@ -334,9 +334,12 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     let base = Connection::open_in_memory().unwrap();
     base.execute_batch(INDEX).unwrap();
     let base = shape(&base).unwrap();
-    let read_indexes: Vec<_> = shape(&conn).unwrap().into_iter()
+    let read_indexes: Vec<_> = shape(&conn)
+        .unwrap()
+        .into_iter()
         .filter(|item| item.0 == "index" && !base.contains(item))
-        .map(|item| item.1).collect();
+        .map(|item| item.1)
+        .collect();
     assert!(!read_indexes.is_empty());
     for name in read_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
