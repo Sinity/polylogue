@@ -15,7 +15,7 @@ fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
         },
         &r.web.daemon,
     ) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{text}: {other:?}"),
     }
 }
@@ -170,7 +170,7 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
                 session: None,
                 fields: vec![],
             };
-            let socket = crate::cli::send(&r.web.daemon.archive.socket(), &request).unwrap();
+            let socket = crate::client::send(&r.web.daemon.archive.socket(), &request).unwrap();
             let (status, _, raw) = send(
                 &r,
                 authed(get(&format!(
@@ -183,7 +183,7 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             .await;
             let api: Value = serde_json::from_str(&raw).unwrap();
             match socket {
-                Response::Ok { data: answer } => {
+                Response::Ok { data: answer, .. } => {
                     assert_eq!(status, StatusCode::OK, "{raw}");
                     assert_eq!(api["rows"], answer["rows"], "{text}");
                     let args = json!({"query":text,"limit":50,"why":true})

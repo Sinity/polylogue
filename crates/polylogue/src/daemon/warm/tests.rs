@@ -128,7 +128,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
         crate::daemon::Request::Complete { word: word.into() },
         &d.daemon,
     ) {
-        crate::daemon::Response::Ok { data } => data,
+        crate::daemon::Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     };
     assert!(

@@ -199,6 +199,7 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
                         assert_eq!(budget, ADVICE_BUDGET);
                         Some(Response::Ok {
                             data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
+                            references: Default::default(),
                         })
                     }
                     Request::AdviceDelivered {
