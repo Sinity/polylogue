@@ -141,9 +141,6 @@ fn a_failed_read_is_never_empty() {
 }
 
 mod asset_lookup;
-mod excision;
-
-mod blob_cleanup;
 
 mod tool_exports;
 

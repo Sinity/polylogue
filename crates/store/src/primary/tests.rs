@@ -110,15 +110,6 @@ impl Sinex for Recorder {
         Ok(material)
     }
 
-    fn excise(&self, materials: &[String]) -> Result<()> {
-        self.held.lock().unwrap().retain(|held| match held {
-            Held::Part { material, .. }
-            | Held::Blob { material, .. }
-            | Held::Change { material, .. } => !materials.contains(material),
-        });
-        Ok(())
-    }
-
     fn held(&self, after: i64) -> Result<Vec<Held>> {
         Ok(self
             .held
@@ -300,79 +291,6 @@ fn nothing_is_written_locally_that_sinex_did_not_take() {
 }
 
 #[test]
-fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuild() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("archive");
-    let store = dir.path().join("sinex-store");
-    let sinex = Recorder::new(&store, false);
-    let path = "/home/op/.claude/projects/p/s.jsonl";
-    let before = {
-        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-        let prepared = archive
-            .prepare_bytes(b"{\"first\":1}\n".as_slice())
-            .unwrap();
-        writer
-            .store_bytes(prepared, observed(path, Change::First, 12))
-            .unwrap();
-        writer.user(note()).unwrap();
-        let excised = writer
-            .excise(
-                crate::excise::ExciseRequest {
-                    id: "0199d8a0-0000-7000-8000-00000000d001".into(),
-                    target: crate::excise::ExciseTarget::Input("synthetic-input".into()),
-                    reason: None,
-                    dry_run: false,
-                },
-                Arc::new(archive.blobs().unwrap()),
-            )
-            .unwrap();
-        assert_eq!(excised.inputs_removed, ["synthetic-input"]);
-        drop(writer);
-        register(&archive)
-    };
-    {
-        let held = sinex.held.lock().unwrap();
-        assert!(
-            !held.iter().any(|h| matches!(h, Held::Part { .. })),
-            "Sinex excised the input's part"
-        );
-        assert!(held.iter().any(|h| matches!(
-            h,
-            Held::Change {
-                change: RegisterChange::Excision(_),
-                ..
-            }
-        )));
-    }
-    assert!(
-        store.join("segments/primary.zst").exists(),
-        "Polylogue never deletes from Sinex's content store"
-    );
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-    ] {
-        let _ = std::fs::remove_file(root.join(name));
-    }
-    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-    assert_eq!(register(&archive), before);
-    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    let excised: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM excised WHERE kind = 'input'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(excised, 1, "the rebuilt copy still refuses the input");
-}
-
-#[test]
 fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
@@ -421,7 +339,6 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
                     polylogue_version: "synthetic".into(),
                     seen_at: b.observation.unwrap().seen_at_ms,
                     details_json: None,
-                    excision: None,
                     zip: None,
                 }),
             }),
@@ -449,52 +366,6 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
         )
         .unwrap();
     assert_eq!((blobs, length), (1, 16));
-}
-
-#[test]
-fn an_imported_excision_in_primary_mode_goes_to_sinex_and_survives_a_rebuild() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("archive");
-    let store = dir.path().join("sinex-store");
-    let sinex = Recorder::new(&store, false);
-    let excision = ExcisionRows {
-        id: "0199d8a0-0000-7000-8000-00000000d002".into(),
-        target: "session:claude-code:gone".into(),
-        reason: None,
-        created_at: 1_790_000_000_000,
-        excised: vec![("session".into(), "claude-code:gone".into())],
-        observations: vec![],
-    };
-    {
-        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-        assert!(writer.import_excision(excision.clone()).unwrap());
-        assert!(!writer.import_excision(excision.clone()).unwrap());
-    }
-    let sent: Vec<RegisterChange> = sinex
-        .held
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|held| match held {
-            Held::Change { change, .. } => Some(change.clone()),
-            Held::Part { .. } | Held::Blob { .. } => None,
-        })
-        .collect();
-    assert_eq!(sent, [RegisterChange::Excision(excision)]);
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm"] {
-        let _ = std::fs::remove_file(root.join(name));
-    }
-    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    let excised: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM excised WHERE kind = 'session' AND value = 'claude-code:gone'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(excised, 1);
 }
 
 #[test]

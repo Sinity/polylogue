@@ -283,17 +283,6 @@ fn cached_session_pages_equal_replay_across_views_parents_and_split_pem() {
     assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
     let _ = page(&daemon.daemon, "claude-code:s1", false, "full", None);
     assert!(daemon.daemon.page_ends.test_counts().0 > 0);
-    let excised = handle(
-        Request::Excise {
-            request_id: "private-page_end-excision".into(),
-            target: "session:claude-code:s1".into(),
-            reason: None,
-            dry_run: false,
-        },
-        &daemon.daemon,
-    );
-    assert!(matches!(excised, Response::Ok { .. }), "{excised:?}");
-    assert_eq!(daemon.daemon.page_ends.test_counts().0, 0);
 }
 
 #[test]

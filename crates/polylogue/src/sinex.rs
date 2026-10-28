@@ -80,10 +80,6 @@ impl polylogue_store::primary::Sinex for Offline {
         self.refused()
     }
 
-    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
-        self.refused()
-    }
-
     fn held(&self, _: i64) -> polylogue_store::Result<Vec<Held>> {
         self.refused()
     }

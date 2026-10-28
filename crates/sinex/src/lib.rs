@@ -6,8 +6,8 @@
 //!   its real input (origin, path, host), a growing file a chain of parts,
 //!   named with the Polylogue parser that reads it ([`parts`]);
 //! - a look at a file that found no new bytes, each request a person or agent
-//!   makes and each excision is a small register material, with a typed event
-//!   for notes, settings, kept results, deliveries and excisions
+//!   makes is a small register material, with a typed event
+//!   for notes, settings, kept results, deliveries
 //!   ([`register`]);
 //! - parsed sessions, messages, tool calls and turns are events keyed by
 //!   Polylogue's IDs and anchored at their records ([`sessions`]).
@@ -253,10 +253,6 @@ impl polylogue_store::primary::Sinex for Sinex {
         change: &polylogue_store::primary::RegisterChange,
     ) -> polylogue_store::Result<String> {
         Ok(self.with(async |client| register::send(client, &self.host, change).await)?)
-    }
-
-    fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {
-        Ok(self.with(async |client| client.excise(materials).await)?)
     }
 
     fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {

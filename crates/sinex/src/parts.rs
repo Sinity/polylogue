@@ -15,7 +15,7 @@ use sinex_protocol::{Ingress, MaterialFrame, ProducerMaterial};
 use std::io::Read;
 
 /// The parser name of register materials (looks that found no new bytes,
-/// requests and excisions). An input's parts are read by
+/// requests). An input's parts are read by
 /// `polylogue-<origin>`.
 pub(crate) const REGISTER: &str = "polylogue-register";
 pub(crate) const ATTACHMENT: &str = "polylogue-attachment";

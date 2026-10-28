@@ -1028,8 +1028,7 @@ impl Reader<'_> {
         Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))
     }
 
-    /// Source file facts come from provider observations; an excision event
-    /// records archive housekeeping, never a fresh observation of the file.
+    /// Source file facts come from provider observations.
     #[cfg(any(test, feature = "fixture"))]
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
         self.known_inputs_at(machine, None, true)
@@ -1080,7 +1079,6 @@ impl Reader<'_> {
              FROM (
                  SELECT MAX(x.rowid) AS latest FROM a.observation x
                  WHERE {location}
-                   AND x.class <> 'excised'
                    AND (?3 OR x.input NOT IN ({imported}))
                  GROUP BY x.path
              ) latest

@@ -201,7 +201,7 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
 }
 
 #[test]
-fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed() {
+fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
     let w = test_archive();
     let body = "Shared message and document text λ🙂";
     let message = text_message("m", "s", Role::User, body, None);
@@ -237,45 +237,21 @@ fn shared_message_document_text_keeps_vectors_until_its_last_source_is_removed()
             .unwrap();
     vectors.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'synthetic/model/1/document/unit',0,1,?2,1)",rusqlite::params![hash,1.25f32.to_le_bytes().to_vec()]).unwrap();
     drop(vectors);
-    let blobs = std::sync::Arc::new(
-        hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap(),
-    );
-    for (id, scope, expected) in [
-        ("message", crate::excise::ExciseTarget::Session(sid("s")), 1),
-        (
-            "document",
-            crate::excise::ExciseTarget::Input("document-input".into()),
-            0,
-        ),
-    ] {
-        w.writer
-            .excise(
-                crate::excise::ExciseRequest {
-                    id: id.into(),
-                    target: scope,
-                    reason: None,
-                    dry_run: false,
-                },
-                std::sync::Arc::clone(&blobs),
-            )
-            .unwrap();
-        let vectors = crate::archive::open_read(&w.archive.embeddings_db()).unwrap();
-        assert_eq!(
-            vectors
-                .query_row("SELECT count(*) FROM embedded", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            expected
-        );
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        assert_eq!(reader.document(&doc.id).unwrap().is_some(), expected == 1);
+    for input in ["message-input", "document-input"] {
+        let mut gone = batch(input, 2, 0, vec![], &[]);
+        gone.change = Change::Disappeared;
+        w.writer.send(gone).unwrap();
     }
-    w.writer
-        .send(doc_batch("fresh-input", doc.clone(), true))
-        .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
+    let vectors = crate::archive::open_read(&w.archive.embeddings_db()).unwrap();
+    assert_eq!(
+        vectors
+            .query_row("SELECT count(*) FROM embedded", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     let pool = ReadPool::open(&w.archive).unwrap();
-    assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_none());
+    assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_some());
 }
 
 #[test]

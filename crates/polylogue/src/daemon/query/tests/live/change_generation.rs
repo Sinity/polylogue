@@ -47,10 +47,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     ] {
         let error = run(&reader, ask(&query, T0)).unwrap_err();
         assert_eq!(error.kind, "resync_required", "{query}: {error:?}");
-        assert_eq!(
-            error.detail.unwrap()["excisions_query"],
-            "changes where kind:excision"
-        );
+        assert_eq!(error.detail.unwrap()["reason"], "generation_changed");
         assert_eq!(
             keep(&reader, ask(&query, T0)).unwrap_err().kind,
             "resync_required",
@@ -70,7 +67,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
 }
 
 #[test]
-fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions() {
+fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let home = ClaudeHome::new();
     home.append(
         "gone.jsonl",
@@ -111,14 +108,8 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
     );
     drop(pinned);
     drop(pool);
-    engine
-        .excise(polylogue_store::excise::ExciseRequest {
-            id: "remove-gone".into(),
-            target: polylogue_store::excise::ExciseTarget::Session(sid("gone")),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap();
+    home.append("kept.jsonl", &claude_user("k2", "kept", "a later message"));
+    assert!(engine.run_pass().unwrap().errors.is_empty());
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
@@ -139,23 +130,6 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes_and_excisions()
         rows.iter()
             .any(|r| r["kind"] == "note" && r["ref"] == "000-late-note")
     );
-    assert!(
-        rows.iter()
-            .any(|r| r["kind"] == "removed" && r["ref"] == "claude-code:gone")
-    );
-    let excision = rows.iter().find(|r| r["kind"] == "excision").unwrap();
-    assert_eq!(excision["ref"], "remove-gone");
-    assert_eq!(excision["target"], "session:claude-code:gone");
-    assert_eq!(excision["sessions"], json!(["claude-code:gone"]));
-    assert!(
-        excision["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(Value::is_string)
-    );
-    let replay = run(&reader, ask("changes where kind:excision", T0)).unwrap();
-    assert_eq!(replay["rows"], json!([excision]));
     let after = format!(
         "changes where after:{}",
         changes["read_at"]["cursor"].as_str().unwrap()
@@ -200,32 +174,6 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
 }
 
 #[test]
-fn excision_changes_list_the_removed_sessions_and_messages() {
-    use polylogue_store::fixture::Fixture;
-    for (sessions, messages) in [
-        (&[][..], &[][..]),
-        (
-            &["claude-code:a"][..],
-            &["claude-code:a1", "claude-code:a2"][..],
-        ),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        fixture
-            .excision("remove", "session:claude-code:a", sessions, messages)
-            .unwrap();
-        let pool = fixture.reads().unwrap();
-        let result = run(
-            &pool.reader().unwrap(),
-            ask("changes where kind:excision", T0),
-        )
-        .unwrap();
-        assert_eq!(result["rows"][0]["sessions"], json!(sessions));
-        assert_eq!(result["rows"][0]["messages"], json!(messages));
-    }
-}
-
-#[test]
 fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
     use crate::daemon::{Request, Response, service::handle};
     let daemon = crate::test_daemon::start("synthetic source");
@@ -248,45 +196,5 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
             )
             .unwrap()[0]["n"],
         0
-    );
-}
-
-#[test]
-fn kept_change_selections_preserve_their_json_type_when_read_back() {
-    use polylogue_store::fixture::Fixture;
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    fixture
-        .excision("remove", "input:synthetic", &["claude-code:a"], &[])
-        .unwrap();
-    let pool = fixture.reads().unwrap();
-    let mut kept = keep(
-        &pool.reader().unwrap(),
-        ask("changes where kind:excision", T0),
-    )
-    .unwrap();
-    fixture
-        .kept_result(
-            "valid-ids",
-            "changes where kind:excision",
-            &kept.to_string(),
-        )
-        .unwrap();
-    let result = run(&pool.reader().unwrap(), ask("result:valid-ids", T0)).unwrap();
-    assert_eq!(result["rows"][0]["sessions"], json!(["claude-code:a"]));
-    assert_eq!(result["rows"][0]["messages"], json!([]));
-    kept["rows"][0]["sessions"] = json!("[\"claude-code:a\"]");
-    fixture
-        .kept_result(
-            "invalid-ids",
-            "changes where kind:excision",
-            &kept.to_string(),
-        )
-        .unwrap();
-    assert_eq!(
-        run(&pool.reader().unwrap(), ask("result:invalid-ids", T0))
-            .unwrap_err()
-            .kind,
-        "store"
     );
 }

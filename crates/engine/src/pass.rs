@@ -304,9 +304,6 @@ impl Engine {
     ) -> Result<Vec<Plan>, EngineError> {
         let mut plans = Vec::new();
         for f in found {
-            if self.refused.contains(&f.path) {
-                continue;
-            }
             seen.insert(f.path.clone());
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
@@ -407,8 +404,7 @@ impl Engine {
         let mut plans = Vec::new();
         let mut seen = HashSet::new();
         for f in &found {
-            if self.refused.contains(&f.path)
-                || busy.contains(f.path.as_path())
+            if busy.contains(f.path.as_path())
                 || self.reparsing.contains_key(&f.path)
                 || !seen.insert(f.path.as_path())
             {
@@ -917,11 +913,6 @@ impl Engine {
             let Some(mut plan) = running.remove(&d.path) else {
                 continue;
             };
-            if d.refused {
-                self.inputs.remove(&d.path);
-                self.refused.insert(d.path);
-                continue;
-            }
             if d.write_failed {
                 if let Some(error) = d.error {
                     pass.errors.push(error);
@@ -1127,12 +1118,6 @@ impl Engine {
                         let report = self.import(&paths).map_err(|e| e.to_string());
                         busy(pending);
                         let _ = reply.send(report);
-                    }
-                    Ok(LoopMsg::Excise { request, reply }) => {
-                        busy(true);
-                        let done = self.excise(request);
-                        busy(pending);
-                        let _ = reply.send(done);
                     }
                     Ok(LoopMsg::Changed) => {}
                     Err(RecvTimeoutError::Timeout) => {}

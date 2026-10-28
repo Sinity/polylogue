@@ -67,7 +67,7 @@ pub(crate) struct Plan {
 impl Plan {
     /// A plan that parses bytes the archive stored, from `parse_pos`, and
     /// stores nothing: an index behind its archive (a rebuild, a file that
-    /// moved or went, an import), or an input an excision rewrote.
+    /// moved or went, an import).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stored(
         path: PathBuf,

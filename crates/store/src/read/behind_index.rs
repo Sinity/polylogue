@@ -35,7 +35,7 @@ impl Reader<'_> {
                 FROM a.revision GROUP BY input, chain
             ), first_paths AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
-                FROM a.observation WHERE class <> 'excised' GROUP BY input
+                FROM a.observation GROUP BY input
             ), formats AS (
                 SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input

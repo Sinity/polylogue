@@ -1,7 +1,7 @@
 //! The loop. One loop runs in the daemon:
 //!
 //! ```text
-//! collect -> store -> parse -> derive -> excise -> wait
+//! collect -> store -> parse -> derive -> wait
 //! ```
 //!
 //! Each step finds its work by comparing what exists with what should
@@ -21,7 +21,6 @@ mod watch;
 use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
-pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -213,7 +212,7 @@ pub struct Pass {
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct LoopStatus {
     pub full_scans: u64,
-    /// A pass, an import or an excision is running, or a capture continues
+    /// A pass or import is running, or a capture continues
     /// in the next pass.
     pub busy: bool,
     /// Passes finished since the loop started.
@@ -263,7 +262,7 @@ pub struct ImportReport {
     pub pass: Pass,
 }
 
-/// Requests and excisions replayed from Polylogue exports.
+/// Requests replayed from Polylogue exports.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct UserStateReport {
     /// Written into this archive.
@@ -280,10 +279,7 @@ pub enum LoopMsg {
         paths: Vec<PathBuf>,
         reply: SyncSender<Result<ImportReport, String>>,
     },
-    Excise {
-        request: ExciseRequest,
-        reply: SyncSender<Result<Excised, EngineError>>,
-    },
+
     Stop,
 }
 
@@ -307,8 +303,6 @@ pub struct Engine {
     pass_open: bool,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
-    /// Paths on this machine an excision removed: never collected again.
-    refused: HashSet<PathBuf>,
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
@@ -373,7 +367,6 @@ impl Engine {
             pass_open: false,
             collectors_at: None,
             capture_checked: None,
-            refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
@@ -392,26 +385,6 @@ impl Engine {
         Ok(derived)
     }
 
-    /// Runs an excision through the writer and stops collecting the paths
-    /// it removed ([`polylogue_store::excise`]).
-    pub fn excise(&mut self, request: ExciseRequest) -> Result<Excised, EngineError> {
-        self.load()?;
-        let done = self.writer.excise(request, Arc::clone(&self.blobs))?;
-        if done.dry_run {
-            return Ok(done);
-        }
-        self.derive()?;
-        let prefix = format!("{}:", self.config.machine);
-        for p in &done.refused_paths {
-            if let Some(path) = p.strip_prefix(&prefix) {
-                let path = PathBuf::from(path);
-                self.inputs.remove(&path);
-                self.refused.insert(path);
-            }
-        }
-        Ok(done)
-    }
-
     /// A location's input id: stable for one path on one machine.
     fn location_id(&self, path: &Path) -> String {
         let mut h = blake3::Hasher::new();
@@ -426,11 +399,7 @@ impl Engine {
             return Ok(());
         }
         let reader = self.reads.reader()?;
-        for (machine, path) in reader.refused_paths()? {
-            if machine == self.config.machine {
-                self.refused.insert(PathBuf::from(path));
-            }
-        }
+
         let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         let mut database_paths: HashMap<String, String> = self
             .inputs
@@ -439,9 +408,6 @@ impl Engine {
             .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
             .collect();
         for input in &mut known {
-            if self.refused.contains(Path::new(&input.path)) {
-                continue;
-            }
             if ORIGINS
                 .iter()
                 .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
@@ -465,9 +431,6 @@ impl Engine {
         self.inputs
             .retain(|path, state| !state.origin.is_row_dump(path));
         for k in known {
-            if self.refused.contains(Path::new(&k.path)) {
-                continue;
-            }
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };

@@ -237,14 +237,8 @@ impl Archive {
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
-        let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
         crate::fault::check("index.after_creation", "")?;
-        if fresh {
-            crate::excise::mark_applied(&archive, &index)?;
-        } else {
-            crate::excise::catch_up(&archive, &index)?;
-        }
         Ok(())
     }
 }

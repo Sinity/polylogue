@@ -191,7 +191,7 @@ pub enum Request {
     Export {
         targets: Vec<ReadTarget>,
         format: String,
-        /// Also the archive's user state: every request and excision.
+        /// Also the archive's user state: every request.
         #[serde(default)]
         user_state: bool,
     },
@@ -297,16 +297,7 @@ pub enum Request {
     Sql {
         statement: String,
     },
-    /// `session:<id>`, `document:<id>` or `input:<id>`. A dry run counts
-    /// what would go and changes nothing.
-    Excise {
-        request_id: String,
-        target: String,
-        #[serde(default)]
-        reason: Option<String>,
-        #[serde(default)]
-        dry_run: bool,
-    },
+
     /// Embeddings: `status`, `preview` (what a build would embed and cost)
     /// or `build`. `query` limits them to the sessions it finds; `limit`
     /// to that many texts. A paid provider builds only with `yes`.
@@ -367,8 +358,7 @@ impl Request {
             | Self::Watch { .. }
             | Self::Withdraw { .. }
             | Self::AdviceDelivered { .. }
-            | Self::DeliveryEvent { .. }
-            | Self::Excise { .. } => false,
+            | Self::DeliveryEvent { .. } => false,
         }
     }
 

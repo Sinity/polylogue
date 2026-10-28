@@ -122,7 +122,7 @@ fn a_newer_database_or_one_with_unknown_tables_is_refused() {
     // The current version with a table missing, as an archive written by a
     // build that declared the same version with other tables.
     for change in [
-        "DROP TABLE excised",
+        "DROP TABLE revision",
         "ALTER TABLE note ADD COLUMN synthetic TEXT",
     ] {
         let conn = Connection::open_in_memory().unwrap();

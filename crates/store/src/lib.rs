@@ -18,7 +18,6 @@ pub mod derive;
 pub mod documents;
 mod encoding;
 mod events;
-pub mod excise;
 pub mod export_items;
 pub mod fault;
 pub(crate) mod first_build;
@@ -115,22 +114,12 @@ pub enum StoreError {
     ReadPoolNested,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
-    #[error("blob {0} is still in use and cannot be deleted")]
-    ExcisionBlobReferenced(polylogue_model::BlobHash),
-    #[error("the excision stopped part way; reopen the archive to finish it: {0}")]
-    ExcisionInterrupted(#[source] Box<StoreError>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("the session's parents are incomplete: {0}")]
     IncompleteParents(read::ParentIssue),
     #[error("{0} not found")]
     NotFound(String),
-    #[error("excision refused for {target}: {reason}")]
-    ExcisionRefused { target: String, reason: String },
-    #[error(
-        "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
-    )]
-    ExcisionInsideZip { input: String, file: String },
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
     #[error("backfill job refused: {0}")]

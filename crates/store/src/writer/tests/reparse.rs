@@ -749,52 +749,6 @@ fn retracting_a_link_only_chain_recomputes_the_childs_work() {
 }
 
 #[test]
-fn excising_a_link_only_input_keeps_the_other_inputs_statement() {
-    let w = test_archive();
-    write(
-        &w,
-        [
-            batch("sessions", 0, 0, vec![], &["parent", "child"]),
-            link_only("a"),
-            link_only("b"),
-        ],
-    );
-    let blobs = Arc::new(w.archive.blobs().unwrap());
-    for (input, links) in [("a", 1), ("b", 0)] {
-        w.writer
-            .excise(
-                crate::excise::ExciseRequest {
-                    id: format!("remove-{input}"),
-                    target: crate::excise::ExciseTarget::Input(input.into()),
-                    reason: None,
-                    dry_run: false,
-                },
-                Arc::clone(&blobs),
-            )
-            .unwrap();
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let r = pool.reader().unwrap();
-        for table in ["link", "link_source", "link_value"] {
-            assert_eq!(
-                r.query(&format!("SELECT count(*) AS n FROM {table}"), &[])
-                    .unwrap()[0]["n"],
-                links
-            );
-        }
-        assert_eq!(
-            r.query("SELECT count(*) AS n FROM session", &[]).unwrap()[0]["n"],
-            2
-        );
-        if links > 0 {
-            assert_eq!(
-                r.query("SELECT evidence FROM link", &[]).unwrap()[0]["evidence"],
-                "b"
-            );
-        }
-    }
-}
-
-#[test]
 fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
     let mut facts = batch("kind-facts", 0, 0, vec![], &["copy"]);
     facts.parse[0].output.sessions[0].kind = SessionKind::Subagent;

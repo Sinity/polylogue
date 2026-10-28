@@ -28,7 +28,6 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
-mod excluded;
 mod rows;
 mod search;
 mod staging;
@@ -44,7 +43,6 @@ pub use batch::{
 pub(crate) use bytes::observation_id;
 use bytes::*;
 use excluded::*;
-pub(crate) use rows::retract_input;
 use rows::*;
 use search::*;
 
@@ -74,18 +72,9 @@ enum Msg {
     Wake,
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>, bool),
-    /// An excision, with the blob store whose files it changes.
-    Excise(
-        Box<crate::excise::ExciseRequest>,
-        std::sync::Arc<crate::blobs::Blobs>,
-        SyncSender<Result<crate::excise::Excised>>,
-    ),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
-    /// An excision another archive recorded, brought in with its user
-    /// state; answered with whether it was new here.
-    ImportExcision(Box<crate::primary::ExcisionRows>, SyncSender<Result<bool>>),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -294,7 +283,6 @@ impl Writer {
             Vec::new()
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
-        let excisions = crate::excise::any_excision(&archive_conn)?;
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index))
             .transpose()?;
@@ -326,10 +314,8 @@ impl Writer {
             deferred_indexes,
             derive_due: true,
             derived_version: None,
-            logs_hold_excised: excisions,
             search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
-            excisions,
             sinex,
         };
         // Senders block once a few batches wait. The writer is the slowest
@@ -379,39 +365,10 @@ impl Writer {
         user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
     }
 
-    /// Runs an excision after the batches already queued and waits for it
-    /// to commit ([`crate::excise`]).
-    pub fn excise(
-        &self,
-        request: crate::excise::ExciseRequest,
-        store: std::sync::Arc<crate::blobs::Blobs>,
-    ) -> Result<crate::excise::Excised> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Excise(Box::new(request), store, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
     /// Derives the products of sessions changed since they were last
     /// derived, after the batches already queued.
     pub fn derive(&self) -> Result<u64> {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
-    }
-
-    /// Records an excision another archive made, so what it removed is
-    /// refused here too ([`Inner::import_excision`]). `false` when this
-    /// archive already holds it.
-    pub fn import_excision(&self, excision: crate::primary::ExcisionRows) -> Result<bool> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::ImportExcision(Box::new(excision), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Stores one import's bytes ([`Inner::store_bytes`]). The batch
@@ -611,16 +568,10 @@ struct Inner {
     /// `data_version` of the index when the last derive ended: it moves when
     /// another connection commits.
     derived_version: Option<i64>,
-    /// A write-ahead log may still hold text an excision removed
-    /// ([`Self::empty_logs`]).
-    logs_hold_excised: bool,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
     location: Archive,
-    /// Whether the archive holds an excision, whose sessions, messages and
-    /// bytes are never written again.
-    excisions: bool,
     /// In primary mode, where every register row goes before it commits.
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
 }
@@ -636,8 +587,6 @@ impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
-        let mut excisions = Vec::new();
-        let mut imported_excisions = Vec::new();
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
@@ -645,22 +594,9 @@ impl Inner {
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
-            // While a log still holds excised text, the writer wakes to
-            // empty it even when no work comes.
-            let first = if self.logs_hold_excised {
-                match rx.recv_timeout(std::time::Duration::from_secs(1)) {
-                    Ok(first) => first,
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        self.empty_logs_or_report();
-                        continue;
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            } else {
-                match rx.recv() {
-                    Ok(first) => first,
-                    Err(_) => break,
-                }
+            let first = match rx.recv() {
+                Ok(first) => first,
+                Err(_) => break,
             };
             let _busy = crate::timing::writer_started();
             self.serve_users(users);
@@ -715,16 +651,9 @@ impl Inner {
                         flushes.push((reply, derive));
                         false
                     }
-                    Msg::Excise(request, store, reply) => {
-                        excisions.push((request, store, reply));
-                        false
-                    }
+
                     Msg::Derive(reply) => {
                         derives.push(reply);
-                        false
-                    }
-                    Msg::ImportExcision(excision, reply) => {
-                        imported_excisions.push((excision, reply));
                         false
                     }
                 };
@@ -762,17 +691,7 @@ impl Inner {
                 let _ = reply.send(self.store_blob(new_blob, file));
             }
             self.serve_users(users);
-            for (request, store, reply) in excisions.drain(..) {
-                let result = self.write_excision(&request, &store);
-                let interrupted = matches!(&result, Err(StoreError::ExcisionInterrupted(_)));
-                let _ = reply.send(result);
-                if interrupted {
-                    return;
-                }
-            }
-            for (excision, reply) in imported_excisions.drain(..) {
-                let _ = reply.send(self.import_excision(&excision));
-            }
+
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
@@ -800,22 +719,12 @@ impl Inner {
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
-            if self.logs_hold_excised {
-                self.empty_logs_or_report();
-            }
+
             if stopping {
                 break;
             }
         }
         let _ = self.finish_build();
-    }
-
-    fn empty_logs_or_report(&mut self) {
-        if let Err(e) = self.empty_logs() {
-            self.report
-                .errors
-                .push(format!("empty the write-ahead logs: {e}"));
-        }
     }
 
     /// Derives from the rows written since the last derive. With nothing
@@ -902,225 +811,9 @@ impl Inner {
         Ok(())
     }
 
-    /// An excision in one pass ([`crate::excise`]): plan, then one
-    /// transaction per database, committed embeddings, archive, index; a dry
-    /// run plans and rolls back. Deleting vectors first only costs a later
-    /// purchase if a later commit fails. Once the archive commits, the
-    /// excision is in force: an index that missed it applies the recorded
-    /// identities when the archive is next opened, and the files of blobs marked for deletion go
-    /// after the commits, or when the archive is next opened. Running a
-    /// recorded request again finishes what is left.
-    fn write_excision(
-        &mut self,
-        request: &crate::excise::ExciseRequest,
-        store: &crate::blobs::Blobs,
-    ) -> Result<crate::excise::Excised> {
-        if request.dry_run {
-            let _lock = crate::write_lock::hold(&self.archive)?;
-            let plan = crate::excise::plan(&self.archive, &self.index, request)?;
-            if plan.recorded() {
-                return crate::excise::recorded(&self.archive, request);
-            }
-            return self.run_excision(request, &plan);
-        }
-        // An excision is written with WAL syncs even during a first build,
-        // and the archive's rows are durable before blob files are deleted.
-        let previous: i64 = self
-            .archive
-            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
-        self.archive
-            .pragma_update(None, "synchronous", previous.max(2))?;
-        let index_sync: i64 = self
-            .index
-            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
-        self.index.pragma_update(None, "synchronous", 2)?;
-        let lock = crate::write_lock::hold(&self.archive)?;
-        // Pages the excision frees are overwritten with zeros, so no removed
-        // content stays readable in the database files.
-        for conn in [&self.archive, &self.index] {
-            conn.pragma_update(None, "secure_delete", true)?;
-        }
-        let result = crate::excise::plan(&self.archive, &self.index, request).and_then(|plan| {
-            if plan.recorded() {
-                crate::excise::recorded(&self.archive, request)
-            } else {
-                self.run_excision(request, &plan)
-            }
-        });
-        drop(lock);
-        // Then the blob files and rows go, and the database files are
-        // scrubbed of every freed page.
-        let result = result.and_then(|done| {
-            let files = self.sinex.is_none().then_some(store);
-            crate::blobs::delete_marked(&self.archive, files)
-                .and_then(|_| {
-                    let _lock = crate::write_lock::hold(&self.archive)?;
-                    self.scrub_after_excision()
-                })
-                .map(|()| done)
-                .map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))
-        });
-        for conn in [&self.archive, &self.index] {
-            conn.pragma_update(None, "secure_delete", false)
-                .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        }
-        self.archive
-            .pragma_update(None, "synchronous", previous)
-            .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        self.index
-            .pragma_update(None, "synchronous", index_sync)
-            .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
-        if result.is_ok() {
-            self.excisions = true;
-            self.derive_due = true;
-        }
-        result
-    }
-
-    /// After an excision commits: the search indexes are merged into one
-    /// segment each, so deleted entries leave the old segments, and both
-    /// write-ahead logs are emptied into the database files, whose freed pages
-    /// `secure_delete` has zeroed ([`Self::empty_logs`]).
-    fn scrub_after_excision(&mut self) -> Result<()> {
-        for table in ["text_fts", "output_fts", "tool_call_trigram"] {
-            self.index.execute(
-                &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
-                [],
-            )?;
-        }
-        self.logs_hold_excised = true;
-        self.empty_logs()
-    }
-
-    /// Empties both write-ahead logs into the database files and truncates
-    /// them, so excised text leaves them. A read still open on an older
-    /// snapshot keeps its frames; rather than wait for it, the writer tries
-    /// again after its next work, or within a second when idle, until both
-    /// logs are empty.
-    fn empty_logs(&mut self) -> Result<()> {
-        let mut emptied = true;
-        for conn in [&self.index, &self.archive] {
-            conn.busy_timeout(std::time::Duration::ZERO)?;
-            let busy = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                r.get::<_, i64>(0)
-            });
-            conn.busy_timeout(std::time::Duration::from_secs(30))?;
-            match busy {
-                Ok(0) => {}
-                Ok(_) => emptied = false,
-                Err(rusqlite::Error::SqliteFailure(e, _))
-                    if e.code == rusqlite::ErrorCode::DatabaseBusy =>
-                {
-                    emptied = false;
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
-        self.logs_hold_excised = !emptied;
-        Ok(())
-    }
-
-    /// One transaction per database, committed in the order
-    /// [`Self::write_excision`] describes, or rolled back for a dry run.
-    fn run_excision(
-        &mut self,
-        request: &crate::excise::ExciseRequest,
-        plan: &crate::excise::Plan,
-    ) -> Result<crate::excise::Excised> {
-        let embeddings = if self.location.embeddings_db().exists() {
-            let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
-            e.pragma_update(None, "synchronous", "full")?;
-            e.execute_batch("BEGIN IMMEDIATE")?;
-            Some(e)
-        } else {
-            None
-        };
-        let rollback = |embeddings: &Option<rusqlite::Connection>| {
-            if let Some(e) = embeddings {
-                let _ = e.execute_batch("ROLLBACK");
-            }
-        };
-        let atx = self.archive.transaction()?;
-        let itx = self
-            .index
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let seq = bump_counter(&atx)?;
-        let counter = bump_counter(&itx)?;
-        let txs = crate::excise::Transactions {
-            archive: &atx,
-            index: &itx,
-            embeddings: embeddings.as_ref(),
-            seq,
-            counter,
-        };
-        let materials = match &self.sinex {
-            Some(_) => crate::primary::materials_of_inputs(&atx, plan.inputs()),
-            None => Ok(Vec::new()),
-        };
-        let applied = materials.and_then(|materials| {
-            let done = crate::excise::apply(&txs, request, plan)?;
-            if let (Some(sinex), false) = (&self.sinex, request.dry_run) {
-                excise_on_sinex(sinex.as_ref(), &atx, request, plan, &done, materials)?;
-            }
-            Ok(done)
-        });
-        let done = match applied {
-            Ok(done) => done,
-            Err(error) => {
-                rollback(&embeddings);
-                return Err(error);
-            }
-        };
-        if request.dry_run {
-            itx.rollback()?;
-            atx.rollback()?;
-            rollback(&embeddings);
-            return Ok(done);
-        }
-        // A failed commit leaves the databases apart until the archive is
-        // reopened, so this writer stops.
-        let committed: Result<()> = (|| {
-            if let Some(e) = &embeddings {
-                e.execute_batch("COMMIT")?;
-                crate::vectors::wrote();
-            }
-            crate::fault::check("excision.after_embeddings_commit", &request.id)?;
-            atx.commit()?;
-            crate::fault::check("excision.after_archive_commit", &request.id)?;
-            itx.commit()?;
-            crate::fault::check("excision.after_index_commit", &request.id)
-        })();
-        committed.map_err(|error| StoreError::ExcisionInterrupted(Box::new(error)))?;
-        Ok(done)
-    }
-
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        if self.excisions {
-            let refused = match matching(group, &self.archive) {
-                Ok(refused) => refused,
-                Err(error) => {
-                    for b in group {
-                        self.report
-                            .errors
-                            .push(format!("input {}: {error}", b.input.id));
-                    }
-                    return;
-                }
-            };
-            if !refused.is_empty() {
-                let filtered: Vec<Box<Batch>> = group
-                    .iter()
-                    .map(|b| Box::new(without_refused(b, &refused)))
-                    .collect();
-                return self.write_group_inner(&filtered);
-            }
-        }
-        self.write_group_inner(group);
-    }
-
-    fn write_group_inner(&mut self, group: &[Box<Batch>]) {
         if group.len() > 1 && self.write(group.iter().map(|b| &**b)).is_ok() {
             return;
         }
@@ -1224,60 +917,6 @@ impl Inner {
         Ok(outcome)
     }
 
-    /// Records an excision from another archive's user state. What it
-    /// removed is refused from now on; when this archive already holds any
-    /// of it (collected before the import), it is refused instead, because
-    /// recording the excision would not remove it.
-    fn import_excision(&mut self, excision: &crate::primary::ExcisionRows) -> Result<bool> {
-        let tx = self.archive.transaction()?;
-        let known: bool = tx
-            .prepare_cached("SELECT 1 FROM excision WHERE id = ?1")?
-            .exists([&excision.id])?;
-        if known {
-            return Ok(false);
-        }
-        for (kind, value) in &excision.excised {
-            let held = match kind.as_str() {
-                "session" => self
-                    .index
-                    .prepare_cached("SELECT 1 FROM session WHERE id = ?1")?
-                    .exists([value])?,
-                "document" => self
-                    .index
-                    .prepare_cached("SELECT 1 FROM document WHERE id = ?1")?
-                    .exists([value])?,
-                "input" => tx
-                    .prepare_cached("SELECT 1 FROM revision WHERE input = ?1")?
-                    .exists([value])?,
-                "blob" => {
-                    let hash = BlobHash::parse(value)
-                        .map_err(|e| StoreError::Invalid(format!("excised blob {value}: {e}")))?;
-                    tx.prepare_cached("SELECT 1 FROM extent WHERE blob = ?1")?
-                        .exists([&hash.0[..]])?
-                }
-                _ => false,
-            };
-            if held {
-                return Err(StoreError::ExcisionRefused {
-                    target: excision.target.clone(),
-                    reason: format!(
-                        "this archive holds {kind} {value}, which the imported excision removed; excise it here, then import again"
-                    ),
-                });
-            }
-        }
-        let seq = bump_counter(&tx)?;
-        crate::primary::insert_excision(&tx, excision, seq)?;
-        if let Some(sinex) = &self.sinex {
-            let change = crate::primary::RegisterChange::Excision(excision.clone());
-            let material = sinex.send_change(&change)?;
-            crate::primary::change_material(&tx, &change, &material)?;
-        }
-        crate::write_lock::commit(tx)?;
-        self.excisions = true;
-        Ok(true)
-    }
-
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
             if crate::zip_members::zip_of(b).is_some() {
@@ -1353,32 +992,6 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
-}
-
-/// In primary mode, before an excision commits: Sinex excises the parts and
-/// register materials of the removed inputs and the requests of the removed
-/// notes, then
-/// keeps the excision itself, so a rebuild keeps refusing what it removed.
-fn excise_on_sinex(
-    sinex: &dyn crate::primary::Sinex,
-    archive: &Connection,
-    request: &crate::excise::ExciseRequest,
-    plan: &crate::excise::Plan,
-    done: &crate::excise::Excised,
-    mut materials: Vec<String>,
-) -> Result<()> {
-    materials.extend(crate::primary::materials_of_requests(archive, &done.notes)?);
-    if !materials.is_empty() {
-        sinex.excise(&materials)?;
-    }
-    crate::primary::forget_inputs(archive, plan.inputs())?;
-    crate::primary::forget_requests(archive, &done.notes)?;
-    let change = crate::primary::RegisterChange::Excision(crate::primary::excision_rows(
-        archive,
-        &request.id,
-    )?);
-    let material = sinex.send_change(&change)?;
-    crate::primary::change_material(archive, &change, &material)
 }
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).

@@ -1,7 +1,7 @@
 //! An export imported into a fresh archive gives the same sessions and IDs,
 //! and the same user state: notes with their revisions, withdrawals and
 //! judgments, settings, kept results, deliveries, chat actions, backfill
-//! jobs and excisions, which keep refusing what they removed.
+//! jobs, replayed through the same request path.
 use super::*;
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Target, Timestamp};
 use polylogue_store::backfill_jobs::{BackfillCounts, BackfillReport, NewBackfillJob};
@@ -39,8 +39,6 @@ const USER_STATE: &[(&str, &str)] = &[
         "backfill_job_event",
         "job, n, at, kind, by, position, listed, captured, unchanged, failed, detail",
     ),
-    ("excision", "id, target, reason, created_at"),
-    ("excised", "*"),
 ];
 
 fn user_state(w: &ClaudeHome) -> Vec<(String, serde_json::Value)> {
@@ -110,8 +108,6 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
     );
-    let dropped = user("d1", "s2", "drop pelican77");
-    w.append("s2.jsonl", &dropped);
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
     let writes = e.writer().unwrap();
@@ -151,7 +147,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         author: Author::Operator,
         reason: Some("superseded".into()),
     });
-    // Notes about the session excised below go with it.
+    // Authored notes retain their explicit session targets.
     write(note(
         NoteKind::Note,
         Author::Operator,
@@ -229,14 +225,6 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
             detail: None,
         },
     });
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e001".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: Some("synthetic".into()),
-        dry_run: false,
-    })
-    .unwrap();
-    // A note after the excision replays after it.
     write(note(
         NoteKind::Note,
         Author::Operator,
@@ -265,58 +253,6 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(again.user_state.applied, 0, "{again:?}");
     assert_eq!(again.user_state.present, report.user_state.applied);
     assert_eq!(user_state(&fresh), source_state);
-
-    // The imported excision refuses the excised session when its file
-    // arrives again.
-    fresh.append("s2.jsonl", &dropped);
-    let pass = e2.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(
-        fresh.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s2'"),
-        0
-    );
-}
-
-#[test]
-fn an_imported_excision_refuses_when_the_archive_already_holds_what_it_removed() {
-    let w = ClaudeHome::new();
-    let dropped = user("d1", "s2", "drop pelican77");
-    w.append("s2.jsonl", &dropped);
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e002".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: None,
-        dry_run: false,
-    })
-    .unwrap();
-    let file = export_file(&w, &[]);
-
-    let fresh = ClaudeHome::new();
-    fresh.append("s2.jsonl", &dropped);
-    let (mut e2, _lock2) = fresh.engine(64 << 20);
-    assert!(e2.run_pass().unwrap().errors.is_empty());
-    let report = e2.import(std::slice::from_ref(&file)).unwrap();
-    assert_eq!(report.user_state.applied, 0, "{report:?}");
-    assert!(
-        report
-            .pass
-            .errors
-            .iter()
-            .any(|e| e.contains("excise it here, then import again")),
-        "{report:?}"
-    );
-    assert_eq!(fresh.count("SELECT count(*) AS n FROM a.excision"), 0);
-}
-
-fn excise_s2(e: &mut Engine) -> Result<Excised, polylogue_engine::EngineError> {
-    e.excise(ExciseRequest {
-        id: "0199d8a0-0000-7000-8000-00000000e003".into(),
-        target: ExciseTarget::parse("session:claude-code:s2").unwrap(),
-        reason: None,
-        dry_run: false,
-    })
 }
 
 fn two_sessions() -> (ClaudeHome, Engine, polylogue_store::ArchiveLock) {
@@ -326,91 +262,4 @@ fn two_sessions() -> (ClaudeHome, Engine, polylogue_store::ArchiveLock) {
     let (mut e, lock) = w.engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
     (w, e, lock)
-}
-
-/// A withdrawal is about the note it withdraws only, so it goes with that
-/// note, request and all, and what is left replays.
-#[test]
-fn an_excision_takes_the_withdrawals_of_the_notes_it_removes() {
-    let (w, mut e, _lock) = two_sessions();
-    let writes = e.writer().unwrap();
-    let withdrawn = writes
-        .user(request(
-            1,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s2",
-                None,
-            ),
-        ))
-        .unwrap()
-        .id;
-    writes
-        .user(request(
-            2,
-            UserWrite::Withdraw {
-                note: withdrawn,
-                author: Author::Operator,
-                reason: None,
-            },
-        ))
-        .unwrap();
-    writes
-        .user(request(
-            3,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s1",
-                None,
-            ),
-        ))
-        .unwrap();
-    assert_eq!(excise_s2(&mut e).unwrap().notes_removed, 2);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.note"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-
-    let file = export_file(&w, &[]);
-    let fresh = ClaudeHome::new();
-    let (mut e2, _lock2) = fresh.engine(64 << 20);
-    let report = e2.import(std::slice::from_ref(&file)).unwrap();
-    assert!(report.pass.errors.is_empty(), "{report:?}");
-    assert_eq!(report.user_state.applied, 2, "{report:?}");
-    assert_eq!(user_state(&fresh), user_state(&w));
-}
-
-/// A revision that would stay without the note it revises could not be
-/// replayed, so the excision refuses and changes nothing.
-#[test]
-fn an_excision_refuses_to_leave_a_revision_without_its_note() {
-    let (w, mut e, _lock) = two_sessions();
-    let writes = e.writer().unwrap();
-    let revised = writes
-        .user(request(
-            1,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s2",
-                None,
-            ),
-        ))
-        .unwrap()
-        .id;
-    writes
-        .user(request(
-            2,
-            note(
-                NoteKind::Note,
-                Author::Operator,
-                "session:claude-code:s1",
-                Some(revised),
-            ),
-        ))
-        .unwrap();
-    let before = user_state(&w);
-    let refused = excise_s2(&mut e).unwrap_err().to_string();
-    assert!(refused.contains("its revision"), "{refused}");
-    assert_eq!(user_state(&w), before);
 }

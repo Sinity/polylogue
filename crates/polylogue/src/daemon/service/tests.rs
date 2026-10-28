@@ -71,29 +71,6 @@ fn a_read_honours_its_view_format_and_budget() {
     }
 }
 
-#[test]
-fn excision_refusals_have_a_distinct_public_error() {
-    let error = StoreError::ExcisionRefused {
-        target: "input1".into(),
-        reason: "it also holds another session".into(),
-    };
-    assert!(
-        matches!(store_error(&error), Response::Error { kind, detail: Some(detail), .. }
-        if kind == "unsupported_excision" && detail["target"] == "input1")
-    );
-    let error = StoreError::ExcisionInsideZip {
-        input: "input2".into(),
-        file: "/exports/chat.zip".into(),
-    };
-    assert!(
-        matches!(store_error(&error), Response::Error { kind, message, detail: Some(detail) }
-        if kind == "unsupported_excision" && message.starts_with("/exports/chat.zip is an export ZIP")
-            && detail["input"] == "input2" && detail["file"] == "/exports/chat.zip")
-    );
-    let error = StoreError::BlobCorrupt(polylogue_model::BlobHash::of(b"synthetic"));
-    assert!(matches!(store_error(&error), Response::Error { kind, .. } if kind == "store"));
-}
-
 fn config(home: &std::path::Path) -> Config {
     let mut config = Config::from_env();
     config.home = home.to_owned();

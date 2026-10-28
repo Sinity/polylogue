@@ -16,8 +16,8 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Commits that stored or removed vectors in this process. Only the daemon
-/// writes `embeddings.db` (its embedding build and excision), so a copy
+/// Commits that stored vectors in this process. Only the daemon
+/// writes `embeddings.db` (its embedding build), so a copy
 /// loaded at the same count holds what the file holds.
 static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -58,7 +58,6 @@ pub struct KeyStatus {
 pub struct Vectors {
     conn: Connection,
     writable: bool,
-    index: std::path::PathBuf,
 }
 
 impl Vectors {
@@ -81,11 +80,7 @@ impl Vectors {
         if !writable {
             conn.execute_batch("BEGIN")?;
         }
-        Ok(Self {
-            conn,
-            writable,
-            index: archive.index_db(),
-        })
+        Ok(Self { conn, writable })
     }
 
     pub(crate) fn writable(&self) -> bool {
@@ -123,60 +118,12 @@ impl Vectors {
         Ok(out)
     }
 
-    /// Runs `write` under the archive's write lock, which an excision holds
-    /// from its embeddings commit to its index commit, with the text hashes
-    /// the current index still holds, and refuses while the index misses an
-    /// excision: a build that read a text before it was excised cannot store
-    /// a vector for it afterwards.
-    fn while_texts_exist<T>(
-        &self,
-        hashes: impl Iterator<Item = Vec<u8>>,
-        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
-    ) -> Result<T> {
-        Self::while_texts_exist_at(&self.index, hashes, write)
-    }
-
-    fn while_texts_exist_at<T>(
-        index: &std::path::Path,
-        hashes: impl Iterator<Item = Vec<u8>>,
-        write: impl FnOnce(&HashSet<Vec<u8>>) -> Result<T>,
-    ) -> Result<T> {
-        let archive = open_read(&index.with_file_name("archive.db"))?;
-        let index = open_read(index)?;
-        let _lock = crate::write_lock::hold(&index)?;
-        if crate::excise::index_behind(&archive, &index)? {
-            return Err(StoreError::Invalid(
-                "an excision has not reached the index yet; reopen the archive".into(),
-            ));
-        }
-        let mut exists = index.prepare("SELECT EXISTS(SELECT 1 FROM text WHERE hash = ?1)")?;
-        let mut present = HashSet::new();
-        for hash in hashes {
-            if exists.query_row([&hash], |r| r.get::<_, bool>(0))? {
-                present.insert(hash);
-            }
-        }
-        write(&present)
-    }
-
-    /// Stores vectors in one transaction, except for texts no longer in the
-    /// index.
+    /// Stores every purchased vector, keyed by its content.
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
-        let conn = &mut self.conn;
-        let index = self.index.clone();
-        Self::while_texts_exist_at(
-            &index,
-            vectors.iter().map(|v| v.text_hash.clone()),
-            |present| Self::insert(conn, key, vectors, present),
-        )
+        Self::insert(&mut self.conn, key, vectors)
     }
 
-    fn insert(
-        conn: &mut Connection,
-        key: &str,
-        vectors: &[Vector],
-        present: &HashSet<Vec<u8>>,
-    ) -> Result<()> {
+    fn insert(conn: &mut Connection, key: &str, vectors: &[Vector]) -> Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut stmt = tx.prepare_cached(
@@ -187,7 +134,7 @@ impl Vectors {
                      embedded_at = excluded.embedded_at",
             )?;
             let now = now_ms();
-            for v in vectors.iter().filter(|v| present.contains(&v.text_hash)) {
+            for v in vectors {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
                 stmt.execute(params![
                     v.text_hash,
@@ -206,12 +153,7 @@ impl Vectors {
 
     /// A text the provider permanently rejected, with its error as given.
     pub fn fail(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
-        self.while_texts_exist(std::iter::once(text_hash.to_vec()), |present| {
-            if present.is_empty() {
-                return Ok(());
-            }
-            self.record_failure(key, text_hash, error)
-        })
+        self.record_failure(key, text_hash, error)
     }
 
     fn record_failure(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {

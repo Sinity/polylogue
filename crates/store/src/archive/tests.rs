@@ -35,56 +35,6 @@ fn a_same_boot_build_keeps_its_rows_and_resumes() {
 }
 
 #[test]
-fn an_index_applies_missing_excisions_and_marked_blobs_go_on_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = crate::blobs::Blobs::open(archive.root.clone(), vec![], 0o600).unwrap();
-    let bytes = vec![7u8; crate::blobs::INLINE_LIMIT + 1];
-    let hash = store.put(bytes.as_slice(), 1).unwrap();
-    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index
-        .execute(
-            "INSERT INTO meta VALUES ('stale-marker', 'from before')",
-            [],
-        )
-        .unwrap();
-    drop(index);
-    // A stop after the archive's commit: the excision is recorded and its
-    // blob marked, but the index and the file were not reached.
-    let archive_db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    archive_db.execute("INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
-    archive_db
-        .execute(
-            "INSERT INTO blob(hash,size,stored_size,place,encoding,state) VALUES (?1,?2,?2,'file','plain','deleting')",
-            rusqlite::params![&hash.0[..], bytes.len() as i64],
-        )
-        .unwrap();
-    drop(archive_db);
-    drop(lock);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(!store.contains(&hash));
-    let archive_db = open_read(&archive.archive_db()).unwrap();
-    assert_eq!(
-        archive_db
-            .query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM meta WHERE key='stale-marker'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
-    assert!(!crate::excise::index_behind(&archive_db, &index).unwrap());
-}
-
-#[test]
 fn an_incompatible_index_is_refused_without_removing_its_rows() {
     for change in [
         "PRAGMA user_version = 26".to_owned(),
@@ -179,7 +129,7 @@ fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
     let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
     // The second as an archive written by a build that declared the current
     // version with other tables.
-    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE excised", false)] {
+    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE revision", false)] {
         let dir = tempfile::tempdir().unwrap();
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         drop(lock);

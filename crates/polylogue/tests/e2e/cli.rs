@@ -451,7 +451,7 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     // tables.
     rusqlite::Connection::open(opened.archive_db())
         .unwrap()
-        .execute_batch("DROP TABLE excised")
+        .execute_batch("DROP TABLE revision")
         .unwrap();
     let mut command = crate::command(dir.path());
     command

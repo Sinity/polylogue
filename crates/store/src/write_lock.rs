@@ -5,9 +5,7 @@
 //! pair of states that never existed together; an index commit there is
 //! harmless, because the register then reads as it was when the index read
 //! started. So writers hold the lock exclusively only while the register
-//! commits ([`commit`]), and for the few steps that must also keep readers
-//! or each other out for longer: schema setup, replacing the index, an
-//! excision and the embedding check. Index transactions take no lock, so a
+//! commits ([`commit`]) and through schema setup. Index transactions take no lock, so a
 //! reader waits at most for one register commit. The file is stable while
 //! open, so readers need no writable directory or extra lock file.
 use crate::{Archive, Result, StoreError};

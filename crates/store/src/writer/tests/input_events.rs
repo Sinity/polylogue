@@ -144,57 +144,6 @@ fn input_events_require_record_coordinates_and_cannot_claim_after_message_associ
 }
 
 #[test]
-fn session_excision_refuses_a_file_that_also_holds_records_of_no_session() {
-    use crate::blobs::NewBlob;
-    use crate::excise::{ExciseRequest, ExciseTarget};
-    use std::sync::Arc;
-    for shared_record in [false, true] {
-        let w = test_archive();
-        let store =
-            Arc::new(hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap());
-        let first = b"{\"native\":\"bound observation\"}\n";
-        let last = b"{\"native\":\"independent observation\"}\n";
-        let raw = if shared_record {
-            first.to_vec()
-        } else {
-            [first.as_slice(), last.as_slice()].concat()
-        };
-        let bound_end = first.len() as u64;
-        let mut bound = event((0, bound_end), "bound");
-        bound.session = Some(sid("conversation"));
-        let unrelated_range = if shared_record {
-            (0, bound_end)
-        } else {
-            (bound_end, raw.len() as u64)
-        };
-        let unrelated = event(unrelated_range, "independent");
-        let mut b = batch("shared-observer", 0, 0, vec![], &["conversation"]);
-        b.length = raw.len() as u64;
-        b.new_blob = Some(NewBlob::prepare(&store, &raw).unwrap());
-        b.parse[0].parsed_upto = b.length;
-        b.parse[0].output.events = vec![bound, unrelated];
-        send(&w.writer, b);
-        let before = rows(&w.archive);
-        let result = w.writer.excise(
-            ExciseRequest {
-                id: "remove-conversation".into(),
-                target: ExciseTarget::Session(sid("conversation")),
-                reason: None,
-                dry_run: false,
-            },
-            store.clone(),
-        );
-        // Records of no session share the file: excising the session alone
-        // would remove them too, so it refuses.
-        assert!(
-            matches!(result, Err(StoreError::ExcisionRefused { .. })),
-            "{result:?}"
-        );
-        assert_eq!(rows(&w.archive), before);
-    }
-}
-
-#[test]
 fn input_event_identity_includes_the_stored_revision_chain() {
     let w = test_archive();
     let observed = event((0, 100), "same recorded bytes");

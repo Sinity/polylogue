@@ -230,7 +230,6 @@ pub(super) fn observation(
                 )
             })
             .transpose()?,
-        excision: None,
         zip,
     }))
 }

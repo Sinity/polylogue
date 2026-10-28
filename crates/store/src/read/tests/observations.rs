@@ -31,13 +31,13 @@ fn history(count: i64) -> (tempfile::TempDir, Fixture) {
         )
         .unwrap();
     }
-    tx.execute_batch("INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('import','imported','synthetic','/source','imported','test',1), ('removed','source','synthetic','/source','excised','test',2), ('gone','gone','synthetic','/gone','deleted','test',3), ('other','other','elsewhere','/source','first','test',4)").unwrap();
+    tx.execute_batch("INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('import','imported','synthetic','/source','imported','test',1), ('gone','gone','synthetic','/gone','deleted','test',3), ('other','other','elsewhere','/source','first','test',4)").unwrap();
     tx.commit().unwrap();
     (dir, fixture)
 }
 
 #[test]
-fn current_source_positions_use_commit_order_and_exclude_imports_and_excisions() {
+fn current_source_positions_use_commit_order_and_exclude_imports() {
     let (_dir, fixture) = history(80);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

@@ -441,30 +441,6 @@ impl Fixture {
         )?;
         Ok(id)
     }
-    /// An excision over this fixture's synthetic rows, naming the sessions
-    /// and messages it removed.
-    pub fn excision(
-        &mut self,
-        id: &str,
-        scope: &str,
-        sessions: &[&str],
-        messages: &[&str],
-    ) -> Result<()> {
-        self.commit_seq += 1;
-        self.notes.execute(
-            "INSERT INTO excision(id, target, created_at, commit_seq) VALUES (?1, ?2, ?3, ?3)",
-            params![id, scope, self.commit_seq],
-        )?;
-        for (kind, values) in [("session", sessions), ("message", messages)] {
-            for value in values {
-                self.notes.execute(
-                    "INSERT INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
-                    params![id, kind, value],
-                )?;
-            }
-        }
-        crate::excise::mark_applied(&self.notes, &self.index)
-    }
 }
 
 /// Marks one origin's readings as older, in an isolated test or benchmark archive.

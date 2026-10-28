@@ -1,7 +1,7 @@
 //! Primary mode: Sinex holds the archive. Each step of an input's appended
 //! bytes goes to Sinex as one part of that input, with the [`InputRows`]
 //! that place it; every other change to the register (a look that found no
-//! new bytes, a request a person or agent makes, an excision) goes as a
+//! new bytes or a request a person or agent makes) goes as a
 //! register material. The writer commits a register row only
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
@@ -29,10 +29,6 @@ pub trait Sinex: Send + Sync {
     /// Sends a register change and the events it makes, and waits until
     /// Sinex acknowledged them. Returns the register material holding it.
     fn send_change(&self, change: &RegisterChange) -> Result<String>;
-    /// Excises these materials, with everything read or derived from them,
-    /// through Sinex's excision with Polylogue as the actor. Sinex refuses
-    /// the whole request when it cannot remove one cleanly.
-    fn excise(&self, materials: &[String]) -> Result<()>;
     /// One page of what Sinex holds from this archive, in the order it was
     /// sent, after `after` (0 for the first page). An empty page is the end.
     fn held(&self, after: i64) -> Result<Vec<Held>>;
@@ -105,24 +101,6 @@ pub enum RegisterChange {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         first_note: Option<String>,
     },
-    /// An excision: what it removed, by identity, so a rebuild keeps
-    /// refusing it.
-    Excision(ExcisionRows),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExcisionRows {
-    pub id: String,
-    /// `session:<id>`, `document:<id>` or `input:<id>`.
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    pub created_at: i64,
-    /// The `excised` rows: what was removed, by kind and identity.
-    pub excised: Vec<(String, String)>,
-    /// What stays of the removed inputs: their observations, the last of
-    /// them `excised`.
-    pub observations: Vec<InputRows>,
 }
 
 /// One thing Sinex holds from this archive.
@@ -163,7 +141,7 @@ impl Held {
 
 /// The Sinex material holding each part, by where its bytes sit in their
 /// chain, and each register material, by the observation, request or
-/// excision it holds. Only `sinex.db` has them.
+/// it holds. Only `sinex.db` has them.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE material (
   input         TEXT NOT NULL,
@@ -174,7 +152,7 @@ CREATE TABLE material (
   PRIMARY KEY (input, chain, offset)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE register_material (
-  id            TEXT PRIMARY KEY,        -- the observation, request or excision ID
+  id            TEXT PRIMARY KEY,        -- the observation, request ID
   input         TEXT,                    -- an observation's input
   material      TEXT NOT NULL UNIQUE     -- the Sinex material
 ) STRICT, WITHOUT ROWID;
@@ -222,7 +200,6 @@ pub(crate) fn change_material(
             Some(stored.input.as_str()),
         ),
         RegisterChange::Request { request, .. } => (request.id.as_str(), None),
-        RegisterChange::Excision(excision) => (excision.id.as_str(), None),
     };
     conn.prepare_cached(
         "INSERT OR REPLACE INTO register_material(id, input, material) VALUES (?1, ?2, ?3)",
@@ -326,7 +303,6 @@ pub(crate) fn load(
                         RegisterChange::Request { request, .. } => {
                             crate::user_writes::apply(&tx, request, seq)?;
                         }
-                        RegisterChange::Excision(excision) => insert_excision(&tx, excision, seq)?,
                     }
                     change_material(&tx, &change, &material)?;
                 }
@@ -389,131 +365,6 @@ fn forget_uncommitted(
             [&blob.0[..]],
         )?;
     }
-    Ok(())
-}
-
-/// The Sinex materials holding `inputs`: their parts and the register
-/// materials of looks at them.
-pub(crate) fn materials_of_inputs(
-    conn: &Connection,
-    inputs: &std::collections::BTreeSet<String>,
-) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for input in inputs {
-        for sql in [
-            "SELECT id FROM material WHERE input = ?1 ORDER BY chain, offset",
-            "SELECT material FROM register_material WHERE input = ?1 ORDER BY id",
-        ] {
-            out.extend(
-                conn.prepare_cached(sql)?
-                    .query_map([input], |r| r.get::<_, String>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
-        }
-    }
-    Ok(out)
-}
-
-/// The Sinex materials holding the requests that wrote `notes`.
-pub(crate) fn materials_of_requests(conn: &Connection, ids: &[String]) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for id in ids {
-        if let Some(material) = conn
-            .prepare_cached("SELECT material FROM register_material WHERE id = ?1")?
-            .query_row([id], |r| r.get::<_, String>(0))
-            .optional()?
-        {
-            out.push(material);
-        }
-    }
-    Ok(out)
-}
-
-/// Forgets the register materials of requests `ids` once Sinex excised them.
-pub(crate) fn forget_requests(conn: &Connection, ids: &[String]) -> Result<()> {
-    for id in ids {
-        conn.execute("DELETE FROM register_material WHERE id = ?1", [id])?;
-    }
-    Ok(())
-}
-
-/// Forgets the parts and register materials of `inputs` once Sinex excised
-/// them.
-pub(crate) fn forget_inputs(
-    conn: &Connection,
-    inputs: &std::collections::BTreeSet<String>,
-) -> Result<()> {
-    for input in inputs {
-        conn.execute("DELETE FROM material WHERE input = ?1", [input])?;
-        conn.execute("DELETE FROM register_material WHERE input = ?1", [input])?;
-    }
-    Ok(())
-}
-
-/// The rows of a committed excision `id`, as Sinex keeps them.
-pub(crate) fn excision_rows(conn: &Connection, id: &str) -> Result<ExcisionRows> {
-    let (target, reason, created_at) = conn.query_row(
-        "SELECT target, reason, created_at FROM excision WHERE id = ?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
-    let excised: Vec<(String, String)> = conn
-        .prepare("SELECT kind, value FROM excised WHERE excision_id = ?1 ORDER BY kind, value")?
-        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut observations = Vec::new();
-    for (kind, input) in &excised {
-        if kind == "input" {
-            observations.extend(crate::input_rows::observations(conn, input)?);
-        }
-    }
-    Ok(ExcisionRows {
-        id: id.to_owned(),
-        target,
-        reason,
-        created_at,
-        excised,
-        observations,
-    })
-}
-
-/// Puts an excision's rows into the register, when rebuilding from Sinex or
-/// importing user state: its rows, and the note targets naming what it
-/// removed (the notes it removed whole went with their requests).
-pub(crate) fn insert_excision(tx: &Connection, excision: &ExcisionRows, seq: i64) -> Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO excision(id, target, reason, created_at, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            excision.id,
-            excision.target,
-            excision.reason,
-            excision.created_at,
-            seq
-        ],
-    )?;
-    for (kind, value) in &excision.excised {
-        tx.execute(
-            "INSERT OR IGNORE INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
-            params![excision.id, kind, value],
-        )?;
-    }
-    for observed in &excision.observations {
-        observed.insert(tx, seq)?;
-    }
-    let of = |kind: &str| -> Vec<String> {
-        excision
-            .excised
-            .iter()
-            .filter(|(k, _)| k == kind)
-            .map(|(_, v)| v.clone())
-            .collect()
-    };
-    let sessions = of("session");
-    let messages: std::collections::BTreeSet<String> = of("message").into_iter().collect();
-    let mut references = crate::excise::index_rows::note_references(tx, &sessions, &messages)?;
-    references.extend(of("document").into_iter().map(|d| format!("document:{d}")));
-    crate::excise::index_rows::remove_notes_about(tx, &references)?;
     Ok(())
 }
 

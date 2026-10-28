@@ -282,17 +282,8 @@ fn not_hidden(a: &Aliases) -> String {
     format!("NOT {}", fields::hidden(&a.s))
 }
 
-fn not_excised(a: &Aliases) -> String {
-    format!("NOT {}", fields::excised(&a.s))
-}
-
 fn maybe_session_visible(a: &Aliases) -> String {
-    format!(
-        "({s}.pk IS NULL OR (NOT {} AND NOT {}))",
-        fields::hidden(&a.s),
-        fields::excised(&a.s),
-        s = a.s
-    )
+    format!("({s}.pk IS NULL OR NOT {})", fields::hidden(&a.s), s = a.s)
 }
 
 fn counts_as_action(a: &Aliases) -> String {
@@ -326,11 +317,8 @@ fn main_sessions(a: &Aliases) -> String {
     format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
 }
 
-/// Hidden and excised sessions stay out.
-const SESSION_VISIBLE: &[Default] = &[
-    d(Expr::Fn(not_hidden), &["hidden"], true),
-    d(Expr::Fn(not_excised), &[], false),
-];
+/// Hidden sessions stay out.
+const SESSION_VISIBLE: &[Default] = &[d(Expr::Fn(not_hidden), &["hidden"], true)];
 
 /// Own, active-path messages, and the session defaults.
 const MESSAGE_DEFAULTS: &[Default] = &[
@@ -345,7 +333,6 @@ const MESSAGE_DEFAULTS: &[Default] = &[
         true,
     ),
     d(Expr::Fn(not_hidden), &["hidden"], true),
-    d(Expr::Fn(not_excised), &[], false),
 ];
 
 /// The session's next counted tool call after `{t}`, in session order.
@@ -398,7 +385,6 @@ pub static UNITS: &[UnitSpec] = &[
             ),
             d(Expr::Template("{s}.stub = 0"), &["source"], false),
             d(Expr::Fn(not_hidden), &["hidden"], true),
-            d(Expr::Fn(not_excised), &[], false),
         ],
         relations: &[],
         parents: &[],
@@ -574,7 +560,6 @@ pub static UNITS: &[UnitSpec] = &[
             ),
             d(Expr::Fn(counts_as_action), &["action"], false),
             d(Expr::Fn(not_hidden), &["hidden"], true),
-            d(Expr::Fn(not_excised), &[], false),
         ],
         relations: &[
             rel("session", Unit::Sessions, Via::Same),
@@ -898,14 +883,11 @@ pub static UNITS: &[UnitSpec] = &[
         from: Expr::Template(
             "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
                MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \
-               cs.live_changed AS live_changed, NULL AS note_kind, NULL AS target, NULL AS sessions, NULL AS messages FROM session cs \
-             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL, NULL, NULL \
+               cs.live_changed AS live_changed, NULL AS note_kind FROM session cs \
+             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL \
                FROM removed_session rs \
-             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind, NULL, NULL, NULL FROM a.note cn \
-             UNION ALL SELECT 'excision', ce.id, NULL, ce.commit_seq, NULL, NULL, NULL, ce.target, \
-               (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'session'), \
-               (SELECT json_group_array(value) FROM a.excised WHERE excision_id = ce.id AND kind = 'message') \
-               FROM a.excision ce) {r}",
+             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM a.note cn \
+) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
         identity: &["{r}.kind", "{r}.ref"],
@@ -915,9 +897,6 @@ pub static UNITS: &[UnitSpec] = &[
             ("seq", T("{r}.seq"), Number),
             ("live_changed", T("{r}.live_changed"), Number),
             ("note_kind", T("{r}.note_kind"), Text),
-            ("target", T("{r}.target"), Text),
-            ("sessions", T("{r}.sessions"), Ids),
-            ("messages", T("{r}.messages"), Ids),
         ],
         time: "{r}.seq",
         newest_first: false,

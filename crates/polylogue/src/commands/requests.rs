@@ -459,15 +459,6 @@ pub fn sql(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
-pub fn excise(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Excise {
-        request_id: v.request_id(),
-        target: v.text("target").unwrap_or_default(),
-        reason: v.text("reason"),
-        dry_run: !v.flag("yes"),
-    })
-}
-
 /// `embed status|preview|build`.
 pub fn embed(c: &Command, v: &Values, _: &Caller) -> Built {
     let what = c.name.trim_start_matches("embed ");

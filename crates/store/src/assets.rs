@@ -173,7 +173,7 @@ impl Reader<'_> {
         }
         let mut stmt = conn.prepare(
             "SELECT o.id,o.input,o.details_json FROM a.observation o
-            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL AND o.class<>'excised'",
+            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL",
         )?;
         let mut out = Vec::new();
         for row in stmt.query_map([after, through], |row| {

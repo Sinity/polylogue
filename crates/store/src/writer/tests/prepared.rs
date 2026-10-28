@@ -215,60 +215,6 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
 }
 
 #[test]
-fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
-    for removed in [vec![0], vec![1], vec![0, 1, 2]] {
-        let w = test_archive();
-        let messages = (0..3)
-            .map(|n| {
-                let mut m = text_message(
-                    &format!("m{n}"),
-                    "s",
-                    Role::Assistant,
-                    "Synthetic text",
-                    Some("end_turn"),
-                );
-                m.blocks.push(Block::Other {
-                    type_name: "synthetic".into(),
-                    data: serde_json::json!({"message":n,"nested":[false,"Ω"]}),
-                });
-                m
-            })
-            .collect::<Vec<_>>();
-        let mut b = batch(
-            "input1",
-            0,
-            0,
-            messages
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(i, m)| row(i as u64, m))
-                .collect(),
-            &["s"],
-        );
-        b.parse[0].prepare();
-        let mut refused = crate::excise::RefusedIds::default();
-        for n in &removed {
-            refused.messages.insert(messages[*n].id.to_string());
-        }
-        let mut filtered = without_refused(&b, &refused);
-        filtered.parse[0].prepare();
-        w.writer.send(filtered).unwrap();
-        let report = w.writer.flush().unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let expected = messages
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !removed.contains(i))
-            .map(|(_, m)| m.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(reader.messages(&sid("s"), false).unwrap(), expected);
-    }
-}
-
-#[test]
 fn misaligned_prepared_rows_refuse_before_writing() {
     for change_id in [false, true] {
         let w = test_archive();

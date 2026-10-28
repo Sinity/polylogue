@@ -14,10 +14,8 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
          INSERT INTO observation(id,input,machine,path,class,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at) VALUES
            ('first','watched','m','/home/op/session.jsonl','first',1,2,10,3,4,'test',100),
            ('gone','watched','m','/home/op/session.jsonl','deleted',NULL,NULL,NULL,NULL,NULL,'test',50),
-           ('excised','watched','m','/home/op/session.jsonl','excised',NULL,NULL,NULL,NULL,NULL,'test',200),
            ('manual','manual','m','/home/op/session.jsonl','imported',5,6,5,7,8,'test',300),
            ('manual-tail','manual','m','/home/op/session.jsonl','appended',5,6,7,7,8,'test',200),
-           ('manual-excised','manual','m','/home/op/session.jsonl','excised',NULL,NULL,NULL,NULL,NULL,'test',400),
            ('facts','watched','m','/home/op/renamed.jsonl','back',9,10,20,11,12,'test',40),
            ('other','other','other-machine','/home/op/session.jsonl','first',13,14,99,15,16,'test',500);"
     ).unwrap();

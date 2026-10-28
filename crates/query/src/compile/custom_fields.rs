@@ -195,7 +195,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's
-/// parsers, prices and excisions. Rows count when their bytes were first
+/// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
 pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let end = c.time(x.name, &x.value()?, x.span)?.end();
@@ -228,7 +228,8 @@ pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
             });
         }
     };
-    let note = "evidence_until: the rows Polylogue had by then, read with today's parsers, prices and excisions";
+    let note =
+        "evidence_until: the rows Polylogue had by then, read with today's parsers and prices";
     if !c.notes.iter().any(|n| n == note) {
         c.notes.push(note.into());
     }
@@ -247,7 +248,7 @@ pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     };
     c.change_generations.push(cursor.generation);
     Ok(format!(
-        "(({r}.kind IN ('note','excision') AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
+        "(({r}.kind = 'note' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
          OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
         r = x.row(),
         index = cursor.index,

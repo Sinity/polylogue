@@ -10,8 +10,7 @@
 //! call's normalized command), which it writes with the row by the same
 //! function so that a first build's derive does not rewrite those rows.
 //! A first build and an incremental one derive the same rows from the same
-//! records. Excision needs nothing per derivation: a
-//! removed session takes its rows with it.
+//! records. Replacing a reading recomputes the derived rows it changes.
 
 use crate::{Result, StoreError};
 use polylogue_model::Catalog;
