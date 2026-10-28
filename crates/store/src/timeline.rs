@@ -154,7 +154,9 @@ fn page_sources(
         let responses = crate::measure::Selection {
             sessions: None,
             origins: None,
-            ..responses.clone()
+            since: responses.since,
+            until: responses.until,
+            undated: responses.undated,
         };
         let selection = Selection {
             responses: Some(&responses),
@@ -180,7 +182,17 @@ fn row_queries(
     limit: i64,
     undated: bool,
 ) -> Result<Vec<(String, Vec<SqlValue>)>> {
-    let sources = page_sources(reader, selection)?;
+    // The bounds below combine the selection and cursor. A single lower
+    // bound makes the index start at the continuation, not the period start.
+    let responses = selection.responses.map(|responses| {
+        let mut responses = responses.clone();
+        if !undated {
+            responses.since = None;
+            responses.until = None;
+        }
+        responses
+    });
+    let sources = page_sources(reader, &Selection { responses: responses.as_ref(), ..*selection })?;
     let mut queries = Vec::new();
     for Source { kind, sql: source, mut params } in sources {
         let mut conditions = Vec::new();

@@ -24,7 +24,7 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
     assert_eq!(plans.len(), 3);
     for (plan, index) in plans.iter().zip(["message_at", "event_at"]) {
         assert!(plan.contains(index), "{plan}");
-        assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     }
     let after = Position { undated: false, at: Some(at("2024-03-31T12:00:00Z")), kind: "message".into(), id: "codex:early:response".into() };
     for (selected, session_led) in [(None, false), (Some(sessions.clone()), false), (Some(vec![sessions[2]]), true), (Some(vec![sessions[2], sessions[1], sessions[2]]), true)] {
@@ -41,7 +41,7 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
                 assert!(!plans.is_empty());
                 for plan in plans {
                     assert!(plan.contains(index), "wanted {index}: {plan}");
-                    assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+                    assert!(!plan.contains("TEMP B-TREE"), "{plan}");
                 }
             }
         }
@@ -53,7 +53,7 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
         assert_eq!(plans.len(), 1);
         for plan in plans {
             assert!(plan.contains(index), "{plan}");
-            assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{plan}");
         }
     }
 
