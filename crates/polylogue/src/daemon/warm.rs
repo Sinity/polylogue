@@ -412,6 +412,16 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
         Ok(())
     };
     let mut values = Vec::new();
+    for field in polylogue_query::fields::FIELDS {
+        for value in field.values.into_iter().flatten() {
+            values.push(format!("{}:{}", field.name, quoted(value)));
+        }
+    }
+    column(
+        "SELECT DISTINCT model AS v FROM message WHERE model IS NOT NULL ORDER BY model",
+        "model",
+        &mut values,
+    )?;
     column(
         "SELECT DISTINCT repo AS v FROM session WHERE repo IS NOT NULL ORDER BY repo",
         "repo",
@@ -470,7 +480,7 @@ fn quoted(v: &str) -> String {
     {
         v.to_owned()
     } else {
-        format!("\"{}\"", v.replace('"', "\\\""))
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
     }
 }
 
@@ -479,7 +489,30 @@ fn quoted(v: &str) -> String {
 pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut add = |value: &str, help: &str| {
-        if value.starts_with(word)
+        let literal_match = value.split_once(':').zip(word.split_once(':')).is_some_and(
+            |((field, value), (wanted, prefix))| {
+                field == wanted
+                    && !prefix.starts_with('"')
+                    && value
+                        .strip_prefix('"')
+                        .and_then(|v| v.strip_suffix('"'))
+                        .is_some_and(|literal| {
+                            let mut chars = literal.chars();
+                            let mut decoded = String::new();
+                            while let Some(c) = chars.next() {
+                                if c == '\\' {
+                                    if let Some(c) = chars.next() {
+                                        decoded.push(c);
+                                    }
+                                } else {
+                                    decoded.push(c);
+                                }
+                            }
+                            decoded.starts_with(prefix)
+                        })
+            },
+        );
+        if (value.starts_with(word) || literal_match)
             && !value.chars().any(char::is_control)
             && polylogue_render::terminal::escape(value) == value
             && !out.iter().any(|(v, _)| v == value)

@@ -4,8 +4,8 @@
 //! so a note never waits behind a first build for longer than one group.
 //!
 //! Every write carries a client request ID. The same ID with the same
-//! content writes nothing and returns what the first write created; the
-//! same ID with other content is refused as a conflict.
+//! intent writes nothing and returns what the first write created; the
+//! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
@@ -134,7 +134,15 @@ pub struct LeftOut {
 impl UserWrite {
     /// The caller's content, without data resolved when the write runs.
     pub fn intent(&self) -> Self {
-        let mut intent = self.clone();
+        let mut intent = match self {
+            Self::KeepResult { name, query, .. } => Self::KeepResult {
+                name: name.clone(),
+                query: query.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+            },
+            _ => self.clone(),
+        };
         match &mut intent {
             Self::AnnotateQuery { note, .. } => note.targets.clear(),
             Self::KeepResult {

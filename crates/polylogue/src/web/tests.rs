@@ -755,3 +755,5 @@ mod pages;
 mod benchmark;
 
 mod notes;
+mod search_api;
+mod search_measurements;

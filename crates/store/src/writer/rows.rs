@@ -154,8 +154,14 @@ pub(super) fn write_rows(
             }
         };
         rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence)?;
-        if let Some(session_pk) = session_pk {
-            crate::live::apply(tx, session_pk, e, counter)?;
+        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
+            // Prepared events release their JSON payload before writing. Live
+            // facts must read the same payload as the stored event.
+            let event = Event {
+                data: crate::encoding::unpack_json(&packed.1)?,
+                ..e.clone()
+            };
+            crate::live::apply(tx, session_pk, &event, counter)?;
         }
     }
     for l in &p.output.links {
