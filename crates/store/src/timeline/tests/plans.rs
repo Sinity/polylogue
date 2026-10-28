@@ -28,7 +28,7 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
     }
     let after = Position { undated: false, at: Some(at("2024-03-31T12:00:00Z")), kind: "message".into(), id: "codex:early:response".into() };
     for (selected, session_led) in [(None, false), (Some(sessions.clone()), false), (Some(vec![sessions[2]]), true), (Some(vec![sessions[2], sessions[1], sessions[2]]), true)] {
-        let usage = crate::measure::Selection { sessions: selected.clone(), ..Default::default() };
+        let usage = crate::measure::Selection { sessions: selected, ..Default::default() };
         for model in [None, Some("synthetic")] {
             let selection = Selection { responses: Some(&usage), model, ..all(None, false, false) };
             let index = if session_led {
@@ -59,7 +59,7 @@ fn selected_session_pages_merge_equal_times_and_continue_through_undated_rows() 
     let temp = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(temp.path()).unwrap();
     let mut sessions = Vec::new();
-    for id in ["codex:a", "codex:b", "codex:outside"] {
+    for id in ["codex:a", "codex:b", "claude-code:outside"] {
         let session = f.session(SessionFacts { id, kind: "main", ..Default::default() }).unwrap();
         for (suffix, time) in [("early", Some(at("2024-03-30T12:00:00Z"))), ("tie", Some(at("2024-03-31T12:00:00Z"))), ("undated", None), ("unrepresentable", Some(i64::MAX))] {
             add(&mut f, session, &format!("{id}:{suffix}"), time);
@@ -69,7 +69,11 @@ fn selected_session_pages_merge_equal_times_and_continue_through_undated_rows() 
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let day = LogicalDay::named("UTC", 240).unwrap();
-    let usage = crate::measure::Selection { sessions: Some(vec![sessions[1], sessions[0], sessions[1]]), ..Default::default() };
+    for usage in [
+        crate::measure::Selection { sessions: Some(vec![sessions[1], sessions[0], sessions[1]]), ..Default::default() },
+        crate::measure::Selection { origins: Some(vec!["codex".into()]), ..Default::default() },
+        crate::measure::Selection { sessions: Some(sessions.clone()), origins: Some(vec!["codex".into()]), ..Default::default() },
+    ] {
     let selection = Selection { responses: Some(&usage), model: Some("synthetic"), ..all(None, false, false) };
     let mut cursor = None;
     let mut ids = Vec::new();
@@ -80,6 +84,7 @@ fn selected_session_pages_merge_equal_times_and_continue_through_undated_rows() 
         if cursor.is_none() { break; }
     }
     assert_eq!(ids, ["codex:a:early", "codex:b:early", "codex:a:tie", "codex:b:tie", "codex:a:undated", "codex:a:unrepresentable", "codex:b:undated", "codex:b:unrepresentable"]);
+    }
     for sessions in [vec![], vec![i64::MAX]] {
         let usage = crate::measure::Selection { sessions: Some(sessions), ..Default::default() };
         let selection = Selection { responses: Some(&usage), ..all(None, false, false) };
