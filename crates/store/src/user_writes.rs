@@ -18,6 +18,15 @@ pub enum UserWrite {
     AddNote {
         note: NewNote,
     },
+    /// A saved query whose previous revision is resolved by name.
+    SaveQuery {
+        note: NewNote,
+    },
+    /// The query intent and its resolved targets, kept together for retries and replay.
+    AnnotateQuery {
+        query: String,
+        note: NewNote,
+    },
     /// Withdraws a note family: the newest revision and every older one.
     Withdraw {
         note: String,
@@ -122,6 +131,26 @@ pub struct LeftOut {
     pub reason: String,
 }
 
+impl UserWrite {
+    /// The caller's content, without data resolved when the write runs.
+    pub fn intent(&self) -> Self {
+        let mut intent = self.clone();
+        match &mut intent {
+            Self::AnnotateQuery { note, .. } => note.targets.clear(),
+            Self::KeepResult {
+                rows_json, read_at, ..
+            } => {
+                rows_json.clear();
+                read_at.clear();
+            }
+            // An explicit revision in AddNote remains part of the request.
+            Self::SaveQuery { note } => note.revises = None,
+            _ => {}
+        }
+        intent
+    }
+}
+
 /// What a user write created, or found already created by the same
 /// request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +207,7 @@ pub fn new_request_id() -> String {
 /// Applies one request in `tx`, which the writer commits. `seq` is the
 /// archive's write counter for this transaction.
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    let content = serde_json::to_vec(&r.write)?;
+    let content = serde_json::to_vec(&r.write.intent())?;
     let hash = blake3::hash(&content);
     let seen: Option<Vec<u8>> = tx
         .query_row(
@@ -210,7 +239,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
     )?;
     let at = r.at.unix_ms();
     match &r.write {
-        UserWrite::AddNote { note } => add_note(tx, r, note, seq),
+        UserWrite::AddNote { note } | UserWrite::AnnotateQuery { note, .. } => {
+            add_note(tx, r, note, seq)
+        }
+        UserWrite::SaveQuery { note } => {
+            if note.kind != NoteKind::SavedQuery {
+                return Err(StoreError::Invalid("save needs a saved query note".into()));
+            }
+            add_note(tx, r, note, seq)
+        }
         UserWrite::Withdraw {
             note,
             author,
@@ -401,7 +438,9 @@ pub(crate) fn first_note_of_request(
     r: &UserRequest,
 ) -> Result<Option<String>> {
     match &r.write {
-        UserWrite::AddNote { .. } => first_note_of(tx, &r.id).map(Some),
+        UserWrite::AddNote { .. }
+        | UserWrite::SaveQuery { .. }
+        | UserWrite::AnnotateQuery { .. } => first_note_of(tx, &r.id).map(Some),
         UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
         _ => Ok(None),
     }
