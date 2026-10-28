@@ -13,6 +13,9 @@ pub struct BehindChain {
     pub progress: ChainProgress,
 }
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedAs {
     pub format: String,
