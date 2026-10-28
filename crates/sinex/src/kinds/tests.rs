@@ -61,9 +61,11 @@ fn sessions_messages_and_calls_are_keyed_by_polylogue_ids_and_replaced_when_newe
 }
 
 #[devkit::test]
-fn message_text_is_stored_guarded_whatever_the_producer_asks() {
-    assert_eq!(Message::CLASS, Class::Guarded);
-    assert_eq!(Session::CLASS, Class::Open);
+fn message_fields_default_to_guarded_and_skip_sinex_search() {
+    assert!(Message::FIELD_HINTS.contains(&("/text", Class::Guarded)));
+    assert_eq!(Message::SEARCH, sinex_model::kinds::Search::None);
+    assert_eq!(ToolCall::SEARCH, sinex_model::kinds::Search::None);
+    assert!(Session::FIELD_HINTS.is_empty());
     let event = sinex_model::Event::build(
         &message("a prompt"),
         "polylogue",
@@ -73,7 +75,7 @@ fn message_text_is_stored_guarded_whatever_the_producer_asks() {
         Class::Open,
     )
     .unwrap();
-    assert_eq!(event.class, Class::Guarded);
+    assert_eq!(event.class, Class::Open);
     let sealed = sinex_model::Event::build(
         &message("a prompt"),
         "polylogue",
@@ -170,12 +172,12 @@ fn example(schema: &Value, root: &Value, optional: bool) -> Value {
 }
 
 fn parity<P: EventPayload>() {
-    let d = super::declarations("polylogue")
+    let declaration = super::declarations("polylogue")
         .into_iter()
-        .find(|d| d.kind.name == P::EVENT_TYPE)
+        .find(|declaration| declaration.kind.name == P::EVENT_TYPE)
         .unwrap();
     for optional in [false, true] {
-        let schema = d.payload_schema.as_ref().unwrap();
+        let schema = declaration.payload_schema.as_ref().unwrap();
         let payload = example(schema, schema, optional);
         let typed: P = serde_json::from_value(payload).unwrap();
         let event = sinex_model::Event::build(
@@ -187,7 +189,9 @@ fn parity<P: EventPayload>() {
             Class::Open,
         )
         .unwrap();
-        let evaluated = d.evaluate(&event.payload, Class::Open).unwrap();
+        assert_eq!(event.kind_ref(), declaration.kind);
+        assert_eq!(super::kind_reference(P::EVENT_TYPE).unwrap(), declaration.kind);
+        let evaluated = declaration.evaluate(&event.payload, Class::Open).unwrap();
         assert_eq!(evaluated.equivalence_key, event.equivalence_key);
         assert_eq!(evaluated.ts_orig, event.ts_orig);
         assert_eq!(evaluated.record_state, event.record_state);
@@ -209,4 +213,9 @@ fn all_ten_producer_declarations_preserve_typed_keys_clocks_and_classes() {
     parity::<Setting>();
     parity::<KeptResult>();
     parity::<Excision>();
+}
+
+#[test]
+fn undeclared_producer_kind_has_no_wire_reference() {
+    assert!(matches!(super::kind_reference("polylogue.unknown"), Err(crate::Error::Invalid(_))));
 }

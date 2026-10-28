@@ -384,7 +384,9 @@ CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
 
 The Sinex producer owns its ten `polylogue.*` payload types and declares their
-exact version, schema, keys, times and class minima on connection. Registration
+exact version, schema, keys, times, field class hints and search mode on connection.
+Message and tool-call declarations use Sinex search mode `none`. Field hints
+describe defaults for configurable output rules. Registration
 must be acknowledged before material or event publication. Content-named event
 frames include declaration hashes. `Sinex::replay` holds publication while the
 caller selects a metadata snapshot with `Replay::scope` and prepares its parse.

@@ -67,33 +67,48 @@ pub struct SessionLink {
     Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
 )]
 #[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.message", key = ["message"], replace = newer, time = at, quality = intrinsic, class = guarded)]
+#[event(version = 2, type = "polylogue.message", search = none, key = ["message"], replace = newer, time = at, quality = intrinsic)]
 pub struct Message {
+    #[event(class = guarded)]
     pub message: String,
+    #[event(class = guarded)]
     pub session: String,
     /// The message it replies to, when the source records it.
+    #[event(class = guarded)]
     pub parent: Option<String>,
     /// `user`, `assistant` or `system`.
+    #[event(class = guarded)]
     pub role: String,
     /// Who wrote it: `human`, `model`, `harness` or `unknown`.
+    #[event(class = guarded)]
     pub written_by: String,
     /// A typed prompt's kind: `prose`, `command`, `harness` or `model`.
+    #[event(class = guarded)]
     pub prompt_kind: Option<String>,
+    #[event(class = guarded)]
     pub at: Option<Timestamp>,
+    #[event(class = guarded)]
     pub model: Option<String>,
     /// Its text blocks, joined by blank lines. Tool inputs and outputs stay
     /// in the material.
+    #[event(class = guarded)]
     pub text: String,
+    #[event(class = guarded)]
     pub usage: Usage,
     /// Polylogue's cost of the message in billionths of a dollar; unknown
     /// when absent.
+    #[event(class = guarded)]
     pub cost_nusd: Option<i64>,
+    #[event(class = guarded)]
     pub stop_reason: Option<String>,
+    #[event(class = guarded)]
     pub duration_ms: Option<u64>,
+    #[event(class = guarded)]
     pub attachments: Vec<Attachment>,
     /// The other records that carry a version of this message (the same
     /// message in an export and in a live file). The event's own location is
     /// the version Polylogue shows.
+    #[event(class = guarded)]
     pub copies: Vec<RecordRef>,
 }
 
@@ -137,27 +152,39 @@ pub struct RecordRef {
     Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
 )]
 #[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.tool_call", key = ["call"], replace = newer, time = at, quality = intrinsic, class = guarded)]
+#[event(version = 2, type = "polylogue.tool_call", search = none, key = ["call"], replace = newer, time = at, quality = intrinsic)]
 pub struct ToolCall {
     /// `tool:<session>#<call id>`, Polylogue's reference to the call.
+    #[event(class = guarded)]
     pub call: String,
+    #[event(class = guarded)]
     pub session: String,
     /// The message that made the call.
+    #[event(class = guarded)]
     pub message: String,
+    #[event(class = guarded)]
     pub tool: String,
     /// `shell`, `code`, `file_read`, `file_write`, `file_edit`, `search`,
     /// `web`, `subagent`, `mcp` or `other`.
+    #[event(class = guarded)]
     pub action: String,
     /// The shell command, when the call runs one.
+    #[event(class = guarded)]
     pub command: Option<String>,
     /// The file it reads or changes, when it names one.
+    #[event(class = guarded)]
     pub path: Option<String>,
     /// `ok`, `error` or `unknown`.
+    #[event(class = guarded)]
     pub outcome: String,
+    #[event(class = guarded)]
     pub outcome_reason: Option<String>,
+    #[event(class = guarded)]
     pub exit_code: Option<i64>,
+    #[event(class = guarded)]
     pub at: Option<Timestamp>,
     /// The record holding the call's output.
+    #[event(class = guarded)]
     pub result: Option<RecordRef>,
 }
 
@@ -243,21 +270,32 @@ pub struct DeliveryOutcome {
     Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
 )]
 #[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.note", key = ["note"], replace = repeat, time = created_at, quality = intrinsic, class = guarded)]
+#[event(version = 2, type = "polylogue.note", key = ["note"], replace = repeat, time = created_at, quality = intrinsic)]
 pub struct Note {
+    #[event(class = guarded)]
     pub note: String,
     /// The first note of its revisions; the note itself for a first note.
+    #[event(class = guarded)]
     pub first_note: String,
+    #[event(class = guarded)]
     pub kind: String,
+    #[event(class = guarded)]
     pub key: Option<String>,
+    #[event(class = guarded)]
     pub value: Option<String>,
     /// `operator`, an agent session ID, `agent` or `script`.
+    #[event(class = guarded)]
     pub author: String,
+    #[event(class = guarded)]
     pub machine: String,
+    #[event(class = guarded)]
     pub created_at: Timestamp,
+    #[event(class = guarded)]
     pub valid_until: Option<Timestamp>,
     /// What it is about: `session:…`, `message:…`, `tool:…`, ….
+    #[event(class = guarded)]
     pub targets: Vec<String>,
+    #[event(class = guarded)]
     pub relations: Vec<NoteRelation>,
 }
 
@@ -290,15 +328,21 @@ pub struct Setting {
     Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
 )]
 #[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.kept_result", key = ["result"], replace = repeat, time = ran_at, quality = intrinsic, class = guarded)]
+#[event(version = 2, type = "polylogue.kept_result", key = ["result"], replace = repeat, time = ran_at, quality = intrinsic)]
 pub struct KeptResult {
+    #[event(class = guarded)]
     pub result: String,
+    #[event(class = guarded)]
     pub name: Option<String>,
+    #[event(class = guarded)]
     pub query: String,
+    #[event(class = guarded)]
     pub ran_at: Timestamp,
     /// What its read transaction read (the query's resolved time).
+    #[event(class = guarded)]
     pub read_at: Value,
     /// The rows it returned.
+    #[event(class = guarded)]
     pub rows: Value,
 }
 
@@ -316,10 +360,18 @@ pub struct Excision {
     pub created_at: Timestamp,
 }
 
+/// Kind references are independent of the configured producer identity.
+pub(crate) fn kind_reference(name: &str) -> crate::Result<sinex_model::KindRef> {
+    static REFERENCES: std::sync::OnceLock<Vec<sinex_model::KindRef>> = std::sync::OnceLock::new();
+    REFERENCES.get_or_init(|| declarations("polylogue").into_iter().map(|declaration| declaration.kind).collect())
+        .iter().find(|kind| kind.name == name).cloned()
+        .ok_or_else(|| crate::Error::Invalid(format!("undeclared Polylogue event type {name}")))
+}
+
 pub fn definition_hash(producer: &str) -> String {
     let hashes: Vec<_> = declarations(producer)
         .iter()
-        .map(|d| d.definition_hash())
+        .map(|declaration| declaration.definition_hash())
         .collect();
     blake3::hash(&serde_json::to_vec(&hashes).expect("declaration hashes serialize"))
         .to_hex()
@@ -340,9 +392,9 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
         KeptResult::declaration(),
         Excision::declaration(),
     ];
-    for d in &mut declarations {
-        d.declaring_producer = producer.to_string();
-        d.normalization = sinex_model::kinds::Normalization::Json;
+    for declaration in &mut declarations {
+        declaration.declaring_producer = producer.to_string();
+        declaration.normalization = sinex_model::kinds::Normalization::Json;
     }
     declarations
 }

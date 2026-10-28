@@ -101,10 +101,7 @@ pub(crate) async fn send(
                 crate::kinds::definition_hash(client.producer())
             ),
             events: vec![ProducerEvent {
-                kind: sinex_model::KindRef {
-                    name: event_type.into(),
-                    version: 2,
-                },
+                kind: crate::kinds::kind_reference(event_type)?,
                 payload,
                 location: Some(RecordLocation {
                     material,

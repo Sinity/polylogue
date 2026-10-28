@@ -188,10 +188,7 @@ fn producer_event(
     location: RecordLocation,
 ) -> Result<ProducerEvent> {
     Ok(ProducerEvent {
-        kind: sinex_model::KindRef {
-            name: event_type.into(),
-            version: 2,
-        },
+        kind: crate::kinds::kind_reference(event_type)?,
         payload: serde_json::to_value(payload)?,
         location: Some(location),
         output_index: 0,
