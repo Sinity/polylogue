@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session reader: Date parsing</title>
+<style>
+body{margin:0}
+a{color:#1F5FA0}a:hover{color:#163F6B}
+</style>
+</head>
+<body>
+<div style="min-height: 1480px; background: #F4F5F2; color: #1B1D1F; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+<header style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; padding: 12px 24px; border-bottom: 1px solid #DDE1DE; background: #FFFFFF">
+<nav style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center">
+<span style="font-weight: 600; font-size: 15px">Polylogue</span>
+<a href="home.html" style="color: #4A5155; text-decoration: none">Home</a>
+<a href="running.html" style="color: #4A5155; text-decoration: none">Running</a>
+<a href="cost.html" style="color: #4A5155; text-decoration: none">Cost</a>
+<a href="pages.html" style="color: #4A5155; text-decoration: none">Pages</a>
+</nav>
+<button type="button" style="min-height: 36px; padding: 0 12px; border: 1px solid #DDE1DE; background: #FFFFFF; color: #1B1D1F; border-radius: 4px; font-size: 13px">Copy as CLI command</button>
+</header>
+<main style="max-width: 1200px; margin: 0 auto; padding: 24px; display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+<article style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="margin: 0; font-size: 22px; font-weight: 600">Date parsing</h1>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #4A5155">claude-code:7f3a2c10-0002 · Oct 02 10:00–11:15 (1h 15m) · /home/op/morrow · branch main</div>
+<div style="font-size: 13px; color: #4A5155">claude-fable-5-1 · 18 messages · 3 prompts · 13 tool calls (<span style="color: #B42318">1 error</span>) · $2.85 (+ $0.16 in 1 subagent) · tag project:morrow</div>
+</div>
+
+<section style="border: 1px solid #DDE1DE; background: #EEF0EC; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">you</b> · 10:00</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>Add parse_relative() for phrases like &quot;tomorrow at noon&quot; and &quot;in 3 days&quot;.</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:06</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>Let me look at the current code first.</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Read</span><span style="flex: 1 1 200px">src/lib.rs</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Read</span><span style="flex: 1 1 200px">Cargo.toml</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:19</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▾</span><span style="font-weight: 500; min-width: 48px">Agent</span><span style="flex: 1 1 200px">Explore: Survey date crates</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155">7m · → claude-code:a7f3a2c1 (6 msgs)</span></button>
+
+<div style="margin-left: 16px; padding: 10px 12px; border-left: 2px solid #DDE1DE; font-family: 'IBM Plex Mono', monospace; font-size: 12px; white-space: pre-wrap; color: #1B1D1F">Delegation
+Instruction  Explore: Survey date crates
+Subagent     claude-code:a7f3a2c1 · claude-opus-5-5 · 6 messages · $0.16
+Final answer chrono offers NaiveDateTime plus Duration and weekday helpers; …
+Parent next  10:30 Edit src/parse.rs, Edit src/lib.rs</div>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:30</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Edit</span><span style="flex: 1 1 200px">src/parse.rs</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Edit</span><span style="flex: 1 1 200px">src/lib.rs</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:37</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▾</span><span style="font-weight: 500; min-width: 48px">Bash</span><span style="flex: 1 1 200px">cargo test</span><span style="color: #B42318; font-weight: 500">error</span><span style="color: #4A5155">exit 101 · 3m 43s</span></button>
+
+<div style="margin-left: 16px; padding: 10px 12px; border-left: 2px solid #DDE1DE; font-family: 'IBM Plex Mono', monospace; font-size: 12px; white-space: pre-wrap; color: #1B1D1F">$ cargo test
+…
+test parse_dates::tomorrow_at_noon ... FAILED
+…
+[full output, as stored]</div>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:45</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>thinking (10 words)</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Edit</span><span style="flex: 1 1 200px">src/parse.rs</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Bash</span><span style="flex: 1 1 200px">cargo test</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155">3m 44s</span></button>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 10:52</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>All 6 tests pass. parse_relative handles &quot;tomorrow at noon&quot; and &quot;in N days&quot; using the time crate.</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #EEF0EC; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">you</b> · 10:56</span><span style="font-size: 12px; color: #1F5FA0">◆ decision: decided: chrono, not time</span></div>
+<div>let's use chrono, not time</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 11:00</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Edit</span><span style="flex: 1 1 200px">Cargo.toml</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Read</span><span style="flex: 1 1 200px">src/parse.rs</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155"></span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Bash</span><span style="flex: 1 1 200px">cargo test</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155">3m 43s</span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Bash</span><span style="flex: 1 1 200px">cargo clippy</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155">3m 43s</span></button>
+
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button type="button" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; min-height: 32px; padding: 4px 8px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; text-align: left; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; border-radius: 3px; cursor: pointer"><span style="color: #4A5155">▸</span><span style="font-weight: 500; min-width: 48px">Bash</span><span style="flex: 1 1 200px">cargo build</span><span style="color: #0A403C; font-weight: 500">ok</span><span style="color: #4A5155">3m 43s</span></button>
+
+</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 11:07</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>Switched to chrono. Tests, clippy and build are clean.</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #EEF0EC; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">you</b> · 11:11</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>Which crate does parse_absolute need?</div>
+
+</section>
+
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px"><span style="font-size: 12px; color: #4A5155"><b style="color: #1B1D1F">model</b> · 11:15</span><span style="font-size: 12px; color: #1F5FA0"></span></div>
+<div>chrono covers it too: NaiveDate::parse_from_str for ISO dates. I'll add it next session.</div>
+
+</section>
+
+</article>
+<aside style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 600">Lineage</h2>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: flex; flex-direction: column; gap: 4px">
+<div><b>Date parsing</b> <span style="color: #4A5155">…0002 (this)</span></div>
+<div style="padding-left: 16px">↳ subagent <a href="#">claude-code:a7f3a2c1</a> <span style="color: #4A5155">Explore · 6 msgs · $0.16</span></div>
+<div>→ continued by <a href="#">…0004</a> <span style="color: #4A5155">Oct 03 · resume · 10 own + 18 copied</span></div>
+</div>
+</section>
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 600">Notes</h2>
+<div style="font-size: 13px">◆ decision · <b>decided: chrono, not time</b><div style="font-size: 12px; color: #4A5155">operator · on 10:56 "let's use chrono, not time"</div></div>
+<div style="font-size: 13px">tag · project:morrow</div>
+<button type="button" style="min-height: 44px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; border-radius: 4px">Add a note</button>
+</section>
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 600">Views</h2>
+<div style="font-size: 13px; display: flex; flex-wrap: wrap; gap: 10px"><a href="#">transcript</a><a href="#">dialogue</a><a href="#">summary</a><a href="#">changes</a><a href="#">context</a><a href="#">raw</a></div>
+</section>
+</aside>
+</main>
+</div>
+</body>
+</html>

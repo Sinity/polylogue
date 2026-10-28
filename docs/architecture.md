@@ -1,384 +1,234 @@
 # Architecture
 
-Polylogue stores the files AI tools write, and what people and agents add, in
-a local archive; parses them into sessions, messages and documents; and serves
-them through one daemon. This guide describes the current code. The
-[README](../README.md) describes the commands, [vocabulary.md](vocabulary.md)
-the names, and Beads the planned work.
+Polylogue is an archive and workbench for AI work. This page states what it is
+for, the principles every area follows, the two modes it runs in, how data
+flows from a file on disk to an answer, where it is stored, what a crash can
+leave behind, and how configuration and time reach the code. Each area's
+behaviour is on its own page (see the [index](README.md)); the crates and how
+to build them are in [`AGENTS.md`](../AGENTS.md).
 
-## Crates
+## Purpose and users
 
-Data flows `Sources → Engine → Store`; clients go through the application,
-which reads through Store and presents through Query and Render.
+Polylogue captures every session its user has with AI tools (coding agents
+such as Claude Code, Codex and Gemini CLI; web chats such as ChatGPT, claude.ai
+and AI Studio), keeps the original bytes, parses them into one model of
+sessions and their lineage, and lets people and agents search, read, measure
+and annotate that history. On top of the parsed sessions it holds what its
+users author about them: notes, tags, judgments, claims, Pages, saved queries
+and kept results.
 
-| Crate | What it owns |
-|---|---|
-| [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates; no I/O. |
-| [Sources](../crates/sources/src/lib.rs) | Reading each origin's formats. An [origin declaration](../crates/sources/src/origin.rs) holds everything known about an origin: its locations, how to recognize its files and split them into records, its parser and its tool facts. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) turn records into model values with byte ranges and record counts. |
-| [Engine](../crates/engine/src/lib.rs) | The loop: find changed files, store their bytes, schedule parsing and derivations. The [parse pool](../crates/engine/src/pool.rs) feeds Store's writer; it holds no SQL. |
-| [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
-| [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
-| [Render](../crates/render/src/lib.rs) | Views of typed content as terminal text, Markdown, HTML and JSON, and pages sized for models. |
-| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
-| [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
-| [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
+It has two kinds of users with the same powers:
+- **the operator**, the person whose sessions these are, who works mostly in
+  the web workbench and the CLI;
+- **agents**, who work mostly through MCP and the CLI, start every session
+  with a brief from the archive, and write into it as they work.
 
-The `explain` command reads the command, query-unit, field, read-view and
-format declarations. Query explanation uses the same reader-backed options as execution, then
-Query's pure parser and compiler. Declaration pages use a cursor naming
-their subject, unit and next offset. The local `demo tour` command bundles the
-main Morrow files and starts an application runtime against its own home and
-archive; each narrated operation is built through the ordinary command
-table. Its transcript is written under the new tour directory.
+## Principles
 
-A new origin is an origin declaration and a parser, a new command is a
-command-table entry, and a new measure is an entry in the
-[measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
-rules are checked by [xtask](../xtask/src/main.rs).
+**The archive keeps the original inputs, and holds what cannot be
+recomputed.** Every revision of every captured file, export and tool database
+is stored as bytes; everything parsed from them is an index that can be built
+again by reading the bytes. Exports are kept whole, and a file a tool later
+deletes or rewrites stays in the archive. Ruling, 2026-07-22: "WE ARE
+SUPPOSED TO KEEP ALL DATA"
+(cc-queued:0398d7a3-0d3d-42e4-acd7-bca417e0c481@2026-07-22T12:20:09Z).
 
-## Databases
+**Agents are primary users.** Agents get every power the operator has: every
+command, every kind of authored record, every setting. What distinguishes the
+operator is authorship, which the daemon computes from the channel a write
+arrives on and which no caller supplies ([authorship](assertions.md#authorship)).
+Ruling, 2026-07-03: "I want agents to have more power / capabilites rather
+than less, more affordances"
+(cc-queued:30f5e650-7033-4423-9f91-2b66ebd1e6b2@2026-07-03T13:20:44Z).
 
-[Archive](../crates/store/src/archive.rs) owns the directory, the archive lock
-and the checks at open. One writer thread makes every change. Notes,
-settings, deliveries and browser requests have a queue of their own that it
-serves before its next batch, so during a first build they wait for at most
-the transaction being written.
+**Valid input is never refused or truncated for size.** Page sizes are
+defaults, transfer units continue, and memory is bounded by streaming and
+read-ahead rather than by caps on what may be stored or asked for. A query
+that runs past its deadline names a narrower query and the same command with
+the deadline lifted ([deadlines](query.md#deadlines)). Ruling, 2026-09-27:
+"such arbitrary limits are themselves straight-up bugs"
+(cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9).
 
-| File | Holds |
-|---|---|
-| [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; chat actions and backfill jobs; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
-| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
-| [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
-| [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
+**Invariants, not repair.** The code does not produce broken state, so there
+is nothing to repair: no repair, reconcile, reindex or verify-and-fix command,
+and no scheduled checks. A crash leaves only states that the ordinary open path
+treats as normal ([durability](#durability)). Reads of content-addressed bytes
+check their hashes as they read.
 
-`Archive::scanner_key()` creates `scanner.key` beside `archive.db` on first
-use: 32 random bytes, mode 0600, kept across index rebuilds and archive
-backups. An existing key is never replaced; an invalid key is refused.
-Credential fingerprints are comparable only within that archive. Scanned
-findings must record the shared `SCANNER_VERSION` and recompute when it
+**Overlap everything.** No stage waits on another that has nothing to do with
+its data. The one serial stage in a pipeline only appends and commits
+([pipeline](#pipeline)).
+
+**Configuration only where the choice is open.** A behaviour with a dominant
+option is not configurable. Polylogue reads each tool's data where the tool
+writes it, and recognises inputs by their declared structure; there are no
+custom roots and no guessing ([capture](capture.md)).
+
+**Polylogue's concepts are its own.** Sessions, lineage, assertions, Pages and
+measures are Polylogue's. Code is shared with Sinex only where the mechanics
+are identical (bytes and segments, the query grammar, the operation and failure
+types, the web shell, signals), and neither product's concepts are bent to fit
+the other's.
+
+## Modes
+
+**Standalone**: Polylogue alone, on SQLite and its own segment log. It is a
+complete product: capture, archive, index, authored records, every surface.
+
+**Primary**: Polylogue on Sinex. Polylogue captures and parses exactly as it
+does standalone, but its bytes become Sinex materials and its parsed and
+authored records become Sinex events; Polylogue keeps a local index that one
+subscription to Sinex's confirmed stream keeps current. Everything a user can
+do is the same in both modes. [Primary mode](primary-mode.md) owns what
 changes.
 
-A rebuild parses the stored inputs, including imports whose original files
-are gone; notes live in `archive.db` and survive it. A
-message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
-keeps one `message_source` row per input chain that holds it and shows one
-version: within an input the newest chain; within a chain the earliest record,
-or the latest for inputs whose records repeat whole conversations; across
-inputs the session it started in, then a complete version, then the more
-faithful arrival, then the smaller content hash. Messages are ordered by source
-position, with message IDs breaking ties; no time is invented.
-[Import rebuild tests](../crates/engine/src/import/tests/replay.rs) cover
-rebuilds from stored imports.
+## Data flow
 
-Derived products declare their inputs and rule version in
-[derive](../crates/store/src/derive.rs); a changed rule recomputes what depends
-on it. An index build in progress is marked on disk and starts over on
-reopen; [`Archive::prepare_index`](../crates/store/src/archive.rs) also
-rebuilds an index that holds fewer excisions than the archive. An index
-rebuild or a reboot starts a new index generation, which the change feed
-reports.
+1. **Capture.** The daemon watches each tool's own locations, reads the
+   browser extension's captures and hook events as they arrive, and takes
+   exports when a user runs `polylogue import`
+   ([capture](capture.md), [extension](extension.md)).
+2. **Store.** Each new revision of an input is hashed, compressed and appended
+   to the segment log; its extents and the input's revision and chain rows
+   commit together ([archive](archive.md#stored-inputs)).
+3. **Parse.** A per-origin parser reads each changed chain into sessions,
+   messages, blocks, tool calls and attachments, versioned so that every
+   reading is kept ([archive](archive.md#parsing), [sessions](sessions.md)).
+4. **Derive.** Derived values are computed at session grain as their data
+   arrives, and stored with the rows they belong to
+   ([measures](measures.md#rules)).
+5. **Serve.** The daemon answers the CLI, MCP, HTTP and the web workbench from
+   one command table ([interfaces](interfaces.md#command-table)). Queries
+   compile to a plan the store executes; every run is recorded
+   ([query](query.md#query-objects)).
+6. **Author.** Users and agents write assertions, Pages and settings through
+   one write path ([assertions](assertions.md#write-path)).
 
-A first build, into an empty index, writes without syncs, without copying
-its write-ahead log into the database file until its rows are written, and
-without the
-indexes only reads use or those on natural keys (message and event IDs, text
-hashes); the writer finds rows by key through hashes it keeps in memory. When
-the build ends it writes the search entries, rebuilds the trigram index and
-creates each dropped index once from a sorted scan, then derives, one session
-at a time through every derivation. Until then a
-read that needs one of those indexes scans instead.
+The daemon is the only process that opens the archive. It holds the archive
+lock, runs the one writer and serves every client over its socket; a command
+that needs the archive with no daemon running fails with "daemon down"
+([exit codes](interfaces.md#exit-codes)).
 
-## Storing bytes
+## Stores
 
-[Import](../crates/engine/src/import.rs) and the loop store the bytes before
-anything parses them. A pass feeds its plans to the parse pool a few at a
-time; every two seconds it looks at Polylogue's own spools (hook events,
-browser captures) and at the live files written in the last ten minutes, and
-what changed there goes ahead of the work still waiting, so a capture or a
-session being written shows up within seconds even during a first build. The [writer](../crates/store/src/writer/staging.rs)
-checks them against excisions, commits the blob rows as `writing` with their
-revision and extents, writes the files, then marks the rows `present`. After a
-stop, opening the archive and every pass finish what is left: files not yet
-moved under their content names are deleted (on open), a `writing` row that
-stored bytes use becomes `present` when its file exists, and a `writing` row
-nothing in the archive uses (decoded bytes whose parsed rows never committed)
-is deleted with its file. The rest are listed in `status` as
-`pending_inputs`; readers refuse their byte ranges, and only the same bytes
-can finish them. A provider file that changed meanwhile starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
-cover imports, watched files and parse-pool groups. Bytes a parser decodes
-from inside a record, such as inline images, are stored as blobs of that
-input.
-
-A ZIP import stores the ZIP itself and each file in it as inputs, linked by
-`observation_zip`. Export [attachments](attachments.md) are found
-through those links and the [asset lookup](../crates/store/src/assets.rs).
-
-Parsers count every record and field they were given, keep what they could
-not read as diagnostics, and keep unknown values apart from zero or empty.
-Each origin's rules and exceptions live with its
-[parser](../crates/sources/src/lib.rs) and its
-[format tests](../crates/sources/tests/formats/main.rs).
-
-An export that wraps many conversations in one document is checked whole
-before any of it is written. The [export reader](../crates/engine/src/import/exports.rs)
-keeps its ordering state and compressed items in scratch files and waits for
-each item's commit before decoding the next; a retry reads the stored bytes
-again and skips what was committed. Memory holds the largest single record,
-conversation or decoded output.
-
-A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
-dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
-checkpoint moves. Its identity is the machine and the file's path. Reading
-is done in turns, so other inputs are served between them.
-
-[Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
-to a capture log and synced before the extension is told they are stored. An
-identical retry is a no-op; a partial matching tail is completed and a
-different one refused. Each capture repeats the whole conversation, so the latest
-capture's version of a message is shown, and a message missing from a later
-capture stays.
-
-The extension keeps nothing but captures the host has not yet acknowledged.
-[Chat actions](../crates/store/src/chat_actions.rs) and
-[backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
-writer changes: the operator queues or starts them through the CLI, MCP or the
-reader, and the extension claims them through the host, with a claim that
-expires, and reports what it did.
-
-A Gemini page capture and a Takeout export of one conversation are one
-session, but they share no turn ID: the capture has the page's text with
-no times, the export has times and no message IDs. Both arrivals stay
-stored. The [duplicates derivation](../crates/store/src/derive/duplicates.rs)
-shows a turn once, from the export, when its prompt text occurs once in
-each arrival, the matched prompts keep one order, and the replies have the
-same roles; the capture's messages then name the export message
-(`duplicate_of`) and the reason. Other turns show from both arrivals, and
-`duplicate:*` lists the hidden copies.
-
-Text that is not a conversation is a [Document](../crates/model/src/document.rs)
-in Store's [document rows](../crates/store/src/documents.rs), with one shown
-version chosen by source time. `read document:ID` and `export` read it; the
-`documents` unit searches it. A later export with an empty list removes
-nothing.
-
-## Reading
-
-The [read pool](../crates/store/src/read.rs) holds a bounded number of reader
-slots. A reader sees one read transaction on `index.db` with `archive.db`
-attached; it starts on first use, under the shared
-[write lock](../crates/store/src/write_lock.rs), so the two databases are a
-committed pair. Writers hold the write lock only while the register commits,
-and through schema setup, an index replacement or an excision; index writes
-never take it. Outside an excision a reader waits at most for one register
-commit, however long the writer keeps writing. A thread that would wait for a
-slot while holding one gets an error instead of a deadlock. Closing the pool
-refuses new reads; started readers finish. Cache sizes are SQLite page-cache
-targets with mmap off, not a limit on process memory.
-
-Every query answer has a total order: its sort keys, then the unit's
-identity. A page's cursor holds the last row's values of those keys, with the
-question, clock and random seed; the next page reads the rows after them, so a
-write between pages neither refuses the cursor nor repeats or skips rows. A
-query ranked by `near:` pages the same way: its similarities come from the
-vectors held in memory, through `pl_similarity(text_hash)` while the query
-runs, so its other conditions choose the rows before any ranking; with
-words in the same query the two orders are fused (reciprocal rank fusion).
-Its cursor is refused once vectors were stored or removed. Semantic setup runs
-only when the answer needs ranking, including a limit that selects rows before
-a count or measurement. A row answer's own semantic ranking keeps each row's similarity in a hidden column,
-so one statement counts both the answer and its rows without a vector, after
-stages such as `distinct`. Session `has:errors` and `has:tool_calls` inspect
-its own messages: duplicates and abandoned branches are excluded. Every field
-that names a session resolves an exact ID before a unique prefix and refuses
-an ambiguous prefix. A query inside a
-query (a combining stage, `FIELD in (…)`) is compiled on its own over the
-outer query's parameters and read as a subquery of the one statement; a
-union with a ranked side ranks by fusing every list's order, computed once
-in the statement, so it pages like any other answer.
-[Query page tests](../crates/polylogue/src/daemon/query/tests/pages.rs)
-cover this.
-
-A budgeted session or document read is bound to the selected content, view
-and index generation: unrelated writes leave the cursor usable, a changed
-content or new index returns `stale_cursor`. The only masking state that
-crosses a block boundary is an open private key block, and a PEM header or
-END line counts only whole within one block. The writer marks each message
-holding either, and those holding a block that leaves a key open. A page
-starts at its cursor's message, seeking to it by its key: masking starts
-afresh there when no earlier message leaves a key open, and otherwise from
-the state reached by masking only the marked messages from the first that
-does. Cursors are sealed with a secret of the index
-generation, so a changed one is refused and one from an earlier index is
-stale.
-Budgeted reads return both text and structured masked block slices. The web
-reader uses these pages, with shared message anchors, latest selection and
-metadata outlines; [the reader contract](web-reader.md) describes the API,
-route ownership and authentication.
-The budget limits output size, not
-memory: a session page may decode one whole message, a document page one
-block. See the [read operation](../crates/polylogue/src/daemon/service/read.rs),
-the [model pager](../crates/render/src/model_pages.rs) and the
-[read-page tests](../crates/polylogue/src/daemon/service/tests/read_pages.rs).
-
-`changes --since POSITION` writes a finite batch of references, masked, to a
-temporary file, releases its reader, then sends it. Only the final `complete`
-line gives a new position; a client applies every earlier line before saving
-it. A retry can send references again. A new index generation tells the
-client to read everything again. A query over the `changes` unit is an
-ordinary query. [The change feed](../crates/polylogue/src/cli/changes.rs) and
-its [tests](../crates/polylogue/src/cli/changes/tests.rs) own this.
-
-## Output and daemon lifetime
-
-[Render](../crates/render/src/lib.rs) is shared by the CLI, HTML export and
-the web reader. Structured export keeps model records, events and links as
-data, so `import` reads them back.
-
-The [masker](../crates/model/src/masking.rs) runs over content in source
-order before views, pages or encoding, so titles and
-[search snippets](../crates/store/src/search/tests/masking.rs) mask the same
-way. Every application response also masks strings, metadata, errors and
-object keys. Stored bytes never change.
-[Masking tests](../crates/model/src/masking/tests.rs) and
-[CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
-
-The daemon owns archive writes and interactive reads. Offline schema tools
-read explicit stored revisions directly; other CLI archive commands need a
-running daemon in either mode. It keeps [warm state](../crates/polylogue/src/daemon/warm.rs)
-between requests: the vectors `near:` ranks by (reloaded after a commit
-stores or removes vectors), the provider's vectors of recent `near:` texts,
-recent query answers by read position, completion data, and the archive
-counts `status` shows. A write moves the read position and so retires what
-was read before it. Counts that take more than 50 ms are counted again by a
-worker of their own, so `status` answers from memory during a long pass and
-says which read position its counts are from (`counted`). The application runtime owns the loop, signal workers,
-and the archive lock; transports own listeners and client
-work. Shutdown stops accepting requests and closes the read pool, joins
-transports and workers, then releases the archive lock. Writes already
-accepted finish. [TestDaemon](../crates/polylogue/src/daemon/service/tests.rs)
-uses the same lifetime.
-
-## Excision
-
-[Excision](excision.md) removes whole stored inputs, with the sessions,
-documents and notes only they hold, and never rewrites stored bytes; a
-session or document whose inputs hold anything else refuses before anything
-changes. It commits embeddings, then the archive, then the index, and
-deletes the files of blobs it marked `deleting` last; reopening the archive
-finishes a stopped excision. Provider files are never edited.
-
-## Sinex primary mode
-
-With the `sinex` feature and `mode = "primary"` in `sinex.toml`, Sinex holds
-the archive and Polylogue is one of its producers. The modes differ only
-where the register's rows go ([primary](../crates/store/src/primary.rs));
-capture, parsing, the index, queries and every surface are the same, and
-queries always read `index.db`.
-
-| | standalone | primary |
+| Store | Holds | Rebuilt from |
 |---|---|---|
-| input bytes | `blobs/` and inline rows | Sinex's content store, read-only |
-| register of inputs, notes, settings, deliveries | `archive.db`, the archive's own | `sinex.db`, a copy of what Sinex holds |
-| parsed sessions, search, derived rows | `index.db` | `index.db` |
-| embedding vectors | `embeddings.db` | `embeddings.db` |
+| segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
+| `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); assertions, Pages and variants; settings; delivery records | nothing |
+| `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied | the segment log and `archive.db` |
+| embeddings store | message vectors for semantic ranking | the model that made them (vectors bought from a paid provider are kept as data) |
 
-- **Parts.** Each step of a captured file's appended bytes is sent as one
-  part: a material of its real input (origin, path and host), a growing file
-  a chain of parts, named with the parser `polylogue-<origin>` and its
-  version. The material's manifest holds the
-  [register rows](../crates/store/src/input_rows.rs) that place the part.
-- **Register materials.** Every other change to the register is sent as a
-  small register material: a look that found no new bytes (a file gone or
-  back, an import of bytes already stored), each request a person or agent
-  makes, and each excision. Notes, settings, kept results, deliveries and
-  excisions also become their typed `polylogue.*` events.
-- **Order.** The writer sends a part or register material and waits for Sinex's
-  acknowledgment before the transaction that writes its rows commits, so
-  `sinex.db` and `index.db` hold only what Sinex holds. Bytes wait in
-  `parts/` until then. An outage fails the write; the loop tries again.
-- **Sessions.** After each derive step, the loop sends the session, message,
-  tool-call and turn events of every session whose rows changed, keyed by
-  Polylogue's IDs and anchored at their records, in frames named by their
-  content ([sessions](../crates/sinex/src/sessions.rs)). A changed parser
-  re-sends the same keys, and the newer reading replaces the older one.
-- **Rebuild.** When `sinex.db` is missing, opening the archive pages through
-  every material Sinex holds from Polylogue and inserts the same rows again;
-  the loop then rebuilds `index.db` from the stored bytes. The
-  [rebuild test](../crates/sinex/tests/rebuild/main.rs) runs this on the
-  Morrow example against a real `sinexd`.
-- **Excision** removes the same whole inputs as in standalone mode. Before
-  it commits, Sinex excises their parts and register materials, and those of
-  the requests behind the notes it removes (`<root>.excise.<producer>`,
-  Polylogue as the actor); Sinex refuses the whole request when it cannot
-  remove one cleanly, and nothing changes. The excision itself is then sent
-  as a register material, so a rebuild keeps refusing what it removed.
-  Polylogue never deletes from Sinex's content store.
-- **Connection.** `sinex.toml` names the NATS server, the producer
-  (`polylogue`, also its NATS user), a `password_file` holding its
-  password, and Sinex's store root. Credentials in the `nats` URL are
-  refused, so no password sits in the configuration file. Polylogue
-  writes the bytes it sends under the store root, so the account it runs
-  as needs the store's group.
+The segment container, blob hashing and member access are the common
+[`hashed-blobs`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)
+crate. In primary mode, Sinex holds the bytes and the records, and Polylogue's
+local state is `index.db`, the embeddings store and the producer spool
+([primary mode](primary-mode.md)).
 
-### Moving to primary mode
+## Durability
 
-There is no tool for the move; it is a fresh collection into Sinex plus an
-export of what only the standalone archive holds. The standalone archive is
-left as it was.
+Writes reach disk in one order:
 
-1. **Start primary on an empty directory.** Write `sinex.toml` with
-   `mode = "primary"` and start the daemon with `XDG_DATA_HOME` pointing at
-   an empty directory, keeping the same state directory, so browser
-   captures and hook spools are collected again. The loop collects every
-   provider file and tool database into Sinex; wait until `polylogue
-   status` shows `mode.state: primary`, `busy: false` and no
-   `store.pending_inputs`.
-2. **Export from standalone and import into primary.** Start the
-   standalone daemon on its own archive (a configuration directory without
-   `sinex.toml`, and a separate state directory so it does not collect
-   alongside the primary one). Compare `polylogue sql "select id from
-   session"` on both archives and `polylogue export` the sessions only the
-   standalone one holds, together with `user-state`, into one file:
-   `polylogue export <session>... user-state --out moved.json`. Then
-   `polylogue import moved.json` into the primary archive. The sessions are
-   mostly manual imports and captures whose files are gone; manual exports
-   whose original ZIPs still exist can be imported again from those
-   instead.
-3. **Switch.** Point the live daemon, CLI and browser host at the primary
-   archive and stop the standalone daemon.
+1. Bytes are appended to a segment and synced, once per write group, on a
+   dedicated thread overlapped with the next group.
+2. The extents and the rows that cite them commit in one transaction.
+3. `index.db` saves the archive and request-log positions it has applied, in
+   the same transaction as the rows it applied.
+4. Source cursors (how far a growing file has been read) are saved only for
+   committed rows.
 
-**User state** is every request a person or agent made (notes with their
-revisions, withdrawals and judgments, settings, kept results, deliveries,
-chat actions and backfill jobs) and every excision, in commit order.
-`archive.db` keeps each request whole, and import replays them through the
-writer as the requests they were, so in primary mode they reach Sinex like
-any new request. A request or excision already in the archive counts as
-`present`, so importing the same file again changes nothing. An imported
-excision refuses what it removed from then on. When step 1 already collected
-something an excision removed (its provider file was still there), the
-import stops at that excision and names it: excise it in the primary
-archive and import the file again.
+A crash therefore leaves at most these states, and ordinary code resumes from
+each: a segment tail past the last committed extent, which is truncated when
+the segment opens; `index.db` behind its saved position, which catches up; a
+source cursor behind its committed rows, which re-reads and finds the bytes
+already stored. Deduplication checks the hash index together with the hashes
+appended in groups not yet committed, so a resumed write never stores a blob
+twice.
 
-## Offline schema tools
+## Pipeline
 
-[Schema tools](schema-tools.md) use a pure Sources observer and recursive diff,
-called by local commands in the application's command table. Store selects
-exact revisions and provides streaming byte reads in either mode. These
-commands run independently of the engine, parsing jobs and the daemon.
-The observer reports field names, structural paths and counts, grouping dynamic
-map keys under `*`. Observed values stay out. Reads use read-only database
-and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+Building the archive overlaps every stage:
+- read-ahead, bounded by memory;
+- workers on every core that hash, compress, parse, and resolve keys and
+  versions against a read snapshot and an in-memory key map;
+- one writer that only appends and commits;
+- consumers of committed positions: derived data, the request-log projection
+  and the completion catalog;
+- at the end of a first build, full-text and secondary indexes built in
+  parallel, with the archive searchable before the trigram index finishes;
+- live inputs ahead of bulk work.
 
-Shell completion help and decoded hook context use the same visible escapes.
-Completion values containing control or direction characters are omitted.
+**Targets**, on the full corpus of an active user (about 40 GB): at least
+40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
+byte; no stage idle while another holds a queue for it. Results are reported
+as hardware-independent figures (bytes written per input byte, syncs per
+group, stage utilisation) beside the absolute rates of the host that ran them
+([benchmarks](testing.md#benchmarks)).
 
-Terminal output treats archived text as data. Render's `terminal::escape`
-shows C0 (except newline and tab), DEL and C1 as lowercase `\xNN` escapes,
-and Unicode direction controls as `\u{NNNN}`. Escaping happens before
-styling or table layout, including titles, paths, snippets and error text.
-The daemon's terminal reads are plain text; the displaying CLI adds its own
-heading and match styles only when stdout is a terminal and `NO_COLOR` is
-unset. JSON uses JSON Unicode escapes and round trips the original values.
-HTML and Markdown retain their format encoding; displaying them through the
-CLI read printer escapes terminal controls, while file and pipe exports keep
-the requested format.
+## Configuration and clocks
+
+Each binary's `main` loads one typed configuration (the configuration file,
+then flags, then environment variables where meaningful), validates it there
+and passes it, with a `Clock`, to every component. Libraries never read the
+environment or the system time zone, and no component has a default
+constructor for a setting. A time zone is resolved to a named zone or the
+daemon refuses to start; paths are absolute.
+
+- **The logical day** is one `DaySetting`, a named zone and a start time
+  (default 04:00), with one implementation in the common
+  [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md)
+  crate. Dates, `today` and `group by day` all mean it. In primary mode
+  Polylogue reads Sinex's day setting and has none of its own.
+- **Two homes for settings.** Deployment configuration (the Nix modules, the
+  configuration file, environment variables) holds what is set per machine:
+  mode, archive path, the logical day, listen address and authentication, the
+  optional notification command, the Sinex endpoint. The changeable settings
+  catalog holds what any author may change at run time (quiet hours, the
+  interrupt budget, enabled variants, briefing switches), each key with a
+  type, default and scope; unknown keys are refused. Keys and defaults are in
+  the generated settings reference ([`reference/`](reference/README.md)); how
+  they are loaded is in
+  [operations](operations.md#configuration).
+- **Derived outputs and cursors record the settings they were made under**, so
+  a changed setting re-derives them through the ordinary version mechanism.
+- **One instant type, one clock, one error type** whose kind names are stable
+  on the wire; conversions happen only at the storage boundary. Unknown times
+  stay unknown.
+
+## Store boundary
+
+A query resolves to a closed `Plan`, which the store executes. All SQL lives in
+the `store` crate, with one row codec per table; no other crate opens SQLite,
+and `cargo xtask boundaries` enforces it. Clients of the daemon receive typed
+answers, never connections or SQL.
+
+## Deletion
+
+Polylogue has no deletion. Re-parse is not deletion: it replaces a chain's
+parsed rows with a new reading of the same stored bytes, and the earlier
+reading stays as an earlier version ([versioned rows](archive.md#versioned-rows)).
+A secret that matters is edited out of its source by the operator or an agent,
+as an exceptional act; both revisions stay in the archive. In primary mode,
+Sinex's lifecycle (archive, restore, tombstone) applies to Polylogue's
+materials as to any other source's
+([Sinex lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md)).
+Ruling, 2026-10-28: "probably just do not have deletion in the first place in
+polylogue, for now"
+(cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:14:04Z).
+
+## Laws
+
+- **crash-leaves-only-resumable-states**: killing the daemon at any point
+  between append, sync, commit and truncate leaves only the states listed
+  under [durability](#durability), and the next open resumes each with no
+  repair step; checked by fault-point kill tests.
+- **index-rebuilds-equal**: an `index.db` rebuilt from the segment log and
+  `archive.db` equals the one built incrementally, row for row.
+- **no-blob-stored-twice**: appending a blob whose hash is in the index or in
+  an uncommitted group stores nothing new.
+- **settings-never-reread**: no component reads the environment, the system
+  zone or a setting's default outside `main`; checked by constructing every
+  component from an explicit configuration in tests.
+- **same-answer-every-transport**: one operation gives the same typed answer
+  over the CLI, the socket, HTTP and MCP.
+- **no-deleting-operation**: no operation in the command table removes an
+  input, a revision or an authored record.

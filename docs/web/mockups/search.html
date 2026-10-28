@@ -1,0 +1,77 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>chrono · polylogue</title><style>
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--faint:#e7e6e1;--panel:#f2f1ec;--link:#1f5fa8;--ok:#2d7a3a;--err:#b3261e;--warn:#8a6100;--note:#6b3fa0;--hl:#fff1a8;--hlfg:inherit;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e6e5e0;--dim:#9a9993;--faint:#2c2c2a;--panel:#1f1f1d;--link:#7fb0ec;--ok:#6cc27b;--err:#f08a80;--warn:#e0b450;--note:#c3a0f0;--hl:#5a4d00;--hlfg:#fff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+code,.mono,.id,pre,kbd{font-family:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,monospace;font-size:12.5px}
+header.top{display:flex;gap:16px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--faint);flex-wrap:wrap}
+header.top .brand{font-weight:600;letter-spacing:.02em}
+header.top nav a{margin-right:12px;color:var(--dim)}header.top nav a.on{color:var(--fg);font-weight:600}
+header.top form{flex:1;min-width:240px;display:flex;gap:6px}
+input[type=search],input[type=text],textarea,select{background:var(--bg);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:5px 8px;font:inherit}
+input[type=search]{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:4px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+main{max-width:1180px;margin:0 auto;padding:16px 20px 48px}
+h1{font-size:18px;margin:4px 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:22px 0 6px;font-weight:600}
+.meta{color:var(--dim)}.dim{color:var(--dim)}
+table{border-collapse:collapse;width:100%}
+th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--faint);padding:4px 8px}
+td{padding:3px 8px;border-bottom:1px solid var(--faint);vertical-align:top}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.unk{color:var(--dim);font-style:italic}
+.ok{color:var(--ok)}.err{color:var(--err);font-weight:600}.warn{color:var(--warn)}
+.tag{display:inline-block;border:1px solid var(--faint);border-radius:3px;padding:0 5px;font-size:11.5px;color:var(--dim);margin-right:3px}
+.note{color:var(--note)}
+mark{background:var(--hl);color:var(--hlfg);padding:0 1px}
+.cli{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)}
+.cli code{background:var(--panel);padding:2px 6px;border-radius:3px;color:var(--fg)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border-radius:6px;padding:10px 12px}
+.panel dl{display:grid;grid-template-columns:76px 1fr;gap:3px 8px;margin:0}
+.panel dt{color:var(--dim)}.panel dd{margin:0}
+.footnote{margin-top:30px;color:var(--dim);font-size:12px;border-top:1px solid var(--faint);padding-top:8px}
+.hitgroup{margin:0 0 16px;border-left:3px solid var(--faint);padding-left:12px}
+.sess{margin-bottom:4px}.sess .when{color:var(--dim);font-variant-numeric:tabular-nums}
+.hit{display:grid;grid-template-columns:48px 1fr;column-gap:8px;padding:3px 0}
+.hit .t{color:var(--dim);font-variant-numeric:tabular-nums;grid-row:span 2}.hit .who{color:var(--dim);font-size:12px}
+.refine{display:flex;gap:10px;flex-wrap:wrap}</style></head><body>
+<header class="top"><span class="brand">polylogue</span><nav><a href="index.html" class="">Overview</a><a href="search.html" class="on">Search</a><a href="cost.html" class="">Cost</a><a href="page.html" class="">Pages</a></nav>
+<form action="search.html"><input type="search" name="q" value="chrono" placeholder="query — e.g. chrono · origin:codex since:7d · tool_calls where outcome:error" aria-label="query"><button>Search</button></form>
+<span class="meta mono" title="daemon state">● up to date</span></header>
+<main>
+<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline">
+<h1>3 sessions <span class="meta">· 7 matching messages for</span> <code>chrono</code></h1>
+<span class="cli"><code>polylogue chrono</code><button data-cli="polylogue chrono">copy as CLI command</button></span></div>
+<p class="dim" style="margin:2px 0 14px">Ordered by relevance. Excluded by default: inherited copies (#4 repeats #2), messages on abandoned branches (1 hit in chatgpt:68f0a1b2). <a href="#">include them</a> · <a href="#">explain this query</a></p>
+
+<div class="hitgroup">
+<div class="sess"><span class="when">Oct 02 10:00</span> <a class="id" href="session.html">claude-code:7f3a2c10-0002</a> <b>Date parsing</b> <span class="dim">· 18 msgs · $2.85 · /home/op/morrow</span></div>
+<div class="hit"><span class="t">10:26</span><span class="who">↳ subagent <a class="id" href="#">claude-code:7f3a2c10-0002-4000-8000-000000000002/a7f3a2c1000000003</a> (Explore) · model</span><div><mark>chrono</mark> offers NaiveDateTime plus Duration and weekday helpers; time is leaner but lacks weekday arithmetic helpers we need.</div></div>
+<div class="hit"><span class="t">10:56</span><span class="who">you <span class="note">◆ decision: chrono, not time</span></span><div>let's use <mark>chrono</mark>, not time</div></div>
+<div class="hit"><span class="t">11:07</span><span class="who">model</span><div>Switched to <mark>chrono</mark>. Tests, clippy and build are clean.</div></div>
+<div class="hit"><span class="t">11:15</span><span class="who">model</span><div><mark>chrono</mark> covers it too: NaiveDate::parse_from_str for ISO dates. I'll add it next session.</div></div>
+</div>
+
+<div class="hitgroup">
+<div class="sess"><span class="when">Oct 07 18:00</span> <a class="id" href="#">claude-ai:0b9d4e6c</a> <b>README wording</b> <span class="dim">· 4 msgs · <span class="unk">cost unknown</span></span></div>
+<div class="hit"><span class="t">18:04</span><span class="who">you</span><div>Shorter, and mention <mark>chrono</mark>.</div></div>
+<div class="hit"><span class="t">18:05</span><span class="who">model</span><div>morrow parses human-written dates into <mark>chrono</mark> types and rejects …</div></div>
+</div>
+
+<div class="hitgroup">
+<div class="sess"><span class="when">Oct 04 21:00</span> <a class="id" href="#">chatgpt:68f0a1b2</a> <b>Date format edge cases</b> <span class="dim">· 6 msgs · <span class="unk">cost unknown</span> · </span><span class="tag">research</span></div>
+<div class="hit"><span class="t">21:09</span><span class="who">model</span><div>dateutil guesses month-first; <mark>chrono</mark> refuses. Refusing by default is least surprising for a library.</div></div>
+</div>
+
+<h2>Refine</h2>
+<div class="refine">
+<a href="#"><code>chrono origin:claude-code</code></a>
+<a href="#"><code>chrono written_by:human</code></a>
+<a href="#"><code>messages where "chrono" | group by session.origin | count</code></a>
+<a href="#"><code>notes where kind:decision "chrono"</code></a>
+</div>
+<p class="footnote">Mockup on the Morrow example archive (examples/morrow/FACTS.md). Clock fixed at 2026-10-08 12:00 Europe/Warsaw.</p></main><script>document.querySelectorAll('[data-cli]').forEach(b=>b.addEventListener('click',()=>{navigator.clipboard&&navigator.clipboard.writeText(b.dataset.cli);const t=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=t,1200)}))</script></body></html>

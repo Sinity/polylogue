@@ -1,0 +1,82 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Overview · polylogue</title><style>
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--faint:#e7e6e1;--panel:#f2f1ec;--link:#1f5fa8;--ok:#2d7a3a;--err:#b3261e;--warn:#8a6100;--note:#6b3fa0;--hl:#fff1a8;--hlfg:inherit;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e6e5e0;--dim:#9a9993;--faint:#2c2c2a;--panel:#1f1f1d;--link:#7fb0ec;--ok:#6cc27b;--err:#f08a80;--warn:#e0b450;--note:#c3a0f0;--hl:#5a4d00;--hlfg:#fff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+code,.mono,.id,pre,kbd{font-family:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,monospace;font-size:12.5px}
+header.top{display:flex;gap:16px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--faint);flex-wrap:wrap}
+header.top .brand{font-weight:600;letter-spacing:.02em}
+header.top nav a{margin-right:12px;color:var(--dim)}header.top nav a.on{color:var(--fg);font-weight:600}
+header.top form{flex:1;min-width:240px;display:flex;gap:6px}
+input[type=search],input[type=text],textarea,select{background:var(--bg);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:5px 8px;font:inherit}
+input[type=search]{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:4px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+main{max-width:1180px;margin:0 auto;padding:16px 20px 48px}
+h1{font-size:18px;margin:4px 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:22px 0 6px;font-weight:600}
+.meta{color:var(--dim)}.dim{color:var(--dim)}
+table{border-collapse:collapse;width:100%}
+th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--faint);padding:4px 8px}
+td{padding:3px 8px;border-bottom:1px solid var(--faint);vertical-align:top}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.unk{color:var(--dim);font-style:italic}
+.ok{color:var(--ok)}.err{color:var(--err);font-weight:600}.warn{color:var(--warn)}
+.tag{display:inline-block;border:1px solid var(--faint);border-radius:3px;padding:0 5px;font-size:11.5px;color:var(--dim);margin-right:3px}
+.note{color:var(--note)}
+mark{background:var(--hl);color:var(--hlfg);padding:0 1px}
+.cli{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)}
+.cli code{background:var(--panel);padding:2px 6px;border-radius:3px;color:var(--fg)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border-radius:6px;padding:10px 12px}
+.panel dl{display:grid;grid-template-columns:76px 1fr;gap:3px 8px;margin:0}
+.panel dt{color:var(--dim)}.panel dd{margin:0}
+.footnote{margin-top:30px;color:var(--dim);font-size:12px;border-top:1px solid var(--faint);padding-top:8px}
+</style></head><body>
+<header class="top"><span class="brand">polylogue</span><nav><a href="index.html" class="on">Overview</a><a href="search.html" class="">Search</a><a href="cost.html" class="">Cost</a><a href="page.html" class="">Pages</a></nav>
+<form action="search.html"><input type="search" name="q" value="" placeholder="query — e.g. chrono · origin:codex since:7d · tool_calls where outcome:error" aria-label="query"><button>Search</button></form>
+<span class="meta mono" title="daemon state">● up to date</span></header>
+<main>
+<h1>Polylogue <span class="meta">· 8 sessions (7 top-level) · last activity Oct 07 18:05</span></h1>
+<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">
+<div class="meta">daemon running · up to date &nbsp;·&nbsp; sources: claude-code 4 · codex 2 · chatgpt 1 · claude-ai 1</div>
+<span class="cli"><code>polylogue</code><button data-cli="polylogue">copy as CLI command</button></span></div>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:14px">
+ <div class="panel"><div class="dim">last 14 days</div><b>7</b> sessions · <b>17</b> prompts</div>
+ <div class="panel"><div class="dim">tool calls</div><b>35</b> · <span class="err">2 errors</span></div>
+ <div class="panel"><div class="dim">cost</div><b>$5.86</b> known <span class="unk">· 4 sessions unknown</span></div>
+ <div class="panel"><div class="dim">notice</div><span class="warn">1 unrecognized record type</span> · <a href="#status">details</a></div>
+</div>
+
+<h2>Recent sessions</h2>
+<table>
+<tr><th>last active</th><th>session</th><th>title</th><th>links</th><th class="n">msgs</th><th class="n">cost</th><th>notes</th></tr>
+<tr><td>Oct 07 18:00</td><td class="id"><a href="#">claude-ai:0b9d4e6c</a></td><td>README wording</td><td></td><td class="n">4</td><td class="n unk">—</td><td></td></tr>
+<tr><td>Oct 06 09:30</td><td class="id"><a href="#">codex:01a20000-0006</a></td><td>Review parser (try strict mode)</td><td class="dim">fork of codex:01a20000-0005</td><td class="n">4</td><td class="n">unknown</td><td><span class="tag">project:morrow</span></td></tr>
+<tr><td>Oct 05 16:00</td><td class="id"><a href="#">codex:01a20000-0005</a></td><td>Review parser</td><td></td><td class="n">8</td><td class="n">unknown</td><td><span class="tag">project:morrow</span> <span class="note">◆ 1 note</span></td></tr>
+<tr><td>Oct 04 21:00</td><td class="id"><a href="#">chatgpt:68f0a1b2</a></td><td>Date format edge cases</td><td class="dim">⑂ 1 abandoned branch</td><td class="n">6</td><td class="n unk">—</td><td><span class="tag">research</span></td></tr>
+<tr><td>Oct 03 14:00</td><td class="id"><a href="#">claude-code:7f3a2c10-0004</a></td><td>Date parsing</td><td class="dim">continues claude-code:7f3a2c10-0002</td><td class="n">10</td><td class="n">$1.59</td><td><span class="tag">project:morrow</span></td></tr>
+<tr><td>Oct 02 10:00</td><td class="id"><a href="session.html">claude-code:7f3a2c10-0002</a></td><td>Date parsing</td><td class="dim">1 subagent</td><td class="n">18</td><td class="n">$2.85</td><td><span class="tag">project:morrow</span> <span class="note">◆ decision</span></td></tr>
+<tr><td>Oct 01 09:00</td><td class="id"><a href="#">claude-code:7f3a2c10-0001</a></td><td>Project skeleton</td><td></td><td class="n">12</td><td class="n">$1.26</td><td><span class="tag">project:morrow</span></td></tr>
+</table>
+<p class="dim" style="font-size:12px">Top-level sessions; the subagent claude-code:7f3a2c10-0002-4000-8000-000000000002/a7f3a2c1000000003 is listed under its parent. Message counts exclude inherited copies (#4 repeats 18 messages of #2).</p>
+
+<h2>Recent notes</h2>
+<table>
+<tr><td style="width:110px">Oct 02 10:56</td><td class="note">◆ decision</td><td>“decided: chrono, not time”</td><td class="dim">operator</td><td class="id"><a href="session.html#m-1056">claude-code:7f3a2c10-0002 · 10:56</a></td></tr>
+<tr><td>Oct 05 16:25</td><td class="note">◆ note</td><td>“next friday bug found here”</td><td class="dim">agent codex:01a20000-0005</td><td class="id"><a href="#">codex:01a20000-0005 · 16:25</a></td></tr>
+</table>
+
+<h2 id="status">Status</h2>
+<table>
+<tr><th>source</th><th>location</th><th class="n">inputs</th><th class="n">sessions</th><th>last new</th></tr>
+<tr><td>claude-code</td><td class="mono">~/.claude/projects</td><td class="n">5</td><td class="n">4</td><td>Oct 03 15:10</td></tr>
+<tr><td>codex</td><td class="mono">~/.codex/sessions, state_5.sqlite</td><td class="n">3</td><td class="n">2</td><td>Oct 06 09:50</td></tr>
+<tr><td>chatgpt</td><td class="mono">import</td><td class="n">1</td><td class="n">1</td><td>Oct 04 21:20</td></tr>
+<tr><td>claude-ai</td><td class="mono">import</td><td class="n">1</td><td class="n">1</td><td>Oct 07 18:05</td></tr>
+</table>
+<p><span class="warn">unrecognized</span> &nbsp;<span class="mono">claude-code-jsonl · record type "atis-latch" · 1× · first seen Oct 02</span> &nbsp;·&nbsp; parse problems: none</p>
+<p class="footnote">Mockup on the Morrow example archive (examples/morrow/FACTS.md). Clock fixed at 2026-10-08 12:00 Europe/Warsaw.</p></main><script>document.querySelectorAll('[data-cli]').forEach(b=>b.addEventListener('click',()=>{navigator.clipboard&&navigator.clipboard.writeText(b.dataset.cli);const t=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=t,1200)}))</script></body></html>

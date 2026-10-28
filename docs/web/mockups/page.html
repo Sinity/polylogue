@@ -1,0 +1,127 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Why does 'next friday' return today on Fridays? · polylogue</title><style>
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--faint:#e7e6e1;--panel:#f2f1ec;--link:#1f5fa8;--ok:#2d7a3a;--err:#b3261e;--warn:#8a6100;--note:#6b3fa0;--hl:#fff1a8;--hlfg:inherit;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e6e5e0;--dim:#9a9993;--faint:#2c2c2a;--panel:#1f1f1d;--link:#7fb0ec;--ok:#6cc27b;--err:#f08a80;--warn:#e0b450;--note:#c3a0f0;--hl:#5a4d00;--hlfg:#fff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+code,.mono,.id,pre,kbd{font-family:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,monospace;font-size:12.5px}
+header.top{display:flex;gap:16px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--faint);flex-wrap:wrap}
+header.top .brand{font-weight:600;letter-spacing:.02em}
+header.top nav a{margin-right:12px;color:var(--dim)}header.top nav a.on{color:var(--fg);font-weight:600}
+header.top form{flex:1;min-width:240px;display:flex;gap:6px}
+input[type=search],input[type=text],textarea,select{background:var(--bg);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:5px 8px;font:inherit}
+input[type=search]{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:4px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+main{max-width:1180px;margin:0 auto;padding:16px 20px 48px}
+h1{font-size:18px;margin:4px 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:22px 0 6px;font-weight:600}
+.meta{color:var(--dim)}.dim{color:var(--dim)}
+table{border-collapse:collapse;width:100%}
+th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--faint);padding:4px 8px}
+td{padding:3px 8px;border-bottom:1px solid var(--faint);vertical-align:top}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.unk{color:var(--dim);font-style:italic}
+.ok{color:var(--ok)}.err{color:var(--err);font-weight:600}.warn{color:var(--warn)}
+.tag{display:inline-block;border:1px solid var(--faint);border-radius:3px;padding:0 5px;font-size:11.5px;color:var(--dim);margin-right:3px}
+.note{color:var(--note)}
+mark{background:var(--hl);color:var(--hlfg);padding:0 1px}
+.cli{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)}
+.cli code{background:var(--panel);padding:2px 6px;border-radius:3px;color:var(--fg)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border-radius:6px;padding:10px 12px}
+.panel dl{display:grid;grid-template-columns:76px 1fr;gap:3px 8px;margin:0}
+.panel dt{color:var(--dim)}.panel dd{margin:0}
+.footnote{margin-top:30px;color:var(--dim);font-size:12px;border-top:1px solid var(--faint);padding-top:8px}
+.slot{border-left:3px solid var(--faint);padding:2px 0 8px 12px;margin-bottom:10px}
+.slot h3{font-size:14px;margin:4px 0;display:flex;gap:8px;align-items:baseline}
+.slotref{color:var(--dim);font-weight:400;font-size:11.5px}
+.empty{color:var(--dim);font-style:italic;margin:2px 0}
+.ref{background:var(--panel);border-radius:5px;padding:7px 10px;margin:6px 0}
+.refhead{font-size:12.5px;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
+.pin{margin-left:auto;font-size:11px;border:1px solid var(--faint);border-radius:3px;padding:0 5px;color:var(--dim)}
+.livepin{color:var(--ok);border-color:var(--ok)}
+blockquote{margin:5px 0;padding-left:10px;border-left:2px solid var(--faint)}
+table.mini td,table.mini th{font-size:12.5px;padding:2px 6px}
+.viewbar{font-size:12.5px;color:var(--dim)}</style></head><body>
+<header class="top"><span class="brand">polylogue</span><nav><a href="index.html" class="">Overview</a><a href="search.html" class="">Search</a><a href="cost.html" class="">Cost</a><a href="page.html" class="on">Pages</a></nav>
+<form action="search.html"><input type="search" name="q" value="" placeholder="query — e.g. chrono · origin:codex since:7d · tool_calls where outcome:error" aria-label="query"><button>Search</button></form>
+<span class="meta mono" title="daemon state">● up to date</span></header>
+<main>
+<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline">
+<div><div class="dim mono" style="font-size:12px">page:morrow-next-friday · investigation · created Oct 06 09:15 by operator</div>
+<h1>Why does 'next friday' return today on Fridays?</h1></div>
+<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="cli"><code>polylogue page show morrow-next-friday</code><button data-cli="polylogue page show morrow-next-friday">copy as CLI command</button></span>
+<div class="viewbar"><b>linear</b> · <a href="#">board</a> · <a href="#">table of contents (for agents)</a> · <a href="#">history</a></div></div>
+</div>
+
+<div class="grid" style="margin-top:10px">
+<div>
+<section class="slot"><h3>Question <span class="slotref mono">note:01JA… · question · operator</span></h3>
+<p>Why does <code>parse_relative("next friday")</code> evaluated on a Friday return the same day instead of a week later? Is strict mode the fix, or should the default change?</p></section>
+
+<section class="slot"><h3>Goal</h3><p class="empty">empty — <a href="#">add</a></p></section>
+<section class="slot"><h3>Assumptions</h3><p class="empty">empty — <a href="#">add</a></p></section>
+
+<section class="slot"><h3>Evidence</h3>
+<div class="ref">
+<div class="refhead"><span class="mono">message</span> <a class="id" href="#">codex:01a20000-0005:msg_01a20000a11</a> <span class="dim">· Review parser · Oct 05 16:25 · model gpt-6.1-sol</span> <span class="pin">fixed</span></div>
+<blockquote>Found a bug: "next friday" evaluated on a Friday returns the same day instead of a week later. weekday_offset() uses <code>&gt;=</code> where it should use <code>&gt;</code>.</blockquote>
+<div class="dim" style="font-size:12px"><span class="note">◆ note</span> “next friday bug found here” · agent codex:01a20000-0005 &nbsp;·&nbsp; <a href="#">read around it</a></div>
+</div>
+<div class="ref">
+<div class="refhead"><span class="mono">kept result</span> <a class="id" href="#">result:01JA…</a> <span class="dim">· kept Oct 06 09:20 · query</span> <code>tool_calls where session:codex:01a20000-0005</code> <span class="pin">as of Oct 06 09:20</span></div>
+<table class="mini"><tr><th>time</th><th>tool</th><th>command</th><th>outcome</th><th>output (first line)</th></tr>
+<tr><td>16:07</td><td>exec</td><td class="mono">sed -n 1,80p src/parse.rs</td><td class="ok">ok · exit 0</td><td class="mono">pub fn parse_relative(...)</td></tr>
+<tr><td>16:14</td><td>exec</td><td class="mono">cargo test</td><td class="ok">ok · exit 0</td><td class="mono">test result: ok. 9 passed; 0 failed</td></tr>
+<tr><td>16:16</td><td>exec</td><td class="mono">date -d 'next friday'</td><td class="ok">ok · exit 0</td><td class="mono">Fri Oct  9 00:00:00 CEST 2026</td></tr></table>
+<div class="dim" style="font-size:12px">Stored rows, not re-run. <a href="#">re-run now</a></div>
+</div>
+<div class="ref live">
+<div class="refhead"><span class="mono">live query</span> <code>messages where "next friday"</code> <span class="pin livepin">live · 3 matches</span></div>
+<table class="mini">
+<tr><td>Oct 06 09:33</td><td class="id">codex:01a20000-0006</td><td>you</td><td>Try a strict mode that rejects ambiguous weekdays like "<mark>next friday</mark>" on a Friday.</td></tr>
+<tr><td>Oct 05 16:32</td><td class="id">codex:01a20000-0005</td><td>model</td><td>Noted on the message above: <mark>next friday</mark> bug in weekday_offset().</td></tr>
+<tr><td>Oct 05 16:25</td><td class="id">codex:01a20000-0005</td><td>model</td><td>Found a bug: "<mark>next friday</mark>" evaluated on a Friday returns the same day …</td></tr></table>
+</div>
+</section>
+
+<section class="slot"><h3>Findings</h3>
+<div class="ref">
+<div class="refhead"><span class="mono">note</span> <span class="id">note:01JA…</span> <span class="dim">· finding · agent <a class="id" href="#">codex:01a20000-0006</a> · from a <code>::finding</code> marker in its output, Oct 06 09:48</span></div>
+<p style="margin:2px 0">weekday arithmetic used <code>&gt;=</code> instead of <code>&gt;</code>; strict mode fixes it</p>
+<div class="dim" style="font-size:12px">session result: “Strict mode is in: Options { strict: true } rejects same-day weekday phrases. Tests and clippy pass.” · patch applied, not committed</div>
+</div></section>
+
+<section class="slot"><h3>Open questions</h3><p class="empty">empty — <a href="#">add</a></p></section>
+
+<section class="slot"><h3>Decision</h3><p class="empty">no decision yet</p>
+<div style="display:flex;gap:6px"><input type="text" placeholder="decided: …" style="flex:1"><button>record decision</button></div>
+<div class="dim" style="font-size:12px;margin-top:3px">Same as <code>polylogue page:morrow-next-friday note --section Decision --kind decision "…"</code></div></section>
+</div>
+
+<aside>
+<h2 style="margin-top:0">Members</h2>
+<div class="panel">
+<div><span class="mono">@reviewer</span> → <a class="id" href="#">codex:01a20000-0006</a> <span class="dim">codex · last active Oct 06 09:50</span></div>
+<div><span class="mono">@parser</span> → <a class="id" href="#">claude-code:7f3a2c10-0004</a> <span class="dim">claude-code · Oct 03 15:10</span></div>
+<div style="margin-top:6px"><a href="#">add member</a></div>
+</div>
+
+<h2>Ping</h2>
+<div class="panel">
+<div style="display:flex;gap:6px;margin-bottom:6px"><select><option>@reviewer</option><option>@parser</option></select>
+<select><option>about: whole page</option><option>about: Evidence · msg_01a20000a11</option><option>about: Findings · note:01JA…</option></select></div>
+<textarea rows="4" style="width:100%">Should strict mode become the default, or should the non-strict path also return a week later? Write your answer as a ::finding on this page.</textarea>
+<div class="dim mono" style="font-size:11.5px;margin:6px 0">will run: codex exec resume 01a20000-0006-7000-8000-000000000006 "…"</div>
+<div style="display:flex;justify-content:space-between;align-items:center"><span class="dim" style="font-size:12px">the reply is ingested as usual and linked here</span><button>send ping</button></div>
+</div>
+
+<h2>Pings</h2>
+<div class="panel dim" style="font-size:12.5px">none yet</div>
+
+<h2>Stored</h2>
+<div class="panel" style="font-size:12.5px">1 page · slots: 8 headings, 1 message reference, 1 kept result, 1 live query, 1 note reference · notes: 1 question, 1 finding. <b>No copied text</b>: the quoted message and query rows are rendered from the archive on read.</div>
+</aside></div>
+<p class="footnote">Mockup on the Morrow example archive (examples/morrow/FACTS.md). The question note, kept result, members and the <code>::finding</code> marker are illustrative additions; the session texts, IDs and tool outputs are from the Morrow archive. Clock fixed at 2026-10-08 12:00 Europe/Warsaw.</p></main><script>document.querySelectorAll('[data-cli]').forEach(b=>b.addEventListener('click',()=>{navigator.clipboard&&navigator.clipboard.writeText(b.dataset.cli);const t=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=t,1200)}))</script></body></html>
