@@ -3,8 +3,8 @@
 //! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
 //! build, or one whose tables match no version this build knows, is refused.
 //! `embeddings.db` has one version and no migrations yet. `index.db` is never
-//! migrated: a new version or a different schema builds a new file and swaps
-//! it in.
+//! migrated: a new version or a different base schema builds a new file and
+//! swaps it in. Read indexes can be added in place.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
-const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
+pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// A different version rebuilds the index into a new file. Raise it when the
@@ -71,23 +71,6 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
             wanted: INDEX_VERSION,
         }),
     }
-}
-
-/// Read indexes can be added in place without rebuilding parsed rows.
-pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
-    let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
-    let base = shape(&expected)?;
-    expected.execute_batch(READ_INDEXES)?;
-    let added: Vec<_> = shape(&expected)?
-        .into_iter()
-        .filter(|entry| !base.contains(entry))
-        .collect();
-    let found: Vec<_> = shape(conn)?
-        .into_iter()
-        .filter(|entry| !added.contains(entry))
-        .collect();
-    Ok(found == base)
 }
 
 /// Whether the index was being built without syncs and never finished
@@ -168,6 +151,25 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
         expected.execute_batch(part)?;
     }
     Ok(shape(conn)? == shape(&expected)?)
+}
+
+/// Missing read indexes can be created without rebuilding parsed rows.
+pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    let base = shape(&expected)?;
+    expected.execute_batch(READ_INDEXES)?;
+    let expected = shape(&expected)?;
+    let read_indexes: HashSet<_> = expected
+        .iter()
+        .filter(|item| item.0 == "index" && !base.contains(item))
+        .map(|item| item.1.clone())
+        .collect();
+    let found = shape(conn)?;
+    Ok(found.iter().all(|item| expected.contains(item))
+        && expected.iter().all(|item| {
+            (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
+        }))
 }
 
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {

@@ -13,6 +13,7 @@ mod reports;
 pub mod survival;
 pub mod tool_calls;
 mod usage;
+pub(crate) use usage::RESPONSE_ROWS;
 
 pub use usage::{
     ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,
@@ -28,6 +29,8 @@ pub struct Selection {
     /// Unix ms bounds on a message's time, `since` inclusive.
     pub since: Option<i64>,
     pub until: Option<i64>,
+    /// Only records without a representable source time.
+    pub undated: bool,
     /// Only sessions of these origins (`claude-code`, `codex`, …).
     pub origins: Option<Vec<String>>,
 }
@@ -41,7 +44,7 @@ impl Selection {
 
     /// The SQL condition on `m` (message) and `s` (session), with its
     /// parameters.
-    fn condition(&self) -> (String, Vec<rusqlite::types::Value>) {
+    pub(crate) fn condition(&self) -> (String, Vec<rusqlite::types::Value>) {
         let mut clauses = vec!["1".to_owned()];
         let mut params: Vec<rusqlite::types::Value> = vec![];
         if let Some(since) = self.since {
@@ -52,6 +55,13 @@ impl Selection {
             params.push(until.into());
             clauses.push(format!("m.at < ?{}", params.len()));
         }
+        if self.undated {
+            clauses.push(format!(
+                "(m.at IS NULL OR m.at < {} OR m.at > {})",
+                jiff::Timestamp::MIN.as_millisecond(),
+                jiff::Timestamp::MAX.as_millisecond()
+            ));
+        }
         self.session_clauses("m.session_pk", &mut clauses, &mut params);
         (clauses.join(" AND "), params)
     }
@@ -60,7 +70,7 @@ impl Selection {
     /// from per-session facts. Those facts have no message times, so a
     /// time-bounded selection is refused.
     fn session_condition(&self, column: &str) -> Result<(String, Vec<rusqlite::types::Value>)> {
-        if self.since.is_some() || self.until.is_some() {
+        if self.since.is_some() || self.until.is_some() || self.undated {
             return Err(crate::StoreError::Invalid(
                 "per-session measures take no time bounds".into(),
             ));

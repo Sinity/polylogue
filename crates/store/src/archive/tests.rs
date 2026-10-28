@@ -18,7 +18,9 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index.execute_batch("DROP INDEX message_model;").unwrap();
+    index
+        .execute_batch("DROP INDEX message_model; DROP INDEX message_model_at;")
+        .unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
         index
             .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
@@ -183,7 +185,10 @@ fn replaced_index_keeps_the_archive(change: &str) {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
-    assert!(schema::same_index_schema(&index).unwrap(), "{change}");
+    assert!(
+        schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap(),
+        "{change}"
+    );
     assert_eq!(
         index
             .query_row(
@@ -348,4 +353,41 @@ fn opening_finishes_every_blob_row_left_writing() {
         crate::staging::pending_blobs(&conn, "").unwrap()[0].blob,
         used_missing
     );
+}
+
+#[test]
+fn missing_time_indexes_are_created_without_rebuilding_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index
+        .execute_batch(
+            "DROP INDEX message_at; DROP INDEX event_at;
+             DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;
+        INSERT INTO input_ref(id) VALUES ('synthetic');
+        INSERT INTO meta VALUES ('index-marker','present');",
+        )
+        .unwrap();
+    drop(index);
+    drop(lock);
+    for _ in 0..2 {
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let index = open_read(&archive.index_db()).unwrap();
+        assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
+        assert_eq!(
+            index
+                .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "present"
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT id FROM input_ref", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "synthetic"
+        );
+        drop(index);
+        drop(lock);
+    }
 }
