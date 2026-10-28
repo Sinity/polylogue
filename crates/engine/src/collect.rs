@@ -6,7 +6,7 @@
 //! backlog.
 
 use crate::Config;
-use polylogue_sources::{Arrival, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{Arrival, ORIGINS, OriginSpec};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -98,7 +98,7 @@ pub fn scan_paths(
                 walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
                 for path in matched {
                     let relative = path.strip_prefix(&root).expect("location under root");
-                    if relative.components().any(|p| p.as_os_str() == ".git")
+                    if git_metadata(relative, Some(tool))
                         || tool
                             .ignored
                             .iter()
@@ -278,9 +278,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         all_files(&root, &root, &roots, &mut files, &mut scan.unreadable);
         for path in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
-            let ignored = relative
-                .components()
-                .any(|p| p.as_os_str() == ".git")
+            let ignored = git_metadata(relative, tool)
                 .then_some("git metadata")
                 .or_else(|| {
                     tool.and_then(|tool| {
@@ -360,6 +358,17 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
     scan.unreadable.dedup();
     scan.coverage = rows.into_values().collect();
     scan
+}
+
+fn git_metadata(relative: &Path, tool: Option<&polylogue_sources::locations::Tool>) -> bool {
+    relative.components().any(|p| p.as_os_str() == ".git")
+        && !tool.is_some_and(|tool| {
+            tool.name == "gemini-cli"
+                && tool
+                    .locations
+                    .iter()
+                    .any(|pattern| pattern.contains(".git/") && matches_path(relative, pattern))
+        })
 }
 
 fn context_origin(tool: &polylogue_sources::locations::Tool, path: &Path) -> &'static OriginSpec {

@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 pub enum Support {
     /// Parsed into sessions and messages.
     Parsed,
-    /// Declared only: where the tool writes is known; nothing is collected
-    /// or parsed yet.
-    Declared,
+    /// Collected as raw bytes or committed row dumps, with parse state
+    /// `no_parser_yet` until the origin has a parser.
+    NoParser,
     /// Bytes kept with no records in them: the images, audio and HTML an
     /// export carries beside its conversations. Messages refer to them.
     Kept,
@@ -572,10 +572,56 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        name: "pi",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root {
+            env: None,
+            default: ".pi/agent",
+        },
+        locations: &["sessions/**/*.jsonl"],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "llm",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root {
+            env: None,
+            default: ".config/io.datasette.llm",
+        },
+        locations: &["logs.db"],
+        capture: Capture::RowDump,
+        database: Some(Database { is_input: |_| true }),
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
         name: "tool-context",
         harness_prefixes: &[],
         modules: &[],
-        support: Support::Kept,
+        support: Support::NoParser,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: &[],
@@ -595,7 +641,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         name: "tool-database",
         harness_prefixes: &[],
         modules: &[],
-        support: Support::Kept,
+        support: Support::NoParser,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: &[],
