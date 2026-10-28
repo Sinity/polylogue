@@ -20,7 +20,7 @@ pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
 
 pub fn tools() -> Vec<Value> {
     tool_commands()
-        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c)}))
+        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c), "annotations": {"readOnlyHint": !c.writes}}))
         .collect()
 }
 

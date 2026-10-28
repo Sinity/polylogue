@@ -228,3 +228,25 @@ fn errors_show_archived_controls_as_text() {
     );
     assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
 }
+
+#[test]
+fn tool_annotations_follow_the_command_table() {
+    let tools = tools();
+    for command in tool_commands() {
+        let tool = tools.iter().find(|t| t["name"] == command.mcp_name()).unwrap();
+        let json = serde_json::to_value(tool).unwrap();
+        assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
+    }
+    for name in ["query", "read", "status"] {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"],
+            true
+        );
+    }
+    let write = tools.iter().find(|t| t["name"] == "note_add").unwrap();
+    assert_eq!(
+        write["annotations"]["readOnlyHint"],
+        false
+    );
+}
