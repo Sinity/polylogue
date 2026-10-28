@@ -180,6 +180,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "message_at",
     "message_session_at",
     "message_model_at",
+    "message_session_model_at",
     "event_at",
     "session_activity",
     "session_started",

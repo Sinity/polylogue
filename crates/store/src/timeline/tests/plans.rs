@@ -31,7 +31,9 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
         let usage = crate::measure::Selection { sessions: selected, ..Default::default() };
         for model in [None, Some("synthetic")] {
             let selection = Selection { responses: Some(&usage), model, ..all(None, false, false) };
-            let index = if session_led {
+            let index = if session_led && model.is_some() {
+                "message_session_model_at"
+            } else if session_led {
                 "message_session_at"
             } else if model.is_some() { "message_model_at" } else { "message_at" };
             for cursor in [None, Some(&after)] {
@@ -44,14 +46,17 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
             }
         }
     }
-    let usage = crate::measure::Selection::default();
-    let unknown = Selection { responses: Some(&usage), unknown_model: true, ..all(None, false, false) };
-    let plans = plan(&r, &unknown, None, None);
-    assert_eq!(plans.len(), 1);
-    for plan in plans {
-        assert!(plan.contains("message_model_at"), "{plan}");
-        assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+    for (selected, index) in [(None, "message_model_at"), (Some(vec![sessions[2]]), "message_session_model_at")] {
+        let usage = crate::measure::Selection { sessions: selected, ..Default::default() };
+        let unknown = Selection { responses: Some(&usage), unknown_model: true, ..all(None, false, false) };
+        let plans = plan(&r, &unknown, None, None);
+        assert_eq!(plans.len(), 1);
+        for plan in plans {
+            assert!(plan.contains(index), "{plan}");
+            assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
+        }
     }
+
 }
 
 #[test]

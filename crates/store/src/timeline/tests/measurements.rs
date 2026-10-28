@@ -35,7 +35,7 @@ fn million_message_measurements() {
     let conn =
         crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
     let start = at("2010-01-01T12:00:00Z");
-    conn.execute_batch("DROP INDEX message_at; DROP INDEX event_at; DROP INDEX message_session_at; DROP INDEX message_model_at;")
+    conn.execute_batch("DROP INDEX message_at; DROP INDEX event_at; DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;")
         .unwrap();
     let setup = Instant::now();
     conn.execute(
@@ -91,6 +91,11 @@ fn million_message_measurements() {
     let late_cost = Selection { responses: Some(&late_session), ..all(None, false, false) };
     let usage = crate::measure::Selection::default();
     let rare_cost = Selection { responses: Some(&usage), model: Some("rare"), ..all(None, false, false) };
+    let selected_rare = crate::measure::Selection {
+        sessions: Some(vec![session + 998, session + 999]),
+        ..Default::default()
+    };
+    let selected_rare_cost = Selection { responses: Some(&selected_rare), model: Some("rare"), ..all(None, false, false) };
     // The reviewed narrow reads already had global time indexes, but still
     // walked them from the earliest response to find sparse matches.
     let global_index_clock = Instant::now();
@@ -104,7 +109,7 @@ fn million_message_measurements() {
             let sql = format!("SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51", source[0].replace("m.session_pk IN", "+m.session_pk IN"), representable("at", false));
             json!({"timing":sample(name, || r.query(&sql, &params).unwrap().len()), "plan":r.query(&format!("EXPLAIN QUERY PLAN {sql}"), &params).unwrap()})
         };
-        json!({"late_session":read("before late session", &late_cost), "rare_model":read("before rare model", &rare_cost)})
+        json!({"late_session":read("before late session", &late_cost), "rare_model":read("before rare model", &rare_cost),"selected_rare_model":read("before selected rare model", &selected_rare_cost)})
     };
     let index_clock = Instant::now();
     crate::schema::ensure_index(&conn).unwrap();
@@ -132,7 +137,7 @@ fn million_message_measurements() {
     };
     let response_plan = plans(&selected_cost, None);
     let day_plans = plans(&all(Some(date), false, false), Some(day.day(date)));
-    let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"late_session":sample("after late session",||page(&r,&day,&late_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"rare_model":sample("after rare model",||page(&r,&day,&rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"late_session":plans(&late_cost,None),"rare_model":plans(&rare_cost,None),"selected_cost_page":response_plan,"day_sources":day_plans,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
+    let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"late_session":sample("after late session",||page(&r,&day,&late_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"rare_model":sample("after rare model",||page(&r,&day,&rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_rare_model":sample("after selected rare model",||page(&r,&day,&selected_rare_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_rare_model":plans(&selected_rare_cost,None),"late_session":plans(&late_cost,None),"rare_model":plans(&rare_cost,None),"selected_cost_page":response_plan,"day_sources":day_plans,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
     let report = json!({"messages":1000000,"events":100000,"sessions":1000,"years":16,"page_size":50,"samples_per_action":5,"setup_ms":setup_ms,"index_ms":global_index_ms+index_ms,"global_time_indexes_ms":global_index_ms,"selection_time_indexes_ms":index_ms,"before":baseline,"sparse_before":sparse_before,"late_session_messages":1000,"rare_model_messages":100,"after":after,"load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; "))});
     let path = std::env::var_os("POLYLOGUE_TIMELINE_REPORT")
         .map(std::path::PathBuf::from)

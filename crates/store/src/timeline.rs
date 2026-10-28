@@ -44,14 +44,12 @@ fn sources(selection: &Selection<'_>, session: Option<i64>) -> (Vec<String>, Vec
                 bind(&mut params, SqlValue::Int(session))
             ));
         }
-        // A session range supplies the ordering even for a common model.
-        let model_column = if session.is_some() { "+m.model" } else { "m.model" };
         if selection.unknown_model {
-            condition.push_str(&format!(" AND {model_column} IS NULL"));
+            condition.push_str(" AND m.model IS NULL");
         }
         if let Some(model) = selection.model {
             condition.push_str(&format!(
-                " AND {model_column} = {}",
+                " AND m.model = {}",
                 bind(&mut params, SqlValue::Text(model.to_owned()))
             ));
         }
@@ -114,12 +112,18 @@ fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> R
     Ok(years.into_iter().collect())
 }
 
+struct Source {
+    kind: &'static str,
+    sql: String,
+    params: Vec<SqlValue>,
+}
+
 /// Session selections read one ordered range per session and merge their
 /// bounded pages. Selecting every session uses the global time order instead.
 fn page_sources(
     reader: &Reader<'_>,
     selection: &Selection<'_>,
-) -> Result<Vec<(&'static str, String, Vec<SqlValue>)>> {
+) -> Result<Vec<Source>> {
     if let Some(responses) = selection.responses
         && (responses.sessions.is_some() || responses.origins.is_some())
     {
@@ -158,13 +162,13 @@ fn page_sources(
         };
         return Ok(keys.into_iter().map(|key| {
             let (sources, params) = sources(&selection, key);
-            ("message", sources.into_iter().next().unwrap(), params)
+            Source { kind: "message", sql: sources.into_iter().next().unwrap(), params }
         }).collect());
     }
 
     let (sources, params) = sources(selection, None);
     Ok(sources.into_iter().enumerate().map(|(index, sql)| {
-        (["message", "event", "note"][index], sql, params.clone())
+        Source { kind: ["message", "event", "note"][index], sql, params: params.clone() }
     }).collect())
 }
 
@@ -178,7 +182,7 @@ fn row_queries(
 ) -> Result<Vec<(String, Vec<SqlValue>)>> {
     let sources = page_sources(reader, selection)?;
     let mut queries = Vec::new();
-    for (kind, source, mut params) in sources {
+    for Source { kind, sql: source, mut params } in sources {
         let mut conditions = Vec::new();
         if undated {
             conditions.push(representable("at", true));

@@ -290,7 +290,7 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     index
         .execute_batch(
             "DROP INDEX message_at; DROP INDEX event_at;
-             DROP INDEX message_session_at; DROP INDEX message_model_at;
+             DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;
         INSERT INTO input_ref(id) VALUES ('synthetic');
         INSERT INTO meta VALUES ('index-marker','present');",
         )
