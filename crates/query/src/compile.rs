@@ -199,6 +199,9 @@ pub struct Program {
     pub shape: Shape,
     /// The whole answer, in order, without paging.
     pub sql: String,
+    /// Exact cardinality and missing similarities, without presentation work
+    /// that does not affect which rows the query selects.
+    pub count_sql: String,
     pub params: Vec<Param>,
     /// Every output column but `_pk` (each row unit's key).
     pub columns: Vec<Column>,
@@ -348,15 +351,7 @@ impl Program {
     }
 
     pub fn count_sql(&self) -> String {
-        format!(
-            "SELECT count(*), {} FROM ({})",
-            if self.counts_near {
-                "count(*) FILTER (WHERE _near IS NULL)"
-            } else {
-                "0"
-            },
-            self.sql
-        )
+        self.count_sql.clone()
     }
 }
 

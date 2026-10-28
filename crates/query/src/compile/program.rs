@@ -397,6 +397,7 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
+        let mut row_count = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
@@ -594,6 +595,16 @@ impl<'a> Compiler<'a> {
                 );
                 (sql, keys)
             } else {
+                // Selections already live in `wh`, including any ordering a
+                // limit or offset needs. The final presentation order and
+                // projected fields do not affect this relation's cardinality.
+                let without = self.near_rank.as_ref().map_or_else(
+                    || "0".to_owned(),
+                    |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
+                );
+                row_count = Some(format!(
+                    "{ctes}SELECT count(*), {without} FROM {from} WHERE {wh}"
+                ));
                 let (hidden, keys) = hidden_order(&order, "_o");
                 select.extend(hidden);
                 let sql = format!(
@@ -647,6 +658,17 @@ impl<'a> Compiler<'a> {
             and_all(&defaults_only)
         );
         let ranked = self.ranking().is_some();
+        let counts_near = shape == Shape::Rows && self.near_rank.is_some();
+        let count_sql = row_count.unwrap_or_else(|| {
+            format!(
+                "SELECT count(*), {} FROM ({sql})",
+                if counts_near {
+                    "count(*) FILTER (WHERE _near IS NULL)"
+                } else {
+                    "0"
+                }
+            )
+        });
         let page_size =
             self.opts
                 .page_size
@@ -672,6 +694,7 @@ impl<'a> Compiler<'a> {
             unit,
             shape,
             sql,
+            count_sql,
             params: self.params,
             columns,
             ranked,
@@ -684,7 +707,7 @@ impl<'a> Compiler<'a> {
             why,
             why_of,
             page_size,
-            counts_near: shape == Shape::Rows && self.near_rank.is_some(),
+            counts_near,
             near: self.near,
             definitions: self.definitions,
             now: self.opts.clock.now,

@@ -36,6 +36,8 @@ All three return the same rows in the same order. Rows are joined to blocks, mes
 
 `count` is the exact number of matching rows, computed by a separate count plan in the same read transaction and cached by question hash and read position. When counting would pass the deadline, `count` is `null` and `notes` give the query that counts with the deadline lifted; the rest of the answer is unaffected. A count is never estimated.
 
+Counting ordinary rows applies the query's filters and stage selections without evaluating presentation fields or the final order. Ranking still runs when a selection such as `limit` depends on it, and missing semantic similarities are counted over the same selected rows.
+
 ## Index maintenance
 
 The full-text indexes are contentless, keyed by text ID, with contentless delete. A text enters an index when its first block of that kind is written and leaves with its last. Ranking after re-parse retractions equals a fresh build's: whenever retracted rows exceed 10% of an index's rows, the writer rebuilds that index's statistics in the same pass. This is part of the ordinary write path, not a command.
