@@ -1121,6 +1121,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn stop_count_worker(&mut self) {
+        if let Some(stop) = self.counts_stop.take() {
+            let _ = stop.send(());
+            self.daemon.warm.clear();
+        }
+        if let Some(counts) = self.counts.take() {
+            counts.join().unwrap();
+        }
+    }
+
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.

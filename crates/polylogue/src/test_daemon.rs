@@ -63,6 +63,11 @@ pub fn start(text: &str) -> TestDaemon {
 }
 
 impl TestDaemon {
+    /// Keeps archive-lock fixtures from trapping an unrelated background read.
+    pub(crate) fn stop_count_worker(&mut self) {
+        self.runtime.stop_count_worker();
+    }
+
     /// Waits until `status` satisfies `ok` and then until the loop is idle,
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.

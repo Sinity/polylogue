@@ -5,7 +5,8 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 fn cancelled_read(disconnect: bool, context: bool) {
-    let daemon = test_daemon::start("MCP cancellation");
+    let mut daemon = test_daemon::start("MCP cancellation");
+    daemon.stop_count_worker();
     let _held = daemon.daemon.reads.reader().unwrap();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
     lock.lock().unwrap();
@@ -47,15 +48,19 @@ fn cancelled_read(disconnect: bool, context: bool) {
             client.shutdown(Shutdown::Both).unwrap();
         } else {
             writeln!(client, "{}", json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":2, "reason":"caller stopped"}})).unwrap();
-            let elapsed = daemon.assert_slot_freed();
-            eprintln!("MCP cancellation released reader in {elapsed:?}");
-            client.shutdown(Shutdown::Both).unwrap();
         }
-        let elapsed = daemon.assert_slot_freed();
-        assert!(limit.cancellation.is_cancelled());
-        eprintln!("MCP disconnect released reader in {elapsed:?}");
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while daemon.daemon.reads.checked_out() != 1 && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let released = daemon.daemon.reads.checked_out() == 1;
+        let cancelled = limit.cancellation.is_cancelled();
+        // Teardown must also finish when the regression retains its reader.
         drop(lock);
+        client.shutdown(Shutdown::Both).unwrap();
         let _ = service.join().unwrap();
+        assert!(released, "MCP retained its reader after cancellation");
+        assert!(cancelled);
     });
 }
 
@@ -118,7 +123,8 @@ fn stdio_tool_metadata_preserves_the_explicit_daemon_deadline() {
 
 #[test]
 fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
-    let daemon = test_daemon::start("MCP context deadline");
+    let mut daemon = test_daemon::start("MCP context deadline");
+    daemon.stop_count_worker();
     let held = daemon.daemon.reads.reader().unwrap();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
     lock.lock().unwrap();
