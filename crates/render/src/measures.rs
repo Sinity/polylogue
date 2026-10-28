@@ -362,7 +362,8 @@ fn outlook_text(data: &Value) -> String {
             segment["unknown_boundary_items"],
             segment["unconfirmed_reports"]
         ));
-        if let Some(p) = segment["budget_pressure"].as_object() {
+        let p = &segment["budget_pressure"];
+        if p.is_object() {
             out.push_str(&format!(
                 "Your budget ({}): {}used {}, projected {}, budget {}\n",
                 p["unit"].as_str().unwrap_or(""),
@@ -384,7 +385,7 @@ fn outlook_text(data: &Value) -> String {
             ));
         }
     }
-    out.push_str(&format!("Untimed responses: {}; untimed reports: {}; untimed unknown-boundary items: {}. Billing before the first plan setting: unknown.\n",data["untimed_responses"],data["untimed_reports"],data["untimed_boundary_items"]));
+    out.push_str(&format!("Untimed responses: {}; untimed reports: {}; untimed unknown-boundary items: {}. Billing before the first plan setting: unknown.\n",number(&data["untimed_responses"]),number(&data["untimed_reports"]),number(&data["untimed_boundary_items"])));
     out
 }
 
