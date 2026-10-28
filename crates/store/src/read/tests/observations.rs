@@ -88,7 +88,8 @@ fn read_work(count: i64) -> usize {
             observed.fetch_add(100, Ordering::Relaxed);
             false
         }),
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(reader.known_watched_inputs("synthetic").unwrap().len(), 2);
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     work.load(Ordering::Relaxed)
