@@ -16,7 +16,7 @@ memchr.workspace = true
 zstd.workspace = true
 uuid.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
 base64.workspace = true
 thiserror.workspace = true
 jiff.workspace = true

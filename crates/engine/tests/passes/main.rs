@@ -16,6 +16,7 @@ mod hook_events;
 mod large_sessions;
 mod live_first;
 mod older_chains;
+mod reading_version;
 mod tool_captures;
 
 #[test]

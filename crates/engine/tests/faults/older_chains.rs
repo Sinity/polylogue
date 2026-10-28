@@ -24,7 +24,7 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
             assert_eq!(before.len(), 2);
         }
         delete_index(&w.root);
-        fault::arm("parse", "history.jsonl", Action::Panic, 0, 1);
+        fault::arm("parse", "history.jsonl", Action::Panic, 1, 1);
         let (mut engine, lock) = w.engine(64 << 20);
         let first = engine.run_pass().unwrap();
         assert_eq!(first.errors.len(), 1, "{:?}", first.errors);

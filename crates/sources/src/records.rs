@@ -1,5 +1,8 @@
 //! Record and wire-field counts shared by line and document parsers.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::fields::{Fields, unaccounted};
 use polylogue_model::{CountMismatch, Json, RecordCounts, RecordOutcome};
 

@@ -27,10 +27,12 @@ use std::thread::JoinHandle;
 mod attachments;
 mod batch;
 mod bytes;
+mod chain;
 mod excluded;
 mod rows;
 mod search;
 mod staging;
+pub use chain::ChainReading;
 
 #[cfg(test)]
 use crate::encoding::pack_block;
@@ -42,6 +44,7 @@ pub use batch::{
 pub(crate) use bytes::observation_id;
 use bytes::*;
 use excluded::*;
+pub(crate) use rows::retract_input;
 use rows::*;
 use search::*;
 
@@ -69,11 +72,12 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
+    ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
     Batch(Box<Batch>),
-    Flush(SyncSender<WriteReport>),
+    Flush(SyncSender<WriteReport>, bool),
     /// An excision, with the blob store whose files it changes.
     Excise(
         Box<crate::excise::ExciseRequest>,
@@ -450,11 +454,20 @@ impl Writer {
     /// Outside a first build what it reports is also derived and searchable;
     /// a first build derives and indexes once, when it ends.
     pub fn flush(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(true)
+    }
+
+    /// Commits queued rows; the engine derives once its round is complete.
+    pub fn flush_rows(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(false)
+    }
+
+    fn flush_with_derivation(&self, derive: bool) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Flush(reply))
+            .send(Msg::Flush(reply, derive))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)
     }
@@ -492,6 +505,41 @@ impl WriterSender {
         self.0
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
+    }
+
+    /// Replaces one chain's parsed rows in one index transaction.
+    pub fn replace_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        reading: ChainReading,
+    ) -> Result<u64> {
+        self.queue_chain(input, chain, length, reading)?
+            .recv()
+            .map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Queue a chain without waiting for its transaction to commit.
+    pub fn queue_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        mut reading: ChainReading,
+    ) -> Result<Receiver<Result<u64>>> {
+        reading.finish()?;
+        let (reply, wait) = sync_channel(1);
+        crate::timing::reading_commit_queue(1);
+        if self
+            .0
+            .send(Msg::ReplaceChain(input, chain, length, reading, reply))
+            .is_err()
+        {
+            crate::timing::reading_commit_queue(-1);
+            return Err(StoreError::WriterGone);
+        }
+        Ok(wait)
     }
 
     /// As [`Writer::user`].
@@ -584,6 +632,7 @@ impl Inner {
         let mut file_groups = Vec::new();
         let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
+        let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
             // While a log still holds excised text, the writer wakes to
@@ -603,6 +652,7 @@ impl Inner {
                     Err(_) => break,
                 }
             };
+            let _busy = crate::timing::writer_started();
             self.serve_users(users);
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn
@@ -638,6 +688,10 @@ impl Inner {
                         blobs.push((blob, reply));
                         false
                     }
+                    Msg::ReplaceChain(input, chain, length, reading, reply) => {
+                        replacements.push((input, chain, length, reading, reply));
+                        false
+                    }
                     Msg::Stop => {
                         stopping = true;
                         false
@@ -649,8 +703,8 @@ impl Inner {
                         group.push(b);
                         true
                     }
-                    Msg::Flush(reply) => {
-                        flushes.push(reply);
+                    Msg::Flush(reply, derive) => {
+                        flushes.push((reply, derive));
                         false
                     }
                     Msg::Excise(request, store, reply) => {
@@ -681,13 +735,6 @@ impl Inner {
             group.retain(|b| !self.report.failed_inputs.contains(&b.input.id));
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
-                // Derived rows follow every commit; a first build derives
-                // once, after its indexes exist.
-                if self.first_build.is_none()
-                    && let Err(e) = self.derive()
-                {
-                    self.report.errors.push(format!("derive: {e}"));
-                }
             }
             // Later queue replies also observe release of the parsed batches'
             // memory charges, not only their committed database rows.
@@ -696,6 +743,13 @@ impl Inner {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
             self.store_groups(std::mem::take(&mut file_groups));
+            for (input, chain, length, reading, reply) in replacements.drain(..) {
+                let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
+                    self.replace_chain(input, chain, length, reading)
+                }));
+                crate::timing::reading_commit_queue(-1);
+                self.serve_users(users);
+            }
             for (store, reply) in finish_writing.drain(..) {
                 let _ = reply.send(self.finish_writing(&store));
             }
@@ -729,7 +783,8 @@ impl Inner {
             // Whatever a flush reports written is also derived, except in a
             // first build, which a flush in the middle of a pass (each import
             // item, each run of the parse pool) must not end.
-            let derived_on_flush = !flushes.is_empty() && self.first_build.is_none();
+            let derived_on_flush =
+                flushes.iter().any(|(_, derive)| *derive) && self.first_build.is_none();
             if derived_on_flush && let Err(e) = self.derive() {
                 self.report.errors.push(format!("derive: {e}"));
             }
@@ -738,14 +793,7 @@ impl Inner {
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
-            // Whatever a flush reports written is also searchable.
-            if derived_on_flush && let Err(e) = crate::text_rows::index_pending(&self.index, || ())
-            {
-                self.report
-                    .errors
-                    .push(format!("write search entries: {e}"));
-            }
-            for reply in flushes.drain(..) {
+            for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
             if self.logs_hold_excised {
@@ -777,6 +825,22 @@ impl Inner {
         };
         if !self.derive_due && self.derived_version == Some(version(&self.index)?) {
             return Ok(0);
+        }
+        if self.first_build.is_none() {
+            crate::text_rows::index_pending(&self.index, || ())?;
+        }
+        crate::versions::remove_unused(&self.index, self.first_build.is_some())?;
+        // A full search batch's deletions get one merge at the end of a round.
+        let deleted:i64=self.index.query_row("SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='reparse_deletions'),0)",[],|r|r.get(0))?;
+        if self.first_build.is_none() && deleted >= 2_000 {
+            for table in ["text_fts", "output_fts", "tool_call_trigram"] {
+                self.index.execute(
+                    &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
+                    [],
+                )?;
+            }
+            self.index
+                .execute("DELETE FROM meta WHERE key='reparse_deletions'", [])?;
         }
         let derived = crate::timing::time(crate::timing::Stage::Derive, || {
             crate::derive::run(&mut self.index)
@@ -1244,6 +1308,9 @@ impl Inner {
             if let Some(chain) = chain {
                 for p in &b.parse {
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
+                }
+                if b.parse.iter().any(|p| p.at_end) {
+                    rows::prune_sessions(&itx, &b.input.id, chain)?;
                 }
             }
             stats.0 += 1;

@@ -43,6 +43,8 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 ### Reading versions
 
 - **Each parser module declares its reading version.** A chain is re-parsed when the reading version of the module that parsed it changes, and nothing else triggers a re-parse; there is no index-wide version that rebuilds everything.
+- Each origin declares the ordered tuple of parser modules and versions it uses. The tuple commits with each chain's parsed rows and progress. Workers prepare replacement readings in private scratch, then the writer retracts and replaces one chain in one transaction. Other chains stay readable throughout.
+- Source selection and chain retraction for messages, documents, events and links share the `VersionKind` declarations in the store.
 - Derivations carry their own versions ([measures.md](measures.md#rules)).
 
 ### Independent goldens

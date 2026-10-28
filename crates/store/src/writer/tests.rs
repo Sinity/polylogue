@@ -86,6 +86,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         length: start + 100,
         parse: vec![ParseStep {
             order_from: None,
+            reading_version: "synthetic=1".into(),
             reset: start == 0,
             repeats_whole_conversations: false,
             output: Output {
@@ -1035,3 +1036,4 @@ fn a_user_write_goes_ahead_of_queued_batches() {
 }
 
 mod attachments;
+mod reparse;

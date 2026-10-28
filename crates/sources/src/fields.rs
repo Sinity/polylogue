@@ -2,6 +2,9 @@
 //! declares its fields per record kind; [`unaccounted`] lists the fields a
 //! record carries that the declaration does not mention.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use polylogue_model::Json;
 use std::collections::HashSet;
 use std::sync::OnceLock;

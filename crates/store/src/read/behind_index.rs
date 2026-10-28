@@ -11,6 +11,7 @@ pub struct BehindChain {
     /// For an imported input, the format and path it was imported as.
     pub imported: Option<ImportedAs>,
     pub progress: ChainProgress,
+    pub reading_changed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,7 @@ impl Reader<'_> {
     /// Every chain of every input whose index is behind its stored bytes,
     /// by input and chain. A chain that ends in an incomplete record the
     /// parser is waiting on is not behind.
-    pub fn chains_behind_index(&self) -> Result<Vec<BehindChain>> {
+    pub fn chains_behind_index(&self, versions: &[(String, String)]) -> Result<Vec<BehindChain>> {
         let mut stmt = self.conn()?.prepare(
             "WITH inputs AS MATERIALIZED (
                 SELECT input, max(number) AS number, max(produced = 'imported') AS imported
@@ -47,7 +48,7 @@ impl Reader<'_> {
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting', 0)
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting', 0), p.reading_version
             FROM chains c JOIN a.input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN a.revision l ON l.input = c.input AND l.number = s.number
@@ -57,11 +58,16 @@ impl Reader<'_> {
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE c.length > 0
-              AND NOT (p.input_pk IS NOT NULL AND (p.status = 'waiting' OR p.parsed_upto >= c.length))
-            ORDER BY c.input, c.chain",
+              AND (p.input_pk IS NULL
+                OR (p.status <> 'waiting' AND p.parsed_upto < c.length)
+                OR EXISTS(SELECT 1 FROM json_each(?1) expected
+                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
+                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))
+            ORDER BY 5,(SELECT max(o.seen_at) FROM a.observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
         )?;
+        let versions_json = serde_json::to_string(versions)?;
         Ok(stmt
-            .query_map([], |r| {
+            .query_map([versions_json], |r| {
                 let imported: bool = r.get(4)?;
                 Ok(BehindChain {
                     input: r.get(0)?,
@@ -74,6 +80,14 @@ impl Reader<'_> {
                             })
                         })
                         .transpose()?,
+                    reading_changed: {
+                        let format: String = r.get(5)?;
+                        let previous: Option<String> = r.get(10)?;
+                        versions
+                            .iter()
+                            .find(|(name, _)| name == &format)
+                            .is_some_and(|(_, version)| previous.as_ref() != Some(version))
+                    },
                     progress: ChainProgress {
                         chain: r.get(1)?,
                         length: r.get::<_, i64>(2)? as u64,
@@ -84,7 +98,7 @@ impl Reader<'_> {
                     },
                 })
             })?
-            .collect::<rusqlite::Result<_>>()?)
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 

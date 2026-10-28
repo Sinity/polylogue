@@ -1,9 +1,8 @@
-//! Text documents: one shown version each, chosen like a message's, and
-//! reads in the reader's read transaction.
+//! Text documents: one shown version each, with source time before arrival
+//! rank, and reads in the reader's read transaction.
 use crate::encoding::hex;
-use crate::encoding::{
-    PreparedDocument, block_text, restore_text, unpack_block, unpack_json, unpack_text,
-};
+use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
+use crate::versions::VersionKind;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -13,38 +12,12 @@ use std::ops::ControlFlow;
 
 pub(crate) struct Source<'a> {
     pub input_pk: i64,
-    pub input_id: &'a str,
     pub chain: i64,
-    /// Later records of the chain restate earlier ones.
-    pub repeats_whole_conversations: bool,
     pub rank: i64,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
-}
-
-/// What decides the shown version: a known source time first, then the
-/// newest, then the more faithful arrival, then the larger content hash, then
-/// the smaller input ID and the newer chain, so arrival order never decides.
-type Rank = (bool, Option<i64>, i64, Vec<u8>, String, i64);
-
-fn better(new: &Rank, cur: &Rank) -> bool {
-    (
-        !new.0,
-        std::cmp::Reverse(new.1),
-        new.2,
-        std::cmp::Reverse(&new.3),
-        &new.4,
-        std::cmp::Reverse(new.5),
-    ) < (
-        !cur.0,
-        std::cmp::Reverse(cur.1),
-        cur.2,
-        std::cmp::Reverse(&cur.3),
-        &cur.4,
-        std::cmp::Reverse(cur.5),
-    )
 }
 
 pub(crate) fn write(
@@ -60,14 +33,6 @@ pub(crate) fn write(
     }
     let doc = &row.document;
     let time = doc.source_time.map(|t| t.unix_ms());
-    let new: Rank = (
-        time.is_some(),
-        time,
-        source.rank,
-        prepared.hash.to_vec(),
-        source.input_id.to_owned(),
-        source.chain,
-    );
     let existing: Option<i64> = tx
         .query_row(
             "SELECT pk FROM document WHERE id=?1",
@@ -76,55 +41,98 @@ pub(crate) fn write(
         )
         .optional()?;
     if let Some(pk) = existing {
-        // Within one chain the earliest record wins, or the latest in a repeating whole conversations chain.
-        let earlier: Option<i64> = tx
-            .query_row(
-                "SELECT source_start FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
-                params![pk, source.input_pk, source.chain],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let start = row.offset as i64;
-        if earlier.is_some_and(|earlier| {
-            if source.repeats_whole_conversations {
-                start < earlier
-            } else {
-                start > earlier
-            }
+        let earlier:Option<(Option<i64>,i64,Vec<u8>)>=tx.query_row(
+            "SELECT source_time,arrival_rank,version_hash FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
+            params![pk,source.input_pk,source.chain],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        if earlier.is_some_and(|(old_time, old_rank, old_hash)| {
+            (
+                time,
+                std::cmp::Reverse(source.rank),
+                prepared.hash.as_slice(),
+            ) < (old_time, std::cmp::Reverse(old_rank), old_hash.as_slice())
         }) {
             return Ok(());
         }
-        let shown: Option<Rank> = tx
-            .query_row(
-                "SELECT s.source_time,s.arrival_rank,s.version_hash,r.id,s.chain FROM document_source s
-                 JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 AND s.shown=1",
-                [pk],
-                |r| {
-                    let time: Option<i64> = r.get(0)?;
-                    Ok((time.is_some(), time, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-                },
-            )
-            .optional()?;
-        let wins = shown
-            .as_ref()
-            .is_none_or(|shown| better(&new, shown) || (shown.4 == new.4 && shown.5 == new.5));
-        if wins {
-            tx.execute(
-                "UPDATE document_source SET shown=0 WHERE document_pk=?1",
-                [pk],
-            )?;
+    }
+    crate::versions::store(
+        tx,
+        VersionKind::Document,
+        &prepared.hash,
+        &prepared.body,
+        &doc.blocks,
+        source.packed,
+        source.first_build,
+    )?;
+    let pk = match existing {
+        Some(pk) => pk,
+        None => {
+            tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
+            tx.last_insert_rowid()
         }
-        set_source(tx, pk, source, row, time, &prepared.hash, wins)?;
-        if wins {
-            show(tx, pk, source, row, prepared)?;
+    };
+    set_source(tx, pk, source, row, time, &prepared.hash, false)?;
+    refresh(tx, pk, source.counter, source.first_build)
+}
+
+pub(crate) fn refresh(
+    tx: &Transaction<'_>,
+    pk: i64,
+    counter: i64,
+    first_build: Option<&crate::first_build::FirstBuild>,
+) -> Result<()> {
+    // Source time is authoritative for documents, including within one input.
+    let winner = VersionKind::Document.select(
+        tx,
+        pk,
+        "s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.arrival_rank,s.version_hash",
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Vec<u8>>(6)?,
+            ))
+        },
+    )?;
+    let Some((input_pk, _input_id, chain, start, end, rank, hash)) = winner else {
+        let texts = tx
+            .prepare(
+                "SELECT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL",
+            )?
+            .query_map([pk], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
+        for text in texts {
+            crate::text_rows::unindex_unused(tx, text, first_build.is_some())?;
         }
         return Ok(());
-    }
-    tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
-    let pk = tx.last_insert_rowid();
-    set_source(tx, pk, source, row, time, &prepared.hash, true)?;
-    insert_blocks(tx, pk, source, doc, prepared)
+    };
+    let document: Document = crate::versions::read(tx, VersionKind::Document, &hash)?;
+    let prepared = PreparedDocument::new(&document)?;
+    let packed = HashMap::new();
+    let source = Source {
+        input_pk,
+        chain,
+        rank,
+        counter,
+        packed: &packed,
+        first_build,
+    };
+    let row = DocumentRow {
+        offset: start as u64,
+        end: end as u64,
+        document,
+    };
+    show(tx, pk, &source, &row, &prepared)?;
+    tx.execute(
+        "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
+        params![pk, input_pk, chain],
+    )?;
+    Ok(())
 }
 
 fn set_source(
@@ -179,11 +187,17 @@ fn insert_blocks(
         .zip(&prepared.data)
         .enumerate()
     {
-        let text = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(tx, text, 1, Some(source.packed), source.first_build)
+        let text = tx
+            .prepare_cached(
+                "SELECT text_id FROM document_version_text WHERE version_hash=?1 AND idx=?2",
+            )?
+            .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
+                r.get::<_, i64>(0)
             })
-            .transpose()?;
+            .optional()?;
+        if let Some(id) = text {
+            crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
+        }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
             _ => None,

@@ -82,6 +82,7 @@ pub(crate) fn remove_with_references(
     )?;
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
+    crate::versions::remove_readings(i)?;
     consume(&references)?;
     references.finish()
 }

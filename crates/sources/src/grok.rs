@@ -1,6 +1,9 @@
 //! Grok account exports. One stored conversation is decoded at a time;
 //! response order stays as supplied, independently of derived identity hashing.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 mod identity;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};

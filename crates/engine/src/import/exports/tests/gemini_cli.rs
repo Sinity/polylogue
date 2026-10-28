@@ -98,6 +98,13 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
         serde_json::to_value(after).unwrap(),
         serde_json::to_value(before).unwrap()
     );
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 6);
+    assert_eq!(
+        w.reads()
+            .reader()
+            .unwrap()
+            .query("SELECT records FROM parse_state ORDER BY chain", &[])
+            .unwrap(),
+        [json!({"records":5}), json!({"records":6})]
+    );
     assert!(!final_bytes.is_empty());
 }

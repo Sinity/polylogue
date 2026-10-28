@@ -8,6 +8,9 @@
 //! (`stage1_outputs`). The thread-history tables are derived from the
 //! rollouts, which are parsed; they stay in the stored export.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use super::{items::str_field, session_id};
 use crate::lines::Record;
 use crate::origin::Root;

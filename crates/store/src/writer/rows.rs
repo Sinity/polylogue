@@ -3,7 +3,13 @@
 
 use super::*;
 use crate::first_build::FirstBuild;
+use crate::versions::VersionKind;
 use std::collections::BTreeMap;
+
+mod assertions;
+mod retract;
+pub(super) use retract::prune_sessions;
+pub(crate) use retract::retract_input;
 
 /// Writes a parse step's rows; returns the number of message rows written.
 pub(super) fn write_rows(
@@ -31,26 +37,19 @@ pub(super) fn write_rows(
         packed: &p.prepared.texts,
         first_build,
     };
-    // A step parsed from the chain's first byte restates everything the
-    // chain said: its earlier events and session facts go first.
     if p.reset {
-        tx.prepare_cached(
-            "DELETE FROM event WHERE input_pk = ?1 AND (source_chain = ?2 OR source_chain IS NULL)",
-        )?
-        .execute(params![input_pk, chain])?;
-        tx.prepare_cached("DELETE FROM session_record WHERE input_pk = ?1 AND chain = ?2")?
-            .execute(params![input_pk, chain])?;
+        rows.retract()?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
+    let mut main_sessions = HashMap::new();
     for s in &p.output.sessions {
-        let pk = rows.upsert_session(s)?;
+        let (pk, main) = rows.upsert_session(s)?;
         sessions.insert(s.id.to_string(), pk);
+        main_sessions.insert(s.id.clone(), main);
     }
     let source = crate::documents::Source {
         input_pk,
-        input_id: &b.input.id,
         chain,
-        repeats_whole_conversations: p.repeats_whole_conversations,
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
@@ -92,13 +91,8 @@ pub(super) fn write_rows(
             }
         };
         // A kind this step states needs no lookup.
-        let main = match p
-            .output
-            .sessions
-            .iter()
-            .find(|s| s.id == row.message.session)
-        {
-            Some(session) => session.kind == polylogue_model::SessionKind::Main,
+        let main = match main_sessions.get(&row.message.session) {
+            Some(main) => *main,
             None => rows.session_kind(session_pk)? == "main",
         };
         written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
@@ -155,6 +149,10 @@ pub(super) fn write_rows(
         };
         rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence)?;
         if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
+            tx.prepare_cached(
+                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
+            )?
+            .execute(params![session_pk, ms(e.at)])?;
             // Prepared events release their JSON payload before writing. Live
             // facts must read the same payload as the stored event.
             let event = Event {
@@ -204,6 +202,7 @@ pub(super) fn write_rows(
 struct StoredBlock<'a> {
     body: &'a [u8],
     data: Option<&'a [u8]>,
+    text_id: Option<i64>,
 }
 
 pub(super) struct RowWriter<'a, 't> {
@@ -223,16 +222,12 @@ pub(super) struct RowWriter<'a, 't> {
     first_build: Option<&'a FirstBuild>,
 }
 
-/// The shown version of a message, as compared with a new one.
+/// A message reading's source and shown fields.
 pub(super) struct Version {
     input_pk: i64,
     chain: i64,
     start: i64,
     end: i64,
-    /// Whether the version's session is a main session. A spawned
-    /// session's file can repeat its parent's messages; the parent's own
-    /// record is the original.
-    main: bool,
     complete: bool,
     rank: i64,
     hash: Vec<u8>,
@@ -240,30 +235,6 @@ pub(super) struct Version {
     /// ([`crate::ordered_blocks::pem`]). Written with the version, never
     /// compared.
     pem: i64,
-}
-
-impl Version {
-    /// Architecture 5.5 and 5.5a. Within one input a newer revision chain
-    /// wins (a rewrite), and within a chain the caller has already kept the
-    /// right record. Across inputs: the originating session's own record
-    /// over a copy in a session it spawned, then a complete version, then
-    /// the more faithful arrival, then the smaller content hash, so the choice
-    /// does not depend on which input arrived first.
-    fn beats(&self, cur: &Version) -> bool {
-        if self.input_pk == cur.input_pk {
-            return self.chain >= cur.chain;
-        }
-        if self.main != cur.main {
-            return self.main;
-        }
-        if self.complete != cur.complete {
-            return self.complete;
-        }
-        if self.rank != cur.rank {
-            return self.rank < cur.rank;
-        }
-        self.hash < cur.hash
-    }
 }
 
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
@@ -329,7 +300,7 @@ impl RowWriter<'_, '_> {
     /// session's own columns are derived from every input's facts
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
-    fn upsert_session(&self, s: &Session) -> Result<i64> {
+    fn upsert_session(&self, s: &Session) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
         let stored: Option<String> = self
             .tx
@@ -347,7 +318,7 @@ impl RowWriter<'_, '_> {
                 let before = cur.clone();
                 cur.merge(s);
                 if cur == before {
-                    return Ok(pk);
+                    return Ok((pk, cur.kind == polylogue_model::SessionKind::Main));
                 }
                 cur
             }
@@ -359,10 +330,18 @@ impl RowWriter<'_, '_> {
                  ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts",
             )?
             .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?])?;
+        let main = merged.kind == polylogue_model::SessionKind::Main;
+        let changed=self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
+        if changed > 0 {
+            let messages=self.tx.prepare("SELECT message_pk FROM message_source WHERE session_pk=?1 AND input_pk=?2 AND chain=?3")?.query_map(params![pk,self.input_pk,self.chain],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for message in messages {
+                self.refresh_message(message)?;
+            }
+        }
         self.tx
             .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
             .execute(params![pk, self.counter])?;
-        Ok(pk)
+        Ok((pk, main))
     }
 
     /// The session's row, created on first sight (`stub` when no record of
@@ -398,8 +377,7 @@ impl RowWriter<'_, '_> {
         Ok(pk)
     }
 
-    /// Records one version of a message and makes it the shown one when it
-    /// beats the current one. Returns whether the message row was written.
+    /// Stores a chain's reading before choosing across inputs.
     fn write_message(
         &self,
         row: &MessageRow,
@@ -409,181 +387,152 @@ impl RowWriter<'_, '_> {
         main: bool,
     ) -> Result<bool> {
         let m = &row.message;
-        let new = Version {
+        let id = m.id.to_string();
+        let pk = self.message_pk(&id)?;
+        let new = pk.is_none();
+        if let Some(pk) = pk {
+            let prior: Option<i64> = self.tx.prepare_cached(
+                "SELECT source_start FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3"
+            )?.query_row(params![pk,self.input_pk,self.chain], |r|r.get(0)).optional()?;
+            if prior.is_some_and(|start| {
+                if self.repeats_whole_conversations {
+                    (row.offset as i64) < start
+                } else {
+                    (row.offset as i64) > start
+                }
+            }) {
+                return Ok(false);
+            }
+        }
+        crate::versions::store(
+            self.tx,
+            VersionKind::Message,
+            &prepared.hash,
+            &prepared.body,
+            &m.blocks,
+            self.packed,
+            self.first_build,
+        )?;
+        let v = Version {
             input_pk: self.input_pk,
             chain: self.chain,
             start: row.offset as i64,
             end: row.end.max(row.offset) as i64,
-            main,
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: prepared.hash.to_vec(),
             pem: prepared.pem.iter().copied().max().unwrap_or(0),
         };
-        let id = m.id.to_string();
-        let cur = match self.message_pk(&id)? {
-            None => None,
-            Some(pk) => self
-                .tx
-                .prepare_cached(
-                    "SELECT m.pk, m.order_input_pk, m.seq, m.order_input_id, m.input_pk, m.source_chain,
-                        m.source_start, m.in_progress, m.arrival_rank, s.version_hash, m.session_pk, ss.kind,
-                        m.record_position
-                 FROM message m LEFT JOIN message_source s
-                   ON s.message_pk = m.pk AND s.shown = 1
-                 JOIN session ss ON ss.pk = m.session_pk
-                 WHERE m.pk = ?1",
-                )?
-                .query_row([pk], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    (
-                        r.get::<_, i64>(1)?,
-                        (r.get::<_, i64>(2)?, r.get::<_, i64>(12)?),
-                        r.get::<_, String>(3)?,
-                    ),
-                    Version {
-                        input_pk: r.get(4)?,
-                        chain: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                        start: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                        end: 0,
-                        main: r.get::<_, String>(11)? == "main",
-                        complete: r.get::<_, i64>(7)? == 0,
-                        rank: r.get(8)?,
-                        hash: r.get::<_, Option<Vec<u8>>>(9)?.unwrap_or_default(),
-                        pem: 0,
-                    },
-                    (r.get::<_, i64>(10)?, r.get::<_, String>(11)?),
-                ))
-                })
-                .optional()?,
-        };
-
-        let Some((pk, (order_input, order_seq, order_id), shown, (cur_session, cur_kind))) = cur
-        else {
-            let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
-            if let Some(first_build) = self.first_build {
-                first_build.add_message(&id, pk);
+        let pk = match pk {
+            Some(pk) => pk,
+            None => {
+                let pk = self.insert_message(m, session_pk, &v, (self.input_pk, position))?;
+                if let Some(first) = self.first_build {
+                    first.add_message(&id, pk);
+                }
+                pk
             }
-            self.upsert_source(pk, &new, true)?;
+        };
+        if new {
+            self.tx.prepare_cached(
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+                 VALUES (?1,?2,?3,?4,?5,1,?6,?7,?8,?9,?10,?11,?12)"
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;
             self.insert_blocks(pk, session_pk, m, prepared)?;
             return Ok(true);
-        };
+        }
+        self.tx.prepare_cached(
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
+             VALUES (?1,?2,?3,?4,?5,0,?6,?7,?8,?9,?10,?11,?12)
+             ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
+             source_end=excluded.source_end,complete=excluded.complete,version_hash=excluded.version_hash,
+             shown=CASE WHEN message_source.version_hash=excluded.version_hash THEN message_source.shown ELSE 0 END,
+             session_pk=excluded.session_pk,main=excluded.main,arrival_rank=excluded.arrival_rank,
+             seq=excluded.seq,record_position=excluded.record_position"
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;
+        self.refresh_message_using(pk, Some((m, prepared)))
+    }
 
-        // Within one chain the earliest record of a message wins: a later
-        // duplicate (a repeated uuid) is not another version. In a chain of
-        // repeating whole conversations records each record restates the conversation, so the later
-        // record replaces the earlier one.
-        let prior: Option<i64> = self
-            .tx
-            .prepare_cached(
-                "SELECT source_start FROM message_source
-                 WHERE message_pk = ?1 AND input_pk = ?2 AND chain = ?3",
-            )?
-            .query_row(params![pk, self.input_pk, self.chain], |r| r.get(0))
-            .optional()?;
-        if prior.is_some_and(|start| {
-            if self.repeats_whole_conversations {
-                new.start < start
-            } else {
-                new.start > start
-            }
-        }) {
-            return Ok(false);
-        }
-        let order = (order_input, order_seq);
-        let new_order = if (self.repeats_whole_conversations && order_id == self.input_id)
-            || (self.input_id, position) < (order_id.as_str(), order_seq)
-        {
-            (self.input_pk, position)
-        } else {
-            order
-        };
-        if !new.beats(&shown) {
-            self.upsert_source(pk, &new, false)?;
-            if new_order != order {
-                self.tx
-                    .prepare_cached(
-                        "UPDATE message SET order_input_pk = ?2, seq = ?3, record_position = ?4,
-                             order_input_id = (SELECT id FROM input_ref WHERE pk = ?2) WHERE pk = ?1",
-                    )?
-                    .execute(params![pk, new_order.0, new_order.1.0, new_order.1.1])?;
-            }
-            return Ok(false);
-        }
-        // A message is stored once, in the session where it originated
-        //. A spawned session's file can repeat its
-        // parent's messages (a compaction call, a side question replaying
-        // the history); such a copy may become the shown version, but it
-        // never moves the message out of a main session.
-        let declared = session_pk;
-        let session_pk = if cur_session != session_pk && cur_kind == "main" && !new.main {
-            cur_session
-        } else {
-            session_pk
-        };
-        if cur_session != declared {
-            // Both sessions change: the one the version came in and the
-            // one the message was in. Each is derived again and its reads
-            // see the change, and the input is recorded as one the
-            // message's session was parsed from.
-            self.tx
-                .prepare_cached("UPDATE session SET changed = ?3 WHERE pk IN (?1, ?2)")?
-                .execute(params![cur_session, declared, self.counter])?;
-            self.tx
-                .prepare_cached(
-                    "INSERT OR IGNORE INTO parsed(input_pk, chain, session_pk) VALUES (?1, ?2, ?3)",
-                )?
-                .execute(params![self.input_pk, self.chain, session_pk])?;
-        }
-        self.tx
-            .prepare_cached("UPDATE message_source SET shown = 0 WHERE message_pk = ?1")?
-            .execute([pk])?;
-        self.upsert_source(pk, &new, true)?;
-        let unchanged = new.hash == shown.hash && cur_session == session_pk;
-        if !unchanged {
+    fn refresh_message(&self, pk: i64) -> Result<bool> {
+        self.refresh_message_using(pk, None)
+    }
+
+    fn refresh_message_using(
+        &self,
+        pk: i64,
+        incoming: Option<(&Message, &PreparedMessage)>,
+    ) -> Result<bool> {
+        let winner = VersionKind::Message.select(self.tx, pk,
+            "s.input_pk,s.chain,s.source_start,s.source_end,s.main,s.complete,s.arrival_rank,s.version_hash,s.session_pk",
+            |r|Ok((Version { input_pk:r.get(0)?,chain:r.get(1)?,start:r.get(2)?,end:r.get(3)?,complete:r.get(5)?,rank:r.get(6)?,hash:r.get(7)?,pem:0 },r.get::<_,i64>(8)?)))?;
+        let Some((mut v, session_pk)) = winner else {
             self.clear_blocks(pk)?;
+            self.update_event_anchors(pk, false)?;
+            self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
+            return Ok(true);
+        };
+        let order = self.tx.prepare_cached(
+            "SELECT s.input_pk,s.seq,s.record_position FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
+             WHERE s.message_pk=?1 AND NOT EXISTS(SELECT 1 FROM message_source n
+                WHERE n.message_pk=s.message_pk AND n.input_pk=s.input_pk AND n.chain>s.chain)
+             ORDER BY i.id,s.seq,s.record_position LIMIT 1"
+        )?.query_row([pk],|r|Ok((r.get(0)?,(r.get(1)?,r.get(2)?))))?;
+        let old: Option<(Vec<u8>,i64)> = self.tx.prepare_cached(
+            "SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk
+             WHERE s.message_pk=?1 AND s.shown=1"
+        )?.query_row([pk],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if old
+            .as_ref()
+            .is_some_and(|o| o.0 == v.hash && o.1 == session_pk)
+        {
+            self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,arrival_rank=?6,
+                order_input_pk=?7,order_input_id=(SELECT id FROM input_ref WHERE pk=?7),seq=?8,record_position=?9 WHERE pk=?1",
+                params![pk,v.input_pk,v.chain,v.start,v.end,v.rank,order.0,order.1.0,order.1.1])?;
+            self.tx.execute(
+                "UPDATE session SET changed=?2 WHERE pk=?1",
+                params![session_pk, self.counter],
+            )?;
+            self.mark_shown(pk, &v)?;
+            self.update_event_anchors(pk, true)?;
+            return Ok(false);
         }
-        self.update_message(pk, m, session_pk, &new, new_order)?;
-        if !unchanged {
-            self.insert_blocks(pk, session_pk, m, prepared)?;
-        }
+        let restored;
+        let (m, prepared) =
+            match incoming.filter(|(_, prepared)| prepared.hash.as_slice() == v.hash) {
+                Some(values) => values,
+                None => {
+                    let message: Message =
+                        crate::versions::read(self.tx, VersionKind::Message, &v.hash)?;
+                    let prepared = PreparedMessage::new(&message)?;
+                    restored = (message, prepared);
+                    (&restored.0, &restored.1)
+                }
+            };
+        v.pem = prepared.pem.iter().copied().max().unwrap_or(0);
+        self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
+        self.clear_blocks(pk)?;
+        self.update_message(pk, m, session_pk, &v, order)?;
+        self.insert_blocks(pk, session_pk, m, prepared)?;
+        self.mark_shown(pk, &v)?;
         Ok(true)
     }
 
-    fn upsert_source(&self, pk: i64, v: &Version, shown: bool) -> Result<()> {
-        self.tx
-            .prepare_cached(
-                "INSERT INTO message_source(message_pk, input_pk, chain, source_start, source_end,
-                     shown, complete, version_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(message_pk, input_pk, chain) DO UPDATE SET
-                     source_start = excluded.source_start, source_end = excluded.source_end,
-                     shown = excluded.shown, complete = excluded.complete,
-                     version_hash = excluded.version_hash",
-            )?
-            .execute(params![
-                pk,
-                v.input_pk,
-                v.chain,
-                v.start,
-                v.end,
-                i64::from(shown),
-                i64::from(v.complete),
-                v.hash
-            ])?;
+    fn mark_shown(&self, pk: i64, v: &Version) -> Result<()> {
+        self.tx.execute(
+            "UPDATE message_source SET shown=(input_pk=?2 AND chain=?3) WHERE message_pk=?1",
+            params![pk, v.input_pk, v.chain],
+        )?;
         Ok(())
     }
 
-    // Placement uses this input's declared kind before the merged session
-    // is derived; another input's kind cannot classify these rows.
+    // Placement uses this input's kind, or a fresh session's main default.
+    // Another input's facts or an earlier derive cannot classify these rows.
     fn session_kind(&self, session_pk: i64) -> Result<String> {
         Ok(self
             .tx
             .prepare_cached(
                 "SELECT COALESCE((SELECT json_extract(facts,'$.kind') FROM session_record
-                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),kind)
-                 FROM session WHERE pk=?1",
+                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),'main')",
             )?
             .query_row(params![session_pk, self.input_pk, self.chain], |r| r.get(0))?)
     }
@@ -710,7 +659,35 @@ impl RowWriter<'_, '_> {
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
         ])?;
-        Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
+        let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
+        self.update_event_anchors(pk, true)?;
+        Ok(pk)
+    }
+
+    /// Events can precede their message, or survive its replacement.
+    fn update_event_anchors(&self, message_pk: i64, present: bool) -> Result<()> {
+        let (id, seq): (String, i64) = self
+            .tx
+            .prepare_cached("SELECT id,seq FROM message WHERE pk=?1")?
+            .query_row([message_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let pk = present.then_some(message_pk);
+        let seq = if present { seq } else { 0 };
+        let sessions = self
+            .tx
+            .prepare_cached(
+                "UPDATE event SET after_message_pk=?2,
+             seq=CASE WHEN seq_from_message=1 THEN ?3 ELSE seq END
+             WHERE after_message_id=?1 AND (after_message_pk IS NOT ?2
+                OR (seq_from_message=1 AND seq IS NOT ?3)) RETURNING session_pk",
+            )?
+            .query_map(params![id, pk, seq], |r| r.get::<_, Option<i64>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions.into_iter().flatten() {
+            self.tx
+                .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
+                .execute(params![session, self.counter])?;
+        }
+        Ok(())
     }
 
     /// Removes a message's blocks, keeping search entries and tool-call
@@ -783,9 +760,19 @@ impl RowWriter<'_, '_> {
             .zip(&prepared.data)
             .enumerate()
         {
+            let text_id = self
+                .tx
+                .prepare_cached(
+                    "SELECT text_id FROM message_version_text WHERE version_hash=?1 AND idx=?2",
+                )?
+                .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?;
             let stored = StoredBlock {
                 body,
                 data: data.as_deref(),
+                text_id,
             };
             self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
         }
@@ -798,7 +785,11 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        StoredBlock { body, data }: StoredBlock<'_>,
+        StoredBlock {
+            body,
+            data,
+            text_id,
+        }: StoredBlock<'_>,
         at: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
@@ -806,11 +797,9 @@ impl RowWriter<'_, '_> {
         } else {
             1
         };
-        let text_id = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(self.tx, text, bit, Some(self.packed), self.first_build)
-            })
-            .transpose()?;
+        if let Some(id) = text_id {
+            crate::text_rows::activate(self.tx, id, bit, self.first_build.is_some())?;
+        }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
             Block::Thinking { .. } => ("thinking", None, None),
@@ -1025,117 +1014,27 @@ impl RowWriter<'_, '_> {
             .or(e.range.map(|(start, _)| start as i64))
             .or(self
                 .repeats_whole_conversations
-                .then_some(step_start as i64))
-            .or(after.map(|a| a.1))
-            .unwrap_or(0);
+                .then_some(step_start as i64));
         let source_chain = e.range.map(|_| self.chain);
-        // The first input to state an event keeps it; within that input the
-        // later position (chain, then place in the chain) wins.
         let pk = match self.event_pk(&id)? {
-            Some(pk) => {
-                self.tx
-                    .prepare_cached(
-                        "UPDATE event SET seq = ?2, after_message_pk = ?3, source_chain = ?4,
-                             source_start = ?5, source_end = ?6
-                         WHERE pk = ?1 AND input_pk = ?7
-                           AND (COALESCE(?4, 0), ?2) > (COALESCE(source_chain, 0), seq)",
-                    )?
-                    .execute(params![
-                        pk,
-                        seq,
-                        after.map(|a| a.0),
-                        source_chain,
-                        e.range.map(|r| r.0 as i64),
-                        e.range.map(|r| r.1 as i64),
-                        self.input_pk,
-                    ])?;
-                pk
-            }
+            Some(pk) => pk,
             None => {
-                self.tx
-                    .prepare_cached(
-                        "INSERT INTO event(id, session_pk, seq, after_message_pk, kind, at, input_pk,
-                             source_chain, source_start, source_end, data)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    )?
-                    .execute(params![
-                        &*id,
-                        session_pk,
-                        seq,
-                        after.map(|a| a.0),
-                        e.kind,
-                        ms(e.at),
-                        self.input_pk,
-                        source_chain,
-                        e.range.map(|r| r.0 as i64),
-                        e.range.map(|r| r.1 as i64),
-                        data,
-                    ])?;
+                self.tx.prepare_cached("INSERT INTO event(id,session_pk,seq,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,data)
+                    VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")?
+                    .execute(params![&*id,session_pk,seq.unwrap_or(0),after.map(|a|a.0),e.kind,ms(e.at),self.input_pk,source_chain,e.range.map(|r|r.0 as i64),e.range.map(|r|r.1 as i64),data])?;
                 let pk = self.tx.last_insert_rowid();
-                if let Some(first_build) = self.first_build {
-                    first_build.add_event(&id, pk);
+                if let Some(first) = self.first_build {
+                    first.add_event(&id, pk);
                 }
                 pk
             }
         };
-        if crate::encoding::reading_confirmed(&e.data) {
-            // A copy of a reading that reports a measured completion
-            // replaces one stored without it.
-            let stored: Vec<u8> = self
-                .tx
-                .prepare_cached("SELECT data FROM event WHERE pk = ?1")?
-                .query_row([pk], |r| r.get(0))?;
-            let stored: serde_json::Value = crate::encoding::unpack_json(&stored)?;
-            if !crate::encoding::reading_confirmed(&stored) {
-                self.tx
-                    .prepare_cached("UPDATE event SET data = ?2 WHERE pk = ?1")?
-                    .execute(params![pk, data])?;
-            }
-        }
+        self.store_event_value(pk, e, data, seq)?;
         Ok(())
     }
 
-    /// One link per kind, parent and child; parts one file lacks are filled
-    /// from another (the SQL form of [`Link::merge`]).
-    /// Upserts a link. Several inputs state the same link; what it records
-    /// must not depend on which arrived first, so where two
-    /// statements differ the smaller value is kept, and the evidence keeps
-    /// the input that stated it.
     fn write_link(&self, l: &Link) -> Result<()> {
-        let (kind, how) = l.kind.columns();
-        let child = l.child.to_string();
-        let child_pk: Option<i64> = self
-            .tx
-            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
-            .query_row([&child], |r| r.get(0))
-            .optional()?;
-        self.tx
-            .prepare_cached(
-                "INSERT INTO link(parent_id, child_id, child_pk, kind, how, branch_point,
-                     spawning_call, evidence, input_pk)
-                 VALUES (?1, ?2, ?3, ?4, ?9, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(parent_id, child_id, kind, how) DO UPDATE SET
-                     child_pk = COALESCE(link.child_pk, excluded.child_pk),
-                     branch_point = min(COALESCE(link.branch_point, excluded.branch_point),
-                                        COALESCE(excluded.branch_point, link.branch_point)),
-                     spawning_call = min(COALESCE(link.spawning_call, excluded.spawning_call),
-                                         COALESCE(excluded.spawning_call, link.spawning_call)),
-                     input_pk = CASE WHEN excluded.evidence < link.evidence
-                                     THEN excluded.input_pk ELSE link.input_pk END,
-                     evidence = min(link.evidence, excluded.evidence)",
-            )?
-            .execute(params![
-                l.parent.to_string(),
-                child,
-                child_pk,
-                kind,
-                l.at.as_ref().map(ToString::to_string),
-                l.call_id,
-                l.evidence,
-                self.input_pk,
-                how,
-            ])?;
-        Ok(())
+        self.store_link(l)
     }
 
     /// Parse position and record counts for the chain, committed with the rows
@@ -1157,18 +1056,18 @@ impl RowWriter<'_, '_> {
         let whole = p.reset;
         let sql = if whole {
             "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, skipped, unreadable, detail, reading_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
                  records = excluded.records, used = excluded.used,
                  skipped = excluded.skipped, unreadable = excluded.unreadable"
         } else {
             "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, skipped, unreadable, detail, reading_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
                  records = records + excluded.records, used = used + excluded.used,
                  skipped = skipped + excluded.skipped,
                  unreadable = unreadable + excluded.unreadable"
@@ -1183,12 +1082,8 @@ impl RowWriter<'_, '_> {
             skipped as i64,
             unreadable as i64,
             detail,
+            p.reading_version,
         ])?;
-        if whole {
-            self.tx
-                .prepare_cached("DELETE FROM unused WHERE input_pk = ?1 AND chain = ?2")?
-                .execute(params![self.input_pk, self.chain])?;
-        }
         let groups = [
             ("skipped:", &a.skipped, 1),
             ("unreadable:", &a.unreadable, 0),

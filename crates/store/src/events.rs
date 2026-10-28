@@ -71,7 +71,7 @@ impl Reader<'_> {
     }
 
     pub fn event_sources(&self, id: &str) -> Result<Vec<polylogue_model::Json>> {
-        self.query("SELECT i.id AS input,i.format AS source,e.source_chain AS chain,e.source_start,e.source_end
-            FROM event e JOIN input_ref i ON i.pk=e.input_pk WHERE e.id=?1",&[crate::SqlValue::Text(id.into())])
+        self.query("SELECT i.id AS input,i.format AS source,s.chain,s.source_start,s.source_end
+            FROM event_source s JOIN event e ON e.pk=s.event_pk JOIN input_ref i ON i.pk=s.input_pk WHERE e.id=?1 ORDER BY i.id,s.chain",&[crate::SqlValue::Text(id.into())])
     }
 }

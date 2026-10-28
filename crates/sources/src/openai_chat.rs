@@ -6,6 +6,9 @@
 //! Messages carry no IDs, so each keeps its identity by its place. The
 //! session is the object's `id` when it has one, else the file name.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};

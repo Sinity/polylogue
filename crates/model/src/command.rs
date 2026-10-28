@@ -2,6 +2,9 @@
 //! stage's program and words with assignments and wrapper programs skipped.
 //! Nothing here reads meaning from a command's text; it only finds its shape.
 
+/// Version of command normalization used while parsing.
+pub const VERSION: u32 = 1;
+
 /// One pipeline or list element: the program run and its arguments, with
 /// leading `NAME=value` assignments and wrapper programs removed.
 #[derive(Debug, Clone, PartialEq, Eq)]

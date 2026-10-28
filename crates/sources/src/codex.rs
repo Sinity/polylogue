@@ -15,6 +15,9 @@
 //! is stored once, in the parent: copied items that carry an ID keep it
 //! and their parent session, and the rest is accounted as copied.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 pub mod database;
 mod fields;
 mod index;

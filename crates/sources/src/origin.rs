@@ -68,11 +68,43 @@ pub enum Capture {
     RowDump,
 }
 
+impl Arrival {
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Live => 0,
+            Self::Spool => 1,
+            Self::Import => 2,
+        }
+    }
+}
+
 /// A tool's resume command line (program first) from a session's native
 /// ID, or `None` when that session cannot be resumed on its own.
 pub type Resume = fn(&str) -> Option<Vec<String>>;
 
+/// One module contributing to an origin's reading.
+#[derive(Debug, Clone, Copy)]
+pub struct ParserModule {
+    pub name: &'static str,
+    pub version: u32,
+}
+
+// Every parser runs through the shared framing, accounting and value readers.
+macro_rules! modules {
+    ($($module:path),* $(,)?) => { &[
+        ParserModule{name:"parse",version:crate::parse::VERSION},
+        ParserModule{name:"lines",version:crate::lines::VERSION},
+        ParserModule{name:"records",version:crate::records::VERSION},
+        ParserModule{name:"fields",version:crate::fields::VERSION},
+        ParserModule{name:"document",version:crate::document::VERSION},
+        ParserModule{name:"time",version:crate::time::VERSION},
+        ParserModule{name:"command",version:polylogue_model::command::VERSION},
+        $(ParserModule{name:stringify!($module),version:$module}),*
+    ] };
+}
+
 pub struct OriginSpec {
+    pub modules: &'static [ParserModule],
     pub name: &'static str,
     /// Text prefixes written by this harness in user-role messages.
     pub harness_prefixes: &'static [&'static str],
@@ -182,6 +214,15 @@ pub struct LinkPrefix {
 }
 
 impl OriginSpec {
+    /// Stable, ordered tuple of module names and versions.
+    pub fn reading_version(&self) -> String {
+        self.modules
+            .iter()
+            .map(|m| format!("{}={}", m.name, m.version))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     /// Where Polylogue's own writer puts a spool origin's files, relative
     /// to its root: the directory every location lies under, up to the
     /// first wildcard (`polylogue/hooks`). `None` for other arrivals.
@@ -232,6 +273,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             "This session is being continued from a previous session that ran out of context.",
             "Base directory for this skill:",
         ],
+        modules: modules!(crate::claude_code::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
@@ -250,6 +292,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-side",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::claude_code::VERSION,
+            crate::claude_code::side::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::side::SIDE_ROOT,
@@ -268,6 +314,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-history",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::claude_code::VERSION,
+            crate::claude_code::side::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
@@ -297,6 +347,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             "<user_action>",
             "<permissions instructions>",
         ],
+        modules: modules!(crate::codex::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::codex::ROOT,
@@ -315,6 +366,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "codex-database",
         harness_prefixes: &[],
+        modules: modules!(crate::codex::VERSION, crate::codex::database::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::codex::database::ROOT,
@@ -333,6 +385,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "gemini-cli",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::gemini_cli::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
@@ -350,6 +407,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity",
+        modules: modules!(crate::antigravity::VERSION),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -368,6 +426,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity-exports",
+        modules: modules!(crate::antigravity::VERSION),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
@@ -387,6 +446,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "hermes",
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::hermes::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
@@ -405,6 +465,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok-cli",
         harness_prefixes: &[],
+        modules: modules!(crate::grok_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
@@ -423,6 +484,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "polylogue-repo-lookup",
         harness_prefixes: &[],
+        modules: modules!(crate::repo_lookup::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -441,6 +503,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(crate::hook_spool::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -459,6 +522,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::browser_capture::VERSION,
+            crate::chatgpt::VERSION,
+            crate::claude_ai::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -477,6 +545,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "export-file",
         harness_prefixes: &[],
+        modules: &[],
         support: Support::Kept,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -495,6 +564,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::export::VERSION,
+            crate::polylogue_export::VERSION,
+            polylogue_model::export::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -513,6 +587,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "chatgpt",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -541,6 +616,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-ai",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -566,6 +642,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-design",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -584,6 +661,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::ai_studio::VERSION,
+            crate::chatgpt::VERSION,
+            crate::export::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
@@ -612,6 +694,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::gemini_app::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -640,6 +723,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok",
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::grok::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -665,6 +749,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::otel_genai::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -683,6 +772,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openrouter::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::openrouter::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
@@ -703,6 +797,11 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::openai_chat::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,

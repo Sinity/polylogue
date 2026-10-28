@@ -1,0 +1,24 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "session": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [],
+    "sessions": [
+      {
+        "id": "claude-code:synthetic",
+        "kind": "main"
+      }
+    ]
+  }
+}

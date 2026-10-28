@@ -47,6 +47,7 @@ pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
 pub mod vectors;
+mod versions;
 mod write_lock;
 pub mod writer;
 mod zip_members;

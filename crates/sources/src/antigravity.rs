@@ -13,6 +13,8 @@ use std::path::Path;
 
 pub mod server;
 
+pub const VERSION: u32 = 1;
+
 pub const ORIGIN: &str = "antigravity";
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb"];
 

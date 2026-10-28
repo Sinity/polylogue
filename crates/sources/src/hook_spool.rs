@@ -22,6 +22,9 @@
 //! That ID, the line's time and its process stay in its data; storing the
 //! same file again adds none.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;

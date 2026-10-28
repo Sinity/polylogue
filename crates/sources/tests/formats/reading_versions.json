@@ -1,0 +1,86 @@
+{
+  "ai-studio": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::ai_studio::VERSION=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1",
+    "4bf151921755c306aa4b96d12bec54fa17e77ffe3d47507960665afb311cf8f4"
+  ],
+  "browser-capture": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::browser_capture::VERSION=1,crate::chatgpt::VERSION=1,crate::claude_ai::VERSION=1",
+    "eeeaf9ce9912f52ce70934fc0a3f1c6cdb23f5f81c1794ea0de7858e526bc5cc"
+  ],
+  "chatgpt": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1",
+    "1bc209fb3af4089b0121b90809a5a9102835769ee7bb94a045a6c4d9b9570d7d"
+  ],
+  "claude-ai": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::claude_ai::VERSION=1",
+    "47eb6dae74c69921e6e5cd4b6108fa85c6873bd82fa18f490e76bba612e24d3b"
+  ],
+  "claude-code": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::claude_code::VERSION=1",
+    "923f42ec016a9be072fe6685a47a8bb65494c2c3aed3202085452d3705f19cc3"
+  ],
+  "claude-code-history": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::claude_code::VERSION=1,crate::claude_code::side::VERSION=1",
+    "fcf46e3ec35d7d748241f9d5088370db0ae10333cf77092f9bd62b9f43c1c108"
+  ],
+  "claude-code-side": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::claude_code::VERSION=1,crate::claude_code::side::VERSION=1",
+    "38a04b627a5429b12541b14887a42d5a98eece347feb669acbd712038441b445"
+  ],
+  "claude-design": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::claude_ai::VERSION=1",
+    "a6497920b701fe1cc53a37d0b0136d8b689f95704609f1df0084d9de4f3dd16f"
+  ],
+  "codex": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::codex::VERSION=1",
+    "f83f53502ac866d65032aa03324ac60ba028ddabd227a4a6fde17ee542848d0f"
+  ],
+  "codex-database": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::codex::VERSION=1,crate::codex::database::VERSION=1",
+    "b61faf05844dbf29476c3c6c0dc8aedba63168380ce206f9e594f2a4a8c13ce4"
+  ],
+  "gemini-app": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::export::VERSION=1,crate::gemini_app::VERSION=1",
+    "774a4bc99c4b66a4165f4b5e07ca4ea1a98fec36386edd2e775cfbb4adc64877"
+  ],
+  "gemini-cli": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1,crate::gemini_cli::VERSION=1",
+    "4ce001bf521c33ecc55b375747916dfd7c115e81511f9c3484309453e7950fa5"
+  ],
+  "grok": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::export::VERSION=1,crate::grok::VERSION=1",
+    "a66eaf35473eead85f141a37c9368ee7f8cb4934cdafbde4974058c0a1942e9a"
+  ],
+  "grok-cli": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::grok_cli::VERSION=1",
+    "4eb451be6ad47c8cf6934bcac3c6a6a5cd2fe6c6f90719b75896b40a9978f8cf"
+  ],
+  "hermes": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::export::VERSION=1,crate::hermes::VERSION=1",
+    "20420448fb893639217aa0c7c1f64e6f402752b4615ccfdaab721e60ebd5aecb"
+  ],
+  "hook-spool": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::hook_spool::VERSION=1",
+    "84294bbf9b2952ea4d6e7e593d2ad3031c6291bd9b36a1afd6ca8658828e59c3"
+  ],
+  "openai-chat": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1,crate::openai_chat::VERSION=1",
+    "1a1b7a83862ae4064618de9e7219016f672f689112ccb920c8d00ae4f5650f9a"
+  ],
+  "openrouter": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1,crate::openrouter::VERSION=1",
+    "2df8e7400b11eb34a6b92da00e7d87766558c10b247f264efaf3cbc94c93d6f8"
+  ],
+  "otel-genai": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::chatgpt::VERSION=1,crate::export::VERSION=1,crate::otel_genai::VERSION=1",
+    "f3fdd80c49f0ed356ee4689bcaa6ccd3e4366a12fa5c9bfc04c01c0792ce16e1"
+  ],
+  "polylogue-export": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::export::VERSION=1,crate::polylogue_export::VERSION=1,polylogue_model::export::VERSION=4",
+    "94a97318c54518ff3984b7948b7bb27a5fbed0511ca3551d4e7c37cdc650ba25"
+  ],
+  "polylogue-repo-lookup": [
+    "parse=1,lines=1,records=1,fields=1,document=1,time=1,command=1,crate::repo_lookup::VERSION=1",
+    "d9d36531539b83d25eb6fa1ee287a9946e54934ff3041677de36a4bfe8371ffe"
+  ]
+}
