@@ -1039,3 +1039,6 @@ fn record_turn(
         Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
     }
 }
+
+#[cfg(test)]
+mod tests;
