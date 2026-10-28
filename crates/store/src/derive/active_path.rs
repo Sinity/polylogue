@@ -13,6 +13,7 @@ use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
+    products: &[],
     version: Version::Rules(5),
     after: &[],
     run: |tx, pk, _| run(tx, pk),

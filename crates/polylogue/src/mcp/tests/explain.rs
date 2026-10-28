@@ -4,7 +4,7 @@ use super::*;
 fn explain_is_a_table_tool_with_paged_declarations_and_query_errors() {
     let w = test_daemon::start("grammar discovery");
     let archive = Archive::at(&w.daemon.archive.root);
-    assert!(tools().iter().any(|t| t.name == "explain"));
+    assert!(tools().iter().any(|tool| tool["name"] == "explain"));
     let page: serde_json::Value = serde_json::from_str(
         &call(
             &archive,

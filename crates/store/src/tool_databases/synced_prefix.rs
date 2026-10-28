@@ -119,9 +119,8 @@ impl SyncedPrefix {
             hash: hash.finalize().to_hex().to_string(),
         })
         .map_err(std::io::Error::from)?;
-        atomicwrites::AtomicFile::new(checkpoint(out), atomicwrites::AllowOverwrite)
-            .write(|file| file.write_all(&bytes))
-            .map_err(std::io::Error::from)?;
+        let path = checkpoint(out);
+        polylogue_model::atomic_write::write_atomic(&path, &bytes, None)?;
         Ok(())
     }
 

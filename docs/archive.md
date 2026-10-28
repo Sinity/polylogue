@@ -81,6 +81,7 @@ The schema tools describe the real shape of an origin's stored inputs without in
 - **Paths** start at the root and use `/` between components; `[]` is an array element and `*` an unnamed member; literal `~`, `/`, `*` and `[]` in names are escaped as `~0`, `~1`, `~2`, `~3`.
 - **Counts per path:** `types` (values of each JSON type), `occurrences` (all values), `present` (parents with at least one value there), `parents` (eligible parents), `missing` (`parents - present`) and `required` (every eligible parent had it). These are observations of the sample, not a guarantee about future inputs.
 - **A diff** reports each kind of change separately, ordered by path, and labels populations as incomparable when their origins, revisions or reads differ, while still showing what differs.
+- Observation streams records and discards scalar bodies. Memory follows schema shape and nesting depth rather than record count or scalar length; deep JSON is read without a fixed depth cutoff. Malformed input, including an unfinished array or trailing content, is refused.
 - Tool databases contribute their row dumps' column shapes and table structure; SQL text stays out. Browser captures are Polylogue's own format and have no inferred schema.
 
 ## Laws

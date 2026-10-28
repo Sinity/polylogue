@@ -2,7 +2,7 @@
 
 Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table as Polylogue uses it, the command-line grammar and the rule that keeps the command set small, latency classes and Polylogue's budgets, the daemon's states as the command line sees them, warm state, completion and its catalog file, the picker, row addressing (`@N`, `@last`), footers and affordances, output, Polylogue's failure kinds and exit codes, and help.
 
-The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and answer envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's. The list of operations is generated into [reference/commands.md](reference/README.md). The query language is in [query.md](query.md); what a caller sends about itself and how its author is computed is in [assertions.md](assertions.md#authorship); writing out with `read --to` is in [reading.md](reading.md#writing-out); MCP as the agents' channel is in [agents.md](agents.md#mcp-server); the web is in [web.md](web.md).
+The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and answer envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md) crate's. The list of operations is generated into [reference/commands.md](reference/README.md). The query language is in [query.md](query.md); what a caller sends about itself and how its author is computed is in [assertions.md](assertions.md#authorship); writing out with `read --to` is in [reading.md](reading.md#writing-out); MCP as the agents' channel is in [agents.md](agents.md#mcp-server); the web is in [web.md](web.md).
 
 ## Command table
 
@@ -202,7 +202,7 @@ A query matching exactly one row, or a unique prefix, never opens the picker. `-
 
 ### Keys
 
-The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s, and Polylogue's web bindings are in [web.md](web.md). The picker uses Ctrl forms for letters that would otherwise type into its query.
+The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/web-shell.md)'s, and Polylogue's web bindings are in [web.md](web.md). The picker uses Ctrl forms for letters that would otherwise type into its query.
 
 | Act | Picker |
 |---|---|

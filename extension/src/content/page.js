@@ -14,7 +14,9 @@
   if (!provider) return;
   globalThis.polylogueContent = true;
 
-  const CHUNK_BYTES = 4 * 1024 * 1024;
+  // A body is sent in chunks as it arrives, so a slow download keeps
+  // talking to the background, which Chrome would otherwise stop as idle.
+  const CHUNK_BYTES = 256 * 1024;
   // Announce a change after the messages stop changing for this long.
   const CHANGE_PAUSE_MS = 3000;
 
@@ -26,10 +28,24 @@
     return btoa(text);
   }
 
+  /** Sends a body (a Blob, or a fetch Response read as it arrives). */
   async function sendBody(port, body) {
-    for (let at = 0; at < body.size; at += CHUNK_BYTES) {
-      const chunk = new Uint8Array(await body.slice(at, at + CHUNK_BYTES).arrayBuffer());
-      port.postMessage({ type: "chunk", data: base64(chunk) });
+    if (body instanceof Blob) {
+      for (let at = 0; at < body.size; at += CHUNK_BYTES) {
+        const chunk = new Uint8Array(await body.slice(at, at + CHUNK_BYTES).arrayBuffer());
+        port.postMessage({ type: "chunk", data: base64(chunk) });
+      }
+      return;
+    }
+    if (body.body === null) return;
+    const reader = body.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (let at = 0; at < value.length; at += CHUNK_BYTES) {
+        const chunk = value.subarray(at, at + CHUNK_BYTES);
+        port.postMessage({ type: "chunk", data: base64(chunk) });
+      }
     }
   }
 
@@ -56,7 +72,7 @@
       try {
         const { body = null, ...facts } = await answer(request);
         if (!open) return;
-        port.postMessage({ type: "facts", ...facts, size: body ? body.size : null });
+        port.postMessage({ type: "facts", ...facts, has_body: body !== null });
         if (body) await sendBody(port, body);
         if (open) port.postMessage({ type: "end" });
       } catch (error) {
@@ -66,7 +82,7 @@
   });
 
   // Change notices. A conversation that is still being written (the
-  // provider shows its stop button) is announced once it finishes. Pages
+  // provider shows its stop button) is announced once it stops changing. Pages
   // change their markup all the time (menus, animations); only a change of
   // the conversation's text, or another page, is announced.
   let timer = null;

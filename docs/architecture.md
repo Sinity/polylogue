@@ -175,7 +175,7 @@ daemon refuses to start; paths are absolute.
 
 - **The logical day** is one `DaySetting`, a named zone and a start time
   (default 04:00), with one implementation in the common
-  [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md)
+  [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md)
   crate. Dates, `today` and `group by day` all mean it. In primary mode
   Polylogue reads Sinex's day setting and has none of its own.
 - **Two homes for settings.** Deployment configuration (the Nix modules, the

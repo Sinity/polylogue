@@ -108,7 +108,7 @@ impl fmt::Display for Target {
 
 impl Serialize for Target {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
+        s.serialize_newtype_struct("polylogue_reference", &self.to_string())
     }
 }
 

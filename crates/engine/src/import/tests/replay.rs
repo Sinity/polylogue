@@ -261,3 +261,64 @@ fn register(root: &std::path::Path) -> Vec<String> {
     }
     rows
 }
+
+#[test]
+fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions() {
+    fn read(w: &ClaudeHome) -> serde_json::Value {
+        let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
+        let reader = pool.reader().unwrap();
+        let id = polylogue_model::SessionId::parse("ai-studio:Chat").unwrap();
+        serde_json::json!({
+            "messages": reader.messages(&id, false).unwrap(),
+            "sessions": reader.query("SELECT id FROM session WHERE stub=0 ORDER BY id", &[]).unwrap(),
+            "sources": reader.query("SELECT m.id,s.source_start,s.source_end FROM message_source s JOIN message m ON m.pk=s.message_pk ORDER BY m.id", &[]).unwrap(),
+        })
+    }
+    let w = ClaudeHome::new();
+    let path = w.dir.path().join("Chat.json");
+    let empty = w.dir.path().join("Empty.json");
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "runSettings": {"model": "models/test"},
+        "systemInstruction": {"text": "Be brief"},
+        "chunkedPrompt": {"chunks": [
+            {"role":"user", "id":"ask", "text":"question"},
+            {"role":"model", "isThought":true, "text":"thinking", "tokenCount":7},
+            {"role":"model", "id":"reply", "text":"answer", "tokenCount":3,
+             "inlineImage":{"mimeType":"image/png", "data":"aGk="}},
+            {"role":"unknown", "text":"unreadable"}
+        ]}
+    }))
+    .unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(&empty, br#"{"runSettings":{},"systemInstruction":{"text":"header"},"chunkedPrompt":{"chunks":[]}}"#).unwrap();
+    let (mut e, lock) = engine(&w, 64);
+    let imported = e.import(&[path.clone(), empty.clone()]).unwrap();
+    assert!(imported.pass.errors.is_empty(), "{imported:?}");
+    let before = read(&w);
+    assert_eq!(
+        before["sessions"],
+        serde_json::json!([{"id":"ai-studio:Chat"}])
+    );
+    let messages = before["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(messages[2].to_string().contains("thinking"));
+    assert!(messages[3].to_string().contains("answer"));
+    for row in before["sources"].as_array().unwrap() {
+        if row["id"].as_str().unwrap().ends_with("#system:0:") {
+            continue;
+        }
+        let start = row["source_start"].as_u64().unwrap() as usize;
+        let end = row["source_end"].as_u64().unwrap() as usize;
+        let chunk: serde_json::Value = serde_json::from_slice(&bytes[start..end]).unwrap();
+        assert!(matches!(chunk["role"].as_str(), Some("user" | "model")));
+    }
+    drop(e);
+    drop(lock);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(empty).unwrap();
+    delete_index(&w.root);
+    let (mut e, _lock) = engine(&w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(read(&w), before);
+}

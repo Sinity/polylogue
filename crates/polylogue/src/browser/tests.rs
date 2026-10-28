@@ -263,7 +263,7 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        crate::daemon::Response::Ok { data } => Ok(data["action"].clone()),
+        crate::daemon::Response::Ok { data, .. } => Ok(data["action"].clone()),
         crate::daemon::Response::Error { kind, .. } => Err(kind),
     }
 }
@@ -391,7 +391,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
             &w.daemon,
         )
     };
-    let crate::daemon::Response::Ok { data } = start("chatgpt") else {
+    let crate::daemon::Response::Ok { data, .. } = start("chatgpt") else {
         panic!("the job did not start")
     };
     let id = data["job"]["id"].as_str().unwrap().to_owned();
@@ -490,23 +490,70 @@ fn a_capture_larger_than_axums_default_body_limit_is_accepted() {
     assert_eq!(sent.json()["new"], true);
 }
 
-#[test]
-fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
-    let w = test_daemon::start("fixture");
-    let host = host(&w);
-    let body = serde_json::to_vec(&json!({
+/// A Grok capture whose question names one file, `raw-file`.
+fn grok_capture() -> Value {
+    json!({
         "polylogue_capture_kind":"browser_llm_session", "schema_version":1,
         "session":{"provider":"grok", "provider_session_id":"grok-raw", "turns":[]},
         "raw_provider_payload":{
             "conversation":{"conversationId":"grok-raw", "title":"Grok fixture"},
             "responses":{"responses":[{"responseId":"raw-r1", "sender":"human", "message":"raw provider question", "fileAttachmentsMetadata":[{"fileMetadataId":"raw-file", "fileName":"notes.txt", "fileMimeType":"text/plain", "fileUri":"users/u/raw-file/content"}]}]}
         }
-    })).unwrap();
+    })
+}
+
+/// The file blobs of the Grok fixture's question once the loop has read
+/// a capture holding `text`.
+fn grok_file_blobs(
+    w: &TestDaemon,
+    host: &Arc<BrowserHost>,
+    text: &str,
+) -> Vec<Option<polylogue_model::BlobHash>> {
+    let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
+    until(
+        || match host.ask(&crate::daemon::Request::Read {
+            slices: true,
+            selection: None,
+            target: crate::daemon::ReadTarget::Session(session.clone()),
+            view: "full".into(),
+            format: "markdown".into(),
+            with_parents: false,
+            budget: None,
+            cursor: None,
+        }) {
+            Some(crate::daemon::Response::Ok { data, .. }) => data["content"].clone(),
+            _ => Value::Null,
+        },
+        |content| content.as_str().is_some_and(|t| t.contains(text)),
+    );
+    let messages = w
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    messages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            polylogue_model::Block::File(file) => Some(file.blob),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
+    let w = test_daemon::start("fixture");
+    let host = host(&w);
+    let body = serde_json::to_vec(&grok_capture()).unwrap();
     let read = exchange(&host, "POST", "/v1/captures/files", &body);
     assert_eq!(read.status, 200, "{:?}", read.json());
     assert_eq!(read.json()["files"][0]["id"], "raw-file");
     assert_eq!(read.json()["files"][0]["url"], "users/u/raw-file/content");
-    let mut capture: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(read.json()["files"][0]["stored"], Value::Null);
+    let mut capture = grok_capture();
     capture["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
     let sent = exchange(
         &host,
@@ -515,37 +562,54 @@ fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
         &serde_json::to_vec(&capture).unwrap(),
     );
     assert_eq!(sent.status, 200);
-    let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
-    until(
-        || match host.ask(&crate::daemon::Request::Read {
-            start: None,
-            target: crate::daemon::ReadTarget::Session(session.clone()),
-            view: "full".into(),
-            format: "markdown".into(),
-            with_parents: false,
-            budget: None,
-            cursor: None,
-        }) {
-            Some(crate::daemon::Response::Ok { data }) => data["content"].clone(),
-            _ => Value::Null,
-        },
-        |content| {
-            content
-                .as_str()
-                .is_some_and(|text| text.contains("raw provider question"))
-        },
-    );
     let hash = polylogue_model::BlobHash::of(b"fetched file bytes");
-    let messages = w
-        .daemon
-        .reads
-        .reader()
-        .unwrap()
-        .messages(&session, false)
-        .unwrap();
-    assert!(messages[0].blocks.iter().any(
-        |block| matches!(block, polylogue_model::Block::File(file) if file.blob == Some(hash))
-    ));
+    assert_eq!(
+        grok_file_blobs(&w, &host, "raw provider question"),
+        [Some(hash)]
+    );
+}
+
+/// The extension downloads a file once: a later capture names the stored
+/// bytes by their hash, and the archive still links the file to them.
+#[test]
+fn a_file_the_archive_holds_is_named_by_its_hash_instead_of_sent_again() {
+    let w = test_daemon::start("fixture");
+    let host = host(&w);
+    let mut first = grok_capture();
+    first["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
+    let sent = exchange(
+        &host,
+        "POST",
+        "/v1/captures",
+        &serde_json::to_vec(&first).unwrap(),
+    );
+    assert_eq!(sent.status, 200);
+    let hash = polylogue_model::BlobHash::of(b"fetched file bytes");
+    grok_file_blobs(&w, &host, "raw provider question");
+
+    let mut later = grok_capture();
+    later["raw_provider_payload"]["responses"]["responses"][0]["message"] =
+        json!("raw provider question, edited");
+    let read = exchange(
+        &host,
+        "POST",
+        "/v1/captures/files",
+        &serde_json::to_vec(&later).unwrap(),
+    );
+    assert_eq!(read.status, 200, "{:?}", read.json());
+    assert_eq!(
+        read.json()["files"][0]["stored"],
+        json!({"blob": hash.to_string(), "size": 18})
+    );
+    later["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "blob": hash.to_string(), "size_bytes": 18}]);
+    let sent = exchange(
+        &host,
+        "POST",
+        "/v1/captures",
+        &serde_json::to_vec(&later).unwrap(),
+    );
+    assert_eq!(sent.status, 200);
+    assert_eq!(grok_file_blobs(&w, &host, "edited"), [Some(hash)]);
 }
 
 #[test]

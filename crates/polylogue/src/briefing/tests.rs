@@ -299,7 +299,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         "claimed pl-1, still open",
         "last answer: \"Finished the parser fix; one test still fails.\"",
         "Beads claimed here this week and still open:\n- pl-1",
-        "Checks that failed here with no later pass:\n- `proj check` failed",
+        "Verifications that failed here since their last pass:\n- `proj check` failed",
         "in /home/op/proj, job proj-check: clippy failed; `xtask history failures 1`\n- `cargo test` exit 101",
         "formatting",
     ] {

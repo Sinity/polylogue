@@ -1,6 +1,6 @@
 //! Printing the change feed. A completion line is forwarded only after every
 //! preceding line has been validated and written, then stdout is flushed.
-use super::{Archive, Request, Response, fail, when_ready};
+use super::{Archive, Request, Response, fail, wait_for_ready};
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
 use std::io::{self, BufRead, BufReader, Write};
@@ -13,16 +13,28 @@ fn invalid(message: &str) -> io::Error {
 
 /// `changes`: writes one finite batch to stdout, ending with its
 /// completion line.
-pub fn run(request: &Request) -> ExitCode {
+pub fn run(request: &Request, timeout: Option<std::time::Duration>) -> ExitCode {
     let archive = Archive::at(&Archive::default_root());
-    match send(&archive, request, &mut io::stdout().lock()) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
+    match send(&archive, request, &mut io::stdout().lock(), timeout) {
+        Ok(code) => ExitCode::from(code),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            fail(true, "deadline_exceeded", &e.to_string(), 7)
+        }
         Err(e) => fail(true, "io", &e.to_string(), 1),
     }
 }
 
-fn send(archive: &Archive, request: &Request, output: &mut impl Write) -> io::Result<bool> {
+fn send(
+    archive: &Archive,
+    request: &Request,
+    output: &mut impl Write,
+    timeout: Option<std::time::Duration>,
+) -> io::Result<u8> {
     let Request::Changes { since } = request else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -39,8 +51,20 @@ fn send(archive: &Archive, request: &Request, output: &mut impl Write) -> io::Re
         .transpose()?;
     // Only the connection is retried. A partial stream is never resent
     // within this output attempt; the caller keeps its previous position.
-    let mut socket = when_ready(archive, || UnixStream::connect(archive.socket()))?;
-    serde_json::to_writer(&mut socket, request)?;
+    let duration = timeout.unwrap_or_else(crate::daemon::execution::timeout);
+    let deadline_ms = Some(crate::daemon::execution::deadline(duration));
+    let mut socket = wait_for_ready(archive, deadline_ms, || {
+        UnixStream::connect(archive.socket())
+    })?;
+    socket.set_read_timeout(Some(
+        crate::daemon::execution::remaining(deadline_ms) + std::time::Duration::from_secs(1),
+    ))?;
+    socket.set_write_timeout(Some(duration))?;
+    let outgoing = crate::daemon::execution::Outgoing {
+        request,
+        deadline_ms,
+    };
+    serde_json::to_writer(&mut socket, &outgoing)?;
     socket.write_all(b"\n")?;
     receive(BufReader::new(socket), output, previous.as_deref())
 }
@@ -49,7 +73,7 @@ fn receive(
     mut input: impl BufRead,
     output: &mut impl Write,
     previous: Option<&str>,
-) -> io::Result<bool> {
+) -> io::Result<u8> {
     let mut begun = None;
     let mut seen = 0_u64;
     let mut text = String::new();
@@ -62,12 +86,15 @@ fn receive(
         }
         let response: Response = serde_json::from_str(&text).map_err(io::Error::other)?;
         let value = match response {
-            Response::Ok { data } => data,
+            Response::Ok { data, .. } => data,
             response @ Response::Error { .. } => {
                 serde_json::to_writer(&mut *output, &response)?;
                 output.write_all(b"\n")?;
                 output.flush()?;
-                return Ok(false);
+                let Response::Error { kind, .. } = response else {
+                    unreachable!()
+                };
+                return Ok(crate::daemon::execution::exit_code(&kind));
             }
         };
         let line: Line = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
@@ -146,7 +173,7 @@ fn receive(
         output.write_all(b"\n")?;
         if complete {
             output.flush()?;
-            return Ok(true);
+            return Ok(0);
         }
     }
 }

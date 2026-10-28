@@ -83,7 +83,7 @@ Where a deployment manages Polylogue's configuration (a Nix module option, for e
 
 The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, because it holds the AI text, which Sinex does not index; Sinex callers reach AI text through this route.
 
-- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is a law of the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md).
+- Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is a law of the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md).
 - Sinex parts are compiled for and run by Sinex through its API; results join on references and time.
 - Every answer reports the positions it read in each product and their lag, so a mixed answer is reproducible and its staleness visible.
 - `sx:` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).

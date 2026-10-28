@@ -107,7 +107,7 @@ macro_rules! scoped_id {
 
         impl Serialize for $name {
             fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                s.collect_str(self)
+                s.serialize_newtype_struct("polylogue_reference", &self.to_string())
             }
         }
 

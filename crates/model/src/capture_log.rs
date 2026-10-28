@@ -41,6 +41,43 @@ impl Header {
     }
 
     pub fn verifies(&self, bytes: &[u8]) -> bool {
-        bytes.len() as u64 == self.length && blake3::hash(bytes).to_hex().as_str() == self.digest
+        self.matches(bytes.len() as u64, blake3::hash(bytes))
+    }
+
+    /// Checks the length and digest of bytes supplied in chunks.
+    pub fn verifier(&self) -> Verifier<'_> {
+        Verifier {
+            header: self,
+            length: Some(0),
+            hash: blake3::Hasher::new(),
+        }
+    }
+
+    fn matches(&self, length: u64, digest: blake3::Hash) -> bool {
+        length == self.length && digest.to_hex().as_str() == self.digest
     }
 }
+
+pub struct Verifier<'a> {
+    header: &'a Header,
+    length: Option<u64>,
+    hash: blake3::Hasher,
+}
+
+impl Verifier<'_> {
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.length = self
+            .length
+            .and_then(|length| length.checked_add(bytes.len() as u64));
+        self.hash.update(bytes);
+    }
+
+    /// True only when the complete frame was supplied and its digest matches.
+    pub fn verifies(self) -> bool {
+        self.length
+            .is_some_and(|length| self.header.matches(length, self.hash.finalize()))
+    }
+}
+
+#[cfg(test)]
+mod tests;

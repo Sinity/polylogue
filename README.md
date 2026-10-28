@@ -72,6 +72,8 @@ MCP and HTTP too.
   and other references generated from the code.
 - [`AGENTS.md`](AGENTS.md): how work is done in this repository, its layout and
   its commands.
+- [Python client](clients/python/README.md): the declared commands through CLI
+  JSON and the daemon, with unknown values and opaque IDs preserved.
 
 ## Licence
 

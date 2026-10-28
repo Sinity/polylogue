@@ -34,7 +34,7 @@ Every area page ends with its laws. Each law has a stable key unique in its page
 
 - **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
 - Integration test binaries are already one per area, so a law's tests sit in the binary of the area that owns it.
-- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) and run against Polylogue's occurrence keys.
+- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) and run against Polylogue's occurrence keys.
 - **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
 - Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).
 

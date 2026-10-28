@@ -394,3 +394,55 @@ fn near_builds_only_when_an_answer_needs_ranking() {
     };
     assert_eq!(position, text.find("near:").unwrap());
 }
+
+#[test]
+fn explicit_identity_equality_keeps_case_and_does_not_expand_a_prefix() {
+    let exact = c("notes where first_note = \"Root:Case\" current:true");
+    assert!(exact.params.contains(&Param::Text("Root:Case".into())));
+    assert!(!exact.sql.contains("first_note LIKE"));
+    let prefix = c("notes where first_note:Root");
+    assert!(prefix.sql.contains("first_note LIKE"));
+}
+
+#[test]
+fn kept_references_use_query_literals_without_splitting_their_ids() {
+    let mut options = opts(&[]);
+    let id = "source:λ | \"reader\".matches";
+    let columns = c("sessions").columns;
+    options.kept.insert(
+        id.into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: columns.clone(),
+            match_columns: vec![],
+        },
+    );
+    let reference = r#"result:"source:λ | \"reader\".matches""#;
+    let program = compile(&format!("{reference} | sort by id"), &options).unwrap();
+    assert!(
+        program
+            .params
+            .iter()
+            .any(|p| matches!(p,Param::Text(value) if value==id))
+    );
+    assert!(program.sql.contains("$.rows"));
+    assert!(!program.sql.contains("$.matches"));
+    assert!(matches!(
+        compile(&format!("{reference} title:other"), &options),
+        Err(QueryError::Invalid { .. })
+    ));
+    options.kept.insert(
+        "simple".into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: columns.clone(),
+            match_columns: columns,
+        },
+    );
+    assert!(
+        compile("result:simple.matches | count", &options)
+            .unwrap()
+            .sql
+            .contains("$.matches")
+    );
+}

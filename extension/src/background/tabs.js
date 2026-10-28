@@ -30,16 +30,23 @@ function once(chrome, tabId, request) {
   return new Promise((resolve, reject) => {
     const port = chrome.tabs.connect(tabId, { name: "polylogue" });
     let facts = null;
-    const chunks = [];
+    let hasBody = false;
+    const chunk = [];
     port.onMessage.addListener((message) => {
       if (message.type === "facts") {
-        const { type: _type, size: _size, ...rest } = message;
+        const { type: _type, has_body: present, ...rest } = message;
+        if (typeof present !== "boolean") {
+          reject(new PageError("invalid_page_reply"));
+          port.disconnect();
+          return;
+        }
+        hasBody = present;
         facts = rest;
       } else if (message.type === "chunk") {
-        chunks.push(decode(message.data));
+        chunk.push(decode(message.data));
       } else if (message.type === "end") {
         port.disconnect();
-        resolve({ ...facts, body: chunks.length ? new Blob(chunks) : null });
+        resolve({ ...facts, body: hasBody ? new Blob(chunk) : null });
       } else if (message.type === "failed") {
         port.disconnect();
         reject(new PageError(message.error));

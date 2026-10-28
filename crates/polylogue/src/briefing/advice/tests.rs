@@ -1,0 +1,173 @@
+use super::*;
+use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+
+const T0: i64 = 1_790_000_000_000;
+
+/// Sessions in `/home/op/proj` that ran `cargo test` and `cargo fmt`:
+/// each run is (session, command, outcome, minute).
+fn ran(runs: &[(&str, &str, &str, i64)]) -> (tempfile::TempDir, Fixture) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let mut sessions = std::collections::BTreeMap::new();
+    for (session, command, outcome, minute) in runs {
+        let (s, m) = *sessions.entry(*session).or_insert_with(|| {
+            let s = f
+                .session(SessionFacts {
+                    id: session,
+                    cwd: Some("/home/op/proj"),
+                    started: Some(T0),
+                    last: Some(T0 + 3_600_000),
+                    ..SessionFacts::default()
+                })
+                .unwrap();
+            let m = f
+                .message(
+                    s,
+                    MessageFacts {
+                        id: session,
+                        role: "assistant",
+                        written_by: "model",
+                        at: Some(T0),
+                        ..MessageFacts::default()
+                    },
+                )
+                .unwrap();
+            (s, m)
+        });
+        f.tool_call(
+            s,
+            m,
+            CallFacts {
+                tool: "Bash",
+                action: "shell",
+                command: Some(command),
+                outcome,
+                exit_code: (*outcome == "error").then_some(101),
+                at: Some(T0 + minute * 60_000),
+                ..CallFacts::default()
+            },
+        )
+        .unwrap();
+    }
+    f.derive().unwrap();
+    (dir, f)
+}
+
+fn advise(f: &Fixture, command: &str) -> Prepared {
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
+    advice(&reader, Path::new("/home/op/proj"), command, None, now).unwrap()
+}
+
+#[test]
+fn a_verification_that_failed_repeatedly_since_its_last_pass_gets_a_hint() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "ok", 1),
+        ("claude-code:s1", "cargo test", "error", 2),
+        ("claude-code:s2", "cargo test", "error", 3),
+    ]);
+    let p = advise(&f, "cargo test");
+    assert!(!p.empty);
+    assert_eq!(p.event, "advice");
+    for expected in [
+        "`cargo test` failed 2 times here",
+        "across 2 sessions, with no pass since",
+        "The last failure is in claude-code:s2, exit 101",
+        "`polylogue read claude-code:s2`",
+    ] {
+        assert!(
+            p.text.contains(expected),
+            "missing {expected:?} in {}",
+            p.text
+        );
+    }
+    assert!(p.refs.is_empty());
+}
+
+#[test]
+fn anything_less_certain_says_nothing() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo fmt", "error", 2),
+        ("claude-code:s1", "cargo fmt", "error", 3),
+        ("claude-code:s1", "cargo fmt", "ok", 4),
+    ]);
+    // One failure is not a pattern.
+    assert!(advise(&f, "cargo test").empty);
+    // A later pass clears the failures before it.
+    assert!(advise(&f, "cargo fmt").empty);
+    // A command that runs no verification, and a verification never run here.
+    assert!(advise(&f, "ls -la").empty);
+    assert!(advise(&f, "cargo clippy").empty);
+}
+
+#[test]
+fn the_brief_and_advice_count_only_failures_after_the_last_pass() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo test", "error", 2),
+        ("claude-code:s1", "cargo test", "ok", 3),
+        ("claude-code:s2", "cargo test", "error", 4),
+    ]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let failures = reader
+        .failing_commands(&["/home/op/proj".into()], T0, None)
+        .unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].times, 1);
+    assert_eq!(failures[0].sessions, 1);
+    assert_eq!(failures[0].session, "claude-code:s2");
+    assert!(advise(&f, "cargo test").empty);
+}
+
+#[test]
+fn one_verification_has_the_same_failures_as_in_the_full_list() {
+    let (_dir, f) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo fmt", "error", 2),
+        ("claude-code:s2", "cargo test", "error", 3),
+        ("claude-code:s2", "cargo fmt", "error", 4),
+    ]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let dirs = ["/home/op/proj".into()];
+    let all = reader.failing_commands(&dirs, T0, None).unwrap();
+    let one = reader
+        .failing_commands(&dirs, T0, Some("cargo test"))
+        .unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].times, 2);
+    assert_eq!(
+        one,
+        all.into_iter()
+            .filter(|f| f.command == "cargo test")
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reader
+            .failing_commands(&dirs, T0, Some("cargo check"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn unrelated_calls_leave_advice_identity_unchanged() {
+    let (_dir, first) = ran(&[
+        ("claude-code:s1", "cargo test", "error", 1),
+        ("claude-code:s2", "cargo test", "error", 1),
+    ]);
+    let (_other_dir, reordered) = ran(&[
+        ("claude-code:other", "cargo fmt", "error", 0),
+        ("claude-code:s2", "cargo test", "error", 1),
+        ("claude-code:s1", "cargo test", "error", 1),
+    ]);
+    let first = advise(&first, "cargo test");
+    let reordered = advise(&reordered, "cargo test");
+    assert!(!first.empty);
+    assert_eq!(first.advice_id, reordered.advice_id);
+    assert_eq!(first.text, reordered.text);
+}

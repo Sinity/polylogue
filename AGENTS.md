@@ -108,10 +108,12 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 
 | Command | Does |
 |---|---|
-| `cargo xtask check` | formatting, crate boundaries, clippy with warnings denied, and every test |
+| `cargo xtask check` | formatting, crate boundaries, both Clippy configurations, standalone tests and Sinex client/primary-mode tests |
 | `cargo xtask fast` | formatting, boundaries and clippy, without tests |
 | `cargo xtask test -p <crate> -E 'test(<name>)'` | selected tests under nextest |
-| `cargo xtask test --changed` | tests of packages changed since the merge base, and their dependents |
+| `cargo xtask test --changed` | tests selected through changed packages and their dependents |
+| `cargo xtask test --no-run` | build every test binary without running tests |
+| `cargo xtask sinex-client` | Sinex client and primary-mode application tests |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
@@ -119,12 +121,14 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 | `nix flake check` | the locked package build |
 | `nix build` | the package |
 
-All test runs share one build of the whole workspace with one feature set, so
-`test`, `scenarios` and `check` reuse each other's artifacts; `-p` narrows
-which tests run, not what is built. Every xtask run is recorded in devkit's
-history database.
+Default tests build the standalone workspace with the fault-test features;
+Sinex client tests use a separate primary-mode build. `test`, `scenarios` and
+`check` reuse these artifacts. Package and test filters select which tests
+run. Changed-package selection enables primary mode when its dependencies
+are affected; the landing check always runs both configurations. Every xtask
+run is recorded in devkit's history database.
 
-Designed and not built yet: `cargo xtask compile`, `fuzz` and `coverage`;
+Designed and not built yet: `cargo xtask compile` and `coverage`;
 `cargo xtask laws`, which lists each law in `docs/` with the tests whose names
 carry its key; `cargo xtask docs`, which regenerates `docs/reference/`; and
 flake checks beyond the package build (clippy, fmt, nextest, boundaries,
@@ -335,3 +339,33 @@ archive, `/home/op` paths). Credentials, real captures, private reports and
 real databases stay out of Git, and so do paths into a particular machine.
 Reading the operator's real files on the development machine for development
 and measurement is fine; report figures, not contents.
+
+## Cloud sessions and changes to polylogue-sinex-common
+
+Cloud sessions (Claude Code on the web, Codex cloud) run on a fresh
+VM without AgentCTL, `/realm` or the operator's services; run `cargo xtask`
+commands there directly. The environment's setup script runs
+`bash dev/cloud/setup.sh`, after which every shell is in the development
+shell.
+
+- A Polylogue session must include the polylogue-sinex-common and sinex
+  repositories: Cargo fetches Git dependencies from both, and a session
+  reaches only the repositories it includes.
+- `cargo xtask fast`, `cargo xtask check` and `cargo xtask test [-p <crate>]
+  [-E <filterset>]` work as on the host. The first workspace build takes
+  minutes; run it in the background. `xtask bench` and anything that reads
+  the operator's data do not run there; report them as not run.
+- Push a branch and open a pull request; do not merge.
+
+A change that needs polylogue-sinex-common changed too starts there.
+`cargo xtask link-common [<path>]` builds this workspace against a checkout
+of it (the path, else `$POLYLOGUE_SINEX_COMMON`, else
+`../polylogue-sinex-common`), and entering the development shell does the
+same when that checkout exists. It writes the git-ignored
+`.cargo/local.toml`, and Cargo.lock then names the local crates, so the lock
+is not committed in that state. `cargo xtask unlink-common` restores the lock and
+keeps the shell from linking again. Merge the common pull request first;
+its workflow then opens a pull request here that moves Cargo.lock to the new
+commit. Convert the callers on that branch, or run `cargo update -p devkit
+-p hashed-blobs -p credential-masking` on the branch that converts them, so
+the lock change and the callers land together.

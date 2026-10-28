@@ -164,7 +164,7 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - **imports:** packages imported and paths refused by the last import;
 - **field accounting:** `unused` paths per origin and reading version ([archive.md](archive.md#parsing)).
 
-Its figures and verdicts use the shared status format of [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md); the rest of status is in [operations.md](operations.md#status). The health report raises an item for every non-empty `unrecognized` class, every refusal, every unwired hook event, and every origin silent for longer than its own usual gap. Status is computed on request from stored facts; nothing is checked on a schedule.
+Its figures and verdicts use the shared status format of [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md); the rest of status is in [operations.md](operations.md#status). The health report raises an item for every non-empty `unrecognized` class, every refusal, every unwired hook event, and every origin silent for longer than its own usual gap. Status is computed on request from stored facts; nothing is checked on a schedule.
 
 ## Laws
 

@@ -255,7 +255,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 ### Daily series and rhythm
 
-- A daily series of any summable metric over the one logical day (the shared `DaySetting`, [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md)): logical sessions, physical sessions, prompts, responses, tool calls, tool errors with denominator, tokens per lane, API-equivalent cost, recorded-report tokens and cost, clustered time, or any field through `group by day(at) | agg sum:F`.
+- A daily series of any summable metric over the one logical day (the shared `DaySetting`, [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md)): logical sessions, physical sessions, prompts, responses, tool calls, tool errors with denominator, tokens per lane, API-equivalent cost, recorded-report tokens and cost, clustered time, or any field through `group by day(at) | agg sum:F`.
 - Each day carries `complete`, `unknown_items` and `untimed_items` for that metric; untimed items go to an `unknown day` row. A session crossing midnight contributes by each item's own time.
 - `baseline_7d` is computed only over 7 complete previous days. **Level changes** are found by binary segmentation with a BIC-style penalty, minimum segment 7 days, over runs of at least 14 complete days, each with means before and after, and labelled "level change", never "trend".
 - **Rhythm:** a 7 × 24 grid by logical weekday and clock hour, of any countable unit.

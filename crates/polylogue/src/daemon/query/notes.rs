@@ -37,9 +37,7 @@ pub fn about(targets: &[Target]) -> String {
 }
 
 /// A value as a quoted query string.
-pub fn quoted(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-}
+pub use polylogue_query::quoted;
 
 fn text(conditions: &str) -> String {
     if conditions.trim().is_empty() {

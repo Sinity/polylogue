@@ -74,7 +74,7 @@ A halt survives a restart and clears only when what it depends on changes: a new
 8. **Settings changed by anyone but the operator** since he last looked.
 9. **Harnesses:** for each installed harness, whether its hooks and MCP entry are installed, and the last hook line and MCP call seen.
 
-**Figures.** `status --json` returns the same content as typed figures `{name, value, state, reason, age}` in the shared figure-and-verdict format of common's [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md). Polylogue's figure states are `measured`, `none_found`, `not_measured` (with the reason) and `unavailable`.
+**Figures.** `status --json` returns the same content as typed figures `{name, value, state, reason, age}` in the shared figure-and-verdict format of common's [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/command-surface.md). Polylogue's figure states are `measured`, `none_found`, `not_measured` (with the reason) and `unavailable`.
 - Every figure has its own deadline; one that misses it is `not_measured: timed out`, and the rest still answers within the class budget.
 - A figure is reused only while its key (file times, counters, positions) is unchanged, and is then shown with its age; time alone never makes an old value reusable.
 - Totals come from counters the writer keeps in the transaction of the rows they count, never from a recount.
@@ -160,7 +160,7 @@ Deployment configuration is loaded once by `main`, from the config file, then fl
 | mode (`standalone` or `primary`), the Sinex endpoint, producer identity and credential file | deployment: `sinex.toml` | whether Polylogue runs on Sinex |
 | archive location | `$XDG_DATA_HOME/polylogue` by default, or `--archive DIR` | where the data is kept |
 | listen address and authentication of the web UI and HTTP API | deployment: `polylogue.toml`, `POLYLOGUE_LISTEN`, `POLYLOGUE_AUTH_TOKEN_FILE`; default loopback on a fixed default port with a peer-uid check; a non-loopback address needs a token file and refuses to start without one | where the web UI is reached from |
-| the logical day (zone and start) | standalone: deployment; in primary mode, read from Sinex, with no value of Polylogue's own | the operator's day; its meaning is common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) `DaySetting` |
+| the logical day (zone and start) | standalone: deployment; in primary mode, read from Sinex, with no value of Polylogue's own | the operator's day; its meaning is common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) `DaySetting` |
 | the notification route command, value targets and action commands | deployment: `signals.toml` | which programs may be run or written to |
 | enabled variants | authored `setting` | which translations or summaries readers show ([assertions.md#variants](assertions.md#variants)) |
 | quiet hours and the interrupt budget `signal.interrupts_per_hour` | standalone: authored `setting`; in primary mode Sinex's, applied by Sinex's deliverer | the operator's attention |

@@ -78,19 +78,19 @@ pub struct SessionWork {
     pub plan_open: Vec<String>,
 }
 
-/// A check (test, build, lint) that failed under a directory with no later
-/// pass of the same check there.
+/// A verification that failed under a directory since its last pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FailingCommand {
-    /// The check as the work graph names it (`cargo test`).
     pub command: String,
-    /// The latest failing command as given.
     pub latest: Option<String>,
     pub exit_code: Option<i64>,
     pub at: Option<Timestamp>,
     pub session: String,
-    /// Failures since the window began.
     pub times: u64,
+    pub sessions: u64,
+    pub first: Option<Timestamp>,
+    /// The latest failure's source location and time.
+    pub state: String,
 }
 
 /// A Bead whose latest claim under a directory is still open.
@@ -433,53 +433,87 @@ impl Reader<'_> {
         Ok(Some(work))
     }
 
-    /// Checks (tests, builds, lints: the work graph's verifications) that
-    /// failed since `since` in sessions under `dirs`, with no later pass of
-    /// the same check there, most recent first.
-    pub fn failing_commands(&self, dirs: &[String], since: i64) -> Result<Vec<FailingCommand>> {
+    /// Verifications that failed since `since` under `dirs`, counting only
+    /// failures after the last pass of the same verification there.
+    /// A title keeps advice on the verification index's title and time range.
+    pub fn failing_commands(
+        &self,
+        dirs: &[String],
+        since: i64,
+        title: Option<&str>,
+    ) -> Result<Vec<FailingCommand>> {
         let conn = self.conn()?;
-        let under = |alias: &str| {
-            format!(
-                "EXISTS (SELECT 1 FROM json_each(?1) d WHERE {alias}.cwd = d.value \
-                 OR ({alias}.cwd >= d.value || '/' AND {alias}.cwd < d.value || '0'))"
-            )
+        let title_condition = if title.is_some() {
+            "AND v.title = ?3"
+        } else {
+            ""
         };
         let sql = format!(
-            "SELECT v.title, t.command, t.exit_code, v.at, s.id,
-                    (SELECT count(*) FROM work_node f JOIN session fs ON fs.pk = f.session_pk
-                      WHERE f.kind = 'verification' AND f.title = v.title AND f.state = 'error'
-                        AND f.at >= ?2 AND {fs})
+            "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state,
+                    json_array(s.id, m.id, b.idx, v.at)
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
-              WHERE v.kind = 'verification' AND v.state = 'error' AND v.at >= ?2 AND {s}
-                AND NOT EXISTS (
-                    SELECT 1 FROM work_node u JOIN session us ON us.pk = u.session_pk
-                     WHERE u.kind = 'verification' AND u.title = v.title AND u.state = 'ok'
-                       AND u.at > v.at AND {us})
-              ORDER BY v.at DESC, v.pk DESC",
-            fs = under("fs"),
-            s = under("s"),
-            us = under("us"),
+               LEFT JOIN block b ON b.pk = t.call_block_pk
+               LEFT JOIN message m ON m.pk = b.message_pk
+              WHERE v.kind = 'verification' AND v.at >= ?2
+                {title_condition}
+                AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
+                            OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
+              ORDER BY v.at DESC, s.id DESC, m.seq DESC, m.id DESC, b.idx DESC",
         );
-        let dirs = serde_json::to_string(dirs)?;
         let mut stmt = conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![dirs, since], |r| {
-            Ok(FailingCommand {
-                command: r.get(0)?,
-                latest: r.get(1)?,
-                exit_code: r.get(2)?,
-                at: ts(r.get(3)?),
-                session: r.get(4)?,
-                times: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-            })
-        })?;
+        let mut passed = std::collections::HashSet::new();
+        let mut sessions =
+            std::collections::HashMap::<String, std::collections::HashSet<String>>::new();
         let mut out: Vec<FailingCommand> = Vec::new();
+        let read = |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        };
+        let dirs = serde_json::to_string(dirs)?;
+        let rows = match title {
+            Some(title) => stmt.query_map(params![dirs, since, title], read)?,
+            None => stmt.query_map(params![dirs, since], read)?,
+        };
         for row in rows {
-            let row = row?;
-            // The latest failure of each command shape stands for it.
-            if !out.iter().any(|o| o.command == row.command) {
-                out.push(row);
+            let (command, latest, exit_code, at, session, state, key) = row?;
+            if state == "ok" {
+                passed.insert(command);
+                continue;
             }
+            if state != "error" || passed.contains(&command) {
+                continue;
+            }
+            let seen = sessions.entry(command.clone()).or_default();
+            seen.insert(session.clone());
+            let index = match out.iter().position(|f| f.command == command) {
+                Some(i) => i,
+                None => {
+                    out.push(FailingCommand {
+                        command,
+                        latest,
+                        exit_code,
+                        at: ts(at),
+                        session,
+                        times: 0,
+                        sessions: 0,
+                        first: None,
+                        state: key,
+                    });
+                    out.len() - 1
+                }
+            };
+            let f = &mut out[index];
+            f.times += 1;
+            f.sessions = seen.len() as u64;
+            f.first = ts(at);
         }
         Ok(out)
     }

@@ -90,21 +90,6 @@ fn data_url(url: &str) -> Option<(String, Vec<u8>)> {
     Some((media_type.to_owned(), bytes))
 }
 
-/// Text that the harness, not the operator, put in a user message. Codex
-/// sends each of these as its own message.
-const HARNESS_MARKERS: &[&str] = &[
-    "<environment_context>",
-    "# AGENTS.md instructions",
-    "<user_instructions>",
-    "<subagent_notification>",
-    "<recommended_plugins>",
-    "<codex_internal_context",
-    "<turn_aborted>",
-    "<skill>",
-    "<user_action>",
-    "<permissions instructions>",
-];
-
 pub fn prompt_kind(content: &Json) -> PromptKind {
     let first = content
         .as_array()
@@ -117,7 +102,12 @@ pub fn prompt_kind(content: &Json) -> PromptKind {
         .unwrap_or("");
     if first.starts_with("<user_shell_command>") {
         PromptKind::Command
-    } else if HARNESS_MARKERS.iter().any(|m| first.starts_with(m)) {
+    } else if crate::origin::by_name("codex")
+        .unwrap()
+        .harness_prefixes
+        .iter()
+        .any(|m| first.starts_with(m))
+    {
         PromptKind::Harness
     } else {
         PromptKind::Prose

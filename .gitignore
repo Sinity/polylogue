@@ -9,3 +9,7 @@ extension/.npm-cache/
 extension/dist/
 
 extension/.cache/
+
+# `cargo xtask link-common`: the patch, the saved lock and the opt-out marker.
+/.cargo/local.toml
+/.cargo/common-link.*

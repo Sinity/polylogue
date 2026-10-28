@@ -2,6 +2,7 @@
 //! whole BLAKE3 check out. The temporary file is private and removed on failure.
 use super::*;
 use base64::Engine as _;
+use std::io::Write;
 
 pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     if !values.flag("reveal") {
@@ -80,10 +81,16 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                     return Err("attachment request changed".into());
                 };
                 *cursor = Some(next);
-                value = match send_when_ready(&Archive::at(&Archive::default_root()), &request)
-                    .map_err(|e| e.to_string())?
+                value = match send_with_timeout(
+                    &Archive::at(&Archive::default_root()),
+                    &request,
+                    values
+                        .integer("timeout")
+                        .map(std::time::Duration::from_secs),
+                )
+                .map_err(|e| e.to_string())?
                 {
-                    Response::Ok { data } => data,
+                    Response::Ok { data, .. } => data,
                     Response::Error { kind, message, .. } => {
                         return Err(format!("{kind}: {message}"));
                     }
