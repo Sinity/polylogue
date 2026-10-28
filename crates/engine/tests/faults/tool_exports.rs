@@ -82,12 +82,24 @@ fn database_progress_does_not_reload_unrelated_sources() {
     let db = database(&w);
     let (mut engine, _lock) = w.engine();
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    rusqlite::Connection::open(&db).unwrap()
-        .execute("UPDATE kept_rows SET body='changed' WHERE id=1", []).unwrap();
-    fault::arm("read.watched_inputs", &engine.config.machine, Action::Fail, 0, 100);
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE kept_rows SET body='changed' WHERE id=1", [])
+        .unwrap();
+    fault::arm(
+        "read.watched_inputs",
+        &engine.config.machine,
+        Action::Fail,
+        0,
+        100,
+    );
     let result = engine.run_pass();
     fault::clear();
     let pass = result.unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert!(row_lines(&w, &db).iter().any(|row| row["r"]["body"] == "changed"));
+    assert!(
+        row_lines(&w, &db)
+            .iter()
+            .any(|row| row["r"]["body"] == "changed")
+    );
 }
