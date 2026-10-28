@@ -14,19 +14,22 @@
         # The shared crates are Git dependencies; Nix fetches them at the
         # locked commit.
         cargoLock = { lockFile = ./Cargo.lock; allowBuiltinFetchGit = true; };
-        nativeBuildInputs = [ pkgs.pkg-config ];
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
         buildInputs = [ pkgs.zstd ];
         cargoBuildFlags = [ "-p" "polylogue" ];
         # Primary mode is chosen by `sinex.toml` at run time, so the packaged
         # binary carries it.
         buildFeatures = [ "sinex" ];
         doCheck = false;
+        postInstall = ''
+          wrapProgram "$out/bin/polylogue" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]}
+        '';
       };
     in {
       packages.${system} = { default = polylogue; inherit polylogue; };
       checks.${system}.polylogue = polylogue;
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server pkgs.mold ];
+        packages = [ pkgs.git pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.python3 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server pkgs.mold ];
         # mold links the test binaries several times faster than the default
         # linker: on a cold test build the workspace's test binaries took
         # 169 s of linking with ld and 37 s with mold.
@@ -39,6 +42,15 @@
             fi
           fi
           export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/target}"
+          # Build against a checkout of polylogue-sinex-common when there is
+          # one ($POLYLOGUE_SINEX_COMMON, else the sibling directory), unless
+          # `cargo xtask unlink-common` turned that off.
+          if [ -z "''${LINKING_COMMON:-}" ] && [ -f crates/polylogue/Cargo.toml ] \
+            && [ -f "''${POLYLOGUE_SINEX_COMMON:-../polylogue-sinex-common}/Cargo.toml" ] \
+            && [ ! -e .cargo/local.toml ] && [ ! -e .cargo/common-link.off ]; then
+            LINKING_COMMON=1 cargo xtask link-common \
+              || echo "polylogue: linking polylogue-sinex-common failed; see cargo xtask link-common" >&2
+          fi
         '';
       };
     };

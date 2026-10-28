@@ -94,24 +94,46 @@ pub(crate) async fn send(
     let Some((event_type, payload, reading_order)) = event else {
         return Ok(material.to_string());
     };
+    let mut events = vec![ProducerEvent {
+        kind: crate::kinds::kind_reference(event_type)?,
+        payload,
+        location: Some(RecordLocation {
+            material,
+            anchor: 0,
+        }),
+        output_index: 0,
+        parents: vec![],
+        reading_order,
+        class: Class::Open,
+    }];
+    if let RegisterChange::Request { request, .. } = change
+        && matches!(request.write, UserWrite::DeliveredAdvice(_))
+    {
+        events.push(ProducerEvent {
+            kind: crate::kinds::kind_reference("polylogue.delivery_outcome")?,
+            payload: serde_json::to_value(event::DeliveryOutcome {
+                delivery: request.id.clone(),
+                what: "delivered".into(),
+                at: time(request.at)?,
+                detail: Some("written to the harness hook output".into()),
+            })?,
+            location: Some(RecordLocation {
+                material,
+                anchor: 0,
+            }),
+            output_index: 1,
+            parents: vec![],
+            reading_order,
+            class: Class::Open,
+        });
+    }
     client
         .send(Ingress::Events {
             frame: format!(
                 "{name}:event:{}",
                 crate::kinds::definition_hash(client.producer())
             ),
-            events: vec![ProducerEvent {
-                kind: crate::kinds::kind_reference(event_type)?,
-                payload,
-                location: Some(RecordLocation {
-                    material,
-                    anchor: 0,
-                }),
-                output_index: 0,
-                parents: vec![],
-                reading_order,
-                class: Class::Open,
-            }],
+            events,
             failures: vec![],
         })
         .await?;
@@ -145,7 +167,9 @@ pub(crate) fn request_event(
             .ok_or_else(|| Error::Invalid(format!("note request {} has no family", r.id)))
     };
     Ok(Some(match &r.write {
-        UserWrite::AddNote { note } => (
+        UserWrite::AddNote { note }
+        | UserWrite::SaveQuery { note }
+        | UserWrite::AnnotateQuery { note, .. } => (
             "polylogue.note",
             serde_json::to_value(event::Note {
                 note: r.id.clone(),
@@ -198,7 +222,7 @@ pub(crate) fn request_event(
                 })?,
             )
         }
-        UserWrite::Deliver(d) => (
+        UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => (
             "polylogue.delivery",
             serde_json::to_value(event::Delivery {
                 delivery: r.id.clone(),

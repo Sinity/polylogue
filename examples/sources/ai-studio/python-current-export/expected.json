@@ -74,7 +74,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:current_export#system",
+          "id": "ai-studio:14:current_export#system:0:",
           "role": "system",
           "session": "ai-studio:current_export"
         },
@@ -90,8 +90,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:current_export#0",
-          "parent": "ai-studio:current_export#system",
+          "id": "ai-studio:14:current_export#position:1:0",
+          "parent": "ai-studio:14:current_export#system:0:",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export",
@@ -114,9 +114,9 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:current_export#1",
+          "id": "ai-studio:14:current_export#position:1:1",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#0",
+          "parent": "ai-studio:14:current_export#position:1:0",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -139,9 +139,9 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:current_export#2",
+          "id": "ai-studio:14:current_export#position:1:2",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#1",
+          "parent": "ai-studio:14:current_export#position:1:1",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -165,8 +165,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:current_export#3",
-          "parent": "ai-studio:current_export#2",
+          "id": "ai-studio:14:current_export#position:1:3",
+          "parent": "ai-studio:14:current_export#position:1:2",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -183,8 +183,8 @@
               "type": "image"
             }
           ],
-          "id": "ai-studio:current_export#4",
-          "parent": "ai-studio:current_export#3",
+          "id": "ai-studio:14:current_export#position:1:4",
+          "parent": "ai-studio:14:current_export#position:1:3",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -201,8 +201,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:current_export#5",
-          "parent": "ai-studio:current_export#4",
+          "id": "ai-studio:14:current_export#position:1:5",
+          "parent": "ai-studio:14:current_export#position:1:4",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -219,8 +219,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:current_export#6",
-          "parent": "ai-studio:current_export#5",
+          "id": "ai-studio:14:current_export#position:1:6",
+          "parent": "ai-studio:14:current_export#position:1:5",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -239,8 +239,8 @@
               "type": "image"
             }
           ],
-          "id": "ai-studio:current_export#8",
-          "parent": "ai-studio:current_export#6",
+          "id": "ai-studio:14:current_export#position:1:8",
+          "parent": "ai-studio:14:current_export#position:1:6",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -259,8 +259,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:current_export#9",
-          "parent": "ai-studio:current_export#8",
+          "id": "ai-studio:14:current_export#position:1:9",
+          "parent": "ai-studio:14:current_export#position:1:8",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"
@@ -273,7 +273,7 @@
           "blocks": [
             {
               "action": "code",
-              "call_id": "current_export#10:code1",
+              "call_id": "14:current_export#position:2:10:code1",
               "command": "print(0)",
               "input": {
                 "code": "print(0)",
@@ -283,9 +283,9 @@
               "type": "tool_call"
             }
           ],
-          "id": "ai-studio:current_export#10",
+          "id": "ai-studio:14:current_export#position:2:10",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#9",
+          "parent": "ai-studio:14:current_export#position:1:9",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "usage": {
@@ -303,7 +303,7 @@
         "message": {
           "blocks": [
             {
-              "call_id": "current_export#10:code1",
+              "call_id": "14:current_export#position:2:10:code1",
               "data": {
                 "outcome": "OUTCOME_OK",
                 "output": "0"
@@ -315,9 +315,9 @@
               "type": "tool_result"
             }
           ],
-          "id": "ai-studio:current_export#11",
+          "id": "ai-studio:14:current_export#position:2:11",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#10",
+          "parent": "ai-studio:14:current_export#position:2:10",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "usage": {
@@ -339,9 +339,9 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:current_export#12",
+          "id": "ai-studio:14:current_export#position:2:12",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#11",
+          "parent": "ai-studio:14:current_export#position:2:11",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "STOP",
@@ -365,9 +365,9 @@
               "type_name": "error"
             }
           ],
-          "id": "ai-studio:current_export#13",
+          "id": "ai-studio:14:current_export#position:2:13",
           "model": "synthetic-model",
-          "parent": "ai-studio:current_export#12",
+          "parent": "ai-studio:14:current_export#position:2:12",
           "role": "assistant",
           "session": "ai-studio:current_export",
           "stop_reason": "OTHER"
@@ -383,8 +383,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:current_export#14",
-          "parent": "ai-studio:current_export#13",
+          "id": "ai-studio:14:current_export#position:2:14",
+          "parent": "ai-studio:14:current_export#position:2:13",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:current_export"

@@ -38,6 +38,9 @@ fn chunks_become_messages_with_thoughts_split_out() {
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 6);
     assert_eq!(msgs[0].role, Role::System);
+    assert_eq!(step.output.messages[0].offset, 0);
+    assert_eq!(step.output.messages[0].end, bytes.len() as u64);
+    assert_eq!(step.output.events[0].range, Some((0, bytes.len() as u64)));
     assert_eq!(msgs[1].text(), "what is an electron");
     assert_eq!(msgs[1].usage.input, Some(6));
     assert!(msgs[1].at.is_some());
@@ -56,14 +59,14 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert_eq!(msgs[3].model.as_deref(), Some("gemini-3-pro-preview"));
     assert_eq!(
         msgs[3].parent.as_ref().unwrap().native().as_str(),
-        "Electrons#1"
+        "9:Electrons#position:1:1"
     );
     assert!(
         matches!(&msgs[4].blocks[1], Block::File(a) if a.source_id.as_deref() == Some("abc123"))
     );
     assert!(matches!(&msgs[5].blocks[0], Block::Other { type_name, .. } if type_name == "error"));
     // A chunk without an ID keeps its identity by its place.
-    assert_eq!(msgs[1].id.native().as_str(), "Electrons#0");
+    assert_eq!(msgs[1].id.native().as_str(), "9:Electrons#position:1:0");
     assert_eq!(
         step.output.sessions[0].title.as_ref().unwrap().text,
         "Electrons"
@@ -117,10 +120,12 @@ fn code_and_images_inside_parts_are_read() {
     ], "safetyRatings": [], "thoughtSignatures": ["s"], "isEdited": true})]);
     let step = parse("p", &bytes);
     let m = &step.output.messages[1].message;
-    assert!(matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "p#0:code1"));
+    assert!(
+        matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "1:p#position:1:0:code1")
+    );
     assert!(matches!(
         &m.blocks[2],
-        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "p#0:code1"
+        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "1:p#position:1:0:code1"
     ));
     assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
     assert!(
@@ -209,5 +214,132 @@ fn listings_distinguish_empty_invalid_and_refused_entries() {
         assert_eq!(step.counts.records, records);
         assert_eq!(step.counts.unreadable.values().sum::<u64>(), refused);
         assert_eq!(step.output.sessions.len(), sessions);
+    }
+}
+
+#[test]
+fn headers_and_unusable_chunks_do_not_make_a_session() {
+    for chunks in [
+        json!([]),
+        json!(false),
+        json!([null, {}, {"role": "future", "text": "unknown"}]),
+    ] {
+        let bytes = serde_json::to_vec(&json!({
+            "runSettings": {"model": "models/test"},
+            "systemInstruction": {"text": "A system header alone is not a chat."},
+            "chunkedPrompt": {"chunks": chunks}
+        }))
+        .unwrap();
+        let step = parse("empty", &bytes);
+        assert!(
+            step.output.sessions.is_empty(),
+            "{chunks}: {:?}",
+            step.output.sessions
+        );
+        assert!(step.output.messages.is_empty(), "{chunks}");
+        assert!(step.output.events.is_empty(), "{chunks}");
+    }
+}
+
+#[test]
+fn adjacent_chunks_keep_their_own_ids_usage_and_source_ranges() {
+    let chunks = vec![
+        json!({"role": "user", "id": "question", "text": "ask", "tokenCount": 3}),
+        json!({"role": "model", "id": "thought", "isThought": true, "text": "think", "tokenCount": 7}),
+        json!({"role": "model", "text": "answer", "tokenCount": 5}),
+        json!({"role": "unknown", "text": "unreadable"}),
+        json!({"role": "user", "text": "next", "inlineImage": {"mimeType": "image/png", "data": "aGk="}}),
+    ];
+    let bytes = prompt(chunks.clone());
+    let step = parse("p", &bytes);
+    let rows = &step.output.messages;
+    assert_eq!(rows.len(), 5);
+    let expected = [
+        "1:p#id:8:question",
+        "1:p#id:7:thought",
+        "1:p#position:1:2",
+        "1:p#position:1:4",
+    ];
+    for (i, row) in rows[1..].iter().enumerate() {
+        assert_eq!(row.message.id.native().as_str(), expected[i]);
+        assert_eq!(row.message.parent.as_ref(), Some(&rows[i].message.id));
+        let source: Json =
+            serde_json::from_slice(&bytes[row.offset as usize..row.end as usize]).unwrap();
+        assert_eq!(source, chunks[if i == 3 { 4 } else { i }]);
+    }
+    assert_eq!(rows[2].message.usage.reasoning, Some(7));
+    assert_eq!(rows[3].message.usage.output, Some(5));
+    assert_eq!(step.output.blobs[0].bytes, b"hi");
+    assert_eq!(step.counts.records, 6);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
+}
+
+#[test]
+fn native_ids_positions_and_the_system_header_cannot_name_the_same_message() {
+    let bytes = prompt(vec![
+        json!({"role": "user", "id": "1", "text": "native ID"}),
+        json!({"role": "model", "text": "position one"}),
+        json!({"role": "user", "id": "system", "text": "native system ID"}),
+        json!({"role": "model", "id": "id:1:1", "text": "separators"}),
+    ]);
+    let step = parse("p", &bytes);
+    let ids: Vec<_> = step
+        .output
+        .messages
+        .iter()
+        .map(|r| r.message.id.to_string())
+        .collect();
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(ids.len(), 5);
+    assert_eq!(unique.len(), ids.len(), "{ids:?}");
+    assert_eq!(ids[1], "ai-studio:1:p#id:1:1");
+    assert_eq!(ids[2], "ai-studio:1:p#position:1:1");
+    let other = parse(
+        "p#id:1",
+        &prompt(vec![
+            json!({"role": "user", "id": "1", "text": "another file"}),
+        ]),
+    );
+    for row in other.output.messages {
+        assert!(!ids.contains(&row.message.id.to_string()));
+    }
+}
+
+#[test]
+fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
+    let chunks = vec![
+        json!({"role":"future", "branchParent":{"promptId":"parent"}}),
+        json!({"role":"user"}),
+    ];
+    let step = parse("child", &prompt(chunks.clone()));
+    assert!(step.output.sessions.is_empty());
+    assert!(step.output.messages.is_empty());
+    assert!(step.output.events.is_empty());
+    assert_eq!(step.output.links.len(), 1);
+    assert_eq!(step.counts.used.values().sum::<u64>(), 0);
+    let mut chunks = chunks;
+    chunks.push(json!({"role":"model", "text":"usable", "branchParent":{"promptId":"another"}}));
+    let step = parse("child", &prompt(chunks));
+    assert!(step.output.links.is_empty());
+    assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(step.output.messages[0].message.role, Role::System);
+    assert_eq!(
+        step.output.messages[1].message.parent,
+        Some(step.output.messages[0].message.id.clone())
+    );
+    assert_eq!(
+        step.output.messages[1].message.model.as_deref(),
+        Some("gemini-3-pro-preview")
+    );
+}
+
+#[test]
+fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_make_none() {
+    for (parents, count) in [(["parent", "parent"], 1), (["first", "second"], 0)] {
+        let chunks = parents.into_iter().map(|parent| {
+            json!({"role":"user", "text":"continue", "branchParent":{"promptId":parent}})
+        }).collect();
+        let step = parse("child", &prompt(chunks));
+        assert_eq!(step.output.links.len(), count);
     }
 }

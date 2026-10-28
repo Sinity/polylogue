@@ -24,14 +24,14 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
             .iter()
             .any(|event| event.data == summary)
     });
-    let Response::Ok { data: typed } = read(&daemon.daemon, "full", "json", None, None) else {
+    let Response::Ok { data: typed, .. } = read(&daemon.daemon, "full", "json", None, None) else {
         panic!("ordinary read failed")
     };
     assert_eq!(typed["messages"].as_array().unwrap().len(), 2);
     assert_eq!(typed["messages"][1]["prompt_kind"], "harness");
     let archive = Archive::at(&daemon.daemon.archive.root);
     let mcp: serde_json::Value = serde_json::from_str(
-        &crate::mcp::call(
+        &crate::mcp::tests::call(
             &archive,
             "read",
             json!({"session":"claude-code:s1", "format":"markdown"})
@@ -46,7 +46,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
     assert!(text.contains("synthetic hook failed λ"), "{text}");
     assert!(text.contains("Stop hook prevented continuation."));
     assert!(text.contains("check blocked"));
-    let full = crate::mcp::call(
+    let full = crate::mcp::tests::call(
         &archive,
         "read",
         json!({"session":"claude-code:s1", "budget":10000})
@@ -63,7 +63,8 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         if let Some(token) = cursor.take() {
             args["cursor"] = token;
         }
-        let page = crate::mcp::call(&archive, "read", args.as_object().unwrap().clone()).unwrap();
+        let page =
+            crate::mcp::tests::call(&archive, "read", args.as_object().unwrap().clone()).unwrap();
         let page: serde_json::Value = serde_json::from_str(&page).unwrap();
         joined.push_str(page["text"].as_str().unwrap());
         cursor = page.get("next").filter(|v| v.is_string()).cloned();

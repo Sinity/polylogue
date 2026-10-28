@@ -2,6 +2,8 @@
 //! command, the browser host and the web reader. A write carries a request
 //! ID so a resent write is a no-op.
 
+mod references;
+
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::{Author, DocumentId, NewNote, SessionId};
@@ -11,7 +13,7 @@ use std::path::PathBuf;
 /// Selects the first page at a message reference or at the latest message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReadStart {
+pub enum PageSelection {
     Message(polylogue_model::MessageId),
     Latest,
 }
@@ -79,6 +81,12 @@ pub enum Request {
         provider: String,
         ids: Vec<String>,
     },
+    /// The files of a web chat's conversation whose bytes the archive
+    /// holds, so the extension does not download them again.
+    StoredFiles {
+        provider: String,
+        conversation: String,
+    },
     Status,
     Explain {
         subject: String,
@@ -87,6 +95,29 @@ pub enum Request {
         page_size: Option<u64>,
         cursor: Option<String>,
         session: Option<String>,
+    },
+    /// Chronological recorded activity and a logical-day calendar.
+    Timeline {
+        date: Option<String>,
+        #[serde(default)]
+        across_years: bool,
+        #[serde(default)]
+        undated: bool,
+        cursor: Option<String>,
+        page_size: Option<u64>,
+    },
+    /// Session-scoped usage, optionally bounded by a logical day, with response pages.
+    Cost {
+        month: Option<String>,
+        #[serde(default)]
+        undated: bool,
+        #[serde(default)]
+        unknown_model: bool,
+        query: String,
+        date: Option<String>,
+        model: Option<String>,
+        cursor: Option<String>,
+        page_size: Option<u64>,
     },
     /// Completions for one word of a query being typed.
     Complete {
@@ -131,6 +162,8 @@ pub enum Request {
     /// `with_parents` (sessions only): the parent sessions' messages first.
     Read {
         target: ReadTarget,
+        #[serde(default)]
+        slices: bool,
         view: String,
         format: String,
         #[serde(default)]
@@ -138,7 +171,7 @@ pub enum Request {
         budget: Option<usize>,
         cursor: Option<String>,
         #[serde(default)]
-        start: Option<ReadStart>,
+        selection: Option<PageSelection>,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
@@ -227,6 +260,13 @@ pub enum Request {
         #[serde(default)]
         sender: Option<String>,
     },
+    /// Advice printed by a hook. Preparation is read-only.
+    AdviceDelivered {
+        request_id: String,
+        session: Option<SessionId>,
+        cwd: PathBuf,
+        text: String,
+    },
     /// What happened to a delivery after it was handed out.
     DeliveryEvent {
         delivery: String,
@@ -287,6 +327,8 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::Timeline { .. }
+            | Self::Cost { .. }
             | Self::Complete { .. }
             | Self::Explain { .. }
             | Self::Attachment { .. }
@@ -303,7 +345,8 @@ impl Request {
             | Self::ChatAction { .. }
             | Self::ChatAttachment { .. }
             | Self::BackfillJobs
-            | Self::Conversations { .. } => true,
+            | Self::Conversations { .. }
+            | Self::StoredFiles { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
@@ -323,9 +366,16 @@ impl Request {
             | Self::Save { .. }
             | Self::Watch { .. }
             | Self::Withdraw { .. }
+            | Self::AdviceDelivered { .. }
             | Self::DeliveryEvent { .. }
             | Self::Excise { .. } => false,
         }
+    }
+
+    /// A context has bounded read preparation even when it also records a receipt.
+    /// Write authorization still follows read_only, independently of this phase.
+    pub(crate) fn has_read_phase(&self) -> bool {
+        self.read_only() || matches!(self, Self::Context { .. })
     }
 }
 
@@ -367,6 +417,9 @@ fn attachment_chunk() -> usize {
 pub enum Response {
     Ok {
         data: serde_json::Value,
+        /// References supplied by the response constructor, before transport cleaning.
+        #[serde(skip)]
+        references: References,
     },
     Error {
         kind: String,
@@ -383,7 +436,7 @@ impl Response {
     /// Mask decoded strings before JSON escaping, keeping every structured field.
     pub(crate) fn masked(mut self) -> Self {
         match &mut self {
-            Self::Ok { data } => polylogue_render::mask_json(data),
+            Self::Ok { data, references } => references.clean(data, &mut polylogue_render::mask),
             Self::Error {
                 kind,
                 message,
@@ -393,6 +446,81 @@ impl Response {
                 *message = polylogue_render::mask(message);
                 if let Some(detail) = detail {
                     polylogue_render::mask_json(detail);
+                }
+            }
+        }
+        self
+    }
+}
+
+/// Typed identifiers and declared command continuations excluded from text cleaning.
+#[derive(Debug, Clone, Default)]
+pub struct References(Vec<String>);
+
+impl References {
+    pub(crate) fn response(mut self, data: impl Serialize) -> Response {
+        match references::value(&mut self, "", &data) {
+            Ok(data) => {
+                // These root fields belong to the command response, not its authored values.
+                for field in ["cursor", "next", "previous"] {
+                    self.opaque_field(&data, format!("/{field}"));
+                }
+                Response::Ok {
+                    data,
+                    references: self,
+                }
+            }
+            Err(error) => crate::daemon::service::error("internal", error),
+        }
+    }
+    pub(crate) fn value(&mut self, path: &str, data: &impl Serialize) -> serde_json::Value {
+        references::value(self, path, data).expect("model serializes")
+    }
+
+    pub(crate) fn observe(&mut self, path: &str, data: &impl Serialize) {
+        references::observe(self, path, data);
+    }
+
+    pub(crate) fn add(&mut self, path: impl Into<String>, _value: &impl Serialize) {
+        self.0.push(path.into());
+    }
+
+    pub(crate) fn opaque_field(&mut self, value: &serde_json::Value, path: impl Into<String>) {
+        let path = path.into();
+        if let Some(value) = value.pointer(&path).and_then(serde_json::Value::as_str) {
+            self.add(path, &value);
+        }
+    }
+
+    pub(crate) fn field<T: serde::de::DeserializeOwned + Serialize>(
+        &mut self,
+        value: &serde_json::Value,
+        path: impl Into<String>,
+    ) {
+        let path = path.into();
+        if let Some(value) = value
+            .pointer(&path)
+            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
+        {
+            self.value(&path, &value);
+        }
+    }
+
+    fn clean(&mut self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
+        polylogue_model::masking::mask_json_values_except(value, string, &mut self.0);
+    }
+}
+
+impl Response {
+    pub(crate) fn clean(mut self, mut string: impl FnMut(&str) -> String) -> Self {
+        match &mut self {
+            Self::Ok { data, references } => references.clean(data, &mut string),
+            Self::Error {
+                message, detail, ..
+            } => {
+                *message = string(message);
+                if let Some(detail) = detail {
+                    polylogue_model::masking::mask_json_values(detail, string);
                 }
             }
         }

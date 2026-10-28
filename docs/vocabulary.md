@@ -59,11 +59,16 @@ the same change.
   **tool database**.
 - **native ID**: the ID an origin itself gives a session or message. Chrome's
   **native messaging** is the only other use of "native".
+- **link prefix**: an optional account or project path before a web chat's
+  conversation path, declared by its origin.
 - **web chat**: a provider's chat pages, which the browser extension captures
   from. **Chat action**: a turn the operator asks the extension to draft or
   submit in one.
 - **collector**: code that fetches an origin's files into its spool (the AI
-  Studio Drive collector).
+  Studio Drive and Antigravity language-server collectors).
+- **conversation file**: Antigravity's opaque `.pb` file for one conversation.
+- **conversion state**: the small JSON file recording a conversation file's
+  size, mtime, conversion outcome and language-server PID.
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
 - **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
@@ -136,10 +141,14 @@ the same change.
   briefing can cite them.
 - **setting**: a value the operator or an agent sets, kept with its history.
 - **delivery**: exactly what was put into a model's context.
+- **verification**: a test, build or lint command in the work graph.
 - **check run**: one `xtask` check or test run, as devkit's machine-wide
   run history records it with its checkout and outcome.
 - **brief**: the session-start context for a directory; it fits its
   **budget** (`briefing.budget`, tokens).
+- **advice**: a delivery just before a command runs, given only when the
+  command is a verification that failed in that checkout more than once since it
+  last passed.
 - **judgment**: the operator's `accepted` or `rejected` on one revision of
   an agent's note, itself a note of kind `judgment`.
 - **notice**: a delivery a signal rule fired; an interrupting one is also
@@ -162,6 +171,9 @@ the same change.
 - **writer**: the one thread that writes the databases.
 - **read pool**, **reader**, **reader slot**: readers see one SQLite read
   transaction each; a slot bounds how many run at once.
+- **read deadline** (`deadline_ms`): the time one request has to finish its
+  reads, including its wait for a reader slot. **Cancellation** stops the
+  request when its caller leaves or cancels it.
 - **write lock**: what a register commit holds so readers start from a
   consistent pair of databases.
 - **command table**: every command, once, for the CLI, MCP and HTTP.
@@ -201,6 +213,9 @@ the same change.
   storing observed values; dynamic map keys share the `*` path.
 - **schema diff**: added and removed paths, changed types and changed
   requiredness between explicit schema artifacts.
+- **discovery names**: the distinct member names remembered at an object path
+  to decide whether to group its unforced fields under `*`. At most 51 names
+  establish whether the path exceeds 50 names; they are discarded when grouped.
 - **named field**: a field name forced into schema paths even when the dynamic-key
   heuristic would group it under `*`.
 - **sample**: explicit inputs and revisions selected for schema observation,
@@ -231,7 +246,7 @@ the same change.
   preserving the original message identity and source block index.
 - **outline**: paged prompt, tool failure, compaction and branch references,
   selected without reading message bodies.
-- **read start**: a message anchor or the latest selected message, resolved by
+- **page selection**: a message anchor or the latest selected message, resolved by
   the daemon before issuing continuation cursors.
 - **view**: how a session is shown: `full`, `dialogue`, `prompts`,
   `actions`.
@@ -297,3 +312,26 @@ record of a chat action's result, as the extension saw it.
 - **kind declaration**: the immutable schema and rules of one version of a
   Sinex event type; Polylogue owns its `polylogue.*` declarations.
 - **kind version**: the exact numbered declaration a producer event selects.
+
+## Session measures
+
+- **facet**: a value counted once per selected or global session. **IDF** is
+  the natural logarithm of global session count divided by its frequency;
+  **lift** is selected share divided by global share.
+- **cost outlook**: an estimate over dated, explicitly configured billing
+  terms and observed usage, with units, method and coverage shown.
+- **session span** (`session_span`): recorded clocks, message clusters, tool
+  intervals and the last recorded item. **Wall span** (`wall_span`) is elapsed
+  time between the first and last own recorded time.
+- **clustered time** (`clustered_time`): union of consecutive message intervals
+  at most five minutes apart, extended across paired tools. **Tool time**
+  (`tool_time`) sums positive paired call/result intervals; **tool time union**
+  (`tool_time_union`) counts their overlap once. Neither measures attention.
+- **time lanes** (`session_time`): wall time attributed to tool commands,
+  waiting for the model, waiting for the human, or unattributed transitions.
+- **ends with** (`ends_with`): the kind of the last recorded item; no task outcome.
+- **validity kind**: exact, parameterized, extracted or judged, with the
+  evidence each requires before it ships. **Derived data** is the reference
+  page generated from those declarations.
+- **pending**: a stored product not yet derived for its session's current
+  rows and rule version; counted apart in population summaries.

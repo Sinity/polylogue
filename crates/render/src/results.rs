@@ -287,6 +287,13 @@ fn html(
     writeln!(out, "</tbody></table>")
 }
 
+/// The shared continuation line for row and measure text views.
+pub fn next_page(data: &Value) -> Option<String> {
+    data["next"]
+        .as_str()
+        .map(|next| format!("more: --cursor {next}"))
+}
+
 fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     let count = data["count"].as_u64().unwrap_or(0);
     let shown = data["rows"].as_array().map_or(0, Vec::len);
@@ -299,8 +306,8 @@ fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
             format!("{shown} of {count} rows")
         }),
     }
-    if let Some(next) = data["next"].as_str() {
-        lines.push(format!("more: --cursor {next}"));
+    if let Some(next) = next_page(data) {
+        lines.push(next);
     }
     for n in data["incomplete"]
         .as_array()

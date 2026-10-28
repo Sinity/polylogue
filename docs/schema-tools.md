@@ -4,7 +4,8 @@
 JSON artifact containing field paths, types, presence and counts. It runs
 with or without the daemon running, without ingestion. Archive and stored-byte
 reads use read-only handles and do not take the daemon's archive lock. It
-never opens the original source files or tool databases. `schema diff` compares two such artifacts recursively.
+never opens the original source files or tool databases. `schema diff`
+compares the field paths in two such artifacts.
 
 ```sh
 polylogue schema infer claude-code --input INPUT_ID --revision 1 \
@@ -28,9 +29,19 @@ The artifact always says `sample: true`: explicit inputs are a sample of
 that origin, without a claim of full coverage. Each selection lists the
 actual revision and its readable/unreadable record counts. JSON lines and
 top-level export-array elements count as records; a wrapped JSON document
-counts as one record. Export arrays reuse Sources' streaming reader. JSON
-observation keeps counts rather than a corpus of decoded values. Capture
-logs use the shared length and digest format. Tool databases are read only
+counts as one record. The observer streams JSON lines, export-array elements
+and capture bodies, validating scalar values without copying their bodies. It keeps counts and
+at most 51 discovery names per object path, rather than per-record key sets.
+Dynamic names are grouped while reading; memory follows the observed schema,
+forced names and nesting depth, rather than record count or scalar size.
+Parsing, merging, output-path traversal and cleanup use explicit stacks or
+flat storage, with no fixed JSON depth cutoff. Artifact paths themselves
+grow with nesting depth. Capture logs use the shared length and digest
+format and `Header`'s streaming verifier. Arrays use the observer's reader because
+`export::scan` buffers each complete element as a Serde `RawValue` and uses
+recursive validation. Observation must discard scalar bodies and accept deep
+JSON without a call-stack limit; both array readers require a closing bracket
+and end of input before accepting the document. Tool databases are read only
 as their already-stored JSON row dumps; row fields contribute column shape,
 and the schema map contributes table structure. SQL text stays out of the
 artifact.
@@ -68,10 +79,11 @@ increase `occurrences`, while increasing `present` once.
 
 Diff reports added paths, removed paths, changed type sets and changed
 requiredness as separate findings, ordered by path. Different origin names,
-selected revisions, failed reads or empty samples label the populations as
-incomparable; their observed differences remain visible. Counts alone do
+selected revisions, failed reads or empty samples label the samples as
+incomparable; their observed schema differences remain visible. Counts alone do
 not cause structural changes. Unsupported rule versions and different
-field-name declarations are errors.
+field-name declarations are errors. Plain reports use backslash escapes for
+control characters in names.
 
 ## Destinations and primary mode
 

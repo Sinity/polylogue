@@ -33,6 +33,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod collectors;
 mod import;
 mod pass;
 mod plan;
@@ -248,6 +249,7 @@ pub enum LoopMsg {
 }
 
 pub struct Engine {
+    collectors: collectors::Collectors,
     pub config: Config,
     pub archive: Archive,
     writer: Writer,
@@ -322,6 +324,7 @@ impl Engine {
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
+            collectors: collectors::Collectors::default(),
             sinex,
             first_pass: true,
         })

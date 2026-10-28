@@ -299,3 +299,62 @@ fn misaligned_prepared_rows_refuse_before_writing() {
         );
     }
 }
+
+#[test]
+fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
+    for prepared in [false, true] {
+        for (kind, data, waiting, todo) in [
+            (
+                "hook_notification",
+                serde_json::json!({"notification_type":"permission_prompt"}),
+                Some("permission"),
+                None,
+            ),
+            (
+                "hook_pre_tool_use",
+                serde_json::json!({"tool_use_id":"call-1","tool_name":"TodoWrite","tool_input":{"todos":[{"status":"in_progress","activeForm":"Checking the parser"}]}}),
+                None,
+                Some("Checking the parser"),
+            ),
+        ] {
+            let w = test_archive();
+            let mut message = text_message("m", "s", Role::Assistant, "Synthetic reply", None);
+            message.blocks.push(Block::ToolCall {
+                run_by_script: false,
+                call_id: Some("call-1".into()),
+                tool: Some("TodoWrite".into()),
+                action: polylogue_model::ToolAction::Other,
+                input: serde_json::json!({}),
+                command: None,
+                path: None,
+            });
+            let mut b = batch("input1", 0, 0, vec![row(1, message)], &["s"]);
+            b.parse[0].output.events.push(Event {
+                session: Some(sid("s")),
+                kind: kind.into(),
+                at: Timestamp::from_unix_ms(2_000),
+                after: None,
+                range: Some((10, 20)),
+                data: data.clone(),
+            });
+            if prepared {
+                b.parse[0].prepare();
+            }
+            w.writer.send(b).unwrap();
+            assert!(w.writer.flush().unwrap().errors.is_empty());
+            let pool = ReadPool::open(&w.archive).unwrap();
+            let reader = pool.reader().unwrap();
+            assert_eq!(reader.events(&sid("s")).unwrap()[0].data, data);
+            let rows=reader.query("SELECT s.live_waiting_on AS waiting,s.live_todo AS todo,t.call_id FROM session s LEFT JOIN tool_call t ON t.pk=s.live_open_tool_pk WHERE s.id='claude-code:s'",&[]).unwrap();
+            assert_eq!(
+                rows[0]["waiting"].as_str(),
+                waiting,
+                "prepared={prepared} {kind}"
+            );
+            assert_eq!(rows[0]["todo"].as_str(), todo, "prepared={prepared} {kind}");
+            if todo.is_some() {
+                assert_eq!(rows[0]["call_id"], "call-1");
+            }
+        }
+    }
+}

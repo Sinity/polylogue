@@ -4,8 +4,8 @@
 //! so a note never waits behind a first build for longer than one group.
 //!
 //! Every write carries a client request ID. The same ID with the same
-//! content writes nothing and returns what the first write created; the
-//! same ID with other content is refused as a conflict.
+//! intent writes nothing and returns what the first write created; the
+//! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
@@ -18,6 +18,15 @@ pub enum UserWrite {
     AddNote {
         note: NewNote,
     },
+    /// A saved query whose previous revision is resolved by name.
+    SaveQuery {
+        note: NewNote,
+    },
+    /// The query intent and its resolved targets, kept together for retries and replay.
+    AnnotateQuery {
+        query: String,
+        note: NewNote,
+    },
     /// Withdraws a note family: the newest revision and every older one.
     Withdraw {
         note: String,
@@ -27,6 +36,8 @@ pub enum UserWrite {
     },
     /// Context prepared for a recipient, with its exact text.
     Deliver(Delivery),
+    /// Advice already printed by a hook, recorded with its delivered outcome.
+    DeliveredAdvice(Delivery),
     /// What happened to a prepared delivery.
     DeliveryEvent {
         delivery: String,
@@ -122,6 +133,34 @@ pub struct LeftOut {
     pub reason: String,
 }
 
+impl UserWrite {
+    /// The caller's content, without data resolved when the write runs.
+    pub fn intent(&self) -> Self {
+        let mut intent = match self {
+            Self::KeepResult { name, query, .. } => Self::KeepResult {
+                name: name.clone(),
+                query: query.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+            },
+            _ => self.clone(),
+        };
+        match &mut intent {
+            Self::AnnotateQuery { note, .. } => note.targets.clear(),
+            Self::KeepResult {
+                rows_json, read_at, ..
+            } => {
+                rows_json.clear();
+                read_at.clear();
+            }
+            // An explicit revision in AddNote remains part of the request.
+            Self::SaveQuery { note } => note.revises = None,
+            _ => {}
+        }
+        intent
+    }
+}
+
 /// What a user write created, or found already created by the same
 /// request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +217,7 @@ pub fn new_request_id() -> String {
 /// Applies one request in `tx`, which the writer commits. `seq` is the
 /// archive's write counter for this transaction.
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    let content = serde_json::to_vec(&r.write)?;
+    let content = serde_json::to_vec(&r.write.intent())?;
     let hash = blake3::hash(&content);
     let seen: Option<Vec<u8>> = tx
         .query_row(
@@ -210,7 +249,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
     )?;
     let at = r.at.unix_ms();
     match &r.write {
-        UserWrite::AddNote { note } => add_note(tx, r, note, seq),
+        UserWrite::AddNote { note } | UserWrite::AnnotateQuery { note, .. } => {
+            add_note(tx, r, note, seq)
+        }
+        UserWrite::SaveQuery { note } => {
+            if note.kind != NoteKind::SavedQuery {
+                return Err(StoreError::Invalid("save needs a saved query note".into()));
+            }
+            add_note(tx, r, note, seq)
+        }
         UserWrite::Withdraw {
             note,
             author,
@@ -231,7 +278,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: false,
             })
         }
-        UserWrite::Deliver(d) => {
+        UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => {
             let body = crate::encoding::pack_text(&d.text)?;
             tx.execute(
                 "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
@@ -253,6 +300,10 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                     seq,
                 ],
             )?;
+            if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
+                tx.execute("INSERT INTO delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)",
+                    params![r.id, at, "written to the harness hook output", seq])?;
+            }
             Ok(UserOutcome {
                 id: r.id.clone(),
                 repeat: false,
@@ -401,7 +452,9 @@ pub(crate) fn first_note_of_request(
     r: &UserRequest,
 ) -> Result<Option<String>> {
     match &r.write {
-        UserWrite::AddNote { .. } => first_note_of(tx, &r.id).map(Some),
+        UserWrite::AddNote { .. }
+        | UserWrite::SaveQuery { .. }
+        | UserWrite::AnnotateQuery { .. } => first_note_of(tx, &r.id).map(Some),
         UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
         _ => Ok(None),
     }

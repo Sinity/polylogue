@@ -161,7 +161,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
             "UPDATE meta SET value=?1 WHERE key='generation'",
-            [uuid::Uuid::new_v4().to_string()],
+            [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
         let secret = "AKIAIOSFODNN7EXAMPLE";
@@ -172,7 +172,10 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert!(body.contains("Refresh from this message"));
-        assert!(!body.contains(secret));
+        assert!(
+            body.contains(secret),
+            "valid identifiers remain intact in links"
+        );
         let url = format!(
             "/api/v1/changes?since={}",
             polylogue_render::html::encode_path_segment(position)
@@ -280,7 +283,7 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         revises: None,
         valid_until: None,
     };
-    let Response::Ok { data } = handle(
+    let Response::Ok { data, .. } = handle(
         Request::AddNote {
             request_id: "exact-note".into(),
             note: note.clone(),
@@ -344,5 +347,185 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
                 "{path}"
             );
         }
+    });
+}
+
+fn page_link(html: &str, label: &str) -> String {
+    let end = html.find(&format!("\">{label}</a>")).unwrap();
+    html[..end]
+        .rsplit_once("href=\"")
+        .unwrap()
+        .1
+        .replace("&amp;", "&")
+}
+
+#[test]
+fn fork_parent_toggle_opens_the_selected_content_and_outline_is_optional() {
+    let r = reader();
+    let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+        "child-prompt",
+        "child",
+        "synthetic child only",
+    ))
+    .unwrap();
+    record["forkedFrom"] = serde_json::json!({"sessionId":"s1","messageUuid":"u1"});
+    std::fs::write(
+        r.w.home.join(".claude/projects/-p/child.jsonl"),
+        format!("{record}\n"),
+    )
+    .unwrap();
+    r.w.wait_for(|data| data["store"]["messages"] == 2);
+    rt().block_on(async {
+        let (status, _, html) = send(
+            &r,
+            authed(get("/s/claude-code:child"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("Open outline"));
+        let path = page_link(&html, "Exclude parents");
+        assert!(!path.contains("message="));
+        let (status, _, html) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("synthetic child only"));
+        assert!(!html.contains("&lt;script&gt;alert"));
+        let path = page_link(&html, "Open outline");
+        let (status, _, outline) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(outline.contains("<summary>Outline</summary>"));
+        let path = page_link(&html, "Include parents");
+        let (status, _, html) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("&lt;script&gt;alert"));
+    });
+}
+
+#[test]
+fn previous_links_work_for_direct_anchors_and_within_large_blocks() {
+    let r = reader();
+    let records = polylogue_testkit::claude_user("u1", "s1", &"first ".repeat(500))
+        + &polylogue_testkit::claude_user("u2", "s1", &"second ".repeat(500));
+    std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), records).unwrap();
+    r.w.wait_for(|data| data["store"]["messages"] == 2);
+    rt().block_on(async {
+        let (_, _, html) = send(
+            &r,
+            authed(get("/s/claude-code:s1?message=claude-code:u2&budget=100"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let previous = page_link(&html, "Previous");
+        let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("first first"));
+        assert!(!html.contains("second second"));
+        let previous = page_link(&html, "Previous");
+        let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains("first first"));
+        assert!(!html.contains("second second"));
+        assert!(!html.contains("history.back"));
+    });
+}
+
+#[test]
+fn message_redirects_quote_literal_ids_and_preserve_them_in_links() {
+    let r = reader();
+    let id = "claude-code:slash\\tab\tline\nquote\"AKIAIOSFODNN7EXAMPLE";
+    let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
+    conn.execute("UPDATE message SET id=?1", [id]).unwrap();
+    rt().block_on(async {
+        let path = format!("/m/{}", polylogue_render::html::encode_path_segment(id));
+        let (status, headers, body) =
+            send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+        assert_eq!(
+            headers[header::LOCATION],
+            format!(
+                "/s/claude-code%3As1?message={}",
+                polylogue_render::html::encode_path_segment(id)
+            )
+        );
+        let path = headers[header::LOCATION].to_str().unwrap();
+        let (status, _, body) = send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("AKIAIOSFODNN7EXAMPLE"));
+    });
+}
+
+#[test]
+fn message_identifiers_are_validated_even_when_a_cursor_is_supplied() {
+    let r = reader();
+    rt().block_on(async {
+        let (status, _, body) = send(
+            &r,
+            authed(get("/s/claude-code:s1?cursor=invalid&message=not-an-id"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("not a message ID"), "{body}");
+    });
+}
+
+#[test]
+fn live_initial_queries_page_through_the_real_http_api() {
+    let r = reader();
+    std::fs::write(
+        r.w.home.join(".claude/projects/-p/s2.jsonl"),
+        polylogue_testkit::claude_user("second", "s2", "second synthetic prompt"),
+    )
+    .unwrap();
+    r.w.wait_for(|s| s["store"]["sessions"].as_u64().is_some_and(|n| n >= 2) && s["busy"] == false);
+    rt().block_on(async {
+        let mut cursor = None;
+        let mut ids = Vec::new();
+        loop {
+            let mut params = vec![
+                ("query".into(), "changes where kind:session".into()),
+                ("limit".into(), "1".into()),
+            ];
+            if let Some(cursor) = cursor {
+                params.push(("cursor".into(), cursor));
+            }
+            let path = format!(
+                "/api/v1/query?{}",
+                params
+                    .iter()
+                    .map(|(k, v): &(String, String)| format!(
+                        "{}={}",
+                        polylogue_render::html::encode_path_segment(k),
+                        polylogue_render::html::encode_path_segment(v)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("&")
+            );
+            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let page: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert!(
+                page["read_at"]["cursor"]
+                    .as_str()
+                    .and_then(polylogue_model::ChangePosition::parse)
+                    .is_some(),
+                "{page}"
+            );
+            for row in page["rows"].as_array().unwrap() {
+                assert_eq!(row["kind"], "session");
+                ids.push(row["ref"].as_str().unwrap().to_owned());
+            }
+            cursor = page["next"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(ids.iter().any(|id| id == "claude-code:s1"));
+        assert!(ids.len() >= 2);
+        let distinct: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len());
     });
 }

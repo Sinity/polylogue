@@ -38,7 +38,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:branching_session#chunk-user-1",
+          "id": "ai-studio:17:branching_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:branching_session"
@@ -55,8 +55,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:branching_session#chunk-model-edit-1",
-          "parent": "ai-studio:branching_session#chunk-user-1",
+          "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-1",
+          "parent": "ai-studio:17:branching_session#id:12:chunk-user-1",
           "role": "assistant",
           "session": "ai-studio:branching_session"
         },
@@ -72,8 +72,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:branching_session#chunk-model-edit-2",
-          "parent": "ai-studio:branching_session#chunk-model-edit-1",
+          "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
+          "parent": "ai-studio:17:branching_session#id:18:chunk-model-edit-1",
           "role": "assistant",
           "session": "ai-studio:branching_session"
         },
@@ -94,8 +94,8 @@
               "type_name": "error"
             }
           ],
-          "id": "ai-studio:branching_session#chunk-error-1",
-          "parent": "ai-studio:branching_session#chunk-model-edit-2",
+          "id": "ai-studio:17:branching_session#id:13:chunk-error-1",
+          "parent": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
           "role": "assistant",
           "session": "ai-studio:branching_session",
           "stop_reason": "OTHER"

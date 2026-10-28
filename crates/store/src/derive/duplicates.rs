@@ -22,6 +22,7 @@ use std::collections::HashMap;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "duplicates",
+    products: &[],
     version: Version::Rules(1),
     after: &[],
     run: |tx, pk, _| run(tx, pk),

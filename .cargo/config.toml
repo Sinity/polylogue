@@ -1,3 +1,10 @@
+# `cargo xtask link-common` writes the included, Git-ignored file to build
+# against a local checkout of polylogue-sinex-common.
+include = [{ path = "local.toml", optional = true }]
+
+[alias]
+xtask = "run --quiet --locked -p xtask --"
+
 [env]
 # The capture reader must use the bundled connection's committed page view.
 LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_DBPAGE_VTAB"

@@ -18,3 +18,5 @@ fn command(root: &std::path::Path) -> std::process::Command {
     command.env("XDG_RUNTIME_DIR", runtime);
     command
 }
+
+mod deadlines;

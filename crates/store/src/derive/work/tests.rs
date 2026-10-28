@@ -320,7 +320,7 @@ fn a_spawned_session_pursues_the_task_it_was_given() {
     });
     w.write("child", child);
     let rows = w.rows(
-        "SELECT g.title AS goal, a.state, c.title AS check_title FROM work_node g
+        "SELECT g.title AS goal, a.state, c.title AS verification_title FROM work_node g
          JOIN work_edge p ON p.to_pk = g.pk AND p.kind = 'pursues'
          JOIN work_node a ON a.pk = p.from_pk
          JOIN work_edge k ON k.to_pk = a.pk AND k.kind = 'checks'
@@ -331,7 +331,7 @@ fn a_spawned_session_pursues_the_task_it_was_given() {
         vec![json!({
             "goal": "Sinex lane B: replay and excision.",
             "state": null,
-            "check_title": "cargo nextest"
+            "verification_title": "cargo nextest"
         })]
     );
 }
