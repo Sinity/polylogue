@@ -350,10 +350,6 @@ fn is_down(e: &std::io::Error) -> bool {
 /// that holds the archive lock but has not bound its socket yet (opening a
 /// large archive takes seconds). With no daemon at all, the error is
 /// returned at once.
-pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<Response> {
-    send_with_timeout(archive, request, None)
-}
-
 fn send_with_timeout(
     archive: &Archive,
     request: &Request,

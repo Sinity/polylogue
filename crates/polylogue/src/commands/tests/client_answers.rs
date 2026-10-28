@@ -26,6 +26,8 @@ const ASKED: &[(&str, &[&str])] = &[
     ("continue", &["claude-code:s1"]),
     ("chat list", &[]),
     ("backfill list", &[]),
+    ("timeline", &["--date", "2024-01-01"]),
+    ("cost", &["--date", "2024-01-01"]),
 ];
 
 /// Read commands left out, each with the reason.
