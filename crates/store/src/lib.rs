@@ -41,6 +41,7 @@ pub mod sql_functions;
 pub mod sql_views;
 pub mod staging;
 mod text_rows;
+pub mod timeline;
 pub mod timing;
 pub mod tool_databases;
 pub mod user_state;

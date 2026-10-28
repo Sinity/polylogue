@@ -285,26 +285,23 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
                     return error("bad_request", "expression is required for query");
                 };
-                let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                    .ok()
-                    .flatten();
-                let embeddings =
-                    crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-                super::query::explain(
-                    &reader,
-                    super::query::Ask {
-                        text,
-                        cursor: None,
-                        page_size: None,
-                        why: false,
-                        session,
-                        now: now_ms(),
-                        day: None,
-                        embeddings,
-                        near: None,
-                        fields: &[],
-                    },
-                )
+                super::query::with_ranking(&reader, &d.warm, |embeddings, _near| {
+                    super::query::explain(
+                        &reader,
+                        super::query::Ask {
+                            text,
+                            cursor: None,
+                            page_size: None,
+                            why: false,
+                            session,
+                            now: now_ms(),
+                            day: None,
+                            embeddings,
+                            near: None,
+                            fields: &[],
+                        },
+                    )
+                })
             } else {
                 crate::explain::answer(
                     &subject,
@@ -323,6 +320,66 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 },
             }
         }
+        Request::Timeline {
+            date,
+            across_years,
+            undated,
+            cursor,
+            page_size,
+        } => {
+            match super::calendar::timeline(
+                &reader,
+                super::calendar::Timeline {
+                    date: date.as_deref(),
+                    across_years,
+                    undated,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
+        Request::Cost {
+            month,
+            undated,
+            unknown_model,
+            query,
+            date,
+            model,
+            cursor,
+            page_size,
+        } => super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+            match super::calendar::cost(
+                &reader,
+                super::calendar::Cost {
+                    embeddings,
+                    near: Some(near),
+                    month: month.as_deref(),
+                    query: &query,
+                    date: date.as_deref(),
+                    model: model.as_deref(),
+                    undated,
+                    unknown_model,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }),
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),
@@ -372,37 +429,31 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             if let Some(data) = d.warm.answer(&key, &position) {
                 return Response::Ok { data };
             }
-            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                .ok()
-                .flatten();
-            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-            let near = |q: &str| match &provider {
-                Some(p) => d.warm.similarity(&reader, p, q),
-                None => Err("embeddings are off".into()),
-            };
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: cursor.as_deref(),
-                page_size,
-                why,
-                session,
-                now: now_ms(),
-                day: None,
-                embeddings,
-                near: Some(&near),
-                fields: &fields,
-            };
-            match super::query::run(&reader, ask) {
-                Ok(data) => {
-                    d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                    Response::Ok { data }
+            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                    why,
+                    session,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &fields,
+                };
+                match super::query::run(&reader, ask) {
+                    Ok(data) => {
+                        d.warm.keep_answer(key, position, cursor.is_none(), &data);
+                        Response::Ok { data }
+                    }
+                    Err(f) => Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    },
                 }
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
-            }
+            })
         }
         Request::Complete { word } => {
             let position = match reader.change_position() {
@@ -549,27 +600,22 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(response) => return response,
                 Ok(None) => {}
             }
-            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                .ok()
-                .flatten();
-            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-            let near = |q: &str| match &provider {
-                Some(p) => d.warm.similarity(&reader, p, q),
-                None => Err("embeddings are off".into()),
-            };
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: None,
-                page_size: None,
-                why: false,
-                session: None,
-                now: now_ms(),
-                day: None,
-                embeddings,
-                near: Some(&near),
-                fields: &[],
-            };
-            let kept = match super::query::keep(&reader, ask) {
+            let kept = super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: None,
+                    page_size: None,
+                    why: false,
+                    session: None,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &[],
+                };
+                super::query::keep(&reader, ask)
+            });
+            let kept = match kept {
                 Ok(k) => k,
                 Err(f) => {
                     return Response::Error {
@@ -850,14 +896,7 @@ fn query_targets(
     query: &str,
 ) -> Result<Vec<polylogue_model::Target>, Response> {
     use polylogue_model::Target;
-    let provider = crate::embeddings::Provider::from_settings(reader, &machine_id())
-        .ok()
-        .flatten();
-    let embeddings = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
-    let near = |q: &str| match &provider {
-        Some(provider) => d.warm.similarity(reader, provider, q),
-        None => Err("embeddings are off".into()),
-    };
+    super::query::with_ranking(reader, &d.warm, |embeddings, near| {
     let now = now_ms();
     let mut targets = Vec::new();
     let mut seen = HashSet::new();
@@ -872,7 +911,7 @@ fn query_targets(
             now,
             day: None,
             embeddings,
-            near: Some(&near),
+            near: Some(near),
             fields: &[],
         };
         let page = super::query::run(reader, ask).map_err(|f| Response::Error {
@@ -925,6 +964,7 @@ fn query_targets(
         ));
     }
     Ok(targets)
+    })
 }
 
 /// Whole sessions in the structured export format (`json`, read back by

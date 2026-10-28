@@ -524,7 +524,8 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
             let status = named.unwrap_or(match kind.as_str() {
                 "not_found" => StatusCode::NOT_FOUND,
-                "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
+                "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field"
+                | "bad_value" | "not_a_query" => StatusCode::BAD_REQUEST,
                 "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
                 "not_built" => StatusCode::NOT_IMPLEMENTED,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
