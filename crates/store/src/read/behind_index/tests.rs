@@ -14,6 +14,7 @@ fn expected(
     BehindChain {
         input: input.into(),
         current,
+        reading_changed: false,
         imported: imported.map(|(format, path)| ImportedAs {
             format: format.into(),
             path: path.map(str::to_owned),
@@ -68,7 +69,7 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     assert_eq!(
-        pool.reader().unwrap().chains_behind_index().unwrap(),
+        pool.reader().unwrap().chains_behind_index(&[]).unwrap(),
         vec![
             expected(
                 "a",
@@ -144,7 +145,7 @@ fn history_work(revisions: usize) -> usize {
             }),
         )
         .unwrap();
-    let found = reader.chains_behind_index().unwrap();
+    let found = reader.chains_behind_index(&[]).unwrap();
     reader
         .conn()
         .unwrap()
