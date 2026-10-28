@@ -340,7 +340,8 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
     for (format, prefix) in [
         ("markdown", "# First human question"),
         ("html", "<h1>First human question</h1>"),
-        ("terminal", "\u{1b}[1mFirst human question"),
+        // The daemon renders plain text; the CLI client adds terminal styling.
+        ("terminal", "First human question\n"),
     ] {
         let Response::Ok { data } = read(&w.daemon, "full", format, None, None) else {
             panic!("{format} read failed")

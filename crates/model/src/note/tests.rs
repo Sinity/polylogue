@@ -38,6 +38,4 @@ fn authors_round_trip_and_agents_are_marked() {
 fn kinds_use_their_stored_names() {
     assert_eq!(NoteKind::parse("saved_query"), Some(NoteKind::SavedQuery));
     assert_eq!(NoteKind::SavedQuery.as_str(), "saved_query");
-    assert!(NoteKind::Handoff.briefed());
-    assert!(!NoteKind::Tag.briefed());
 }

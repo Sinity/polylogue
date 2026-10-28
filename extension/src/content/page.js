@@ -14,7 +14,7 @@
   if (!provider) return;
   globalThis.polylogueContent = true;
 
-  // A body is sent as appended bytes as it arrives, so a slow download keeps
+  // A body is sent in chunks as it arrives, so a slow download keeps
   // talking to the background, which Chrome would otherwise stop as idle.
   const CHUNK_BYTES = 256 * 1024;
   // Announce a change after the messages stop changing for this long.

@@ -28,6 +28,10 @@ fn every_spool_lies_in_polylogue_s_state_directory() {
         spools,
         [
             (
+                "antigravity-exports",
+                PathBuf::from("polylogue/antigravity")
+            ),
+            (
                 "polylogue-repo-lookup",
                 PathBuf::from("polylogue/repo-lookup")
             ),

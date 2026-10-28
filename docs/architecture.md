@@ -23,10 +23,24 @@ which reads through Store and presents through Query and Render.
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
+The `explain` command reads the command, query-unit, field, read-view and
+format declarations. Query explanation uses the same reader-backed options as execution, then
+Query's pure parser and compiler. Declaration pages use a cursor naming
+their subject, unit and next offset. The local `demo tour` command bundles the
+main Morrow files and starts an application runtime against its own home and
+archive; each narrated operation is built through the ordinary command
+table. Its transcript is written under the new tour directory.
+
 A new origin is an origin declaration and a parser, a new command is a
 command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
 rules are checked by [xtask](../xtask/src/main.rs).
+
+An origin's collector receives the configured home, state and spool directories.
+It runs automatically or when its declared setting is on. Antigravity's
+loopback collector runs in an engine-owned worker; the loop reads its spool on
+subsequent passes and joins the worker at shutdown. The optional AI Studio
+Drive import runs before the pass. Both are declared in the origin table.
 
 ## Databases
 
@@ -42,6 +56,13 @@ the transaction being written.
 | [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
+
+`Archive::scanner_key()` creates `scanner.key` beside `archive.db` on first
+use: 32 random bytes, mode 0600, kept across index rebuilds and archive
+backups. An existing key is never replaced; an invalid key is refused.
+Credential fingerprints are comparable only within that archive. Scanned
+findings must record the shared `SCANNER_VERSION` and recompute when it
+changes.
 
 A rebuild parses the stored inputs, including imports whose original files
 are gone; notes live in `archive.db` and survive it. A
@@ -140,7 +161,8 @@ capture stays.
 The extension keeps captures the host has not yet acknowledged in its outbox.
 The daemon reports attachments marked `not_fetched: "downloading"` in the latest
 capture, so backfill and unchanged page captures resume their downloads after a
-browser restart. Conversation fingerprints survive browser restarts in extension storage.
+browser restart. Conversation fingerprints survive browser restarts in extension storage. An unchanged
+conversation is recaptured unless the daemon reports an archived or spooled copy.
 [Chat actions](../crates/store/src/chat_actions.rs) and
 [backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
 writer changes: the operator queues or starts them through the CLI, MCP or the
@@ -185,7 +207,14 @@ query ranked by `near:` pages the same way: its similarities come from the
 vectors held in memory, through `pl_similarity(text_hash)` while the query
 runs, so its other conditions choose the rows before any ranking; with
 words in the same query the two orders are fused (reciprocal rank fusion).
-Its cursor is refused once vectors were stored or removed. A query inside a
+Its cursor is refused once vectors were stored or removed. Semantic setup runs
+only when the answer needs ranking, including a limit that selects rows before
+a count or measurement. A row answer's own semantic ranking keeps each row's similarity in a hidden column,
+so one statement counts both the answer and its rows without a vector, after
+stages such as `distinct`. Session `has:errors` and `has:tool_calls` inspect
+its own messages: duplicates and abandoned branches are excluded. Every field
+that names a session resolves an exact ID before a unique prefix and refuses
+an ambiguous prefix. A query inside a
 query (a combining stage, `FIELD in (…)`) is compiled on its own over the
 outer query's parameters and read as a subquery of the one statement; a
 union with a ranked side ranks by fusing every list's order, computed once
@@ -371,6 +400,20 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+Shell completion help and decoded hook context use the same visible escapes.
+Completion values containing control or direction characters are omitted.
+
+Terminal output treats archived text as data. Render's `terminal::escape`
+shows C0 (except newline and tab), DEL and C1 as lowercase `\xNN` escapes,
+and Unicode direction controls as `\u{NNNN}`. Escaping happens before
+styling or table layout, including titles, paths, snippets and error text.
+The daemon's terminal reads are plain text; the displaying CLI adds its own
+heading and match styles only when stdout is a terminal and `NO_COLOR` is
+unset. JSON uses JSON Unicode escapes and round trips the original values.
+HTML and Markdown retain their format encoding; displaying them through the
+CLI read printer escapes terminal controls, while file and pipe exports keep
+the requested format.
 
 ## Python client
 

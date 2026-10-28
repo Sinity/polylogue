@@ -4,7 +4,6 @@
 //! answer itself.
 
 use polylogue_render::shell_quote;
-use polylogue_store::Archive;
 use serde_json::Value;
 use std::fmt::Write as _;
 
@@ -14,13 +13,10 @@ fn s(v: &Value) -> String {
 
 /// The answer as indented JSON: commands without a text view.
 pub fn json(data: &Value) -> String {
-    format!(
-        "{}\n",
-        serde_json::to_string_pretty(data).unwrap_or_default()
-    )
+    format!("{}\n", polylogue_render::terminal::json(data, true))
 }
 
-/// A query's rows as a table, remembered for `@N`, or a measurement in its
+/// A query's rows as a table, or a measurement in its
 /// own text view.
 pub fn query(data: &Value) -> String {
     if data["outcome"] == "measure" {
@@ -30,14 +26,18 @@ pub fn query(data: &Value) -> String {
             });
         return text(&data["data"]);
     }
-    if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-        crate::row_numbers::remember(
-            &Archive::default_root(),
-            &crate::row_numbers::row_ids(&data["rows"]),
-        );
-    }
     let mut out = Vec::new();
     let _ = polylogue_render::results::render(data, polylogue_render::Format::Terminal, &mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Query text for the tour, whose final display handles styling.
+pub fn query_plain(data: &Value) -> String {
+    if data["outcome"] == "measure" {
+        return query(data);
+    }
+    let mut out = Vec::new();
+    let _ = polylogue_render::results::plain_terminal(data, &mut out);
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -50,14 +50,18 @@ pub fn read(data: &Value) -> String {
     };
     let content = match data["next"].as_str() {
         _ if data["content"].is_string() => s(&data["content"]),
-        Some(next) => format!("{}\n(next page: --cursor {next})\n", s(&data["text"])),
+        Some(next) => format!("{}\n(next page: --cursor {})\n", s(&data["text"]), next),
         None => s(&data["text"]),
     };
-    format!("{notice}{content}")
+    polylogue_render::terminal::heading(&format!("{notice}{content}"))
 }
 
 /// A prepared brief, takeover or recall.
 pub fn context(data: &Value) -> String {
+    polylogue_render::terminal::escape(&context_text(data))
+}
+
+fn context_text(data: &Value) -> String {
     if data["off"].as_bool() == Some(true) {
         return "session-start briefs are off (`polylogue setting briefing.session_start on`)\n"
             .into();
@@ -67,6 +71,10 @@ pub fn context(data: &Value) -> String {
 
 /// `continue`: the sessions worth resuming here, or one session's plan.
 pub fn resume(data: &Value) -> String {
+    polylogue_render::terminal::escape(&resume_text(data))
+}
+
+fn resume_text(data: &Value) -> String {
     match data.as_array() {
         Some(sessions) => resumable(sessions),
         None => plan(data),
@@ -139,6 +147,10 @@ fn plan(data: &Value) -> String {
 
 /// `chat list`: one line per chat action.
 pub fn chat_actions(data: &Value) -> String {
+    polylogue_render::terminal::escape(&chat_actions_text(data))
+}
+
+fn chat_actions_text(data: &Value) -> String {
     let actions = data["actions"].as_array().map_or(&[][..], Vec::as_slice);
     if actions.is_empty() {
         return "no chat actions\n".into();
@@ -164,6 +176,10 @@ pub fn chat_actions(data: &Value) -> String {
 
 /// `backfill start`, `list` and `cancel`: one line per job.
 pub fn backfill_jobs(data: &Value) -> String {
+    polylogue_render::terminal::escape(&backfill_jobs_text(data))
+}
+
+fn backfill_jobs_text(data: &Value) -> String {
     let jobs: Vec<&Value> = match data["jobs"].as_array() {
         Some(jobs) => jobs.iter().collect(),
         None => data
@@ -195,3 +211,6 @@ pub fn backfill_jobs(data: &Value) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests;

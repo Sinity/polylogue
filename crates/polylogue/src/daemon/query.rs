@@ -316,11 +316,7 @@ fn answer(
             "read_at": read_at,
         }));
     }
-    let count = reader.query(&program.count_sql(), &params)?;
-    let count = count
-        .first()
-        .and_then(|r| r["count(*)"].as_u64())
-        .unwrap_or(0);
+    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
     let page_size = program.page_size.max(1);
     let mut page_params = params.clone();
     if let Some(after) = &after {
@@ -347,12 +343,7 @@ fn answer(
     }
     let mut notes = program.notes.clone();
     let mut unknown = serde_json::Map::new();
-    if let Some(sql) = &program.count_without_vectors {
-        let rows = reader.query(sql, &params)?;
-        let without = rows
-            .first()
-            .and_then(|r| r["count(*)"].as_u64())
-            .unwrap_or(0);
+    if program.counts_near {
         if without > 0 {
             notes.push(format!(
                 "{without} of {count} rows have no vector; their semantic similarity is unknown"
@@ -628,3 +619,11 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+
+/// Compile with the same archive settings and calling session as execution.
+pub fn explain(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let options = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    Ok(
+        json!({"subject": "query", "explanation": polylogue_query::explain::query(ask.text, &options)?}),
+    )
+}

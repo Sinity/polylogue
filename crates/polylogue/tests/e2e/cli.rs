@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-struct Daemon(Child);
+pub(super) struct Daemon(Child);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -17,8 +17,8 @@ impl Drop for Daemon {
     }
 }
 
-fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
-    let mut command = Command::new(crate::BIN);
+pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
+    let mut command = command(env);
     command.arg("daemon").stderr(Stdio::piped());
     for (key, value) in env {
         command.env(key, value);
@@ -35,7 +35,7 @@ fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
 /// Polls `status` until `ready` holds and the loop is idle, so whatever pass
 /// made `ready` true has also derived from its rows. A state that never comes
 /// is ended by the test runner's timeout.
-fn wait_status(
+pub(super) fn wait_status(
     env: &[(&str, &Path)],
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
@@ -100,7 +100,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
             break;
         }
     }
-    let running = Command::new(crate::BIN)
+    let running = crate::command(dir.path())
         .args(["--json", "status"])
         .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
         .env("POLYLOGUE_HOME", dir.path().join("home"))
@@ -135,7 +135,7 @@ fn daemon_parent_fixture() {
     let dir = std::path::PathBuf::from(dir);
     let daemon = Daemon(
         polylogue_testkit::spawn_daemon(
-            Command::new(crate::BIN)
+            crate::command(&dir)
                 .arg("daemon")
                 .env("POLYLOGUE_ARCHIVE", dir.join("archive"))
                 .env("POLYLOGUE_HOME", dir.join("home"))
@@ -235,8 +235,17 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
     assert_eq!(status["store"]["parse_states"]["done"], 2);
 }
 
-fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
-    let mut c = Command::new(crate::BIN);
+fn command(env: &[(&str, &Path)]) -> Command {
+    let archive = env
+        .iter()
+        .find(|(key, _)| *key == "POLYLOGUE_ARCHIVE")
+        .expect("test commands name their archive")
+        .1;
+    crate::command(archive.parent().expect("fixture archive has a parent"))
+}
+
+pub(super) fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
+    let mut c = command(env);
     for (k, v) in env {
         c.env(k, v);
     }
@@ -381,7 +390,7 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let elsewhere = dir.path().join("xdg");
-    let mut child = Command::new(crate::BIN)
+    let mut child = crate::command(dir.path())
         .args(["hook", "Stop"])
         .env("POLYLOGUE_HOME", &home)
         .env("XDG_STATE_HOME", &elsewhere)
@@ -444,7 +453,7 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
         .unwrap()
         .execute_batch("DROP TABLE excised")
         .unwrap();
-    let mut command = Command::new(crate::BIN);
+    let mut command = crate::command(dir.path());
     command
         .arg("daemon")
         .env("POLYLOGUE_ARCHIVE", &archive)
@@ -472,3 +481,42 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
 }
 
 mod python;
+
+#[test]
+fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("archive");
+    let home = dir.path().join("home");
+    let config = dir.path().join("config");
+    let env = [
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("POLYLOGUE_HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let daemon = start_daemon(&env);
+    wait_status(&env, |_| true);
+    let runtime = dir.path().join("runtime/polylogue");
+    // Readiness of the socket precedes the HTTP listener's access files.
+    loop {
+        if runtime.exists()
+            && std::fs::read_dir(&runtime).unwrap().any(|entry| {
+                let path = entry.unwrap().path();
+                path.join("port").exists() && path.join("token").exists()
+            })
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(daemon);
+    assert!(runtime.exists());
+    dir.close().unwrap();
+    assert!(!runtime.exists());
+}
+
+mod query_surfaces;
+
+mod agent_guidance;
+
+#[cfg(target_os = "linux")]
+mod terminal;

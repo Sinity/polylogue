@@ -59,11 +59,16 @@ the same change.
   **tool database**.
 - **native ID**: the ID an origin itself gives a session or message. Chrome's
   **native messaging** is the only other use of "native".
+- **link prefix**: an optional account or project path before a web chat's
+  conversation path, declared by its origin.
 - **web chat**: a provider's chat pages, which the browser extension captures
   from. **Chat action**: a turn the operator asks the extension to draft or
   submit in one.
 - **collector**: code that fetches an origin's files into its spool (the AI
-  Studio Drive collector).
+  Studio Drive and Antigravity language-server collectors).
+- **conversation file**: Antigravity's opaque `.pb` file for one conversation.
+- **conversion state**: the small JSON file recording a conversation file's
+  size, mtime, conversion outcome and language-server PID.
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
 - **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
@@ -74,8 +79,6 @@ the same change.
 
 - **first build**: building an empty index from all available inputs. The
   writer delays search entries and secondary indexes until the build ends.
-  **Bulk mode** means this first-build write mode, with deferred indexes and
-  syncing; it ends by making the index durable. Prefer "first build".
 - **prepared batch** (`store::staging::PreparedBatch`): parsed rows together
   with private files of new bytes, ready for the writer to store. The
   `store::staging` module prepares bytes off the writer thread; its
@@ -188,6 +191,7 @@ the same change.
 
 - **host**: the native messaging host, `polylogue browser-host`, which Chrome
   starts for the extension.
+- **chunk**: a fragment of a body sent in one transport message.
 - **outbox**: captures the extension keeps until the host has stored them;
   the only thing it keeps.
 - **page script**: the extension's script in a chat page, which fetches the
@@ -219,6 +223,10 @@ the same change.
 
 - **query**, **unit** (what a query lists: sessions, messages, ...),
   **field**, **condition**, **measure**.
+- **explanation**: a query's parsed conditions, units and compiled shape,
+  without executing it; `--why` instead counts rows for its conditions.
+- **tour**: ordinary commands over a separate synthetic Morrow archive,
+  with their explanations and output in a transcript.
 - **saved query** (`query:NAME`) and its **parameters** (`$word` in its
   text, given as `query:NAME(word=VALUE)`); the note revision a name
   resolved to is its **definition**.

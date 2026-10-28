@@ -81,16 +81,16 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("settings.json");
             std::fs::write(&path, original).unwrap();
-            let out = cli(
-                &[],
-                &[
+            let out = crate::command(dir.path())
+                .args([
                     "--json",
                     "hooks",
                     action,
                     "--settings",
                     path.to_str().unwrap(),
-                ],
-            );
+                ])
+                .output()
+                .unwrap();
             assert_eq!(out.status.code(), Some(1), "{out:?}");
             assert_eq!(json(&out)["error"]["kind"], "io", "{out:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);

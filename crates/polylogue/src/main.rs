@@ -9,8 +9,11 @@ mod cli;
 mod client;
 mod commands;
 mod daemon;
+mod demo;
 mod embeddings;
+mod explain;
 mod hook;
+mod manual;
 mod mcp;
 mod resume;
 mod row_numbers;
@@ -71,7 +74,10 @@ fn main() -> ExitCode {
             match row_numbers::rewrite_args(argv, &root) {
                 Ok(argv) => cli::command().get_matches_from(argv),
                 Err(e) => {
-                    eprintln!("polylogue: {e}");
+                    eprintln!(
+                        "{}",
+                        polylogue_render::terminal::escape(&format!("polylogue: {e}"))
+                    );
                     return ExitCode::from(2);
                 }
             }

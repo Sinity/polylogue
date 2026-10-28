@@ -268,14 +268,14 @@ const HOOKS_ARGS: &[Arg] = &[
         default: Some("claude-code"),
         ..opt(
             "harness",
-            Kind::Choice(&["claude-code", "codex"]),
+            Kind::Choice(crate::hook::Harness::NAMES),
             "Whose settings",
         )
     },
     opt(
         "settings",
         Kind::Text,
-        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
 
@@ -300,6 +300,10 @@ pub const GROUPS: &[Group] = &[
         help: "Offline structure and counts over explicitly selected stored revisions",
     },
     Group {
+        name: "demo",
+        help: "Explore the synthetic Morrow archive",
+    },
+    Group {
         name: "note",
         help: "Notes and tags on sessions, messages and tool calls",
     },
@@ -313,7 +317,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
     },
     Group {
         name: "chat",
@@ -435,6 +439,47 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Local(crate::cli::schema::diff),
+        ..CLI
+    },
+    Command {
+        name: "demo tour",
+        help: "Prepare a separate Morrow archive and walk through search, tool outcomes, parents, costs and notes",
+        args: &[pos(
+            "directory",
+            Kind::Text,
+            "A new directory for the example home, archive and transcript",
+        )],
+        action: Action::Local(crate::demo::tour),
+        ..CLI
+    },
+    Command {
+        name: "explain",
+        help: "Explain a query without executing it, or page through current syntax, units, fields, operators and capabilities",
+        args: &[
+            pos(
+                "subject",
+                Kind::Choice(crate::explain::SUBJECTS),
+                "query, syntax, units, fields, operators or capabilities",
+            ),
+            opt("session", Kind::Text, "Calling session for self references"),
+            opt("expression", Kind::Text, "Required for subject query"),
+            opt("unit", Kind::Text, "List fields for this unit"),
+            opt(
+                "page_size",
+                Kind::Integer,
+                "Declarations per page (default 20)",
+            ),
+            CURSOR,
+        ],
+        action: Action::Request(requests::explain),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "manual",
+        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        action: Action::Local(local::manual),
         ..CLI
     },
     Command {
@@ -1142,7 +1187,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID, advice before a verification that keeps failing",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link, advice before a verification that keeps failing",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {

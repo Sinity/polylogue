@@ -6,8 +6,9 @@ sets on Oct 08–09) on a fictional Rust library,
 `morrow` (parsing human-written dates), using Claude Code, Codex, ChatGPT and
 claude.ai. The raw provider files live beside this file
 (`claude-code/`, `codex/`, `chatgpt/`, `claude-ai/`); they are
-written to produce exactly the facts below. If an example's output disagrees
-with this file, the example or the files are wrong.
+read through the current parser and query rules. The query tests name
+remaining differences from the historical expected examples; the public
+tour checks the current answers it presents.
 
 Operator's time zone for display: `Europe/Warsaw` (UTC+2 in October 2026).
 Times below are local. Working directory for agent sessions:
@@ -20,16 +21,26 @@ Times below are local. Working directory for agent sessions:
 |---|---|---|---|---|---|---|---|---|
 | 1 | `claude-code:7f3a2c10-0001-4000-8000-000000000001` | claude-code | main | 2026-10-01 09:00–09:42 | "Project skeleton" (`ai-title`) | claude-fable-5-1 | 12 | 3 |
 | 2 | `claude-code:7f3a2c10-0002-4000-8000-000000000002` | claude-code | main | 2026-10-02 10:00–11:15 | "Date parsing" | claude-fable-5-1 | 18 | 3 |
-| 3 | `claude-code:7f3a2c10-0002-4000-8000-000000000002/a7f3a2c1000000003` | claude-code | subagent of #2 | 2026-10-02 10:20–10:26 | — | claude-opus-5-5 | 6 | 0 |
+| 3 | `claude-code:agent-a7f3a2c1000000003` | claude-code | subagent of #2 | 2026-10-02 10:20–10:26 | — | claude-opus-5-5 | 6 | 0 |
 | 4 | `claude-code:7f3a2c10-0004-4000-8000-000000000004` | claude-code | main (continuation, resume, of #2) | 2026-10-03 14:00–15:10 | "Date parsing" | claude-fable-5-1 | 10 own + 18 inherited | 3 |
-| 5 | `codex:01a20000-0005-7000-8000-000000000005` | codex | main | 2026-10-05 16:00–16:35 | "Review parser" (thread name, from `state_5.sqlite`) | gpt-6.1-sol | 9 | 2 |
-| 6 | `codex:01a20000-0006-7000-8000-000000000006` | codex | main (continuation, fork, of #5) | 2026-10-06 09:30–09:50 | "Review parser (try strict mode)" | gpt-6.1-sol | 6 | 1 |
+| 5 | `codex:01a20000-0005-7000-8000-000000000005` | codex | main | 2026-10-05 16:00–16:35 | "Review parser" (thread name, from `state_5.sqlite`) | gpt-6.1-sol | 13 | 2 |
+| 6 | `codex:01a20000-0006-7000-8000-000000000006` | codex | main (continuation, fork, of #5) | 2026-10-06 09:30–09:50 | "Review parser (try strict mode)" | gpt-6.1-sol | 10 | 1 |
 | 7 | `chatgpt:68f0a1b2-0007-8000-8000-000000000007` | chatgpt | chat | 2026-10-04 21:00–21:20 | "Date format edge cases" | gpt-6 | 6 on active path, 2 on an abandoned branch | 3 |
 | 8 | `claude-ai:0b9d4e6c-0008-4000-8000-000000000008` | claude-ai | chat | 2026-10-07 18:00–18:05 | "README wording" | not recorded in the export | 4 | 2 |
 
 Top-level sessions (excluding the subagent #3): 7. All sessions: 8.
-Message counting rules are in `README.md`; `check_facts.py` re-derives every
-number here from the raw files.
+A subagent's session ID is `claude-code:agent-<agentId>`. Codex item IDs
+identify messages across files: copied parent messages keep their IDs, while
+distinct messages have distinct IDs. Codex message counts are item
+counts, including calls, results and commands recorded separately from their
+script calls, rather than model-response groups. Session #5 has ten response
+items and three command items; #6 has eight response items and two command
+items. Repeated user-message events add no messages.
+Usage observations do not combine items into model-response messages.
+The source story's prompts, calls and outcomes remain unchanged.
+Hook spool lines put `event_id`, `event_type` and `observed_at_ms` first,
+as current hook spool files do. Every field from the generated example is kept.
+The testkit and query tests read these files through the real parsers.
 
 ## What happened (the story the examples rely on)
 

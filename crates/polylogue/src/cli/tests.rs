@@ -35,3 +35,31 @@ fn a_starting_daemon_is_waited_for() {
     assert!(matches!(response, Response::Ok { .. }));
     server.join().unwrap();
 }
+
+#[test]
+fn manual_is_an_offline_topic() {
+    let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
+    assert!(matches!(manual.action, Action::Local(_)));
+    let matches = command()
+        .try_get_matches_from(["polylogue", "manual"])
+        .unwrap();
+    assert_eq!(run(&matches), std::process::ExitCode::SUCCESS);
+}
+
+#[test]
+fn shell_completion_escapes_daemon_help_and_omits_control_values() {
+    let data = serde_json::json!([
+        {"value": "tag:ordinary", "help": "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}"},
+        {"value": "tag:bad\x1b", "help": ""},
+        {"value": "query:bad\u{202e}", "help": ""},
+        {"value": "tag:bad\n", "help": ""},
+        {"value": "tag:bad\t", "help": ""}
+    ]);
+    let found = completion_candidates(&data);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].get_value(), "tag:ordinary");
+    assert_eq!(
+        found[0].get_help().unwrap().to_string(),
+        polylogue_render::terminal::escape(data[0]["help"].as_str().unwrap())
+    );
+}

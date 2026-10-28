@@ -466,11 +466,11 @@ fn leaf(p: Pair<'_, Rule>) -> Cond {
 }
 
 fn compact_compare(text: &str) -> Option<(Op, &str)> {
-    for op in [">=", "<=", "!=", ">", "<", "="] {
-        if let Some(rest) = text.strip_prefix(op)
+    for &(op, name) in Op::TABLE {
+        if let Some(rest) = text.strip_prefix(name)
             && !rest.is_empty()
         {
-            return Some((Op::parse(op).expect("listed"), rest));
+            return Some((op, rest));
         }
     }
     None

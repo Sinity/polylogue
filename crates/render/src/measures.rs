@@ -5,14 +5,15 @@ use serde_json::Value;
 
 /// Any measurement as indented JSON, for those without a text view.
 pub fn json(data: &Value) -> String {
-    format!(
-        "{}\n",
-        serde_json::to_string_pretty(data).unwrap_or_default()
-    )
+    format!("{}\n", crate::terminal::json(data, true))
 }
 
 /// `usage` and `cost`: tokens by kind and cost by model.
 pub fn usage(data: &Value) -> String {
+    crate::terminal::escape(&usage_text(data))
+}
+
+fn usage_text(data: &Value) -> String {
     usage_at(data, "")
 }
 
@@ -143,6 +144,10 @@ fn recorded_usage(reading: &Value, indent: &str) -> String {
 }
 
 pub fn quota(o: &Value) -> String {
+    crate::terminal::escape(&quota_text(o))
+}
+
+fn quota_text(o: &Value) -> String {
     let mut out = String::new();
     for t in o["tools"].as_array().into_iter().flatten() {
         out.push_str(t["tool"].as_str().unwrap_or(""));
@@ -221,6 +226,10 @@ pub fn quota(o: &Value) -> String {
 
 /// FailingCommand commands grouped by repository, most recent failure first.
 pub fn failing(data: &Value) -> String {
+    crate::terminal::escape(&failing_text(data))
+}
+
+fn failing_text(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "no command's latest run failed\n".into();
@@ -261,6 +270,10 @@ pub fn failing(data: &Value) -> String {
 
 /// Drift by format: what each parser did not know, most frequent first.
 pub fn drift(data: &Value) -> String {
+    crate::terminal::escape(&drift_text(data))
+}
+
+fn drift_text(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "every record and field was recognized\n".into();

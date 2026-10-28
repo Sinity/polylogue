@@ -130,7 +130,7 @@ describe("the shared page script", () => {
     return received;
   }
 
-  it("answers through a port with the facts, then the body as appended bytes", async () => {
+  it("answers through a port with the facts, then the body in chunks", async () => {
     const { window } = page("https://claude.ai/chat/c1", ["content/claude.js", "content/page.js"]);
     const big = "x".repeat(5 * 1024 * 1024);
     window.polylogueProvider.fetchConversation = async () => ({ status: 200, info: { id: "c1" }, body: new window.Blob([big]) });

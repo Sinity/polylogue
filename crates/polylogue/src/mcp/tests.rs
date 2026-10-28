@@ -56,42 +56,57 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(e.starts_with("error (not_found)"), "{e}");
 }
 
-/// The example queries the instructions give agents run as given, and each
-/// tool they name exists.
-#[test]
-fn the_instructions_name_real_tools_and_working_queries() {
-    let w = test_daemon::start("the walrus migration");
-    let archive = Archive::at(&w.daemon.archive.root);
-    let examples: Vec<&str> = INSTRUCTIONS
-        .split("Examples:")
-        .nth(1)
-        .unwrap()
-        .split("An empty answer")
-        .next()
-        .unwrap()
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .collect();
-    assert_eq!(examples.len(), 5, "{examples:?}");
-    for query in examples {
-        let answer = call(&archive, "query", args(json!({ "query": query })));
-        assert!(answer.is_ok(), "{query}: {answer:?}");
-    }
-    let names: Vec<String> = tools().iter().map(|t| t.name.to_string()).collect();
-    for tool in [
-        "brief", "recall", "takeover", "query", "read", "note_add", "status",
-    ] {
-        assert!(names.contains(&tool.to_owned()), "no tool {tool}");
-        assert!(
-            INSTRUCTIONS.contains(&format!("`{tool}`")),
-            "{tool} is not described"
-        );
-    }
-}
-
 mod read_pages;
 
 mod events;
 
 mod attachments;
+
+mod explain;
+
+#[test]
+fn server_instructions_include_guidance_and_current_command_names() {
+    let server = Polylogue {
+        archive: std::path::PathBuf::from("/synthetic/archive"),
+    };
+    let info = server.get_info();
+    let text = info.instructions.unwrap();
+    assert!(text.contains("Continue pages"));
+    for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
+        assert!(text.contains(&format!("`{}`", command.mcp_name())));
+    }
+    assert_eq!(text, crate::manual::text());
+}
+
+#[test]
+fn manual_query_examples_compile_through_the_public_command() {
+    let w = test_daemon::start("manual query examples");
+    let archive = Archive::at(&w.daemon.archive.root);
+    for query in crate::manual::text()
+        .split('`')
+        .filter(|text| text.starts_with("sessions where ") || text.starts_with("messages where "))
+    {
+        call(
+            &archive,
+            "explain",
+            args(json!({"subject":"query", "expression":query})),
+        )
+        .unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+}
+
+#[test]
+fn errors_show_archived_controls_as_text() {
+    let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
+    let text = super::error_text(
+        hostile,
+        hostile,
+        Some(&serde_json::json!({"suggestion":hostile})),
+    );
+    assert!(
+        !text
+            .chars()
+            .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{202e}')
+    );
+    assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
+}

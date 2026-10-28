@@ -1,7 +1,7 @@
 # Polylogue
 
 Polylogue keeps every AI conversation and agent session your tools leave
-behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, and exports from
+behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, Antigravity exports, and exports from
 ChatGPT, claude.ai, AI Studio, the Gemini app, Grok account exports and others)
 in one local archive, exactly as written, and lets you and your agents search, read,
 measure and annotate it from the command line, over MCP or in a web reader.
@@ -60,6 +60,8 @@ it.
 | Command | What it does |
 |---|---|
 | `QUERY` | Run a query over sessions, messages, documents, blocks, tool calls, files, events, notes, links, turns, deliveries, work or changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. Queries combine: `\| union (…)`, `\| intersect (…)`, `\| except (…)`, `\| fuse (…)`, `count(UNIT where …) >= N` and `FIELD in (… \| group by FIELD)`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `demo tour DIRECTORY` | Walk through ordinary commands over a separate synthetic Morrow archive. |
+| `explain SUBJECT` | Explain query grammar or page through current units, fields, operators and capabilities. |
 | `status` | What the archive holds and what the daemon is doing; during a long pass the counts come from memory, with the read position they are from. |
 | `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). `read document:ID` and `read event:ID` read a document or an event. |
@@ -83,8 +85,9 @@ it.
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
 | `setting KEY [VALUE]` | Read or set a setting. `day.zone` (an IANA zone; the machine's unless set) and `day.logical_start` (default `04:00`) define the logical day that dates, `today` and `group by day` mean. |
 | `web` | Open the web reader. |
-| `mcp` | Serve MCP over stdio. |
-| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`) and Hermes: live state, the session-start brief, takeovers and advice before a verification that keeps failing. |
+| `mcp` | Serve MCP over stdio with the standing agent manual. |
+| `manual` | Print agent guidance and the current MCP command reference without a daemon. |
+| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`), Gemini CLI (`--harness gemini-cli`) and Hermes: live state, the session-start brief, takeovers and advice before a verification that keeps failing. |
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
@@ -93,6 +96,40 @@ it.
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
 invalid request, 6 no daemon running.
+
+## Try Morrow and discover the grammar
+
+`polylogue demo tour ./morrow-tour` creates a new directory containing a
+synthetic home, a separate archive and `transcript.md`. It walks through
+searching and reading a session, checking tool failures, following parent
+work, inspecting unknown costs, and adding notes for takeover context.
+The example files are bundled in the binary. Preparation time and first
+query time are reported separately. Use `--json` for the steps and results.
+Run the displayed commands against the example archive by starting
+
+```sh
+tour_directory="$(realpath ./morrow-tour)"
+export POLYLOGUE_ARCHIVE="$tour_directory/archive"
+export POLYLOGUE_HOME="$tour_directory/home"
+export XDG_CONFIG_HOME="$tour_directory/config"
+polylogue daemon
+```
+in another terminal, and setting the same variables for each command.
+
+`polylogue explain query --expression 'tool_calls where outcome:error'`
+parses and compiles the expression without running it. The answer includes
+the parsed conditions and stages, output unit and columns, ordering,
+parameters and SQL in the full compiled `program`. It uses the archive's
+logical day, saved queries, kept results and embedding availability. Supply
+`--session ID` for `self` references. This differs from `--why`, which executes a
+query and counts how many rows its conditions keep.
+
+The MCP `explain` tool uses the same arguments. Subjects `units`, `fields`,
+`syntax`, `operators` and `capabilities` describe current declarations. For example,
+`polylogue explain fields --unit tool_calls --page-size 10` returns entries and
+`next`; pass that value as `--cursor` with the same subject and unit.
+`page_size` controls page size. The units subject lists session-field inheritance and relation prefixes; the fields subject lists each unit's own fields. Capabilities include command schemas,
+read views and output formats from their registries.
 
 ## Context for agents
 
@@ -106,7 +143,7 @@ failed there with no later pass (the `xtask` check and test runs devkit
 records for the checkout, which AgentCTL's jobs run, and test, build and
 lint commands sessions ran), and the last day's signal notices.
 It stays within `briefing.budget` tokens (default 2000) and names what it
-left out with the command that shows it. A session ID pasted into a prompt
+left out with the command that shows it. A session ID or supported conversation link pasted into a prompt
 brings that session's takeover context. Before Claude Code or Codex runs a
 shell command that is a verification (a test, build or lint) that failed
 in this checkout more than once in the last week with no pass since, the
@@ -119,6 +156,7 @@ to 20 ms for read-only preparation, prints the advice, then has a separate
 |---|---|
 | Claude Code | `polylogue hooks install` writes them into `settings.json`. |
 | Codex | `polylogue hooks install --harness codex` writes them into `hooks.json`. |
+| Gemini CLI | `polylogue hooks install --harness gemini-cli` writes `SessionStart`, `BeforeAgent` and observation hooks into `~/.gemini/settings.json`. |
 | Hermes | In `config.yaml`: `hooks: {pre_llm_call: [{command: "polylogue hook pre_llm_call --harness hermes"}]}` and `hooks_auto_accept: true`; the brief comes with the first turn. |
 
 A signal is a note of kind `signal` whose body names a watched query, such
@@ -247,3 +285,31 @@ how primary mode stores the archive and how a standalone archive moves to it.
 The [Python client](clients/python/README.md) runs the declared commands through
 CLI JSON and the daemon. Its answers keep unknown values, complete refusals and
 opaque IDs, and its change feed streams one finite batch at a time.
+
+## Antigravity and agent guidance
+
+Antigravity language-server JSON exports (`source: antigravity_language_server`,
+`cascadeId`, `markdown`) parse as sessions with user and planner turns. Known
+activity markers become assistant tool calls, including markers placed inside
+user sections. Unknown Markdown stays prose; missing times stay unknown.
+Conversation files (`.pb`) under `~/.gemini/antigravity/conversations/` are
+stored as bytes and converted through the running language server's loopback
+RPC with its CSRF token, bypassing proxies and redirects. Conversion runs in a
+worker with a five-second connection timeout and a sixty-second request timeout.
+Conversion state records file size, mtime and server PID. An unchanged failed
+conversion retries when the file or server process changes. A connection failure
+or timeout ends conversion for the pass; shutdown stops between files.
+The original bytes and conversion status belong to the same session as its
+export. An unavailable server produces a session event; unchanged status is
+written once. Converted exports rebuild the index without the server.
+
+The standing [agent manual](docs/agent-manual.md) is shared by `manual` and MCP
+server instructions, with its command reference generated from the command
+table. Supported pasted links use the same hosts and conversation paths as
+browser capture: ChatGPT, claude.ai, AI Studio, Gemini app and Grok. They resolve
+to archived sessions; hooks do not fetch linked pages.
+
+Gemini CLI `SessionStart` injects the brief and `BeforeAgent` injects
+pasted-session takeover context through `hookSpecificOutput.additionalContext`.
+Hook timeouts in its settings are milliseconds. `PreCompress` records an event
+because Gemini does not accept context from that event.

@@ -246,16 +246,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 /// The origin's collector: Google's Drive, the token the operator
 /// authorized in `state_dir`, and the origin's spool.
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
-    setting: SETTING,
-    sync: |state_dir, spool| {
+    background: false,
+    setting: Some(SETTING),
+    sync: |paths, _stop| {
         Drive {
             endpoints: Endpoints::default(),
-            token_path: state_dir.join("token.json"),
-            spool: spool.to_path_buf(),
+            token_path: paths.state_dir.join("token.json"),
+            spool: paths.spool.to_path_buf(),
         }
         .sync()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .err()
+        .map(|e| e.to_string())
+        .into_iter()
+        .collect()
     },
 };
 

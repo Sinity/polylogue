@@ -15,6 +15,7 @@ const ASKED: &[(&str, &[&str])] = &[
     ("query", &["sessions"]),
     ("query", &["messages where parser"]),
     ("query", &["sessions where"]),
+    ("explain", &["syntax"]),
     ("list", &[]),
     ("read", &["claude-code:s1"]),
     ("outline", &["claude-code:s1"]),

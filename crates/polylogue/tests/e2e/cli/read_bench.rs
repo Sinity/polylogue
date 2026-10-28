@@ -247,7 +247,7 @@ fn window(env: &[(&str, &Path)], start: &WindowStart, reference: &str) -> Value 
 
 fn cancelled_client(env: &[(&str, &Path)]) {
     let budget = PAGE_BUDGET.to_string();
-    let mut command = Command::new(crate::BIN);
+    let mut command = super::command(env);
     command
         .args(["--json", "read", LARGE, "--budget", &budget])
         .stdout(Stdio::piped())

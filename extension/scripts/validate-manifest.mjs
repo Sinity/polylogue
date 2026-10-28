@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Lightweight in-tree manifest validator.
 //
-// Catches the failure modes we have actually hit during local builds before
-// the heavier addons-linter is invoked from CI. Specifically:
+// Checks the manifest before packaging:
 //   - manifest_version is 3
 //   - version is 1-4 dot-separated integers, each <= 65535
 //   - all content_scripts[*].js paths exist on disk
