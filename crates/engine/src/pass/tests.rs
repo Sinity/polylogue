@@ -3,6 +3,9 @@ use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 
+#[cfg(feature = "faults")]
+mod live_queue;
+
 #[test]
 fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() {
     failed_rewrite_then_growth(false);
