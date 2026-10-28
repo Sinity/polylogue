@@ -324,7 +324,7 @@ fn split(
     for lane in ["model", "human", "unattributed"] {
         totals.insert((lane.into(), String::new()), 0);
     }
-    let mut active_tools = BTreeSet::new();
+    let mut active_tools = BTreeSet::<usize>::new();
     let mut active_wait = BTreeMap::<&str, usize>::new();
     let mut previous = first;
     for (at, change) in points {
@@ -425,7 +425,7 @@ pub(crate) fn selected_spans(
 ) -> Result<(Vec<Span>, u64)> {
     let (condition, params) = selection.session_condition("s.pk")?;
     let conn = reader.conn()?;
-    let (count, pk): (u64, Option<i64>) = conn.query_row(
+    let (count, pk): (i64, Option<i64>) = conn.query_row(
         &format!("SELECT count(*),min(s.pk) FROM session s WHERE {condition}"),
         rusqlite::params_from_iter(params.iter()),
         |r| Ok((r.get(0)?, r.get(1)?)),
@@ -446,7 +446,7 @@ pub(crate) fn selected_spans(
         .collect::<Vec<_>>()
         .join(",");
     let spans=conn.prepare(&format!("SELECT {columns} FROM session s JOIN session_span f ON f.session_pk=s.pk WHERE {condition} AND {}",session_sql::current("s","session_span")))?.query_map(rusqlite::params_from_iter(params.iter()),span_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let pending = count - spans.len() as u64;
+    let pending = count as u64 - spans.len() as u64;
     Ok((spans, pending))
 }
 
@@ -513,7 +513,7 @@ pub fn pending(reader: &Reader<'_>, selection: &Selection) -> Result<u64> {
             session_sql::current("s", "session_span")
         ),
         rusqlite::params_from_iter(params.iter()),
-        |r| r.get(0),
+        |r| Ok(r.get::<_, i64>(0)? as u64),
     )?)
 }
 

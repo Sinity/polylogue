@@ -325,9 +325,9 @@ pub fn summary(
                     if row.get::<_, i64>(i * 2)? > 1 {
                         varies.push(name.into());
                     }
-                    unknown.insert(name.into(), row.get::<_, u64>(i * 2 + 1)?);
+                    unknown.insert(name.into(), row.get::<_, i64>(i * 2 + 1)? as u64);
                 }
-                Ok((varies, unknown, row.get(fields.len() * 2)?))
+                Ok((varies, unknown, row.get::<_, i64>(fields.len() * 2)? as u64))
             },
         )
         .map_err(Into::into)

@@ -251,8 +251,8 @@ pub fn outlook(
         GROUP BY w.id,2,known",response=usage::RESPONSE_ROWS))?;
     let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
     while let Some(row) = rows.next()? {
-        let n = row.get::<_, u64>(3)?;
-        let Some(i) = row.get::<_, Option<usize>>(0)? else {
+        let n = row.get::<_, i64>(3)? as u64;
+        let Some(i) = row.get::<_, Option<i64>>(0)? else {
             if row.get::<_, bool>(2)? {
                 answer.untimed_responses += n;
             } else {
@@ -260,13 +260,14 @@ pub fn outlook(
             }
             continue;
         };
+        let i = i as usize;
         let day = window.start + row.get::<_, i64>(1)? * DAY;
         if !row.get::<_, bool>(2)? {
             answer.segments[i].unknown_boundary_items += n;
             continue;
         }
         for (j, &unit) in UNITS.iter().enumerate() {
-            let known = row.get::<_, u64>(5 + j * 2)?;
+            let known = row.get::<_, i64>(5 + j * 2)? as u64;
             data[i].0.entry(unit.into()).or_default().add(
                 day,
                 row.get(4 + j * 2)?,

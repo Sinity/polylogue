@@ -102,7 +102,7 @@ pub fn summary(reader: &Reader<'_>, selection: &Selection) -> Result<Summary> {
             session_sql::current("s", "session_span")
         ),
         rusqlite::params_from_iter(params.iter()),
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64)),
     )?;
     let population = Selection {
         sessions: selection.population.clone(),
@@ -112,7 +112,7 @@ pub fn summary(reader: &Reader<'_>, selection: &Selection) -> Result<Summary> {
     let global_sessions = conn.query_row(
         &format!("SELECT count(*) FROM session s WHERE {condition}"),
         rusqlite::params_from_iter(params.iter()),
-        |r| r.get(0),
+        |r| Ok(r.get::<_, i64>(0)? as u64),
     )?;
     Ok(Summary {
         outcome: if selected_sessions == 0 {

@@ -67,7 +67,7 @@ pub(crate) fn read(conn: &Connection, pk: i64, current: bool) -> Result<Counts> 
     if !current {
         return compute(conn, pk);
     }
-    Ok(conn.query_row("SELECT message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,thinking_count,compaction_count,tool_call_count,error_count FROM session WHERE pk=?1",[pk],|r|Ok(Counts{messages:r.get(0)?,human_prompts:r.get(1)?,human_commands:r.get(2)?,words:r.get(3)?,human_words:r.get(4)?,model_words:r.get(5)?,thinking:r.get(6)?,compactions:r.get(7)?,tool_calls:r.get(8)?,errors:r.get(9)?})))
+    Ok(conn.query_row("SELECT message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,thinking_count,compaction_count,tool_call_count,error_count FROM session WHERE pk=?1",[pk],|r|Ok(Counts{messages:r.get(0)?,human_prompts:r.get(1)?,human_commands:r.get(2)?,words:r.get(3)?,human_words:r.get(4)?,model_words:r.get(5)?,thinking:r.get(6)?,compactions:r.get(7)?,tool_calls:r.get(8)?,errors:r.get(9)?}))?)
 }
 
 fn run(tx: &Transaction<'_>, pk: i64) -> Result<()> {
