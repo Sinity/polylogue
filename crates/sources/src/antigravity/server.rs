@@ -405,7 +405,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     }
     fs::create_dir_all(path.parent().ok_or("missing spool directory")?)
         .map_err(|e| e.to_string())?;
-    polylogue_model::write_atomic(path, &bytes, None).map_err(|e| e.to_string())
+    polylogue_model::atomic_write::write_atomic(path, &bytes, None).map_err(|e| e.to_string())
 }
 
 fn write_conversion_state(
