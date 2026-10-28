@@ -130,7 +130,7 @@ pub fn reasoning_block(item: &Json) -> Block {
     let encrypted = str_field(item, "encrypted_content").is_some();
     Block::Thinking {
         text: (!parts.is_empty()).then(|| parts.join("\n\n")),
-        signature: None,
+        signature: str_field(item, "encrypted_content").map(str::to_owned),
         redacted: parts.is_empty() && encrypted,
     }
 }
@@ -350,6 +350,23 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
     }
 }
 
+/// The harness header reports seconds independently of command output.
+pub fn reported_duration(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .take_while(|line| line.trim_end() != "Output:")
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("Wall time: ")
+                .and_then(|s| s.strip_suffix(" seconds"))
+        })
+        .and_then(|seconds| seconds.parse::<f64>().ok())
+        .filter(|seconds| {
+            seconds.is_finite() && *seconds >= 0.0 && *seconds < u64::MAX as f64 / 1000.0
+        })
+        .map(|seconds| (seconds * 1000.0).round() as u64)
+}
+
 fn running() -> ToolOutcome {
     ToolOutcome::Unknown {
         reason: UnknownReason::RunningInBackground,
@@ -550,6 +567,7 @@ fn result_block(
         |c| c.outcome,
     );
     Block::ToolResult {
+        reported_duration_ms: completed(item).and_then(|c| c.duration_ms),
         call_id: Some(id.to_owned()),
         outcome,
         output,

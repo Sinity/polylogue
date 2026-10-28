@@ -102,6 +102,43 @@ pub fn scan(
     finish_scan(result, &scan_state)
 }
 
+/// Single-conversation exports use the same item pipeline as an export array.
+/// The array path buffers one conversation, and the object path is one conversation.
+pub fn scan_array_or_object(
+    reader: &mut dyn Input,
+    mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+) -> Result<ScanStats, ScanError> {
+    let mut prefix = Vec::new();
+    let first = loop {
+        let buffer = reader
+            .fill_buf()
+            .map_err(|error| ScanError::Callback(error.to_string()))?;
+        if buffer.is_empty() {
+            break None;
+        }
+        let byte = buffer[0];
+        reader.consume(1);
+        prefix.push(byte);
+        if !byte.is_ascii_whitespace() {
+            break Some(byte);
+        }
+    };
+    if first != Some(b'{') {
+        return scan(std::io::Cursor::new(prefix).chain(reader), item);
+    }
+    let start = prefix.len() as u64 - 1;
+    let input = std::io::Cursor::new(prefix).chain(reader);
+    let mut de = serde_json::Deserializer::from_reader(input);
+    let raw = Box::<RawValue>::deserialize(&mut de).map_err(ScanError::Malformed)?;
+    de.end().map_err(ScanError::Malformed)?;
+    let length = raw.get().len();
+    item(start..start + length as u64, &raw).map_err(ScanError::Callback)?;
+    Ok(ScanStats {
+        elements: 1,
+        peak_element_bytes: length,
+    })
+}
+
 fn finish_scan(
     result: Result<(), serde_json::Error>,
     scan_state: &Rc<RefCell<ScanState>>,

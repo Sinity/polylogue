@@ -21,6 +21,8 @@ fn background_only_groups_use_the_exclusion_lookup() {
         .output
         .background
         .push(polylogue_model::BackgroundUpdate {
+            result_at: None,
+            reported_duration_ms: None,
             session: sid("removed"),
             task_id: "task".into(),
             call_id: None,

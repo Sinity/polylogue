@@ -3,6 +3,7 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
+use crate::fields::ExpectedType as T;
 mod identity;
 mod message;
 mod observer;
@@ -116,19 +117,19 @@ struct Selected {
 }
 
 static SESSION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("source", Rule::Read),
-    ("model", Rule::Read),
-    ("model_config", Rule::Read),
-    ("parent_session_id", Rule::Read),
-    ("title", Rule::Read),
-    ("cwd", Rule::Read),
-    ("git_branch", Rule::Read),
-    ("git_remote", Rule::Read),
-    ("started_at", Rule::Read),
-    ("ended_at", Rule::Read),
-    ("end_reason", Rule::Read),
-    ("system_prompt", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("source", Rule::Read(T::String)),
+    ("model", Rule::Read(T::String)),
+    ("model_config", Rule::Read(T::StringOrObject)),
+    ("parent_session_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("cwd", Rule::Read(T::String)),
+    ("git_branch", Rule::Read(T::String)),
+    ("git_remote", Rule::Read(T::String)),
+    ("started_at", Rule::Read(T::StringOrNumber)),
+    ("ended_at", Rule::Read(T::StringOrNumber)),
+    ("end_reason", Rule::Read(T::String)),
+    ("system_prompt", Rule::Read(T::String)),
 ]);
 
 fn lines(
@@ -505,6 +506,14 @@ impl ExportParser for Database {
                 session.repo = text(row, "git_remote");
                 session.started = row.get("started_at").and_then(crate::time::epoch_seconds);
                 sink.out.sessions.push(session);
+                sink.out.events.push(Event {
+                    session: Some(id.clone()),
+                    kind: "session_metadata".into(),
+                    at: None,
+                    after: None,
+                    range: None,
+                    data: row.clone(),
+                });
                 let mut limits = Vec::new();
                 if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
                     sink.out.events.push(Event {

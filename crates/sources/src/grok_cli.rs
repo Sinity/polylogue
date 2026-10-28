@@ -12,6 +12,7 @@
 pub const VERSION: u32 = 1;
 
 use crate::document::{first_key, message_id, session_id, str_of, string_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
 use crate::parse::{MessageRow, Output, Parse, Parser};
@@ -93,30 +94,45 @@ pub struct ParserState {
 }
 
 static FIELDS: Fields = Fields::new(&[
-    ("type", Rule::Read),
-    ("content", Rule::Read),
-    ("id", Rule::Read),
-    ("summary", Rule::Read),
+    ("tool_calls[].id", Rule::Read(T::String)),
+    ("tool_calls[].name", Rule::Read(T::String)),
+    (
+        "tool_calls[].arguments",
+        Rule::Kept("complete parsed tool input"),
+    ),
+    ("content[].type", Rule::Read(T::String)),
+    ("content[].text", Rule::Read(T::String)),
+    ("type", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("id", Rule::Read(T::String)),
+    ("summary", Rule::Read(T::String)),
     (
         "encrypted_content",
         Rule::Kept("reasoning only the provider can read"),
     ),
     ("status", Rule::Excluded("completion of the reasoning step")),
-    ("model_id", Rule::Read),
+    ("model_id", Rule::Read(T::String)),
     (
         "model_fingerprint",
         Rule::Kept("the model build's fingerprint"),
     ),
-    ("reasoning_effort", Rule::Read),
-    ("tool_calls", Rule::Read),
-    ("tool_call_id", Rule::Read),
-    ("synthetic_reason", Rule::Read),
+    ("reasoning_effort", Rule::Read(T::String)),
+    ("tool_calls", Rule::Read(T::Array)),
+    ("tool_call_id", Rule::Read(T::String)),
+    ("synthetic_reason", Rule::Read(T::String)),
     (
         "prompt_index",
         Rule::Excluded("the CLI's count of typed prompts"),
     ),
-    ("kind", Rule::Read),
-]);
+    ("kind", Rule::Read(T::String)),
+])
+.shape(
+    &[],
+    &[crate::fields::KnownKinds {
+        path: "type",
+        values: &["user", "assistant", "tool_result", "system", "reasoning"],
+    }],
+);
 
 /// What a Grok CLI tool does, by its name.
 fn action(tool: &str) -> ToolAction {
@@ -263,6 +279,7 @@ impl Parser for GrokCli {
                 Role::User,
                 Some(PromptKind::Harness),
                 vec![Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id: string_of(value, "tool_call_id"),
                     outcome: ToolOutcome::Ok,
                     output: text_of(value.get("content")),
@@ -296,6 +313,7 @@ impl Parser for GrokCli {
                 stop_reason: None,
                 reported_cost_usd: None,
                 duration_ms: None,
+                attrs: crate::fields::attributes(value, &FIELDS),
                 production,
             },
         });

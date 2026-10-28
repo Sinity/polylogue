@@ -11,6 +11,7 @@ pub const VERSION: u32 = 1;
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{ExtractedBlob, MessageRow, Output, Parse, Step};
 use crate::{RecordOutcome, Records};
@@ -47,9 +48,9 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         "version",
         Rule::Excluded("the export format's version string"),
     ),
-    ("title", Rule::Read),
-    ("characters", Rule::Read),
-    ("messages", Rule::Read),
+    ("title", Rule::Read(T::String)),
+    ("characters", Rule::Read(T::Array)),
+    ("messages", Rule::Read(T::Array)),
     ("artifacts", Rule::Kept("artifact panes, kept as an event")),
     (
         "artifactFiles",
@@ -66,19 +67,19 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
 ]);
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("type", Rule::Read),
-    ("content", Rule::Read),
-    ("contentType", Rule::Read),
-    ("characterId", Rule::Read),
-    ("parentMessageId", Rule::Read),
-    ("createdAt", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("type", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("contentType", Rule::Read(T::String)),
+    ("characterId", Rule::Read(T::String)),
+    ("parentMessageId", Rule::Read(T::String)),
+    ("createdAt", Rule::Read(T::String)),
     (
         "updatedAt",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    ("attachments", Rule::Read),
-    ("files", Rule::Read),
+    ("attachments", Rule::Read(T::Array)),
+    ("files", Rule::Read(T::Array)),
     ("citations", Rule::Kept("web search citations")),
     (
         "context",
@@ -91,16 +92,16 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "isEdited",
         Rule::Kept("the operator edited the message after sending"),
     ),
-    ("metadata", Rule::Read),
-    ("metadata.tokensCount", Rule::Read),
-    ("metadata.generateDuration", Rule::Read),
-    ("metadata.latencyDuration", Rule::Read),
-    ("metadata.cost", Rule::Read),
+    ("metadata", Rule::Read(T::Object)),
+    ("metadata.tokensCount", Rule::Read(T::Number)),
+    ("metadata.generateDuration", Rule::Read(T::Number)),
+    ("metadata.latencyDuration", Rule::Read(T::Number)),
+    ("metadata.cost", Rule::Read(T::Number)),
     (
         "metadata.provider",
         Rule::Kept("the upstream host that served the reply"),
     ),
-    ("metadata.variantSlug", Rule::Read),
+    ("metadata.variantSlug", Rule::Read(T::String)),
     (
         "metadata.tokensPerSecond",
         Rule::Excluded("tokens divided by duration, both read"),
@@ -109,7 +110,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "metadata.plugins",
         Rule::Kept("plugins enabled for the reply"),
     ),
-    ("metadata.reasoning", Rule::Read),
+    ("metadata.reasoning", Rule::Read(T::StringOrArray)),
 ]);
 
 impl ExportParser for OpenRouter {
@@ -432,6 +433,7 @@ fn message(
         duration_ms: meta
             .and_then(|x| x.get("generateDuration"))
             .and_then(Json::as_u64),
+        attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
         production,
     })
 }

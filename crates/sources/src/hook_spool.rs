@@ -26,6 +26,7 @@
 pub const VERSION: u32 = 1;
 
 use crate::document::{first_key, session_id, str_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
 use crate::parse::{Output, Parse, Parser};
@@ -64,15 +65,15 @@ pub struct HookSpool;
 pub struct ParserState {}
 
 static FIELDS: Fields = Fields::new(&[
-    ("event_id", Rule::Read),
-    ("event_type", Rule::Read),
-    ("event", Rule::Read),
-    ("at_ns", Rule::Read),
-    ("harness_pid", Rule::Read),
-    ("observed_at_ms", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("provider", Rule::Read),
-    ("session_id", Rule::Read),
+    ("event_id", Rule::Read(T::String)),
+    ("event_type", Rule::Read(T::String)),
+    ("event", Rule::Read(T::String)),
+    ("at_ns", Rule::Read(T::Number)),
+    ("harness_pid", Rule::Read(T::Number)),
+    ("observed_at_ms", Rule::Read(T::Number)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("provider", Rule::Read(T::String)),
+    ("session_id", Rule::Read(T::String)),
     (
         "payload",
         Rule::Kept("the hook's input, kept whole as the event's data"),

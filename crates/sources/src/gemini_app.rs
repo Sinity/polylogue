@@ -192,6 +192,7 @@ fn message(
         stop_reason: None,
         reported_cost_usd: None,
         duration_ms: None,
+        attrs: Default::default(),
         production: Default::default(),
     }
 }

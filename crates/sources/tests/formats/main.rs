@@ -17,3 +17,5 @@ mod optional_numeric;
 mod support;
 
 mod hermes_trajectories;
+
+mod fidelity;

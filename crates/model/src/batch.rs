@@ -77,6 +77,10 @@ pub struct MessageRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_at: Option<crate::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_duration_ms: Option<u64>,
     pub session: SessionId,
     pub task_id: String,
     /// The tool call that started the task, when the notice names it.
@@ -131,14 +135,41 @@ impl RecordOutcome {
 /// How the records of one parse step ended, by record kind. The counts
 /// add up to the records read; the writer refuses a step whose counts do
 /// not.
+/// Derived wire observations contain shape and declared discriminator sets,
+/// never scalar bodies from the input. The writer gives these their receipt time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireShape {
+    pub types: BTreeMap<String, u64>,
+    pub expected: Vec<String>,
+    pub dynamic_map: bool,
+    pub known_kinds: Vec<String>,
+}
+impl WireShape {
+    pub fn merge(&mut self, other: &Self) {
+        for (kind, count) in &other.types {
+            *self.types.entry(kind.clone()).or_default() += count;
+        }
+        if self.expected.is_empty() {
+            self.expected.clone_from(&other.expected);
+        }
+        self.dynamic_map |= other.dynamic_map;
+        if self.known_kinds.is_empty() {
+            self.known_kinds.clone_from(&other.known_kinds);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordCounts {
+    /// Derived observations travel with scratch steps through the writer boundary.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub wire_shapes: BTreeMap<String, WireShape>,
     pub records: u64,
     pub used: BTreeMap<String, u64>,
     /// Keyed by `record kind: reason`.
     pub skipped: BTreeMap<String, u64>,
     pub unreadable: BTreeMap<String, u64>,
-    /// Wire fields neither read nor excluded, by `record kind.path`. Not a
+    /// Wire leaves neither read nor retained in parsed rows, by `record kind.path`. Not a
     /// failure: it shows where a parser falls behind its format.
     pub unread_fields: BTreeMap<String, u64>,
 }
@@ -191,6 +222,12 @@ impl RecordCounts {
 
     pub fn merge(&mut self, other: &RecordCounts) {
         self.records += other.records;
+        for (path, shape) in &other.wire_shapes {
+            self.wire_shapes
+                .entry(path.clone())
+                .or_default()
+                .merge(shape);
+        }
         let add = |into: &mut BTreeMap<String, u64>, from: &BTreeMap<String, u64>| {
             for (k, v) in from {
                 *into.entry(k.clone()).or_default() += v;

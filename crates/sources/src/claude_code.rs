@@ -159,6 +159,9 @@ pub struct ParserState {
     /// Session facts gathered so far, by native ID. A file touches a few
     /// sessions: its own, the ones it copies from, its sidechain.
     sessions: BTreeMap<String, Session>,
+    /// Embedded transcripts use the same response assembly as separate files.
+    #[serde(default)]
+    agents: BTreeMap<String, Box<ParserState>>,
     /// The assistant response still being assembled.
     open: Option<Response>,
     /// Recently closed responses that a late continuation may reopen.
@@ -480,6 +483,7 @@ impl ClaudeCode {
                     stop_reason: None,
                     reported_cost_usd: None,
                     duration_ms: None,
+                    attrs: Default::default(),
                     production: Production::default(),
                 },
             });
@@ -523,6 +527,7 @@ impl ClaudeCode {
         let cost = v.get("costUSD").and_then(Json::as_number).cloned();
         let duration = v.get("durationMs").and_then(Json::as_u64);
         let production = production(v, msg);
+        let attrs = message_attrs(v, msg);
         let end = range(record).1;
         if let Some(fork) = v.get("forkedFrom")
             && let (Some(parent), Some(at)) = (
@@ -598,6 +603,7 @@ impl ClaudeCode {
                     };
                     open.end = open.end.max(end);
                     let m = &mut open.message;
+                    let block_offset = m.blocks.len();
                     m.blocks.extend(blocks);
                     if !usage.is_empty() {
                         m.usage = usage;
@@ -607,6 +613,7 @@ impl ClaudeCode {
                     m.reported_cost_usd = cost.or(m.reported_cost_usd.take());
                     m.duration_ms = duration.or(m.duration_ms);
                     m.production.merge(production);
+                    merge_attrs(&mut m.attrs, attrs, block_offset);
                 }
                 None => {
                     parser_state.open = Some(Response {
@@ -626,6 +633,7 @@ impl ClaudeCode {
                             stop_reason,
                             reported_cost_usd: cost,
                             duration_ms: duration,
+                            attrs,
                             production,
                         },
                     });
@@ -654,6 +662,7 @@ impl ClaudeCode {
                 stop_reason,
                 reported_cost_usd: cost,
                 duration_ms: duration,
+                attrs,
                 production,
             };
             out.messages.push(MessageRow {
@@ -853,6 +862,11 @@ fn production(v: &Json, msg: &Json) -> Production {
     let s = |k: &str| str_field(v, k).map(str::to_owned);
     let kept = |x: Option<&Json>| x.filter(|x| !x.is_null()).cloned();
     Production {
+        server_tool_use: msg
+            .pointer("/usage/server_tool_use")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        iterations: msg.pointer("/usage/iterations").and_then(Json::as_u64),
+        phase: None,
         response_boundary_unknown: None,
         effort: s("effort").or_else(|| s("perTurnEffort")),
         requested_model: s("requestedModel"),
@@ -886,6 +900,82 @@ fn production(v: &Json, msg: &Json) -> Production {
     }
 }
 
+fn message_attrs(record: &Json, message: &Json) -> serde_json::Map<String, Json> {
+    let mut attrs = crate::fields::attributes(record, &fields::MESSAGE_FIELDS);
+    if let Some(usage) = message.get("usage").and_then(Json::as_object) {
+        let details: serde_json::Map<String, Json> = usage
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(
+                    key.as_str(),
+                    "input_tokens"
+                        | "output_tokens"
+                        | "cache_read_input_tokens"
+                        | "cache_creation_input_tokens"
+                        | "service_tier"
+                )
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if !details.is_empty() {
+            attrs.insert("usage".into(), Json::Object(details));
+        }
+    }
+    if let Some(result) = record.get("toolUseResult") {
+        attrs.insert("toolUseResult".into(), result.clone());
+    }
+    let details: Vec<Json> = message
+        .get("content")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(position, block)| {
+            let fields: serde_json::Map<String, Json> = block
+                .as_object()?
+                .iter()
+                .filter(|(key, _)| {
+                    matches!(
+                        key.as_str(),
+                        "citations" | "summaries" | "start_timestamp" | "stop_timestamp"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            (!fields.is_empty()).then(|| serde_json::json!({"position":position,"fields":fields}))
+        })
+        .collect();
+    if !details.is_empty() {
+        attrs.insert("content".into(), Json::Array(details));
+    }
+    attrs
+}
+
+fn merge_attrs(
+    into: &mut serde_json::Map<String, Json>,
+    later: serde_json::Map<String, Json>,
+    block_offset: usize,
+) {
+    for (key, mut value) in later {
+        if key == "content" {
+            if let Some(details) = value.as_array_mut() {
+                for detail in details {
+                    if let Some(position) = detail.get("position").and_then(Json::as_u64) {
+                        detail["position"] = Json::from(position + block_offset as u64);
+                    }
+                }
+            }
+            if let Some(Json::Array(existing)) = into.get_mut(&key) {
+                if let Json::Array(additional) = value {
+                    existing.extend(additional);
+                }
+                continue;
+            }
+        }
+        into.insert(key, value);
+    }
+}
+
 fn usage(u: &Json) -> Usage {
     let n = |k: &str| u.get(k).and_then(Json::as_u64);
     Usage {
@@ -893,7 +983,10 @@ fn usage(u: &Json) -> Usage {
         cached_input: n("cache_read_input_tokens"),
         cache_write: n("cache_creation_input_tokens"),
         output: n("output_tokens"),
-        reasoning: None,
+        reasoning: u.get("thinking_tokens").and_then(Json::as_u64).or_else(|| {
+            u.pointer("/output_tokens_details/thinking_tokens")
+                .and_then(Json::as_u64)
+        }),
         cache_write_1h: u
             .get("cache_creation")
             .and_then(|c| c.get("ephemeral_1h_input_tokens"))
@@ -1040,6 +1133,12 @@ impl Parser for ClaudeCode {
             parser_state.alias(uuid, target);
         }
         self.names(parser_state, record, v, out);
+        if matches!(ty, "summary" | "custom-title" | "ai-title") {
+            records.fields(ty, v, &fields::TITLE_FIELDS);
+        }
+        if ty == "continued-in" {
+            records.fields(ty, v, &fields::CONTINUATION_FIELDS);
+        }
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
                 self.event(parser_state, record, v, "compaction_summary", out)
@@ -1092,6 +1191,8 @@ impl Parser for ClaudeCode {
                     }
                 {
                     out.background.push(BackgroundUpdate {
+                        result_at: v.get("timestamp").and_then(time::rfc3339),
+                        reported_duration_ms: v.get("durationMs").and_then(Json::as_u64),
                         session,
                         task_id,
                         call_id,
@@ -1175,12 +1276,65 @@ impl Parser for ClaudeCode {
                             out,
                             LinkKind::Spawn,
                             parent,
-                            child,
+                            child.clone(),
                             None,
                             call,
                             "agent_progress",
                         );
-                        RecordOutcome::Used
+                        if let Some(embedded) = data.get("message").filter(|m| m.is_object()) {
+                            let agent = ClaudeCode {
+                                file: File::Subagent {
+                                    stem: child.native().to_string(),
+                                },
+                            };
+                            let state = parser_state
+                                .agents
+                                .entry(child.native().to_string())
+                                .or_default();
+                            let mut embedded = embedded.clone();
+                            if let Some(object) = embedded.as_object_mut() {
+                                // Some progress records wrap an API message; others hold
+                                // the API message itself with its identity beside it.
+                                if !object.contains_key("message") {
+                                    let api = Json::Object(object.clone());
+                                    object.clear();
+                                    object.insert("message".into(), api);
+                                }
+                                for key in ["uuid", "timestamp", "parentUuid"] {
+                                    if !object.contains_key(key) {
+                                        if let Some(value) = data.get(key) {
+                                            object.insert(key.into(), value.clone());
+                                        }
+                                    }
+                                }
+                                if !object.contains_key("type") {
+                                    if let Some(role) =
+                                        object.get("message").and_then(|m| m.get("role")).cloned()
+                                    {
+                                        object.insert("type".into(), role);
+                                    }
+                                }
+                            }
+                            let role = match str_field(&embedded, "type") {
+                                Some("assistant") => Role::Assistant,
+                                Some("user") => Role::User,
+                                _ => {
+                                    return self.event(
+                                        parser_state,
+                                        record,
+                                        v,
+                                        "agent_progress",
+                                        out,
+                                    );
+                                }
+                            };
+                            let outcome =
+                                agent.message(state, record, &embedded, role, out, records);
+                            if !matches!(outcome, RecordOutcome::Used) {
+                                return outcome;
+                            }
+                        }
+                        self.event(parser_state, record, v, "agent_progress", out)
                     }
                     Some("hook_progress") => self.event(parser_state, record, v, "hook_run", out),
                     Some(_) => {
@@ -1198,6 +1352,16 @@ impl Parser for ClaudeCode {
     }
 
     fn flush(&self, parser_state: &mut ParserState, out: &mut Output) {
+        let mut agent_sessions = Vec::new();
+        for (native, state) in &mut parser_state.agents {
+            let agent = ClaudeCode {
+                file: File::Subagent {
+                    stem: native.clone(),
+                },
+            };
+            agent.flush(state, out);
+            agent_sessions.append(&mut out.sessions);
+        }
         if let Some(open) = &parser_state.open {
             out.messages.push(MessageRow {
                 offset: open.offset,
@@ -1216,7 +1380,12 @@ impl Parser for ClaudeCode {
         }
         kept.sort_by_key(|row| row.offset);
         out.messages = kept;
-        out.sessions = parser_state.sessions.values().cloned().collect();
+        out.sessions = parser_state
+            .sessions
+            .values()
+            .cloned()
+            .chain(agent_sessions)
+            .collect();
     }
 }
 

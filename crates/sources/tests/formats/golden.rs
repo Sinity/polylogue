@@ -2,8 +2,8 @@
 //! (`input.jsonl`, `input.json`),
 //! the path it would have under the home directory (`path`), and the
 //! expected rows and accounting (`expected.json`). A parser bug is fixed by
-//! adding its input as a case. Expected rows are written from the format
-//! and reviewed independently of the parser.
+//! adding its input as a case. Expectations are edited from format knowledge;
+//! this harness only reads them.
 
 use polylogue_sources::origin::by_name;
 use std::fs;
@@ -37,7 +37,14 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
             input.len()
         ));
     }
-    let value = sorted(serde_json::json!({"output": step.output, "counts": step.counts}));
+    // Wire observations have their own independent shape/count tests. Historical
+    // conversation goldens keep their public record-accounting projection.
+    let mut counts = serde_json::to_value(step.counts).map_err(|error| error.to_string())?;
+    counts
+        .as_object_mut()
+        .expect("counts object")
+        .remove("wire_shapes");
+    let value = sorted(serde_json::json!({"output": step.output, "counts": counts}));
     let got = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n";
     let expected_path = dir.join("expected.json");
     compare_expected(&expected_path, &value, &got)
@@ -59,7 +66,7 @@ fn compare_expected(
                 Ok(())
             } else {
                 Err(format!(
-                    "output differs from {}; compare with the input format and review the expected rows\n{got}",
+                    "output differs from {}; review the input and hand-written expectation\n{got}",
                     expected_path.display()
                 ))
             }
@@ -78,7 +85,7 @@ fn missing_expectation_fails_without_creating_it() {
 }
 
 #[test]
-fn invalid_expectation_is_preserved() {
+fn goldens_hand_written_invalid_expectation_is_preserved() {
     let dir = tempfile::tempdir().unwrap();
     let expected = dir.path().join("expected.json");
     fs::write(&expected, "invalid JSON").unwrap();

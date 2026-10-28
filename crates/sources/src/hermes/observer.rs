@@ -3,6 +3,7 @@
 use super::{Event, Json, Parse, Sink, lines};
 use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use std::path::Path;
 
@@ -27,15 +28,15 @@ pub(super) fn open(path: &Path) -> Option<Parse> {
 struct Atof;
 
 static FIELDS: Fields = Fields::new(&[
-    ("atof_version", Rule::Read),
-    ("kind", Rule::Read),
-    ("uuid", Rule::Read),
-    ("parent_uuid", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("name", Rule::Read),
-    ("scope_category", Rule::Read),
-    ("category", Rule::Read),
-    ("data", Rule::Read),
+    ("atof_version", Rule::Read(T::Number)),
+    ("kind", Rule::Read(T::String)),
+    ("uuid", Rule::Read(T::String)),
+    ("parent_uuid", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("name", Rule::Read(T::String)),
+    ("scope_category", Rule::Read(T::String)),
+    ("category", Rule::Read(T::String)),
+    ("data", Rule::Read(T::Object)),
     ("data_schema", Rule::Kept("native observation schema")),
     (
         "metadata",

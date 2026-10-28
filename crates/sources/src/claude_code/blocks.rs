@@ -123,12 +123,7 @@ fn tool_result(
     sole_result: bool,
     blobs: &mut Vec<ExtractedBlob>,
 ) -> Block {
-    // `toolUseResult` describes the record's result only when there is
-    // exactly one.
-    let meta = record
-        .get("toolUseResult")
-        .filter(|_| sole_result)
-        .filter(|m| m.is_object());
+    let meta = result_metadata(record, item, sole_result);
     let mut attachments = Vec::new();
     let output = match item.get("content") {
         Some(Json::String(s)) => Some(s.clone()),
@@ -145,12 +140,53 @@ fn tool_result(
         _ => None,
     };
     Block::ToolResult {
+        reported_duration_ms: meta
+            .and_then(|m| m.get("durationMs").or_else(|| m.get("duration_ms")))
+            .and_then(Json::as_u64),
         call_id: string(item, "tool_use_id"),
         outcome: outcome(record, item, meta, output.as_deref()),
         output,
-        data: meta.cloned(),
+        data: match item.get("content").and_then(Json::as_array) {
+            Some(parts) => Some(serde_json::json!({"toolUseResult":meta,"content":parts})),
+            None => meta.cloned(),
+        },
         attachments,
     }
+}
+
+/// Multi-result records associate metadata by native call identity. An
+/// unkeyed result belongs to a block only when the record has one result.
+fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a Json> {
+    let result = record.get("toolUseResult")?;
+    let id = item.get("tool_use_id").and_then(Json::as_str);
+    let matches = |value: &&Json| {
+        id.is_some_and(|id| {
+            ["tool_use_id", "toolUseId", "call_id", "id"]
+                .iter()
+                .any(|key| value.get(key).and_then(Json::as_str) == Some(id))
+        })
+    };
+    if let Some(items) = result.as_array() {
+        return items.iter().find(matches);
+    }
+    if let Some(id) = id {
+        if let Some(value) = result.get(id).filter(|v| v.is_object()) {
+            return Some(value);
+        }
+        for key in ["results", "toolResults"] {
+            if let Some(value) = result
+                .get(key)
+                .and_then(Json::as_array)
+                .and_then(|list| list.iter().find(matches))
+            {
+                return Some(value);
+            }
+        }
+        if matches(&result) {
+            return Some(result);
+        }
+    }
+    sole.then_some(result).filter(|value| value.is_object())
 }
 
 /// The result's outcome, from the most specific evidence present: a denial,
@@ -191,6 +227,21 @@ pub fn outcome(
         return ToolOutcome::Unknown {
             reason: UnknownReason::RunningInBackground,
         };
+    }
+    if let Some(code) = meta
+        .and_then(|m| m.get("exitCode").or_else(|| m.get("exit_code")))
+        .and_then(Json::as_i64)
+    {
+        return if code == 0 {
+            ToolOutcome::Ok
+        } else {
+            ToolOutcome::Error {
+                reason: Some(ErrorReason::ExitCode(code)),
+            }
+        };
+    }
+    if meta_bool("isError").or_else(|| meta_bool("is_error")) == Some(true) {
+        return ToolOutcome::Error { reason: None };
     }
     match item.get("is_error") {
         None | Some(Json::Null) => ToolOutcome::Ok,

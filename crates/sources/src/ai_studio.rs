@@ -17,6 +17,7 @@ pub const VERSION: u32 = 1;
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -118,10 +119,10 @@ struct PromptState {
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("runSettings", Rule::Read),
-    ("systemInstruction", Rule::Read),
-    ("chunkedPrompt", Rule::Read),
-    ("chunkedPrompt.chunks", Rule::Read),
+    ("runSettings", Rule::Read(T::Object)),
+    ("systemInstruction", Rule::Read(T::Object)),
+    ("chunkedPrompt", Rule::Read(T::Object)),
+    ("chunkedPrompt.chunks", Rule::Read(T::Array)),
     (
         "chunkedPrompt.pendingInputs",
         Rule::Kept("the unsent draft in the input box"),
@@ -130,18 +131,18 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
 ]);
 
 static CHUNK_FIELDS: Fields = Fields::new(&[
-    ("role", Rule::Read),
-    ("author", Rule::Read),
-    ("id", Rule::Read),
-    ("text", Rule::Read),
-    ("parts", Rule::Read),
-    ("parts[].text", Rule::Read),
-    ("parts[].thought", Rule::Read),
-    ("parts[].thoughtSignature", Rule::Read),
-    ("parts[].executableCode", Rule::Read),
-    ("parts[].codeExecutionResult", Rule::Read),
-    ("parts[].inlineData", Rule::Read),
-    ("parts[].fileData", Rule::Read),
+    ("role", Rule::Read(T::String)),
+    ("author", Rule::Read(T::String)),
+    ("id", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("parts", Rule::Read(T::Array)),
+    ("parts[].text", Rule::Read(T::String)),
+    ("parts[].thought", Rule::Read(T::Boolean)),
+    ("parts[].thoughtSignature", Rule::Read(T::String)),
+    ("parts[].executableCode", Rule::Read(T::Object)),
+    ("parts[].codeExecutionResult", Rule::Read(T::Object)),
+    ("parts[].inlineData", Rule::Read(T::Object)),
+    ("parts[].fileData", Rule::Read(T::Object)),
     (
         "thoughtSignatures",
         Rule::Kept("the thoughts' signatures, also read from their parts"),
@@ -155,10 +156,10 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
         "videoMetadata",
         Rule::Kept("the clip range of an attached video"),
     ),
-    ("isThought", Rule::Read),
-    ("tokenCount", Rule::Read),
-    ("finishReason", Rule::Read),
-    ("createTime", Rule::Read),
+    ("isThought", Rule::Read(T::Boolean)),
+    ("tokenCount", Rule::Read(T::Number)),
+    ("finishReason", Rule::Read(T::String)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
     (
         "updateTime",
         Rule::Excluded("edit time; the creation time orders chunks"),
@@ -167,18 +168,18 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
         "thinkingBudget",
         Rule::Kept("the request's reasoning budget, kept with the run settings"),
     ),
-    ("driveDocument", Rule::Read),
-    ("driveImage", Rule::Read),
-    ("driveAudio", Rule::Read),
-    ("driveVideo", Rule::Read),
-    ("inlineImage", Rule::Read),
-    ("inlineFile", Rule::Read),
-    ("youtubeVideo", Rule::Read),
-    ("executableCode", Rule::Read),
-    ("codeExecutionResult", Rule::Read),
-    ("errorMessage", Rule::Read),
+    ("driveDocument", Rule::Read(T::Object)),
+    ("driveImage", Rule::Read(T::Object)),
+    ("driveAudio", Rule::Read(T::Object)),
+    ("driveVideo", Rule::Read(T::Object)),
+    ("inlineImage", Rule::Read(T::Object)),
+    ("inlineFile", Rule::Read(T::Object)),
+    ("youtubeVideo", Rule::Read(T::Object)),
+    ("executableCode", Rule::Read(T::Object)),
+    ("codeExecutionResult", Rule::Read(T::Object)),
+    ("errorMessage", Rule::Read(T::String)),
     ("grounding", Rule::Kept("search grounding sources")),
-    ("branchParent", Rule::Read),
+    ("branchParent", Rule::Read(T::String)),
     (
         "branchChildren",
         Rule::Kept("other prompts branched from here"),
@@ -294,6 +295,17 @@ impl ExportParser for AiStudio {
                         range: Some((0, self.state.length)),
                         data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
                     });
+                    let attrs = crate::fields::attributes(doc, &DOCUMENT_FIELDS);
+                    if !attrs.is_empty() {
+                        sink.out.events.push(Event {
+                            session: Some(sid.clone()),
+                            kind: "prompt_metadata".into(),
+                            at: None,
+                            after: None,
+                            range: Some((0, self.state.length)),
+                            data: Json::Object(attrs),
+                        });
+                    }
                     if let Some(text) = system_text(doc.get("systemInstruction")) {
                         let id = message_id(ORIGIN, &message_key(&self.native, "system", ""))
                             .ok_or("unusable system id")?;
@@ -486,6 +498,7 @@ impl AiStudio {
         }
 
         let mut message = plain(id, sid.clone(), role, blocks);
+        message.attrs = crate::fields::attributes(chunk, &CHUNK_FIELDS);
         message.parent = self.state.previous.clone();
         message.at = chunk.get("createTime").and_then(time_of);
         if role == Role::Assistant {
@@ -536,6 +549,7 @@ fn plain(
         stop_reason: None,
         reported_cost_usd: None,
         duration_ms: None,
+        attrs: Default::default(),
         production: Default::default(),
     }
 }
@@ -708,9 +722,9 @@ pub struct Listing {
 }
 
 static LISTING_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("name", Rule::Read),
-    ("createdTime", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("createdTime", Rule::Read(T::String)),
     (
         "modifiedTime",
         Rule::Excluded("the revisions carry when the prompt changed"),

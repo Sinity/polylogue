@@ -38,8 +38,10 @@ impl Parser for ClassifiedLines {
     ) -> RecordOutcome {
         let kind = self.kind(value);
         parser_state.push((record.offset, kind.clone()));
-        static FIELDS: crate::fields::Fields =
-            crate::fields::Fields::new(&[("kind", crate::fields::Rule::Read)]);
+        static FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[(
+            "kind",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+        )]);
         records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
             "message" => RecordOutcome::Used,
