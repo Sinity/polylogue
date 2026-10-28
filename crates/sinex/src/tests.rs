@@ -83,7 +83,7 @@ fn a_saved_query_request_records_its_resolved_revision_in_sinex() {
     assert_eq!(payload["kind"], "saved_query");
     assert_eq!(payload["first_note"], "first");
     assert_eq!(payload["relations"][0]["other"], "note:previous");
-    let event: sinex_model::event_types::polylogue::Note = serde_json::from_value(payload).unwrap();
+    let event: crate::kinds::Note = serde_json::from_value(payload).unwrap();
     assert_eq!(event.note, saved.id);
 }
 
