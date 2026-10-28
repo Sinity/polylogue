@@ -143,3 +143,133 @@ fn export_scanning_uses_one_forward_decode_after_verification() {
     assert_eq!(stats.decoded_bytes, 2 * bytes.len() as u64);
     assert_eq!(stats.frames, verified.frames + 1);
 }
+
+#[test]
+fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
+    use crate::plan::Plan;
+    use crate::pool::{Bytes, Pool};
+    use polylogue_store::{Change, InputKey};
+    use std::sync::{Arc, Mutex, mpsc::channel};
+
+    const CHUNK: usize = 64 << 10;
+    const INPUTS: usize = 32;
+    let budget = 2 * CHUNK;
+    let home = polylogue_testkit::ClaudeHome::new();
+    let mut expected = Vec::new();
+    for i in 0..INPUTS {
+        let session = format!("stored-{i}");
+        let first_id = format!("first-{i}");
+        let empty = polylogue_testkit::claude_user(&first_id, &session, "");
+        let body = "x".repeat(CHUNK - 3 - empty.len());
+        let first = polylogue_testkit::claude_user(&first_id, &session, &body);
+        assert_eq!(first.len(), CHUNK - 3);
+        let last = format!("last complete record {i}");
+        let second = polylogue_testkit::claude_user(&format!("last-{i}"), &session, &last);
+        let path = home.file(&format!("stored-{i}.jsonl"));
+        std::fs::write(&path, first + &second).unwrap();
+        expected.push((path, session, body, last, second.as_bytes()[..3].to_vec()));
+    }
+    {
+        let (mut seed, _lock) = home.engine(CHUNK as u64);
+        let pass = seed.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    for (path, ..) in &expected {
+        std::fs::remove_file(path).unwrap();
+    }
+    polylogue_testkit::delete_index(&home.root);
+    let (engine, _lock) = home.engine(CHUNK as u64);
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let mut plans = Vec::new();
+    for (path, ..) in &expected {
+        let input = engine.location_id(path);
+        let reader = engine.reads.reader().unwrap();
+        let progress = reader.input_progress(&input).unwrap().unwrap();
+        let stored = reader
+            .stored_chain(&input, progress.chain, progress.length)
+            .unwrap();
+        plans.push(Plan::stored(
+            path.clone(),
+            origin,
+            InputKey {
+                id: input,
+                format: "claude-code".into(),
+                arrival_rank: 0,
+            },
+            Change::Reparse {
+                chain: progress.chain,
+            },
+            None,
+            progress.length,
+            0,
+            Bytes::Import(Arc::new(Mutex::new(Imported::from_chain(
+                stored,
+                Arc::clone(&engine.blobs),
+            )))),
+            CHUNK as u64,
+            false,
+        ));
+    }
+    let (done, received) = channel();
+    let pool = Pool::start(
+        3,
+        budget as u64,
+        engine.writer.sender().unwrap(),
+        Arc::clone(&engine.blobs),
+        engine.archive.clone(),
+        done,
+    );
+    // Match the scheduler's read-ahead: retained plans are not advanced while
+    // their completed jobs release the byte budget and later inputs enter.
+    for plan in &mut plans {
+        pool.submit(plan.next_job());
+    }
+    drop(pool);
+    engine.writer.flush().unwrap();
+    let retained: usize = plans
+        .iter()
+        .zip(&expected)
+        .map(|(plan, (_, _, _, _, suffix))| {
+            let Bytes::Import(source) = &plan.source else {
+                unreachable!()
+            };
+            let source = source.lock().unwrap();
+            assert_eq!(&source.pending, suffix);
+            source.pending.capacity()
+        })
+        .sum();
+    let completed: Vec<_> = received.into_iter().collect();
+    assert_eq!(completed.len(), INPUTS);
+    for result in completed {
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
+        plan.apply(result, true);
+    }
+    let (done, received) = channel();
+    let pool = Pool::start(
+        3,
+        budget as u64,
+        engine.writer.sender().unwrap(),
+        Arc::clone(&engine.blobs),
+        engine.archive.clone(),
+        done,
+    );
+    for plan in &mut plans {
+        pool.submit(plan.next_job());
+    }
+    drop(pool);
+    engine.writer.flush().unwrap();
+    for result in received {
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
+        plan.apply(result, true);
+        assert!(plan.finished());
+    }
+    for (_, session, first, last, _) in &expected {
+        assert_eq!(home.texts(session), [first.clone(), last.clone()]);
+    }
+    assert!(
+        retained <= budget,
+        "consumed chunks retained {retained} bytes outside the {budget}-byte pool budget"
+    );
+}
