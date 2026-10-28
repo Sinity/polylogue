@@ -16,6 +16,22 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 - **Sinex's lifecycle applies to Polylogue's materials** as to any source's, through Sinex's own surfaces. Polylogue itself offers no deletion in either mode ([architecture.md#deletion](architecture.md#deletion)).
 - **Settings shared with Sinex.** The logical day, quiet hours and the interrupt budget are Sinex's settings; Polylogue has no value of its own for them, and its interrupting notices are shown by Sinex's deliverer ([operations.md#notices](operations.md#notices)).
 
+## Producer connection and declarations
+
+Before writing frame bytes, Polylogue checks Sinex's producer welcome with an
+empty hello. This checks the protocol and sealing configuration before its
+producer-owned kinds exist. It then registers its ten `polylogue.*` declarations
+and requires the acknowledgment to name their exact definition hashes before
+sending materials or events. Each event selects its declaration by name and
+version. A refused hello returns Sinex's reason.
+
+Message and tool-call declarations request no Sinex text index. Their field
+hints describe defaults for operator-configured output rules; they impose no
+kind-wide admission class floor. Event frame names include declaration hashes.
+A producer replay selects the exact declarations and parser/build identities
+for its complete material sequence, and waits for the replacement acknowledgment
+before updating its local index.
+
 ## Local state
 
 What a host keeps locally in primary mode:

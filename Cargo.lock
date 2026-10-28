@@ -1773,6 +1773,7 @@ dependencies = [
  "polylogue-query",
  "polylogue-store",
  "polylogue-testkit",
+ "schemars",
  "serde",
  "serde_json",
  "sinex-model",
@@ -2567,7 +2568,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=8babf74b4fb0ee27f140350111f522c85df9c8be#8babf74b4fb0ee27f140350111f522c85df9c8be"
+source = "git+https://github.com/Sinity/sinex?rev=41e79f09661fa466e88bfa4e7496054b3bbe05a5#41e79f09661fa466e88bfa4e7496054b3bbe05a5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2577,7 +2578,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=8babf74b4fb0ee27f140350111f522c85df9c8be#8babf74b4fb0ee27f140350111f522c85df9c8be"
+source = "git+https://github.com/Sinity/sinex?rev=41e79f09661fa466e88bfa4e7496054b3bbe05a5#41e79f09661fa466e88bfa4e7496054b3bbe05a5"
 dependencies = [
  "blake3",
  "caseless",
@@ -2585,6 +2586,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sinex-macros",
  "thiserror 2.0.21",
  "time",
@@ -2596,7 +2598,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=8babf74b4fb0ee27f140350111f522c85df9c8be#8babf74b4fb0ee27f140350111f522c85df9c8be"
+source = "git+https://github.com/Sinity/sinex?rev=41e79f09661fa466e88bfa4e7496054b3bbe05a5#41e79f09661fa466e88bfa4e7496054b3bbe05a5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2606,10 +2608,11 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=8babf74b4fb0ee27f140350111f522c85df9c8be#8babf74b4fb0ee27f140350111f522c85df9c8be"
+source = "git+https://github.com/Sinity/sinex?rev=41e79f09661fa466e88bfa4e7496054b3bbe05a5#41e79f09661fa466e88bfa4e7496054b3bbe05a5"
 dependencies = [
  "blake3",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

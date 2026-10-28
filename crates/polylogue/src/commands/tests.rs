@@ -140,10 +140,23 @@ fn command_words_are_every_first_word() {
 }
 
 #[test]
-fn the_readme_lists_every_command() {
-    let readme = include_str!("../../../../README.md");
-    for w in command_words().iter().filter(|w| *w != "browser-host") {
-        assert!(readme.contains(&format!("`{w}")), "README misses `{w}`");
+fn cli_help_lists_every_command() {
+    let help = crate::cli::command()
+        .try_get_matches_from(["polylogue", "--help"])
+        .unwrap_err();
+    assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = help.to_string();
+    let words: std::collections::BTreeSet<_> = COMMANDS
+        .iter()
+        .filter(|command| command.cli == Cli::Subcommand)
+        .map(|command| command.name.split(' ').next().unwrap())
+        .collect();
+    for word in words {
+        assert!(
+            help.lines()
+                .any(|line| line.split_whitespace().next() == Some(word)),
+            "CLI help misses `{word}`"
+        );
     }
 }
 

@@ -256,6 +256,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **mode**: `standalone`, or `primary` on Sinex.
 - **material**: Sinex's unit of stored bytes; Polylogue's input revisions
   become materials in primary mode.
+- **kind declaration**: the immutable schema and rules of one version of a
+  Sinex event type; Polylogue owns its `polylogue.*` declarations.
+- **kind version**: the exact numbered declaration a producer event selects.
 - **confirmed stream**: Sinex's ordered stream of committed events, which
   Polylogue applies to `index.db`.
 - **write identity**: the durable identity of a prepared write, reused on retry.

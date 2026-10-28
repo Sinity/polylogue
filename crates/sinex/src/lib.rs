@@ -19,8 +19,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod client;
+pub mod kinds;
 mod parts;
 mod register;
+mod replay;
+pub use replay::Replay;
 mod sessions;
 
 use client::Client;
