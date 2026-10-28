@@ -182,13 +182,26 @@ pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
         v,
         NewNote {
             kind: note_kind(&v.text("kind").unwrap_or_else(|| "note".into()))?,
-            key: None,
+            key: v.text("key"),
             value: v.text("body"),
             author,
             targets: targets(&v.list("targets"))?,
-            relations: vec![],
+            relations: v
+                .text("relations")
+                .map(|text| {
+                    serde_json::from_str(&text)
+                        .map_err(|error| format!("invalid note relations: {error}"))
+                })
+                .transpose()?
+                .unwrap_or_default(),
             revises: v.text("revises"),
-            valid_until: None,
+            valid_until: v
+                .text("valid_until")
+                .map(|text| {
+                    polylogue_model::Timestamp::parse_rfc3339(&text)
+                        .ok_or_else(|| "valid_until needs a time with a UTC offset".to_owned())
+                })
+                .transpose()?,
         },
     )
 }
@@ -197,6 +210,12 @@ pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
 fn noted(v: &Values, note: NewNote) -> Built {
     match (v.text("query"), note.targets.is_empty()) {
         (Some(_), false) => Err("give targets or `--query`, not both".into()),
+        (None, true) if matches!(note.kind, NoteKind::SavedQuery | NoteKind::Signal) => {
+            Ok(Request::AddNote {
+                request_id: v.request_id(),
+                note,
+            })
+        }
         (None, true) => Err("give the targets, or `--query` for every row of a query".into()),
         (Some(query), true) => Ok(Request::AnnotateQuery {
             request_id: v.request_id(),

@@ -9,6 +9,7 @@ use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -163,6 +164,18 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     match serde_json::to_value(data) {
         Ok(data) => Response::Ok { data },
         Err(e) => error("internal", e),
+    }
+}
+
+fn repeated_request(
+    reader: &polylogue_store::Reader<'_>,
+    id: &str,
+    intended: &UserWrite,
+) -> Result<Option<UserWrite>, Response> {
+    match reader.user_request(id).map_err(|e| store_error(&e))? {
+        Some(previous) if intended.intent() == previous.write.intent() => Ok(Some(previous.write)),
+        Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
+        None => Ok(None),
     }
 }
 
@@ -522,6 +535,20 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             name,
         } => {
+            let intended = UserWrite::KeepResult {
+                name: name.clone(),
+                query: text.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+            };
+            match repeated_request(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
             let ask = super::query::Ask {
                 text: &text,
                 cursor: None,
@@ -563,22 +590,35 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             author,
         } => {
+            let mut note = NewNote {
+                kind: NoteKind::SavedQuery,
+                key: Some(name.clone()),
+                value: Some(text.clone()),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises: None,
+                valid_until: None,
+            };
+            match repeated_request(
+                &reader,
+                &request_id,
+                &UserWrite::SaveQuery { note: note.clone() },
+            ) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
             let revises = match saved_revision(&reader, &name, &text) {
                 Ok(revises) => revises,
                 Err(response) => return response,
             };
             drop(reader);
-            let note = NewNote {
-                kind: NoteKind::SavedQuery,
-                key: Some(name),
-                value: Some(text),
-                author,
-                targets: vec![],
-                relations: vec![],
-                revises,
-                valid_until: None,
-            };
-            write(d, request_id, UserWrite::AddNote { note })
+            note.revises = revises;
+            write(d, request_id, UserWrite::SaveQuery { note })
         }
         Request::Watch {
             request_id,
@@ -648,20 +688,38 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             query,
             mut note,
         } => {
-            note.targets = match query_targets(&reader, &query) {
-                Ok(targets) => targets,
+            let intended = UserWrite::AnnotateQuery {
+                query: query.clone(),
+                note: note.clone(),
+            };
+            let resolved = match repeated_request(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => previous,
+                Ok(None) => {
+                    note.targets = match query_targets(d, &reader, &query) {
+                        Ok(targets) => targets,
+                        Err(response) => return response,
+                    };
+                    UserWrite::AnnotateQuery { query, note }
+                }
                 Err(response) => return response,
             };
             drop(reader);
-            let count = note.targets.len();
-            match write(d, request_id, UserWrite::AddNote { note }) {
+            match write(d, request_id, resolved) {
                 Response::Ok { mut data } => {
-                    data["targets"] = serde_json::json!(count);
+                    let committed = d.reads.reader().and_then(|reader| {
+                        reader.note(data["id"].as_str().expect("write result ID"))
+                    });
+                    match committed {
+                        Ok(Some(note)) => data["targets"] = serde_json::json!(note.targets.len()),
+                        Ok(None) => return error("not_found", "the committed note is absent"),
+                        Err(e) => return store_error(&e),
+                    }
                     Response::Ok { data }
                 }
                 other => other,
             }
         }
+
         Request::Judge {
             request_id,
             note,
@@ -779,11 +837,22 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 /// The references of every row `query` returns, for a note on all of
 /// them: sessions, messages, documents and notes.
 fn query_targets(
+    d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
 ) -> Result<Vec<polylogue_model::Target>, Response> {
     use polylogue_model::Target;
+    let provider = crate::embeddings::Provider::from_settings(reader, &machine_id())
+        .ok()
+        .flatten();
+    let embeddings = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
+    let near = |q: &str| match &provider {
+        Some(provider) => d.warm.similarity(reader, provider, q),
+        None => Err("embeddings are off".into()),
+    };
+    let now = now_ms();
     let mut targets = Vec::new();
+    let mut seen = HashSet::new();
     let mut cursor: Option<String> = None;
     loop {
         let ask = super::query::Ask {
@@ -792,10 +861,10 @@ fn query_targets(
             page_size: Some(1_000),
             why: false,
             session: None,
-            now: now_ms(),
+            now,
             day: None,
-            embeddings: false,
-            near: None,
+            embeddings,
+            near: Some(&near),
             fields: &[],
         };
         let page = super::query::run(reader, ask).map_err(|f| Response::Error {
@@ -804,11 +873,13 @@ fn query_targets(
             detail: f.detail,
         })?;
         let unit = page["unit"].as_str().unwrap_or("");
-        if !matches!(unit, "sessions" | "messages" | "documents" | "notes") {
+        if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
+            || page["shape"] != "rows"
+        {
             return Err(error(
                 "bad_request",
                 format!(
-                    "a note applies to the rows of a sessions, messages, documents or notes query, not {unit}"
+                    "a note needs session, message, document or note rows; the query returned {unit} in another form"
                 ),
             ));
         }
@@ -828,10 +899,10 @@ fn query_targets(
                     .ok(),
                 _ => Some(Target::Note(id.to_owned())),
             };
-            if let Some(t) = target
-                && !targets.contains(&t)
+            if let Some(target) = target
+                && seen.insert(target.clone())
             {
-                targets.push(t);
+                targets.push(target);
             }
         }
         match page["next"].as_str() {

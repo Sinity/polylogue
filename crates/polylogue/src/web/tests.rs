@@ -753,3 +753,5 @@ mod attachments;
 mod pages;
 
 mod benchmark;
+
+mod notes;
