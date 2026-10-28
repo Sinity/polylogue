@@ -984,9 +984,7 @@ impl Inner {
             crate::fault::check("write.between_commits", "")?;
         }
 
-        let indexed = batches
-            .map(|b| attachments::with_stored_blobs(b, &self.archive))
-            .collect::<Result<Vec<_>>>()?;
+        let indexed = batches.collect::<Vec<_>>();
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
