@@ -91,3 +91,33 @@ Optimize for fast integration. See `docs/development.md`.
 The repository is public. Keep credentials, real captures, private reports
 and real databases out of Git; fixtures are synthetic. Reading the operator's
 real files on this machine for development and measurement is fine.
+
+## Cloud sessions and changes to polylogue-sinex-common
+
+Cloud sessions (Claude Code on the web, Codex cloud) run as root on a fresh
+VM without AgentCTL, `/realm` or the operator's services; run `cargo xtask`
+commands there directly. The environment's setup script runs
+`bash dev/cloud/setup.sh`, after which every shell is in the development
+shell.
+
+- A Polylogue session must include the polylogue-sinex-common and sinex
+  repositories: Cargo fetches Git dependencies from both, and a session
+  reaches only the repositories it includes.
+- `cargo xtask fast`, `cargo xtask check` and `cargo xtask test [-p <crate>]
+  [-E <filterset>]` work as on the host. The first workspace build takes
+  minutes; run it in the background. `xtask bench` and anything that reads
+  the operator's data do not run there; report them as not run.
+- Push a branch and open a pull request; do not merge.
+
+A change that needs polylogue-sinex-common changed too starts there.
+`cargo xtask link-common [<path>]` builds this workspace against a checkout
+of it (the path, else `$POLYLOGUE_SINEX_COMMON`, else
+`../polylogue-sinex-common`), and entering the development shell does the
+same when that checkout exists. It writes the git-ignored
+`.cargo/local.toml`, and Cargo.lock then names the local crates, so the lock
+is not committed in that state. `cargo xtask unlink-common` restores the lock and
+keeps the shell from linking again. Merge the common pull request first;
+its workflow then opens a pull request here that moves Cargo.lock to the new
+commit. Convert the callers on that branch, or run `cargo update -p devkit
+-p hashed-blobs -p credential-masking` on the branch that converts them, so
+the lock change and the callers land together.

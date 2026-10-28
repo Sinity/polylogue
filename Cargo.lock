@@ -603,7 +603,7 @@ dependencies = [
 [[package]]
 name = "credential-masking"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.7.6#3388417f89868a07d493dee563c7dfa972aa10ad"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#739d145e90580649c5bb0f84b06d2833826a7a74"
 dependencies = [
  "hmac",
  "sha2",
@@ -741,7 +741,7 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.7.6#3388417f89868a07d493dee563c7dfa972aa10ad"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#739d145e90580649c5bb0f84b06d2833826a7a74"
 dependencies = [
  "blake3",
  "clap",
@@ -759,7 +759,7 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.7.6#3388417f89868a07d493dee563c7dfa972aa10ad"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#739d145e90580649c5bb0f84b06d2833826a7a74"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1735,7 +1735,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.7.6#3388417f89868a07d493dee563c7dfa972aa10ad"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#739d145e90580649c5bb0f84b06d2833826a7a74"
 dependencies = [
  "blake3",
  "chacha20poly1305",

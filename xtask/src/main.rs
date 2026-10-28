@@ -1,4 +1,5 @@
 mod bench;
+mod common_link;
 
 use clap::Parser;
 use devkit::{Nextest, Run, select::Selection};
@@ -41,6 +42,10 @@ enum Cli {
         /// what depends on them.
         #[arg(long)]
         changed: bool,
+        /// Build every test binary without running any (a cloud
+        /// environment's warm build); selection does not apply.
+        #[arg(long, conflicts_with_all = ["changed", "args"])]
+        no_run: bool,
         /// Further `cargo nextest run` arguments: `-p` packages and `-E`
         /// filtersets (both select which tests run), names and runner flags.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -59,6 +64,15 @@ enum Cli {
     /// Corpus builds and native interactive read measurements.
     #[command(subcommand)]
     Bench(bench::Bench),
+    /// Build against a local checkout of polylogue-sinex-common instead of
+    /// the commit Cargo.lock pins.
+    LinkCommon {
+        /// The checkout; by default `$POLYLOGUE_SINEX_COMMON`, else
+        /// `../polylogue-sinex-common`.
+        checkout: Option<std::path::PathBuf>,
+    },
+    /// Return to the commit of polylogue-sinex-common that Cargo.lock pinned.
+    UnlinkCommon,
     #[command(flatten)]
     Shared(devkit::cli::Command),
 }
@@ -283,6 +297,16 @@ fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::R
     run.finish()
 }
 
+fn exit_code(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse() {
         Cli::Fast => run("fast", &[], |run| {
@@ -303,7 +327,20 @@ fn main() -> ExitCode {
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
-        Cli::Test { changed, args } => {
+        Cli::Test { no_run: true, .. } => run("test", &["--no-run".into()], |run| {
+            run.cargo(
+                "test build",
+                &[
+                    "test",
+                    "--no-run",
+                    "--locked",
+                    "--workspace",
+                    "--features",
+                    TEST_FEATURES,
+                ],
+            )
+        }),
+        Cli::Test { changed, args, .. } => {
             let mut required = None;
             if changed {
                 let root = Path::new(".");
@@ -349,6 +386,8 @@ fn main() -> ExitCode {
             }
         }
         Cli::Bench(command) => bench::execute(command),
+        Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),
+        Cli::UnlinkCommon => exit_code(common_link::unlink()),
         Cli::Shared(command) => devkit::cli::execute("polylogue", command),
     }
 }
