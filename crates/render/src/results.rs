@@ -9,14 +9,19 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
-    render_with_links(data, format, out, None)
+    render_with_links(data, format, out, None, crate::terminal::color_enabled())
+}
+
+/// Plain text for a transcript whose displaying client chooses its styling.
+pub fn plain_terminal(data: &Value, out: &mut dyn Write) -> io::Result<()> {
+    render_with_links(data, Format::Terminal, out, None, false)
 }
 
 type LinkTarget<'a> = dyn Fn(&Value, &Value) -> Option<String> + 'a;
 
 /// HTML links are chosen per column descriptor and cell, then escaped here.
 pub fn linked_html(data: &Value, out: &mut dyn Write, target: &LinkTarget<'_>) -> io::Result<()> {
-    render_with_links(data, Format::Html, out, Some(target))
+    render_with_links(data, Format::Html, out, Some(target), false)
 }
 
 fn render_with_links(
@@ -24,9 +29,10 @@ fn render_with_links(
     format: Format,
     out: &mut dyn Write,
     target: Option<&LinkTarget<'_>>,
+    color: bool,
 ) -> io::Result<()> {
     if format == Format::Json {
-        return writeln!(out, "{data}");
+        return writeln!(out, "{}", crate::terminal::json(data, false));
     }
     let columns: Vec<String> = data["columns"]
         .as_array()
@@ -37,12 +43,24 @@ fn render_with_links(
     let rows: Vec<&Value> = data["rows"].as_array().into_iter().flatten().collect();
     let cells: Vec<Vec<String>> = rows
         .iter()
-        .map(|r| columns.iter().map(|c| cell(&r[c.as_str()])).collect())
+        .map(|r| {
+            columns
+                .iter()
+                .map(|c| {
+                    let value = &r[c.as_str()];
+                    if format == Format::Terminal {
+                        terminal_cell(value)
+                    } else {
+                        cell(value)
+                    }
+                })
+                .collect()
+        })
         .collect();
     match format {
         Format::Html => html(data, &columns, &cells, &rows, out, target)?,
         Format::Markdown => markdown(&columns, &cells, &rows, out)?,
-        _ => terminal(&columns, &cells, &rows, out)?,
+        _ => terminal(&columns, &cells, &rows, out, color)?,
     }
     footer(data, format, out)
 }
@@ -63,13 +81,15 @@ fn cell(v: &Value) -> String {
     }
 }
 
-fn one_line(s: &str) -> String {
-    let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 80 {
-        format!("{}…", flat.chars().take(79).collect::<String>())
-    } else {
-        flat
+fn terminal_cell(value: &Value) -> String {
+    match value.as_str() {
+        Some(text) => one_line(&crate::terminal::escape(text)),
+        None => crate::terminal::escape(&cell(value)),
     }
+}
+
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The snippet with its marks wrapped by `open`/`close`.
@@ -110,7 +130,9 @@ fn terminal(
     cells: &[Vec<String>],
     rows: &[&Value],
     out: &mut dyn Write,
+    color: bool,
 ) -> io::Result<()> {
+    let columns: Vec<String> = columns.iter().map(|s| crate::terminal::escape(s)).collect();
     if cells.is_empty() {
         return Ok(());
     }
@@ -124,7 +146,6 @@ fn terminal(
                 .chain([c.chars().count()])
                 .max()
                 .unwrap_or(0)
-                .min(60)
         })
         .collect();
     let line = |vals: &[String]| -> String {
@@ -141,10 +162,15 @@ fn terminal(
     };
     // Rows are numbered: `@N` names row N of this list in a later command.
     let num = cells.len().to_string().len() + 1;
-    writeln!(out, "\x1b[2m{:num$}  {}\x1b[0m", "", line(columns))?;
+    writeln!(out, "{:num$}  {}", "", line(&columns))?;
     for (n, (r, row)) in cells.iter().zip(rows).enumerate() {
         writeln!(out, "{:<num$}  {}", format!("@{}", n + 1), line(r))?;
-        if let Some(s) = marked(&row["snippet"], "\x1b[1m", "\x1b[0m", plain) {
+        let (open, close) = if color {
+            ("\x1b[1m", "\x1b[0m")
+        } else {
+            ("", "")
+        };
+        if let Some(s) = marked(&row["snippet"], open, close, crate::terminal::escape) {
             writeln!(out, "    {s}")?;
         }
         attached(row, out, "    ")?;
@@ -161,13 +187,13 @@ fn attached(row: &Value, out: &mut dyn Write, indent: &str) -> io::Result<()> {
             && items.iter().all(Value::is_object)
             && !items.is_empty()
         {
-            writeln!(out, "{indent}{name}:")?;
+            writeln!(out, "{indent}{}:", crate::terminal::escape(name))?;
             for item in items {
                 let fields: Vec<String> = item
                     .as_object()
                     .into_iter()
                     .flatten()
-                    .map(|(k, v)| format!("{k}={}", cell(v)))
+                    .map(|(k, v)| format!("{}={}", crate::terminal::escape(k), terminal_cell(v)))
                     .collect();
                 writeln!(out, "{indent}  {}", fields.join("  "))?;
             }
@@ -297,7 +323,7 @@ fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     for l in lines {
         match format {
             Format::Html => writeln!(out, "<p>{}</p>", escape(&l))?,
-            Format::Terminal => writeln!(out, "\x1b[2m{l}\x1b[0m")?,
+            Format::Terminal => crate::terminal::line(out, format_args!("{l}"))?,
             _ => writeln!(out, "{l}")?,
         }
     }

@@ -37,10 +37,11 @@ pub fn tools() -> Vec<Tool> {
 /// An error as tool text, with the corrected query when the daemon formed
 /// one, so an agent can retry with it as given.
 fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> String {
-    match detail.and_then(|d| d["suggestion"].as_str()) {
+    let text = match detail.and_then(|d| d["suggestion"].as_str()) {
         Some(s) => format!("error ({kind}): {message}\ntry: {s}"),
         None => format!("error ({kind}): {message}"),
-    }
+    };
+    polylogue_render::terminal::escape(&text)
 }
 
 /// One tool call: the answer's text, or the refusal.
@@ -51,11 +52,15 @@ pub fn call(
 ) -> Result<String, String> {
     let command = tool_commands()
         .find(|c| c.mcp_name() == name)
-        .ok_or_else(|| format!("error (bad_request): no tool {name}"))?;
+        .ok_or_else(|| {
+            polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
+        })?;
     let Action::Request(build) = command.action else {
-        return Err(format!("error (bad_request): no tool {name}"));
+        return Err(polylogue_render::terminal::escape(&format!(
+            "error (bad_request): no tool {name}"
+        )));
     };
-    let bad = |e: String| format!("error (bad_request): {e}");
+    let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
     let caller = Caller {
         surface: Surface::Mcp,
@@ -65,22 +70,19 @@ pub fn call(
     let request = build(command, &values, &caller).map_err(bad)?;
     match crate::cli::send_when_ready(archive, &request) {
         Ok(Response::Ok { data, .. }) if matches!(request, Request::Context { .. }) => {
-            Ok(data["prepared"]["text"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned())
+            Ok(polylogue_render::terminal::escape(
+                data["prepared"]["text"].as_str().unwrap_or_default(),
+            ))
         }
-        Ok(Response::Ok { data, .. }) => {
-            Ok(serde_json::to_string_pretty(&data).unwrap_or_default())
-        }
+        Ok(Response::Ok { data, .. }) => Ok(polylogue_render::terminal::json(&data, true)),
         Ok(Response::Error {
             kind,
             message,
             detail,
         }) => Err(error_text(&kind, &message, detail.as_ref())),
-        Err(e) => Err(format!(
+        Err(e) => Err(polylogue_render::terminal::escape(&format!(
             "error (daemon_required): no Polylogue daemon answered ({e}); start it with `polylogue daemon`"
-        )),
+        ))),
     }
 }
 
@@ -113,9 +115,11 @@ impl ServerHandler for Polylogue {
         Ok(match answer {
             Ok(Ok(text)) => CallToolResult::success(vec![ContentBlock::text(text)]),
             Ok(Err(text)) => CallToolResult::error(vec![ContentBlock::text(text)]),
-            Err(e) => {
-                CallToolResult::error(vec![ContentBlock::text(format!("error (internal): {e}"))])
-            }
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(error_text(
+                "internal",
+                &e.to_string(),
+                None,
+            ))]),
         }
         .into())
     }

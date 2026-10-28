@@ -479,8 +479,12 @@ fn quoted(v: &str) -> String {
 pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut add = |value: &str, help: &str| {
-        if value.starts_with(word) && !out.iter().any(|(v, _)| v == value) {
-            out.push((value.to_owned(), help.to_owned()));
+        if value.starts_with(word)
+            && !value.chars().any(char::is_control)
+            && polylogue_render::terminal::escape(value) == value
+            && !out.iter().any(|(v, _)| v == value)
+        {
+            out.push((value.to_owned(), polylogue_render::terminal::escape(help)));
         }
     };
     if word.contains(':') {

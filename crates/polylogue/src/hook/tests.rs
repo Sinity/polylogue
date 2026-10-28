@@ -161,3 +161,18 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
 }
 
 mod settings;
+
+#[test]
+fn decoded_hook_context_has_visible_terminal_controls() {
+    let text = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}\n\tcontext";
+    for harness in [Harness::ClaudeCode, Harness::Codex, Harness::Hermes] {
+        let mut bytes = Vec::new();
+        assert!(write_context(&mut bytes, harness, "SessionStart", text));
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let context = match harness {
+            Harness::Hermes => &value["context"],
+            _ => &value["hookSpecificOutput"]["additionalContext"],
+        };
+        assert_eq!(context, &polylogue_render::terminal::escape(text));
+    }
+}

@@ -18,12 +18,14 @@ pub fn text(event: &Event) -> String {
     serde_json::to_string_pretty(&data).expect("JSON values serialize")
 }
 pub(crate) fn terminal(event: &Event, out: &mut dyn Write) -> io::Result<()> {
-    writeln!(
+    crate::terminal::line(
         out,
-        "· {} {}\n{}",
-        crate::mask(&event.kind),
-        event.at.map(|t| t.to_string()).unwrap_or_default(),
-        text(event)
+        format_args!(
+            "· {} {}\n{}",
+            crate::mask(&event.kind),
+            event.at.map(|t| t.to_string()).unwrap_or_default(),
+            text(event)
+        ),
     )
 }
 pub(crate) fn markdown(event: &Event, out: &mut dyn Write) -> io::Result<()> {

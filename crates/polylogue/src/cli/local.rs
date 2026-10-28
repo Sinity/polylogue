@@ -10,7 +10,10 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
     match crate::daemon::server::serve() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("polylogue: {e}");
+            eprintln!(
+                "{}",
+                polylogue_render::terminal::escape(&format!("polylogue: {e}"))
+            );
             let refused = e
                 .get_ref()
                 .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
@@ -34,7 +37,10 @@ pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
     match crate::mcp::serve_stdio() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("polylogue mcp: {e}");
+            eprintln!(
+                "{}",
+                polylogue_render::terminal::escape(&format!("polylogue mcp: {e}"))
+            );
             ExitCode::FAILURE
         }
     }
@@ -247,7 +253,12 @@ fn open_reader(json: bool) -> ExitCode {
         println!("opened {url}");
     } else {
         // The operator's own terminal: the sign-in link may be shown here.
-        eprintln!("polylogue: could not start a browser; open {auth}");
+        eprintln!(
+            "{}",
+            polylogue_render::terminal::escape(&format!(
+                "polylogue: could not start a browser; open {auth}"
+            ))
+        );
     }
     ExitCode::SUCCESS
 }
