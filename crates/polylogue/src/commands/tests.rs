@@ -146,13 +146,15 @@ fn cli_help_lists_every_command() {
         .unwrap_err();
     assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
     let help = help.to_string();
-    for word in command_words()
+    let words: std::collections::BTreeSet<_> = COMMANDS
         .iter()
-        .filter(|word| *word != "browser-host")
-    {
+        .filter(|command| command.cli == Cli::Subcommand)
+        .map(|command| command.name.split(' ').next().unwrap())
+        .collect();
+    for word in words {
         assert!(
             help.lines()
-                .any(|line| line.split_whitespace().next() == Some(word.as_str())),
+                .any(|line| line.split_whitespace().next() == Some(word)),
             "CLI help misses `{word}`"
         );
     }
