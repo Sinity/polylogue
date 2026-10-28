@@ -4,6 +4,20 @@ use super::*;
 use crate::test_daemon;
 use serde_json::json;
 
+pub(crate) fn call(
+    archive: &Archive,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    call_with_limit(
+        archive,
+        name,
+        arguments,
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+}
+
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
 }

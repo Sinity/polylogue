@@ -77,20 +77,6 @@ fn format_answer(request: &Request, response: std::io::Result<Response>) -> Resu
     }
 }
 
-pub fn call(
-    archive: &Archive,
-    name: &str,
-    arguments: serde_json::Map<String, Value>,
-) -> Result<String, String> {
-    call_with_limit(
-        archive,
-        name,
-        arguments,
-        None,
-        &tokio_util::sync::CancellationToken::new(),
-    )
-}
-
 fn call_with_limit(
     archive: &Archive,
     name: &str,
@@ -310,6 +296,12 @@ impl Reply {
     }
 }
 
+type Worker<'scope> = (
+    Value,
+    tokio_util::sync::CancellationToken,
+    std::thread::ScopedJoinHandle<'scope, io::Result<()>>,
+);
+
 fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> io::Result<()> {
     let output = std::sync::Mutex::new(output);
     let write = |message: Value| -> io::Result<()> {
@@ -322,11 +314,7 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
     };
     std::thread::scope(|scope| {
         let mut session = Session::default();
-        let mut workers: Vec<(
-            Value,
-            tokio_util::sync::CancellationToken,
-            std::thread::ScopedJoinHandle<'_, io::Result<()>>,
-        )> = Vec::new();
+        let mut workers: Vec<Worker<'_>> = Vec::new();
         let result = (|| {
             for line in input.lines() {
                 let mut index = 0;
