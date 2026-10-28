@@ -30,7 +30,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **The segment format starts at version 1.** The initial format baseline collapses the earlier archive migrations. It applies to newly created stores; an older store is preserved and refused until the operator deliberately prepares its transition. Inputs, authored rows and purchased vectors are never reset by opening it. Subsequent changes use numbered migrations.
 - **Stored formats evolve in place.** Schema changes are numbered in-place migrations, each with a test that an archive at the previous version keeps every row; a reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
-- **No code path deletes the index.** An index whose schema does not match is migrated, or refused with an error naming the rebuild command. A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
+- **No code path deletes the index.** An index whose schema does not match is migrated, or refused with an error naming the deliberate move-aside rebuild. A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
 
 ## Parsing
 
@@ -93,7 +93,7 @@ The schema tools describe the real shape of an origin's stored inputs without in
 - **crash-leaves-normal-state**: a crash at every point between append, sync and commit leaves a state that the ordinary open path accepts, with no repair step.
 - **reparse-idempotent**: parsing the same bytes twice under one reading version yields identical rows.
 - **reading-version-scope**: raising one module's reading version re-parses exactly the chains that module parsed.
-- **index-never-deleted**: opening an index with a mismatched schema migrates it or refuses with an error naming the rebuild command; it never deletes the index.
+- **index-never-deleted**: opening an index with a mismatched schema migrates it or refuses with an error naming the deliberate move-aside rebuild; it never deletes the index.
 - **inputs-never-rewritten**: no code path deletes or rewrites stored inputs or blobs.
 - **migration-keeps-rows**: an archive at the previous version keeps every row through each migration.
 - **goldens-hand-written**: there is a hand-written golden for each format era of each origin, and the test harness has no mode that writes expected files.

@@ -95,7 +95,9 @@ pub enum StoreError {
         "{database}.db at version {found} has tables this Polylogue build has no migration from"
     )]
     NoMigration { database: &'static str, found: u32 },
-    #[error("index format {found} is not {wanted}; an explicit schema change is required")]
+    #[error(
+        "index format {found} is not {wanted}; stop the daemon, move index.db and its WAL/SHM files aside, then restart the daemon to rebuild from stored bytes"
+    )]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),
