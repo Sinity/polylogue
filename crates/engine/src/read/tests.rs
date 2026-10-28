@@ -113,6 +113,8 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
     let hash = store.put(&b"0123456789abcdef"[..], 1).unwrap();
     let mut source = Imported::open(&store, polylogue_model::BlobHash(hash.0), 16).unwrap();
     assert_eq!(source.read_range(0, 14).unwrap(), b"0123456789abcd");
+    source.consume(0);
+    assert_eq!(source.read_range(0, 14).unwrap(), b"0123456789abcd");
     source.consume(4);
     assert_eq!(source.read_range(4, 8).unwrap(), b"4567");
     source.consume(8);
