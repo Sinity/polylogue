@@ -181,7 +181,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let values = values(cmd, m);
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
-        Action::Request(build) => build,
+        Action::Request(build) | Action::Stream { build, .. } => build,
     };
     let caller = Caller {
         surface: Surface::Cli,
@@ -192,8 +192,8 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Ok(r) => r,
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
-    if matches!(request, Request::Changes { .. }) {
-        return changes::run(&request);
+    if let Action::Stream { cli, .. } = cmd.action {
+        return cli(&request);
     }
     let root = Archive::default_root();
     let response = match send_when_ready(&Archive::at(&root), &request) {
@@ -212,7 +212,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
-        Response::Ok { data } => {
+        Response::Ok { data, .. } => {
             if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
                 crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
@@ -357,7 +357,7 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
     let request = Request::Complete {
         word: word.to_owned(),
     };
-    let Ok(Response::Ok { data }) =
+    let Ok(Response::Ok { data, .. }) =
         crate::client::send_with_budget(&socket, &request, std::time::Duration::from_millis(500))
     else {
         return Vec::new();

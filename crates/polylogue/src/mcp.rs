@@ -59,12 +59,12 @@ pub fn call(
     };
     let request = build(command, &values, &caller).map_err(bad)?;
     match crate::cli::send_when_ready(archive, &request) {
-        Ok(Response::Ok { data }) if matches!(request, Request::Context { .. }) => {
+        Ok(Response::Ok { data, .. }) if matches!(request, Request::Context { .. }) => {
             Ok(polylogue_render::terminal::escape(
                 data["prepared"]["text"].as_str().unwrap_or_default(),
             ))
         }
-        Ok(Response::Ok { data }) => Ok(polylogue_render::terminal::json(&data, true)),
+        Ok(Response::Ok { data, .. }) => Ok(polylogue_render::terminal::json(&data, true)),
         Ok(Response::Error {
             kind,
             message,

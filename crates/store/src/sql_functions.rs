@@ -33,6 +33,17 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
         let version: String = ctx.get(1)?;
         Ok(versions.get(&name).is_some_and(|wanted| *wanted == version))
     })?;
+    conn.create_scalar_function("pl_is_prompt", 2, FLAGS, |ctx| {
+        let role: String = ctx.get(0)?;
+        let kind: Option<String> = ctx.get(1)?;
+        Ok(polylogue_model::Role::from_name(&role).is_some_and(|role| {
+            polylogue_model::is_prompt(
+                role,
+                kind.as_deref()
+                    .and_then(polylogue_model::PromptKind::from_name),
+            )
+        }))
+    })?;
     conn.create_scalar_function("pl_text", 1, FLAGS, |ctx| {
         decompress(ctx, 0).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned()))
     })?;

@@ -234,7 +234,7 @@ the state reached by masking only the marked messages from the first that
 does. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
-Budgeted reads return both text and structured masked block slices. The web
+Budgeted reads return text, with structured masked block slices when requested. The web
 reader uses these pages, with shared message anchors, latest selection and
 metadata outlines; [the reader contract](web-reader.md) describes the API,
 route ownership and authentication.
@@ -262,7 +262,8 @@ The [masker](../crates/model/src/masking.rs) runs over content in source
 order before views, pages or encoding, so titles and
 [search snippets](../crates/store/src/search/tests/masking.rs) mask the same
 way. Every application response also masks strings, metadata, errors and
-object keys. Stored bytes never change.
+object keys. Typed identifiers and continuation tokens keep their exact bytes;
+authored JSON fields with the same names are masked. Stored bytes never change.
 [Masking tests](../crates/model/src/masking/tests.rs) and
 [CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
 

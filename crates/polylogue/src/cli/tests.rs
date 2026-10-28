@@ -26,6 +26,7 @@ fn a_starting_daemon_is_waited_for() {
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
         let reply = serde_json::to_string(&Response::Ok {
             data: serde_json::json!({"ready": true}),
+            references: Default::default(),
         })
         .unwrap();
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();

@@ -254,9 +254,19 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
 /// Runs a request on a blocking thread, as the socket would.
 pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     let d = Arc::clone(&web.daemon);
-    tokio::task::spawn_blocking(move || handle(request, &d))
+    tokio::task::spawn_blocking(move || browser_response(handle(request, &d), &d.archive.root))
         .await
         .unwrap_or_else(|error| crate::daemon::service::error("internal", error))
+}
+
+fn browser_response(response: Response, root: &std::path::Path) -> Response {
+    let mut response = response.clean(|text| access::scrub(text, root));
+    if let Response::Ok { data, .. } = &mut response
+        && let Some(data) = data.as_object_mut()
+    {
+        data.remove("archive");
+    }
+    response
 }
 
 /// A response's data with the archive directory's path taken out.
@@ -264,37 +274,9 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    let mut pending = vec![&mut value];
-    while let Some(value) = pending.pop() {
-        match value {
-            serde_json::Value::String(text) => {
-                *text = access::scrub(text, &web.daemon.archive.root)
-            }
-            serde_json::Value::Array(values) => pending.extend(values.iter_mut()),
-            serde_json::Value::Object(fields) => {
-                let mut renamed = Vec::new();
-                for (name, field) in std::mem::take(fields) {
-                    let clean = access::scrub(&name, &web.daemon.archive.root);
-                    if clean == name {
-                        fields.insert(name, field);
-                    } else {
-                        renamed.push((clean, field));
-                    }
-                }
-                for (label, field) in renamed {
-                    let mut name = label.clone();
-                    let mut suffix = 2;
-                    while fields.contains_key(&name) {
-                        name = format!("{label} #{suffix}");
-                        suffix += 1;
-                    }
-                    fields.insert(name, field);
-                }
-                pending.extend(fields.values_mut());
-            }
-            _ => {}
-        }
-    }
+    polylogue_model::masking::mask_json_values(&mut value, |text| {
+        access::scrub(text, &web.daemon.archive.root)
+    });
     value
 }
 
@@ -308,9 +290,9 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
 
 async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
     let status = match ask(&web, Request::Status).await {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         Response::Error { kind, message, .. } => {
-            return failed(StatusCode::INTERNAL_SERVER_ERROR, &kind, &message);
+            return failed(error_status(&kind), &kind, &message);
         }
     };
     let sessions = match ask(
@@ -326,7 +308,7 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
     )
     .await
     {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         _ => serde_json::Value::Null,
     };
     page(pages::home(&status, &sessions))
@@ -352,12 +334,9 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
         fields: vec![],
     };
     match ask(&web, request).await {
-        Response::Ok { data } => page(pages::search(
-            &p.q,
-            Some(&scrubbed(&web, data)),
-            None,
-            p.cursor.as_deref(),
-        )),
+        Response::Ok { data, .. } => {
+            page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref()))
+        }
         Response::Error {
             kind,
             message,
@@ -390,21 +369,9 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
     )
     .await
     {
-        Response::Ok { data } => page(pages::cost(scope, &scrubbed(&web, data)["data"])),
+        Response::Ok { data, .. } => page(pages::cost(scope, &data["data"])),
         Response::Error { kind, message, .. } => failed(
-            if matches!(
-                kind.as_str(),
-                "bad_request"
-                    | "query"
-                    | "invalid_query"
-                    | "unknown_field"
-                    | "bad_value"
-                    | "not_a_query"
-            ) {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
+            error_status(&kind),
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
         ),
@@ -507,11 +474,21 @@ async fn live_js() -> HttpResponse {
         .into_response()
 }
 
-/// The body of a JSON answer: the data as the socket gives it, the error
-/// as a typed kind with a status code.
+fn error_status(kind: &str) -> StatusCode {
+    match kind {
+        "not_found" => StatusCode::NOT_FOUND,
+        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
+        | "not_a_query" => StatusCode::BAD_REQUEST,
+        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
+        "not_built" => StatusCode::NOT_IMPLEMENTED,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// The data as the socket gives it, or a typed error with its HTTP status.
 pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    match response {
-        Response::Ok { data } => axum::Json(scrubbed(web, data)).into_response(),
+    match browser_response(response, &web.daemon.archive.root) {
+        Response::Ok { data, .. } => axum::Json(data).into_response(),
         Response::Error {
             kind,
             message,
@@ -522,14 +499,7 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .as_ref()
                 .and_then(|d| d["http_status"].as_u64())
                 .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or(match kind.as_str() {
-                "not_found" => StatusCode::NOT_FOUND,
-                "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field"
-                | "bad_value" | "not_a_query" => StatusCode::BAD_REQUEST,
-                "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-                "not_built" => StatusCode::NOT_IMPLEMENTED,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            let status = named.unwrap_or_else(|| error_status(&kind));
             let message = access::scrub(&message, &web.daemon.archive.root);
             (
                 status,

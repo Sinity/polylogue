@@ -124,15 +124,17 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
         return Err("choose either message or latest".into());
     }
     let start = if let Some(message) = message {
-        Some(crate::daemon::ReadStart::Message(
+        Some(crate::daemon::PageSelection::Message(
             polylogue_model::MessageId::parse(message.strip_prefix("message:").unwrap_or(&message))
                 .map_err(|e| e.to_string())?,
         ))
     } else {
-        v.flag("latest").then_some(crate::daemon::ReadStart::Latest)
+        v.flag("latest")
+            .then_some(crate::daemon::PageSelection::Latest)
     };
     Ok(Request::Read {
-        start,
+        slices: v.flag("slices"),
+        selection: start,
         target,
         view: v.text("view").unwrap_or_else(|| "full".into()),
         format: v

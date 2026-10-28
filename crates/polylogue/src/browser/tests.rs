@@ -263,7 +263,7 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        crate::daemon::Response::Ok { data } => Ok(data["action"].clone()),
+        crate::daemon::Response::Ok { data, .. } => Ok(data["action"].clone()),
         crate::daemon::Response::Error { kind, .. } => Err(kind),
     }
 }
@@ -391,7 +391,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
             &w.daemon,
         )
     };
-    let crate::daemon::Response::Ok { data } = start("chatgpt") else {
+    let crate::daemon::Response::Ok { data, .. } = start("chatgpt") else {
         panic!("the job did not start")
     };
     let id = data["job"]["id"].as_str().unwrap().to_owned();
@@ -512,7 +512,8 @@ fn grok_file_blobs(
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
         || match host.ask(&crate::daemon::Request::Read {
-            start: None,
+            slices: true,
+            selection: None,
             target: crate::daemon::ReadTarget::Session(session.clone()),
             view: "full".into(),
             format: "markdown".into(),
@@ -520,7 +521,7 @@ fn grok_file_blobs(
             budget: None,
             cursor: None,
         }) {
-            Some(crate::daemon::Response::Ok { data }) => data["content"].clone(),
+            Some(crate::daemon::Response::Ok { data, .. }) => data["content"].clone(),
             _ => Value::Null,
         },
         |content| content.as_str().is_some_and(|t| t.contains(text)),

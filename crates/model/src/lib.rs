@@ -39,7 +39,9 @@ pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod reports;
-pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy};
+pub use message::{
+    ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy, is_prompt,
+};
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};

@@ -3,7 +3,7 @@ use crate::daemon::{Request, Response, service::handle};
 
 fn data(response: Response) -> Value {
     match response {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     }
 }

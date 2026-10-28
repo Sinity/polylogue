@@ -259,22 +259,68 @@ impl DocumentRead<'_, '_> {
         })?;
         Ok(document)
     }
-    pub fn visit_blocks(&self, mut visit: impl FnMut(Block) -> ControlFlow<()>) -> Result<()> {
-        let mut statement=self.reader.conn()?.prepare("SELECT b.body,t.body,b.data FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 ORDER BY b.idx")?;
-        let mut rows = statement.query([self.pk])?;
+    pub fn visit_blocks(&self, visit: impl FnMut(Block) -> ControlFlow<()>) -> Result<()> {
+        self.visit_blocks_until(None, visit)
+    }
+
+    fn visit_blocks_until(
+        &self,
+        end: Option<usize>,
+        mut visit: impl FnMut(Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        let bound = if end.is_some() { "AND b.idx<?2" } else { "" };
+        let sql = format!(
+            "SELECT b.body,t.body,b.data FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 {bound} ORDER BY b.idx"
+        );
+        let mut statement = self.reader.conn()?.prepare_cached(&sql)?;
+        let mut rows = if let Some(end) = end {
+            statement.query(params![self.pk, end as i64])?
+        } else {
+            statement.query([self.pk])?
+        };
         while let Some(row) = rows.next()? {
-            let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-            if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
-                restore_text(&mut block, unpack_text(&text)?);
-            }
-            if let Some(data) = row.get::<_, Option<Vec<u8>>>(2)? {
-                crate::encoding::restore_data(&mut block, &data)?;
-            }
-            if visit(block).is_break() {
+            if visit(decoded_block(row)?).is_break() {
                 break;
             }
         }
         Ok(())
+    }
+
+    pub fn visit_blocks_before(
+        &self,
+        end: usize,
+        visit: impl FnMut(Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_blocks_until(Some(end), visit)
+    }
+
+    /// Seek to the selected source block immediately before `before`.
+    pub fn previous_block(
+        &self,
+        before: usize,
+        kinds: &[polylogue_model::BlockKind],
+    ) -> Result<Option<usize>> {
+        let kinds = kinds
+            .iter()
+            .map(|kind| format!("'{}'", kind.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT idx FROM document_block WHERE document_pk=?1 AND idx<?2 AND kind IN ({kinds}) ORDER BY idx DESC LIMIT 1"
+        );
+        let index = self
+            .reader
+            .conn()?
+            .prepare_cached(&sql)?
+            .query_row(params![self.pk, before as i64], |row| row.get::<_, i64>(0))
+            .optional()?;
+        index
+            .map(|index| {
+                usize::try_from(index).map_err(|_| {
+                    StoreError::Invalid("the document block index is outside address space".into())
+                })
+            })
+            .transpose()
     }
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
         let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.shown FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
@@ -295,6 +341,17 @@ impl DocumentRead<'_, '_> {
         }
         Ok(out)
     }
+}
+
+fn decoded_block(row: &rusqlite::Row<'_>) -> Result<Block> {
+    let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
+    if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
+        restore_text(&mut block, unpack_text(&text)?);
+    }
+    if let Some(data) = row.get::<_, Option<Vec<u8>>>(2)? {
+        crate::encoding::restore_data(&mut block, &data)?;
+    }
+    Ok(block)
 }
 
 #[derive(Debug, Clone, Serialize)]

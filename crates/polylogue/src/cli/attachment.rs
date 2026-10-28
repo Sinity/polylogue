@@ -84,7 +84,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                 value = match send_when_ready(&Archive::at(&Archive::default_root()), &request)
                     .map_err(|e| e.to_string())?
                 {
-                    Response::Ok { data } => data,
+                    Response::Ok { data, .. } => data,
                     Response::Error { kind, message, .. } => {
                         return Err(format!("{kind}: {message}"));
                     }

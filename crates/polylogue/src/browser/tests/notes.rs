@@ -3,7 +3,7 @@ use crate::daemon::{Request, Response, server, service};
 
 /// Every note, as the `notes` query lists them.
 fn notes(host: &BrowserHost) -> Vec<Value> {
-    let Some(Response::Ok { data }) = host.ask(&Request::Query {
+    let Some(Response::Ok { data, .. }) = host.ask(&Request::Query {
         text: "notes".into(),
         cursor: None,
         page_size: None,
@@ -49,7 +49,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         200
     );
     loop {
-        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok {data} if data["store"]["messages"] == 1 && data["busy"] == false)
+        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok { data, .. } if data["store"]["messages"] == 1 && data["busy"] == false)
         {
             break;
         }

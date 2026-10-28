@@ -4,7 +4,14 @@ use serde_json::{Value, json};
 fn wire(lines: &[Value]) -> Vec<u8> {
     let mut out = Vec::new();
     for data in lines {
-        serde_json::to_writer(&mut out, &Response::Ok { data: data.clone() }).unwrap();
+        serde_json::to_writer(
+            &mut out,
+            &Response::Ok {
+                data: data.clone(),
+                references: Default::default(),
+            },
+        )
+        .unwrap();
         out.push(b'\n');
     }
     out
@@ -165,9 +172,14 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
     fn prepared(home: &ClaudeHome, since: Option<&str>) -> Vec<u8> {
         let pool = home.reads();
         let reader = pool.reader().unwrap();
-        let mut file =
-            crate::daemon::query::feed::prepare(&reader, since, 0, tempfile::tempfile().unwrap())
-                .unwrap();
+        let mut file = crate::daemon::query::feed::prepare_with(
+            &reader,
+            since,
+            0,
+            tempfile::tempfile().unwrap(),
+            |response| response,
+        )
+        .unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         bytes
@@ -261,7 +273,13 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     use std::io::Read;
     let daemon = crate::test_daemon::start("synthetic finite delivery");
-    let mut file = crate::daemon::service::change_feed(&daemon.daemon, None).unwrap();
+    let mut file = crate::daemon::service::change_feed(
+        &Request::Changes { since: None },
+        &daemon.daemon,
+        None,
+    )
+    .unwrap()
+    .unwrap();
     drop(daemon);
     let mut wire = Vec::new();
     file.read_to_end(&mut wire).unwrap();
@@ -308,7 +326,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
 
 fn request(v: &crate::commands::Values) -> Result<Request, String> {
     let command = crate::commands::command("changes").unwrap();
-    let crate::commands::Action::Request(build) = command.action else {
+    let crate::commands::Action::Stream { build, .. } = command.action else {
         panic!("shared request")
     };
     build(

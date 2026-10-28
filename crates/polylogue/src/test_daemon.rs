@@ -68,7 +68,7 @@ impl TestDaemon {
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
         let status = || match handle(Request::Status, &self.daemon) {
-            Response::Ok { data } => data,
+            Response::Ok { data, .. } => data,
             other => panic!("status failed: {other:?}"),
         };
         while !ok(&status()) {

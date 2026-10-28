@@ -53,7 +53,7 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
 /// code; 503 `daemon_required` when it does not answer (stopped, or too busy).
 async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<HttpResponse>> {
     match blocking(move || host.ask(&request)).await.flatten() {
-        Some(Response::Ok { data }) => Ok(data),
+        Some(Response::Ok { data, .. }) => Ok(data),
         Some(Response::Error {
             kind,
             message,
@@ -284,7 +284,7 @@ async fn selection_note(
     Json(input): Json<super::notes::SelectionNote>,
 ) -> HttpResponse {
     match blocking(move || super::notes::save(&host, input)).await {
-        Some(Response::Ok { data }) => Json(json!({ "note": data })).into_response(),
+        Some(Response::Ok { data, .. }) => Json(json!({ "note": data })).into_response(),
         Some(Response::Error { kind, message, .. }) => {
             let status = match kind.as_str() {
                 "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,

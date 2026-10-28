@@ -62,8 +62,9 @@ async fn answer(
     c: &'static Command,
     values: Result<Values, String>,
 ) -> HttpResponse {
-    let Action::Request(build) = c.action else {
-        return StatusCode::NOT_FOUND.into_response();
+    let build = match c.action {
+        Action::Request(build) | Action::Stream { build, .. } => build,
+        Action::Local(_) => return StatusCode::NOT_FOUND.into_response(),
     };
     let caller = Caller {
         surface: Surface::Http,
@@ -71,8 +72,10 @@ async fn answer(
         json: true,
     };
     match values.and_then(|v| build(c, &v, &caller)) {
-        Ok(crate::daemon::Request::Changes { since }) => changes(web, since).await,
-        Ok(request) => json_answer(web, ask(web, request).await),
+        Ok(request) => match c.action {
+            Action::Stream { prepare, .. } => stream(web, request, prepare).await,
+            _ => json_answer(web, ask(web, request).await),
+        },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
     }
 }
@@ -80,12 +83,16 @@ async fn answer(
 /// Stream a prepared finite batch after its reader has been released. The
 /// spool belongs to the response, so a slow or disconnected client owns no
 /// database transaction, reader slot or detached producer.
-async fn changes(web: &Arc<Web>, since: Option<String>) -> HttpResponse {
+async fn stream(
+    web: &Arc<Web>,
+    request: crate::daemon::Request,
+    prepare: crate::commands::StreamHandler,
+) -> HttpResponse {
     let web = Arc::clone(web);
     let worker = Arc::clone(&web);
     let result = tokio::task::spawn_blocking(move || {
-        let file = crate::daemon::service::change_feed(&worker.daemon, since.as_deref())?;
-        scrub_changes(&worker, file)
+        prepare(&request, &worker.daemon, Some(super::access::scrub))
+            .expect("command owns its request")
     })
     .await;
     match result {
@@ -100,29 +107,6 @@ async fn changes(web: &Arc<Web>, since: Option<String>) -> HttpResponse {
         Ok(Err(response)) => json_answer(&web, response),
         Err(error) => json_answer(&web, crate::daemon::service::error("internal", error)),
     }
-}
-
-fn scrub_changes(web: &Web, file: std::fs::File) -> Result<std::fs::File, crate::daemon::Response> {
-    use std::io::{BufRead, Seek, SeekFrom, Write};
-    let failed = |error: std::io::Error| crate::daemon::service::error("io", error);
-    let mut output = tempfile::tempfile_in(&web.daemon.archive.root).map_err(failed)?;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(failed)?;
-        let response: crate::daemon::Response =
-            serde_json::from_str(&line).map_err(|e| failed(std::io::Error::other(e)))?;
-        let crate::daemon::Response::Ok { data } = response else {
-            return Err(response);
-        };
-        let response = crate::daemon::Response::Ok {
-            data: super::scrubbed(web, data),
-        };
-        serde_json::to_writer(&mut output, &response)
-            .map_err(|e| failed(std::io::Error::other(e)))?;
-        output.write_all(b"\n").map_err(failed)?;
-    }
-    output.flush().map_err(failed)?;
-    output.seek(SeekFrom::Start(0)).map_err(failed)?;
-    Ok(output)
 }
 
 #[cfg(test)]

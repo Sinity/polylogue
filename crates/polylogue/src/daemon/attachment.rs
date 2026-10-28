@@ -176,7 +176,10 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     // This byte payload is encoded only after the operator check. Its descriptor
     // is masked separately; encoded bytes must never enter the text masker.
     match serde_json::to_value(page) {
-        Ok(data) => Response::Ok { data },
+        Ok(data) => Response::Ok {
+            data,
+            references: Default::default(),
+        },
         Err(e) => error("internal", e),
     }
 }

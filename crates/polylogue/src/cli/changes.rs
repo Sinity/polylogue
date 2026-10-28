@@ -62,7 +62,7 @@ fn receive(
         }
         let response: Response = serde_json::from_str(&text).map_err(io::Error::other)?;
         let value = match response {
-            Response::Ok { data } => data,
+            Response::Ok { data, .. } => data,
             response @ Response::Error { .. } => {
                 serde_json::to_writer(&mut *output, &response)?;
                 output.write_all(b"\n")?;

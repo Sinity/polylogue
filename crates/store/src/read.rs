@@ -718,8 +718,12 @@ impl Reader<'_> {
                     None => true,
                     Some(filter)
                         if filter.prompts
-                            && (role != "user"
-                                || matches!(kind.as_deref(), Some("harness" | "model"))) =>
+                            && !parse_name::<Role>(&role).is_some_and(|role| {
+                                polylogue_model::is_prompt(
+                                    role,
+                                    kind.as_deref().and_then(parse_name::<PromptKind>),
+                                )
+                            }) =>
                     {
                         false
                     }

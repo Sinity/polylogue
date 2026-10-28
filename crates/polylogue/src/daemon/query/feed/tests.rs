@@ -8,7 +8,7 @@ fn lines(file: File) -> Vec<Value> {
         .lines()
         .map(
             |s| match serde_json::from_str::<Response>(&s.unwrap()).unwrap() {
-                Response::Ok { data } => data,
+                Response::Ok { data, .. } => data,
                 other => panic!("{other:?}"),
             },
         )
@@ -214,4 +214,13 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
     );
     let next = result.last().unwrap()["position"].as_str().unwrap();
     assert_eq!(batch(&fixture, Some(next)).last().unwrap()["count"], 0);
+}
+
+fn prepare(
+    reader: &Reader<'_>,
+    since: Option<&str>,
+    now: i64,
+    file: File,
+) -> Result<File, Failure> {
+    prepare_with(reader, since, now, file, |response| response)
 }

@@ -20,32 +20,129 @@ pub fn mask_json(value: &mut Value) {
     mask_json_values(value, mask);
 }
 
-fn mask_json_values(value: &mut Value, mut string: impl FnMut(&str) -> String) {
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
+pub fn mask_json_values(value: &mut Value, string: impl FnMut(&str) -> String) {
+    map_values(value, string, None, None);
+}
+
+/// Follow typed exclusions through key changes so a later cleaning pass sees them too.
+pub fn mask_json_values_except(
+    value: &mut Value,
+    string: impl FnMut(&str) -> String,
+    paths: &mut Vec<String>,
+) {
+    if paths.is_empty() {
+        map_values(value, string, None, None);
+        return;
+    }
+    let mut tree = Exclusions::default();
+    for path in paths.iter() {
+        let mut node = &mut tree;
+        for key in path.split('/').skip(1) {
+            node = node
+                .children
+                .entry(key.replace("~1", "/").replace("~0", "~"))
+                .or_default();
+        }
+        node.value = true;
+    }
+    paths.clear();
+    map_values(value, string, Some(&tree), Some(paths));
+}
+
+#[derive(Default)]
+struct Exclusions {
+    value: bool,
+    children: std::collections::HashMap<String, Exclusions>,
+}
+
+fn map_values(
+    value: &mut Value,
+    mut string: impl FnMut(&str) -> String,
+    exclusions: Option<&Exclusions>,
+    mut paths: Option<&mut Vec<String>>,
+) {
+    // Most values have no typed references. Their stack holds only value pointers.
+    let mut plain = Vec::new();
+    let mut protected = Vec::new();
+    match exclusions {
+        Some(node) => protected.push((value, node, String::new())),
+        None => plain.push(value),
+    }
+    loop {
+        let (value, exclusions, path) = if let Some((value, node, path)) = protected.pop() {
+            (value, Some(node), Some(path))
+        } else if let Some(value) = plain.pop() {
+            (value, None, None)
+        } else {
+            break;
+        };
+        if exclusions.is_some_and(|node| node.value) {
+            if let Some(paths) = paths.as_mut()
+                && let Some(path) = path
+            {
+                paths.push(path);
+            }
+            continue;
+        }
         match value {
             Value::String(text) => *text = string(text),
-            Value::Array(values) => pending.extend(values.iter_mut()),
-            Value::Object(values) => {
-                let mut renamed = Vec::new();
-                for (key, value) in std::mem::take(values) {
-                    let masked = mask(&key);
-                    if masked == key {
-                        values.insert(key, value);
+            Value::Array(values) => {
+                for (index, value) in values.iter_mut().enumerate() {
+                    if let Some(child) =
+                        exclusions.and_then(|node| node.children.get(&index.to_string()))
+                    {
+                        protected.push((
+                            value,
+                            child,
+                            format!("{}/{index}", path.as_deref().unwrap_or_default()),
+                        ));
                     } else {
-                        renamed.push((masked, value));
+                        plain.push(value);
                     }
                 }
-                for (label, value) in renamed {
+            }
+            Value::Object(values) => {
+                let mut renamed = Vec::new();
+                let mut children = std::collections::HashMap::new();
+                for (key, value) in std::mem::take(values) {
+                    let child = exclusions.and_then(|node| node.children.get(&key));
+                    let masked = string(&key);
+                    if masked == key {
+                        if let Some(child) = child {
+                            children.insert(key.clone(), child);
+                        }
+                        values.insert(key, value);
+                    } else {
+                        renamed.push((masked, value, child));
+                    }
+                }
+                for (label, value, child) in renamed {
                     let mut key = label.clone();
                     let mut suffix = 2;
                     while values.contains_key(&key) {
                         key = format!("{label} #{suffix}");
                         suffix += 1;
                     }
+                    if let Some(child) = child {
+                        children.insert(key.clone(), child);
+                    }
                     values.insert(key, value);
                 }
-                pending.extend(values.values_mut());
+                for (key, value) in values.iter_mut() {
+                    if let Some(child) = children.get(key).copied() {
+                        protected.push((
+                            value,
+                            child,
+                            format!(
+                                "{}/{}",
+                                path.as_deref().unwrap_or_default(),
+                                key.replace('~', "~0").replace('/', "~1")
+                            ),
+                        ));
+                    } else {
+                        plain.push(value);
+                    }
+                }
             }
             _ => {}
         }
