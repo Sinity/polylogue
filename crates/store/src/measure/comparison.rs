@@ -22,13 +22,14 @@ pub const FIELDS: &[&str] = &[
     "clustered_time",
     "tool_time",
     "tool_time_union",
+    "tool_untimed",
     "ends_with",
     "last_stop_reason",
     "waiting_model",
     "waiting_human",
     "cost_nusd",
 ];
-const DEFAULT_FIELDS: &str = "origin,messages,human_prompts,words,tool_calls,errors,wall_span,clustered_time,tool_time,ends_with";
+const DEFAULT_FIELDS: &str = "origin,messages,human_prompts,words,tool_calls,errors,wall_span,clustered_time,tool_time,tool_untimed,ends_with";
 
 #[derive(Debug, Serialize)]
 pub struct ComparedSession {
@@ -85,7 +86,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
             "wall_span"
                 | "clustered_time"
                 | "tool_time"
-                | "tool_time_union"
+                | "tool_time_union" | "tool_untimed"
                 | "ends_with"
                 | "last_stop_reason"
                 | "waiting_model"
@@ -100,7 +101,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
                 | "wall_span"
                 | "clustered_time"
                 | "tool_time"
-                | "tool_time_union"
+                | "tool_time_union" | "tool_untimed"
                 | "ends_with"
                 | "last_stop_reason"
                 | "waiting_model"
@@ -134,6 +135,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
                 "clustered_time" => json!(span.and_then(|s| s.clustered_ms)),
                 "tool_time" => json!(span.and_then(|s| s.tool_sum_ms)),
                 "tool_time_union" => json!(span.and_then(|s| s.tool_union_ms)),
+                "tool_untimed" => json!(span.map(|s| s.tool_untimed)),
                 "ends_with" => json!(span.map(|s| s.ends_with.as_str())),
                 "last_stop_reason" => json!(span.and_then(|s| s.last_stop_reason.as_deref())),
                 "waiting_model" | "waiting_human" => json!(
@@ -220,6 +222,7 @@ fn field_sql(name: &str) -> Result<String> {
         "clustered_time" => session_sql::span("s", "clustered_ms"),
         "tool_time" => session_sql::span("s", "tool_sum_ms"),
         "tool_time_union" => session_sql::span("s", "tool_union_ms"),
+        "tool_untimed" => session_sql::span("s", "tool_untimed"),
         "ends_with" | "last_stop_reason" => session_sql::span("s", name),
         "waiting_model" | "waiting_human" => format!(
             "(SELECT ms FROM session_time st WHERE st.session_pk=s.pk AND st.lane='{}' AND st.key='' AND {})",
@@ -273,7 +276,7 @@ pub fn summary(
             "wall_span"
                 | "clustered_time"
                 | "tool_time"
-                | "tool_time_union"
+                | "tool_time_union" | "tool_untimed"
                 | "ends_with"
                 | "last_stop_reason"
                 | "waiting_model"
@@ -288,7 +291,7 @@ pub fn summary(
                 | "wall_span"
                 | "clustered_time"
                 | "tool_time"
-                | "tool_time_union"
+                | "tool_time_union" | "tool_untimed"
                 | "ends_with"
                 | "last_stop_reason"
                 | "waiting_model"

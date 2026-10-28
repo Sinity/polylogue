@@ -508,9 +508,10 @@ pub static FIELDS: &[Field] = &[
     f(Sessions, "clustered_time", Duration, "Union of consecutive message gaps at most 5 minutes, extended across paired tools").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"clustered_ms")),
     f(Sessions, "tool_time", Duration, "Sum of strictly positive paired tool intervals; untimed calls counted separately").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"tool_sum_ms")),
     f(Sessions, "tool_time_union", Duration, "Union of strictly positive paired tool intervals").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"tool_union_ms")),
-    f(Sessions, "ends_with", Match, "Kind of the last recorded own item").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"ends_with")),
+    f(Sessions, "tool_untimed", Number, "Own tool calls whose durations are unknown; shown beside tool-time sums").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"tool_untimed")),
+    f(Sessions, "ends_with", Match, "Kind of the last recorded own item").stored_unknown("unknown").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"ends_with")),
     f(Sessions, "last_stop_reason", Match, "Last model stop reason as recorded").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"last_stop_reason")),
-    f(Sessions, "time_source", Match, "Messages, or events when there are no messages").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"time_source")),
+    f(Sessions, "time_source", Match, "Messages, or events when there are no messages").stored_unknown("absent").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"time_source")),
     f(Sessions, "waiting_model", Duration, "Wall time waiting for the model").sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='model' AND st.key='' AND {})",polylogue_model::session_sql::current(&a.s,"session_span"),s=a.s)),
     f(Sessions, "waiting_human", Duration, "Wall time waiting for the human").sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='human' AND st.key='' AND {})",polylogue_model::session_sql::current(&a.s,"session_span"),s=a.s)),
     f(Sessions, "human_words", Number, "Own human words").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_word_count")),
@@ -1306,7 +1307,7 @@ pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
         return Some(derived::SESSION_COUNTS);
     }
     match field.name {
-        "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "ends_with"
+        "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "tool_untimed" | "ends_with"
         | "last_stop_reason" | "time_source" => Some(derived::SESSION_SPAN),
         "waiting_model" | "waiting_human" => Some(derived::SESSION_TIME),
         _ => None,

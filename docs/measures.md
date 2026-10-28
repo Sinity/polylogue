@@ -35,7 +35,9 @@ not measure attention.
 
 `tool_time` sums positive paired tool intervals; `tool_time_union` takes
 their union. `tool_overlap_ms` is the difference. Missing, equal and reversed
-timestamps are unknown durations, counted separately. Recorded absence of
+timestamps are unknown durations, counted separately in `tool_untimed`.
+Tool-time aggregates include `unmeasured_calls_FIELD` beside the known sum;
+default comparisons include the unmeasured-call count. Recorded absence of
 calls has an empty sum; this says nothing about tools an origin does not
 record. Harness tool-result messages never become human prompts.
 
@@ -119,7 +121,8 @@ provider-reported money and the five token lanes. Responses and independently
 recorded usage reports keep separate populations and denominators. Only
 confirmed reports enter sums; unconfirmed and untimed reports are counted.
 Unknown values remain null, known zero stays zero, and partial sums are labelled
-lower bounds. Missing observed days are listed per unit.
+lower bounds, including when response boundaries or report confirmation are
+unknown. Missing observed days are listed per unit.
 
 `linear` projects `used / elapsed * total`. `trailing-7d-mean` keeps history
 and adds the mean of the last **7 observed UTC billing days** over the remaining

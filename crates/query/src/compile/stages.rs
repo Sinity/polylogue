@@ -227,7 +227,7 @@ impl<'a> Compiler<'a> {
                 "wall_span"
                     | "clustered_time"
                     | "tool_time"
-                    | "tool_time_union"
+                    | "tool_time_union" | "tool_untimed"
                     | "ends_with"
                     | "last_stop_reason"
                     | "waiting_model"
@@ -247,6 +247,16 @@ impl<'a> Compiler<'a> {
                     ColKind::Number,
                 ));
             }
+        }
+        if scope.unit == Unit::Sessions && matches!(field, "tool_time" | "tool_time_union") {
+            out.push((
+                format!("unmeasured_calls_{flat_field}"),
+                format!(
+                    "CASE WHEN count(*)=0 THEN 0 ELSE sum({}) END",
+                    polylogue_model::session_sql::span(&scope.a.s, "tool_untimed")
+                ),
+                ColKind::Number,
+            ));
         }
         // A session cost known only in part (some request-bearing messages
         // unpriced) is a lower bound, and the total says how many. A tree

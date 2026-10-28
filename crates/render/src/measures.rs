@@ -364,8 +364,9 @@ fn outlook_text(data: &Value) -> String {
         ));
         if let Some(p) = segment["budget_pressure"].as_object() {
             out.push_str(&format!(
-                "Your budget ({}): used {}, projected {}, budget {}\n",
+                "Your budget ({}): {}used {}, projected {}, budget {}\n",
                 p["unit"].as_str().unwrap_or(""),
+                if p["lower_bound"].as_bool()==Some(true){"at least "}else{""},
                 number(&p["used"]),
                 number(&p["projected"]),
                 number(&p["budget"])
@@ -379,7 +380,7 @@ fn outlook_text(data: &Value) -> String {
             ));
         }
     }
-    out.push_str(&format!("Untimed responses: {}; untimed reports: {}. Billing before the first plan setting: unknown.\n",data["untimed_responses"],data["untimed_reports"]));
+    out.push_str(&format!("Untimed responses: {}; untimed reports: {}; untimed unknown-boundary items: {}. Billing before the first plan setting: unknown.\n",data["untimed_responses"],data["untimed_reports"],data["untimed_boundary_items"]));
     out
 }
 

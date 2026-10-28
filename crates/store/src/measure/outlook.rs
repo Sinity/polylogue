@@ -66,6 +66,7 @@ pub struct Projection {
 #[derive(Debug, Serialize)]
 pub struct Pressure {
     pub label: &'static str,
+    pub lower_bound: bool,
     pub population: Population,
     pub unit: String,
     pub budget: i64,
@@ -106,6 +107,7 @@ pub struct Outlook {
     pub window: Option<Window>,
     pub segments: Vec<Segment>,
     pub untimed_responses: u64,
+    pub untimed_boundary_items: u64,
     pub untimed_reports: u64,
     pub billing_before_setting: &'static str,
 }
@@ -174,6 +176,7 @@ pub fn outlook(
         window: None,
         segments: vec![],
         untimed_responses: 0,
+        untimed_boundary_items: 0,
         untimed_reports: 0,
         billing_before_setting: "unknown",
     };
@@ -243,14 +246,18 @@ pub fn outlook(
         SELECT w.id,(m.at-?{start_param})/{DAY},({response}) AS known,count(*),
         sum(m.cost_nusd),count(m.cost_nusd),sum(m.provider_cost_nusd),count(m.provider_cost_nusd),
         sum(m.input_tokens),count(m.input_tokens),sum(m.cache_read_tokens),count(m.cache_read_tokens),sum(m.cache_write_tokens),count(m.cache_write_tokens),sum(m.output_tokens),count(m.output_tokens),sum(m.reasoning_tokens),count(m.reasoning_tokens)
-        FROM message m JOIN session s ON s.pk=m.session_pk JOIN spans w ON w.origin=s.origin AND m.at>=w.starts AND m.at<w.ends
-        WHERE {condition} AND m.duplicate_of IS NULL AND m.role='assistant' AND m.written_by='model' AND m.at<?{now_param}
+        FROM message m JOIN session s ON s.pk=m.session_pk LEFT JOIN spans w ON w.origin=s.origin AND m.at>=w.starts AND m.at<w.ends
+        WHERE {condition} AND m.duplicate_of IS NULL AND m.role='assistant' AND m.written_by='model' AND (m.at IS NULL OR m.at<?{now_param}) AND (w.id IS NOT NULL OR (m.at IS NULL AND s.origin IN (SELECT origin FROM spans)))
         GROUP BY w.id,2,known",response=usage::RESPONSE_ROWS))?;
     let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
     while let Some(row) = rows.next()? {
-        let i = row.get::<_, usize>(0)?;
-        let day = window.start + row.get::<_, i64>(1)? * DAY;
         let n = row.get::<_, u64>(3)?;
+        let Some(i) = row.get::<_, Option<usize>>(0)? else {
+            if row.get::<_,bool>(2)? { answer.untimed_responses += n; }
+            else { answer.untimed_boundary_items += n; }
+            continue;
+        };
+        let day = window.start + row.get::<_, i64>(1)? * DAY;
         if !row.get::<_, bool>(2)? {
             answer.segments[i].unknown_boundary_items += n;
             continue;
@@ -285,8 +292,6 @@ pub fn outlook(
         origins: Some(origins),
         ..selection.clone()
     };
-    let (condition, params) = scope.condition();
-    answer.untimed_responses=reader.conn()?.query_row(&format!("SELECT count(*) FROM message m WHERE {condition} AND m.duplicate_of IS NULL AND m.at IS NULL AND {}",usage::RESPONSE_ROWS),rusqlite::params_from_iter(params.iter()),|r|r.get(0))?;
     // Report totals stay in their own population, apart from response totals.
     reports::visit::<polylogue_model::UsageReport>(
         reader,
@@ -341,7 +346,7 @@ pub fn outlook(
         ] {
             let mut projections = BTreeMap::new();
             for (unit, amounts) in &amounts {
-                let projection = project(
+                let mut projection = project(
                     amounts,
                     segment.from,
                     segment.until,
@@ -352,6 +357,11 @@ pub fn outlook(
                     },
                     method,
                 )?;
+                let excluded = match population {
+                    Population::Responses => segment.unknown_boundary_items,
+                    Population::RecordedReports => segment.unconfirmed_reports,
+                };
+                projection.lower_bound |= projection.used.is_some() && excluded > 0;
                 projections.insert(unit.clone(), projection);
             }
             if let Some(budget) = segment
@@ -524,6 +534,7 @@ fn pressure(
         .transpose()?;
     Ok(Pressure {
         label: "your budget",
+        lower_bound: projection.is_some_and(|p|p.lower_bound),
         population: budget.population,
         unit: budget.unit.clone(),
         budget: budget.amount,
