@@ -13,9 +13,9 @@ polylogue-store.workspace = true
 polylogue-model.workspace = true
 polylogue-query.workspace = true
 hashed-blobs.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "92ec6a25c3a73693756dd20344ad94ef85753695" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "92ec6a25c3a73693756dd20344ad94ef85753695" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "92ec6a25c3a73693756dd20344ad94ef85753695" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466e88bfa4e7496054b3bbe05a5" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466e88bfa4e7496054b3bbe05a5" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466e88bfa4e7496054b3bbe05a5" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
