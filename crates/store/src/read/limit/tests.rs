@@ -164,3 +164,21 @@ fn a_read_without_a_deadline_still_observes_cancellation() {
     limit.cancellation.cancel();
     assert!(matches!(limit.check(), Err(StoreError::ReadCancelled)));
 }
+
+#[test]
+fn finishing_read_preparation_restores_the_enclosing_scope_after_the_write() {
+    let outer = ReadLimit::new(Duration::ZERO, Default::default());
+    let inner = ReadLimit::new(Duration::from_secs(30), Default::default());
+    outer.scope(|| {
+        inner.scope(|| {
+            ReadLimit::finish_scope("write").unwrap();
+            assert!(ReadLimit::current().is_none());
+            assert_eq!(inner.stage(), Some("write"));
+        });
+        assert!(matches!(
+            ReadLimit::current().unwrap().check(),
+            Err(StoreError::ReadDeadlineExceeded)
+        ));
+    });
+    assert!(ReadLimit::current().is_none());
+}

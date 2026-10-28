@@ -182,3 +182,53 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
         matches!(response, Response::Error { detail: Some(detail), .. } if detail["stage"] == "backfill_jobs")
     );
 }
+
+#[test]
+fn context_receipts_do_not_disable_the_read_phase_deadline() {
+    let request = Request::Context {
+        request_id: "synthetic-context".into(),
+        ask: crate::briefing::Ask::Takeover {
+            session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+            for_session: None,
+        },
+        sender: Some("mcp".into()),
+    };
+    assert!(!request.read_only());
+    assert!(request.has_read_phase());
+    assert!(request_deadline(&request, None).is_some());
+    assert_eq!(request_deadline(&request, Some(0)), Some(0));
+    let response = run(
+        request,
+        &ReadLimit::new(Duration::ZERO, Default::default()),
+        |_| panic!("expired context started"),
+    );
+    assert!(matches!(response, Response::Error { kind, .. } if kind == "deadline_exceeded"));
+}
+
+#[test]
+fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
+    let daemon = test_daemon::start("authored write deadline independence");
+    let limit = ReadLimit::new(Duration::ZERO, Default::default());
+    limit.cancellation.cancel();
+    let id = polylogue_store::user_writes::new_request_id();
+    let response = handle_with_limit(
+        Request::Keep {
+            request_id: id.clone(),
+            text: "sessions".into(),
+            name: None,
+        },
+        &daemon.daemon,
+        &limit,
+    );
+    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    assert!(
+        daemon
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .user_request(&id)
+            .unwrap()
+            .is_some()
+    );
+}

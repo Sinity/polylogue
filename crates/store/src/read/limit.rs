@@ -108,6 +108,17 @@ impl ReadLimit {
         work()
     }
 
+    /// Validate the completed read preparation before handing work to a writer.
+    /// The enclosing scope restores its previous state when that work returns.
+    pub fn finish_scope(stage: &'static str) -> Result<()> {
+        if let Some(limit) = Self::current() {
+            limit.check()?;
+        }
+        Self::set_stage(stage);
+        CURRENT.with(|current| current.replace(None));
+        Ok(())
+    }
+
     pub fn current() -> Option<Self> {
         CURRENT.with(|current| current.borrow().clone())
     }

@@ -140,8 +140,13 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Ok(writes) => writes,
             Err(response) => return response,
         };
+        if let Err(error) = polylogue_store::read::limit::ReadLimit::finish_scope("record delivery")
+        {
+            return store_error(&error);
+        }
         let _invalidation = d.page_ends.mutation();
-        match writes.user(UserRequest::now(request_id, write)) {
+        let result = writes.user(UserRequest::now(request_id, write));
+        match result {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
         }

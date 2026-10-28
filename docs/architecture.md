@@ -439,8 +439,11 @@ parameter and evidence declarations.
 Read-only requests have a 30-second default time limit, including time waiting
 for a reader slot. `POLYLOGUE_READ_TIMEOUT_MS` configures the global default in
 milliseconds; the CLI `--timeout SECONDS` flag overrides it for one command.
-Export has no deadline unless the caller supplies one. Writes, background
-counts, vector preload and signals do not inherit a request deadline.
+Export has no deadline unless the caller supplies one. Ordinary authored
+writes, background counts, vector preload and signals do not inherit a request deadline.
+Context preparation has a read deadline even when it records a prepared receipt.
+The budget is checked before handing off that receipt; its accepted write finishes
+independently, and remains prepared until the client reports a delivered event.
 Embedding provider calls outside a read request have their own 60-second timeout.
 A failed count appears in status as `count_error`, alongside any previous counts. A socket request can supply `deadline_ms` as absolute Unix
 milliseconds; HTTP accepts the same value in `X-Polylogue-Deadline-Ms`, and MCP

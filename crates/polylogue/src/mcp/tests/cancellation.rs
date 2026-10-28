@@ -4,7 +4,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-fn cancelled_read(disconnect: bool) {
+fn cancelled_read(disconnect: bool, context: bool) {
     let daemon = test_daemon::start("MCP cancellation");
     let _held = daemon.daemon.reads.reader().unwrap();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
@@ -23,7 +23,17 @@ fn cancelled_read(disconnect: bool) {
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
         assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
-        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"query", "arguments":{"query":"sessions"}}})).unwrap();
+        let params = if context {
+            json!({"name":"takeover", "arguments":{"session":"claude-code:s1"}})
+        } else {
+            json!({"name":"query", "arguments":{"query":"sessions"}})
+        };
+        writeln!(
+            client,
+            "{}",
+            json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":params})
+        )
+        .unwrap();
         let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(5);
         while daemon.daemon.reads.checked_out() < 2 {
@@ -51,12 +61,12 @@ fn cancelled_read(disconnect: bool) {
 
 #[test]
 fn mcp_cancellation_interrupts_the_daemon_read() {
-    cancelled_read(false);
+    cancelled_read(false, false);
 }
 
 #[test]
 fn mcp_disconnect_interrupts_the_daemon_read() {
-    cancelled_read(true);
+    cancelled_read(true, false);
 }
 
 #[test]
@@ -170,4 +180,14 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
         data["count"], 0,
         "a refused context must not record prepared delivery"
     );
+}
+
+#[test]
+fn mcp_context_cancellation_interrupts_preparation_without_explicit_deadline() {
+    cancelled_read(false, true);
+}
+
+#[test]
+fn mcp_context_disconnect_interrupts_preparation_without_explicit_deadline() {
+    cancelled_read(true, true);
 }

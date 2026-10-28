@@ -48,9 +48,10 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
     ReadLimit::new(remaining(deadline_ms), cancellation)
 }
 
-/// Writes never carry a read deadline. Export waits until done unless asked otherwise.
+/// Limits cover read phases, including context preparation before its receipt.
+/// Export waits until done unless asked otherwise.
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
-    if !request.read_only() {
+    if !request.has_read_phase() {
         None
     } else if matches!(request, Request::Export { .. }) {
         deadline_ms
@@ -75,7 +76,7 @@ pub fn run(
     limit: &ReadLimit,
     work: impl FnOnce(Request) -> Response,
 ) -> Response {
-    if !request.read_only() {
+    if !request.has_read_phase() {
         return work(request);
     }
     let (stage, text) = match &request {
@@ -106,7 +107,11 @@ pub fn run(
             return refusal(&error, &info, limit);
         }
         let response = work(request);
-        if let Err(error) = limit.check() {
+        // A checked writer handoff ends the read phase. Its accepted result
+        // must not become a timeout after the write commits.
+        if ReadLimit::current().is_some()
+            && let Err(error) = limit.check()
+        {
             return refusal(&error, &info, limit);
         }
         response
