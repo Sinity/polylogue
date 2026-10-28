@@ -394,7 +394,7 @@ impl<'a> Compiler<'a> {
                     members.push(format!("SELECT _pk FROM ({relation})"));
                 }
                 Some((
-                    self.from_without_fusion(&scope),
+                    self.row_source(&scope),
                     format!("{pk} IN ({})", members.join(" UNION ")),
                 ))
             }
@@ -809,7 +809,7 @@ impl<'a> Compiler<'a> {
 
     /// The FROM clause of a unit, joining the rows its fields read.
     pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
-        let mut from = self.from_without_fusion(scope);
+        let mut from = self.row_source(scope);
         if let Some(fusion) = &self.fusion {
             from.push(' ');
             from.push_str(&fusion.join);
@@ -817,7 +817,7 @@ impl<'a> Compiler<'a> {
         Ok(from)
     }
 
-    fn from_without_fusion(&self, scope: &RowContext) -> String {
+    fn row_source(&self, scope: &RowContext) -> String {
         let mut from = base_from(scope.unit, &scope.a);
         if let Some(join) = &self.near_join {
             from.push(' ');
