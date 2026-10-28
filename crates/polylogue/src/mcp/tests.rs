@@ -184,11 +184,10 @@ fn malformed_request_ids_are_not_echoed_in_error_responses() {
 
 #[test]
 fn server_instructions_include_guidance_and_current_command_names() {
-    let server = Polylogue {
-        archive: std::path::PathBuf::from("/synthetic/archive"),
+    let Reply::Message(info) = Session::default().prepare(initialize()) else {
+        panic!("initialize must return server information");
     };
-    let info = server.get_info();
-    let text = info.instructions.unwrap();
+    let text = info["result"]["instructions"].as_str().unwrap();
     assert!(text.contains("Continue pages"));
     for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
         assert!(text.contains(&format!("`{}`", command.mcp_name())));
@@ -233,20 +232,17 @@ fn errors_show_archived_controls_as_text() {
 fn tool_annotations_follow_the_command_table() {
     let tools = tools();
     for command in tool_commands() {
-        let tool = tools.iter().find(|t| t["name"] == command.mcp_name()).unwrap();
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == command.mcp_name())
+            .unwrap();
         let json = serde_json::to_value(tool).unwrap();
         assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
     }
     for name in ["query", "read", "status"] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();
-        assert_eq!(
-            tool["annotations"]["readOnlyHint"],
-            true
-        );
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
     }
     let write = tools.iter().find(|t| t["name"] == "note_add").unwrap();
-    assert_eq!(
-        write["annotations"]["readOnlyHint"],
-        false
-    );
+    assert_eq!(write["annotations"]["readOnlyHint"], false);
 }
