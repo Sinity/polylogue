@@ -39,7 +39,7 @@ fn plain_reports_escape_controls_in_names_without_changing_json() {
     render(&data, Format::Terminal, &mut bytes).unwrap();
     let text = String::from_utf8(bytes).unwrap();
     assert!(!text.contains('\u{1b}'));
-    assert!(text.contains(r"synthetic\u{1b}[31m"));
+    assert!(text.contains(r"synthetic\x1b[31m"));
     assert!(text.contains(r"sample\nnext"));
     assert!(text.contains(r"/é\nfield"));
     let mut bytes = Vec::new();

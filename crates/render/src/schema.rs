@@ -16,6 +16,12 @@ pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<(
     )
 }
 
+fn inline(text: &str) -> String {
+    crate::terminal::escape(text)
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+}
+
 fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Rule version: {}", data["rule_version"])?;
     for side in ["before", "after"] {
@@ -23,7 +29,7 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
         writeln!(
             out,
             "{side}: {} (sample: {}), {} records, {} unreadable inputs, {} unreadable records",
-            sample["origin"].as_str().unwrap_or_default().escape_debug(),
+            inline(sample["origin"].as_str().unwrap_or_default()),
             sample["sample"],
             sample["records"],
             sample["unreadable_inputs"],
@@ -34,7 +40,7 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
                 writeln!(
                     out,
                     "  input {} revision {}",
-                    input["input"].as_str().unwrap_or_default().escape_debug(),
+                    inline(input["input"].as_str().unwrap_or_default()),
                     input["revision"]
                 )?;
             }
@@ -43,11 +49,7 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Comparable samples: {}", data["comparable"])?;
     if let Some(reasons) = data["reasons"].as_array() {
         for reason in reasons {
-            writeln!(
-                out,
-                "{}",
-                reason.as_str().unwrap_or_default().escape_debug()
-            )?;
+            writeln!(out, "{}", inline(reason.as_str().unwrap_or_default()))?;
         }
     }
     if let Some(changes) = data["changes"].as_array() {
@@ -55,12 +57,13 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
             writeln!(
                 out,
                 "{} {}: types {} -> {}, required {} -> {}",
-                change["kind"].as_str().unwrap_or_default().escape_debug(),
-                change["path"]
-                    .as_str()
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or("/ (root)")
-                    .escape_debug(),
+                inline(change["kind"].as_str().unwrap_or_default()),
+                inline(
+                    change["path"]
+                        .as_str()
+                        .filter(|p| !p.is_empty())
+                        .unwrap_or("/ (root)")
+                ),
                 change["before"]["types"],
                 change["after"]["types"],
                 change["before"]["required"],
