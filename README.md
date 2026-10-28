@@ -77,7 +77,7 @@ it.
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work (words and, with vectors, similarity, ranked together, by pages) with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
-| `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
+| `measure WHAT` | Tokens and cost, subscription windows, recorded time lanes, facets, comparisons and billing outlooks. `measure --help` lists the computations; [measures](docs/measures.md) defines their units and unknowns. |
 | `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. `status` also shows the last day's notices. |
 | `changes [--since POSITION]` | The change feed: JSON lines naming changed sessions, notes, removals and excisions since a position, ending with the next position. |
 | `sql STATEMENT` | Read-only SQL. The views `v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links` and `v1_notes` keep their names and columns ([crates/store/src/sql_views.rs](crates/store/src/sql_views.rs)); the tables under them change with the index format. |
@@ -272,5 +272,5 @@ return `sinex_unavailable`. Fix the cause and restart the daemon.
 [docs/architecture.md](docs/architecture.md#sinex-primary-mode) describes
 how primary mode stores the archive and how a standalone archive moves to it.
 
-[Session measures](docs/measures.md) cover IDF facets, explicit-plan cost
-outlooks, pacing, session profiles and comparisons through the measure registry.
+[Session measures](docs/measures.md) cover recorded time lanes, comparisons,
+facets and dated billing outlooks through the measure registry.

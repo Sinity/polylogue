@@ -1,4 +1,4 @@
-//! Survival measures over the per-session facts the `session_survival`
+//! Survival measures over the per-session facts the `session_span`
 //! derivation keeps: time to a session's first failed tool call, and time
 //! to a session ending on an unanswered prompt.
 
@@ -30,6 +30,8 @@ pub struct Survival {
     pub censored: u64,
     /// Sessions left out because their duration is unknown.
     pub unmeasured: u64,
+    pub pending: u64,
+    pub quiet_period_ms: Option<i64>,
     /// Where survival first drops to one half; `None` when it never does.
     pub median: Option<f64>,
     pub curve: Vec<Step>,
@@ -76,35 +78,9 @@ pub fn kaplan_meier(mut obs: Vec<(f64, bool)>) -> (Vec<Step>, Option<f64>) {
     (curve, median)
 }
 
-/// One session's row of `session_survival`.
-struct Facts {
-    first_at: Option<i64>,
-    last_at: Option<i64>,
-    first_failure_at: Option<i64>,
-    prompts_to_failure: i64,
-    prompted: bool,
-    last_prompt_unanswered: bool,
-}
-
-/// The facts of every session in the selection that has messages.
-fn facts(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<Facts>> {
-    let (cond, params) = selection.session_condition("f.session_pk")?;
-    let mut stmt = reader.conn()?.prepare(&format!(
-        "SELECT first_at, last_at, first_failure_at, prompts_to_failure, prompted,
-                last_prompt_unanswered
-         FROM session_survival f WHERE {cond}"
-    ))?;
-    let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
-        Ok(Facts {
-            first_at: r.get(0)?,
-            last_at: r.get(1)?,
-            first_failure_at: r.get(2)?,
-            prompts_to_failure: r.get(3)?,
-            prompted: r.get(4)?,
-            last_prompt_unanswered: r.get(5)?,
-        })
-    })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+/// A behind session is computed only for a single-session read.
+fn facts(reader:&Reader<'_>,selection:&Selection)->Result<(Vec<super::time::Span>,u64)> {
+    super::time::selected_spans(reader,selection)
 }
 
 fn survival(
@@ -125,6 +101,8 @@ fn survival(
         events,
         censored: sessions - events,
         unmeasured,
+        pending:0,
+        quiet_period_ms:(event=="ended on an unanswered prompt").then_some(QUIET),
         median,
         curve,
     }
@@ -137,7 +115,8 @@ fn survival(
 pub fn first_failure(reader: &Reader<'_>, selection: &Selection, turns: bool) -> Result<Survival> {
     let mut obs = vec![];
     let mut unmeasured = 0;
-    for f in facts(reader, selection)? {
+    let (facts,pending)=facts(reader,selection)?;
+    for f in facts {
         let (Some(first), Some(last)) = (f.first_at, f.last_at) else {
             unmeasured += 1;
             continue;
@@ -153,7 +132,7 @@ pub fn first_failure(reader: &Reader<'_>, selection: &Selection, turns: bool) ->
         };
         obs.push((x, event));
     }
-    Ok(if turns {
+    let mut result=if turns {
         survival(
             "first failed tool call",
             "turns",
@@ -169,14 +148,17 @@ pub fn first_failure(reader: &Reader<'_>, selection: &Selection, turns: bool) ->
             obs,
             unmeasured,
         )
-    })
+    };
+    result.pending=pending;
+    result.unmeasured+=pending;
+    Ok(result)
 }
 
 /// How long a session must have been quiet before it counts as over.
 /// Inside it, a session is censored as possibly still going.
 pub const QUIET: i64 = 6 * 3_600_000;
 
-/// Time to a session ending on an unanswered prompt (abandonment): the
+/// Time to a session ending on an unanswered prompt: the
 /// session went quiet for [`QUIET`] with its last human prompt followed by
 /// no model message. A session that ended answered is censored at its end,
 /// and so is one still within the quiet period. Structural only: what the
@@ -184,7 +166,8 @@ pub const QUIET: i64 = 6 * 3_600_000;
 pub fn unanswered_end(reader: &Reader<'_>, selection: &Selection, now: i64) -> Result<Survival> {
     let mut obs = vec![];
     let mut unmeasured = 0;
-    for f in facts(reader, selection)? {
+    let (facts,pending)=facts(reader,selection)?;
+    for f in facts {
         let (Some(first), Some(last)) = (f.first_at, f.last_at) else {
             unmeasured += 1;
             continue;
@@ -198,16 +181,18 @@ pub fn unanswered_end(reader: &Reader<'_>, selection: &Selection, now: i64) -> R
         let over = now - last >= QUIET;
         obs.push((
             (last - first) as f64 / 60_000.0,
-            over && f.last_prompt_unanswered,
+            over && f.ends_with == "human_prompt",
         ));
     }
-    Ok(survival(
+    let mut result=survival(
         "ended on an unanswered prompt",
         "wall clock",
         "minutes",
         obs,
-        unmeasured,
-    ))
+        unmeasured+pending,
+    );
+    result.pending=pending;
+    Ok(result)
 }
 
 #[cfg(test)]

@@ -1,221 +1,56 @@
 use super::*;
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use crate::fixture::{Fixture,MessageFacts,SessionFacts};
 
 #[test]
-fn pearson_keeps_translation_scale_and_order_and_undefined_cases() {
-    for scale in [1.0, 1e120, 1e200] {
-        let pairs: Vec<_> = [(1.0, 1.0), (2.0, 2.0), (3.0, 4.0), (4.0, 3.0)]
-            .map(|(x, y)| ((100_000_000.0 + x) * scale, y))
-            .into();
-        let value = pearson(&pairs).0.unwrap();
-        assert!((value - 0.8).abs() < 1e-7);
-        let reverse: Vec<_> = pairs.into_iter().rev().collect();
-        assert!((pearson(&reverse).0.unwrap() - 0.8).abs() < 1e-7);
+fn comparisons_use_recorded_fields_and_keep_missing_values() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
+    for (id,origin,text,at) in [("codex:a","model","one",Some(0)),("codex:b","model","one two",Some(60000)),("chatgpt:c","human","one two three",None)] {
+        let pk=f.session(SessionFacts{id,..Default::default()}).unwrap();
+        f.message(pk,MessageFacts{id:&format!("{id}-m"),role:if origin=="model"{"assistant"}else{"user"},written_by:origin,text:Some(text),at,..Default::default()}).unwrap();
     }
-    assert_eq!(pearson(&[(1.0, 3.0), (2.0, 2.0), (3.0, 1.0)]).0, Some(-1.0));
-    assert_eq!(pearson(&[(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]).0, Some(1.0));
-    assert_eq!(
-        pearson(&[(1.0, 1.0), (2.0, 2.0)]),
-        (None, Some("insufficient_pairs"))
-    );
-    assert_eq!(
-        pearson(&[(1e8, 1.0), (1e8, 2.0), (1e8, 3.0)]),
-        (None, Some("zero_variance"))
-    );
-}
-
-fn matches(r: &Reader<'_>, reference: &str) -> Vec<serde_json::Value> {
-    r.query(
-        &format!(
-            "{} ORDER BY score DESC,session",
-            similarity_query("SELECT pk AS _pk FROM session WHERE id=?1")
-        ),
-        &[crate::SqlValue::Text(reference.into())],
-    )
-    .unwrap()
+    f.derive().unwrap();let pool=f.reads().unwrap();let reader=pool.reader().unwrap();
+    let compared=compare(&reader,&Selection::default(),"origin,words,wall_span").unwrap();
+    assert_eq!(compared.sessions.len(),3);assert!(compared.varies.contains(&"origin".into()));assert!(compared.varies.contains(&"words".into()));
+    assert_eq!(compared.unknown["wall_span"],1);assert_eq!(compared.pending,0);
+    let(varies,unknown,pending)=summary(&reader,&Selection::default(),"origin,words,wall_span").unwrap();
+    assert_eq!(varies,compared.varies);assert_eq!(unknown,compared.unknown);assert_eq!(pending,0);
+    assert!(compare(&reader,&Selection::default(),"unsupported").is_err());
 }
 
 #[test]
-fn comparisons_and_similarity_read_facts_without_message_usage_or_parent_walks() {
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    for (id, text) in [
-        ("codex:a", "one"),
-        ("codex:b", "one two"),
-        ("chatgpt:c", "one two three"),
-    ] {
-        let pk = f
-            .session(SessionFacts {
-                id,
-                ..Default::default()
-            })
-            .unwrap();
-        f.message(
-            pk,
-            MessageFacts {
-                id: &format!("{id}:m"),
-                role: "user",
-                written_by: "human",
-                text: Some(text),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        f.note("tag", None, Some("Shared"), &format!("session:{id}"))
-            .unwrap();
+fn structural_comparison_does_not_read_bodies_usage_or_parents() {
+    use rusqlite::hooks::{AuthAction,AuthContext,Authorization};
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
+    for id in ["codex:a","codex:b"]{let s=f.session(SessionFacts{id,..Default::default()}).unwrap();f.message(s,MessageFacts{id:&format!("{id}-m"),role:"assistant",written_by:"model",text:Some(id),at:Some(0),..Default::default()}).unwrap();}
+    f.derive().unwrap();let pool=f.reads().unwrap();let reader=pool.reader().unwrap();
+    reader.conn().unwrap().authorizer(Some(|context:AuthContext<'_>|match context.action{AuthAction::Read{table_name:"message"|"block"|"tool_call"|"link"|"text",..}=>Authorization::Deny,_=>Authorization::Allow})).unwrap();
+    let compared=compare(&reader,&Selection::default(),"").unwrap();assert_eq!(compared.pending,0);
+    assert_eq!(compared.sessions.len(),2);
+    assert!(summary(&reader,&Selection::default(),"").is_ok());
+}
+
+#[test]
+fn pending_populations_do_not_serve_stale_values_and_single_reads_compute() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
+    let mut keys=vec![];for id in ["codex:a","codex:b"]{let s=f.session(SessionFacts{id,..Default::default()}).unwrap();keys.push(s);f.message(s,MessageFacts{id:&format!("{id}-m"),role:"user",written_by:"human",text:Some("one"),at:Some(0),..Default::default()}).unwrap();}
+    f.derive().unwrap();
+    for (i,&s) in keys.iter().enumerate(){f.message(s,MessageFacts{id:&format!("new-{i}"),role:"assistant",written_by:"model",text:Some("one two"),at:Some(60000),..Default::default()}).unwrap();}
+    let pool=f.reads().unwrap();let reader=pool.reader().unwrap();
+    let population=compare(&reader,&Selection::default(),"words,wall_span").unwrap();
+    assert_eq!(population.pending,2);assert!(population.sessions.iter().all(|s|s.values.values().all(Value::is_null)));
+    let one=compare(&reader,&Selection{sessions:Some(vec![keys[0]]),..Default::default()},"words,wall_span").unwrap();
+    assert_eq!(one.pending,0);assert_eq!(one.sessions[0].values["words"],3);assert_eq!(one.sessions[0].values["wall_span"],60000);
+}
+
+#[test]
+fn cost_comparison_keeps_integer_nano_usd_and_unknown_totals() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
+    for (id,cost) in [("claude-code:known",Some(9_007_199_254_740_993_i64)),("claude-code:zero",Some(0)),("chatgpt:unknown",None)] {
+        let s=f.session(SessionFacts{id,..Default::default()}).unwrap();
+        f.message(s,MessageFacts{id:&format!("{id}-m"),role:"assistant",written_by:"model",cost_nusd:cost,..Default::default()}).unwrap();
     }
-    f.derive().unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    reader
-        .conn()
-        .unwrap()
-        .authorizer(Some(|context: AuthContext<'_>| match context.action {
-            AuthAction::Read {
-                table_name: "message" | "link" | "block" | "tool_call",
-                ..
-            } => Authorization::Deny,
-            _ => Authorization::Allow,
-        }))
-        .unwrap();
-    let rows = matches(&reader, "codex:a");
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["session"], "codex:b");
-    assert_eq!(rows[0]["score"], 5);
-    assert!(
-        rows.iter()
-            .all(|r| r["reference"] == "codex:a" && r["session"] != "codex:a")
-    );
-    let x = compare(&reader, &Selection::default(), "").unwrap();
-    assert!(x.differences.contains_key("word_count"));
-    assert!(!x.differences.contains_key("workflow_shape"));
-    assert!(!x.differences.contains_key("cost_usd"));
-    assert_eq!(x.underived_sessions, 0);
-    let c = correlation(
-        &reader,
-        &Selection::default(),
-        "message_count:median_tool_call_ms",
-    )
-    .unwrap();
-    assert_eq!(c.sample_count, 0);
-    assert_eq!(c.missing_pairs, 3);
-    assert!(correlation(&reader, &Selection::default(), "word_count:unknown").is_err());
-}
-
-#[test]
-fn similarity_time_weights_include_boundaries_and_exclude_zero_scores() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    for (id, day) in [
-        ("codex:ref", 0),
-        ("chatgpt:three", 3),
-        ("chatgpt:fourteen", 14),
-        ("chatgpt:fifteen", 15),
-    ] {
-        f.session(SessionFacts {
-            id,
-            started: Some(day * 86_400_000),
-            ..Default::default()
-        })
-        .unwrap();
-    }
-    f.derive().unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let rows = matches(&reader, "codex:ref");
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["session"], "chatgpt:three");
-    assert_eq!(rows[0]["score"], 2);
-    assert_eq!(rows[1]["session"], "chatgpt:fourteen");
-    assert_eq!(rows[1]["score"], 1);
-}
-
-#[test]
-fn underived_sessions_keep_null_facts_and_do_not_fail_aggregates_or_similarity() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    f.session(SessionFacts {
-        id: "codex:new",
-        ..Default::default()
-    })
-    .unwrap();
-    f.session(SessionFacts {
-        id: "codex:other",
-        ..Default::default()
-    })
-    .unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let p = reader.session_profiles(&Selection::default()).unwrap();
-    assert!(p.iter().all(|p| p.facts.is_none()));
-    let c = compare(&reader, &Selection::default(), "").unwrap();
-    assert_eq!(c.underived_sessions, 2);
-    let d = distribution(&reader, &Selection::default(), "message_count").unwrap();
-    assert_eq!(d.underived_sessions, 2);
-    assert_eq!(d.missing_sessions, 2);
-    assert_eq!(d.median, None);
-    let c = correlation(&reader, &Selection::default(), "message_count:word_count").unwrap();
-    assert_eq!(c.underived_sessions, 2);
-    assert_eq!(c.sample_count, 0);
-    let rows = matches(&reader, "codex:new");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["score"], 1);
-}
-
-#[test]
-fn explicit_cost_comparison_reads_own_usage_without_parent_history() {
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    let pk = f
-        .session(SessionFacts {
-            id: "codex:cost",
-            ..Default::default()
-        })
-        .unwrap();
-    let message = f
-        .message(
-            pk,
-            MessageFacts {
-                id: "reply",
-                role: "assistant",
-                written_by: "model",
-                model: Some("gpt-6.1-sol"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    f.usage(
-        message,
-        &polylogue_model::Usage {
-            input: Some(100),
-            cached_input: Some(0),
-            cache_write: Some(0),
-            output: Some(10),
-            reasoning: Some(0),
-            ..Default::default()
-        },
-        None,
-    )
-    .unwrap();
-    f.derive().unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    reader
-        .conn()
-        .unwrap()
-        .authorizer(Some(|context: AuthContext<'_>| match context.action {
-            AuthAction::Read {
-                table_name: "link" | "block",
-                ..
-            } => Authorization::Deny,
-            _ => Authorization::Allow,
-        }))
-        .unwrap();
-    let compared = compare(&reader, &Selection::default(), "cost_usd").unwrap();
-    let metric = compared.profiles[0].metric.as_ref().unwrap();
-    assert_eq!(metric.name, "cost_usd");
-    assert!(metric.value.unwrap() > 0.0);
-    assert!(compare(&reader, &Selection::default(), "unknown").is_err());
+    let pool=f.reads().unwrap();let reader=pool.reader().unwrap();let c=compare(&reader,&Selection::default(),"cost_nusd").unwrap();
+    assert_eq!(c.unknown["cost_nusd"],1);
+    assert!(c.sessions.iter().any(|s|s.values["cost_nusd"]==9_007_199_254_740_993_i64));
+    assert!(c.sessions.iter().any(|s|s.values["cost_nusd"]==0));
 }

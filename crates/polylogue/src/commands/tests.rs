@@ -401,20 +401,14 @@ fn chat_send_reads_attached_files_on_the_command_line() {
 fn measure_options_build_the_same_query_as_the_query_surface() {
     for (name, metric) in [
         ("facets", "deep"),
-        ("pace", "60"),
-        ("outlook", "sample:linear"),
-        ("correlation", "message_count:word_count"),
-        ("distribution", "median_tool_call_ms"),
+        ("outlook", "example:linear"),
+        ("compare", "origin,words"),
     ] {
         let (command, values) = crate::cli::parse(&[
             "polylogue",
             "measure",
             name,
-            if matches!(name, "correlation" | "distribution") {
-                "--metric"
-            } else {
-                "--option"
-            },
+            "--option",
             metric,
             "sessions where origin:codex",
         ])

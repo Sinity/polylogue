@@ -38,6 +38,16 @@ CREATE TABLE session (
   branch            TEXT,
   harness           TEXT,
   harness_version   TEXT,
+  message_count INTEGER,
+  human_prompt_count INTEGER,
+  human_command_count INTEGER,
+  word_count INTEGER,
+  human_word_count INTEGER,
+  model_word_count INTEGER,
+  thinking_count INTEGER,
+  compaction_count INTEGER,
+  tool_call_count INTEGER,
+  error_count INTEGER,
   -- Live facts: updated in the session's write transaction
   -- when a hook line for it is written, so they follow data, not
   -- the clock; the live state itself is computed at read time from these and now.
@@ -450,19 +460,42 @@ CREATE TABLE derive_state (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX derive_state_session ON derive_state(session_pk);
 
--- Per-session facts the survival measures read (derived: session_survival).
--- A session without messages has no row.
-CREATE TABLE session_survival (
-  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
-  first_at          INTEGER,                -- the earliest message time
-  last_at           INTEGER,                -- the latest message time
-  first_failure_at  INTEGER,                -- the session's first failed tool call
-  prompts_to_failure INTEGER NOT NULL,      -- human prose prompts up to first_failure_at, else up to last_at
-  prompted          INTEGER NOT NULL,       -- 1 when a human typed a prose prompt
-  last_prompt_unanswered INTEGER NOT NULL   -- 1 when no model message follows the last prose prompt
+-- Clocks and interval calculations over one session's parsed rows.
+CREATE TABLE session_span (
+  session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+  first_at INTEGER,
+  last_at INTEGER,
+  time_source TEXT NOT NULL,
+  wall_ms INTEGER,
+  clustered_ms INTEGER,
+  tool_sum_ms INTEGER,
+  tool_union_ms INTEGER,
+  tool_overlap_ms INTEGER,
+  tool_untimed INTEGER NOT NULL,
+  tool_no_result INTEGER NOT NULL,
+  tool_same_timestamp INTEGER NOT NULL,
+  tool_reversed INTEGER NOT NULL,
+  timed_messages INTEGER NOT NULL,
+  untimed_messages INTEGER NOT NULL,
+  unordered_gaps INTEGER NOT NULL,
+  first_failure_at INTEGER,
+  prompts_to_failure INTEGER NOT NULL,
+  prompted INTEGER NOT NULL,
+  ends_with TEXT NOT NULL,
+  ends_with_message TEXT,
+  last_stop_reason TEXT
 ) STRICT;
+CREATE INDEX session_span_wall ON session_span(wall_ms);
+CREATE INDEX session_span_clustered ON session_span(clustered_ms);
+CREATE INDEX session_span_ending ON session_span(ends_with);
 
-
+CREATE TABLE session_time (
+  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  lane TEXT NOT NULL CHECK(lane IN ('tool','model','human','unattributed')),
+  key TEXT NOT NULL,
+  ms INTEGER NOT NULL CHECK(ms >= 0),
+  PRIMARY KEY(session_pk,lane,key)
+) STRICT, WITHOUT ROWID;
 
 -- Text that is not a conversation (claude.ai documents, for example), with the
 -- same shown-version rule as messages and interned text.
@@ -556,48 +589,3 @@ CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SE
 CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
 CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
 CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
-
--- Profile rules and clustering threshold live in the facts they produced. Usage
--- and cost are read from their own rows, rather than copied into this product.
-CREATE TABLE session_profile (
-    session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
-    rule_version INTEGER NOT NULL,
-    cluster_gap_ms INTEGER NOT NULL,
-    timestamped_messages INTEGER NOT NULL,
-    message_count INTEGER NOT NULL,
-    word_count INTEGER NOT NULL,
-    substantive_count INTEGER NOT NULL,
-    compaction_count INTEGER NOT NULL,
-    total_duration_ms INTEGER,
-    thinking_count INTEGER NOT NULL,
-    message_clustered_duration_ms INTEGER NOT NULL,
-    tool_active_duration_ms INTEGER NOT NULL,
-    tool_latency_measured_pairs INTEGER NOT NULL,
-    tool_latency_median_ms INTEGER,
-    tool_latency_p90_ms INTEGER,
-    tool_latency_max_ms INTEGER,
-    agent_response_latency_measured_pairs INTEGER NOT NULL,
-    agent_response_latency_median_ms INTEGER,
-    agent_response_latency_p90_ms INTEGER,
-    agent_response_latency_max_ms INTEGER,
-    user_response_latency_measured_pairs INTEGER NOT NULL,
-    user_response_latency_median_ms INTEGER,
-    user_response_latency_p90_ms INTEGER,
-    user_response_latency_max_ms INTEGER,
-    unpaired_tools_past_gap INTEGER NOT NULL,
-    tools TEXT NOT NULL,
-    tool_call_count INTEGER NOT NULL,
-    actions TEXT NOT NULL,
-    workflow_shape TEXT NOT NULL,
-    workflow_features TEXT NOT NULL,
-    final_observed_state TEXT NOT NULL,
-    final_observed_state_method TEXT NOT NULL,
-    final_message TEXT
-) STRICT;
-
-CREATE TABLE session_facet (
-  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  family TEXT NOT NULL,
-  value TEXT NOT NULL,
-  PRIMARY KEY(session_pk,family,value)
-) WITHOUT ROWID, STRICT;

@@ -8,6 +8,7 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "tool_calls",
+    products: &[],
     version: Version::Rules(3),
     after: &[],
     run: |tx, pk, _| run(tx, pk),

@@ -1,356 +1,137 @@
 use super::*;
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use crate::fixture::{Fixture,MessageFacts,SessionFacts};
 use serde_json::json;
-const START: i64 = 1_777_593_600_000; // 2026-05-01 UTC
+const START:i64=1_777_593_600_000;
 
-fn setting(f: &mut Fixture, quota: Option<f64>, unit: Option<&str>, anchor: Option<i8>) {
-    f.setting("cost.plans",&json!({"sample":{"origin":"codex","cycle_anchor_day":anchor,"quota_unit":unit,"quota":quota,"price_usd":20.0,"overage_rate_usd_per_unit":0.1}}).to_string()).unwrap();
+fn plan(name:&str,budget:Option<Budget>)->Plan {Plan{name:name.into(),origin:"codex".into(),cycle_anchor_day:Some(1),price_nusd:Some(31_000_000_000),budget}}
+fn setting_at(f:&mut Fixture,at:i64,plan:&Plan){
+    f.setting("plan.example",&serde_json::to_string(plan).unwrap()).unwrap();
+    let conn=crate::archive::open_write(&f.archive.archive_db(),64).unwrap();
+    conn.execute("UPDATE setting SET set_at=?1 WHERE id=(SELECT id FROM setting WHERE key='plan.example' ORDER BY commit_seq DESC LIMIT 1)",[at]).unwrap();
 }
-fn observed(f: &mut Fixture, s: i64, day: i64, amount: f64) {
-    f.message(
-        s,
-        MessageFacts {
-            id: &format!("m{day}"),
-            role: "assistant",
-            written_by: "model",
-            at: Some(START + day * DAY),
-            cost_nusd: Some((amount * 1e9) as i64),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+fn observed(f:&mut Fixture,s:i64,id:&str,at:Option<i64>,cost:Option<i64>){
+    f.message(s,MessageFacts{id,role:"assistant",written_by:"model",at,cost_nusd:cost,..Default::default()}).unwrap();
+}
+fn projection(values:&[i64],method:&str)->Projection {
+    let mut a=Amounts::default();for (i,n) in values.iter().enumerate(){a.add(i as i64*DAY,Some(*n),1,0).unwrap();}
+    project(&a,0,10*DAY,30*DAY,method).unwrap()
 }
 
 #[test]
 fn projections_preserve_history_zero_elapsed_and_recent_spike() {
-    assert_eq!(project(&[], 0.0, 30.0, "linear").unwrap().projected, 0.0);
-    assert_eq!(project(&[1.0], 0.0, 30.0, "linear").unwrap().projected, 1.0);
-    assert_eq!(
-        project(&[100.0; 10], 10.0, 30.0, "linear")
-            .unwrap()
-            .projected,
-        3000.0
-    );
-    assert_eq!(
-        project(&[100.0; 10], 10.0, 30.0, "trailing-7d-mean")
-            .unwrap()
-            .projected,
-        3000.0
-    );
-    let mut spike = [0.0; 10];
-    spike[9] = 700.0;
-    assert_eq!(
-        project(&spike, 10.0, 30.0, "trailing-7d-mean")
-            .unwrap()
-            .projected,
-        2700.0
-    );
-    assert_eq!(
-        project(&spike, 10.0, 30.0, "linear").unwrap().projected,
-        2100.0
-    );
+    assert_eq!(project(&Amounts::default(),0,0,30*DAY,"linear").unwrap().projected,None);
+    let mut zero=Amounts::default();zero.add(0,Some(0),1,0).unwrap();
+    assert_eq!(project(&zero,0,0,30*DAY,"linear").unwrap().projected,Some(0));
+    assert_eq!(projection(&[100;10],"linear").projected,Some(3000));
+    assert_eq!(projection(&[100;10],"trailing-7d-mean").projected,Some(3000));
+    let mut spike=[0;10];spike[9]=700;
+    assert_eq!(projection(&spike,"trailing-7d-mean").projected,Some(2700));
+    assert_eq!(projection(&spike,"linear").projected,Some(2100));
+    let mut a=Amounts::default();for (i,n) in spike.iter().enumerate(){a.add(i as i64*DAY,Some(*n),1,0).unwrap();}
+    assert_eq!(project_with_tail(&a,0,10*DAY,30*DAY,"trailing-7d-mean",10).unwrap().projected,Some(2100));
+    assert!(validate_method("eom-naive").is_err());
 }
 
 #[test]
-fn monthly_window_uses_utc_and_excludes_cycle_end() {
-    let w = window(START + 10 * DAY, 1).unwrap();
-    assert_eq!(w.start, START);
-    assert_eq!(w.end, START + 31 * DAY);
-    assert_eq!(w.elapsed_days, 10.0);
-    assert_eq!(window(w.end, 1).unwrap().start, w.end);
-    let w = window(START, 31).unwrap();
-    assert!(w.start <= START && w.end > START);
+fn monthly_window_clamps_anchors_and_excludes_cycle_end() {
+    let w=window(START+10*DAY,1).unwrap();assert_eq!((w.start,w.end),(START,START+31*DAY));
+    assert_eq!(window(w.end,1).unwrap().start,w.end);
+    let feb="2026-02-28T12:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+    let w=window(feb,31).unwrap();assert_eq!(jiff::Timestamp::from_millisecond(w.start).unwrap().to_string(),"2026-02-28T00:00:00Z");
+    assert_eq!(jiff::Timestamp::from_millisecond(w.end).unwrap().to_string(),"2026-03-31T00:00:00Z");
 }
 
 #[test]
-fn missing_plan_anchor_quota_and_unobserved_unit_stay_explicit() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    let s = f
-        .session(SessionFacts {
-            id: "codex:cost",
-            ..Default::default()
-        })
-        .unwrap();
-    observed(&mut f, s, 0, 40_000.0);
+fn missing_configuration_anchor_and_unobserved_budget_stay_explicit() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
     {
-        let p = f.reads().unwrap();
-        let r = p.reader().unwrap();
-        assert_eq!(
-            outlook(&r, &Selection::default(), START + DAY, "sample", "x")
-                .unwrap()
-                .reason,
-            Some("plans_not_configured")
-        );
+        let pool=f.reads().unwrap();let r=pool.reader().unwrap();
+        assert_eq!(outlook(&r,&Selection::default(),START+DAY,"","x").unwrap().reason,Some("provider_required"));
+        assert_eq!(outlook(&r,&Selection::default(),START+DAY,"example","x").unwrap().reason,Some("plan_not_configured"));
     }
-    setting(&mut f, None, None, None);
+    let mut p=plan("pro",None);p.cycle_anchor_day=None;setting_at(&mut f,START,&p);
     {
-        let p = f.reads().unwrap();
-        let r = p.reader().unwrap();
-        assert_eq!(
-            outlook(&r, &Selection::default(), START + DAY, "sample", "x")
-                .unwrap()
-                .reason,
-            Some("no_cycle_anchor")
-        );
-        assert!(outlook(&r, &Selection::default(), START + DAY, "unknown", "x").is_err());
+        let pool=f.reads().unwrap();let r=pool.reader().unwrap();assert_eq!(outlook(&r,&Selection::default(),START+DAY,"example","x").unwrap().reason,Some("no_cycle_anchor"));
     }
-    setting(&mut f, None, None, Some(1));
+    p.cycle_anchor_day=Some(1);p.budget=Some(Budget{population:Population::Responses,unit:"input_tokens".into(),amount:10,overage_rate_nusd_per_unit:None});setting_at(&mut f,START,&p);
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+DAY,"example","x").unwrap();
+    let pressure=x.segments[0].budget_pressure.as_ref().unwrap();assert_eq!(pressure.used,None);assert_eq!(pressure.breach_day,None);assert_eq!(pressure.reason,Some("budget_unit_unobserved"));
+}
+
+#[test]
+fn grouped_billing_keeps_nano_usd_unknowns_and_future_rows_apart() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();setting_at(&mut f,START,&plan("pro",None));
+    let s=f.session(SessionFacts{id:"codex:billing",..Default::default()}).unwrap();
+    observed(&mut f,s,"a",Some(START),Some(9_007_199_254_740_993));
+    observed(&mut f,s,"b",Some(START+1),Some(1));observed(&mut f,s,"unknown",Some(START+2),None);
+    observed(&mut f,s,"future",Some(START+2*DAY),Some(99));observed(&mut f,s,"untimed",None,Some(99));
+    let conn=crate::archive::open_write(&f.archive.index_db(),64).unwrap();
+    conn.execute("UPDATE message SET provider_cost_nusd=0 WHERE id='a'",[]).unwrap();
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+DAY,"example","x").unwrap();let seg=&x.segments[0];
+    assert_eq!(seg.responses["api_nusd"].used,Some(9_007_199_254_740_994));assert_eq!(seg.responses["api_nusd"].unknown_items,1);assert!(seg.responses["api_nusd"].lower_bound);
+    assert_eq!(seg.responses["reported_nusd"].used,Some(0));assert_eq!(seg.responses["reported_nusd"].unknown_items,2);
+    assert_eq!(x.untimed_responses,1);assert!(seg.recorded_reports.is_empty());
+}
+
+#[test]
+fn missing_days_lower_coverage_and_zero_budget_never_divides() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();
+    let budget=Budget{population:Population::Responses,unit:"api_nusd".into(),amount:30,overage_rate_nusd_per_unit:Some(2)};
+    setting_at(&mut f,START,&plan("pro",Some(budget)));
+    let s=f.session(SessionFacts{id:"codex:days",..Default::default()}).unwrap();
+    for day in 0..10 {if day!=5{observed(&mut f,s,&format!("m{day}"),Some(START+day*DAY),Some(4));}}
     {
-        let p = f.reads().unwrap();
-        let r = p.reader().unwrap();
-        let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
-        assert_eq!(x.quota_reason, Some("no_quota_configured"));
-        assert_eq!(x.units["api_usd"].used, 40_000.0);
+        let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+10*DAY,"example:trailing-7d-mean","x").unwrap();let seg=&x.segments[0];
+        assert_eq!(seg.responses["api_nusd"].used,Some(36));assert_eq!(seg.responses["api_nusd"].missing_days,vec![START+5*DAY]);assert_eq!(seg.responses["api_nusd"].coverage_ratio,Some(0.9));
+        let p=seg.budget_pressure.as_ref().unwrap();assert_eq!(p.label,"your budget");assert_eq!(p.breach_day,Some(START+8*DAY));assert_eq!(p.actual_overage,Some(6));assert!(p.projected_overage_cost_nusd.unwrap()>0);
     }
-    setting(&mut f, Some(30_000.0), Some("credits"), Some(1));
-    let p = f.reads().unwrap();
-    let r = p.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
-    let q = x.quota_pressure.unwrap();
-    assert_eq!(q.reason, Some("quota_unit_unobserved"));
-    assert_eq!(q.used, None);
-    assert_eq!(q.breach_day, None);
-    assert_eq!(q.projected_overage_cost_usd, None);
+    let mut p=plan("pro",None);p.budget=Some(Budget{population:Population::Responses,unit:"api_nusd".into(),amount:0,overage_rate_nusd_per_unit:None});setting_at(&mut f,START,&p);
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+10*DAY,"example","x").unwrap();let p=x.segments[0].budget_pressure.as_ref().unwrap();assert_eq!(p.breach_day,None);assert_eq!(p.used_ratio,None);
 }
 
 #[test]
-fn missing_day_lowers_coverage_and_breach_uses_own_unit() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    setting(&mut f, Some(30.0), Some("api_usd"), Some(1));
-    let s = f
-        .session(SessionFacts {
-            id: "codex:cost",
-            ..Default::default()
-        })
-        .unwrap();
-    for day in 0..10 {
-        if day != 5 {
-            observed(&mut f, s, day, 4.0);
-        }
-    }
-    observed(&mut f, s, 31, 100_000.0);
-    let p = f.reads().unwrap();
-    let r = p.reader().unwrap();
-    let x = outlook(
-        &r,
-        &Selection::default(),
-        START + 10 * DAY,
-        "sample:trailing-7d-mean",
-        "x",
-    )
-    .unwrap();
-    assert_eq!(x.incomplete_days, vec![START + 5 * DAY]);
-    assert_eq!(x.coverage_ratio, Some(0.9));
-    assert_eq!(x.units["api_usd"].used, 36.0);
-    let q = x.quota_pressure.unwrap();
-    assert_eq!(q.breach_day, Some(START + 8 * DAY));
-    assert_eq!(q.actual_overage, Some(6.0));
-    assert!(q.projected_overage_cost_usd.unwrap() > 0.0);
-    assert!(x.incomplete_usage); // Tool-reported money was not reported.
+fn a_plan_change_splits_the_cycle_and_prices_only_its_own_span() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();setting_at(&mut f,START,&plan("first",None));setting_at(&mut f,START+10*DAY,&plan("second",None));
+    let s=f.session(SessionFacts{id:"codex:plans",..Default::default()}).unwrap();
+    for (id,day) in [("early",2),("boundary",10),("late",12),("after-now",16)]{observed(&mut f,s,id,Some(START+day*DAY),Some(1));}
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+15*DAY,"example","x").unwrap();
+    assert_eq!(x.segments.len(),2);assert_eq!(x.segments[0].responses["api_nusd"].used,Some(1));assert_eq!(x.segments[1].responses["api_nusd"].used,Some(2));
+    assert_eq!(x.segments[0].responses["api_nusd"].projected,Some(1));
+    assert_eq!(x.segments.iter().map(|s|s.subscription_price_share_nusd.unwrap()).sum::<i64>(),31_000_000_000);
+    let earlier=outlook(&r,&Selection::default(),START+5*DAY,"example","x").unwrap();assert_eq!(earlier.segments.len(),1);assert_eq!(earlier.segments[0].plan.name,"first");
 }
 
 #[test]
-fn zero_usage_is_unknown_until_observed_zero_and_projection_can_breach() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    setting(&mut f, Some(20.0), Some("api_usd"), Some(1));
-    let s = f
-        .session(SessionFacts {
-            id: "codex:cost",
-            ..Default::default()
-        })
-        .unwrap();
-    {
-        let p = f.reads().unwrap();
-        let r = p.reader().unwrap();
-        let x = outlook(&r, &Selection::default(), START + 10 * DAY, "sample", "x").unwrap();
-        assert!(x.units.is_empty());
-        assert_eq!(x.quota_pressure.unwrap().used, None);
-        assert_eq!(x.coverage_ratio, Some(0.0));
-    }
-    observed(&mut f, s, 0, 0.0);
-    {
-        let p = f.reads().unwrap();
-        let r = p.reader().unwrap();
-        let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
-        assert_eq!(x.units["api_usd"].used, 0.0);
-    }
-    for day in 1..10 {
-        observed(&mut f, s, day, 1.0);
-    }
-    let p = f.reads().unwrap();
-    let r = p.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + 10 * DAY, "sample", "x").unwrap();
-    let q = x.quota_pressure.unwrap();
-    assert!(q.projected.unwrap() > 20.0);
-    assert!(q.breach_day.is_some());
-    assert_eq!(q.actual_overage, Some(0.0));
+fn usage_before_a_plan_and_other_origins_never_enter_its_projection() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();setting_at(&mut f,START+DAY,&plan("pro",None));
+    let s=f.session(SessionFacts{id:"codex:selection",..Default::default()}).unwrap();
+    let other=f.session(SessionFacts{id:"claude-code:other",..Default::default()}).unwrap();
+    observed(&mut f,s,"before",Some(START),Some(100));observed(&mut f,s,"own",Some(START+DAY),Some(1));observed(&mut f,other,"other",Some(START+DAY),Some(100));
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();
+    let x=outlook(&r,&Selection::default(),START+2*DAY,"example","x").unwrap();assert_eq!(x.segments[0].responses["api_nusd"].used,Some(1));assert_eq!(x.billing_before_setting,"unknown");
+    let x=outlook(&r,&Selection{origins:Some(vec!["claude-code".into()]),..Default::default()},START+2*DAY,"example","x").unwrap();assert!(x.segments[0].responses.is_empty());
 }
 
 #[test]
-fn units_remain_separate_and_user_only_days_do_not_prove_usage_coverage() {
-    let mut fixture = crate::fixture::writer::WriterArchive::new();
-    let mut message = crate::fixture::writer::message(
-        "a",
-        "units",
-        polylogue_model::Role::Assistant,
-        START,
-        vec![polylogue_model::Block::Text {
-            text: "Reply".into(),
-        }],
-    );
-    message.model = Some("gpt-6.1-sol".into());
-    message.usage = polylogue_model::Usage {
-        input: Some(100),
-        output: Some(20),
-        cached_input: Some(0),
-        cache_write: Some(0),
-        reasoning: Some(0),
-        ..Default::default()
-    };
-    message.reported_cost_usd = Some(serde_json::Number::from(7));
-    fixture.write(
-        "units",
-        vec![
-            message,
-            crate::fixture::writer::message(
-                "u",
-                "units",
-                polylogue_model::Role::User,
-                START + DAY,
-                vec![polylogue_model::Block::Text {
-                    text: "Prompt only".into(),
-                }],
-            ),
-        ],
-    );
-    fixture.writer.derive().unwrap();
-    let pool = crate::ReadPool::open(&fixture.archive).unwrap();
-    let r = pool.reader().unwrap();
-    let report = super::super::usage(&r, &Selection::default()).unwrap();
-    let mut units = std::collections::BTreeMap::new();
-    units.insert("reported_usd", report.reported_cost.known_usd.unwrap());
-    units.insert("api_usd", report.api_cost.known_usd.unwrap());
-    units.insert("input_tokens", report.tokens.input.tokens as f64);
-    units.insert("output_tokens", report.tokens.output.tokens as f64);
-    assert_eq!(units["reported_usd"], 7.0);
-    assert_eq!(units["input_tokens"], 100.0);
-    assert_eq!(units["output_tokens"], 20.0);
-    assert!(units["api_usd"] > 0.0 && units["api_usd"] < 7.0);
-    drop(r);
-    drop(pool);
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    setting(&mut f, None, None, Some(1));
-    let s = f
-        .session(SessionFacts {
-            id: "codex:user",
-            ..Default::default()
-        })
-        .unwrap();
-    f.message(
-        s,
-        MessageFacts {
-            id: "u",
-            role: "user",
-            written_by: "human",
-            at: Some(START),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let pool = f.reads().unwrap();
-    let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + DAY, "sample", "x").unwrap();
-    assert_eq!(x.coverage_ratio, Some(0.0));
-}
-
-#[test]
-fn zero_quota_has_no_breach_and_removed_method_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    setting(&mut f, Some(0.0), Some("api_usd"), Some(1));
-    let pk = f
-        .session(SessionFacts {
-            id: "codex:zero",
-            ..Default::default()
-        })
-        .unwrap();
-    observed(&mut f, pk, 0, 1.0);
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let x = outlook(&reader, &Selection::default(), START + DAY, "sample", "x").unwrap();
-    assert_eq!(x.quota_pressure.unwrap().breach_day, None);
-    assert!(project(&[1.0], 1.0, 31.0, "eom-naive").is_err());
-}
-
-#[test]
-fn grouped_units_preserve_zero_and_untimed_count_uses_response_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    setting(&mut f, None, None, Some(1));
-    let pk = f
-        .session(SessionFacts {
-            id: "codex:grouped",
-            ..Default::default()
-        })
-        .unwrap();
-    let timed = f
-        .message(
-            pk,
-            MessageFacts {
-                id: "timed",
-                role: "assistant",
-                written_by: "model",
-                at: Some(START),
-                cost_nusd: Some(7_000_000_000),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    f.usage(
-        timed,
-        &polylogue_model::Usage {
-            input: Some(100),
-            cached_input: Some(0),
-            cache_write: Some(0),
-            output: Some(20),
-            reasoning: Some(0),
-            ..Default::default()
-        },
-        None,
-    )
-    .unwrap();
-    for (id, author) in [
-        ("unknown-boundaries", "model"),
-        ("untimed-response", "model"),
-        ("harness", "harness"),
-    ] {
-        f.message(
-            pk,
-            MessageFacts {
-                id,
-                role: "assistant",
-                written_by: author,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+fn recorded_reports_remain_a_separate_population_with_confirmation_counts() {
+    let dir=tempfile::tempdir().unwrap();let mut f=Fixture::new(dir.path()).unwrap();setting_at(&mut f,START,&plan("pro",None));
+    let s=f.session(SessionFacts{id:"codex:reports",..Default::default()}).unwrap();
+    observed(&mut f,s,"response",Some(START),Some(1));
+    for (i,confirmed,at) in [(0,true,Some(START)),(1,false,Some(START)),(2,true,None),(3,true,Some(START+2*DAY))] {
+        f.event(s,"usage_report",at).unwrap();
+        let conn=crate::archive::open_write(&f.archive.index_db(),64).unwrap();
+        let value=json!({"report_id":format!("r{i}"),"usage":{"input":100,"cached_input":0,"cache_write":0,"output":1,"reasoning":0},"model":"gpt-6.1-sol","response":null,"measured_completion":confirmed,"measured_at":at.and_then(polylogue_model::Timestamp::from_unix_ms),"input_including_cache":null,"output_including_reasoning":null});
+        let packed=crate::encoding::pack_json(&value).unwrap();
+        conn.execute("UPDATE event SET data=?1 WHERE pk=(SELECT max(pk) FROM event)",[packed]).unwrap();
     }
-    let conn = crate::archive::open_write(&f.archive.index_db(), 64).unwrap();
-    conn.execute(
-        "UPDATE message SET attrs_json=?1 WHERE id='unknown-boundaries'",
-        [r#"{"production":{"response_boundary_unknown":true}}"#],
-    )
-    .unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let result = outlook(&reader, &Selection::default(), START + DAY, "sample", "x").unwrap();
-    assert_eq!(result.untimed_responses, 1);
-    assert_eq!(result.units["api_usd"].used, 7.0);
-    assert_eq!(result.units["input_tokens"].used, 100.0);
-    assert_eq!(result.units["cached_input_tokens"].used, 0.0);
-    assert_eq!(result.units["output_tokens"].used, 20.0);
+    let pool=f.reads().unwrap();let r=pool.reader().unwrap();let x=outlook(&r,&Selection::default(),START+DAY,"example","x").unwrap();
+    assert_eq!(x.untimed_reports,1);assert_eq!(x.segments[0].unconfirmed_reports,1);assert_eq!(x.segments[0].responses["api_nusd"].used,Some(1));
+    assert_eq!(x.segments[0].recorded_reports["input_tokens"].used,Some(100));assert_eq!(x.segments[0].recorded_reports["input_tokens"].known_items,1);
+}
+
+#[test]
+fn plan_validation_refuses_ambiguous_and_mismatched_units() {
+    let mut p=plan("max",None);assert!(validate_plan(&p).is_err());p.name="max-20x".into();p.price_nusd=Some(-1);assert!(validate_plan(&p).is_err());
+    p.price_nusd=None;p.budget=Some(Budget{population:Population::Responses,unit:"invented credits".into(),amount:10,overage_rate_nusd_per_unit:None});assert!(validate_plan(&p).is_err());
+    assert!(serde_json::from_value::<Plan>(json!({"name":"pro","origin":"codex","price_usd":20})).is_err());
 }

@@ -1,155 +1,89 @@
-//! Session frequencies in a selection and in the same reader's whole archive.
+//! Read-time grouped session counts. No separate facet rows are stored.
 use super::Selection;
-use crate::{Reader, Result, StoreError};
+use crate::{Reader,Result,StoreError};
+use polylogue_model::session_sql;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use serde_json::Value;
 
-type Counts = BTreeMap<String, u64>;
+pub const BASIC:&[&str]=&["origins","models","repositories","tags","months","ends_with"];
+pub const DEEP:&[&str]=&["roles","written_by","block_kinds","actions","flags"];
 
-#[derive(Debug, Default, Serialize)]
-pub struct Buckets {
-    pub total_sessions: u64,
-    pub total_messages: u64,
-    pub underived_sessions: u64,
-    pub families: BTreeMap<String, Counts>,
-    pub omitted: Vec<&'static str>,
+pub(super) fn tags_sql()->String {
+    format!("SELECT DISTINCT s.pk,lower(CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key||':'||n.value END) AS value
+        FROM session s JOIN a.note_target nt ON nt.ref='session:'||s.id JOIN a.note n ON n.id=nt.note_id
+        WHERE n.kind='tag' AND {}",polylogue_model::note_sql::live_note("n"))
 }
 
-#[derive(Debug, Serialize)]
-pub struct Facets {
-    pub selected: Buckets,
-    pub global: Buckets,
-    pub scoped_to_query: bool,
-    pub idf: BTreeMap<String, BTreeMap<String, f64>>,
+pub fn families(options:&str)->Result<Vec<&'static str>> {
+    match options {
+        ""|"basic"=>Ok(BASIC.to_vec()),
+        "deep"=>Ok(BASIC.iter().chain(DEEP).copied().collect()),
+        name if BASIC.contains(&name)||DEEP.contains(&name)=>Ok(BASIC.iter().chain(DEEP).copied().filter(|f|*f==name).collect()),
+        _=>Err(StoreError::Invalid(format!("facets takes basic, deep or a family: {}",BASIC.iter().chain(DEEP).copied().collect::<Vec<_>>().join(",")))),
+    }
 }
 
-pub fn facets(reader: &Reader<'_>, selection: &Selection, options: &str) -> Result<Facets> {
-    let (deep, weights) = match options {
-        "" | "basic" => (false, true),
-        "deep" => (true, true),
-        "no-idf" => (false, false),
-        "deep-no-idf" => (true, false),
-        _ => {
-            return Err(StoreError::Invalid(
-                "facets takes basic, deep, no-idf or deep-no-idf".into(),
-            ));
-        }
-    };
-    let selected = buckets(reader, selection, deep)?;
-    let global = buckets(
-        reader,
-        &Selection {
-            sessions: selection.population.clone(),
-            ..Selection::default()
-        },
-        deep,
-    )?;
-    let idf = if weights && global.total_sessions > 0 {
-        global
-            .families
-            .iter()
-            .map(|(family, counts)| {
-                (
-                    family.clone(),
-                    counts
-                        .iter()
-                        .filter(|(_, n)| **n > 0)
-                        .map(|(value, n)| {
-                            (
-                                value.clone(),
-                                (global.total_sessions as f64 / *n as f64).ln(),
-                            )
-                        })
-                        .collect(),
-                )
-            })
-            .collect()
-    } else {
-        BTreeMap::new()
-    };
-    Ok(Facets {
-        selected,
-        global,
-        scoped_to_query: selection.sessions.is_some() || selection.origins.is_some(),
-        idf,
-    })
+/// Group the selection and the unit's defaults in one read transaction.
+pub fn query(selection_sql:&str,population_sql:&str,options:&str,zone:&str,day_start:u16)->Result<String> {
+    let own=session_sql::own_messages("m",None);
+    let mut parts=vec![];
+    for family in families(options)? {
+        let sql=match family {
+            "origins"=>"SELECT pk,origin AS value FROM session".into(),
+            "models"=>format!("SELECT DISTINCT m.session_pk AS pk,m.model AS value FROM message m WHERE {own} AND m.written_by='model'"),
+            "repositories"=>"SELECT pk,coalesce(repo_root,repo) AS value FROM session
+                UNION SELECT s.pk,coalesce(rl.root_commit,rl.remote) FROM session s JOIN json_each(s.cwd_json) cwd
+                JOIN repo_lookup rl ON rl.path=(SELECT r.path FROM repo_lookup r WHERE r.path=cwd.value OR substr(cwd.value,1,length(r.path)+1)=r.path||'/' ORDER BY length(r.path) DESC LIMIT 1)".into(),
+            "tags"=>tags_sql(),
+            "months"=>format!("SELECT pk,pl_month(started_at,'{}',{day_start}) AS value FROM session",zone.replace('\'',"''")),
+            "ends_with"=>format!("SELECT s.pk,{} AS value FROM session s",session_sql::span("s","ends_with")),
+            "roles"=>format!("SELECT DISTINCT m.session_pk AS pk,m.role AS value FROM message m WHERE {own}"),
+            "written_by"=>format!("SELECT DISTINCT m.session_pk AS pk,m.written_by AS value FROM message m WHERE {own}"),
+            "block_kinds"=>format!("SELECT DISTINCT m.session_pk AS pk,b.kind AS value FROM message m JOIN block b ON b.message_pk=m.pk WHERE {own}"),
+            "actions"=>format!("SELECT DISTINCT m.session_pk AS pk,t.action AS value FROM message m JOIN block b ON b.message_pk=m.pk JOIN tool_call t ON t.call_block_pk=b.pk WHERE {own} AND {}",session_sql::counts_as_action("t")),
+            "flags"=>format!("SELECT DISTINCT m.session_pk AS pk,CASE WHEN b.kind='thinking' THEN 'thinking' WHEN b.kind='tool_call' THEN 'tool_call' ELSE 'attachment' END AS value FROM message m JOIN block b ON b.message_pk=m.pk WHERE {own} AND b.kind IN ('thinking','tool_call','image','file')"),
+            _=>unreachable!("checked family"),
+        };
+        parts.push(format!("SELECT '{family}' AS family,f.pk,CAST(f.value AS TEXT) AS value FROM ({sql}) f"));
+    }
+    Ok(format!("WITH selected AS MATERIALIZED (SELECT _pk FROM ({selection_sql})),
+        population AS MATERIALIZED ({population_sql}),
+        members AS MATERIALIZED ({}),
+        eligible AS (SELECT _pk FROM selected UNION SELECT _pk FROM population)
+        SELECT f.family,f.value,
+          count(DISTINCT CASE WHEN f.pk IN (SELECT _pk FROM selected) THEN f.pk END) AS selected_count,
+          count(DISTINCT CASE WHEN f.pk IN (SELECT _pk FROM population) THEN f.pk END) AS global_count
+        FROM members f JOIN eligible e ON e._pk=f.pk
+        GROUP BY f.family,f.value",parts.join(" UNION ALL ")))
 }
 
-pub(super) fn tags_sql() -> String {
-    format!("SELECT DISTINCT s.pk, lower(CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key || ':' || n.value END) AS value
-    FROM session s JOIN a.note_target nt ON nt.ref='session:' || s.id JOIN a.note n ON n.id=nt.note_id
-    WHERE n.kind='tag' AND {}",polylogue_model::note_sql::live_note("n"))
+#[derive(Debug,Serialize)]
+pub struct Summary {
+    pub outcome:&'static str,
+    pub selected_sessions:u64,
+    pub global_sessions:u64,
+    pub pending:u64,
 }
 
-fn buckets(reader: &Reader<'_>, selection: &Selection, deep: bool) -> Result<Buckets> {
-    let (mut condition, params) = selection.session_condition("s.pk")?;
-    if selection.sessions.is_none() {
-        condition.push_str(&format!(" AND s.kind='main' AND s.stub=0 AND NOT EXISTS(SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id=hn.id WHERE ht.ref='session:'||s.id AND hn.kind='hidden' AND {}) AND NOT EXISTS(SELECT 1 FROM a.excision ex WHERE ex.target='session:'||s.id)",polylogue_model::note_sql::live_note("hn")));
+pub fn summary(reader:&Reader<'_>,selection:&Selection)->Result<Summary> {
+    let (condition,params)=selection.session_condition("s.pk")?;
+    let conn=reader.conn()?;
+    let (selected_sessions,pending)=conn.query_row(&format!("SELECT count(*),coalesce(sum(NOT ({})),0) FROM session s WHERE {condition}",session_sql::current("s","session_span")),rusqlite::params_from_iter(params.iter()),|r|Ok((r.get(0)?,r.get(1)?)))?;
+    let population=Selection{sessions:selection.population.clone(),..Default::default()};
+    let (condition,params)=population.session_condition("s.pk")?;
+    let global_sessions=conn.query_row(&format!("SELECT count(*) FROM session s WHERE {condition}"),rusqlite::params_from_iter(params.iter()),|r|r.get(0))?;
+    Ok(Summary{outcome:if selected_sessions==0{"empty"}else{"ok"},selected_sessions,global_sessions,pending})
+}
+
+/// Convert grouped counts into weights after paging; every value uses full counts.
+pub fn weights(rows:&mut [Value],summary:&Summary) {
+    for row in rows {
+        let selected=row["selected_count"].as_u64().unwrap_or(0);
+        let global=row["global_count"].as_u64().unwrap_or(0);
+        row["idf"]=if global>0 && summary.global_sessions>0 {Value::from((summary.global_sessions as f64/global as f64).ln())}else{Value::Null};
+        row["lift"]=if global>0 && summary.global_sessions>0 && summary.selected_sessions>0 {Value::from((selected as f64/summary.selected_sessions as f64)/(global as f64/summary.global_sessions as f64))}else{Value::Null};
+        row.as_object_mut().unwrap().retain(|k,_|!k.starts_with('_'));
     }
-    let conn = reader.conn()?;
-    let (total_sessions, total_messages, underived_sessions) = conn.query_row(&format!(
-        "SELECT count(*), coalesce(sum(coalesce(p.message_count,(SELECT count(*) FROM message m WHERE m.session_pk=s.pk AND m.duplicate_of IS NULL))),0),coalesce(sum(p.session_pk IS NULL),0) FROM session s LEFT JOIN session_profile p ON p.session_pk=s.pk WHERE {condition}"),
-        rusqlite::params_from_iter(params.iter()), |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get::<_,i64>(2)? as u64)))?;
-    let mut result = Buckets {
-        total_sessions,
-        total_messages,
-        underived_sessions,
-        ..Buckets::default()
-    };
-    let mut families = vec![
-        (
-            "origins",
-            "SELECT pk, origin AS value FROM session".to_owned(),
-        ),
-        ("tags", tags_sql()),
-    ];
-    let deeper = [
-        "repositories",
-        "roles",
-        "written_by",
-        "block_kinds",
-        "actions",
-        "flags",
-    ];
-    if deep {
-        for family in ["roles", "written_by", "block_kinds", "actions", "flags"] {
-            families.push((
-                family,
-                format!("SELECT session_pk AS pk,value FROM session_facet WHERE family='{family}'"),
-            ));
-        }
-    } else {
-        result.omitted = deeper.to_vec();
-    }
-    if deep {
-        let keys: Vec<i64> = conn
-            .prepare(&format!("SELECT s.pk FROM session s WHERE {condition}"))?
-            .query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut counts = Counts::new();
-        for pk in keys {
-            let values: std::collections::BTreeSet<_> = super::profiles::repositories(conn, pk)?
-                .0
-                .into_iter()
-                .filter_map(|r| r.identity.or(r.label))
-                .collect();
-            for value in values {
-                *counts.entry(value).or_default() += 1;
-            }
-        }
-        result.families.insert("repositories".into(), counts);
-    }
-    for (name, sql) in families {
-        let mut statement = conn.prepare(&format!(
-            "SELECT f.value,count(DISTINCT s.pk) FROM session s JOIN ({sql}) f ON f.pk=s.pk WHERE {condition} AND f.value IS NOT NULL GROUP BY f.value ORDER BY f.value"))?;
-        let counts = statement
-            .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-                Ok((r.get(0)?, r.get::<_, i64>(1)? as u64))
-            })?
-            .collect::<rusqlite::Result<Counts>>()?;
-        result.families.insert(name.into(), counts);
-    }
-    Ok(result)
 }
 
 #[cfg(test)]

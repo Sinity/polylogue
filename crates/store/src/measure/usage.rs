@@ -247,8 +247,28 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
         let Ok(sid) = polylogue_model::SessionId::parse(&id) else {
             continue;
         };
-        let own = own_session(reader, pk)?;
-        let with_parents = with_parents(reader, &sid, &own)?;
+        let mut own = totals(reader, &format!("m.session_pk = {pk}"))?;
+        let own_scope = Selection {
+            sessions: Some(vec![pk]),
+            ..Selection::default()
+        };
+        let observations = recorded(reader, &own_scope)?;
+        if observations.observations > 0 || unknown_scope(reader, &own_scope)? {
+            own.messages = None;
+            mark_unknown(&mut own.tokens, &mut own.api_cost, true);
+        }
+        own.recorded_usage = Some(observations);
+        let keys = reader.message_keys_with_parents(&sid)?;
+        let list = keys
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut with_parents = totals(reader, &format!("m.pk IN ({list})"))?;
+        if own.messages.is_none() {
+            with_parents.messages = None;
+            mark_unknown(&mut with_parents.tokens, &mut with_parents.api_cost, true);
+        }
         out.push(SessionUsage {
             session: id,
             own,
@@ -256,45 +276,6 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
         });
     }
     Ok(out)
-}
-
-/// Own usage does not depend on whether a session's parents are available.
-pub(super) fn own_session(reader: &Reader<'_>, pk: i64) -> Result<Totals> {
-    let mut own = totals(reader, &format!("m.session_pk = {pk}"))?;
-    let own_scope = Selection {
-        sessions: Some(vec![pk]),
-        ..Selection::default()
-    };
-    let observations = recorded(reader, &own_scope)?;
-    if observations.observations > 0 || unknown_scope(reader, &own_scope)? {
-        own.messages = None;
-        mark_unknown(&mut own.tokens, &mut own.api_cost, true);
-    }
-    own.recorded_usage = Some(observations);
-    Ok(own)
-}
-
-pub(super) fn with_parents(
-    reader: &Reader<'_>,
-    sid: &polylogue_model::SessionId,
-    own: &Totals,
-) -> Result<Totals> {
-    let keys = reader.message_keys_with_parents(sid)?;
-    with_keys(reader, &keys, own)
-}
-
-pub(super) fn with_keys(reader: &Reader<'_>, keys: &[i64], own: &Totals) -> Result<Totals> {
-    let list = keys
-        .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut total = totals(reader, &format!("m.pk IN ({list})"))?;
-    if own.messages.is_none() {
-        total.messages = None;
-        mark_unknown(&mut total.tokens, &mut total.api_cost, true);
-    }
-    Ok(total)
 }
 
 /// TokensByKind and cost over the model messages a condition on `m` selects. The

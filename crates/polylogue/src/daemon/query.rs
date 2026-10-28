@@ -267,7 +267,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     )?;
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
-    let reference = prepare_measure(&mut program, ask.page_size)?;
+    prepare_measure(&mut program, ask.page_size)?;
     let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
@@ -283,20 +283,6 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     };
     let day = opts.clock.day.clone();
     let answer = || {
-        if let Some(sql) = reference {
-            let count = reader.query(
-                &format!("SELECT count(*) FROM ({sql})"),
-                &values(&program.params),
-            )?;
-            if count[0]["count(*)"] != 1 {
-                return Err(Failure {
-                    kind: "bad_request".into(),
-                    message: "similar needs one reference session; select it with a sessions query"
-                        .into(),
-                    detail: None,
-                });
-            }
-        }
         answer(reader, &program, &day, after, seed, question, ask.why)
     };
     match similarity {
@@ -333,44 +319,18 @@ fn answer(
                 ..Default::default()
             };
             let data = match paging {
-                super::measure::Paging::Similar => {
-                    let mut matches = rows;
-                    for row in &mut matches {
-                        let reasons = row["reasons"].as_str().unwrap_or("[]");
-                        row["reasons"] = serde_json::from_str(reasons).map_err(|e| Failure {
-                            kind: "store".into(),
-                            message: format!("similarity reasons: {e}"),
-                            detail: None,
-                        })?;
-                        row.as_object_mut().unwrap().retain(|k, _| {
-                            matches!(k.as_str(), "session" | "reference" | "score" | "reasons")
-                        });
-                    }
-                    json!({"matches":matches,"underived_sessions":reader.underived_profiles(&Default::default())?})
-                }
-                super::measure::Paging::Pace => {
-                    let selected =
-                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
-                    let keys = selected.iter().filter_map(|r| r["_pk"].as_i64()).collect();
-                    let mut data =
-                        super::measure::run(reader, &m.what, Some(keys), program.now, day, None)?;
-                    let mut gaps = rows;
-                    for gap in &mut gaps {
-                        gap.as_object_mut().unwrap().retain(|k, _| {
-                            matches!(
-                                k.as_str(),
-                                "session"
-                                    | "from_position"
-                                    | "to_position"
-                                    | "from_message"
-                                    | "to_message"
-                                    | "milliseconds"
-                                    | "kind"
-                            )
-                        });
-                    }
-                    data["gaps"] = json!(gaps);
-                    data
+                super::measure::Paging::Facets => {
+                    let selected = reader.query(&format!("SELECT _pk FROM ({})",m.selection_sql),&params)?;
+                    let population = reader.query(&m.population_sql,&params)?;
+                    let scope = polylogue_store::measure::Selection {
+                        sessions:Some(selected.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
+                        population:Some(population.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
+                        ..Default::default()
+                    };
+                    let summary=polylogue_store::measure::facets::summary(reader,&scope)?;
+                    let mut facets=rows;
+                    polylogue_store::measure::facets::weights(&mut facets,&summary);
+                    json!({"summary":summary,"values":facets})
                 }
                 super::measure::Paging::Sessions => {
                     let mut data = super::measure::run(
@@ -384,7 +344,7 @@ fn answer(
                     let sessions = if data.is_array() {
                         data.as_array_mut()
                     } else {
-                        data["profiles"].as_array_mut()
+                        data["sessions"].as_array_mut()
                     };
                     if let Some(sessions) = sessions {
                         sessions.sort_by_key(|p| {
@@ -393,11 +353,21 @@ fn answer(
                                 .copied()
                         });
                     }
-                    if definition.name == "profiles" {
-                        let underived = data.as_array().map_or(0, |rows| {
-                            rows.iter().filter(|p| p["facts"].is_null()).count()
-                        });
-                        data = json!({"profiles":data,"underived_sessions":underived});
+                    if definition.name == "time" {
+                        data=json!({"sessions":data});
+                    }
+                    let selected=reader.query(&format!("SELECT _pk FROM ({})",m.selection_sql),&params)?;
+                    let all=polylogue_store::measure::Selection {
+                        sessions:Some(selected.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
+                        ..Default::default()
+                    };
+                    data["pending"]=json!(polylogue_store::measure::time::pending(reader,&all)?);
+                    if definition.name == "compare" {
+                        let (_,options)=super::measure::find_checked(&m.what)?;
+                        let (varies,unknown,pending)=polylogue_store::measure::comparison::summary(reader,&all,options)?;
+                        data["varies"]=json!(varies);
+                        data["unknown"]=json!(unknown);
+                        data["pending"]=json!(pending);
                     }
                     data
                 }
@@ -406,9 +376,7 @@ fn answer(
                 json!({"outcome":"measure","measure":m.what,"data":data,"count":count,"next":next,"read_at":read_at}),
             );
         }
-        let sessions = if m.everything
-            && !matches!(definition.name, "facets" | "correlation" | "distribution")
-        {
+        let sessions = if m.everything {
             None
         } else {
             let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
@@ -486,54 +454,25 @@ fn answer(
     Ok(out)
 }
 
-fn prepare_measure(
-    program: &mut Program,
-    page_size: Option<u64>,
-) -> Result<Option<String>, Failure> {
-    let Some(m) = &program.measure else {
-        return Ok(None);
-    };
-    let (definition, _) = super::measure::find_checked(&m.what)?;
-    let mut reference = None;
-    if matches!(definition.paging, Some(super::measure::Paging::Sessions)) {
-        program.sql = polylogue_store::measure::profiles::page_query(&program.sql);
+fn prepare_measure(program:&mut Program,page_size:Option<u64>)->Result<(),Failure> {
+    let Some(m)=program.measure.clone() else {return Ok(());};
+    let (definition,options)=super::measure::find_checked(&m.what)?;
+    match definition.paging {
+        Some(super::measure::Paging::Sessions)=>{
+            program.sql=polylogue_store::measure::comparison::page_query(&program.sql);
+        },
+        Some(super::measure::Paging::Facets)=>{
+            program.counts_near=false;
+            program.page_size=page_size.unwrap_or(100);
+            program.sql=polylogue_store::measure::facets::query(&m.selection_sql,&m.population_sql,options,&program.zone,program.day_start_minutes)?;
+            program.order=vec![
+                polylogue_query::OrderKey{column:"family".into(),descending:false},
+                polylogue_query::OrderKey{column:"value".into(),descending:false},
+            ];
+        },
+        None=>{},
     }
-    if matches!(definition.paging, Some(super::measure::Paging::Pace)) {
-        program.counts_near = false;
-        program.page_size = page_size.unwrap_or(100);
-        let (_, options) = super::measure::find_checked(&m.what)?;
-        program.sql = polylogue_store::measure::pace::gap_query(&program.sql, options)?;
-        program.order = [
-            ("milliseconds", true),
-            ("session", false),
-            ("_from_input", false),
-            ("_from_seq", false),
-            ("_from_record", false),
-            ("from_message", false),
-        ]
-        .into_iter()
-        .map(|(column, descending)| polylogue_query::OrderKey {
-            column: column.into(),
-            descending,
-        })
-        .collect();
-    }
-    if matches!(definition.paging, Some(super::measure::Paging::Similar)) {
-        program.counts_near = false;
-        reference = Some(program.sql.clone());
-        program.sql = polylogue_store::measure::comparison::similarity_query(&program.sql);
-        program.order = vec![
-            polylogue_query::OrderKey {
-                column: "score".into(),
-                descending: true,
-            },
-            polylogue_query::OrderKey {
-                column: "session".into(),
-                descending: false,
-            },
-        ];
-    }
-    Ok(reference)
+    Ok(())
 }
 
 /// Row selection for ordinary queries and paged measures uses the same SQL and cursor.

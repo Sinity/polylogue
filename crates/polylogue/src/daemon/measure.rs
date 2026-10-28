@@ -16,8 +16,7 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub enum Paging {
     Sessions,
-    Similar,
-    Pace,
+    Facets,
 }
 
 pub struct Measure {
@@ -46,26 +45,26 @@ pub struct Run<'a> {
 }
 
 fn json<T: Serialize>(r: polylogue_store::Result<T>) -> polylogue_store::Result<Value> {
-    Ok(serde_json::to_value(r?).unwrap_or_default())
+    Ok(serde_json::to_value(r?)?)
 }
 
 pub static MEASURES: &[Measure] = &[
     Measure {
         name: "facets",
-        help: "Selected and global session frequencies with IDF; optional basic, deep, no-idf or deep-no-idf",
+        help: "Paged read-time session counts by family and value, with global counts, IDF and lift; basic, deep or one family",
         whole_archive: false,
-        paging: None,
-        argument: Some("options"),
+        paging: Some(Paging::Facets),
+        argument: Some("family"),
         metrics: &[],
-        run: |r, x| json(measure::facets::facets(r, &x.selection, x.metric)),
+        run: |_, _| Err(polylogue_store::StoreError::Invalid("facets requires query paging".into())),
         text: text::json,
     },
     Measure {
         name: "outlook",
-        help: "Billing estimate from cost.plans: plan_name:method (linear, trailing-7d-mean); no configured plan means no outlook",
+        help: "Billing estimate from dated plan.<provider> settings: provider:method (linear, trailing-7d-mean); money in nano-USD",
         whole_archive: false,
         paging: None,
-        argument: Some("plan_name:method"),
+        argument: Some("provider:method"),
         metrics: &[],
         run: |r, x| {
             json(measure::outlook::outlook(
@@ -79,67 +78,23 @@ pub static MEASURES: &[Measure] = &[
         text: text::outlook,
     },
     Measure {
-        name: "pace",
-        help: "Observed authored turn gaps and burstiness of consecutive user-message gaps (at least 10 gaps); threshold_seconds defaults to 60; query cursor pages gaps across the full selection",
-        whole_archive: false,
-        paging: Some(Paging::Pace),
-        argument: Some("threshold_seconds"),
-        metrics: &[],
-        run: |r, x| json(measure::pace::pace(r, &x.selection, x.metric)),
-        text: text::json,
-    },
-    Measure {
-        name: "profiles",
-        help: "Session facts, timing sources, workflow shape, final observed state and own/with-parents usage",
+        name: "time",
+        help: "Recorded session clocks and wall-time lanes; clustering gap 5 minutes; query cursor pages sessions",
         whole_archive: false,
         paging: Some(Paging::Sessions),
         argument: None,
         metrics: &[],
-        run: |r, x| json(r.session_profiles(&x.selection)),
+        run: |r,x| json(measure::time::times(r,&x.selection)),
         text: text::json,
     },
     Measure {
         name: "compare",
-        help: "Selected structural facts and their varying fields; optional numeric metric, including cost_usd",
+        help: "Recorded session fields side by side, with varying fields and unknown counts; optional comma-separated fields",
         whole_archive: false,
         paging: Some(Paging::Sessions),
-        argument: Some("metric"),
+        argument: Some("fields"),
         metrics: &[],
-        run: |r, x| json(measure::comparison::compare(r, &x.selection, x.metric)),
-        text: text::json,
-    },
-    Measure {
-        name: "similar",
-        help: "One selected reference session compared by metadata with every other session in the archive",
-        whole_archive: false,
-        paging: Some(Paging::Similar),
-        argument: None,
-        metrics: &[],
-        run: |_, _| {
-            Err(polylogue_store::StoreError::Invalid(
-                "similar requires query paging".into(),
-            ))
-        },
-        text: text::json,
-    },
-    Measure {
-        name: "correlation",
-        help: "Pearson correlation of profile metric_x:metric_y, with measured and missing pair counts",
-        whole_archive: false,
-        paging: None,
-        argument: Some("metric_x:metric_y"),
-        metrics: &[],
-        run: |r, x| json(measure::comparison::correlation(r, &x.selection, x.metric)),
-        text: text::json,
-    },
-    Measure {
-        name: "distribution",
-        help: "Profile metric distribution, with selected and measured session counts",
-        whole_archive: false,
-        paging: None,
-        argument: Some("metric"),
-        metrics: &[],
-        run: |r, x| json(measure::comparison::distribution(r, &x.selection, x.metric)),
+        run: |r,x| json(measure::comparison::compare(r,&x.selection,x.metric)),
         text: text::json,
     },
     Measure {
@@ -210,7 +165,7 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "unanswered",
-        help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
+        help: "Time to a session ending on an unanswered prompt after 6 quiet hours (Kaplan-Meier)",
         whole_archive: false,
         paging: None,
         argument: None,

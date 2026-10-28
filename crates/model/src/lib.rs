@@ -54,3 +54,5 @@ pub use work::{WorkEdgeKind, WorkNodeKind};
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
 /// (`serde_json` with `arbitrary_precision`).
 pub type Json = serde_json::Value;
+
+pub mod derived;

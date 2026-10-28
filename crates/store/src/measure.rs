@@ -1,7 +1,7 @@
 //! Measurement reads: tokens by kind, cost, subscription quota, and the
 //! measures over sessions and tool calls. Each runs at read time over the
 //! sessions a query selects; facts that depend only on one session's rows
-//! come from derivations (`session_survival`, message cost). Every figure says
+//! come from derivations (`session_span`, message cost). Every figure says
 //! how many items it could not count; unknown is never shown as zero.
 //! Hidden sessions stay in every figure: hiding changes what is listed, not
 //! what was used.
@@ -11,8 +11,7 @@ pub mod daily;
 pub mod drift;
 pub mod facets;
 pub mod outlook;
-pub mod pace;
-pub mod profiles;
+pub mod time;
 pub mod quota;
 mod reports;
 pub mod survival;

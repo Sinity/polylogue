@@ -296,20 +296,23 @@ record of a chat action's result, as the extension saw it.
 
 ## Session measures
 
-- **facet**: a value counted once per selected or global session; **IDF** is
-  the natural logarithm of global session count divided by its frequency.
-- **cost outlook**: an estimate over explicitly configured billing terms and
-  observed usage, with units, method and coverage shown.
-- **pacing**: observed gaps in source message order. **Burstiness** is the
-  Goh–Barabási coefficient of consecutive user-message gaps.
-- **session profile**: recorded session facts together with named timing and
-  classification calculations, each with its rule version.
-- **message-clustered time** (`message_clustered_duration_ms`): summed intervals within
-  a five-minute gap threshold. **Tool-active time**: summed timestamped paired
-  tool-call/result intervals. Neither measures attention.
-- **workflow shape**: the threshold label over observed tool/message counts.
-  **final observed state** (`final_observed_state`): the last structural activity,
-  without a task-success judgment.
-
-- **unpaired tools past the gap** (`unpaired_tools_past_gap`): tool starts without
-  a paired result more than five minutes before the last observed time.
+- **facet**: a value counted once per selected or global session. **IDF** is
+  the natural logarithm of global session count divided by its frequency;
+  **lift** is selected share divided by global share.
+- **cost outlook**: an estimate over dated, explicitly configured billing
+  terms and observed usage, with units, method and coverage shown.
+- **session span** (`session_span`): recorded clocks, message clusters, tool
+  intervals and the last recorded item. **Wall span** (`wall_span`) is elapsed
+  time between the first and last own recorded time.
+- **clustered time** (`clustered_time`): union of consecutive message intervals
+  at most five minutes apart, extended across paired tools. **Tool time**
+  (`tool_time`) sums positive paired call/result intervals; **tool time union**
+  (`tool_time_union`) counts their overlap once. Neither measures attention.
+- **time lanes** (`session_time`): wall time attributed to tool commands,
+  waiting for the model, waiting for the human, or unattributed transitions.
+- **ends with** (`ends_with`): the kind of the last recorded item; no task outcome.
+- **validity kind**: exact, parameterized, extracted or judged, with the
+  evidence each requires before it ships. **Derived data** is the reference
+  page generated from those declarations.
+- **pending**: a stored product not yet derived for its session's current
+  rows and rule version; counted apart in population summaries.

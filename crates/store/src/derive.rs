@@ -21,10 +21,10 @@ use std::collections::BTreeMap;
 mod active_path;
 mod cost;
 mod duplicates;
-mod profile;
+pub(crate) mod counts;
+mod session_span;
 mod repository;
 mod session;
-mod session_survival;
 mod title;
 mod tool_calls;
 mod work;
@@ -38,6 +38,7 @@ const SESSIONS_PER_TRANSACTION: usize = 200;
 struct Derivation {
     /// Its key in `derive_state`; stable across versions.
     pub name: &'static str,
+    pub products: &'static [polylogue_model::derived::Construct],
     /// Bumped when the rules change; every session is derived again.
     pub version: Version,
     /// Derivations whose rows this one reads; they run first.
@@ -79,9 +80,22 @@ const ALL: &[Derivation] = &[
     title::DERIVATION,
     work::DERIVATION,
     cost::DERIVATION,
-    session_survival::DERIVATION,
-    profile::DERIVATION,
+    counts::DERIVATION,
+    session_span::DERIVATION,
 ];
+
+/// Declared stored products, in their derivation order.
+pub fn products() -> Vec<polylogue_model::derived::Construct> {
+    ALL.iter().flat_map(|d| d.products.iter().copied()).collect()
+}
+
+pub(crate) fn current_versions() -> Result<BTreeMap<String, String>> {
+    Ok(ALL.iter().zip(versions(ALL, Catalog::builtin())?).map(|(d,v)| (d.name.to_owned(),v)).collect())
+}
+
+pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM derive_state d JOIN session s ON s.pk=d.session_pk WHERE d.name=?1 AND s.pk=?2 AND d.from_changed=s.changed AND pl_derived_current(d.name,d.version))", params![name,pk], |r| r.get(0))?)
+}
 
 /// Runs every derivation over the sessions it has not derived at their
 /// current state; returns the number of (derivation, session) pairs done.

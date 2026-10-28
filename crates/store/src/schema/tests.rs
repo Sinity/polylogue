@@ -314,8 +314,8 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            47,
-            "bbb20467aaad4187ea2b00c294cbbec567861ac0487566ff9db4ea38906a3173".to_owned(),
+            46,
+            "d66e2ee75c396bf873aa6ea7721f80e35d4880b9b478cb8efabc5d1c84a5e033".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"

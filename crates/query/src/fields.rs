@@ -462,17 +462,17 @@ pub static FIELDS: &[Field] = &[
     f(Sessions, "last_active", Time, "last own message or event").sql("{s}.last_activity_at"),
     sp(Sessions, "since", "active on or after the time", custom::since),
     sp(Sessions, "until", "begun on or before the time", custom::until),
-    f(Sessions, "messages", Number, "own messages").sql_fn(sessions_messages),
-    f(Sessions, "human_prompts", Number, "own prose prompts").sql_fn(sessions_human_prompts),
-    f(Sessions, "human_commands", Number, "own typed commands").sql_fn(sessions_human_commands),
-    f(Sessions, "words", Number, "words in own prose").sql_fn(sessions_words),
-    f(Sessions, "tool_calls", Number, "own tool calls").sql_fn(sessions_tool_calls),
+    f(Sessions, "messages", Number, "own messages").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"message_count")),
+    f(Sessions, "human_prompts", Number, "own prose prompts").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_prompt_count")),
+    f(Sessions, "human_commands", Number, "own typed commands").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_command_count")),
+    f(Sessions, "words", Number, "words in own prose").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"word_count")),
+    f(Sessions, "tool_calls", Number, "own tool calls").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"tool_call_count")),
     f(
         Sessions,
         "errors",
         Number,
         "own tool calls with outcome error",
-    ).sql_fn(sessions_errors),
+    ).sql_fn(|a| polylogue_model::session_sql::count(&a.s,"error_count")),
     f(Sessions, "input_tokens", Number, "summed over own messages").sql_fn(sessions_input_tokens),
     f(
         Sessions,
@@ -504,15 +504,19 @@ pub static FIELDS: &[Field] = &[
         Money,
         "own cost plus every session below in the subagent tree",
     ).sql_fn(sessions_tree_cost),
-    f(Sessions, "duration", Duration, "last_active - started").sql("({s}.last_activity_at - {s}.started_at)"),
-    f(Sessions, "profile_first", Time, "First observed time").sql_fn(profile_first),
-    f(Sessions, "profile_last", Time, "Last observed time").sql_fn(profile_last),
-    f(Sessions, "wall_duration", Duration, "Profile elapsed time; message, event or session clock").sql_fn(profile_wall_duration),
-    f(Sessions, "message_clustered_duration", Duration, "Message-clustered elapsed time, with a five-minute gap threshold").sql("(SELECT sp.message_clustered_duration_ms FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "tool_active_duration", Duration, "Sum of paired timestamped tool intervals").sql("(SELECT sp.tool_active_duration_ms FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "workflow_shape", Match, "Threshold rule over observed tool and message counts").sql("(SELECT sp.workflow_shape FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "final_observed_state", Match, "Final observed state, never task success").sql("(SELECT sp.final_observed_state FROM session_profile sp WHERE sp.session_pk={s}.pk)"),
-    f(Sessions, "timestamp_source", Match, "Clock used by profile bounds").sql_fn(profile_source),
+    f(Sessions, "wall_span", Duration, "Elapsed time between first and last own recorded time").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"wall_ms")),
+    f(Sessions, "clustered_time", Duration, "Union of consecutive message gaps at most 5 minutes, extended across paired tools").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"clustered_ms")),
+    f(Sessions, "tool_time", Duration, "Sum of strictly positive paired tool intervals; untimed calls counted separately").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"tool_sum_ms")),
+    f(Sessions, "tool_time_union", Duration, "Union of strictly positive paired tool intervals").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"tool_union_ms")),
+    f(Sessions, "ends_with", Match, "Kind of the last recorded own item").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"ends_with")),
+    f(Sessions, "last_stop_reason", Match, "Last model stop reason as recorded").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"last_stop_reason")),
+    f(Sessions, "time_source", Match, "Messages, or events when there are no messages").sql_fn(|a| polylogue_model::session_sql::span(&a.s,"time_source")),
+    f(Sessions, "waiting_model", Duration, "Wall time waiting for the model").sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='model' AND st.key='' AND {})",polylogue_model::session_sql::current(&a.s,"session_span"),s=a.s)),
+    f(Sessions, "waiting_human", Duration, "Wall time waiting for the human").sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='human' AND st.key='' AND {})",polylogue_model::session_sql::current(&a.s,"session_span"),s=a.s)),
+    f(Sessions, "human_words", Number, "Own human words").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_word_count")),
+    f(Sessions, "model_words", Number, "Own model words").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"model_word_count")),
+    f(Sessions, "thinking_messages", Number, "Own thinking messages").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"thinking_count")),
+    f(Sessions, "compactions", Number, "Own compactions").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"compaction_count")),
     sp(Sessions, "near", "semantic similarity (a ranking)", custom::near),
     sp(Sessions, "output", "words in tool output", custom::output),
     sp(Sessions, "thinking", "words in thinking", custom::thinking),
@@ -998,31 +1002,7 @@ impl Aliases {
     }
 }
 
-/// Messages shown on the active path, optionally joined to selected sessions.
-pub fn own_messages(x: &str, join: Option<&str>) -> String {
-    let session = join
-        .map(|join| format!(" AND {x}.session_pk {join}"))
-        .unwrap_or_default();
-    format!("{x}.duplicate_of IS NULL AND COALESCE({x}.on_active_path, 1) = 1{session}")
-}
-
-/// A script call whose commands are recorded is counted through them; a
-/// script call with no recorded command counts itself.
-pub fn counts_as_action(t: &str) -> String {
-    format!(
-        "NOT ({t}.action = 'code' AND EXISTS (SELECT 1 FROM tool_call cw WHERE cw.session_pk = {t}.session_pk AND cw.run_by_script = 1))"
-    )
-}
-
-fn own_calls(s: &str, x: &str, extra: &str) -> String {
-    format!(
-        "(SELECT count(*) FROM tool_call {x} JOIN block {x}b ON {x}b.pk = {x}.call_block_pk \
-         JOIN message {x}m ON {x}m.pk = {x}b.message_pk \
-         WHERE {} AND {}{extra})",
-        own_messages(&format!("{x}m"), Some(&format!("= {s}.pk"))),
-        counts_as_action(x)
-    )
-}
+pub use polylogue_model::session_sql::{own_messages, counts_as_action};
 
 /// The title of the goal a work node belongs to: an attempt's goal, or the
 /// goal of the attempt a verification checks or an artifact was made for.
@@ -1102,14 +1082,6 @@ fn own_sum(s: &str, col: &str) -> String {
     )
 }
 
-/// Session `s`'s own messages matching `extra`, counted.
-fn own_count(s: &str, extra: &str) -> String {
-    format!(
-        "(SELECT count(*) FROM message x WHERE {}{extra})",
-        own_messages("x", Some(&format!("= {s}.pk")))
-    )
-}
-
 fn sessions_hidden(a: &Aliases) -> String {
     hidden(&a.s)
 }
@@ -1120,31 +1092,6 @@ fn sessions_outcome(a: &Aliases) -> String {
          WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.commit_seq DESC LIMIT 1), 'none')",
         live_note("n"),
         s = a.s
-    )
-}
-
-fn sessions_messages(a: &Aliases) -> String {
-    own_count(&a.s, "")
-}
-
-fn sessions_human_prompts(a: &Aliases) -> String {
-    own_count(
-        &a.s,
-        " AND x.written_by = 'human' AND x.prompt_kind = 'prose'",
-    )
-}
-
-fn sessions_human_commands(a: &Aliases) -> String {
-    own_count(
-        &a.s,
-        " AND x.written_by = 'human' AND x.prompt_kind = 'command'",
-    )
-}
-
-fn sessions_words(a: &Aliases) -> String {
-    format!(
-        "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
-        own_messages("x", Some(&format!("= {}.pk", a.s)))
     )
 }
 
@@ -1175,14 +1122,6 @@ fn turns_corrected(a: &Aliases) -> String {
         withdrawn_note("nc"),
         r = a.row
     )
-}
-
-fn sessions_tool_calls(a: &Aliases) -> String {
-    own_calls(&a.s, "tx", "")
-}
-
-fn sessions_errors(a: &Aliases) -> String {
-    own_calls(&a.s, "tx", " AND tx.outcome = 'error'")
 }
 
 fn sessions_input_tokens(a: &Aliases) -> String {
@@ -1354,17 +1293,16 @@ pub fn subtree(s: &str) -> String {
     )
 }
 
-fn profile_first(a: &Aliases) -> String {
-    polylogue_model::session_sql::first(&a.s)
-}
-fn profile_last(a: &Aliases) -> String {
-    polylogue_model::session_sql::last(&a.s)
-}
-fn profile_wall_duration(a: &Aliases) -> String {
-    polylogue_model::session_sql::wall_duration(&a.s)
-}
-fn profile_source(a: &Aliases) -> String {
-    polylogue_model::session_sql::source(&a.s)
+/// Evidence and unknown rules for fields backed by declared session products.
+pub fn construct(field:&Field)->Option<polylogue_model::derived::Construct> {
+    use polylogue_model::derived;
+    if field.unit!=Unit::Sessions{return None;}
+    if polylogue_model::session_sql::COUNT_FIELDS.iter().any(|(name,_)|*name==field.name){return Some(derived::SESSION_COUNTS);}
+    match field.name {
+        "wall_span"|"clustered_time"|"tool_time"|"tool_time_union"|"ends_with"|"last_stop_reason"|"time_source"=>Some(derived::SESSION_SPAN),
+        "waiting_model"|"waiting_human"=>Some(derived::SESSION_TIME),
+        _=>None,
+    }
 }
 
 #[cfg(test)]

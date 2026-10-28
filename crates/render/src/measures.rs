@@ -310,75 +310,41 @@ pub fn outlook(data: &Value) -> String {
 }
 
 fn outlook_text(data: &Value) -> String {
-    if let Some(reason) = data["reason"].as_str() {
-        let detail = match reason {
-            "no_cycle_anchor" => "Set cycle_anchor_day for the plan in cost.plans.",
-            "plan_name_required" => "Choose a configured plan with --option plan_name:method.",
-            _ => "Configure cost.plans and choose a plan with --option plan_name:method.",
-        };
+    if let Some(reason)=data["reason"].as_str(){
+        let detail=if reason=="no_cycle_anchor"{"Set cycle_anchor_day in plan.<provider>."}else{"Configure plan.<provider> and choose --option provider:method."};
         return format!("Cost outlook unavailable: {reason}. {detail}\n");
     }
-    let billing_time = |value: &Value| {
-        value
-            .as_i64()
-            .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
-            .map(|t| {
-                t.to_zoned(jiff::tz::TimeZone::UTC)
-                    .strftime("%Y-%m-%d %H:%M UTC")
-                    .to_string()
-            })
-            .unwrap_or_else(|| "unknown".into())
-    };
-    let mut out = format!(
-        "{} (estimate), method {}\nUTC billing window {} to {}\n",
-        data["plan_name"].as_str().unwrap_or(""),
-        data["projection_method"].as_str().unwrap_or(""),
-        billing_time(&data["window"]["start"]),
-        billing_time(&data["window"]["end"])
-    );
-    if let Some(units) = data["units"].as_object() {
-        for (unit, values) in units {
-            let label = match unit.as_str() {
-                "api_usd" => "USD (API-equivalent)",
-                "reported_usd" => "USD (tool-reported)",
-                other => other,
-            };
-            out.push_str(&format!(
-                "{label}: used {}, burn {}/day, projected {} (estimate)\n",
-                number(&values["used"]),
-                number(&values["burn_per_day"]),
-                number(&values["projected"])
-            ));
+    let billing_time=|value:&Value|value.as_i64().and_then(|ms|jiff::Timestamp::from_millisecond(ms).ok()).map(|t|t.to_zoned(jiff::tz::TimeZone::UTC).strftime("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(||"unknown".into());
+    let mut out=format!("{} (estimate), method {}\nUTC billing window {} to {}\n",data["provider"].as_str().unwrap_or(""),data["projection_method"].as_str().unwrap_or(""),billing_time(&data["window"]["start"]),billing_time(&data["window"]["end"]));
+    for segment in data["segments"].as_array().into_iter().flatten(){
+        out.push_str(&format!("{}: {} to {}\n",segment["plan"]["name"].as_str().unwrap_or(""),billing_time(&segment["from"]),billing_time(&segment["until"])));
+        for population in ["responses","recorded_reports"]{
+            if let Some(units)=segment[population].as_object(){for (unit,values) in units{
+                let (label,money)=match unit.as_str(){"api_nusd"=>("API-equivalent USD",true),"reported_nusd"=>("provider-reported USD",true),other=>(other,false)};
+                let amount=|v:&Value|if money{nano_money(v)}else{number(v)};
+                out.push_str(&format!("{population}, {label}: {}used {}, projected {} (estimate); {} known items, {} unknown; {} observed days, {} missing days\n",if values["lower_bound"].as_bool()==Some(true){"at least "}else{""},amount(&values["used"]),amount(&values["projected"]),values["known_items"],values["unknown_items"],values["observed_days"],values["missing_days"].as_array().map_or(0,Vec::len)));
+            }}
+        }
+        out.push_str(&format!("Subscription price share: {}. Unknown-boundary items: {}; unconfirmed reports: {}\n",nano_money(&segment["subscription_price_share_nusd"]),segment["unknown_boundary_items"],segment["unconfirmed_reports"]));
+        if let Some(p)=segment["budget_pressure"].as_object(){
+            out.push_str(&format!("Your budget ({}): used {}, projected {}, budget {}\n",p["unit"].as_str().unwrap_or(""),number(&p["used"]),number(&p["projected"]),number(&p["budget"])));
+            if let Some(reason)=p["reason"].as_str(){out.push_str(&format!("{reason}\n"));}
+            out.push_str(&format!("Possible overage cost: {} (estimate)\n",nano_money(&p["projected_overage_cost_nusd"])));
         }
     }
-    if data["incomplete_usage"].as_bool() == Some(true) {
-        out.push_str("Usage is incomplete; estimates use recorded known values.\n");
-    }
-    if let Some(reason) = data["quota_reason"].as_str() {
-        out.push_str(&format!("Quota not configured: {reason}\n"));
-    }
-    if let Some(pressure) = data["quota_pressure"].as_object() {
-        out.push_str(&format!(
-            "Quota pressure ({}): used {}, projected {}, quota {}\n",
-            pressure["unit"].as_str().unwrap_or(""),
-            number(&pressure["used"]),
-            number(&pressure["projected"]),
-            number(&pressure["quota"])
-        ));
-        if let Some(reason) = pressure["reason"].as_str() {
-            out.push_str(&format!("{reason}\n"));
-        }
-        out.push_str(&format!(
-            "Possible overage cost USD: {} (estimate)\n",
-            number(&pressure["projected_overage_cost_usd"])
-        ));
-    }
-    out.push_str(&format!(
-        "Configured cycle price USD: {}. Observed-day coverage: {}\n",
-        number(&data["plan"]["price_usd"]),
-        number(&data["coverage_ratio"])
-    ));
+    out.push_str(&format!("Untimed responses: {}; untimed reports: {}. Billing before the first plan setting: unknown.\n",data["untimed_responses"],data["untimed_reports"]));
     out
+}
+
+fn nano_money(value:&Value)->String {
+    match value.as_i64(){
+        None=>"unknown".into(),
+        Some(n)=>{
+            let fraction=format!("{:09}",n.unsigned_abs()%1_000_000_000);
+            let fraction=fraction.trim_end_matches('0');
+            format!("{}${}{}{}",if n<0{"-"}else{""},n.unsigned_abs()/1_000_000_000,if fraction.is_empty(){""}else{"."},fraction)
+        }
+    }
 }
 
 #[cfg(test)]

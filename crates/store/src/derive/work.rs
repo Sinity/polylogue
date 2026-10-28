@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     name: "work",
     // Bumped when the rules change; every session is derived again.
+    products: &[],
     version: super::Version::Rules(2),
     // Reads tool calls' commands and outcome reasons.
     after: &["tool_calls"],

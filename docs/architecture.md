@@ -383,10 +383,13 @@ HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
 
-Session [measures](measures.md) include selected/global IDF facets, configured
-billing outlooks, pacing, and profile comparisons. The versioned `profile`
-derivation stores typed timing and classification facts in `session_profile`
-and distinct deep facets in `session_facet`. Profiles reuse the title and
-`session_survival` derivations. Usage is read only for a full profile or an
-explicit cost metric. Profile, comparison, gap and similarity pages use
-the ordinary query cursor.
+Session [measures](measures.md) include read-time facets with IDF and lift,
+dated billing outlooks, recorded time lanes and field comparisons. The
+`session_span` derivation reads each session's parsed messages and paired calls
+once and writes `session_span` and `session_time` together. `counts` writes typed
+session count columns from the shared shown-path and action definitions.
+Single-session reads compute a behind product with the same function;
+population summaries count pending products. Facets group the recorded rows at
+read time. Time, comparison and facet pages use the ordinary query cursor.
+[Derived data](derived.md) and `explain derived` read the same validity,
+parameter and evidence declarations.
