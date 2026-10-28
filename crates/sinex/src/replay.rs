@@ -56,21 +56,26 @@ impl Replay<'_> {
         batches: Vec<ReplayBatch>,
     ) -> Result<Acknowledgment> {
         self.with(async |client| {
-            let reader = hashed_blobs::Reader::new(client.store_root.clone(), vec![]);
+            let reader = hashed_blobs::Reader::new(client.store_root.clone());
             for material in &selection.materials {
                 let hex = material
                     .blob
                     .strip_prefix("blake3:")
                     .ok_or_else(|| Error::Invalid("invalid material digest".into()))?;
-                let hash = hashed_blobs::Hash(
-                    polylogue_model::BlobHash::parse(hex)
-                        .map_err(|e| Error::Invalid(e.to_string()))?
-                        .0,
-                );
-                let mut bytes = reader.read(&hash)?;
+                let extents = crate::parts::decode_extents(&material.extents)?;
+                if extents.is_empty()
+                    || extents.iter().try_fold(0u64, |length, extent| {
+                        length.checked_add(extent.decoded_len)
+                    }) != Some(material.length)
+                {
+                    return Err(Error::Invalid(
+                        "replay material descriptors differ from its length".into(),
+                    ));
+                }
+                let mut bytes = reader.open(&extents, None)?;
                 let mut digest = blake3::Hasher::new();
-                std::io::copy(&mut bytes, &mut digest)?;
-                if digest.finalize().to_hex().as_str() != hex {
+                let length = std::io::copy(&mut bytes, &mut digest)?;
+                if length != material.length || digest.finalize().to_hex().as_str() != hex {
                     return Err(Error::Invalid("stored replay bytes changed".into()));
                 }
             }

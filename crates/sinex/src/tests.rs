@@ -16,8 +16,14 @@ fn request(write: UserWrite) -> UserRequest {
     }
 }
 
-fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> ProducerMaterial {
+fn material(
+    parser: &str,
+    blob: &str,
+    manifest: serde_json::Value,
+    extent: &hashed_blobs::Extent,
+) -> ProducerMaterial {
     ProducerMaterial {
+        extents: vec![extent.encode()],
         number: 7,
         frame: "synthetic".into(),
         material: MaterialFrame {
@@ -28,7 +34,7 @@ fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> ProducerMa
                 host: "laptop".into(),
             },
             blob: blob.into(),
-            length: 12,
+            length: extent.decoded_len,
             parser: parser.into(),
             parser_version: 1,
             part_index: 2,
@@ -36,6 +42,22 @@ fn material(parser: &str, blob: &str, manifest: serde_json::Value) -> ProducerMa
             manifest: sinex_model::Manifest::from_json(manifest),
         },
     }
+}
+
+fn stored(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
+    let prepared = hashed_blobs::Preparation::new(root.join("scratch"))
+        .unwrap()
+        .plain(bytes, 1)
+        .unwrap();
+    let mut writer =
+        hashed_blobs::SegmentWriter::open(root, "segments/test.zst", 0, &[], 0o600).unwrap();
+    let group = writer
+        .append_group(vec![prepared], |_| Ok(None))
+        .unwrap()
+        .wait()
+        .unwrap();
+    writer.acknowledge(&group).unwrap();
+    group.extents[0].clone()
 }
 
 #[test]
@@ -108,7 +130,9 @@ fn a_held_part_carries_the_rows_that_place_it() {
         observation: None,
     };
     let blob = format!("blake3:{}", polylogue_model::BlobHash::of(b"twelve bytes"));
-    let store = hashed_blobs::Reader::new(tempfile::tempdir().unwrap().path(), vec![]);
+    let dir = tempfile::tempdir().unwrap();
+    let extent = stored(dir.path(), b"twelve bytes");
+    let store = hashed_blobs::Reader::new(dir.path());
     let Held::Part {
         number,
         index,
@@ -120,6 +144,7 @@ fn a_held_part_carries_the_rows_that_place_it() {
             "polylogue-claude-code",
             &blob,
             serde_json::json!({ "polylogue": rows }),
+            &extent,
         ),
     )
     .unwrap()
@@ -133,20 +158,21 @@ fn a_held_part_carries_the_rows_that_place_it() {
 #[test]
 fn a_held_register_material_is_read_from_the_content_store_and_checked() {
     let dir = tempfile::tempdir().unwrap();
-    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
     let change = RegisterChange::Request {
         request: Box::new(request(UserWrite::ChatClaim { by: "x".into() })),
         first_note: None,
     };
     let bytes = serde_json::to_vec(&change).unwrap();
-    let hash = store.put(bytes.as_slice(), 1).unwrap();
-    let reader = hashed_blobs::Reader::new(dir.path(), vec![]);
+    let extent = stored(dir.path(), &bytes);
+    let hash = extent.hash;
+    let reader = hashed_blobs::Reader::new(dir.path());
     let held = held(
         &reader,
         material(
             REGISTER,
             &format!("blake3:{}", hash.hex()),
             serde_json::json!({}),
+            &extent,
         ),
     )
     .unwrap();
@@ -184,4 +210,44 @@ fn credentials_in_the_nats_url_are_refused() {
         config.password_file.unwrap(),
         std::path::Path::new("/run/secret")
     );
+}
+
+#[test]
+fn a_held_attachment_rebuilds_without_input_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = b"attachment bytes";
+    let extent = stored(dir.path(), bytes);
+    let hash = polylogue_model::BlobHash(extent.hash.0);
+    let material = material(
+        crate::parts::ATTACHMENT,
+        &format!("blake3:{hash}"),
+        serde_json::json!({"polylogue_blob":{"hash":hash.to_string(),"length":bytes.len()}}),
+        &extent,
+    );
+    let Held::Blob {
+        hash: held_hash,
+        length,
+        extents,
+        ..
+    } = held(&hashed_blobs::Reader::new(dir.path()), material).unwrap()
+    else {
+        panic!("an attachment")
+    };
+    assert_eq!(held_hash, hash);
+    assert_eq!(length, bytes.len() as u64);
+    assert_eq!(extents, [extent]);
+}
+
+#[test]
+fn held_materials_refuse_missing_or_mismatched_descriptors() {
+    let dir = tempfile::tempdir().unwrap();
+    let extent = stored(dir.path(), b"twelve bytes");
+    let reader = hashed_blobs::Reader::new(dir.path());
+    let blob = format!("blake3:{}", extent.hash.hex());
+    let mut missing = material(REGISTER, &blob, serde_json::json!({}), &extent);
+    missing.extents.clear();
+    assert!(held(&reader, missing).is_err());
+    let mut wrong = material(REGISTER, &blob, serde_json::json!({}), &extent);
+    wrong.material.length += 1;
+    assert!(held(&reader, wrong).is_err());
 }

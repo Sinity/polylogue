@@ -234,8 +234,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         part: &polylogue_store::primary::Part,
         bytes: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<String> {
+    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
         Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
+    }
+
+    fn send_blob(
+        &self,
+        hash: polylogue_model::BlobHash,
+        length: u64,
+        bytes: &mut dyn std::io::Read,
+    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
+        Ok(self
+            .with(async |client| parts::send_blob(client, &self.host, hash, length, bytes).await)?)
     }
 
     fn send_change(
@@ -252,7 +262,7 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
         Ok(self.with(async |client| {
             let page = client.materials(after).await?;
-            let store = hashed_blobs::Reader::new(client.store_root.clone(), vec![]);
+            let store = hashed_blobs::Reader::new(client.store_root.clone());
             page.into_iter()
                 .map(|held| parts::held(&store, held))
                 .collect::<Result<Vec<_>>>()

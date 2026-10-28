@@ -95,6 +95,7 @@ fn the_producer_connects_with_the_password_from_its_file() {
             let ack = sinex_protocol::Acknowledgment {
                 frame,
                 material: None,
+                material_extents: vec![],
                 admitted: vec![],
                 outcome: serde_json::json!({"registered_kinds":registered}),
                 refusal: None,

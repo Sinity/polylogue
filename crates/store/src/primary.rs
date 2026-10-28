@@ -18,7 +18,14 @@ pub trait Sinex: Send + Sync {
     /// Sends `bytes` (`part.length` long, hashing to `part.hash`) as one part
     /// of its input and waits until Sinex acknowledged it. Returns the
     /// material Sinex registered.
-    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<String>;
+    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<ConfirmedBlob>;
+    /// Stores decoded or attached bytes as a material independently of an input.
+    fn send_blob(
+        &self,
+        hash: BlobHash,
+        length: u64,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<ConfirmedBlob>;
     /// Sends a register change and the events it makes, and waits until
     /// Sinex acknowledged them. Returns the register material holding it.
     fn send_change(&self, change: &RegisterChange) -> Result<String>;
@@ -32,6 +39,30 @@ pub trait Sinex: Send + Sync {
     /// Sends the events of every session whose rows changed since they were
     /// last sent, read from the index.
     fn send_sessions(&self, reads: &ReadPool) -> Result<()>;
+}
+
+/// The material and committed descriptors Sinex acknowledged for these bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedBlob {
+    pub id: String,
+    pub extents: Vec<hashed_blobs::Extent>,
+}
+
+impl ConfirmedBlob {
+    /// Polylogue stores one prepared blob in one segment extent.
+    pub fn extent(&self, hash: BlobHash, length: u64) -> Result<&hashed_blobs::Extent> {
+        let [extent] = self.extents.as_slice() else {
+            return Err(StoreError::Sinex(
+                "a blob needs one committed extent".into(),
+            ));
+        };
+        if extent.hash.0 != hash.0 || extent.decoded_len != length || extent.len == 0 {
+            return Err(StoreError::Sinex(
+                "committed extent differs from its blob".into(),
+            ));
+        }
+        Ok(extent)
+    }
 }
 
 /// One part of an input's bytes.
@@ -102,8 +133,16 @@ pub enum Held {
         material: String,
         hash: BlobHash,
         length: u64,
+        extents: Vec<hashed_blobs::Extent>,
         index: u32,
         rows: Box<InputRows>,
+    },
+    Blob {
+        number: i64,
+        material: String,
+        hash: BlobHash,
+        length: u64,
+        extents: Vec<hashed_blobs::Extent>,
     },
     Change {
         number: i64,
@@ -115,7 +154,9 @@ pub enum Held {
 impl Held {
     pub fn number(&self) -> i64 {
         match self {
-            Held::Part { number, .. } | Held::Change { number, .. } => *number,
+            Held::Part { number, .. } | Held::Blob { number, .. } | Held::Change { number, .. } => {
+                *number
+            }
         }
     }
 }
@@ -221,7 +262,7 @@ pub(crate) fn part_material(
 pub(crate) fn load(
     conn: &mut Connection,
     sinex: &dyn Sinex,
-    store: &hashed_blobs::Store,
+    store: &hashed_blobs::Reader,
 ) -> Result<u64> {
     let tx = conn.transaction()?;
     let seq = crate::archive::bump_counter(&tx)?;
@@ -244,16 +285,19 @@ pub(crate) fn load(
                     material,
                     hash,
                     length,
+                    extents,
                     index,
                     rows,
                     ..
                 } => {
-                    let stored_size = store.stored_size(&hashed_blobs::Hash(hash.0))?;
-                    tx.prepare_cached(
-                        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-                         VALUES (?1, ?2, ?3, 'file', 'plain', 'present')",
-                    )?
-                    .execute(params![&hash.0[..], length as i64, stored_size as i64])?;
+                    store_blob(&tx, store, hash, length, &extents)?;
+                    if rows.extent.as_ref().is_none_or(|extent| {
+                        extent.blob != hash || u64::try_from(extent.length).ok() != Some(length)
+                    }) {
+                        return Err(StoreError::Sinex(
+                            "part rows differ from their material bytes".into(),
+                        ));
+                    }
                     rows.insert(&tx, seq)?;
                     part_material(&tx, &rows, index, &material)?;
                     if let Some(extent) = &rows.extent {
@@ -265,6 +309,14 @@ pub(crate) fn load(
                             forget_uncommitted(&tx, earlier.as_deref(), &blob, &extent.blob)?;
                         }
                     }
+                }
+                Held::Blob {
+                    hash,
+                    length,
+                    extents,
+                    ..
+                } => {
+                    store_blob(&tx, store, hash, length, &extents)?;
                 }
                 Held::Change {
                     material, change, ..
@@ -284,6 +336,36 @@ pub(crate) fn load(
     }
     tx.commit()?;
     Ok(loaded)
+}
+
+fn store_blob(
+    conn: &Connection,
+    store: &hashed_blobs::Reader,
+    hash: BlobHash,
+    length: u64,
+    extents: &[hashed_blobs::Extent],
+) -> Result<()> {
+    let confirmed = ConfirmedBlob {
+        id: String::new(),
+        extents: extents.to_vec(),
+    };
+    let extent = confirmed.extent(hash, length)?;
+    let mut bytes = store.open(extents, None)?;
+    let mut digest = blake3::Hasher::new();
+    let read = std::io::copy(&mut bytes, &mut digest)?;
+    if read != length || digest.finalize().as_bytes() != &hash.0 {
+        return Err(StoreError::BlobCorrupt(hash));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4)",
+        params![
+            &hash.0[..],
+            length as i64,
+            extent.len as i64,
+            extent.encode()
+        ],
+    )?;
+    Ok(())
 }
 
 /// Drops the rows of a part a stopped write sent but never committed: its
