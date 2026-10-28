@@ -57,11 +57,15 @@ fn cancelled_read(disconnect: bool, context: bool) {
         }
         let released = daemon.daemon.reads.checked_out() == 1;
         let cancelled = limit.cancellation.is_cancelled();
+        let slots = daemon.daemon.reads.checked_out();
         // Teardown must also finish when the regression retains its reader.
         drop(lock);
         client.shutdown(Shutdown::Both).unwrap();
         let _ = service.join().unwrap();
-        assert!(released, "MCP retained its reader after cancellation");
+        assert!(
+            released,
+            "MCP retained its reader after cancellation: cancelled={cancelled}, slots={slots}, limit={limit:?}"
+        );
         assert!(cancelled);
     });
 }
