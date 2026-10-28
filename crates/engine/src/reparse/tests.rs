@@ -35,11 +35,13 @@ const fn origin(open: fn(&Path) -> Option<Parse>) -> OriginSpec {
             version: 1,
         }],
         name: "claude-code",
+        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: |_, _| true,
         open,
         resume: None,
@@ -160,7 +162,9 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         assert_eq!(w.texts(name), ["stored text"]);
     }
     w.append("a.jsonl", &claude_user("later", "a", "later text"));
-    let live = engine.live_plans(&HashSet::new()).unwrap();
+    let live = engine
+        .live_plans(&HashSet::new(), &mut Pass::default())
+        .unwrap();
     assert_eq!(live.len(), 1);
     assert_eq!(live[0].path, w.file("a.jsonl"));
 }
@@ -174,9 +178,16 @@ fn a_nested_live_scan_does_not_reschedule_a_reading_in_progress() {
     let path = w.file("live.jsonl");
     engine.reparsing.insert(path.clone(), 1);
     w.append("live.jsonl", &claude_user("two", "live", "second"));
-    assert!(engine.live_plans(&HashSet::new()).unwrap().is_empty());
+    assert!(
+        engine
+            .live_plans(&HashSet::new(), &mut Pass::default())
+            .unwrap()
+            .is_empty()
+    );
     engine.reparsing.remove(&path);
-    let live = engine.live_plans(&HashSet::new()).unwrap();
+    let live = engine
+        .live_plans(&HashSet::new(), &mut Pass::default())
+        .unwrap();
     assert_eq!(live.len(), 1);
     assert_eq!(live[0].path, path);
 }

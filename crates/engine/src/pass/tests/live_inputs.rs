@@ -88,6 +88,8 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     std::fs::write(&path, b"{}\n").unwrap();
     let origin = Box::leak(Box::new(OriginSpec {
         name: "synthetic",
+        harness_prefixes: &[],
+        modules: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
