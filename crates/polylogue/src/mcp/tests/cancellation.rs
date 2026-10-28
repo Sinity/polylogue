@@ -50,7 +50,9 @@ fn cancelled_read(disconnect: bool, context: bool) {
             writeln!(client, "{}", json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":2, "reason":"caller stopped"}})).unwrap();
         }
         let until = std::time::Instant::now() + Duration::from_secs(2);
-        while daemon.daemon.reads.checked_out() != 1 && std::time::Instant::now() < until {
+        while (daemon.daemon.reads.checked_out() != 1 || !limit.cancellation.is_cancelled())
+            && std::time::Instant::now() < until
+        {
             std::thread::yield_now();
         }
         let released = daemon.daemon.reads.checked_out() == 1;
