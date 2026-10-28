@@ -56,7 +56,11 @@ pub static MEASURES: &[Measure] = &[
         paging: Some(Paging::Facets),
         argument: Some("family"),
         metrics: &[],
-        run: |_, _| Err(polylogue_store::StoreError::Invalid("facets requires query paging".into())),
+        run: |_, _| {
+            Err(polylogue_store::StoreError::Invalid(
+                "facets requires query paging".into(),
+            ))
+        },
         text: text::json,
     },
     Measure {
@@ -84,7 +88,7 @@ pub static MEASURES: &[Measure] = &[
         paging: Some(Paging::Sessions),
         argument: None,
         metrics: &[],
-        run: |r,x| json(measure::time::times(r,&x.selection)),
+        run: |r, x| json(measure::time::times(r, &x.selection)),
         text: text::json,
     },
     Measure {
@@ -94,7 +98,7 @@ pub static MEASURES: &[Measure] = &[
         paging: Some(Paging::Sessions),
         argument: Some("fields"),
         metrics: &[],
-        run: |r,x| json(measure::comparison::compare(r,&x.selection,x.metric)),
+        run: |r, x| json(measure::comparison::compare(r, &x.selection, x.metric)),
         text: text::json,
     },
     Measure {

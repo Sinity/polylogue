@@ -1002,7 +1002,7 @@ impl Aliases {
     }
 }
 
-pub use polylogue_model::session_sql::{own_messages, counts_as_action};
+pub use polylogue_model::session_sql::{counts_as_action, own_messages};
 
 /// The title of the goal a work node belongs to: an attempt's goal, or the
 /// goal of the attempt a verification checks or an artifact was made for.
@@ -1294,14 +1294,22 @@ pub fn subtree(s: &str) -> String {
 }
 
 /// Evidence and unknown rules for fields backed by declared session products.
-pub fn construct(field:&Field)->Option<polylogue_model::derived::Construct> {
+pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
     use polylogue_model::derived;
-    if field.unit!=Unit::Sessions{return None;}
-    if polylogue_model::session_sql::COUNT_FIELDS.iter().any(|(name,_)|*name==field.name){return Some(derived::SESSION_COUNTS);}
+    if field.unit != Unit::Sessions {
+        return None;
+    }
+    if polylogue_model::session_sql::COUNT_FIELDS
+        .iter()
+        .any(|(name, _)| *name == field.name)
+    {
+        return Some(derived::SESSION_COUNTS);
+    }
     match field.name {
-        "wall_span"|"clustered_time"|"tool_time"|"tool_time_union"|"ends_with"|"last_stop_reason"|"time_source"=>Some(derived::SESSION_SPAN),
-        "waiting_model"|"waiting_human"=>Some(derived::SESSION_TIME),
-        _=>None,
+        "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "ends_with"
+        | "last_stop_reason" | "time_source" => Some(derived::SESSION_SPAN),
+        "waiting_model" | "waiting_human" => Some(derived::SESSION_TIME),
+        _ => None,
     }
 }
 

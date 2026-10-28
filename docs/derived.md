@@ -8,7 +8,7 @@ Counts and prose words over a session's shown active-path rows
 
 Kind: Exact. Unit: messages; prompts; words; tool calls; compactions. Denominator: one physical session.
 
-Unknown: Pending derivations have null fields; a recorded empty session has zero counts.
+Unknown: Behind count fields compute current rows and aggregates report pending; a recorded empty session has zero counts.
 
 Reads: message.written_by, message.prompt_kind, message.words, message.on_active_path, message.duplicate_of, block.kind, tool_call.action, tool_call.outcome, tool_call.run_by_script, event.kind.
 

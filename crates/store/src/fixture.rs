@@ -311,7 +311,10 @@ impl Fixture {
             "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
             params![pk, t.command, t.path],
         )?;
-        self.index.execute("UPDATE session SET changed=changed+1 WHERE pk=?1",[session_pk])?;
+        self.index.execute(
+            "UPDATE session SET changed=changed+1 WHERE pk=?1",
+            [session_pk],
+        )?;
         Ok(pk)
     }
 
@@ -348,7 +351,10 @@ impl Fixture {
             "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![id, session_pk, self.seq, kind, at, self.input_pk, data],
         )?;
-        self.index.execute("UPDATE session SET changed=changed+1 WHERE pk=?1",[session_pk])?;
+        self.index.execute(
+            "UPDATE session SET changed=changed+1 WHERE pk=?1",
+            [session_pk],
+        )?;
         Ok(())
     }
 

@@ -11,10 +11,10 @@ pub mod daily;
 pub mod drift;
 pub mod facets;
 pub mod outlook;
-pub mod time;
 pub mod quota;
 mod reports;
 pub mod survival;
+pub mod time;
 pub mod tool_calls;
 mod usage;
 

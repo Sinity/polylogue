@@ -20,11 +20,11 @@ use std::collections::BTreeMap;
 
 mod active_path;
 mod cost;
-mod duplicates;
 pub(crate) mod counts;
-mod session_span;
+mod duplicates;
 mod repository;
 mod session;
+mod session_span;
 mod title;
 mod tool_calls;
 mod work;
@@ -86,11 +86,17 @@ const ALL: &[Derivation] = &[
 
 /// Declared stored products, in their derivation order.
 pub fn products() -> Vec<polylogue_model::derived::Construct> {
-    ALL.iter().flat_map(|d| d.products.iter().copied()).collect()
+    ALL.iter()
+        .flat_map(|d| d.products.iter().copied())
+        .collect()
 }
 
 pub(crate) fn current_versions() -> Result<BTreeMap<String, String>> {
-    Ok(ALL.iter().zip(versions(ALL, Catalog::builtin())?).map(|(d,v)| (d.name.to_owned(),v)).collect())
+    Ok(ALL
+        .iter()
+        .zip(versions(ALL, Catalog::builtin())?)
+        .map(|(d, v)| (d.name.to_owned(), v))
+        .collect())
 }
 
 pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool> {

@@ -217,10 +217,35 @@ impl<'a> Compiler<'a> {
             }
         };
         if scope.unit == Unit::Sessions {
-            let derivation=if polylogue_model::session_sql::COUNT_FIELDS.iter().any(|(name,_)|*name==field) {Some("counts")}
-                else if matches!(field,"wall_span"|"clustered_time"|"tool_time"|"tool_time_union"|"ends_with"|"last_stop_reason"|"waiting_model"|"waiting_human") {Some("session_span")} else {None};
-            if let Some(name)=derivation {
-                out.push((format!("pending_{flat_field}"),format!("coalesce(sum(NOT ({})),0)",polylogue_model::session_sql::current(&scope.a.s,name)),ColKind::Number));
+            let derivation = if polylogue_model::session_sql::COUNT_FIELDS
+                .iter()
+                .any(|(name, _)| *name == field)
+            {
+                Some("counts")
+            } else if matches!(
+                field,
+                "wall_span"
+                    | "clustered_time"
+                    | "tool_time"
+                    | "tool_time_union"
+                    | "ends_with"
+                    | "last_stop_reason"
+                    | "waiting_model"
+                    | "waiting_human"
+            ) {
+                Some("session_span")
+            } else {
+                None
+            };
+            if let Some(name) = derivation {
+                out.push((
+                    format!("pending_{flat_field}"),
+                    format!(
+                        "coalesce(sum(NOT ({})),0)",
+                        polylogue_model::session_sql::current(&scope.a.s, name)
+                    ),
+                    ColKind::Number,
+                ));
             }
         }
         // A session cost known only in part (some request-bearing messages

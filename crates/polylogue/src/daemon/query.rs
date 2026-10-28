@@ -282,9 +282,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         _ => None,
     };
     let day = opts.clock.day.clone();
-    let answer = || {
-        answer(reader, &program, &day, after, seed, question, ask.why)
-    };
+    let answer = || answer(reader, &program, &day, after, seed, question, ask.why);
     match similarity {
         Some(similarity) => reader.with_similarity(similarity, answer),
         None => answer(),
@@ -320,16 +318,22 @@ fn answer(
             };
             let data = match paging {
                 super::measure::Paging::Facets => {
-                    let selected = reader.query(&format!("SELECT _pk FROM ({})",m.selection_sql),&params)?;
-                    let population = reader.query(&m.population_sql,&params)?;
+                    let selected =
+                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let population = reader.query(&m.population_sql, &params)?;
                     let scope = polylogue_store::measure::Selection {
-                        sessions:Some(selected.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
-                        population:Some(population.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
+                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
+                        population: Some(
+                            population
+                                .iter()
+                                .filter_map(|r| r["_pk"].as_i64())
+                                .collect(),
+                        ),
                         ..Default::default()
                     };
-                    let summary=polylogue_store::measure::facets::summary(reader,&scope)?;
-                    let mut facets=rows;
-                    polylogue_store::measure::facets::weights(&mut facets,&summary);
+                    let summary = polylogue_store::measure::facets::summary(reader, &scope)?;
+                    let mut facets = rows;
+                    polylogue_store::measure::facets::weights(&mut facets, &summary);
                     json!({"summary":summary,"values":facets})
                 }
                 super::measure::Paging::Sessions => {
@@ -354,20 +358,22 @@ fn answer(
                         });
                     }
                     if definition.name == "time" {
-                        data=json!({"sessions":data});
+                        data = json!({"sessions":data});
                     }
-                    let selected=reader.query(&format!("SELECT _pk FROM ({})",m.selection_sql),&params)?;
-                    let all=polylogue_store::measure::Selection {
-                        sessions:Some(selected.iter().filter_map(|r|r["_pk"].as_i64()).collect()),
+                    let selected =
+                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let all = polylogue_store::measure::Selection {
+                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
                         ..Default::default()
                     };
-                    data["pending"]=json!(polylogue_store::measure::time::pending(reader,&all)?);
+                    data["pending"] = json!(polylogue_store::measure::time::pending(reader, &all)?);
                     if definition.name == "compare" {
-                        let (_,options)=super::measure::find_checked(&m.what)?;
-                        let (varies,unknown,pending)=polylogue_store::measure::comparison::summary(reader,&all,options)?;
-                        data["varies"]=json!(varies);
-                        data["unknown"]=json!(unknown);
-                        data["pending"]=json!(pending);
+                        let (_, options) = super::measure::find_checked(&m.what)?;
+                        let (varies, unknown, pending) =
+                            polylogue_store::measure::comparison::summary(reader, &all, options)?;
+                        data["varies"] = json!(varies);
+                        data["unknown"] = json!(unknown);
+                        data["pending"] = json!(pending);
                     }
                     data
                 }
@@ -454,23 +460,37 @@ fn answer(
     Ok(out)
 }
 
-fn prepare_measure(program:&mut Program,page_size:Option<u64>)->Result<(),Failure> {
-    let Some(m)=program.measure.clone() else {return Ok(());};
-    let (definition,options)=super::measure::find_checked(&m.what)?;
+fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), Failure> {
+    let Some(m) = program.measure.clone() else {
+        return Ok(());
+    };
+    let (definition, options) = super::measure::find_checked(&m.what)?;
     match definition.paging {
-        Some(super::measure::Paging::Sessions)=>{
-            program.sql=polylogue_store::measure::comparison::page_query(&program.sql);
-        },
-        Some(super::measure::Paging::Facets)=>{
-            program.counts_near=false;
-            program.page_size=page_size.unwrap_or(100);
-            program.sql=polylogue_store::measure::facets::query(&m.selection_sql,&m.population_sql,options,&program.zone,program.day_start_minutes)?;
-            program.order=vec![
-                polylogue_query::OrderKey{column:"family".into(),descending:false},
-                polylogue_query::OrderKey{column:"value".into(),descending:false},
+        Some(super::measure::Paging::Sessions) => {
+            program.sql = polylogue_store::measure::comparison::page_query(&program.sql);
+        }
+        Some(super::measure::Paging::Facets) => {
+            program.counts_near = false;
+            program.page_size = page_size.unwrap_or(100);
+            program.sql = polylogue_store::measure::facets::query(
+                &m.selection_sql,
+                &m.population_sql,
+                options,
+                &program.zone,
+                program.day_start_minutes,
+            )?;
+            program.order = vec![
+                polylogue_query::OrderKey {
+                    column: "family".into(),
+                    descending: false,
+                },
+                polylogue_query::OrderKey {
+                    column: "value".into(),
+                    descending: false,
+                },
             ];
-        },
-        None=>{},
+        }
+        None => {}
     }
     Ok(())
 }

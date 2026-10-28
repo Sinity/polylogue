@@ -661,8 +661,11 @@ impl<'a> Compiler<'a> {
                 self.incomplete.push(note.into());
             }
         }
-        if columns.iter().any(|c|c.name.ends_with("clustered_time")) {
-            self.notes.push(format!("clustered_time uses a {}-minute gap, extended across paired tools",polylogue_model::derived::CLUSTER_GAP_MS/60_000));
+        if columns.iter().any(|c| c.name.ends_with("clustered_time")) {
+            self.notes.push(format!(
+                "clustered_time uses a {}-minute gap, extended across paired tools",
+                polylogue_model::derived::CLUSTER_GAP_MS / 60_000
+            ));
         }
         Ok(Program {
             query: self.text.to_owned(),

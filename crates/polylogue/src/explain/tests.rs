@@ -166,11 +166,18 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
 
 #[test]
 fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
-    let page=answer("derived",None,None,Some(100),None).unwrap();
-    let entries=page["entries"].as_array().unwrap();
-    assert_eq!(entries.len(),polylogue_model::derived::all().len());
-    assert!(entries.iter().any(|e|e["name"]=="session_span" && e["validity"]=="parameterized" && e["parameters"][0]["value"]==300000));
-    let page=answer("fields",None,Some("sessions"),Some(1000),None).unwrap();
-    let field=page["entries"].as_array().unwrap().iter().find(|e|e["name"]=="clustered_time").unwrap();
-    assert_eq!(field["construct"]["catalog"],"K15");
+    let page = answer("derived", None, None, Some(100), None).unwrap();
+    let entries = page["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), polylogue_model::derived::all().len());
+    assert!(entries.iter().any(|e| e["name"] == "session_span"
+        && e["validity"] == "parameterized"
+        && e["parameters"][0]["value"] == 300000));
+    let page = answer("fields", None, Some("sessions"), Some(1000), None).unwrap();
+    let field = page["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "clustered_time")
+        .unwrap();
+    assert_eq!(field["construct"]["catalog"], "K15");
 }

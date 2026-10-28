@@ -194,7 +194,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
     use super::{Derivation, Version};
     [
         Derivation {
-        products: &[],
+            products: &[],
             name: "upstream",
             version: Version::Rules(version),
             after: &[],
@@ -218,7 +218,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
             finish: None,
         },
         Derivation {
-        products: &[],
+            products: &[],
             name: "dependent",
             version: Version::Rules(1),
             after: &["upstream"],
@@ -232,7 +232,7 @@ fn versioned_rules(version: i64) -> [super::Derivation; 4] {
             finish: None,
         },
         Derivation {
-        products: &[],
+            products: &[],
             name: "unrelated",
             version: Version::Rules(1),
             after: &[],
@@ -473,15 +473,26 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
 #[test]
 fn stored_products_declare_validity_and_executable_evidence() {
     use polylogue_model::derived::Validity;
-    let products=super::products();
-    assert_eq!(products.iter().map(|p|p.catalog).collect::<Vec<_>>(),["K23","K15","K16"]);
+    let products = super::products();
+    assert_eq!(
+        products.iter().map(|p| p.catalog).collect::<Vec<_>>(),
+        ["K23", "K15", "K16"]
+    );
     for p in products {
-        assert!(!p.reads.is_empty());assert!(!p.unknown.is_empty());
+        assert!(!p.reads.is_empty());
+        assert!(!p.unknown.is_empty());
         match p.validity {
-            Validity::Exact=>assert!(!p.tests.is_empty()),
-            Validity::Parameterized=>{assert!(!p.tests.is_empty());assert!(!p.parameters.is_empty());assert!(!p.figures.is_empty());},
-            Validity::Extracted|Validity::Judged=>assert!(!p.figures.is_empty()),
+            Validity::Exact => assert!(!p.tests.is_empty()),
+            Validity::Parameterized => {
+                assert!(!p.tests.is_empty());
+                assert!(!p.parameters.is_empty());
+                assert!(!p.figures.is_empty());
+            }
+            Validity::Extracted | Validity::Judged => assert!(!p.figures.is_empty()),
         }
     }
-    assert_eq!(polylogue_model::derived::markdown(&polylogue_model::derived::all()),include_str!("../../../../docs/derived.md"));
+    assert_eq!(
+        polylogue_model::derived::markdown(&polylogue_model::derived::all()),
+        include_str!("../../../../docs/derived.md")
+    );
 }
