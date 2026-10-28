@@ -93,10 +93,12 @@ fn database_progress_does_not_reload_unrelated_sources() {
         0,
         100,
     );
-    let result = engine.run_pass();
+    let results = [engine.run_pass(), engine.run_pass()];
     fault::clear();
-    let pass = result.unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    for result in results {
+        let pass = result.unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
     assert!(
         row_lines(&w, &db)
             .iter()
