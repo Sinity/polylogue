@@ -1,24 +1,48 @@
 //! Attachment references only name bytes the archive holds. Source bytes stay
 //! unchanged when a capture names a file that has not been fetched.
 use super::*;
-pub(super) fn normalize(batch:&mut Batch,archive:&Connection,pending:&HashMap<BlobHash,u64>)->Result<()> {
+pub(super) fn normalize(
+    batch: &mut Batch,
+    archive: &Connection,
+    pending: &HashMap<BlobHash, u64>,
+) -> Result<()> {
     for step in &mut batch.parse {
-        for (message_index,row) in step.output.messages.iter_mut().enumerate() {
-            let Some(mut blocks)=stored_blocks(&row.message.blocks,archive,pending)? else {continue;};
-            if let Some(prepared)=step.prepared.messages.get(message_index) {restore_values(&mut blocks,prepared)?;}
-            row.message.blocks=blocks;
-            if let Some(prepared)=step.prepared.messages.get_mut(message_index) {*prepared=PreparedMessage::new(&row.message)?;}
+        for (message_index, row) in step.output.messages.iter_mut().enumerate() {
+            let Some(mut blocks) = stored_blocks(&row.message.blocks, archive, pending)? else {
+                continue;
+            };
+            if let Some(prepared) = step.prepared.messages.get(message_index) {
+                restore_values(&mut blocks, prepared)?;
+            }
+            row.message.blocks = blocks;
+            if let Some(prepared) = step.prepared.messages.get_mut(message_index) {
+                *prepared = PreparedMessage::new(&row.message)?;
+            }
         }
-        for (document_index,row) in step.output.documents.iter_mut().enumerate() {
-            let Some(mut blocks)=stored_blocks(&row.document.blocks,archive,pending)? else {continue;};
-            if let Some(prepared)=step.prepared.documents.get(document_index) {restore_values(&mut blocks,prepared)?;}
-            if let Some(prepared)=step.prepared.documents.get_mut(document_index) {row.document=crate::encoding::unpack_json(&prepared.fields)?;row.document.blocks=blocks;*prepared=PreparedDocument::new(&row.document)?;} else {row.document.blocks=blocks;}
+        for (document_index, row) in step.output.documents.iter_mut().enumerate() {
+            let Some(mut blocks) = stored_blocks(&row.document.blocks, archive, pending)? else {
+                continue;
+            };
+            if let Some(prepared) = step.prepared.documents.get(document_index) {
+                restore_values(&mut blocks, prepared)?;
+            }
+            if let Some(prepared) = step.prepared.documents.get_mut(document_index) {
+                row.document = crate::encoding::unpack_json(&prepared.fields)?;
+                row.document.blocks = blocks;
+                *prepared = PreparedDocument::new(&row.document)?;
+            } else {
+                row.document.blocks = blocks;
+            }
         }
     }
     Ok(())
 }
 
-fn stored_blocks(blocks: &[Block], archive: &Connection,pending:&HashMap<BlobHash,u64>) -> Result<Option<Vec<Block>>> {
+fn stored_blocks(
+    blocks: &[Block],
+    archive: &Connection,
+    pending: &HashMap<BlobHash, u64>,
+) -> Result<Option<Vec<Block>>> {
     let mut changed = false;
     let mut normalized = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
@@ -31,18 +55,21 @@ fn stored_blocks(blocks: &[Block], archive: &Connection,pending:&HashMap<BlobHas
             let Some(hash) = attachment.blob else {
                 continue;
             };
-            let size: Option<u64> = match pending.get(&hash) {Some(size)=>Some(*size),None=>archive
-                .query_row(
-                    "SELECT size FROM blob WHERE hash = ?1",
-                    [&hash.0[..]],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .map(|size| {
-                    u64::try_from(size)
-                        .map_err(|_| StoreError::Invalid("negative blob size".into()))
-                })
-                .transpose()?};
+            let size: Option<u64> = match pending.get(&hash) {
+                Some(size) => Some(*size),
+                None => archive
+                    .query_row(
+                        "SELECT size FROM blob WHERE hash = ?1",
+                        [&hash.0[..]],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?
+                    .map(|size| {
+                        u64::try_from(size)
+                            .map_err(|_| StoreError::Invalid("negative blob size".into()))
+                    })
+                    .transpose()?,
+            };
             if size.is_some() && attachment.size == size {
                 continue;
             }

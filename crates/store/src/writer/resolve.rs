@@ -425,8 +425,14 @@ impl Resolver {
                 drop(lease);
                 continue;
             }
-            let pending:HashMap<_,_>=batches.iter().flat_map(|batch|batch.new_blob.iter().chain(&batch.blobs)).map(|blob|(blob.hash,blob.size)).collect();
-            for batch in batches.iter_mut() {attachments::normalize(batch,&archive,&pending)?;}
+            let pending: HashMap<_, _> = batches
+                .iter()
+                .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
+                .map(|blob| (blob.hash, blob.size))
+                .collect();
+            for batch in batches.iter_mut() {
+                attachments::normalize(batch, &archive, &pending)?;
+            }
             let mut resolved = ResolvedKeys::default();
             for key in keys {
                 let existing = self.find(&snapshot, &key)?;

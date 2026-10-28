@@ -231,7 +231,7 @@ pub(super) fn write_rows(
     for u in &p.output.background {
         let (outcome, reason, exit) = outcome_columns(&u.outcome);
         tx.prepare_cached(
-            "UPDATE tool_call SET outcome = ?1, outcome_reason = ?2, exit_code = ?3
+            "UPDATE tool_call SET outcome = ?1, outcome_reason = ?2, exit_code = ?3,result_at=?6,reported_duration_ms=?7
              WHERE session_pk = (SELECT pk FROM session WHERE id = ?4) AND call_id = ?5",
         )?
         .execute(params![
@@ -239,7 +239,9 @@ pub(super) fn write_rows(
             reason,
             exit,
             u.session.to_string(),
-            u.call_id
+            u.call_id,
+            ms(u.result_at),
+            u.reported_duration_ms.map(|ms|ms as i64)
         ])?;
     }
     for pk in sessions.values() {

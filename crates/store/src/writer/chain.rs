@@ -103,10 +103,25 @@ impl ChainReading {
             let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
             let mut values = Vec::new();
             while let Some(mut step) = read_step(&mut reader)? {
-                let pending:HashMap<_,_>=self.decoded.iter().flat_map(|item|item.batch.new_blob.iter().chain(&item.batch.blobs)).map(|blob|(blob.hash,blob.size)).collect();
-                let mut batch=Batch {input:input.clone(),change:Change::Reparse{chain},observation:None,continues:false,new_blob:None,blobs:Vec::new(),length,parse:vec![step],release:InFlight::default()};
-                attachments::normalize(&mut batch,&archive,&pending)?;
-                step=batch.parse.pop().expect("one chain step");
+                let pending: HashMap<_, _> = self
+                    .decoded
+                    .iter()
+                    .flat_map(|item| item.batch.new_blob.iter().chain(&item.batch.blobs))
+                    .map(|blob| (blob.hash, blob.size))
+                    .collect();
+                let mut batch = Batch {
+                    input: input.clone(),
+                    change: Change::Reparse { chain },
+                    observation: None,
+                    continues: false,
+                    new_blob: None,
+                    blobs: Vec::new(),
+                    length,
+                    parse: vec![step],
+                    release: InFlight::default(),
+                };
+                attachments::normalize(&mut batch, &archive, &pending)?;
+                step = batch.parse.pop().expect("one chain step");
                 projection.step(input, chain, &mut step)?;
                 if let Some(choices) = &step.prepared.choices {
                     values.extend(
