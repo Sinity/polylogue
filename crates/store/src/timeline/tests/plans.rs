@@ -21,6 +21,7 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
     let day = LogicalDay::named("UTC", 240).unwrap();
     let bounds = Some(day.day("2024-03-31".parse().unwrap()));
     let plans = plan(&r, &all(None, false, false), bounds, None);
+    assert_eq!(plans.len(), 3);
     for (plan, index) in plans.iter().zip(["message_at", "event_at"]) {
         assert!(plan.contains(index), "{plan}");
         assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
@@ -34,7 +35,9 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
                 "message_session_at"
             } else if model.is_some() { "message_model_at" } else { "message_at" };
             for cursor in [None, Some(&after)] {
-                for plan in plan(&r, &selection, bounds, cursor) {
+                let plans = plan(&r, &selection, bounds, cursor);
+                assert!(!plans.is_empty());
+                for plan in plans {
                     assert!(plan.contains(index), "wanted {index}: {plan}");
                     assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
                 }
@@ -43,7 +46,9 @@ fn dated_pages_seek_time_session_and_model_indexes_without_sorting_the_selection
     }
     let usage = crate::measure::Selection::default();
     let unknown = Selection { responses: Some(&usage), unknown_model: true, ..all(None, false, false) };
-    for plan in plan(&r, &unknown, None, None) {
+    let plans = plan(&r, &unknown, None, None);
+    assert_eq!(plans.len(), 1);
+    for plan in plans {
         assert!(plan.contains("message_model_at"), "{plan}");
         assert!(!plan.contains("TEMP B-TREE FOR ORDER BY"), "{plan}");
     }
