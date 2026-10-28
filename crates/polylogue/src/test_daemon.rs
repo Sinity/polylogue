@@ -12,6 +12,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) struct ReadObservation {
+    pub limit: polylogue_store::read::limit::ReadLimit,
+    pub owner: std::thread::ThreadId,
+}
+
+impl std::ops::Deref for ReadObservation {
+    type Target = polylogue_store::read::limit::ReadLimit;
+
+    fn deref(&self) -> &Self::Target {
+        &self.limit
+    }
+}
+
 pub struct TestDaemon {
     pub home: PathBuf,
     /// The loop's settings the daemon was started with.
@@ -26,6 +39,10 @@ pub struct TestDaemon {
 /// A daemon whose loop has parsed one Claude Code session, `claude-code:s1`,
 /// holding `text`, with its first derivation pass finished and socket served.
 pub fn start(text: &str) -> TestDaemon {
+    start_with_workers(text, 2)
+}
+
+pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let project = home.join(".claude/projects/-p");
@@ -38,7 +55,7 @@ pub fn start(text: &str) -> TestDaemon {
     let mut config = Config::from_env();
     config.home = home.clone();
     config.tool_dirs.clear();
-    config.workers = 2;
+    config.workers = workers;
     let runtime = service::start(
         &dir.path().join("archive"),
         config.clone(),
@@ -68,7 +85,7 @@ impl TestDaemon {
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
         let status = || match handle(Request::Status, &self.daemon) {
-            Response::Ok { data } => data,
+            Response::Ok { data, .. } => data,
             other => panic!("status failed: {other:?}"),
         };
         while !ok(&status()) {
@@ -79,6 +96,55 @@ impl TestDaemon {
         while status()["busy"] != false {
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Restarts the daemon over the same synthetic archive and home.
+    pub fn restart(&mut self) {
+        let root = self.daemon.archive.root.clone();
+        self.runtime.stop_accepting();
+        self.server.shutdown().unwrap();
+        self.runtime.shutdown().unwrap();
+        self.runtime =
+            service::start(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
+        self.daemon = Arc::clone(&self.runtime.daemon);
+        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
+    }
+
+    pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.daemon.read_limits.lock().unwrap() = Some(sender);
+        receiver
+    }
+
+    pub(crate) fn wait_for_sql(limit: &polylogue_store::read::limit::ReadLimit) {
+        let start = std::time::Instant::now();
+        while limit.sqlite_steps() < 10_000 {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "request never reached SQL"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    pub(crate) fn assert_slot_freed(&self) -> Duration {
+        let start = std::time::Instant::now();
+        let reads = &self.daemon.reads;
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let limit = crate::daemon::execution::limit(
+                        Some(crate::daemon::execution::deadline(Duration::from_secs(2))),
+                        Default::default(),
+                    );
+                    limit.scope(|| reads.reader().map(drop)).unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_secs(2));
+        elapsed
     }
 
     /// Sets an archive setting through the daemon.
@@ -109,3 +175,4 @@ impl Drop for TestDaemon {
 }
 
 pub mod assets;
+mod embeddings;

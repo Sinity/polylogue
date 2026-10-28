@@ -10,7 +10,8 @@ fn read(
 ) -> Response {
     handle(
         Request::Read {
-            start: None,
+            slices: true,
+            selection: None,
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
             ),
@@ -27,7 +28,7 @@ fn read(
 #[test]
 fn a_read_honours_its_view_format_and_budget() {
     let w = test_daemon::start("a prompt long enough to need two pages of one token each");
-    let Response::Ok { data } = read(&w.daemon, "full", "markdown", None, None) else {
+    let Response::Ok { data, .. } = read(&w.daemon, "full", "markdown", None, None) else {
         panic!("markdown read failed")
     };
     assert_eq!(data["format"], "markdown");
@@ -38,21 +39,21 @@ fn a_read_honours_its_view_format_and_budget() {
             .contains("a prompt long enough")
     );
 
-    let Response::Ok { data } = read(&w.daemon, "full", "json", None, None) else {
+    let Response::Ok { data, .. } = read(&w.daemon, "full", "json", None, None) else {
         panic!("json read failed")
     };
     assert_eq!(data["messages"].as_array().unwrap().len(), 1);
     // A view that keeps no block of the session leaves no message.
-    let Response::Ok { data } = read(&w.daemon, "actions", "json", None, None) else {
+    let Response::Ok { data, .. } = read(&w.daemon, "actions", "json", None, None) else {
         panic!("json read failed")
     };
     assert!(data["messages"].as_array().unwrap().is_empty());
 
-    let Response::Ok { data: first } = read(&w.daemon, "full", "json", Some(5), None) else {
+    let Response::Ok { data: first, .. } = read(&w.daemon, "full", "json", Some(5), None) else {
         panic!("paged read failed")
     };
     let next = first["next"].as_str().expect("a second page").to_owned();
-    let Response::Ok { data: second } = read(&w.daemon, "full", "json", Some(5), Some(&next))
+    let Response::Ok { data: second, .. } = read(&w.daemon, "full", "json", Some(5), Some(&next))
     else {
         panic!("paged read failed")
     };
@@ -310,13 +311,13 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
         },
         &w.daemon,
     ) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("export failed: {other:?}"),
     };
     let before = export();
     let document = polylogue_model::export::Document::from_json(&before.to_string()).unwrap();
     assert!(document.sessions[0].session.title.is_none());
-    let Response::Ok { data: listed } = handle(
+    let Response::Ok { data: listed, .. } = handle(
         Request::Query {
             text: "sessions".into(),
             cursor: None,
@@ -331,7 +332,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
     };
     assert_eq!(listed["rows"][0]["title"], "First human question");
     for budget in [None, Some(4000)] {
-        let Response::Ok { data } = read(&w.daemon, "full", "json", budget, None) else {
+        let Response::Ok { data, .. } = read(&w.daemon, "full", "json", budget, None) else {
             panic!("read failed")
         };
         assert_eq!(data["display_title"], listed["rows"][0]["title"]);
@@ -343,7 +344,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
         // The daemon renders plain text; the CLI client adds terminal styling.
         ("terminal", "First human question\n"),
     ] {
-        let Response::Ok { data } = read(&w.daemon, "full", format, None, None) else {
+        let Response::Ok { data, .. } = read(&w.daemon, "full", format, None, None) else {
             panic!("{format} read failed")
         };
         assert!(data["content"].as_str().unwrap().contains(prefix), "{data}");
@@ -366,3 +367,5 @@ mod attachments;
 mod judgments;
 
 mod saved;
+
+mod deliveries;

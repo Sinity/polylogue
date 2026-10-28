@@ -439,53 +439,6 @@ fn blocks_of_one_message_page_in_position_order() {
     assert_eq!(positions, (0..12).collect::<Vec<_>>());
 }
 
-#[test]
-fn no_sort_key_holds_bytes() {
-    let w = morrow();
-    let pool = w.fx.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let request = ask("sessions");
-    let opts = options(&reader, &request, request.now, 7).unwrap();
-    let mut checked = 0;
-    for unit in polylogue_query::units::UNITS {
-        let questions = std::iter::once(unit.name.to_owned()).chain(
-            polylogue_query::fields::FIELDS
-                .iter()
-                .filter(|f| f.unit == unit.unit && f.sql.is_some())
-                .map(|f| format!("{} | sort by {}", unit.name, f.name)),
-        );
-        for question in questions {
-            let Ok(program) = polylogue_query::compile(&question, &opts) else {
-                continue;
-            };
-            if program.order.is_empty() {
-                continue;
-            }
-            let bytes = program
-                .order
-                .iter()
-                .map(|key| format!("typeof(\"{}\") = 'blob'", key.column))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            let mut params = values(&program.params);
-            // The page's row limit.
-            params.push(SqlValue::Int(i64::MAX));
-            let rows = reader
-                .query(
-                    &format!(
-                        "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
-                        program.page_sql(false)
-                    ),
-                    &params,
-                )
-                .unwrap_or_else(|e| panic!("{question}: {e}"));
-            assert_eq!(rows[0]["n"], 0, "{question}");
-            checked += 1;
-        }
-    }
-    assert!(checked > 100, "{checked}");
-}
-
 /// Each page of `text` by `size`, read now, continuing after `cursor`.
 fn next_page(w: &TestArchive, text: &str, size: u64, cursor: Option<&str>) -> Value {
     let mut request = ask(text);

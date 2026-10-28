@@ -22,7 +22,7 @@ fn chatgpt_payload() -> Json {
            "mapping": {"n1": {"id": "n1", "parent": null, "children": [], "message": {
                "id": "m1", "author": {"role": "user"}, "create_time": 1.0,
                "content": {"content_type": "multimodal_text", "parts": [
-                   {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Pic"},
+                   {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Pic", "size_bytes": 99},
                    "see"]},
                "status": "finished_successfully", "recipient": "all", "metadata": {}}}}})
 }
@@ -54,6 +54,46 @@ fn a_chatgpt_capture_reads_the_provider_json_under_the_export_ids() {
             .any(|e| e.kind == "browser_capture")
     );
     assert_eq!(step.counts.used["capture"], 1);
+}
+
+#[test]
+fn an_empty_download_is_a_stored_zero_byte_file() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider": "chatgpt", "provider_session_id": "c1", "turns": [],
+               "attachments": [{"provider_attachment_id": "file-Pic", "message_provider_id": "m1",
+                                "content_base64": ""}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    match &step.output.messages[0].message.blocks[0] {
+        Block::Image(a) => {
+            assert_eq!(a.blob, Some(BlobHash::of(b"")));
+            assert_eq!(a.size, Some(0));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(step.output.blobs.len(), 1);
+    assert!(step.output.blobs[0].bytes.is_empty());
+}
+
+#[test]
+fn a_file_named_by_the_hash_of_stored_bytes_links_without_bytes() {
+    let hash = BlobHash::of(b"hello");
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider": "chatgpt", "provider_session_id": "c1", "turns": [],
+               "attachments": [{"provider_attachment_id": "file-Pic", "message_provider_id": "m1",
+                                "blob": hash.to_string(), "size_bytes": 5}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    match &step.output.messages[0].message.blocks[0] {
+        Block::Image(a) => {
+            assert_eq!(a.blob, Some(hash));
+            assert_eq!(a.size, Some(5));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(step.output.blobs.is_empty());
 }
 
 #[test]

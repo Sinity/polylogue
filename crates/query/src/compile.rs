@@ -294,6 +294,10 @@ fn order_by(keys: &[OrderKey]) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Measure {
     pub what: String,
+    /// The same unit defaults before the query adds its conditions.
+    pub population_sql: String,
+    /// The selected sessions, before an application measure projects its rows.
+    pub selection_sql: String,
     /// The query named no conditions: the measurement covers every session.
     pub everything: bool,
 }

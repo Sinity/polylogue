@@ -26,7 +26,7 @@ fn native_codex_independent_usage_and_rate_only_quota_reach_mcp() {
     });
     let archive = Archive::at(&daemon.daemon.archive.root);
     let usage: serde_json::Value = serde_json::from_str(
-        &crate::mcp::call(
+        &crate::mcp::tests::call(
             &archive,
             "query",
             json!({"query":"sessions | measure usage"})
@@ -44,7 +44,7 @@ fn native_codex_independent_usage_and_rate_only_quota_reach_mcp() {
     );
     assert_eq!(usage["data"]["recorded_usage"]["known_usage"]["input"], 30);
     let quota: serde_json::Value = serde_json::from_str(
-        &crate::mcp::call(
+        &crate::mcp::tests::call(
             &archive,
             "query",
             json!({"query":"sessions | measure quota"})

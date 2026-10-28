@@ -12,7 +12,6 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The setting that turns the collector on.
@@ -184,7 +183,11 @@ impl Drive {
             };
             let url = format!("{rev_url}/{}", next.id);
             let bytes = get(&url, &[("alt", "media")])?;
-            write_atomic(&self.spool.join(format!("{id}.json")), &bytes)?;
+            polylogue_model::atomic_write::write_atomic(
+                &self.spool.join(format!("{id}.json")),
+                &bytes,
+                None,
+            )?;
             state.insert(id.to_owned(), next.id.clone());
             report.revisions_written += 1;
             report.pending += revisions.len() - start - 1;
@@ -232,30 +235,27 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
     if std::fs::read(path).is_ok_and(|old| old == bytes) {
         return Ok(());
     }
-    write_atomic(path, bytes)
-}
-
-/// Written whole or not at all, so the loop never stores half a revision.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write(|file| file.write_all(bytes))
-        .map_err(std::io::Error::from)?;
-    Ok(())
+    Ok(polylogue_model::atomic_write::write_atomic(
+        path, bytes, None,
+    )?)
 }
 
 /// The origin's collector: Google's Drive, the token the operator
 /// authorized in `state_dir`, and the origin's spool.
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
-    setting: SETTING,
-    sync: |state_dir, spool| {
+    background: false,
+    setting: Some(SETTING),
+    sync: |paths, _stop| {
         Drive {
             endpoints: Endpoints::default(),
-            token_path: state_dir.join("token.json"),
-            spool: spool.to_path_buf(),
+            token_path: paths.state_dir.join("token.json"),
+            spool: paths.spool.to_path_buf(),
         }
         .sync()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .err()
+        .map(|e| e.to_string())
+        .into_iter()
+        .collect()
     },
 };
 

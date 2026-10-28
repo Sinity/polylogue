@@ -622,6 +622,10 @@ impl<'a> Compiler<'a> {
                 let p = self.text_param(&value.to_lowercase());
                 Ok(format!("lower({expr}) {} {p}", op.sql()))
             }
+            (Kind::Prefix, FieldOp::Compare(op @ (Op::Eq | Op::Ne), value)) => {
+                let p = self.text_param(value);
+                Ok(format!("{expr} {} {p}", op.sql()))
+            }
             (Kind::Prefix, FieldOp::Match(v)) => {
                 let values = alternatives(v);
                 let mut parts = vec![];

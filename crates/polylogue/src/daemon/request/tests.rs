@@ -52,3 +52,36 @@ fn response_boundary_masks_errors_and_nested_details_without_erasing_empty_data(
     assert_eq!(value["detail"]["code"], 0);
     assert_eq!(value["detail"]["known"], false);
 }
+
+#[test]
+fn only_declared_references_survive_cleaning() {
+    let token = "AKIAIOSFODNN7EXAMPLE";
+    let id = polylogue_model::MessageId::parse(&format!("claude-code:{token}")).unwrap();
+    let data = serde_json::json!({"declared":id,"session":{"id":id},"authored":token});
+    let mut references = References::default();
+    references.add("/declared", &id);
+    let Response::Ok { data, .. } = (Response::Ok { data, references }).masked() else {
+        panic!()
+    };
+    assert_eq!(data["declared"], id.to_string());
+    assert_ne!(data["session"]["id"], id.to_string());
+    assert_ne!(data["authored"], token);
+}
+
+#[test]
+fn command_continuations_keep_bytes_while_authored_nested_fields_are_masked() {
+    let token = "AKIAIOSFODNN7EXAMPLE";
+    let response = References::default()
+        .response(serde_json::json!({
+            "cursor":token,"next":token,"previous":token,
+            "authored":{"cursor":token,"next":token,"previous":token}
+        }))
+        .masked();
+    let Response::Ok { data, .. } = response else {
+        panic!()
+    };
+    for field in ["cursor", "next", "previous"] {
+        assert_eq!(data[field], token);
+        assert_ne!(data["authored"][field], token);
+    }
+}

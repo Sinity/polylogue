@@ -2,6 +2,7 @@
 //! access rules, the reader's pages and its JSON API.
 
 use super::*;
+use crate::daemon::service::handle;
 use crate::test_daemon::{self, TestDaemon};
 use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
@@ -183,8 +184,9 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         let (s, _, body) = send(&r, req).await;
         assert_eq!(s, StatusCode::OK);
         let api: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let Response::Ok { data } = handle(
-            Request::Read { start: None,
+        let Response::Ok { data, .. } = handle(
+            Request::Read {
+            slices: true, selection: None,
                 target: crate::daemon::ReadTarget::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 ),
@@ -496,8 +498,9 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
     drop(file);
     r.w.wait_for(|status| {
         if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read { start: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
-        matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
+        let response = handle(Request::Read {
+            slices: true, selection: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
+        matches!(response, Response::Ok { data, .. } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
     });
     rt().block_on(async {
         for path in [
@@ -546,7 +549,7 @@ fn cost_uses_public_accounting_and_session_scope() {
                 send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{html}");
             assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-            let Response::Ok { data } = handle(
+            let Response::Ok { data, .. } = handle(
                 Request::Query {
                     text: format!("{scope} | measure usage"),
                     cursor: None,
@@ -753,3 +756,12 @@ mod attachments;
 mod pages;
 
 mod benchmark;
+
+mod notes;
+mod search_api;
+mod search_measurements;
+mod timeline;
+
+mod cancellation;
+mod day_cost_measurements;
+mod measurement;

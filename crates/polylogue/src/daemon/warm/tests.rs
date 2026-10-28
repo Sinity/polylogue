@@ -67,6 +67,33 @@ fn values_with_spaces_are_quoted() {
 }
 
 #[test]
+fn count_failures_are_visible_and_a_success_clears_them() {
+    let daemon = crate::test_daemon::start("count worker failure");
+    let warm = Warm::default();
+    warm.refresh_counts(&daemon.daemon.reads);
+    assert!(warm.count_error().is_none());
+    let before = warm.archive_counts.lock().unwrap().clone().unwrap();
+    let closed = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
+    closed.close();
+    warm.refresh_counts(&closed);
+    assert!(warm.count_error().is_some());
+    assert_eq!(
+        warm.archive_counts.lock().unwrap().as_ref().unwrap().status,
+        before.status
+    );
+    warm.archive_counts.lock().unwrap().as_mut().unwrap().took = Duration::ZERO;
+    warm.recount_wanted.store(false, Ordering::Release);
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let cached = warm.counts(&reader, "later position").unwrap();
+    assert_eq!(cached.position, before.position);
+    assert!(warm.count_error().is_some());
+    assert!(warm.recount_wanted.load(Ordering::Acquire));
+    drop(reader);
+    warm.refresh_counts(&daemon.daemon.reads);
+    assert!(warm.count_error().is_none());
+}
+
+#[test]
 fn completions_escape_help_and_omit_values_with_controls() {
     let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
     let mut values = vec!["tag:ordinary".into(), format!("query:{hostile}")];
@@ -92,5 +119,73 @@ fn completions_escape_help_and_omit_values_with_controls() {
             "claude-code:abc".into(),
             polylogue_render::terminal::escape(hostile)
         )]
+    );
+}
+
+#[test]
+fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
+    let data = Completion {
+        values: vec![
+            format!("repo:{}", quoted("two words")),
+            format!("repo:{}", quoted("path\\part \"λ\"")),
+        ],
+        ..Completion::default()
+    };
+    assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
+    assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
+    let value = &completions(&data, "repo:path")[0].0;
+    let parsed = polylogue_query::parse(value).unwrap();
+    let polylogue_query::ast::Source::Sessions { cond } = parsed.source else {
+        panic!()
+    };
+    let polylogue_query::ast::CondKind::Match {
+        value: polylogue_query::ast::Value::One { text, .. },
+        ..
+    } = cond.kind
+    else {
+        panic!()
+    };
+    assert_eq!(text, "path\\part \"λ\"");
+}
+
+#[test]
+fn completion_reads_declared_values_and_refreshes_observed_models() {
+    let d = crate::test_daemon::start("synthetic prompt");
+    let values = |word: &str| match crate::daemon::service::handle(
+        crate::daemon::Request::Complete { word: word.into() },
+        &d.daemon,
+    ) {
+        crate::daemon::Response::Ok { data, .. } => data,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        values("live:")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["value"] == "live:waiting")
+    );
+    assert!(values("model:").as_array().unwrap().is_empty());
+    let mut message: serde_json::Value = serde_json::from_str(
+        &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
+    )
+    .unwrap();
+    message["message"]["model"] = json!("model with spaces");
+    std::fs::write(
+        d.home.join(".claude/projects/-p/s1.jsonl"),
+        format!(
+            "{}{}\n",
+            polylogue_testkit::claude_user("u1", "s1", "synthetic prompt"),
+            message
+        ),
+    )
+    .unwrap();
+    d.wait_for(|s| s["store"]["messages"] == 2);
+    assert!(
+        values("model:model")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["value"] == "model:\"model with spaces\"")
     );
 }

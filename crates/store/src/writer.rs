@@ -24,6 +24,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod attachments;
 mod batch;
 mod bytes;
 mod excluded;
@@ -177,6 +178,11 @@ const ROWS_PER_TRANSACTION: usize = 50_000;
 /// Checked with `EXPLAIN QUERY PLAN` over the store's statements
 /// (2026-10-19).
 const READ_ONLY_INDEXES: &[&str] = &[
+    "message_at",
+    "message_session_at",
+    "message_model_at",
+    "message_session_model_at",
+    "event_at",
     "session_activity",
     "session_started",
     "session_cwd",
@@ -195,6 +201,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "commit_link_hash",
     "pr_link_number",
     "work_node_session",
+    "work_node_verification",
     "removed_session_changed",
     "message_pem",
 ];
@@ -1225,12 +1232,15 @@ impl Inner {
         crate::write_lock::commit(atx)?;
         crate::fault::check("write.between_commits", "")?;
 
+        let indexed = batches
+            .map(|b| attachments::with_stored_blobs(b, &self.archive))
+            .collect::<Result<Vec<_>>>()?;
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&itx)?;
         let mut stats = (0u64, 0u64);
-        for (b, chain) in batches.zip(chains) {
+        for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
                     stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;

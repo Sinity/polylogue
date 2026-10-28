@@ -314,10 +314,48 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            46,
-            "0bf53870a37f7b91c5c0a43627932f59144993ea4a208d8f0dbf037a132564c7".to_owned(),
+            52,
+            "5c4ccbd763a4443e606e3b90373f869f93e36cf0581cd3bdab25f9503d69e5e1".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"
     );
+}
+
+#[test]
+fn read_indexes_are_added_in_place_and_survive_reopen() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(INDEX).unwrap();
+    set_version(&conn, INDEX_VERSION).unwrap();
+    conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
+        .unwrap();
+    assert!(same_index_schema(&conn).unwrap());
+    ensure_index(&conn).unwrap();
+    let base = Connection::open_in_memory().unwrap();
+    base.execute_batch(INDEX).unwrap();
+    let base = shape(&base).unwrap();
+    let read_indexes: Vec<_> = shape(&conn)
+        .unwrap()
+        .into_iter()
+        .filter(|item| item.0 == "index" && !base.contains(item))
+        .map(|item| item.1)
+        .collect();
+    assert!(!read_indexes.is_empty());
+    for name in read_indexes {
+        conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
+        assert!(same_index_schema(&conn).unwrap(), "missing {name}");
+        ensure_index(&conn).unwrap();
+        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    }
+    assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+    assert_eq!(
+        conn.query_row("SELECT id FROM input_ref", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "synthetic"
+    );
+    conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
+        .unwrap();
+    assert!(!same_index_schema(&conn).unwrap());
 }

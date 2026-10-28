@@ -28,7 +28,7 @@ pub fn seed(daemon: &TestDaemon) -> &'static str {
         },
         &daemon.daemon,
     );
-    let Response::Ok { data } = imported else {
+    let Response::Ok { data, .. } = imported else {
         panic!("{imported:?}")
     };
     assert_eq!(data["pass"]["errors"], serde_json::json!([]));

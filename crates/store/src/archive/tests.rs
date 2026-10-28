@@ -14,6 +14,79 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
+fn opening_adds_model_completion_index_without_rebuilding_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index
+        .execute_batch("DROP INDEX message_model; DROP INDEX message_model_at;")
+        .unwrap();
+    let completion_plan = |index: &Connection| -> Vec<String> {
+        index
+            .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let before = completion_plan(&index);
+    assert!(
+        before.iter().any(|step| step.contains("SCAN message")),
+        "{before:?}"
+    );
+    assert!(
+        before.iter().any(|step| step.contains("TEMP B-TREE")),
+        "{before:?}"
+    );
+    index
+        .execute("INSERT INTO meta VALUES ('example', 'kept')", [])
+        .unwrap();
+    let generation: String = index
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    drop(index);
+    drop(lock);
+    for _ in 0..2 {
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let index = open_read(&archive.index_db()).unwrap();
+        assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+        for (key, expected) in [("example", "kept"), ("generation", generation.as_str())] {
+            assert_eq!(
+                index
+                    .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                expected
+            );
+        }
+        let plan = completion_plan(&index);
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("COVERING INDEX message_model")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step == "SCAN message" || step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        drop(index);
+        drop(lock);
+    }
+}
+
+#[test]
+fn an_incorrect_model_completion_index_is_rebuilt() {
+    replaced_index_keeps_the_archive(
+        "DROP INDEX message_model; CREATE INDEX message_model ON message(role);",
+    );
+}
+
+#[test]
 fn an_index_left_unsynced_is_rebuilt() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
@@ -113,7 +186,7 @@ fn replaced_index_keeps_the_archive(change: &str) {
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
     assert!(
-        schema::same_schema(&index, &[schema::INDEX]).unwrap(),
+        schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap(),
         "{change}"
     );
     assert_eq!(
@@ -280,4 +353,52 @@ fn opening_finishes_every_blob_row_left_writing() {
         crate::staging::pending_blobs(&conn, "").unwrap()[0].blob,
         used_missing
     );
+}
+
+#[test]
+fn missing_time_indexes_are_created_without_rebuilding_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index
+        .execute_batch(
+            "DROP INDEX message_at; DROP INDEX event_at;
+             DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;
+        INSERT INTO input_ref(id) VALUES ('synthetic');
+        INSERT INTO meta VALUES ('index-marker','present');",
+        )
+        .unwrap();
+    drop(index);
+    drop(lock);
+    for _ in 0..2 {
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let index = open_read(&archive.index_db()).unwrap();
+        assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
+        assert_eq!(
+            index
+                .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "present"
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT id FROM input_ref", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "synthetic"
+        );
+        drop(index);
+        drop(lock);
+    }
+}
+
+#[test]
+fn opening_clears_prepared_output_left_by_a_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let output = archive.staging_dir().join("unfinished-output");
+    std::fs::write(&output, b"synthetic prepared output").unwrap();
+    drop(lock);
+    let (_archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert!(!output.exists());
 }

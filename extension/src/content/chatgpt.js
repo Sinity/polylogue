@@ -87,7 +87,7 @@
     return {
       status: 200,
       info: { id: current.id, temporary: current.temporary, url: current.temporary ? location.href : pageUrl(current.id) },
-      body: await response.blob(),
+      body: response,
     };
   }
 
@@ -153,7 +153,7 @@
     return {
       status: 200,
       info: { name: link.file_name || file.name || null, media_type: bytes.headers.get("content-type") },
-      body: await bytes.blob(),
+      body: bytes,
     };
   }
 

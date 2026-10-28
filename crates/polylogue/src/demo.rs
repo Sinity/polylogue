@@ -111,7 +111,7 @@ fn run(directory: &Path) -> Result<Tour, String> {
             },
         )?;
         match service::handle(request, &runtime.daemon) {
-            Response::Ok { data } => Ok(data),
+            Response::Ok { data, .. } => Ok(data),
             Response::Error { kind, message, .. } => Err(format!("{command}: {kind}: {message}")),
         }
     };

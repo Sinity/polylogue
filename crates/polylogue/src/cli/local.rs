@@ -262,3 +262,14 @@ fn open_reader(json: bool) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// The same standing instructions the MCP server supplies at initialization.
+pub fn manual(_: &Command, _: &Values, json: bool) -> ExitCode {
+    let text = crate::manual::text();
+    if json {
+        println!("{}", serde_json::json!({"manual": text}));
+    } else {
+        print!("{text}");
+    }
+    ExitCode::SUCCESS
+}

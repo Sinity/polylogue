@@ -330,6 +330,12 @@ pub trait ExportParser: Send {
         sink: &mut crate::document::Sink<'_>,
         owners: &mut dyn ExportState,
     ) -> Result<(), String>;
+
+    /// A message outside its chunk, such as a document's system header.
+    /// Other messages use their record's range.
+    fn message_range(&self, _message: &polylogue_model::Message) -> Option<Range<u64>> {
+        None
+    }
 }
 
 /// Conversation scan_state within one export operation. A new ownership key returns
@@ -366,15 +372,18 @@ pub fn parse_item(
         owners,
     )?;
     for row in &mut output.messages {
-        row.offset = range.start;
-        row.end = range.end;
+        let source = parser
+            .message_range(&row.message)
+            .unwrap_or_else(|| range.clone());
+        row.offset = source.start;
+        row.end = source.end;
     }
     for row in &mut output.documents {
         row.offset = range.start;
         row.end = range.end;
     }
     for event in &mut output.events {
-        event.range = Some((range.start, range.end));
+        event.range.get_or_insert((range.start, range.end));
     }
     Ok(crate::parse::Step {
         output,
