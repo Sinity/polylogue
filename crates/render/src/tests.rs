@@ -20,6 +20,7 @@ pub(crate) fn message(
         stop_reason: None,
         reported_cost_usd: None,
         duration_ms: None,
+        attrs: Default::default(),
         production: Default::default(),
     }
 }
@@ -63,6 +64,7 @@ pub(crate) fn conversation() -> Vec<Message> {
             Role::User,
             Some(PromptKind::Harness),
             vec![Block::ToolResult {
+                reported_duration_ms: None,
                 call_id: Some("c1".into()),
                 outcome: ToolOutcome::Error {
                     reason: Some(ErrorReason::ExitCode(101)),

@@ -5,6 +5,7 @@ use polylogue_model::{Attachment, Block, ToolOutcome};
 fn unicode_attachment_labels_are_charged_before_splitting_and_described_only_when_visible() {
     let mut message = conversation().remove(0);
     message.blocks = vec![Block::ToolResult {
+        reported_duration_ms: None,
         call_id: None,
         outcome: ToolOutcome::Ok,
         output: Some("Earlier output without attachment labels. ".repeat(4)),

@@ -31,6 +31,7 @@ pub(super) fn structured_message(reverse: bool) -> Message {
             path: None,
         },
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call".into()),
             outcome: polylogue_model::ToolOutcome::Ok,
             output: Some("Synthetic output".into()),

@@ -85,6 +85,7 @@ fn tool_projection_aliases_reuse_redaction_and_independent_values_keep_their_typ
             input: json!({"command":tail, "notes":"independent command notes", "empty":"", "zero":0, "flag":false, "nil":null}),
         },
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: ToolOutcome::Ok,
             output: Some(result.into()),
@@ -143,6 +144,7 @@ fn text_masking_shows_the_same_text_and_leaves_unshown_values() {
     .unwrap();
     message.blocks = vec![
         crate::Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: crate::ToolOutcome::Ok,
             output: Some(format!(

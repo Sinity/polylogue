@@ -268,12 +268,14 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
             redacted: *redacted,
         },
         Block::ToolResult {
+            reported_duration_ms,
             call_id,
             outcome,
             output,
             data,
             attachments,
         } if output.is_some() || data.is_some() => Block::ToolResult {
+            reported_duration_ms: *reported_duration_ms,
             call_id: call_id.clone(),
             outcome: outcome.clone(),
             output: output.as_ref().map(|_| String::new()),

@@ -153,6 +153,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             path: None,
         });
         message.blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call-1".into()),
             outcome: ToolOutcome::Ok,
             output: Some("Synthetic Ω output".into()),

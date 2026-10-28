@@ -98,6 +98,18 @@ pub struct Message {
     /// How the harness produced the message, beyond its content.
     #[serde(default, skip_serializing_if = "Production::is_empty")]
     pub production: Production,
+    /// Provider fields indexed as given, including nested citations and content details.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub attrs: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Server tools are billed separately from model tokens.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerToolUse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u64>,
 }
 
 /// What the harness recorded about producing a message: the settings it
@@ -105,6 +117,14 @@ pub struct Message {
 /// reads these; none of it is content.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Production {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u64>,
+    /// Provider response channel, such as commentary or final.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+
     /// These recorded items have no evidenced model-response grouping.
     /// None is an absent update; a supplied false remains distinct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +194,9 @@ impl Production {
             &mut self.response_boundary_unknown,
             later.response_boundary_unknown,
         );
+        take(&mut self.server_tool_use, later.server_tool_use);
+        take(&mut self.iterations, later.iterations);
+        take(&mut self.phase, later.phase);
         take(&mut self.effort, later.effort);
         take(&mut self.requested_model, later.requested_model);
         take(&mut self.advisor_model, later.advisor_model);

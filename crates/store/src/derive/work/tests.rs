@@ -582,6 +582,7 @@ fn unknown_checks_stay_separate_from_failures_and_later_completion_updates_total
             Role::User,
             8_000,
             vec![Block::ToolResult {
+                reported_duration_ms: None,
                 call_id: Some("t5".into()),
                 outcome: ToolOutcome::Ok,
                 output: Some("finished".into()),

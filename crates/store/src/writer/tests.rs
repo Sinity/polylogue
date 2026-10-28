@@ -237,6 +237,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         }];
         let mut result = text_message("r", "s", Role::User, "", None);
         result.blocks = vec![Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("t1".into()),
             outcome: ToolOutcome::Error {
                 reason: Some(ErrorReason::ExitCode(101)),
@@ -285,6 +286,7 @@ fn prose_and_tool_output_are_searchable_once_a_first_build_ends() {
     let w = test_archive();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
+        reported_duration_ms: None,
         call_id: None,
         outcome: ToolOutcome::Ok,
         output: Some("compiler said narwhal".into()),

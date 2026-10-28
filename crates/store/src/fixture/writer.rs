@@ -101,6 +101,7 @@ pub fn call(
         Role::User,
         at + 1,
         vec![Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some(call_id),
             outcome,
             output: Some(output.into()),

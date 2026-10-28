@@ -16,6 +16,7 @@ fn document_pages_mask_hidden_prefix_and_refuse_cross_content_stale_and_invalid_
     doc.source_time = Timestamp::from_unix_ms(1);
     doc.blocks = vec![
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: ToolOutcome::Ok,
             output: Some("-----BEGIN PRIVATE KEY-----\n".into()),

@@ -50,6 +50,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
             } else if tools && n % 3 == 2 {
                 message.prompt_kind = None;
                 message.blocks.push(Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id: Some(format!("call-{}", n / 3)),
                     outcome: ToolOutcome::Ok,
                     output: Some("Synthetic tool output".into()),
