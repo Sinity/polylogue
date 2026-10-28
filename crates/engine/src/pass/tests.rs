@@ -5,6 +5,15 @@ use std::os::unix::fs::MetadataExt;
 
 #[test]
 fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() {
+    failed_rewrite_then_growth(false);
+}
+
+#[test]
+fn extent_checkpoint_keeps_tail_detection_after_a_rewrite_read_failure() {
+    failed_rewrite_then_growth(true);
+}
+
+fn failed_rewrite_then_growth(edit_tail: bool) {
     let home = ClaudeHome::new();
     let old = "original body ".repeat(40);
     home.append("checkpoint.jsonl", &claude_user("one", "session", &old));
@@ -34,6 +43,13 @@ fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() 
     assert!(failed.errors[0].starts_with("read "), "{failed:?}");
     std::fs::rename(&aside, &path).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    let second = if edit_tail {
+        let source = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, source.replace("second body", "edited body")).unwrap();
+        "edited body"
+    } else {
+        "second body"
+    };
     home.append(
         "checkpoint.jsonl",
         &claude_user("three", "session", "third body"),
@@ -42,7 +58,7 @@ fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() 
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
         home.texts("session"),
-        [old, "second body".into(), "third body".into()]
+        [old, second.into(), "third body".into()]
     );
     let reader = engine.reads.reader().unwrap();
     let known = reader
@@ -59,4 +75,10 @@ fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() 
         .unwrap();
     assert_eq!(actual, std::fs::read(&path).unwrap());
     assert_eq!(known.parsed_upto, known.stored);
+    assert_eq!(
+        reader
+            .query("SELECT count(DISTINCT chain) AS n FROM a.revision", &[])
+            .unwrap()[0]["n"],
+        if edit_tail { 2 } else { 1 },
+    );
 }

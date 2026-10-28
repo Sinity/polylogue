@@ -76,7 +76,31 @@ fn input_rows(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>,
             (number, chain, length as u64)
         }
         (Change::Unchanged, _, Some((number, chain, _, _))) => (number, chain, b.length),
-        (Change::Appended { from }, false, Some((_, chain, _, _))) => {
+        (Change::Appended { from }, false, Some((_, chain, length, _))) => {
+            if let Some(blob) = &b.new_blob
+                && *from != length as u64
+            {
+                // A repeated committed append may name the same extent, but
+                // stale source state must not grow a prefix over later bytes.
+                let retry = b.length == length as u64
+                    && tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM extent WHERE input=?1 AND chain=?2
+                         AND offset=?3 AND length=?4 AND blob=?5 AND blob_offset=0)",
+                        params![
+                            b.input.id,
+                            chain,
+                            *from as i64,
+                            blob.size as i64,
+                            &blob.hash.0[..]
+                        ],
+                        |r| r.get::<_, bool>(0),
+                    )?;
+                if !retry {
+                    return Err(StoreError::Invalid(
+                        "an append must start at the stored length".into(),
+                    ));
+                }
+            }
             rows.revision = Some(revision(next, "appended", chain));
             (next, chain, *from)
         }
