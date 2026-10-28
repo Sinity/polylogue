@@ -423,3 +423,13 @@ masking and feed validation have the same implementation as other clients.
 `polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`
 returns an independent ordinary JSON value. No query or read is redirected to a
 local database. A write is submitted once; the caller owns its retry ID.
+Session [measures](measures.md) include read-time facets with IDF and lift,
+dated billing outlooks, recorded time lanes and field comparisons. The
+`session_span` derivation reads each session's parsed messages and paired calls
+once and writes `session_span` and `session_time` together. `counts` writes typed
+session count columns from the shared shown-path and action definitions.
+Single-session reads compute a behind product with the same function;
+population summaries count pending products. Facets group the recorded rows at
+read time. Time, comparison and facet pages use the ordinary query cursor.
+[Derived data](derived.md) and `explain derived` read the same validity,
+parameter and evidence declarations.

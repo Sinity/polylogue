@@ -38,6 +38,16 @@ CREATE TABLE session (
   branch            TEXT,
   harness           TEXT,
   harness_version   TEXT,
+  message_count INTEGER,
+  human_prompt_count INTEGER,
+  human_command_count INTEGER,
+  word_count INTEGER,
+  human_word_count INTEGER,
+  model_word_count INTEGER,
+  thinking_count INTEGER,
+  compaction_count INTEGER,
+  tool_call_count INTEGER,
+  error_count INTEGER,
   -- Live facts: updated in the session's write transaction
   -- when a hook line for it is written, so they follow data, not
   -- the clock; the live state itself is computed at read time from these and now.
@@ -451,19 +461,42 @@ CREATE TABLE derive_state (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX derive_state_session ON derive_state(session_pk);
 
--- Per-session facts the survival measures read (derived: session_survival).
--- A session without messages has no row.
-CREATE TABLE session_survival (
-  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
-  first_at          INTEGER,                -- the earliest message time
-  last_at           INTEGER,                -- the latest message time
-  first_failure_at  INTEGER,                -- the session's first failed tool call
-  prompts_to_failure INTEGER NOT NULL,      -- human prose prompts up to first_failure_at, else up to last_at
-  prompted          INTEGER NOT NULL,       -- 1 when a human typed a prose prompt
-  last_prompt_unanswered INTEGER NOT NULL   -- 1 when no model message follows the last prose prompt
+-- Clocks and interval calculations over one session's parsed rows.
+CREATE TABLE session_span (
+  session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
+  first_at INTEGER,
+  last_at INTEGER,
+  time_source TEXT NOT NULL,
+  wall_ms INTEGER,
+  clustered_ms INTEGER,
+  tool_sum_ms INTEGER,
+  tool_union_ms INTEGER,
+  tool_overlap_ms INTEGER,
+  tool_untimed INTEGER NOT NULL,
+  tool_no_result INTEGER NOT NULL,
+  tool_same_timestamp INTEGER NOT NULL,
+  tool_reversed INTEGER NOT NULL,
+  timed_messages INTEGER NOT NULL,
+  untimed_messages INTEGER NOT NULL,
+  unordered_gaps INTEGER NOT NULL,
+  first_failure_at INTEGER,
+  prompts_to_failure INTEGER NOT NULL,
+  prompted INTEGER NOT NULL,
+  ends_with TEXT NOT NULL,
+  ends_with_message TEXT,
+  last_stop_reason TEXT
 ) STRICT;
+CREATE INDEX session_span_wall ON session_span(wall_ms);
+CREATE INDEX session_span_clustered ON session_span(clustered_ms);
+CREATE INDEX session_span_ending ON session_span(ends_with);
 
-
+CREATE TABLE session_time (
+  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  lane TEXT NOT NULL CHECK(lane IN ('tool','model','human','unattributed')),
+  key TEXT NOT NULL,
+  ms INTEGER NOT NULL CHECK(ms >= 0),
+  PRIMARY KEY(session_pk,lane,key)
+) STRICT, WITHOUT ROWID;
 
 -- Text that is not a conversation (claude.ai documents, for example), with the
 -- same shown-version rule as messages and interned text.

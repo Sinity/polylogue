@@ -312,8 +312,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         cursor.as_ref().map_or(ask.now, |c| c.now),
         seed,
     )?;
-    let program = polylogue_query::compile(ask.text, &opts)?;
+    let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
+    prepare_measure(&mut program, ask.page_size)?;
     let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
@@ -339,37 +340,108 @@ fn answer(
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
+        let (definition, _) = super::measure::find_checked(&m.what)?;
+        if let Some(paging) = definition.paging {
+            let (rows, count, next, _) = read_page(reader, program, &after, seed, question)?;
+            let session_order: std::collections::BTreeMap<_, _> = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r["_session_id"].as_str().map(|id| (id.to_owned(), i)))
+                .collect();
+            let keys = rows.iter().filter_map(|r| r["_pk"].as_i64()).collect();
+            let selection = polylogue_store::measure::Selection {
+                sessions: Some(keys),
+                ..Default::default()
+            };
+            let data = match paging {
+                super::measure::Paging::Facets => {
+                    let selected =
+                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let population = reader.query(&m.population_sql, &params)?;
+                    let scope = polylogue_store::measure::Selection {
+                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
+                        population: Some(
+                            population
+                                .iter()
+                                .filter_map(|r| r["_pk"].as_i64())
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    };
+                    let summary = polylogue_store::measure::facets::summary(reader, &scope)?;
+                    let mut facets = rows;
+                    polylogue_store::measure::facets::weights(&mut facets, &summary);
+                    json!({"summary":summary,"values":facets})
+                }
+                super::measure::Paging::Sessions => {
+                    let mut data = super::measure::run(
+                        reader,
+                        &m.what,
+                        selection.sessions,
+                        program.now,
+                        day,
+                        None,
+                    )?;
+                    let sessions = if data.is_array() {
+                        data.as_array_mut()
+                    } else {
+                        data["sessions"].as_array_mut()
+                    };
+                    if let Some(sessions) = sessions {
+                        sessions.sort_by_key(|p| {
+                            session_order
+                                .get(p["session"].as_str().unwrap_or(""))
+                                .copied()
+                        });
+                    }
+                    if definition.name == "time" {
+                        data = json!({"sessions":data});
+                    }
+                    let selected =
+                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let all = polylogue_store::measure::Selection {
+                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
+                        ..Default::default()
+                    };
+                    data["pending"] = json!(polylogue_store::measure::time::pending(reader, &all)?);
+                    if definition.name == "compare" {
+                        let (_, options) = super::measure::find_checked(&m.what)?;
+                        let (varies, unknown, pending) =
+                            polylogue_store::measure::comparison::summary(reader, &all, options)?;
+                        data["varies"] = json!(varies);
+                        data["unknown"] = json!(unknown);
+                        data["pending"] = json!(pending);
+                    }
+                    data
+                }
+            };
+            return Ok(
+                json!({"outcome":"measure","measure":m.what,"data":data,"count":count,"next":next,"read_at":read_at}),
+            );
+        }
         let sessions = if m.everything {
             None
         } else {
             let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
             Some(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
         };
-        let data = super::measure::run(reader, &m.what, sessions, program.now, day)?;
-        return Ok(json!({
-            "outcome": "measure",
-            "measure": m.what,
-            "data": data,
-            "read_at": read_at,
-        }));
+        let population = if definition.name == "facets" {
+            Some(
+                reader
+                    .query(&m.population_sql, &params)?
+                    .iter()
+                    .filter_map(|r| r["_pk"].as_i64())
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let data = super::measure::run(reader, &m.what, sessions, program.now, day, population)?;
+        return Ok(
+            json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
+        );
     }
-    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
-    let page_size = program.page_size.max(1);
-    let mut page_params = params.clone();
-    if let Some(after) = &after {
-        page_params.extend(after.iter().map(key_value));
-    }
-    // One row past the page says whether another page follows.
-    page_params.push(SqlValue::Int(
-        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
-    ));
-    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
-    let more = rows.len() as u64 > page_size;
-    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
-    let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
-        _ => None,
-    };
+    let (mut rows, count, next, without) = read_page(reader, program, &after, seed, question)?;
 
     if program.shape == Shape::Rows {
         snippets(reader, program, &mut rows)?;
@@ -423,6 +495,71 @@ fn answer(
         out["why"] = why(reader, program, &params)?;
     }
     Ok(out)
+}
+
+fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), Failure> {
+    let Some(m) = program.measure.clone() else {
+        return Ok(());
+    };
+    let (definition, options) = super::measure::find_checked(&m.what)?;
+    match definition.paging {
+        Some(super::measure::Paging::Sessions) => {
+            program.sql = polylogue_store::measure::comparison::page_query(&program.sql);
+        }
+        Some(super::measure::Paging::Facets) => {
+            program.counts_near = false;
+            program.page_size = page_size.unwrap_or(100);
+            program.sql = polylogue_store::measure::facets::query(
+                &m.selection_sql,
+                &m.population_sql,
+                options,
+                &program.zone,
+                program.day_start_minutes,
+            )?;
+            program.order = vec![
+                polylogue_query::OrderKey {
+                    column: "family".into(),
+                    descending: false,
+                },
+                polylogue_query::OrderKey {
+                    column: "value".into(),
+                    descending: false,
+                },
+            ];
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Row selection for ordinary queries and paged measures uses the same SQL and cursor.
+fn read_page(
+    reader: &Reader<'_>,
+    program: &Program,
+    after: &Option<Vec<Value>>,
+    seed: u64,
+    question: String,
+) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
+    let params = values(&program.params);
+    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
+    let page_size = program.page_size.max(1);
+    let mut page_params = params;
+    if let Some(after) = after {
+        page_params.extend(after.iter().map(key_value));
+    }
+    // One row past the page says whether another page follows.
+    page_params.push(SqlValue::Int(
+        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
+    ));
+    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
+    let more = rows.len() as u64 > page_size;
+    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
+    let next = match rows.last() {
+        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
+        _ => None,
+    };
+
+    Ok((rows, count, next, without))
 }
 
 /// What one read transaction read: the index generation and the

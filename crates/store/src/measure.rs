@@ -1,16 +1,20 @@
 //! Measurement reads: tokens by kind, cost, subscription quota, and the
 //! measures over sessions and tool calls. Each runs at read time over the
 //! sessions a query selects; facts that depend only on one session's rows
-//! come from derivations (`session_survival`, message cost). Every figure says
+//! come from derivations (`session_span`, message cost). Every figure says
 //! how many items it could not count; unknown is never shown as zero.
 //! Hidden sessions stay in every figure: hiding changes what is listed, not
 //! what was used.
 
+pub mod comparison;
 pub mod daily;
 pub mod drift;
+pub mod facets;
+pub mod outlook;
 pub mod quota;
 mod reports;
 pub mod survival;
+pub mod time;
 pub mod tool_calls;
 mod usage;
 pub(crate) use usage::RESPONSE_ROWS;
@@ -26,6 +30,8 @@ use crate::{Reader, Result};
 pub struct Selection {
     /// Session primary keys, from a sessions query.
     pub sessions: Option<Vec<i64>>,
+    /// The sessions unit's default population, supplied by Query for global comparisons.
+    pub population: Option<Vec<i64>>,
     /// Unix ms bounds on a message's time, `since` inclusive.
     pub since: Option<i64>,
     pub until: Option<i64>,
@@ -130,10 +136,8 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
          WHERE {cond} AND EXISTS (
            SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
-             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = hn.first_note
-                             AND later.commit_seq > hn.commit_seq)
-             AND NOT EXISTS (SELECT 1 FROM a.note_relation w
-                             WHERE w.kind = 'withdraws' AND w.other = 'note:' || hn.first_note))"
+             AND {} )",
+        polylogue_model::note_sql::live_note("hn")
     );
     let n: i64 = reader
         .conn()?

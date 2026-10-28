@@ -44,6 +44,8 @@ pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
+pub mod note_sql;
+pub mod session_sql;
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
@@ -53,3 +55,5 @@ pub use work::{WorkEdgeKind, WorkNodeKind};
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
 /// (`serde_json` with `arbitrary_precision`).
 pub type Json = serde_json::Value;
+
+pub mod derived;

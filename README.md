@@ -77,7 +77,7 @@ it.
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work (words and, with vectors, similarity, ranked together, by pages) with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
-| `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
+| `measure WHAT` | Tokens and cost, subscription windows, recorded time lanes, facets, comparisons and billing outlooks. `measure --help` lists the computations; [measures](docs/measures.md) defines their units and unknowns. |
 | `timeline [--date DATE]` | Recorded activity, logical-day calendar counts, this day across years and undated records ([logical days](docs/web-calendar.md)). |
 | `cost [--query QUERY] [--date DATE]` | Selected-session usage and paged physical responses, optionally in one logical day, with model/day drill-downs and explicit unknown source times ([cost](docs/web-calendar.md)). |
 | `live`, `notices`, `work` | Sessions running now, signal notices and the work graph. `status` also shows the last day's notices. |
@@ -315,3 +315,6 @@ Gemini CLI `SessionStart` injects the brief and `BeforeAgent` injects
 pasted-session takeover context through `hookSpecificOutput.additionalContext`.
 Hook timeouts in its settings are milliseconds. `PreCompress` records an event
 because Gemini does not accept context from that event.
+
+[Session measures](docs/measures.md) cover recorded time lanes, comparisons,
+facets and dated billing outlooks through the measure registry.

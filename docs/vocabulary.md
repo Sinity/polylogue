@@ -302,3 +302,26 @@ the same change.
 
 Excision, epoch and sealed are kept. **Receipt** is only the provider's
 record of a chat action's result, as the extension saw it.
+
+## Session measures
+
+- **facet**: a value counted once per selected or global session. **IDF** is
+  the natural logarithm of global session count divided by its frequency;
+  **lift** is selected share divided by global share.
+- **cost outlook**: an estimate over dated, explicitly configured billing
+  terms and observed usage, with units, method and coverage shown.
+- **session span** (`session_span`): recorded clocks, message clusters, tool
+  intervals and the last recorded item. **Wall span** (`wall_span`) is elapsed
+  time between the first and last own recorded time.
+- **clustered time** (`clustered_time`): union of consecutive message intervals
+  at most five minutes apart, extended across paired tools. **Tool time**
+  (`tool_time`) sums positive paired call/result intervals; **tool time union**
+  (`tool_time_union`) counts their overlap once. Neither measures attention.
+- **time lanes** (`session_time`): wall time attributed to tool commands,
+  waiting for the model, waiting for the human, or unattributed transitions.
+- **ends with** (`ends_with`): the kind of the last recorded item; no task outcome.
+- **validity kind**: exact, parameterized, extracted or judged, with the
+  evidence each requires before it ships. **Derived data** is the reference
+  page generated from those declarations.
+- **pending**: a stored product not yet derived for its session's current
+  rows and rule version; counted apart in population summaries.
