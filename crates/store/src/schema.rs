@@ -73,23 +73,6 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
     }
 }
 
-/// Read indexes can be added in place without rebuilding parsed rows.
-pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
-    let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
-    let base = shape(&expected)?;
-    expected.execute_batch(READ_INDEXES)?;
-    let added: Vec<_> = shape(&expected)?
-        .into_iter()
-        .filter(|entry| !base.contains(entry))
-        .collect();
-    let found: Vec<_> = shape(conn)?
-        .into_iter()
-        .filter(|entry| !added.contains(entry))
-        .collect();
-    Ok(found == base)
-}
-
 /// Whether the index was being built without syncs and never finished
 /// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
 /// rebuilt rather than trusted.
