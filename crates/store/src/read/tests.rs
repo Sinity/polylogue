@@ -301,3 +301,6 @@ mod messages;
 mod parents;
 
 mod order;
+
+#[path = "tests/known_inputs.rs"]
+mod known_inputs;

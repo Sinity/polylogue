@@ -1012,17 +1012,38 @@ impl Reader<'_> {
         path: Option<&str>,
         include_imported: bool,
     ) -> Result<Vec<KnownInput>> {
-        let mut stmt = self.conn()?.prepare_cached(
+        // Imported eligibility is per input, not per observation. A point
+        // lookup only visits inputs at its path; startup builds the set once.
+        let (location, imported) = if path.is_some() {
+            (
+                "x.machine = ?1 AND x.path = ?2",
+                "SELECT r.input FROM (
+                 SELECT DISTINCT input FROM a.observation WHERE machine = ?1 AND path = ?2
+             ) paths CROSS JOIN a.revision r ON r.input = paths.input
+             WHERE r.produced = 'imported'",
+            )
+        } else {
+            (
+                "x.machine = ?1",
+                "SELECT input FROM a.revision WHERE produced = 'imported'",
+            )
+        };
+        let sql = format!(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
                     (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
-             FROM a.observation o JOIN a.input i ON i.id = o.input
-             WHERE o.machine = ?1 AND (?2 IS NULL OR o.path = ?2) AND o.rowid = (
-                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
-                 AND x.class <> 'excised' AND (?3 OR NOT EXISTS(
-                    SELECT 1 FROM a.revision r WHERE r.input=x.input AND r.produced='imported')))",
-        )?;
+             FROM (
+                 SELECT MAX(x.rowid) AS latest FROM a.observation x
+                 WHERE {location}
+                   AND x.class <> 'excised'
+                   AND (?3 OR x.input NOT IN ({imported}))
+                 GROUP BY x.path
+             ) latest
+             JOIN a.observation o ON o.rowid = latest.latest
+             JOIN a.input i ON i.id = o.input"
+        );
+        let mut stmt = self.conn()?.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![machine, path, include_imported], |r| {
             Ok((
                 r.get::<_, String>(0)?,
