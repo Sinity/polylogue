@@ -9,6 +9,10 @@ use std::ops::ControlFlow;
 
 const CHARS_PER_TOKEN: usize = 4;
 
+pub fn budget_characters(tokens: usize) -> usize {
+    tokens.max(1).saturating_mul(CHARS_PER_TOKEN)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub text: String,
@@ -87,6 +91,7 @@ pub struct Pager {
     header: Option<MessageHeader>,
     first: Option<Position>,
     latest: bool,
+    until: Option<Position>,
     next: Option<Position>,
     attachments: Vec<crate::AttachmentRef>,
     seen_attachments: std::collections::HashSet<crate::AttachmentRef>,
@@ -96,7 +101,7 @@ impl Pager {
     pub fn new(view: View, budget_tokens: usize, position: Option<Position>) -> Self {
         Self {
             view,
-            budget: budget_tokens.max(1).saturating_mul(CHARS_PER_TOKEN),
+            budget: budget_characters(budget_tokens),
             at: position.unwrap_or_default(),
             resumed: position.is_some(),
             message: 0,
@@ -110,6 +115,7 @@ impl Pager {
             header: None,
             first: None,
             latest: false,
+            until: None,
             next: None,
             attachments: Vec::new(),
             seen_attachments: std::collections::HashSet::new(),
@@ -178,15 +184,15 @@ impl Pager {
             model: message.model.clone(),
             written_by: polylogue_model::WrittenBy::of(message.role, message.prompt_kind),
         });
-        self.source_blocks = message
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, block)| self.view.keeps(&message, block))
-            .map(|(index, _)| index)
-            .collect();
         let blocks = rendered_blocks(&message, self.view);
+        self.source_blocks = blocks.iter().map(|block| block.source_index).collect();
         self.push_blocks(blocks, header(&message), annotations)
+    }
+
+    /// Stop at an exclusive position, used for a page read backwards.
+    pub fn until(mut self, end: Position) -> Self {
+        self.until = Some(end);
+        self
     }
 
     pub fn visible_attachments(&self) -> &[crate::AttachmentRef] {
@@ -209,42 +215,28 @@ impl Pager {
             return Err("the read cursor block is outside the selected record");
         }
         if self.latest && !blocks.is_empty() {
-            self.latest = false;
             self.at.block = blocks.len() - 1;
-            let last = &blocks[self.at.block];
-            let label = last
-                .label
-                .as_deref()
-                .map_or(0, |label| label.chars().count());
-            let prefix = match (last.kind, &last.label) {
-                ("tool_call", Some(_)) => label + 4,
-                ("tool_result", Some(_)) => label + 3,
-                _ => 0,
-            };
-            let heading = if self.at.block == 0 {
-                heading.chars().count() + usize::from(self.at.message > 0)
-            } else {
-                0
-            };
-            self.at.character =
-                (heading + prefix + last.text.chars().count() + 1).saturating_sub(self.budget);
         }
         while self.at.block < blocks.len() {
             let p = &blocks[self.at.block];
-            let mut body = match (p.kind, &p.label) {
-                ("tool_call", Some(l)) => format!("→ {l}: {}\n", p.text),
-                ("tool_result", Some(l)) => format!("← {l}\n{}\n", p.text),
-                _ => format!("{}\n", p.text),
-            };
-            if self.at.block == 0 {
-                let sep = if self.at.message > 0 { "\n" } else { "" };
-                body = format!("{sep}{}{body}", heading);
-            }
+            let body = block_body(p, &heading, self.at.message, self.at.block);
             let prefix = body
                 .chars()
                 .count()
                 .saturating_sub(p.text.chars().count() + 1);
-            let length = body.chars().count();
+            let whole_length = body.chars().count();
+            let end = self
+                .until
+                .filter(|end| end.message == current && end.block == self.at.block);
+            let length = end.map_or(whole_length, |end| end.character.min(whole_length));
+            if end.is_some() && self.at.character >= length {
+                self.next = self.until;
+                return Ok(ControlFlow::Break(()));
+            }
+            if self.latest {
+                self.latest = false;
+                self.at.character = length.saturating_sub(self.budget);
+            }
             if self.at.character >= length {
                 return Err("the read cursor character is outside the block");
             }
@@ -289,6 +281,10 @@ impl Pager {
             self.text
                 .extend(body.chars().skip(self.at.character).take(take));
             self.used += take;
+            if end.is_some() && take == remaining {
+                self.next = self.until;
+                return Ok(ControlFlow::Break(()));
+            }
             if take < remaining {
                 self.at.character += take;
                 self.next = Some(self.at);
@@ -315,6 +311,91 @@ impl Pager {
     }
 }
 
+fn block_body(block: &crate::RenderedBlock, heading: &str, message: usize, index: usize) -> String {
+    let body = match (block.kind, &block.label) {
+        ("tool_call", Some(label)) => format!("→ {label}: {}\n", block.text),
+        ("tool_result", Some(label)) => format!("← {label}\n{}\n", block.text),
+        _ => format!("{}\n", block.text),
+    };
+    if index == 0 {
+        format!("{}{heading}{body}", if message > 0 { "\n" } else { "" })
+    } else {
+        body
+    }
+}
+
+/// Find a suffix before an exclusive position using the same masked, annotated
+/// block formatting as forward pages. The returned size counts characters.
+pub fn previous_start(
+    mut message: Message,
+    view: View,
+    index: usize,
+    end: Option<Position>,
+    characters: usize,
+    mut masker: MessageMasker,
+    labels: impl FnOnce(&Message) -> Vec<crate::AttachmentLabel>,
+) -> (Option<Position>, usize) {
+    masker.message_text(&mut message);
+    let labels = labels(&message);
+    crate::attachments::apply(&mut message, view, labels);
+    let blocks = rendered_blocks(&message, view);
+    let heading = header(&message);
+    let mut used = 0;
+    let mut start = None;
+    for (block, item) in blocks.iter().enumerate().rev() {
+        if end.is_some_and(|end| block > end.block) {
+            continue;
+        }
+        let length = block_body(item, &heading, index, block).chars().count();
+        let until = end
+            .filter(|end| end.block == block)
+            .map_or(length, |end| end.character.min(length));
+        let take = until.min(characters - used);
+        if take > 0 {
+            start = Some(Position {
+                message: index,
+                block,
+                character: until - take,
+            });
+            used += take;
+        }
+        if used == characters {
+            break;
+        }
+    }
+    (start, used)
+}
+
+/// The suffix of one masked document block before an exclusive character.
+pub fn previous_block_start(
+    mut block: polylogue_model::Block,
+    view: View,
+    index: usize,
+    end: Option<usize>,
+    characters: usize,
+    masker: &mut MessageMasker,
+    heading: &str,
+) -> (Option<Position>, usize) {
+    masker.block(&mut block);
+    if !view.keeps_block(false, &block) {
+        return (None, 0);
+    }
+    let Some(block) = crate::block(&block) else {
+        return (None, 0);
+    };
+    let length = block_body(&block, heading, index, 0).chars().count();
+    let until = end.map_or(length, |end| end.min(length));
+    let take = until.min(characters);
+    (
+        (take > 0).then_some(Position {
+            message: index,
+            block: 0,
+            character: until - take,
+        }),
+        take,
+    )
+}
+
 /// Role-free content is projected one ordered block at a time, replaying masking on
 /// continuation before projecting it. Positions use the same character splitter.
 pub struct BlockPager {
@@ -330,6 +411,13 @@ impl BlockPager {
             heading,
             heading_emitted: false,
         }
+    }
+    pub fn until(mut self, end: Position) -> Self {
+        self.stream = self.stream.until(end);
+        self
+    }
+    pub fn first_position(&self) -> Option<Position> {
+        self.stream.first_position()
     }
     pub fn push(
         &mut self,

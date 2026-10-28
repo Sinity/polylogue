@@ -5,17 +5,17 @@ let position;
 let controller;
 let timer;
 let stopped = false;
-let revision = 0;
+const ready = new Set();
+const initializing = new Map();
 
 function report(error) {
   for (const subscriber of subscribers) subscriber.error?.(error);
 }
 
 async function batch() {
-  if (controller || stopped || document.hidden || !subscribers.size) return;
+  if (controller || stopped || document.hidden || !ready.size || initializing.size !== 0) return;
   controller = new AbortController();
-  const audience = [...subscribers];
-  const version = revision;
+  const audience = [...ready];
   try {
     const query = position ? "?since=" + encodeURIComponent(position) : "";
     const response = await fetch("/api/v1/changes" + query, {
@@ -59,7 +59,7 @@ async function batch() {
       }
       if (pending || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
       for (const subscriber of audience) await subscriber.complete?.(complete);
-      position = version === revision ? complete.position : undefined;
+      if (initializing.size === 0 && [...ready].every(subscriber => audience.includes(subscriber))) position = complete.position;
     } finally {
       await reader.cancel();
     }
@@ -68,7 +68,8 @@ async function batch() {
   } finally {
     controller = undefined;
     if (!stopped && !document.hidden && subscribers.size) {
-      timer = setTimeout(batch, 2000);
+      clearTimeout(timer);
+      timer = setTimeout(resume, 2000);
     }
   }
 }
@@ -79,11 +80,13 @@ let clock;
 function visibility() {
   clearTimeout(timer);
   clearInterval(clock);
-  if (document.hidden || stopped || !subscribers.size) controller?.abort();
-  else {
-    batch();
+  if (document.hidden || stopped || !subscribers.size) {
+    controller?.abort();
+    for (const request of initializing.values()) request.abort();
+  } else {
+    resume();
     clock = setInterval(() => {
-      for (const subscriber of subscribers) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
+      for (const subscriber of ready) Promise.resolve().then(() => subscriber.refresh?.()).catch(report);
     }, 30000);
   }
 }
@@ -92,17 +95,70 @@ window.addEventListener("pagehide", () => {
   clearTimeout(timer);
   clearInterval(clock);
   controller?.abort();
+  for (const request of initializing.values()) request.abort();
 });
 window.addEventListener("pageshow", visibility);
 
-export function watchChanges(subscriber) {
-  subscribers.add(subscriber);
-  revision++;
-  // A joining view needs the full reference set, not another view's checkpoint.
-  position = undefined;
+// Each joining view reads current references in pages. Joining never resets
+// the position that existing views have already completed.
+async function readCurrent(subscriber, signal) {
+  let cursor;
+  let initial;
+  let count = 0;
+  do {
+    const query = new URLSearchParams({ query: subscriber.query, limit: "50" });
+    if (cursor) query.set("cursor", cursor);
+    const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
+    if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
+    if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
+    const page = await response.json();
+    if (!subscribers.has(subscriber)) return;
+    if (!initial) {
+      initial = page.read_at.cursor;
+      position ??= initial;
+      await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
+    }
+    if (subscriber.page) await subscriber.page(page);
+    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
+    count += page.rows.length;
+    cursor = page.next;
+  } while (cursor && subscribers.has(subscriber));
+  if (!subscribers.has(subscriber)) return;
+  await subscriber.complete?.({ type: "complete", position: initial, count, replacement: true });
+  ready.add(subscriber);
+  initializing.delete(subscriber);
   visibility();
+}
+
+function resume() {
+  if (document.hidden || stopped || !subscribers.size) return;
+  for (const subscriber of subscribers) {
+    if (ready.has(subscriber) || initializing.has(subscriber)) continue;
+    const request = new AbortController();
+    initializing.set(subscriber, request);
+    readCurrent(subscriber, request.signal).catch(error => {
+      initializing.delete(subscriber);
+      if (error.name !== "AbortError") subscriber.error?.(error);
+      batch();
+      if (stopped) visibility();
+      else if (!document.hidden && subscribers.has(subscriber)) {
+        clearTimeout(timer);
+        timer = setTimeout(resume, 2000);
+      }
+    });
+  }
+  batch();
+}
+
+export function watchChanges(subscriber) {
+  if (!subscriber.query?.trim()) throw new Error("A live view must supply its current query");
+  subscribers.add(subscriber);
+  resume();
   return () => {
     subscribers.delete(subscriber);
-    if (!subscribers.size) visibility();
+    ready.delete(subscriber);
+    initializing.get(subscriber)?.abort();
+    initializing.delete(subscriber);
+    visibility();
   };
 }

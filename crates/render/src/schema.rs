@@ -16,34 +16,40 @@ pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<(
     )
 }
 
+fn inline(text: &str) -> String {
+    crate::terminal::escape(text)
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+}
+
 fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Rule version: {}", data["rule_version"])?;
     for side in ["before", "after"] {
-        let population = &data[side];
+        let sample = &data[side];
         writeln!(
             out,
             "{side}: {} (sample: {}), {} records, {} unreadable inputs, {} unreadable records",
-            population["origin"].as_str().unwrap_or_default(),
-            population["sample"],
-            population["records"],
-            population["unreadable_inputs"],
-            population["unreadable_records"]
+            inline(sample["origin"].as_str().unwrap_or_default()),
+            sample["sample"],
+            sample["records"],
+            sample["unreadable_inputs"],
+            sample["unreadable_records"]
         )?;
-        if let Some(selection) = population["selection"].as_array() {
+        if let Some(selection) = sample["selection"].as_array() {
             for input in selection {
                 writeln!(
                     out,
                     "  input {} revision {}",
-                    input["input"].as_str().unwrap_or_default(),
+                    inline(input["input"].as_str().unwrap_or_default()),
                     input["revision"]
                 )?;
             }
         }
     }
-    writeln!(out, "Comparable populations: {}", data["comparable"])?;
+    writeln!(out, "Comparable samples: {}", data["comparable"])?;
     if let Some(reasons) = data["reasons"].as_array() {
         for reason in reasons {
-            writeln!(out, "{}", reason.as_str().unwrap_or_default())?;
+            writeln!(out, "{}", inline(reason.as_str().unwrap_or_default()))?;
         }
     }
     if let Some(changes) = data["changes"].as_array() {
@@ -51,11 +57,13 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
             writeln!(
                 out,
                 "{} {}: types {} -> {}, required {} -> {}",
-                change["kind"].as_str().unwrap_or_default(),
-                change["path"]
-                    .as_str()
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or("/ (root)"),
+                inline(change["kind"].as_str().unwrap_or_default()),
+                inline(
+                    change["path"]
+                        .as_str()
+                        .filter(|p| !p.is_empty())
+                        .unwrap_or("/ (root)")
+                ),
                 change["before"]["types"],
                 change["after"]["types"],
                 change["before"]["required"],
@@ -63,7 +71,7 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
             )?;
         }
         if changes.is_empty() {
-            writeln!(out, "No structural changes")?;
+            writeln!(out, "No schema differences")?;
         }
     }
     Ok(())

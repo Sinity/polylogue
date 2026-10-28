@@ -10,6 +10,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "repository",
+    products: &[],
     version: Version::Rules(1),
     // Reads the session's working directory and recorded repository.
     after: &["session"],

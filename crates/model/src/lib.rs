@@ -39,11 +39,15 @@ pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod reports;
-pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy};
+pub use message::{
+    ApiError, Attribution, Message, Production, PromptKind, Role, WrittenBy, is_prompt,
+};
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
+pub mod note_sql;
+pub mod session_sql;
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
@@ -53,3 +57,5 @@ pub use work::{WorkEdgeKind, WorkNodeKind};
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
 /// (`serde_json` with `arbitrary_precision`).
 pub type Json = serde_json::Value;
+
+pub mod derived;

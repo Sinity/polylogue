@@ -121,7 +121,11 @@ export class Backfill {
         if (!(await report("progress"))) return;
       }
     } finally {
-      if (opened) await this.chrome.tabs.remove(tab.id).catch(() => undefined);
+      // Files download through the tab, after their conversation is stored.
+      if (opened) {
+        await this.capturer.downloads();
+        await this.chrome.tabs.remove(tab.id).catch(() => undefined);
+      }
     }
   }
 }
@@ -136,6 +140,7 @@ function retryMs(value) {
 
 /** Whether the archive holds this conversation as the provider has it. */
 function current(held, conversation) {
+  if (held?.downloading) return false;
   if (!held || held.state === "missing" || held.state === "unknown") return false;
   if (held.state === "spooled") return true;
   if (!conversation.updated_at || !held.last_captured_at) return false;

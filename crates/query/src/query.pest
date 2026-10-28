@@ -159,7 +159,7 @@ distinct    = { ^"distinct" ~ !ident_char }
 matches     = { ^"matches" ~ !ident_char }
 // `| measure WHAT`: a measurement over the sessions the query selects.
 measure      = { ^"measure" ~ measure_what }
-measure_what = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ":")+ }
+measure_what = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ":" | ",")+ }
 scope_stage = { unit ~ (kw_where ~ expr)? }
 // `| union (…)`, `| intersect (…)`, `| except (…)`: the rows combined with
 // another query's rows of the same unit; `| fuse (…)` ranks the rows also

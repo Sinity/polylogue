@@ -19,7 +19,7 @@ which reads through Store and presents through Query and Render.
 | [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
 | [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
 | [Render](../crates/render/src/lib.rs) | Views of typed content as terminal text, Markdown, HTML and JSON, and pages sized for models. |
-| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
+| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. The [socket client](../crates/polylogue/src/client.rs) sends ordinary requests for the CLI, MCP, browser host and hooks, with whole-exchange deadlines for hooks and completion. |
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
@@ -35,6 +35,12 @@ A new origin is an origin declaration and a parser, a new command is a
 command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
 rules are checked by [xtask](../xtask/src/main.rs).
+
+An origin's collector receives the configured home, state and spool directories.
+It runs automatically or when its declared setting is on. Antigravity's
+loopback collector runs in an engine-owned worker; the loop reads its spool on
+subsequent passes and joins the worker at shutdown. The optional AI Studio
+Drive import runs before the pass. Both are declared in the origin table.
 
 ## Databases
 
@@ -107,7 +113,9 @@ is deleted with its file. The rest are listed in `status` as
 can finish them. A provider file that changed meanwhile starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
 cover imports, watched files and parse-pool groups. Bytes a parser decodes
 from inside a record, such as inline images, are stored as blobs of that
-input.
+input. Attachments name only present blobs. An unknown hash leaves the file
+without stored bytes and keeps its conversation; a known hash supplies its
+stored size. The captured bytes stay unchanged.
 
 A ZIP import stores the ZIP itself and each file in it as inputs, linked by
 `observation_zip`. Export [attachments](attachments.md) are found
@@ -126,6 +134,18 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
+AI Studio keeps one message per usable chunk, including adjacent chunks of
+one role. A native chunk ID names its message; otherwise its position in the
+original chunk array does. Message IDs include the file name, the kind
+(`id`, `position` or `system`) and the value, with byte lengths before the
+file name and value. Native IDs, positions and the system header cannot
+collide, even when names contain separators. Thoughts and answers keep their separate token
+counts, code results name their preceding call, and each message cites its
+chunk's byte range. Unknown roles are counted as unreadable and empty chunks
+as skipped; they still occupy their original positions. A header, settings or
+system instruction without a usable chunk creates no session. Keeping chunks separate
+preserves native IDs and exact ranges even when the role does not change.
+
 A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
@@ -138,7 +158,11 @@ different one refused. Each capture repeats the whole conversation, so the lates
 capture's version of a message is shown, and a message missing from a later
 capture stays.
 
-The extension keeps nothing but captures the host has not yet acknowledged.
+The extension keeps captures the host has not yet acknowledged in its outbox.
+The daemon reports attachments marked `not_fetched: "downloading"` in the latest
+capture, so backfill and unchanged page captures resume their downloads after a
+browser restart. Conversation fingerprints survive browser restarts in extension storage. An unchanged
+conversation is recaptured unless the daemon reports an archived or spooled copy.
 [Chat actions](../crates/store/src/chat_actions.rs) and
 [backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
 writer changes: the operator queues or starts them through the CLI, MCP or the
@@ -210,7 +234,7 @@ the state reached by masking only the marked messages from the first that
 does. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
-Budgeted reads return both text and structured masked block slices. The web
+Budgeted reads return text, with structured masked block slices when requested. The web
 reader uses these pages, with shared message anchors, latest selection and
 metadata outlines; [the reader contract](web-reader.md) describes the API,
 route ownership and authentication.
@@ -238,7 +262,8 @@ The [masker](../crates/model/src/masking.rs) runs over content in source
 order before views, pages or encoding, so titles and
 [search snippets](../crates/store/src/search/tests/masking.rs) mask the same
 way. Every application response also masks strings, metadata, errors and
-object keys. Stored bytes never change.
+object keys. Typed identifiers and continuation tokens keep their exact bytes;
+authored JSON fields with the same names are masked. Stored bytes never change.
 [Masking tests](../crates/model/src/masking/tests.rs) and
 [CLI read tests](../crates/polylogue/tests/e2e/cli/read_masking.rs) cover it.
 
@@ -359,6 +384,14 @@ something an excision removed (its provider file was still there), the
 import stops at that excision and names it: excise it in the primary
 archive and import the file again.
 
+## Hook advice
+
+Hook advice is prepared read-only within 20 milliseconds. After printing it,
+the hook has another 20 milliseconds to record one delivery with its delivered
+outcome. A session receives advice about a verification once until its failures
+change. Advice names sessions in its text; its references contain no session
+text that would prevent excision.
+
 ## Offline schema tools
 
 [Schema tools](schema-tools.md) use a pure Sources observer and recursive diff,
@@ -382,3 +415,50 @@ unset. JSON uses JSON Unicode escapes and round trips the original values.
 HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
+
+## Python client
+
+The standard-library client in `clients/python/polylogue/client.py` invokes the
+installed CLI with an argument list, so command validation, daemon access,
+masking and feed validation have the same implementation as other clients.
+`polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`
+returns an independent ordinary JSON value. No query or read is redirected to a
+local database. A write is submitted once; the caller owns its retry ID.
+Session [measures](measures.md) include read-time facets with IDF and lift,
+dated billing outlooks, recorded time lanes and field comparisons. The
+`session_span` derivation reads each session's parsed messages and paired calls
+once and writes `session_span` and `session_time` together. `counts` writes typed
+session count columns from the shared shown-path and action definitions.
+Single-session reads compute a behind product with the same function;
+population summaries count pending products. Facets group the recorded rows at
+read time. Time, comparison and facet pages use the ordinary query cursor.
+[Derived data](derived.md) and `explain derived` read the same validity,
+parameter and evidence declarations.
+## Read deadlines
+
+Read-only requests have a 30-second default time limit, including time waiting
+for a reader slot. `POLYLOGUE_READ_TIMEOUT_MS` configures the global default in
+milliseconds; the CLI `--timeout SECONDS` flag overrides it for one command.
+Export has no deadline unless the caller supplies one. Ordinary authored
+writes, background counts, vector preload and signals do not inherit a request deadline.
+Context preparation has a read deadline even when it records a prepared receipt.
+The budget is checked before handing off that receipt; its accepted write finishes
+independently, and remains prepared until the client reports a delivered event.
+Embedding provider calls outside a read request have their own 60-second timeout.
+A failed count appears in status as `count_error`, alongside any previous counts. A socket request can supply `deadline_ms` as absolute Unix
+milliseconds; HTTP accepts the same value in `X-Polylogue-Deadline-Ms`, and MCP
+accepts it in the call's `_meta.deadline_ms`. The daemon converts that value to
+a monotonic deadline when the request arrives. Completion sends a 500 ms
+deadline. Continuation pages start new requests.
+
+A request shares one deadline across every reader it opens. SQLite progress
+handlers stop long statements, and slot and write-lock waits check the same
+deadline and cancellation signal. Socket and HTTP disconnects cancel the
+request; MCP cancellation and EOF close its daemon socket. Provider HTTP waits and in-memory vector ranking observe the same limit.
+Progress handlers are removed before a connection returns to the pool. Requests cancelled while
+waiting for a slot never acquire one.
+
+A read that runs out of time returns `deadline_exceeded` (CLI exit 7); one its
+caller cancels returns `cancelled` (exit 3). Refusals name the running stage and
+report SQLite execution steps. An unfinished count and an unavailable scanned
+row count are `null`. A timed-out read never returns a successful partial page.

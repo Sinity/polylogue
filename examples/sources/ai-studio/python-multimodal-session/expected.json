@@ -48,7 +48,7 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:multimodal_session#chunk-user-1",
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multimodal_session"
@@ -68,8 +68,8 @@
               "type": "file"
             }
           ],
-          "id": "ai-studio:multimodal_session#chunk-user-2",
-          "parent": "ai-studio:multimodal_session#chunk-user-1",
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-2",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multimodal_session"
@@ -90,8 +90,8 @@
               "url": "https://www.youtube.com/watch?v=abc123"
             }
           ],
-          "id": "ai-studio:multimodal_session#chunk-user-3",
-          "parent": "ai-studio:multimodal_session#chunk-user-2",
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-3",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-2",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:multimodal_session"
@@ -108,8 +108,8 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:multimodal_session#chunk-model-1",
-          "parent": "ai-studio:multimodal_session#chunk-user-3",
+          "id": "ai-studio:18:multimodal_session#id:13:chunk-model-1",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-3",
           "role": "assistant",
           "session": "ai-studio:multimodal_session",
           "stop_reason": "STOP",

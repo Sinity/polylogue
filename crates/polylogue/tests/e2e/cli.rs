@@ -418,6 +418,8 @@ mod search_snippets;
 
 mod hook_errors;
 
+mod hook_advice;
+
 mod grok_export;
 
 mod codex_reports;
@@ -478,6 +480,8 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     assert!(!archive.join("daemon.sock").exists());
 }
 
+mod python;
+
 #[test]
 fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
     let dir = tempfile::tempdir().unwrap();
@@ -511,5 +515,8 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
 }
 
 mod query_surfaces;
+
+mod agent_guidance;
+
 #[cfg(target_os = "linux")]
 mod terminal;

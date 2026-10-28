@@ -19,29 +19,86 @@ const GAPS: &[(&str, &str)] = &[
         "3",
         "cost: the example prices from its own table (FACTS.md), not the real price catalog",
     ),
-    (
-        "6",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "7",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "19",
-        "tags: the example's annotation notes are not written by the fixture",
-    ),
-    (
-        "31",
-        "notes: the example's annotation notes are not written by the fixture",
-    ),
     ("21", "seq() does not yet take search words over tool calls"),
     (
         "34",
         "an empty repo: result does not yet list the known repositories",
     ),
-    ("38", "tree_cost is not built"),
+    ("38", "tree cost differs from the historical example prices"),
 ];
+
+fn archive_with_notes() -> Morrow {
+    use crate::daemon::service::ArchiveMode;
+    use crate::daemon::{Request, Response, service};
+    use polylogue_model::{Author, Block, NewNote, NoteKind, Target};
+    use polylogue_testkit::session;
+
+    let archive = Morrow::build(Set::Main);
+    let decision = {
+        let pool = archive.reads();
+        let reader = pool.reader().unwrap();
+        reader
+            .messages(&session(2), false)
+            .unwrap()
+            .into_iter()
+            .find(|message| {
+                message.blocks.iter().any(|block| {
+                    matches!(block,
+                Block::Text { text } if text.contains("let's use chrono, not time"))
+                })
+            })
+            .unwrap()
+            .id
+    };
+    let mut runtime =
+        service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+    for (id, kind, key, value, targets) in [
+        (
+            "morrow-project",
+            NoteKind::Tag,
+            Some("project:morrow"),
+            None,
+            [1, 2, 4, 5, 6]
+                .into_iter()
+                .map(|n| Target::Session(session(n)))
+                .collect(),
+        ),
+        (
+            "morrow-research",
+            NoteKind::Tag,
+            Some("research"),
+            None,
+            vec![Target::Session(session(7))],
+        ),
+        (
+            "morrow-decision",
+            NoteKind::Decision,
+            None,
+            Some("decided: chrono, not time"),
+            vec![Target::Message(decision)],
+        ),
+    ] {
+        let response = service::handle(
+            Request::AddNote {
+                request_id: id.into(),
+                note: NewNote {
+                    kind,
+                    key: key.map(Into::into),
+                    value: value.map(Into::into),
+                    author: Author::Operator,
+                    targets,
+                    relations: vec![],
+                    revises: None,
+                    valid_until: None,
+                },
+            },
+            &runtime.daemon,
+        );
+        assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    }
+    runtime.shutdown().unwrap();
+    archive
+}
 
 fn ask(text: &str) -> Ask<'_> {
     Ask {
@@ -85,7 +142,12 @@ fn group_key(r: &Value) -> String {
 
 /// Compares one example's result with its expected value; `Err` says how
 /// they differ.
-fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(), String> {
+fn compare(
+    reader: &Reader<'_>,
+    number: &str,
+    got: &Result<Value, Failure>,
+    want: &Value,
+) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
             let _ = f;
@@ -109,6 +171,39 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
                 .to_string(),
             n.to_string(),
         ),
+        Value::Array(items) if number == "31" => {
+            use polylogue_model::{Block, Target};
+            let mut got: Vec<_> = rows(v)
+                .iter()
+                .map(|note| json!([note["value"], note["target"]]).to_string())
+                .collect();
+            let mut wanted = Vec::new();
+            for item in items {
+                let number = item[1]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix('#')
+                    .unwrap()
+                    .parse::<u8>()
+                    .unwrap();
+                let prompt = item[2].as_str().unwrap();
+                let message = reader
+                    .messages(&polylogue_testkit::session(number), false)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|message| {
+                        message.blocks.iter().any(|block| {
+                            matches!(block,
+                            Block::Text { text } if text == prompt)
+                        })
+                    })
+                    .ok_or_else(|| format!("decision target prompt missing in #{number}"))?;
+                wanted.push(json!([item[0], Target::Message(message.id).to_string()]).to_string());
+            }
+            got.sort();
+            wanted.sort();
+            differ(format!("{got:?}"), format!("{wanted:?}"))
+        }
         Value::Array(items) if items.iter().all(Value::is_string) => {
             let got: Vec<String> = rows(v).iter().map(row_session).collect();
             let want: Vec<String> = items.iter().map(s).collect();
@@ -143,7 +238,6 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
                     match number {
                         "15" => format!("{} {} {}", s(&i[0]), i[1].as_str().unwrap(), i[2]),
                         "36" => format!("{} {} {}", s(&i[0]), s(&i[1]), i[2].as_str().unwrap()),
-                        "31" => s(&i[1]),
                         _ => s(&i[0]),
                     }
                 })
@@ -235,7 +329,7 @@ fn codex_message_counts_include_script_commands() {
 
 #[test]
 fn the_query_examples_match_on_the_real_archive() {
-    let w = Morrow::build(Set::Main);
+    let w = archive_with_notes();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let expected: Value = serde_json::from_str(
@@ -256,7 +350,7 @@ fn the_query_examples_match_on_the_real_archive() {
         };
         let mut failures = Vec::new();
         for (q, want) in &cases {
-            if let Err(why) = compare(number, &run(&r, ask(q)), want) {
+            if let Err(why) = compare(&r, number, &run(&r, ask(q)), want) {
                 failures.push(format!("{q}: {why}"));
             }
         }
@@ -277,7 +371,7 @@ fn the_query_examples_match_on_the_real_archive() {
 /// carries the unpaged count.
 #[test]
 fn pages_of_every_size_concatenate_to_the_whole_answer() {
-    let w = Morrow::build(Set::Main);
+    let w = archive_with_notes();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let expected: Value = serde_json::from_str(

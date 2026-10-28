@@ -216,6 +216,49 @@ impl<'a> Compiler<'a> {
                 vec![(col, format!("count(DISTINCT {expr})"), ColKind::Number)]
             }
         };
+        if scope.unit == Unit::Sessions {
+            let derivation = if polylogue_model::session_sql::COUNT_FIELDS
+                .iter()
+                .any(|(name, _)| *name == field)
+            {
+                Some("counts")
+            } else if matches!(
+                field,
+                "wall_span"
+                    | "clustered_time"
+                    | "tool_time"
+                    | "tool_time_union"
+                    | "tool_untimed"
+                    | "ends_with"
+                    | "last_stop_reason"
+                    | "waiting_model"
+                    | "waiting_human"
+            ) {
+                Some("session_span")
+            } else {
+                None
+            };
+            if let Some(name) = derivation {
+                out.push((
+                    format!("pending_{flat_field}"),
+                    format!(
+                        "coalesce(sum(NOT ({})),0)",
+                        polylogue_model::session_sql::current(&scope.a.s, name)
+                    ),
+                    ColKind::Number,
+                ));
+            }
+        }
+        if scope.unit == Unit::Sessions && matches!(field, "tool_time" | "tool_time_union") {
+            out.push((
+                format!("unmeasured_calls_{flat_field}"),
+                format!(
+                    "CASE WHEN count(*)=0 THEN 0 ELSE sum({}) END",
+                    polylogue_model::session_sql::span(&scope.a.s, "tool_untimed")
+                ),
+                ColKind::Number,
+            ));
+        }
         // A session cost known only in part (some request-bearing messages
         // unpriced) is a lower bound, and the total says how many. A tree
         // cost is one too when a session in the tree is, or when a

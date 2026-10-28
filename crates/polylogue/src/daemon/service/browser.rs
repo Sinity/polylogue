@@ -236,11 +236,29 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
                         "id": id,
                         "session": session.as_ref().map(ToString::to_string),
                         "messages": held.as_ref().map(|h| h.messages),
+                        "downloading": held.as_ref().is_some_and(|h| h.downloading),
                         "last_captured_at": held.and_then(|h| h.last_captured_at),
                     })
                 })
                 .collect();
             ok(json!({ "provider": provider, "conversations": conversations }))
+        }
+        Request::StoredFiles {
+            provider,
+            conversation,
+        } => {
+            let Some(session) =
+                polylogue_sources::browser_capture::session_for(&provider, &conversation)
+            else {
+                return ok(json!({ "files": [] }));
+            };
+            match reader.stored_files(&session) {
+                Ok(files) => match reader.downloading_files(&session) {
+                    Ok(downloading) => ok(json!({ "files": files, "downloading": downloading })),
+                    Err(e) => store_error(&e),
+                },
+                Err(e) => store_error(&e),
+            }
         }
         other => error("bad_request", format!("{other:?} is not a browser request")),
     }

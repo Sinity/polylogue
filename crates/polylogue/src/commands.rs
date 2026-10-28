@@ -69,6 +69,12 @@ const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     }
 }
 
+const REQUEST_ID: Arg = opt(
+    "request_id",
+    Kind::Text,
+    "Reuse this ID when retrying the same write",
+);
+
 /// A required positional argument.
 const fn pos(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     Arg {
@@ -100,10 +106,22 @@ pub enum Cli {
     NoSubcommand,
 }
 
+pub type StreamHandler = fn(
+    &Request,
+    &crate::daemon::service::Daemon,
+    Option<crate::daemon::service::Cleaner>,
+) -> Option<Result<std::fs::File, crate::daemon::Response>>;
+
 #[derive(Clone, Copy)]
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
+    /// A finite stream with shared preparation and command-line delivery.
+    Stream {
+        build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
+        prepare: StreamHandler,
+        cli: fn(&Request, Option<std::time::Duration>) -> ExitCode,
+    },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -145,6 +163,7 @@ impl Command {
     pub fn args_for(&self, surface: Surface) -> impl Iterator<Item = &'static Arg> {
         let args: &'static [Arg] = self.args;
         args.iter()
+            .chain(self.writes.then_some(&REQUEST_ID))
             .filter(move |a| surface == Surface::Cli || !a.cli_only)
     }
 }
@@ -231,6 +250,7 @@ const MEASURE_ARGS: &[Arg] = &[
         Kind::Words,
         "A sessions query (default: every session)",
     ),
+    LIMIT,
     WHY,
     CURSOR,
     FIELDS,
@@ -261,14 +281,14 @@ const HOOKS_ARGS: &[Arg] = &[
         default: Some("claude-code"),
         ..opt(
             "harness",
-            Kind::Choice(&["claude-code", "codex"]),
+            Kind::Choice(crate::hook::Harness::NAMES),
             "Whose settings",
         )
     },
     opt(
         "settings",
         Kind::Text,
-        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
 
@@ -310,7 +330,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
     },
     Group {
         name: "chat",
@@ -343,8 +363,18 @@ pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
 /// and the series for one that takes it.
 fn measure_command(m: &'static Measure) -> Command {
     let mut args: Vec<Arg> = Vec::new();
-    if !m.metrics.is_empty() {
-        args.push(pos("metric", Kind::Choice(m.metrics), "The series"));
+    if let Some(help) = m.argument {
+        args.push(opt(
+            if help.starts_with("metric") {
+                "metric"
+            } else {
+                "option"
+            },
+            Kind::Text,
+            help,
+        ));
+    } else if !m.metrics.is_empty() {
+        args.push(opt("metric", Kind::Choice(m.metrics), "The series"));
     }
     args.extend_from_slice(if m.whole_archive {
         MEASURE_ALL
@@ -470,6 +500,12 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "manual",
+        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        action: Action::Local(local::manual),
+        ..CLI
+    },
+    Command {
         name: "query",
         help: "Run a query",
         args: &[
@@ -558,17 +594,14 @@ const WRITTEN: &[Command] = &[
                 Kind::Choice(FORMATS),
                 "Default: typed JSON for programs (`--json`, MCP, HTTP), else terminal text",
             ),
-            opt(
-                "budget",
-                Kind::Integer,
-                "Page budget in estimated tokens; JSON also returns masked block slices",
-            ),
+            opt("budget", Kind::Integer, "Page budget in estimated tokens"),
             CURSOR,
             opt(
                 "message",
                 Kind::Text,
                 "Start at this message in the selected session",
             ),
+            opt("slices", Kind::Bool, "Include masked block slices"),
             opt("latest", Kind::Bool, "Start at the latest message"),
             opt(
                 "with_parents",
@@ -913,7 +946,11 @@ const WRITTEN: &[Command] = &[
             CURSOR,
             FIELDS,
         ],
-        action: Action::Request(requests::changes),
+        action: Action::Stream {
+            build: requests::changes,
+            prepare: crate::daemon::service::change_feed,
+            cli: crate::cli::changes::run,
+        },
         http: true,
         ..CLI
     },
@@ -1187,7 +1224,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link, advice before a verification that keeps failing",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {
@@ -1376,12 +1413,6 @@ impl Values {
     ) -> Result<Values, String> {
         let name = command.name;
         for (key, value) in &object {
-            if key == "request_id" && command.writes {
-                if !value.is_string() {
-                    return Err(format!("`{name}`: `request_id` is text"));
-                }
-                continue;
-            }
             let Some(arg) = command.args_for(surface).find(|a| a.name == key) else {
                 let known: Vec<&str> = command.args_for(surface).map(|a| a.name).collect();
                 return Err(format!(
@@ -1507,12 +1538,6 @@ pub fn schema(command: &Command) -> Map<String, Value> {
             };
         }
         properties.insert(a.name.to_owned(), p);
-    }
-    if command.writes {
-        properties.insert(
-            "request_id".into(),
-            json!({ "type": "string", "description": "Makes a resent call apply once" }),
-        );
     }
     let required: Vec<&str> = command
         .args_for(Surface::Mcp)

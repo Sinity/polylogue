@@ -8,7 +8,7 @@ format the masked response through the shared renderer.
 
 ## Read pages
 
-`read --budget N` returns the existing text page and structured `slices`.
+`read --budget N` returns one text page. `--slices` additionally returns structured masked block slices; the web reader requests them.
 The budget counts estimated tokens at four Unicode characters each. It limits
 page content, not the amount of history available. A zero budget makes the
 same forward progress as one token. The web default is 8192 tokens. Every
@@ -35,15 +35,15 @@ whose blocks the view hides.
 A session page reports its starting message position, selected message count,
 content version and index generation. Its `cursor` reopens the resolved current
 page, including the tail selected by Latest; `next` continues after it.
-Document pages return their metadata, source descriptors, slices and `next`. Clients treat cursors as opaque. A cursor binds
+Document pages return their metadata, source descriptors, slices, current cursor, `previous` and `next`. Clients treat cursors as opaque. A cursor binds
 content, view, parent inclusion and generation. Unrelated writes preserve it;
 changed content or an index replacement returns `stale_cursor`. The reader
 keeps an anchor in its continuation URL and offers Refresh from this message.
 There is no automatic joining of pages across a stale cursor.
 
-`/s/{id}` and `/d/{id}` render one content page and explicit First/Next links.
-Latest is available for sessions; Previous visited page uses browser history.
-Changing the view starts a new read at the page's message anchor. `/m/{id}`
+`/s/{id}` and `/d/{id}` render one content page and explicit First/Previous/Next links.
+Latest is available for sessions; Previous uses a daemon-issued cursor and reverse key seeks to fill the page before the current start. Its Next link reopens the current page.
+Changing parent inclusion opens the first page of the new selection. Changing the view starts a new read at the page's message anchor. `/m/{id}`
 resolves a message's owning session and redirects to its anchor; `/n/{id}`
 reads one exact revision through the shared `note read ID` operation, also
 available as `/api/v1/note/read?id=ID` and over MCP. Superseded and withdrawn
@@ -71,7 +71,7 @@ after a message. It reads metadata, never message text. Entries contain
 `message`, `session`, recorded `at`, `kinds` and compaction `events` references.
 Its cursor is sealed against the selected content and index generation.
 
-The HTML reader pages both the outline and the existing `self | links` query.
+The HTML reader fetches the outline when opened (`outline=true`), and pages it with an order-key seek. It also pages the existing `self | links` query.
 `outline_cursor`, `links_cursor` and the content `cursor` are independent URL
 parameters. Failure of either optional panel is shown beside the content.
 
@@ -79,16 +79,15 @@ parameters. Failure of either optional panel is shown beside the content.
 
 `GET /api/v1/changes?since=POSITION` streams the same finite JSON-lines response
 as the socket's `changes` operation. It is declared in the command table;
-its HTTP adapter prepares the entire batch in an unnamed file and releases
-the reader before sending. Slow clients hold only the response spool.
+the daemon spools each batch once for clients at the same position and releases
+the reader before sending. Each response opens an independent reader of that shared spool. Slow clients hold only the response spool.
 Every line is a response envelope with `result` and `data`. Only the final
 `data.type = "complete"` advances the applied position. Retrying can repeat
 references. `begin.generation_changed` and `begin.replacement` tell the view
 to refresh its reference population after an index replacement.
 
 `/assets/live.js` exports `watchChanges(subscriber)`, returning an unsubscribe
-function. Optional callbacks are `begin`, `apply`, `complete`, `refresh` and
-`error`. Apply references idempotently; a failed or incomplete batch leaves
+function. New subscribers receive current references through a paged query, without resetting the shared position. The optional `query` selects that population (by default current session, note and excision references); `page(data)` receives each initial page, or `apply` receives its rows. Other optional callbacks are `begin`, `apply`, `complete`, `refresh` and `error`. Apply references idempotently; a failed or incomplete batch leaves
 its last complete position unchanged. One finite request runs per visible tab.
 Hidden tabs abort the request and timers. A 30-second refresh callback asks
 the shared API about clock-driven state changes. A 401 stops requests and
@@ -117,3 +116,18 @@ the foundation does not add those action controls. Sharing and per-span
 credential reveal are outside this contract. Page pings and background triggers
 may issue existing daemon requests only. Investigations use references for this
 increment. The existing design boards need no review for this increment.
+
+The outline includes full compactions and microcompactions: both change the
+context available to the model. Branch points use their own index.
+
+A session Previous page seeks backward from its sealed position and derives
+message indexes from the range crossed. Parent reads start at the selected
+key, and private-key masking states are prepared once per backward request.
+Document Previous replays the prefix to recover ordered masking, so its
+cost grows with the earlier block count; the HTML measurement reports that
+cost separately at 1,000 and 100,000 blocks.
+
+Every live view supplies its own initial query. An active initial query holds
+the shared position; a failed initial query reports its error and retries while
+other initialized views continue. Change batches are prepared once per key,
+outside the shared cache lock, under the archive's staging directory.

@@ -39,7 +39,7 @@ fn parsed(result: &Value, in_parts: bool) -> Value {
     let results: Vec<_> = all.iter().filter(|b| b["type"] == "tool_result").collect();
     assert_eq!(calls.len(), 1);
     assert_eq!(results.len(), 1);
-    assert_eq!(calls[0]["call_id"], "tool-outcomes#answer:code1");
+    assert_eq!(calls[0]["call_id"], "13:tool-outcomes#id:6:answer:code1");
     assert_eq!(results[0]["call_id"], calls[0]["call_id"]);
     assert_eq!(results[0]["data"], *result);
     assert_eq!(results[0]["output"], result["output"]);

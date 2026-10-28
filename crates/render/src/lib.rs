@@ -73,20 +73,29 @@ impl View {
         self.keeps_block(is_prompt(message), block)
     }
 
-    fn keeps_block(self, prompt: bool, block: &Block) -> bool {
+    pub fn block_kinds(self) -> &'static [polylogue_model::BlockKind] {
+        use polylogue_model::BlockKind::*;
         match self {
-            View::Full => true,
-            View::Dialogue => matches!(block, Block::Text { .. } | Block::Thinking { .. }),
-            View::Prompts => prompt && matches!(block, Block::Text { .. }),
-            View::Actions => matches!(block, Block::ToolCall { .. } | Block::ToolResult { .. }),
+            Self::Full => &[Text, Thinking, ToolCall, ToolResult, Image, File, Other],
+            Self::Dialogue => &[Text, Thinking],
+            Self::Prompts => &[Text],
+            Self::Actions => &[ToolCall, ToolResult],
         }
+    }
+
+    pub fn prompts_only(self) -> bool {
+        self == Self::Prompts
+    }
+
+    fn keeps_block(self, prompt: bool, block: &Block) -> bool {
+        (!self.prompts_only() || prompt) && self.block_kinds().contains(&block.kind())
     }
 }
 
 /// A prompt the operator typed: a user message neither the harness nor
 /// another model wrote.
 pub fn is_prompt(m: &Message) -> bool {
-    m.role == Role::User && !matches!(m.prompt_kind, Some(PromptKind::Harness | PromptKind::Model))
+    polylogue_model::is_prompt(m.role, m.prompt_kind)
 }
 
 /// One rendered unit of the stream every format is built from.
@@ -116,6 +125,7 @@ pub fn shell_quote(w: &str) -> String {
 /// One block as the stream carries it: its kind and its masked text.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderedBlock {
+    pub source_index: usize,
     pub kind: &'static str,
     pub label: Option<String>,
     pub text: String,
@@ -126,19 +136,27 @@ fn rendered_blocks(message: &Message, view: View) -> Vec<RenderedBlock> {
     message
         .blocks
         .iter()
-        .filter(|b| view.keeps(message, b))
-        .filter_map(block)
+        .enumerate()
+        .filter(|(_, b)| view.keeps(message, b))
+        .filter_map(|(index, b)| {
+            block(b).map(|mut rendered| {
+                rendered.source_index = index;
+                rendered
+            })
+        })
         .collect()
 }
 
 fn block(block: &Block) -> Option<RenderedBlock> {
     Some(match block {
         Block::Text { text } => RenderedBlock {
+            source_index: 0,
             kind: "text",
             label: None,
             text: text.clone(),
         },
         Block::Thinking { text, redacted, .. } => RenderedBlock {
+            source_index: 0,
             kind: "thinking",
             label: None,
             text: match text {
@@ -154,6 +172,7 @@ fn block(block: &Block) -> Option<RenderedBlock> {
             input,
             ..
         } => RenderedBlock {
+            source_index: 0,
             kind: "tool_call",
             label: Some(tool.clone().unwrap_or_else(|| "tool".into())),
             text: command
@@ -164,11 +183,13 @@ fn block(block: &Block) -> Option<RenderedBlock> {
         Block::ToolResult {
             outcome, output, ..
         } => RenderedBlock {
+            source_index: 0,
             kind: "tool_result",
             label: Some(outcome_label(outcome)),
             text: output.clone().unwrap_or_default(),
         },
         Block::Image(a) | Block::File(a) => RenderedBlock {
+            source_index: 0,
             kind: if matches!(block, Block::Image(_)) {
                 "image"
             } else {
@@ -178,6 +199,7 @@ fn block(block: &Block) -> Option<RenderedBlock> {
             text: a.name.clone().or_else(|| a.url.clone()).unwrap_or_default(),
         },
         Block::Other { type_name, .. } => RenderedBlock {
+            source_index: 0,
             kind: "other",
             label: Some(type_name.clone()),
             text: String::new(),

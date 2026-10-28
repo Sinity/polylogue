@@ -37,7 +37,13 @@ fn navigation(path: &str, data: &Value, p: &ReadQuery) -> String {
             .url(path, None))
         );
     }
-    body.push_str("<button type=\"button\" data-previous hidden>Previous visited page</button> ");
+    if let Some(previous) = data["previous"].as_str() {
+        let _ = write!(
+            body,
+            "<a rel=\"prev\" data-previous href=\"{}\">Previous</a> ",
+            esc(&p.url(path, Some(previous)))
+        );
+    }
     if let Some(next) = data["next"].as_str() {
         let _ = write!(
             body,
@@ -101,6 +107,10 @@ pub(crate) fn session(
     }
     let options = ReadQuery {
         with_parents: Some(!p.parents()),
+        message: None,
+        latest: None,
+        outline_cursor: None,
+        links_cursor: None,
         ..p.clone()
     };
     let _ = write!(
@@ -113,10 +123,7 @@ pub(crate) fn session(
             "Include parents"
         }
     );
-    let scope = format!(
-        "sessions where id:{}",
-        serde_json::to_string(id).expect("string")
-    );
+    let scope = format!("sessions where id:{}", polylogue_query::quoted(id));
     let _ = write!(
         body,
         "<p><a href=\"/cost?q={}\">Session cost and usage</a></p>",
@@ -133,49 +140,61 @@ pub(crate) fn session(
         );
     }
     body.push_str(&navigation(&path, data, p));
-    body.push_str("<details class=\"outline\"><summary>Outline</summary>");
-    if outline["error"].is_string() {
+    if outline.is_null() {
+        let options = ReadQuery {
+            outline: Some(true),
+            ..p.clone()
+        };
         let _ = write!(
             body,
-            "<p role=\"status\">Outline unavailable: {}</p>",
-            esc(outline["message"].as_str().unwrap_or("unknown"))
+            "<p><a href=\"{}\">Open outline</a></p>",
+            esc(&options.url(&path, p.cursor.as_deref()))
         );
     } else {
-        body.push_str("<ol>");
-        for item in outline["entries"].as_array().into_iter().flatten() {
-            let options = ReadQuery {
-                message: item["message"].as_str().map(str::to_owned),
-                ..p.clone()
-            };
-            let label = item["kinds"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
+        body.push_str("<details class=\"outline\" open><summary>Outline</summary>");
+        if outline["error"].is_string() {
             let _ = write!(
                 body,
-                "<li><a href=\"{}\">{} <code>{}</code></a></li>",
-                esc(&options.url(&path, None)),
-                esc(&label),
-                esc(item["message"].as_str().unwrap_or("unknown"))
+                "<p role=\"status\">Outline unavailable: {}</p>",
+                esc(outline["message"].as_str().unwrap_or("unknown"))
             );
+        } else {
+            body.push_str("<ol>");
+            for item in outline["entries"].as_array().into_iter().flatten() {
+                let options = ReadQuery {
+                    message: item["message"].as_str().map(str::to_owned),
+                    ..p.clone()
+                };
+                let label = item["kinds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = write!(
+                    body,
+                    "<li><a href=\"{}\">{} <code>{}</code></a></li>",
+                    esc(&options.url(&path, None)),
+                    esc(&label),
+                    esc(item["message"].as_str().unwrap_or("unknown"))
+                );
+            }
+            body.push_str("</ol>");
+            if let Some(next) = outline["next"].as_str() {
+                let options = ReadQuery {
+                    outline_cursor: Some(next.into()),
+                    ..p.clone()
+                };
+                let _ = write!(
+                    body,
+                    "<a href=\"{}\">Next outline page</a>",
+                    esc(&options.url(&path, p.cursor.as_deref()))
+                );
+            }
         }
-        body.push_str("</ol>");
-        if let Some(next) = outline["next"].as_str() {
-            let options = ReadQuery {
-                outline_cursor: Some(next.into()),
-                ..p.clone()
-            };
-            let _ = write!(
-                body,
-                "<a href=\"{}\">Next outline page</a>",
-                esc(&options.url(&path, p.cursor.as_deref()))
-            );
-        }
+        body.push_str("</details>");
     }
-    body.push_str("</details>");
     body.push_str(&parents(&data["parents"], links));
     if let Some(next) = links["next"].as_str() {
         let options = ReadQuery {

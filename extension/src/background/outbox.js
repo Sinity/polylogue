@@ -43,8 +43,9 @@ export class Outbox {
   }
 
   /** Keeps `capture` ({provider, conversation, body: Blob}); its key. */
-  async add({ provider, conversation, body }) {
+  async add({ provider, conversation, body }, current = () => true) {
     const bytes = await body.arrayBuffer();
+    if (!current()) return null;
     let key;
     await this.run("readwrite", (store) => {
       const request = store.add({ provider, conversation, bytes, added_at: new Date().toISOString(), attempts: 0, last_error: null });

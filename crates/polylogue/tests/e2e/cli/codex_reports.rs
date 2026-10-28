@@ -39,7 +39,7 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("unknown responses"), "{text}");
     assert!(text.contains("2 recorded usage observations"), "{text}");
-    let daily = cli(&env, &["--json", "measure", "daily", "tokens"]);
+    let daily = cli(&env, &["--json", "measure", "daily", "--metric", "tokens"]);
     assert!(daily.status.success(), "{daily:?}");
     let daily = json(&daily);
     let daily = &daily["data"];

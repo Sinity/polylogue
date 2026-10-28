@@ -124,15 +124,17 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
         return Err("choose either message or latest".into());
     }
     let start = if let Some(message) = message {
-        Some(crate::daemon::ReadStart::Message(
+        Some(crate::daemon::PageSelection::Message(
             polylogue_model::MessageId::parse(message.strip_prefix("message:").unwrap_or(&message))
                 .map_err(|e| e.to_string())?,
         ))
     } else {
-        v.flag("latest").then_some(crate::daemon::ReadStart::Latest)
+        v.flag("latest")
+            .then_some(crate::daemon::PageSelection::Latest)
     };
     Ok(Request::Read {
-        start,
+        slices: v.flag("slices"),
+        selection: start,
         target,
         view: v.text("view").unwrap_or_else(|| "full".into()),
         format: v
@@ -382,7 +384,7 @@ pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
 /// `measure WHAT` as the query `QUERY | measure WHAT`.
 pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
     let name = c.name.trim_start_matches("measure ");
-    let what = match v.text("metric") {
+    let what = match v.text("metric").or_else(|| v.text("option")) {
         Some(metric) => format!("{name}:{metric}"),
         None => name.to_owned(),
     };
@@ -390,7 +392,7 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
         Some(q) => format!("{q} | measure {what}"),
         None => format!("sessions | measure {what}"),
     };
-    Ok(query_request(text, None, v))
+    Ok(query_request(text, v.integer("limit"), v))
 }
 
 pub fn work(_: &Command, v: &Values, _: &Caller) -> Built {

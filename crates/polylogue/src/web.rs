@@ -6,10 +6,11 @@
 
 pub mod access;
 mod api;
+mod connection;
 pub mod pages;
 mod reader;
 
-use crate::daemon::service::{Daemon, handle};
+use crate::daemon::service::Daemon;
 use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
@@ -111,7 +112,7 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
     server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
         runtime.block_on(async move {
             tokio::select! {
-                result = axum::serve(OwnerListener { inner: listener, uid }, router(web)).into_future() => result,
+                result = axum::serve(OwnerListener { inner: listener, uid }, router(web).into_make_service_with_connect_info::<connection::Peer>()).into_future() => result,
                 _ = stopped => Ok(()),
             }
         })
@@ -130,7 +131,7 @@ struct OwnerListener {
 }
 
 impl axum::serve::Listener for OwnerListener {
-    type Io = tokio::net::TcpStream;
+    type Io = connection::Connection;
     type Addr = std::net::SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
@@ -142,8 +143,10 @@ impl axum::serve::Listener for OwnerListener {
             let Ok(server) = stream.local_addr() else {
                 continue;
             };
-            if access::socket_owner(peer, server) == Some(self.uid) {
-                return (stream, peer);
+            if access::socket_owner(peer, server) == Some(self.uid)
+                && let Ok(connection) = connection::Connection::new(stream)
+            {
+                return (connection, peer);
             }
         }
     }
@@ -230,8 +233,38 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     next.run(req).await
 }
 
+tokio::task_local! {
+    static READ_LIMIT: (Option<i64>, polylogue_store::read::limit::ReadCancellation);
+}
+
 async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
-    let mut response = guarded(web, req, next).await;
+    let cancellation = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<connection::Peer>>()
+        .map(|peer| peer.0.0.child())
+        .unwrap_or_default();
+    let deadline_ms = match req.headers().get("x-polylogue-deadline-ms") {
+        Some(value) => match value
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+        {
+            Some(value) => Some(value),
+            None => {
+                return json_answer(
+                    &web,
+                    crate::daemon::service::error(
+                        "bad_request",
+                        "x-polylogue-deadline-ms must be Unix milliseconds",
+                    ),
+                );
+            }
+        },
+        None => None,
+    };
+    let mut response = READ_LIMIT
+        .scope((deadline_ms, cancellation), guarded(web, req, next))
+        .await;
     let h = response.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
@@ -254,9 +287,43 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
 /// Runs a request on a blocking thread, as the socket would.
 pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     let d = Arc::clone(&web.daemon);
-    tokio::task::spawn_blocking(move || handle(request, &d))
-        .await
-        .unwrap_or_else(|error| crate::daemon::service::error("internal", error))
+    let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
+    let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
+    let mut cancel = CancelRead(Some(limit.cancellation.clone()));
+    let response = tokio::task::spawn_blocking(move || {
+        crate::daemon::service::handle_with_limit(request, &d, &limit)
+    })
+    .await
+    .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
+    cancel.0.take();
+    browser_response(response, &web.daemon.archive.root)
+}
+
+pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
+    READ_LIMIT
+        .try_with(|(deadline_ms, cancellation)| {
+            crate::daemon::execution::limit(*deadline_ms, cancellation.clone())
+        })
+        .unwrap_or_else(|_| crate::daemon::execution::limit(None, Default::default()))
+}
+
+pub(super) struct CancelRead(Option<polylogue_store::read::limit::ReadCancellation>);
+impl Drop for CancelRead {
+    fn drop(&mut self) {
+        if let Some(cancellation) = &self.0 {
+            cancellation.cancel();
+        }
+    }
+}
+
+fn browser_response(response: Response, root: &std::path::Path) -> Response {
+    let mut response = response.clean(|text| access::scrub(text, root));
+    if let Response::Ok { data, .. } = &mut response
+        && let Some(data) = data.as_object_mut()
+    {
+        data.remove("archive");
+    }
+    response
 }
 
 /// A response's data with the archive directory's path taken out.
@@ -264,37 +331,9 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    let mut pending = vec![&mut value];
-    while let Some(value) = pending.pop() {
-        match value {
-            serde_json::Value::String(text) => {
-                *text = access::scrub(text, &web.daemon.archive.root)
-            }
-            serde_json::Value::Array(values) => pending.extend(values.iter_mut()),
-            serde_json::Value::Object(fields) => {
-                let mut renamed = Vec::new();
-                for (name, field) in std::mem::take(fields) {
-                    let clean = access::scrub(&name, &web.daemon.archive.root);
-                    if clean == name {
-                        fields.insert(name, field);
-                    } else {
-                        renamed.push((clean, field));
-                    }
-                }
-                for (label, field) in renamed {
-                    let mut name = label.clone();
-                    let mut suffix = 2;
-                    while fields.contains_key(&name) {
-                        name = format!("{label} #{suffix}");
-                        suffix += 1;
-                    }
-                    fields.insert(name, field);
-                }
-                pending.extend(fields.values_mut());
-            }
-            _ => {}
-        }
-    }
+    polylogue_model::masking::mask_json_values(&mut value, |text| {
+        access::scrub(text, &web.daemon.archive.root)
+    });
     value
 }
 
@@ -308,9 +347,9 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
 
 async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
     let status = match ask(&web, Request::Status).await {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         Response::Error { kind, message, .. } => {
-            return failed(StatusCode::INTERNAL_SERVER_ERROR, &kind, &message);
+            return failed(error_status(&kind), &kind, &message);
         }
     };
     let sessions = match ask(
@@ -326,7 +365,7 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
     )
     .await
     {
-        Response::Ok { data } => scrubbed(&web, data),
+        Response::Ok { data, .. } => data,
         _ => serde_json::Value::Null,
     };
     page(pages::home(&status, &sessions))
@@ -352,12 +391,9 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
         fields: vec![],
     };
     match ask(&web, request).await {
-        Response::Ok { data } => page(pages::search(
-            &p.q,
-            Some(&scrubbed(&web, data)),
-            None,
-            p.cursor.as_deref(),
-        )),
+        Response::Ok { data, .. } => {
+            page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref()))
+        }
         Response::Error {
             kind,
             message,
@@ -390,21 +426,9 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
     )
     .await
     {
-        Response::Ok { data } => page(pages::cost(scope, &scrubbed(&web, data)["data"])),
+        Response::Ok { data, .. } => page(pages::cost(scope, &data["data"])),
         Response::Error { kind, message, .. } => failed(
-            if matches!(
-                kind.as_str(),
-                "bad_request"
-                    | "query"
-                    | "invalid_query"
-                    | "unknown_field"
-                    | "bad_value"
-                    | "not_a_query"
-            ) {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            },
+            error_status(&kind),
             &kind,
             &access::scrub(&message, &web.daemon.archive.root),
         ),
@@ -507,11 +531,23 @@ async fn live_js() -> HttpResponse {
         .into_response()
 }
 
-/// The body of a JSON answer: the data as the socket gives it, the error
-/// as a typed kind with a status code.
+fn error_status(kind: &str) -> StatusCode {
+    match kind {
+        "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
+        "cancelled" => StatusCode::REQUEST_TIMEOUT,
+        "not_found" => StatusCode::NOT_FOUND,
+        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
+        | "not_a_query" => StatusCode::BAD_REQUEST,
+        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
+        "not_built" => StatusCode::NOT_IMPLEMENTED,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// The data as the socket gives it, or a typed error with its HTTP status.
 pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    match response {
-        Response::Ok { data } => axum::Json(scrubbed(web, data)).into_response(),
+    match browser_response(response, &web.daemon.archive.root) {
+        Response::Ok { data, .. } => axum::Json(data).into_response(),
         Response::Error {
             kind,
             message,
@@ -522,14 +558,7 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
                 .as_ref()
                 .and_then(|d| d["http_status"].as_u64())
                 .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or(match kind.as_str() {
-                "not_found" => StatusCode::NOT_FOUND,
-                "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field"
-                | "bad_value" | "not_a_query" => StatusCode::BAD_REQUEST,
-                "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-                "not_built" => StatusCode::NOT_IMPLEMENTED,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            });
+            let status = named.unwrap_or_else(|| error_status(&kind));
             let message = access::scrub(&message, &web.daemon.archive.root);
             (
                 status,

@@ -1,4 +1,5 @@
 mod bench;
+mod common_link;
 
 use clap::Parser;
 use devkit::{Nextest, Run, select::Selection};
@@ -41,6 +42,10 @@ enum Cli {
         /// what depends on them.
         #[arg(long)]
         changed: bool,
+        /// Build every test binary without running any (a cloud
+        /// environment's warm build); selection does not apply.
+        #[arg(long, conflicts_with_all = ["changed", "args"])]
+        no_run: bool,
         /// Further `cargo nextest run` arguments: `-p` packages and `-E`
         /// filtersets (both select which tests run), names and runner flags.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -61,6 +66,15 @@ enum Cli {
     /// Corpus builds and native interactive read measurements.
     #[command(subcommand)]
     Bench(bench::Bench),
+    /// Build against a local checkout of polylogue-sinex-common instead of
+    /// the commit Cargo.lock pins.
+    LinkCommon {
+        /// The checkout; by default `$POLYLOGUE_SINEX_COMMON`, else
+        /// `../polylogue-sinex-common`.
+        checkout: Option<std::path::PathBuf>,
+    },
+    /// Return to the commit of polylogue-sinex-common that Cargo.lock pinned.
+    UnlinkCommon,
     #[command(flatten)]
     Shared(devkit::cli::Command),
 }
@@ -230,8 +244,8 @@ fn clippy(run: &mut Run, full: bool) -> devkit::Result {
     Ok(())
 }
 
-fn sinex_client(run: &mut Run) -> devkit::Result {
-    let args = [
+fn sinex_client_arguments() -> Vec<String> {
+    [
         "--locked",
         "-p",
         "polylogue-sinex",
@@ -241,8 +255,25 @@ fn sinex_client(run: &mut Run) -> devkit::Result {
         "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults",
     ]
     .map(String::from)
-    .to_vec();
-    run.nextest("sinex-client", &nextest(args))
+    .to_vec()
+}
+
+fn sinex_client(run: &mut Run) -> devkit::Result {
+    run.nextest("sinex-client", &nextest(sinex_client_arguments()))
+}
+
+fn build_tests(run: &mut Run) -> devkit::Result {
+    let standalone = test_arguments(&[], None, false).expect("the full selection is valid");
+    for (stage, arguments) in [
+        ("test build", standalone),
+        ("sinex-client test build", sinex_client_arguments()),
+    ] {
+        let mut command = vec!["test".to_owned(), "--no-run".to_owned()];
+        command.extend(arguments);
+        let arguments: Vec<&str> = command.iter().map(String::as_str).collect();
+        run.cargo(stage, &arguments)?;
+    }
+    Ok(())
 }
 
 fn nextest(args: Vec<String>) -> Nextest {
@@ -359,6 +390,16 @@ fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::R
     run.finish()
 }
 
+fn exit_code(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse() {
         Cli::Fast => run("fast", &[], |run| {
@@ -383,7 +424,8 @@ fn main() -> ExitCode {
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
-        Cli::Test { changed, args } => {
+        Cli::Test { no_run: true, .. } => run("test", &["--no-run".into()], build_tests),
+        Cli::Test { changed, args, .. } => {
             let mut required = None;
             let mut sinex = false;
             if changed {
@@ -440,6 +482,8 @@ fn main() -> ExitCode {
             }
         }
         Cli::Bench(command) => bench::execute(command),
+        Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),
+        Cli::UnlinkCommon => exit_code(common_link::unlink()),
         Cli::Shared(command) => devkit::cli::execute("polylogue", command),
     }
 }

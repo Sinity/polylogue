@@ -129,3 +129,8 @@ impl QueryError {
         }
     }
 }
+
+/// One literal string in the query language.
+pub fn quoted(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}

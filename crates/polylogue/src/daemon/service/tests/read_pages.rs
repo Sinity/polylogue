@@ -10,7 +10,8 @@ fn page(
 ) -> Response {
     handle(
         Request::Read {
-            start: None,
+            slices: true,
+            selection: None,
             target: crate::daemon::ReadTarget::Session(
                 polylogue_model::SessionId::parse(session).unwrap(),
             ),
@@ -25,7 +26,7 @@ fn page(
 }
 
 fn next(response: Response) -> String {
-    let Response::Ok { data } = response else {
+    let Response::Ok { data, .. } = response else {
         panic!("{response:?}")
     };
     data["next"].as_str().unwrap().to_owned()
@@ -100,7 +101,7 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
     )
     .unwrap();
     w.wait_for(|_| {
-        let Response::Ok { data } = read(&w.daemon, "full", "json", None, None) else {
+        let Response::Ok { data, .. } = read(&w.daemon, "full", "json", None, None) else {
             return false;
         };
         data.to_string().contains("rewritten earlier")
@@ -118,8 +119,8 @@ fn read_pages_refuse_positions_from_the_previous_rendering_version() {
         .decode(token)
         .unwrap();
     let mut cursor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(cursor["version"], 4);
-    cursor["version"] = serde_json::json!(3);
+    assert_eq!(cursor["version"], 6);
+    cursor["version"] = serde_json::json!(5);
     let old = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&cursor).unwrap());
     assert!(
@@ -169,7 +170,8 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 &pool.reader().unwrap(),
                 &id,
                 super::super::read::Options {
-                    start: None,
+                    slices: true,
+                    selection: None,
                     view: "full",
                     format: "json",
                     with_parents,
@@ -179,7 +181,7 @@ fn tied_source_positions_keep_page_order_and_cursor_binding_across_index_plan_ch
                 &super::super::read::page_ends::Cache::default(),
                 0,
             );
-            let Response::Ok { data } = response else {
+            let Response::Ok { data, .. } = response else {
                 panic!("{response:?}")
             };
             text.push_str(data["text"].as_str().unwrap());
@@ -239,7 +241,7 @@ fn cached_session_pages_equal_replay_across_views_parents_and_split_pem() {
                     view,
                     cursor.as_deref(),
                 );
-                let (Response::Ok { data: cached }, Response::Ok { data: replayed }) =
+                let (Response::Ok { data: cached, .. }, Response::Ok { data: replayed, .. }) =
                     (cached, replayed)
                 else {
                     panic!("page failed");
@@ -363,7 +365,8 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
                     &pool.reader().unwrap(),
                     &id,
                     super::super::read::Options {
-                        start: None,
+                        slices: true,
+                        selection: None,
                         view: "full",
                         format: "json",
                         with_parents,
@@ -377,7 +380,7 @@ fn inherited_pem_context_has_identical_cached_and_replayed_continuations() {
             let cached = render(cursor.as_deref());
             cache.clear();
             let replayed = render(cursor.as_deref());
-            let (Response::Ok { data: cached }, Response::Ok { data: replayed }) =
+            let (Response::Ok { data: cached, .. }, Response::Ok { data: replayed, .. }) =
                 (cached, replayed)
             else {
                 panic!("inherited page failed");
@@ -425,6 +428,7 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), text).unwrap();
     daemon.wait_for(|data| data["store"]["messages"] == 3);
     let request = |start, view: &str| Request::Read {
+        slices: true,
         target: crate::daemon::ReadTarget::Session(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         ),
@@ -433,26 +437,26 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
         with_parents: true,
         budget: Some(8192),
         cursor: None,
-        start: Some(start),
+        selection: Some(start),
     };
     let response = handle(
         request(
-            crate::daemon::ReadStart::Message(
+            crate::daemon::PageSelection::Message(
                 polylogue_model::MessageId::parse("claude-code:anchor-1").unwrap(),
             ),
             "full",
         ),
         &daemon.daemon,
     );
-    let Response::Ok { data } = response else {
+    let Response::Ok { data, .. } = response else {
         panic!("{response:?}")
     };
     assert_eq!(data["slices"][0]["message"]["id"], "claude-code:anchor-1");
     assert!(data["text"].as_str().unwrap().contains("visible λ🙂"));
     assert!(!data.to_string().contains("private-tail"));
     assert_eq!(data["position"]["message"], 1);
-    let Response::Ok { data } = handle(
-        request(crate::daemon::ReadStart::Latest, "full"),
+    let Response::Ok { data, .. } = handle(
+        request(crate::daemon::PageSelection::Latest, "full"),
         &daemon.daemon,
     ) else {
         panic!("latest failed")
@@ -462,13 +466,13 @@ fn direct_anchors_restore_private_key_masking_and_refuse_unselected_messages() {
     // An anchor whose message is hidden by this view is a valid empty read.
     assert!(matches!(
         handle(
-            request(crate::daemon::ReadStart::Latest, "actions"),
+            request(crate::daemon::PageSelection::Latest, "actions"),
             &daemon.daemon
         ),
         Response::Ok { .. }
     ));
     assert!(
-        matches!(handle(request(crate::daemon::ReadStart::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
+        matches!(handle(request(crate::daemon::PageSelection::Message(polylogue_model::MessageId::parse("claude-code:missing").unwrap()),"full"),&daemon.daemon),Response::Error {kind,..} if kind=="not_found")
     );
 }
 
@@ -513,17 +517,18 @@ fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters()
     let pool = fixture.reads().unwrap();
     let id = polylogue_model::SessionId::parse("claude-code:large").unwrap();
     let cache = super::super::read::page_ends::Cache::default();
-    let render = |cursor: Option<&str>, start: Option<&crate::daemon::ReadStart>| {
+    let render = |cursor: Option<&str>, start: Option<&crate::daemon::PageSelection>| {
         super::super::read::run(
             &pool.reader().unwrap(),
             &id,
             super::super::read::Options {
+                slices: true,
                 view: "full",
                 format: "json",
                 with_parents: true,
                 budget: Some(8192),
                 cursor,
-                start,
+                selection: start,
             },
             &cache,
             cache.epoch(),
@@ -535,7 +540,7 @@ fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters()
     let mut last_message = None;
     loop {
         let response = render(cursor.as_deref(), None);
-        let Response::Ok { data } = response else {
+        let Response::Ok { data, .. } = response else {
             panic!("{response:?}")
         };
         assert_eq!(data["position"]["total_messages"], 100000);
@@ -571,14 +576,17 @@ fn hundred_thousand_message_pages_and_jumps_preserve_identities_and_characters()
     }
     for (start, expected) in [
         (
-            crate::daemon::ReadStart::Message(
+            crate::daemon::PageSelection::Message(
                 polylogue_model::MessageId::parse("claude-code:large-50000").unwrap(),
             ),
             "claude-code:large-50000",
         ),
-        (crate::daemon::ReadStart::Latest, "claude-code:large-99999"),
+        (
+            crate::daemon::PageSelection::Latest,
+            "claude-code:large-99999",
+        ),
     ] {
-        let Response::Ok { data } = render(None, Some(&start)) else {
+        let Response::Ok { data, .. } = render(None, Some(&start)) else {
             panic!("jump failed")
         };
         assert_eq!(data["slices"][0]["message"]["id"], expected);
@@ -620,7 +628,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     let mut references = Vec::new();
     let mut first_cursor = None;
     loop {
-        let Response::Ok { data } = handle(request(cursor), &daemon.daemon) else {
+        let Response::Ok { data, .. } = handle(request(cursor), &daemon.daemon) else {
             panic!("outline failed")
         };
         references.extend(
@@ -718,19 +726,20 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
             &pool.reader().unwrap(),
             &id,
             super::super::read::Options {
+                slices: true,
                 view,
                 format: "json",
                 with_parents: true,
                 budget: Some(8192),
-                start,
+                selection: start,
                 cursor,
             },
             &cache,
             cache.epoch(),
         )
     };
-    let latest = crate::daemon::ReadStart::Latest;
-    let Response::Ok { data } = read("prompts", Some(&latest), None) else {
+    let latest = crate::daemon::PageSelection::Latest;
+    let Response::Ok { data, .. } = read("prompts", Some(&latest), None) else {
         panic!("latest prompt decoded a hidden body")
     };
     assert_eq!(
@@ -738,11 +747,11 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
         "claude-code:visible-user"
     );
     let cursor = data["cursor"].as_str().unwrap();
-    let Response::Ok { data: reopened } = read("prompts", None, Some(cursor)) else {
+    let Response::Ok { data: reopened, .. } = read("prompts", None, Some(cursor)) else {
         panic!("current page cursor decoded a hidden body")
     };
     assert_eq!(data, reopened);
-    let Response::Ok { data } = read("actions", Some(&latest), None) else {
+    let Response::Ok { data, .. } = read("actions", Some(&latest), None) else {
         panic!("empty view decoded a hidden body")
     };
     assert_eq!(data["slices"], serde_json::json!([]));
@@ -750,4 +759,65 @@ fn latest_uses_visible_content_and_current_cursors_skip_hidden_bodies() {
         read("full", Some(&latest), None),
         Response::Error { .. }
     ));
+}
+
+#[test]
+fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
+    let daemon = test_daemon::start("placeholder");
+    let source = (0..12)
+        .map(|n| {
+            polylogue_testkit::claude_user(
+                &if n == 0 {
+                    "u1".to_owned()
+                } else {
+                    format!("reverse-{n}")
+                },
+                "s1",
+                &format!("prompt number {n} λ🙂"),
+            )
+        })
+        .collect::<String>();
+    std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
+    daemon.wait_for(|data| data["store"]["messages"] == 12);
+    let read = |cursor, start| {
+        handle(
+            Request::Read {
+                target: crate::daemon::ReadTarget::Session(
+                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+                ),
+                slices: true,
+                view: "full".into(),
+                format: "json".into(),
+                with_parents: false,
+                budget: Some(40),
+                cursor,
+                selection: start,
+            },
+            &daemon.daemon,
+        )
+    };
+    let Response::Ok { data: current, .. } = read(None, Some(crate::daemon::PageSelection::Latest))
+    else {
+        panic!("latest")
+    };
+    let Response::Ok { data: previous, .. } =
+        read(Some(current["previous"].as_str().unwrap().into()), None)
+    else {
+        panic!("previous")
+    };
+    assert_eq!(previous["next"], current["cursor"]);
+    assert!(
+        !previous["text"]
+            .as_str()
+            .unwrap()
+            .contains("prompt number 11")
+    );
+    assert_eq!(previous["text"].as_str().unwrap().chars().count(), 160);
+    let Response::Ok { data: again, .. } =
+        read(Some(previous["next"].as_str().unwrap().into()), None)
+    else {
+        panic!("next")
+    };
+    assert_eq!(again["text"], current["text"]);
+    assert_eq!(again["slices"], current["slices"]);
 }
