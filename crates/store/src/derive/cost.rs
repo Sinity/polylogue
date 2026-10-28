@@ -7,6 +7,7 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "cost",
+    products: &[],
     version: Version::Catalog(1),
     after: &[],
     run,

@@ -28,6 +28,7 @@ use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
+    products: &[],
     version: Version::Rules(4),
     after: &[],
     run: |tx, pk, _| run(tx, pk),

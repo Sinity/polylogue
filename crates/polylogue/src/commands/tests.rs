@@ -92,7 +92,7 @@ fn the_command_line_has_nothing_outside_the_table() {
 fn mcp_offers_exactly_the_table_commands_marked_for_it() {
     let tools: Vec<String> = crate::mcp::tools()
         .into_iter()
-        .map(|t| t.name.into_owned())
+        .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     let declared: Vec<String> = COMMANDS
         .iter()
@@ -345,7 +345,8 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
     for u in polylogue_query::ast::Unit::all() {
         assert!(query.help.contains(u.name()), "{}", u.name());
     }
-    let (c, v) = crate::cli::parse(&["polylogue", "measure", "daily", "tokens"]).unwrap();
+    let (c, v) =
+        crate::cli::parse(&["polylogue", "measure", "daily", "--metric", "tokens"]).unwrap();
     let r = request_json(c, &v, &cli_caller());
     assert_eq!(r["text"], "sessions | measure daily:tokens");
 }
@@ -393,5 +394,73 @@ fn chat_send_reads_attached_files_on_the_command_line() {
             .unwrap()
             .args_for(Surface::Mcp)
             .all(|a| a.name != "attach")
+    );
+}
+
+mod client_answers;
+
+#[test]
+fn request_id_is_declared_for_all_write_surfaces() {
+    let (command, values) = crate::cli::parse(&[
+        "polylogue",
+        "note",
+        "add",
+        "repo:x",
+        "--body",
+        "b",
+        "--request-id",
+        "retry-one",
+    ])
+    .unwrap();
+    assert_eq!(values.request_id(), "retry-one");
+    for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
+        assert_eq!(
+            command
+                .args_for(surface)
+                .filter(|a| a.name == "request_id")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn measure_options_build_the_same_query_as_the_query_surface() {
+    for (name, metric) in [
+        ("facets", "deep"),
+        ("outlook", "example:linear"),
+        ("compare", "origin,words"),
+    ] {
+        let (command, values) = crate::cli::parse(&[
+            "polylogue",
+            "measure",
+            name,
+            "--option",
+            metric,
+            "sessions where origin:codex",
+        ])
+        .unwrap();
+        let request = request_json(command, &values, &cli_caller());
+        assert_eq!(
+            request["text"],
+            format!("sessions where origin:codex | measure {name}:{metric}")
+        );
+    }
+}
+
+#[test]
+fn daily_series_is_a_metric_option() {
+    let (command, values) = crate::cli::parse(&[
+        "polylogue",
+        "measure",
+        "daily",
+        "--metric",
+        "tokens",
+        "sessions where origin:codex",
+    ])
+    .unwrap();
+    assert_eq!(
+        request_json(command, &values, &cli_caller())["text"],
+        "sessions where origin:codex | measure daily:tokens"
     );
 }

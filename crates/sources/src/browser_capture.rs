@@ -10,7 +10,8 @@
 //! there is no provider JSON, the extension's own normalized turns are read
 //! instead, under the provider's origin.
 //! Attachment bytes the extension inlined are stored and linked to their
-//! attachment.
+//! attachment; a file whose bytes an earlier capture already stored is named
+//! by its blob hash instead.
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -189,6 +190,10 @@ impl DocumentParser for Capture {
                     "schema_version": capture.get("schema_version"),
                     "provenance": provenance,
                     "provider_meta": capture.get("provider_meta"),
+                    "attachments": capture.pointer("/session/attachments").and_then(Json::as_array)
+                        .into_iter().flatten().map(|a| serde_json::json!({
+                            "id": a.get("provider_attachment_id"), "not_fetched": a.get("not_fetched")
+                        })).collect::<Vec<_>>(),
                 }),
             });
         }
@@ -334,13 +339,13 @@ fn turn_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
 fn attachment(
     a: &Json,
     direction: AttachmentDirection,
-    stored: Option<(BlobHash, u64)>,
+    stored: Option<(BlobHash, Option<u64>)>,
 ) -> Vec<Block> {
     let media_type = string_of(a, "mime_type");
     let file = Attachment {
         name: string_of(a, "name"),
         size: stored
-            .map(|(_, size)| size)
+            .and_then(|(_, size)| size)
             .or_else(|| a.get("size_bytes").and_then(Json::as_u64)),
         blob: stored.map(|(hash, _)| hash),
         url: string_of(a, "url"),
@@ -367,10 +372,11 @@ fn attachment(
 }
 
 /// Links the session's attachment list to its messages: stores the bytes
-/// the extension inlined (`content_base64`) and points the matching
-/// attachment at them, the message by its provider ID, the attachment by
-/// its file ID or, failing that, its name. An attachment no block of its
-/// message holds yet is added to that message, with or without bytes.
+/// the extension inlined (`content_base64`), or takes the hash of bytes an
+/// earlier capture stored (`blob`), and points the matching attachment at
+/// them, the message by its provider ID, the attachment by its file ID or,
+/// failing that, its name. An attachment no block of its message holds yet
+/// is added to that message, with or without bytes.
 fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut Sink<'_>) {
     for a in capture
         .pointer("/session/attachments")
@@ -378,13 +384,19 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
         .into_iter()
         .flatten()
     {
-        let stored = str_of(a, "content_base64")
+        let stored = a
+            .get("content_base64")
+            .and_then(Json::as_str)
             .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
             .map(|bytes| {
                 let hash = BlobHash::of(&bytes);
                 let size = bytes.len() as u64;
                 sink.out.blobs.push(ExtractedBlob { hash, size, bytes });
-                (hash, size)
+                (hash, Some(size))
+            })
+            .or_else(|| {
+                let hash = BlobHash::parse(str_of(a, "blob")?).ok()?;
+                Some((hash, a.get("size_bytes").and_then(Json::as_u64)))
             });
         let file_id = str_of(a, "provider_attachment_id");
         let name = str_of(a, "name");
@@ -416,7 +428,7 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
                         && x.blob.is_none()
                     {
                         x.blob = Some(hash);
-                        x.size.get_or_insert(size);
+                        x.size = size.or(x.size);
                     }
                 }
             }

@@ -79,6 +79,12 @@ pub enum Request {
         provider: String,
         ids: Vec<String>,
     },
+    /// The files of a web chat's conversation whose bytes the archive
+    /// holds, so the extension does not download them again.
+    StoredFiles {
+        provider: String,
+        conversation: String,
+    },
     Status,
     Explain {
         subject: String,
@@ -87,6 +93,29 @@ pub enum Request {
         page_size: Option<u64>,
         cursor: Option<String>,
         session: Option<String>,
+    },
+    /// Chronological recorded activity and a logical-day calendar.
+    Timeline {
+        date: Option<String>,
+        #[serde(default)]
+        across_years: bool,
+        #[serde(default)]
+        undated: bool,
+        cursor: Option<String>,
+        page_size: Option<u64>,
+    },
+    /// Session-scoped usage, optionally bounded by a logical day, with response pages.
+    Cost {
+        month: Option<String>,
+        #[serde(default)]
+        undated: bool,
+        #[serde(default)]
+        unknown_model: bool,
+        query: String,
+        date: Option<String>,
+        model: Option<String>,
+        cursor: Option<String>,
+        page_size: Option<u64>,
     },
     /// Completions for one word of a query being typed.
     Complete {
@@ -227,6 +256,13 @@ pub enum Request {
         #[serde(default)]
         sender: Option<String>,
     },
+    /// Advice printed by a hook. Preparation is read-only.
+    AdviceDelivered {
+        request_id: String,
+        session: Option<SessionId>,
+        cwd: PathBuf,
+        text: String,
+    },
     /// What happened to a delivery after it was handed out.
     DeliveryEvent {
         delivery: String,
@@ -287,6 +323,8 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::Timeline { .. }
+            | Self::Cost { .. }
             | Self::Complete { .. }
             | Self::Explain { .. }
             | Self::Attachment { .. }
@@ -303,7 +341,8 @@ impl Request {
             | Self::ChatAction { .. }
             | Self::ChatAttachment { .. }
             | Self::BackfillJobs
-            | Self::Conversations { .. } => true,
+            | Self::Conversations { .. }
+            | Self::StoredFiles { .. } => true,
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
@@ -323,6 +362,7 @@ impl Request {
             | Self::Save { .. }
             | Self::Watch { .. }
             | Self::Withdraw { .. }
+            | Self::AdviceDelivered { .. }
             | Self::DeliveryEvent { .. }
             | Self::Excise { .. } => false,
         }

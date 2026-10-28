@@ -13,6 +13,7 @@ pub const SUBJECTS: &[&str] = &[
     "fields",
     "operators",
     "capabilities",
+    "derived",
 ];
 
 const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe stages sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit stage selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
@@ -95,6 +96,7 @@ fn declarations(
 
 fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
     Ok(match subject {
+        "derived" => polylogue_model::derived::all().into_iter().map(|p|json!(p)).collect(),
         "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::syntax::STAGES, "aggregates": polylogue_query::syntax::AGGREGATES, "keywords": polylogue_query::syntax::KEYWORDS})],
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
@@ -104,6 +106,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
         })).collect(),
         "fields" => fields::FIELDS.iter().filter(|f| unit.is_none_or(|u| u == f.unit)).map(|f| json!({
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
+            "construct": fields::construct(f),
         })).collect(),
         "operators" => polylogue_query::ast::Op::TABLE.iter().map(|(op, _)| json!({"name": op.name(), "operation": op})).collect(),
         "capabilities" => {

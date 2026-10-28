@@ -11,6 +11,7 @@ use std::ops::ControlFlow;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
+    products: &[],
     version: Version::Rules(3),
     after: &["duplicates", "session"],
     run: |tx, pk, _| run(tx, pk),
