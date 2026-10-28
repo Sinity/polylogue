@@ -258,17 +258,10 @@ pub fn step(
         blobs: vec![],
         length,
         release: Default::default(),
-        parse: vec![ParseStep {
-            order_from: None,
-            reading_version: "synthetic=1".into(),
-            reset: start == 0,
-            repeats_whole_conversations: false,
-            output,
-            counts,
-            start,
-            parsed_upto: length,
-            at_end: true,
-            prepared: Default::default(),
+        parse: vec![{
+            let mut step = ParseStep::new(output, counts, start..length, true);
+            step.reading_version = "synthetic=1".into();
+            step
         }],
     }
 }

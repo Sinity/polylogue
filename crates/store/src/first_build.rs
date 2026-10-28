@@ -96,6 +96,31 @@ impl Rows {
 }
 
 impl FirstBuild {
+    pub(crate) fn load(index: &Connection) -> Result<Self> {
+        let keys = Self::default();
+        for (table, key, pk, rows) in [
+            ("message", "id", "pk", &keys.messages),
+            ("event", "id", "pk", &keys.events),
+            ("text", "hash", "id", &keys.texts),
+        ] {
+            let mut statement = index.prepare(&format!("SELECT {key},{pk} FROM {table}"))?;
+            let mut values = statement.query([])?;
+            while let Some(row) = values.next()? {
+                let hash = if table == "text" {
+                    let value: Vec<u8> = row.get(0)?;
+                    text_key(value.as_slice().try_into().map_err(|_| {
+                        crate::StoreError::Invalid("text hash is not 32 bytes".into())
+                    })?)
+                } else {
+                    let value: String = row.get(0)?;
+                    hash_of(value.as_bytes())
+                };
+                rows.borrow_mut().add(hash, row.get(1)?);
+            }
+        }
+        Ok(keys)
+    }
+
     pub(crate) fn message(&self, conn: &Connection, id: &str) -> Result<Option<i64>> {
         self.messages.borrow().find(
             conn,

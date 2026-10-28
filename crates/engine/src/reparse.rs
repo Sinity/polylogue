@@ -290,7 +290,7 @@ impl Engine {
         if checked.elapsed() >= self.config.live_every {
             *checked = Instant::now();
             let result = self
-                .live_plans(&busy.keys().map(PathBuf::as_path).collect())
+                .live_plans(&busy.keys().map(PathBuf::as_path).collect(), pass)
                 .and_then(|live| self.execute(live, pass));
             if let Err(error) = result {
                 pass.errors.push(format!("live inputs: {error}"));

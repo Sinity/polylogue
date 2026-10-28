@@ -229,6 +229,17 @@ impl Engine {
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.reading_version = plan.origin.reading_version();
+        if done && plan.origin.is_row_dump(&plan.path) {
+            let pool::Bytes::Stored(chain) = &plan.source else {
+                return Err(
+                    std::io::Error::other("a row dump must be stored before comparison").into(),
+                );
+            };
+            parse.compare_reader(std::io::BufReader::new(
+                chain.reader(Arc::clone(&self.blobs)),
+            ))?;
+            pass.bytes_read += plan.size;
+        }
         parse.prepare();
         let batch = Batch {
             input: plan.input.clone(),

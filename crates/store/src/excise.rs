@@ -308,10 +308,68 @@ pub(crate) fn recorded(archive: &Connection, request: &ExciseRequest) -> Result<
     })
 }
 
-/// Which excisions an `index.db` has applied: the count and the largest
-/// write counter of the archive's excision rows. An index whose mark differs
-/// from the archive's (a stop between the archive's commit and the index's)
-/// is rebuilt from the stored inputs that remain.
+/// Completes recorded removals before readers can open this index. Each
+/// removal uses its recorded identities; unrelated indexed rows stay in place.
+pub(crate) fn catch_up(archive: &Connection, index: &Connection) -> Result<()> {
+    if !index_behind(archive, index)? {
+        return Ok(());
+    }
+    let previous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
+    index.pragma_update(None, "synchronous", 2)?;
+    index.pragma_update(None, "secure_delete", true)?;
+    let result = (|| {
+        let atx = archive.unchecked_transaction()?;
+        let tx = index.unchecked_transaction()?;
+        let counter = crate::archive::bump_counter(&tx)?;
+        let t = Transactions {
+            archive: &atx,
+            index: &tx,
+            embeddings: None,
+            seq: 0,
+            counter,
+        };
+        let mut texts = BTreeSet::new();
+        let mut blobs = BTreeSet::new();
+        let mut statement = atx.prepare("SELECT DISTINCT kind,value FROM excised WHERE kind IN ('session','document','input') ORDER BY CASE kind WHEN 'session' THEN 0 WHEN 'document' THEN 1 ELSE 2 END,value")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let kind: String = row.get(0)?;
+            let id: String = row.get(1)?;
+            match kind.as_str() {
+                "session" => {
+                    if let Some(pk) = index_rows::session_pk(&tx, &id)? {
+                        index_rows::remove_session(&t, pk, &id, &mut texts, &mut blobs)?;
+                    }
+                }
+                "document" => {
+                    let pk: Option<i64> = tx
+                        .query_row("SELECT pk FROM document WHERE id=?1", [&id], |r| r.get(0))
+                        .optional()?;
+                    if let Some(pk) = pk {
+                        index_rows::remove_document(&t, pk, &mut texts, &mut blobs)?;
+                    }
+                }
+                "input" => index_rows::remove_index_input(&tx, &id, counter)?,
+                _ => unreachable!(),
+            }
+        }
+        mark_applied(&atx, &tx)?;
+        tx.commit()?;
+        for table in ["text_fts", "output_fts", "tool_call_trigram"] {
+            index.execute(
+                &format!("INSERT INTO {table}({table}) VALUES ('optimize')"),
+                [],
+            )?;
+        }
+        index.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    })();
+    index.pragma_update(None, "secure_delete", false)?;
+    index.pragma_update(None, "synchronous", previous)?;
+    result
+}
+
+/// Which excisions an `index.db` has applied, committed with their removals.
 fn excisions(archive: &Connection) -> Result<String> {
     Ok(archive.query_row(
         "SELECT count(*) || ':' || COALESCE(max(commit_seq), 0) FROM excision",

@@ -46,6 +46,16 @@ fn a_failed_write_step_loses_nothing() {
             );
             for file in w.provider_files() {
                 if let Ok(stored) = w.stored_bytes(&file) {
+                    if polylogue_sources::ORIGINS
+                        .iter()
+                        .any(|origin| origin.is_row_dump(&file))
+                    {
+                        assert!(!stored.is_empty());
+                        for record in stored.split(|b| *b == b'\n').filter(|r| !r.is_empty()) {
+                            serde_json::from_slice::<serde_json::Value>(record).unwrap();
+                        }
+                        continue;
+                    }
                     assert_eq!(
                         stored,
                         fs::read(&file).unwrap(),

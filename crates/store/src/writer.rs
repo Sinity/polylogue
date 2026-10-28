@@ -133,13 +133,23 @@ impl WriterQueue {
     }
 
     fn send(&self, message: Msg) -> std::result::Result<(), ()> {
-        self.bulk
-            .lock()
-            .map_err(|_| ())?
-            .as_ref()
-            .ok_or(())?
-            .send(message)
-            .map_err(|_| ())
+        let counted = matches!(&message, Msg::StoreGroup(..) | Msg::Batch(..));
+        if counted {
+            crate::timing::queue(crate::timing::Queue::Writer, 1);
+        }
+        let result = (|| {
+            self.bulk
+                .lock()
+                .map_err(|_| ())?
+                .as_ref()
+                .ok_or(())?
+                .send(message)
+                .map_err(|_| ())
+        })();
+        if result.is_err() && counted {
+            crate::timing::queue(crate::timing::Queue::Writer, -1);
+        }
+        result
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
@@ -224,14 +234,16 @@ const QUEUE: usize = 4;
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
+pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
+    KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
+}
+
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs: every row in it can be
-    /// recomputed, and syncing a first build of tens of GB through a busy
-    /// drive costs more than the build. The first derive (the end of the
-    /// pass), or an excision, ends the build: it builds what the build
-    /// deferred, syncs the index and clears the mark; an index still marked
-    /// when the archive is next opened is set aside and rebuilt.
+    /// An empty index is built without syncs because its rows can be
+    /// recomputed. The first derive builds deferred indexes and syncs the
+    /// index. An interrupted build resumes its committed rows on the same
+    /// boot; opening it after another boot refuses.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -254,16 +266,16 @@ impl Writer {
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
-        if empty {
+        let building = empty || crate::schema::unsynced(&index)?;
+        if building {
             // Make the rebuild marker durable before unsynchronized writes.
             // Keep WAL throughout: an open read transaction must not prevent the
             // first build from finishing or the writer from stopping.
             index.pragma_update(None, "synchronous", "full")?;
-            index.execute(
-                "INSERT INTO meta(key, value) VALUES ('unsynced', '1')
-                 ON CONFLICT(key) DO UPDATE SET value = '1'",
-                [],
-            )?;
+            let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let tx = index.unchecked_transaction()?;
+            tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1'),('build_boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot.trim()])?;
+            tx.commit()?;
             index.pragma_update(None, "synchronous", "off")?;
             // The log is not copied into the database file until the rows
             // are written: each copy read every page back from the log and
@@ -275,10 +287,12 @@ impl Writer {
         // once from a sorted scan when the build ends. The writer's other
         // indexes stay, and an index missing from these lists is kept, which
         // is the safe default.
-        let deferred_indexes = if empty {
+        let deferred_indexes = if building {
+            let expected = Connection::open_in_memory()?;
+            expected.execute_batch(crate::schema::INDEX)?;
             let mut defs = Vec::new();
-            for name in KEY_INDEXES.iter().chain(READ_ONLY_INDEXES) {
-                let sql: Option<String> = index
+            for name in deferred_index_names() {
+                let sql: Option<String> = expected
                     .query_row(
                         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
                         [name],
@@ -286,7 +300,7 @@ impl Writer {
                     )
                     .optional()?;
                 if let Some(sql) = sql {
-                    index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    index.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
                     defs.push(sql);
                 }
             }
@@ -296,16 +310,19 @@ impl Writer {
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
         let excisions = crate::excise::any_excision(&archive_conn)?;
+        let first_build = building
+            .then(|| crate::first_build::FirstBuild::load(&index))
+            .transpose()?;
         let mut inner = Inner {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            first_build: empty.then(crate::first_build::FirstBuild::default),
+            first_build,
             deferred_indexes,
             derive_due: true,
             derived_version: None,
-            logs_hold_excised: false,
-            search: Search::start(archive.index_db(), !empty)?,
+            logs_hold_excised: excisions,
+            search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             excisions,
             sinex,
@@ -494,11 +511,22 @@ impl WriterSender {
         group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<hashed_blobs::Store>,
     ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
+        self.enqueue_group(group, store)?
+            .recv()
+            .map_err(|_| StoreError::WriterGone)
+    }
+
+    /// Queue a group; parsing can continue while the writer commits it.
+    pub fn enqueue_group(
+        &self,
+        group: Vec<crate::staging::PreparedBatch>,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))
             .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)
+        Ok(wait)
     }
 
     pub fn send(&self, batch: Batch) -> Result<()> {
@@ -624,6 +652,7 @@ impl Inner {
     }
 
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
+        let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
         let mut excisions = Vec::new();
         let mut imported_excisions = Vec::new();
@@ -669,6 +698,7 @@ impl Inner {
                         false
                     }
                     Msg::StoreGroup(items, store, reply) => {
+                        crate::timing::queue(crate::timing::Queue::Writer, -1);
                         for item in &items {
                             *rows += weight(&item.batch);
                             *bytes += input_bytes(&item.batch);
@@ -698,6 +728,7 @@ impl Inner {
                     }
                     Msg::Wake => false,
                     Msg::Batch(b) => {
+                        crate::timing::queue(crate::timing::Queue::Writer, -1);
                         *rows += weight(&b);
                         *bytes += input_bytes(&b);
                         group.push(b);
@@ -915,8 +946,8 @@ impl Inner {
     /// transaction per database, committed embeddings, archive, index; a dry
     /// run plans and rolls back. Deleting vectors first only costs a later
     /// purchase if a later commit fails. Once the archive commits, the
-    /// excision is in force: an index that missed it is rebuilt when the
-    /// archive is next opened, and the files of blobs marked for deletion go
+    /// excision is in force: an index that missed it applies the recorded
+    /// identities when the archive is next opened, and the files of blobs marked for deletion go
     /// after the commits, or when the archive is next opened. Running a
     /// recorded request again finishes what is left.
     fn write_excision(
@@ -934,12 +965,15 @@ impl Inner {
         }
         // An excision is written with WAL syncs even during a first build,
         // and the archive's rows are durable before blob files are deleted.
-        self.finish_build()?;
         let previous: i64 = self
             .archive
             .pragma_query_value(None, "synchronous", |r| r.get(0))?;
         self.archive
             .pragma_update(None, "synchronous", previous.max(2))?;
+        let index_sync: i64 = self
+            .index
+            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
+        self.index.pragma_update(None, "synchronous", 2)?;
         let lock = crate::write_lock::hold(&self.archive)?;
         // Pages the excision frees are overwritten with zeros, so no removed
         // content stays readable in the database files.
@@ -972,6 +1006,9 @@ impl Inner {
         }
         self.archive
             .pragma_update(None, "synchronous", previous)
+            .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
+        self.index
+            .pragma_update(None, "synchronous", index_sync)
             .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
         if result.is_ok() {
             self.excisions = true;

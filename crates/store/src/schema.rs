@@ -2,9 +2,8 @@
 //! older one is brought forward by numbered migrations
 //! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
 //! build, or one whose tables match no version this build knows, is refused.
-//! `embeddings.db` has one version and no migrations yet. `index.db` is never
-//! migrated: a new version or a different base schema builds a new file and
-//! swaps it in. Read indexes can be added in place.
+//! `embeddings.db` has one version and no migrations yet. An incompatible
+//! index is refused without removing its rows.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -15,9 +14,8 @@ pub const INDEX: &str = include_str!("schema/index.sql");
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// A different version rebuilds the index into a new file. Raise it when the
-/// index schema, the row encoding, or what any parser produces from the same
-/// bytes changes.
+/// The index schema and row encoding version. Incompatible indexes refuse
+/// without removing their rows.
 pub const INDEX_VERSION: u32 = 52;
 
 /// The steps that bring `archive.db` forward: the first takes version 1 to
@@ -55,10 +53,7 @@ pub fn create_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Creates the index in an empty file. An index at another version is an
-/// error here; [`crate::Archive::open_or_create`] deletes such a file, or
-/// one with another schema, first, so the loop rebuilds the index from
-/// `archive.db`.
+/// Creates the index in an empty file; refuses an incompatible version.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     match version(conn)? {
         0 => create_index(conn),
@@ -73,9 +68,8 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
     }
 }
 
-/// Whether the index was being built without syncs and never finished
-/// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
-/// rebuilt rather than trusted.
+/// Whether the first build has not finished (`meta.unsynced = 1`). Its
+/// saved build boot decides whether its committed rows can be resumed.
 pub fn unsynced(conn: &Connection) -> Result<bool> {
     let v: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
@@ -170,6 +164,21 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
         && expected.iter().all(|item| {
             (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
         }))
+}
+
+/// A pending first build may lack only the indexes the writer deferred.
+pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    expected.execute_batch(READ_INDEXES)?;
+    let found = shape(conn)?;
+    let mut wanted = shape(&expected)?;
+    wanted.retain(|(kind, name, _)| {
+        kind != "index"
+            || !crate::writer::deferred_index_names().any(|deferred| deferred == name)
+            || found.iter().any(|(_, present, _)| present == name)
+    });
+    Ok(found == wanted)
 }
 
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {

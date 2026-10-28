@@ -520,3 +520,5 @@ mod agent_guidance;
 
 #[cfg(target_os = "linux")]
 mod terminal;
+
+mod index_open;

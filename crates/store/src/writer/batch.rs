@@ -74,12 +74,31 @@ pub struct ParseStep {
     /// Default leaves the complete parsed values available for writer fallback.
     #[serde(skip)]
     pub(crate) prepared: PreparedRows,
+    pub(crate) comparison: Option<crate::tool_databases::Comparison>,
 }
 
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
+    /// The comparison hashes of the row-dump records parsed in this step.
+    pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::records(bytes)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
+    /// Whole row-dump parsers commit their comparison with completion.
+    pub fn compare_reader(&mut self, reader: impl std::io::BufRead) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::read(reader)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
     /// An unprepared parse over this byte range. A range beginning at zero
     /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(
@@ -99,6 +118,7 @@ impl ParseStep {
             parsed_upto: range.end,
             at_end,
             prepared: PreparedRows::default(),
+            comparison: None,
         }
     }
 }

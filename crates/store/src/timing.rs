@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 pub enum Stage {
     /// Reading input bytes from files or stored blobs (pool threads).
     Read,
+    /// Reading and comparing tool-database rows.
+    Database,
+    /// Writer work from dequeue through acknowledgment.
+    Writer,
     /// Hashing and compressing bytes and packing rows for the writer (pool).
     Store,
     /// Running the parser (pool).
@@ -36,6 +40,8 @@ pub enum Stage {
 
 const STAGES: [Stage; 11] = [
     Stage::Read,
+    Stage::Database,
+    Stage::Writer,
     Stage::Store,
     Stage::Parse,
     Stage::Rows,
@@ -55,6 +61,8 @@ impl Stage {
     pub fn name(self) -> &'static str {
         match self {
             Stage::Read => "read",
+            Stage::Database => "database",
+            Stage::Writer => "writer",
             Stage::Store => "store",
             Stage::Parse => "parse",
             Stage::Rows => "rows",
@@ -70,7 +78,10 @@ impl Stage {
 
     /// Runs on a pool thread, so its sum is thread-seconds.
     pub fn parallel(self) -> bool {
-        matches!(self, Stage::Read | Stage::Store | Stage::Parse)
+        matches!(
+            self,
+            Stage::Read | Stage::Store | Stage::Parse | Stage::Database
+        )
     }
 
     fn index(self) -> usize {
@@ -103,6 +114,9 @@ pub fn reset() {
     READING_PREPARED.store(0, Ordering::Relaxed);
     READING_COMMITS.store(0, Ordering::Relaxed);
     READING_WORKERS.lock().expect("reading times").clear();
+    if let Ok(mut times) = WORKER_TIMES.lock() {
+        times.clear();
+    }
     for n in &NANOS {
         n.store(0, Ordering::Relaxed);
     }
@@ -184,4 +198,103 @@ pub fn reading_pipeline() -> serde_json::Value {
             "worker":worker,"busy_seconds":*nanos as f64 / 1e9,"cpu_ticks":cpu,
         })).collect::<Vec<_>>()
     })
+}
+
+/// A stage whose time includes its final operation, including early returns.
+pub struct Running(Stage, Instant);
+pub fn enter(stage: Stage) -> Running {
+    Running(stage, Instant::now())
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        add(self.0, self.1.elapsed());
+    }
+}
+
+use std::sync::atomic::AtomicI64;
+#[derive(Clone, Copy)]
+pub enum Queue {
+    Parse,
+    Writer,
+}
+static PARSE_WAITING: AtomicI64 = AtomicI64::new(0);
+static WRITER_WAITING: AtomicI64 = AtomicI64::new(0);
+pub fn queue(queue: Queue, count: i64) {
+    match queue {
+        Queue::Parse => &PARSE_WAITING,
+        Queue::Writer => &WRITER_WAITING,
+    }
+    .fetch_add(count, Ordering::Relaxed);
+}
+pub fn queues() -> [(&'static str, i64); 2] {
+    [
+        ("parse", PARSE_WAITING.load(Ordering::Relaxed)),
+        ("writer", WRITER_WAITING.load(Ordering::Relaxed)),
+    ]
+}
+
+/// Completed worker lifetimes include threads shorter than the sampler period.
+#[derive(Clone, serde::Serialize)]
+pub struct WorkerTime {
+    pub name: String,
+    pub started: f64,
+    pub seconds: f64,
+    pub cpu_seconds: Option<f64>,
+    pub run_queue_seconds: Option<f64>,
+}
+static WORKER_TIMES: std::sync::Mutex<Vec<WorkerTime>> = std::sync::Mutex::new(Vec::new());
+static CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+pub fn clock_seconds() -> f64 {
+    CLOCK.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+fn scheduled() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+    let mut fields = text.split_whitespace();
+    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+}
+struct WorkerStart {
+    name: String,
+    started: f64,
+    scheduled: Option<(u64, u64)>,
+}
+pub struct WorkerTimeGuard(Option<WorkerStart>);
+pub fn worker() -> WorkerTimeGuard {
+    WorkerTimeGuard(std::env::var_os("POLYLOGUE_TIMING_WORKERS").map(|_| {
+        WorkerStart {
+            name: std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_owned(),
+            started: clock_seconds(),
+            scheduled: scheduled(),
+        }
+    }))
+}
+impl Drop for WorkerTimeGuard {
+    fn drop(&mut self) {
+        if let Some(WorkerStart {
+            name,
+            started,
+            scheduled: before,
+        }) = self.0.take()
+        {
+            let elapsed = scheduled().zip(before);
+            let cpu_seconds =
+                elapsed.map(|(after, before)| after.0.saturating_sub(before.0) as f64 / 1e9);
+            let run_queue_seconds =
+                elapsed.map(|(after, before)| after.1.saturating_sub(before.1) as f64 / 1e9);
+            if let Ok(mut times) = WORKER_TIMES.lock() {
+                times.push(WorkerTime {
+                    name,
+                    started,
+                    seconds: clock_seconds() - started,
+                    cpu_seconds,
+                    run_queue_seconds,
+                });
+            }
+        }
+    }
+}
+pub fn workers() -> Vec<WorkerTime> {
+    WORKER_TIMES.lock().map(|v| v.clone()).unwrap_or_default()
 }

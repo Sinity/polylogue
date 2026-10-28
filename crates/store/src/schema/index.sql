@@ -757,3 +757,16 @@ END;
 
 CREATE INDEX message_source_session ON message_source(session_pk);
 CREATE INDEX event_source_session ON event_source(session_pk);
+-- Recomputed comparison state for ordinary tool-database inputs.
+CREATE TABLE tool_row (
+    input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
+    tbl TEXT NOT NULL,
+    key TEXT NOT NULL,
+    hash BLOB NOT NULL,
+    PRIMARY KEY(input_pk,tbl,key)
+) WITHOUT ROWID;
+CREATE TABLE tool_database (
+    input_pk INTEGER PRIMARY KEY REFERENCES input_ref(pk) ON DELETE CASCADE,
+    length INTEGER NOT NULL,
+    schema TEXT NOT NULL
+);
