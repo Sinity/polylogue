@@ -210,3 +210,44 @@ fn selected_session_pages_merge_equal_times_and_continue_through_undated_rows() 
         );
     }
 }
+
+#[test]
+fn combined_response_pages_work_while_the_index_is_deferred() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(temp.path()).unwrap();
+    let mut sessions = Vec::new();
+    for id in ["codex:selected", "codex:outside"] {
+        let session = f
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        add(
+            &mut f,
+            session,
+            &format!("{id}:response"),
+            Some(at("2024-03-31T12:00:00Z")),
+        );
+        sessions.push(session);
+    }
+    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
+        .unwrap()
+        .execute_batch("DROP INDEX message_session_model_at;")
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let usage = crate::measure::Selection {
+        sessions: Some(vec![sessions[0]]),
+        ..Default::default()
+    };
+    let selection = Selection {
+        responses: Some(&usage),
+        model: Some("synthetic"),
+        ..all(None, false, false)
+    };
+    let day = LogicalDay::named("UTC", 240).unwrap();
+    let result = page(&r, &day, &selection, None, 50).unwrap();
+    assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(result["rows"][0]["id"], "codex:selected:response");
+}

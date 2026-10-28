@@ -119,7 +119,7 @@ fn million_message_measurements() {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         let read = |name: &str, selection: &Selection<'_>| {
-            let (source, params) = sources(selection, None);
+            let (source, params) = sources(selection, None, false);
             let sql = format!(
                 "SELECT * FROM ({}) WHERE {} ORDER BY at,id LIMIT 51",
                 source[0].replace("m.session_pk IN", "+m.session_pk IN"),

@@ -26,7 +26,11 @@ fn bind(params: &mut Vec<SqlValue>, value: SqlValue) -> String {
     format!("?{}", params.len())
 }
 
-fn sources(selection: &Selection<'_>, session: Option<i64>) -> (Vec<String>, Vec<SqlValue>) {
+fn sources(
+    selection: &Selection<'_>,
+    session: Option<i64>,
+    combined_index: bool,
+) -> (Vec<String>, Vec<SqlValue>) {
     if let Some(responses) = selection.responses {
         let (condition, values) = responses.condition();
         let mut params = values
@@ -53,9 +57,14 @@ fn sources(selection: &Selection<'_>, session: Option<i64>) -> (Vec<String>, Vec
                 bind(&mut params, SqlValue::Text(model.to_owned()))
             ));
         }
+        let index = if combined_index {
+            " INDEXED BY message_session_model_at"
+        } else {
+            ""
+        };
         return (
             vec![format!(
-                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE {condition}"
+                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m{index} CROSS JOIN session s ON s.pk=m.session_pk WHERE {condition}"
             )],
             params,
         );
@@ -162,10 +171,19 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
             responses: Some(&responses),
             ..*selection
         };
+        // SQLite can prefer the shorter session/time index at equal estimated
+        // cost, walking every model in a selected session. Use the combined
+        // range when available; first builds temporarily defer this index.
+        let combined_index = (selection.model.is_some() || selection.unknown_model)
+            && keys.iter().any(Option::is_some)
+            && !reader.query(
+                "SELECT 1 FROM sqlite_schema WHERE type='index' AND name='message_session_model_at'",
+                &[],
+            )?.is_empty();
         return Ok(keys
             .into_iter()
             .map(|key| {
-                let (sources, params) = sources(&selection, key);
+                let (sources, params) = sources(&selection, key, combined_index && key.is_some());
                 Source {
                     kind: "message",
                     sql: sources.into_iter().next().unwrap(),
@@ -175,7 +193,7 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
             .collect());
     }
 
-    let (sources, params) = sources(selection, None);
+    let (sources, params) = sources(selection, None, false);
     Ok(sources
         .into_iter()
         .enumerate()
@@ -436,6 +454,7 @@ pub fn costs_by_day(
             unknown_model: false,
         },
         None,
+        false,
     );
     let source = &sources[0];
     let (since, until) = day.month(month);
@@ -473,6 +492,7 @@ pub fn undated_responses(
             unknown_model: false,
         },
         None,
+        false,
     );
     let source = &sources[0];
     let rows = reader.query(
