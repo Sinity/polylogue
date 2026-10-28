@@ -394,3 +394,12 @@ fn near_builds_only_when_an_answer_needs_ranking() {
     };
     assert_eq!(position, text.find("near:").unwrap());
 }
+
+#[test]
+fn explicit_identity_equality_keeps_case_and_does_not_expand_a_prefix() {
+    let exact = c("notes where first_note = \"Root:Case\" current:true");
+    assert!(exact.params.contains(&Param::Text("Root:Case".into())));
+    assert!(!exact.sql.contains("first_note LIKE"));
+    let prefix = c("notes where first_note:Root");
+    assert!(prefix.sql.contains("first_note LIKE"));
+}

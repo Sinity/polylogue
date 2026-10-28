@@ -684,6 +684,17 @@ const WRITTEN: &[Command] = &[
                     "note, lesson, handoff, decision, blocker, goal, question, finding, outcome, correction, judgment, title, claim, problem, forecast",
                 )
             },
+            opt("key", Kind::Text, "The note kind's key, such as a tag name"),
+            opt(
+                "relations",
+                Kind::Text,
+                "Relations as JSON pairs of relation and note ID",
+            ),
+            opt(
+                "valid_until",
+                Kind::Text,
+                "Expiry time with a UTC offset (RFC 3339)",
+            ),
             opt(
                 "revises",
                 Kind::Text,
@@ -982,6 +993,8 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::keep),
+        mcp: true,
+        http: true,
         writes: true,
         ..CLI
     },

@@ -706,6 +706,7 @@ pub static FIELDS: &[Field] = &[
         "the message where the child branched off",
     ).sql("{r}.branch_point"),
     // notes
+    f(Notes, "id", Prefix, "note revision ID or a unique prefix").sql_ref("{r}.id", ColumnReference::Note),
     f(Notes, "kind", Match, "tag, note, title, decision, claim, …").sql("{r}.kind"),
     f(Notes, "key", Match, "").sql("{r}.key"),
     f(Notes, "value", Substring, "").sql("{r}.value"),
@@ -722,7 +723,8 @@ pub static FIELDS: &[Field] = &[
         Match,
         "the operator's judgment of this revision: accepted or rejected",
     ).sql_fn(notes_judged),
-    sp(Notes, "target", "a reference it is about: session:ID, repo:NAME, cwd:PATH, …", custom::note_target),
+    sp(Notes, "target", "a reference it is about: session:ID, repo:NAME, cwd:PATH, …", custom::note_target)
+        .sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM a.note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))"),
     f(
         Notes,
         "write_counter",
