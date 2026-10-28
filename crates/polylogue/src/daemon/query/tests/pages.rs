@@ -1,6 +1,27 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
+#[test]
+fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask("messages where parser");
+    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let params = values(&program.params);
+    let count_sql = program.count_sql();
+    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+    let rows = reader.query(&program.sql, &params).unwrap();
+    assert!(!rows.is_empty());
+    assert_eq!(count, rows.len() as u64);
+    assert_eq!(without, 0);
+    // A row count needs selection, never the answer's presentation order.
+    // Inspect SQLite's executable operations rather than timing a tiny fixture.
+    let operations = reader.query(&format!("EXPLAIN {count_sql}"), &params).unwrap();
+    assert!(operations.iter().all(|op| op["opcode"] != "SorterOpen"));
+}
+
 fn page(home: &ClaudeHome, cursor: Option<&str>) -> Result<Value, Failure> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
