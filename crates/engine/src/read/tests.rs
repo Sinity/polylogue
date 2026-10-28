@@ -170,7 +170,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         expected.push((path, session, body, last, second.as_bytes()[..3].to_vec()));
     }
     {
-        let (mut seed, _lock) = home.engine(CHUNK as u64);
+        let (mut seed, _lock) = crate::import::tests::engine(&home, CHUNK as u64);
         let pass = seed.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     }
@@ -178,7 +178,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         std::fs::remove_file(path).unwrap();
     }
     polylogue_testkit::delete_index(&home.root);
-    let (engine, _lock) = home.engine(CHUNK as u64);
+    let (engine, _lock) = crate::import::tests::engine(&home, CHUNK as u64);
     let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
     let mut plans = Vec::new();
     for (path, ..) in &expected {
