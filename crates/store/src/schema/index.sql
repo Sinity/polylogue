@@ -1,6 +1,6 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
--- cursors), the write counter, unsynced, facts_version,
+-- cursors), the write counter, building, facts_version,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose
@@ -36,6 +36,9 @@ CREATE TABLE session (
   record_repo       TEXT,                   -- the repository the session's own records name
   repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
   branch            TEXT,
+  git_commit        TEXT,
+  model_provider    TEXT,
+  instructions      TEXT,
   harness           TEXT,
   harness_version   TEXT,
   message_count INTEGER,
@@ -231,6 +234,8 @@ CREATE TABLE tool_call (
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
   call_block_pk     INTEGER NOT NULL UNIQUE,
   call_id           TEXT,                   -- the provider's call id: how a later result finds its call
+  result_at         INTEGER,
+  reported_duration_ms INTEGER,
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
