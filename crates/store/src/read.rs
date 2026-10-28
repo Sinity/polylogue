@@ -340,6 +340,43 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    /// A row dump names its native source independently of its observations.
+    pub fn tool_database_source(
+        &self,
+        input: &str,
+        blobs: &hashed_blobs::Store,
+    ) -> Result<Option<(String, String)>> {
+        let Some(progress) = self.input_progress(input)? else {
+            return Ok(None);
+        };
+        let chain = self.stored_chain(input, progress.chain, progress.length)?;
+        let mut bytes = Vec::new();
+        let mut offset = 0;
+        while offset < progress.length {
+            let end = progress.length.min(offset + 4096);
+            bytes.extend(chain.read_range(blobs, offset, end)?);
+            if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else {
+                    return Ok(None);
+                };
+                if !header
+                    .get("schema")
+                    .is_some_and(serde_json::Value::is_object)
+                {
+                    return Ok(None);
+                }
+                return Ok(header.get("source").and_then(|source| {
+                    Some((
+                        source.get("machine")?.as_str()?.to_owned(),
+                        source.get("path")?.as_str()?.to_owned(),
+                    ))
+                }));
+            }
+            offset = end;
+        }
+        Ok(None)
+    }
+
     /// The optional embeddings read connection shares this reader's slot and
     /// cannot outlive it. Only one vector guard can be held.
     pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
@@ -941,6 +978,7 @@ impl Reader<'_> {
 
     /// Mutable source observations used by discovery, excluding manual imports.
     pub fn known_watched_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        crate::fault::check("read.watched_inputs", machine)?;
         self.known_inputs_at(machine, None, false)
     }
     pub fn known_watched_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
@@ -954,15 +992,20 @@ impl Reader<'_> {
         include_imported: bool,
     ) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
+            "WITH latest AS (
+                 SELECT path, max(rowid) AS row_id FROM a.observation
+                 WHERE machine = ?1 AND (?2 IS NULL OR path = ?2)
+                   AND class <> 'excised'
+                   AND (?3 OR input NOT IN (
+                       SELECT input FROM a.revision WHERE produced = 'imported'))
+                 GROUP BY path
+             )
+             SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
                     (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
-             FROM a.observation o JOIN a.input i ON i.id = o.input
-             WHERE o.machine = ?1 AND (?2 IS NULL OR o.path = ?2) AND o.rowid = (
-                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
-                 AND x.class <> 'excised' AND (?3 OR NOT EXISTS(
-                    SELECT 1 FROM a.revision r WHERE r.input=x.input AND r.produced='imported')))",
+             FROM latest l JOIN a.observation o ON o.rowid = l.row_id
+             JOIN a.input i ON i.id = o.input",
         )?;
         let rows = stmt.query_map(params![machine, path, include_imported], |r| {
             Ok((

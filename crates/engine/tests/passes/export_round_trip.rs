@@ -269,7 +269,8 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     // The imported excision refuses the excised session when its file
     // arrives again.
     fresh.append("s2.jsonl", &dropped);
-    assert!(e2.run_pass().unwrap().errors.is_empty());
+    let pass = e2.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(
         fresh.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s2'"),
         0

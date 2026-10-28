@@ -18,10 +18,10 @@ pub mod read;
 pub mod repo_lookup;
 mod watch;
 
+use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
-use polylogue_store::tool_databases::Captures;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -33,6 +33,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod databases;
 mod import;
 mod pass;
 mod plan;
@@ -74,7 +75,7 @@ pub struct Config {
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
     /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (a minute).
+    /// even when no change is reported (four hours).
     pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
@@ -169,7 +170,7 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(60),
+            rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
         }
     }
@@ -178,6 +179,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    /// Whole-location scans, excluding changed paths and live-file checks.
+    pub full_scans: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
     /// Input visits, summed across turns by run_pass.
@@ -193,7 +196,7 @@ pub struct Pass {
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
-    /// A SQLite capture has more cooperative work to do.
+    /// A database reader has queued or pending work.
     pub capture_pending: bool,
 }
 
@@ -203,6 +206,7 @@ pub struct Pass {
 /// derived from them.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct LoopStatus {
+    pub full_scans: u64,
     /// A pass, an import or an excision is running, or a capture continues
     /// in the next pass.
     pub busy: bool,
@@ -257,7 +261,15 @@ pub struct Engine {
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     failed_writes: HashSet<String>,
     loaded: bool,
-    exporter: Captures,
+    captures: Databases,
+    wake: Option<Sender<LoopMsg>>,
+    watcher: Option<watch::Roots>,
+    databases: BTreeMap<PathBuf, &'static str>,
+    live_checked: Instant,
+    pass_open: bool,
+    pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
+    collectors_at: Option<Instant>,
+    capture_checked: Option<Instant>,
     /// Paths on this machine an excision removed: never collected again.
     refused: HashSet<PathBuf>,
     lookups: repo_lookup::Cache,
@@ -266,8 +278,6 @@ pub struct Engine {
     /// In primary mode, the Sinex that holds the archive: sessions go to it
     /// as events once derived.
     sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
-    /// No pass has run since the engine started.
-    first_pass: bool,
 }
 
 fn now_ms() -> i64 {
@@ -318,12 +328,19 @@ impl Engine {
             inputs: HashMap::new(),
             failed_writes: HashSet::new(),
             loaded: false,
-            exporter: Captures::default(),
+            captures: Databases::default(),
+            wake: None,
+            watcher: None,
+            databases: BTreeMap::new(),
+            live_checked: Instant::now(),
+            pass_open: false,
+            pending_inputs: Vec::new(),
+            collectors_at: None,
+            capture_checked: None,
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             sinex,
-            first_pass: true,
         })
     }
 
@@ -377,8 +394,39 @@ impl Engine {
                 self.refused.insert(PathBuf::from(path));
             }
         }
-        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let mut database_paths: HashMap<String, String> = self
+            .inputs
+            .iter()
+            .filter(|(path, state)| state.origin.is_row_dump(path))
+            .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
+            .collect();
+        for input in &mut known {
+            if self.refused.contains(Path::new(&input.path)) {
+                continue;
+            }
+            if ORIGINS
+                .iter()
+                .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
+            {
+                if let Some(path) = database_paths.get(&input.input_id) {
+                    input.path = path.clone();
+                    input.facts = None;
+                    continue;
+                }
+                if let Some((machine, path)) =
+                    reader.tool_database_source(&input.input_id, &self.blobs)?
+                    && machine == self.config.machine
+                {
+                    database_paths.insert(input.input_id.clone(), path.clone());
+                    input.path = path;
+                    input.facts = None;
+                }
+            }
+        }
         drop(reader);
+        self.inputs
+            .retain(|path, state| !state.origin.is_row_dump(path));
         for k in known {
             if self.refused.contains(Path::new(&k.path)) {
                 continue;
@@ -386,6 +434,11 @@ impl Engine {
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
+            if !origin.is_row_dump(Path::new(&k.path))
+                && self.inputs.contains_key(Path::new(&k.path))
+            {
+                continue;
+            }
             self.inputs.insert(
                 PathBuf::from(&k.path),
                 InputState {

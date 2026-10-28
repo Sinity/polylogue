@@ -20,6 +20,9 @@ pub(super) fn write_rows(
     let input_pk: i64 = tx
         .prepare_cached("SELECT pk FROM input_ref WHERE id = ?1")?
         .query_row([&b.input.id], |r| r.get(0))?;
+    if let Some(update) = &p.comparison {
+        update.write(tx, input_pk)?;
+    }
     let rows = RowWriter {
         tx,
         input_pk,

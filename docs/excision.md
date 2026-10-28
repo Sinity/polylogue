@@ -60,7 +60,8 @@ holds them, trying again after each piece of work and every second.
 
 A stop needs no recovery code. Reopening the archive deletes the files of
 blobs still marked `deleting`, and an index that holds fewer excisions than
-the archive is rebuilt from the stored inputs that remain. While an index is
+the archive applies the recorded removals before serving readers. Other
+indexed rows and their parse positions stay in place. While an index is
 behind, the embeddings writer refuses to store vectors. A failed commit
 stops the writer until the archive is reopened. Running the same request
 again reports what the recorded excision removed and finishes what is left.

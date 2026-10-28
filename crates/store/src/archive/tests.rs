@@ -14,7 +14,7 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
-fn an_index_left_unsynced_is_rebuilt() {
+fn a_same_boot_build_keeps_its_rows_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
@@ -29,11 +29,14 @@ fn an_index_left_unsynced_is_rebuilt() {
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
     assert!(!root.join("index.db.unsynced").exists());
+    assert!(schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
     assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
 }
 
 #[test]
-fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
+fn an_index_applies_missing_excisions_and_marked_blobs_go_on_open() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
@@ -77,22 +80,28 @@ fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
                 |r| r.get::<_, i64>(0)
             )
             .unwrap(),
-        0
+        1
     );
     assert!(!crate::excise::index_behind(&archive_db, &index).unwrap());
 }
 
 #[test]
-fn an_index_of_another_version_or_schema_is_replaced_and_the_archive_kept() {
+fn an_incompatible_index_is_refused_without_removing_its_rows() {
     for change in [
-        "PRAGMA user_version = 26",
-        "CREATE TABLE synthetic_older(value)",
+        "PRAGMA user_version = 26".to_owned(),
+        "CREATE TABLE synthetic_older(value)".to_owned(),
+        format!(
+            "INSERT INTO meta VALUES ('unsynced','1'),('build_boot_id','{}'); CREATE TABLE synthetic_older(value)",
+            std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .unwrap()
+                .trim(),
+        ),
     ] {
-        replaced_index_keeps_the_archive(change);
+        refused_index_keeps_the_archive(&change);
     }
 }
 
-fn replaced_index_keeps_the_archive(change: &str) {
+fn refused_index_keeps_the_archive(change: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
@@ -109,24 +118,29 @@ fn replaced_index_keeps_the_archive(change: &str) {
     archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
     drop(archive_conn);
     drop(lock);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+    let error = Archive::open_or_create(dir.path()).unwrap_err();
     assert!(
-        schema::same_schema(&index, &[schema::INDEX]).unwrap(),
-        "{change}"
+        matches!(
+            error,
+            StoreError::IndexVersion { .. }
+                | StoreError::NoMigration {
+                    database: "index",
+                    ..
+                }
+        ),
+        "{error}"
     );
+    let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM meta WHERE key='previous-index-marker'",
+                "SELECT value FROM meta WHERE key='previous-index-marker'",
                 [],
-                |r| r.get::<_, i64>(0)
+                |r| r.get::<_, String>(0)
             )
             .unwrap(),
-        0
+        "present"
     );
-    assert!(!dir.path().join("index.db.v26").exists());
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         archive_conn
@@ -280,4 +294,84 @@ fn opening_finishes_every_blob_row_left_writing() {
         crate::staging::pending_blobs(&conn, "").unwrap()[0].blob,
         used_missing
     );
+}
+
+#[test]
+fn a_build_from_another_boot_is_refused_without_removing_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = crate::Writer::start(&archive).unwrap();
+    drop(writer);
+    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    conn.execute_batch("UPDATE meta SET value='1' WHERE key='unsynced'; UPDATE meta SET value='another-boot' WHERE key='build_boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
+    drop(conn);
+    drop(lock);
+    let error = Archive::open_or_create(dir.path()).unwrap_err();
+    assert!(error.to_string().contains("another boot"), "{error}");
+    let conn = open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "present"
+    );
+}
+
+#[test]
+fn a_stopped_process_resumes_its_committed_parse_positions() {
+    const CHILD: &str = "POLYLOGUE_TEST_BUILD_RESUME";
+    if let Some(path) = std::env::var_os(CHILD) {
+        let (archive, _lock) = Archive::open_or_create(Path::new(&path)).unwrap();
+        let writer = crate::Writer::start(&archive).unwrap();
+        let output = polylogue_model::Output {
+            sessions: vec![polylogue_model::Session::new(
+                crate::fixture::writer::sid("resume"),
+                polylogue_model::SessionKind::Main,
+            )],
+            messages: vec![polylogue_model::MessageRow {
+                offset: 0,
+                end: 1,
+                message: crate::fixture::writer::prose("resume", 0, 1, "kept message").remove(0),
+            }],
+            ..Default::default()
+        };
+        writer
+            .send(crate::fixture::writer::step(
+                "resume-input",
+                "claude-code",
+                "/synthetic",
+                output,
+                0,
+                1,
+            ))
+            .unwrap();
+        assert!(writer.flush().unwrap().errors.is_empty());
+        // Exit without dropping the writer, as a stopped process does.
+        std::process::exit(0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "archive::tests::a_stopped_process_resumes_its_committed_parse_positions",
+            "--nocapture",
+        ])
+        .env(CHILD, dir.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 1);
+    let position = reader.input_progress("resume-input").unwrap().unwrap();
+    assert_eq!(position.parsed_upto, 2);
+    drop(reader);
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    let index = open_read(&archive.index_db()).unwrap();
+    assert!(schema::same_schema(&index, &[schema::INDEX]).unwrap());
+    assert!(!schema::unsynced(&index).unwrap());
 }

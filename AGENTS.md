@@ -80,8 +80,8 @@ Optimize for fast integration. See `docs/development.md`.
   Unknown times stay unknown. IDs are opaque strings and may contain colons.
   Check the schema version before writing.
 - A change to the index schema, the row encoding or what a parser produces
-  from the same bytes raises `INDEX_VERSION` in `crates/store/src/schema.rs`;
-  the index is then rebuilt from the stored inputs.
+  from the same bytes needs an explicit schema migration or targeted re-parse.
+  Opening an incompatible index refuses and preserves its rows.
 - `archive.db` is deployed data. A change to `archive.sql` appends a step to
   `ARCHIVE_MIGRATIONS` in the same file, with a test that an archive filled
   at the version before keeps every row (`archive_at` in the schema tests).

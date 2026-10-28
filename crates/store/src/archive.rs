@@ -91,12 +91,6 @@ impl Archive {
         self.root.join("blobs")
     }
 
-    /// Row dumps of tool databases: one
-    /// append-only file per database, stored as an ordinary input.
-    pub fn exports_dir(&self) -> PathBuf {
-        self.root.join("exports")
-    }
-
     /// The daemon's socket. Clients find the daemon of an archive here.
     pub fn socket(&self) -> PathBuf {
         self.root.join("daemon.sock")
@@ -170,7 +164,8 @@ impl Archive {
 
     /// Opens the archive at `root` held by Sinex (primary mode), whose
     /// store root is `store`. A missing register, or one no migration brings
-    /// to this build's tables, is rebuilt from what Sinex holds, and the index with it; there is no local blob store.
+    /// to this build's tables, is rebuilt from what Sinex holds. The index
+    /// resumes from its committed positions; there is no local blob store.
     pub fn open_primary(
         root: &Path,
         store: &Path,
@@ -194,8 +189,6 @@ impl Archive {
             }
         }
         if !archive.archive_db().exists() {
-            // The index describes the register it was built from.
-            remove_database(&archive.index_db())?;
             let building = root.join("sinex.db.building");
             remove_database(&building)?;
             let mut a = open_write(&building, cache::SETUP)?;
@@ -220,9 +213,6 @@ impl Archive {
         fs::create_dir_all(root)?;
         if fresh {
             no_cow(root);
-            let exports = root.join("exports");
-            fs::create_dir_all(&exports)?;
-            compressed(&exports);
         }
         let file = OpenOptions::new()
             .create(true)
@@ -245,42 +235,51 @@ impl Archive {
         generation::open(self)
     }
 
-    /// The caller holds the archive lock. An index built by another version
-    /// or with another schema, left unsynced by a stop in the middle of a
-    /// first build, or missing an excision the archive holds is deleted and
-    /// created again empty; the loop then rebuilds it from the stored inputs.
+    /// The caller holds the archive lock. Parse positions in the index
+    /// resume an interrupted build; incompatible indexes require an explicit
+    /// schema change rather than removing already indexed rows.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;
-        if self.index_db().exists() && self.index_out_of_date(&archive)? {
-            remove_database(&self.index_db())?;
-            File::open(&self.root)?.sync_all()?;
-        }
-        crate::fault::check("index.after_removal", "")?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
+        let building = schema::unsynced(&index)?;
+        if building {
+            let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let previous: Option<String> = index
+                .query_row(
+                    "SELECT value FROM meta WHERE key='build_boot_id'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if previous.as_deref() != Some(boot.trim()) {
+                return Err(StoreError::IndexBuildBoot);
+            }
+        }
+        let matches = if building {
+            schema::same_build_schema(&index)?
+        } else {
+            schema::same_schema(&index, &[schema::INDEX])?
+        };
+        if !matches {
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found: schema::version(&index)?,
+            });
+        }
         crate::fault::check("index.after_creation", "")?;
         if fresh {
             crate::excise::mark_applied(&archive, &index)?;
+        } else {
+            crate::excise::catch_up(&archive, &index)?;
         }
         Ok(())
     }
-
-    fn index_out_of_date(&self, archive: &Connection) -> Result<bool> {
-        let index = open_read(&self.index_db())?;
-        let found = schema::version(&index)?;
-        if found == 0 {
-            return Ok(false);
-        }
-        Ok(found != schema::INDEX_VERSION
-            || !schema::same_schema(&index, &[schema::INDEX])?
-            || schema::unsynced(&index)?
-            || crate::excise::index_behind(archive, &index)?)
-    }
 }
 
-/// Deletes a SQLite database and its journal files.
+/// Removes a regenerable primary-mode register and its journal files.
 fn remove_database(path: &Path) -> Result<()> {
     for suffix in ["", "-wal", "-shm"] {
         let mut name = path.as_os_str().to_owned();
@@ -323,23 +322,6 @@ fn no_cow(dir: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-}
-
-/// Turns transparent compression on for the new, empty exports directory
-/// on btrfs (clearing the copy-on-write flag it inherited, which would
-/// forbid compression). Exports are append-only JSON Lines that the loop
-/// also stores, compressed, as inputs; uncompressed they were 11 GB of a
-/// 51 GB first build. Best effort: other filesystems ignore it.
-fn compressed(dir: &Path) {
-    // Two calls: btrfs refuses clearing one flag and setting the other at once.
-    for flag in ["-C", "+c"] {
-        let _ = std::process::Command::new("chattr")
-            .arg(flag)
-            .arg(dir)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
 }
 
 fn tune(conn: &Connection) -> Result<()> {

@@ -335,6 +335,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 ),
                 "busy": loop_status.busy,
                 "passes": loop_status.passes,
+                "full_scans": loop_status.full_scans,
                 "last_pass": loop_status.last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
                 "notices": crate::signals::recent(&reader, now_ms()),

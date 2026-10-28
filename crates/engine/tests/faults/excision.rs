@@ -63,7 +63,7 @@ fn a_stop_between_commits_stops_the_writer_and_reopening_finishes() {
         assert!(e.run_pass().unwrap().errors.is_empty());
         assert_eq!(w.export("claude-code:kept"), expected);
         // Before the archive's commit nothing was excised; after it the
-        // reopened archive rebuilds an index that missed the excision.
+        // reopened index applies the recorded removal.
         let in_force = point != "excision.after_embeddings_commit";
         assert_eq!(
             w.reads()

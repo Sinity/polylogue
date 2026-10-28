@@ -46,6 +46,47 @@ fn wildcards_match_within_a_segment() {
     assert!(!wildcard("a*b*c", "aXcYb"));
 }
 
+#[test]
+fn changed_directories_find_files_written_before_the_watch_was_added() {
+    let home = tempfile::tempdir().unwrap();
+    let day = home.path().join(".codex/sessions/2026/10/27");
+    fs::create_dir_all(&day).unwrap();
+    let rollout = day.join("rollout-new.jsonl");
+    fs::write(&rollout, "{}\n").unwrap();
+    let sibling = home.path().join(".codex/sessions/2026/10/26");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(sibling.join("rollout-older.jsonl"), "{}\n").unwrap();
+    for changed in [day, rollout.clone()] {
+        let (found, unreadable) =
+            scan_paths(&config(home.path()), &[changed].into_iter().collect());
+        assert!(unreadable.is_empty());
+        assert_eq!(
+            found.iter().map(|f| &f.path).collect::<Vec<_>>(),
+            [&rollout]
+        );
+    }
+}
+
+#[test]
+fn database_sidecars_name_the_database_for_its_capture_scheduler() {
+    let home = tempfile::tempdir().unwrap();
+    let config = config(home.path());
+    let db = home.path().join(".codex/state_5.sqlite");
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        assert_eq!(
+            database_path(
+                &config,
+                &db.with_file_name(format!("state_5.sqlite{suffix}"))
+            ),
+            Some(db.clone())
+        );
+    }
+    assert_eq!(
+        database_path(&config, &home.path().join(".codex/sessions/rollout.jsonl")),
+        None
+    );
+}
+
 fn config(home: &Path) -> Config {
     Config {
         home: home.to_owned(),

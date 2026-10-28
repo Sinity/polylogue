@@ -12,7 +12,7 @@ the same change.
 - **migration**: a numbered SQL step that brings `archive.db` from one
   version to the next; opening an older archive applies the ones it lacks.
 - **index**: `index.db`, everything parsed and derived. Rebuilt from the
-  archive when deleted or when `INDEX_VERSION` changes. Each build is an
+  archive after an explicit rebuild; an incompatible index refuses at open. Each build is an
   **index generation**; the change feed's positions name one.
 - **embeddings**: `embeddings.db`, purchased vectors, kept apart from the
   index because they cost money to make.
@@ -66,9 +66,10 @@ the same change.
   Studio Drive collector).
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
-- **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
-  **row dump** (JSON lines) up to the **synced prefix** named by the tool's
-  checkpoint, and parses the dump.
+- **tool database**: a tool's SQLite file. Its **row dump** is an ordinary
+  input of typed JSON records, stored directly through the writer. Its
+  **catalog** keeps comparison hashes and schema in the index. A changed
+  database is compared in full.
 
 ## Builds and prepared writes
 

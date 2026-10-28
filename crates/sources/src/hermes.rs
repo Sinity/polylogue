@@ -46,13 +46,31 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|byte| *byte == b'{')
 }
 
+pub fn is_database(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        matches!(
+            name.to_str(),
+            Some(
+                "state.db"
+                    | "state.db.jsonl"
+                    | "verification_evidence.db"
+                    | "verification_evidence.db.jsonl"
+            )
+        )
+    })
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
     if path
         .file_name()
-        .is_some_and(|name| name == "state.db.jsonl")
+        .is_some_and(|name| name == "state.db.jsonl" || name == "state.db")
     {
         Some(Parse::Export(Box::new(Database::default())))
-    } else if verification::recognize(path) {
+    } else if verification::recognize(path)
+        || path
+            .file_name()
+            .is_some_and(|name| name == "verification_evidence.db")
+    {
         Some(verification::open())
     } else if path.extension().is_some_and(|s| s == "json") {
         Some(trajectory::open())

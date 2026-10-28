@@ -47,7 +47,7 @@ the transaction being written.
 | File | Holds |
 |---|---|
 | [`archive.db`](../crates/store/src/schema/archive.sql) | Inputs, revisions, extents and observations; notes, settings, kept results and deliveries; chat actions and backfill jobs; excisions; blob rows. Opening an older one applies the numbered migrations it lacks (`ARCHIVE_MIGRATIONS` in [schema.rs](../crates/store/src/schema.rs)) in one transaction; a newer one, or one whose tables match no known version, refuses. |
-| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. Rebuilt from the archive when deleted, when its tables differ from `index.sql`, or when `INDEX_VERSION` changes, which it does whenever the index schema, the row encoding or any parser's output for the same bytes changes. |
+| [`index.db`](../crates/store/src/schema/index.sql) | Parsed sessions, messages, documents and events, search, and derived products. A missing index is built from stored inputs. An incompatible version or schema refuses without removing indexed rows. |
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
@@ -72,9 +72,12 @@ rebuilds from stored imports.
 
 Derived products declare their inputs and rule version in
 [derive](../crates/store/src/derive.rs); a changed rule recomputes what depends
-on it. An index build in progress is marked on disk and starts over on
-reopen; [`Archive::prepare_index`](../crates/store/src/archive.rs) also
-rebuilds an index that holds fewer excisions than the archive. An index
+on it. An index build records its boot in index metadata. On the same boot it
+resumes from committed parse positions, loading the natural-key maps and
+continuing the deferred indexes. A build from another boot refuses and
+requires an explicit rebuild. [`Archive::prepare_index`](../crates/store/src/archive.rs)
+applies recorded excision identities to an index that missed their commit,
+without rebuilding unrelated rows. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
 
@@ -126,10 +129,37 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
-A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
-dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
-checkpoint moves. Its identity is the machine and the file's path. Reading
-is done in turns, so other inputs are served between them.
+The watcher coalesces changed paths. A new or moved directory is scanned as a
+subtree, and a watcher error or overflow requests a full scan. Full scans run
+at startup and every four hours for reconciliation; database sidecars wake the
+capture scheduler. Capture work continues within a time slice, with asset
+refresh and derivation performed once for the pass.
+
+A [tool database](../crates/store/src/tool_databases.rs) is read as row-dump
+records from one SQLite read transaction, including its WAL. Its identity is
+the machine and native file path. The source header lets a native observation continue an existing input even when its earlier observations named a capture file. A separate database reader sends groups of
+changed records directly to the writer as an input's appended bytes, while
+file discovery and parsing continue. A long file pass consumes watcher changes
+and committed database records on its live check, giving them priority over
+remaining bulk work. Stopping the loop ends the reads between rows and waits for groups already queued. There is no export file. The writer
+commits the records' comparison hashes, schema and byte position in `index.db`.
+Domain parsing reads the stored input through the ordinary parse path. Each row records its capture time (`at_ms`) and SQLite value encoding. Null,
+integers, finite reals and UTF-8 text use JSON scalars; blobs use `base64`,
+other text uses `text_base64`, and non-finite reals use their 16-digit IEEE-754
+`real_bits`. Generated columns are stored as read. Rows whose primary key contains NULL use a tagged SQLite rowid; complete
+keys keep their declared values. When every rowid alias is shadowed, the key explicitly names
+the row's observed position, preserving identical rows separately.
+
+An ordinary restart reads this comparison state directly. The ordinary
+stored-input parse finishes any records left between the archive and index
+commits before another database read. Comparison hashes and schema commit with that
+parse. A deliberate index rebuild loses the comparison state and the next read compares
+the source in full. Every source read compares complete rows. Comparison waits
+for quiet files, with an hourly read during continuous writes. Unchanged files
+need no scheduled read.
+The parse workers enqueue byte groups and keep working; an acknowledgment
+reader delivers their committed progress to the loop. Capture progress reads
+committed positions by database input ID.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An
