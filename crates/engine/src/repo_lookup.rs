@@ -1,6 +1,6 @@
 //! Writing repository lookups. For each working directory the index holds that exists on this
-//! host, the nearest directory with `.git` above it is read with `gix`, no
-//! subprocess: its `origin` remote, credentials removed, and the root commit
+//! host, the nearest directory with `.git` above it supplies its `origin`
+//! remote, credentials removed, and Git supplies the root commit
 //! reached by first parents from `HEAD`. The result is a small JSON input in
 //! the lookup spool, written again only when the remote or root commit
 //! changes, so the loop stores and parses it like any input and a rebuild
@@ -8,8 +8,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::SystemTime;
 
 /// What a repository directory says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,15 +20,17 @@ pub struct Lookup {
     pub root_commit: Option<String>,
 }
 
-/// Lookups read in earlier passes, so a pass rereads a repository's
-/// history only when its `HEAD` moved.
+/// Repository results are reused while HEAD and the configuration files are
+/// unchanged. Missing history is retried because a fetch can fill it.
 #[derive(Default)]
 pub struct Cache {
-    /// Working directory to the repository directory above it (`None`: no
-    /// repository).
-    repos: HashMap<PathBuf, Option<PathBuf>>,
-    /// Repository directory to the `HEAD` id and root commit last read.
-    roots: HashMap<PathBuf, (String, Option<String>)>,
+    lookups: HashMap<PathBuf, Cached>,
+}
+
+struct Cached {
+    head: Option<String>,
+    files: Vec<(PathBuf, Option<(SystemTime, u64)>)>,
+    lookup: Lookup,
 }
 
 /// The nearest directory at or above `dir` holding `.git` (a directory, or
@@ -50,53 +54,118 @@ pub fn without_credentials(url: &str) -> String {
     }
 }
 
-/// Reads one repository directory.
-pub fn read(repo_dir: &Path, cache: &mut Cache) -> Lookup {
-    let Ok(repo) = gix::open(repo_dir) else {
-        return Lookup {
-            remote: None,
-            root_commit: None,
-        };
-    };
-    let remote = repo
-        .find_remote("origin")
-        .ok()
-        .and_then(|r| {
-            r.url(gix::remote::Direction::Fetch)
-                .map(|u| u.to_bstring().to_string())
-        })
-        .map(|u| without_credentials(&u));
-    let head = repo.head_id().ok().map(|id| id.detach());
-    let root_commit = head.and_then(|head| {
-        let key = head.to_string();
-        if let Some((seen, root)) = cache.roots.get(repo_dir)
-            && *seen == key
-        {
-            return root.clone();
-        }
-        let root = first_parent_root(&repo, head);
-        cache
-            .roots
-            .insert(repo_dir.to_path_buf(), (key, root.clone()));
-        root
-    });
-    Lookup {
-        remote,
-        root_commit,
+fn git(repo: &Path, args: &[&str]) -> Option<String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(args);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(name);
     }
+    command
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_NO_LAZY_FETCH", "1");
+    git_output(&mut command)
 }
 
-/// The commit with no parents reached from `head` by first parents. `None`
-/// when history is missing (a shallow clone).
-fn first_parent_root(repo: &gix::Repository, head: gix::ObjectId) -> Option<String> {
-    let mut id = head;
-    loop {
-        let commit = repo.find_commit(id).ok()?;
-        match commit.parent_ids().next() {
-            Some(parent) => id = parent.detach(),
-            None => return Some(id.to_string()),
-        }
+fn git_output(command: &mut Command) -> Option<String> {
+    let output = command.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
+}
+
+/// Reads one repository directory. Git's ownership refusal makes both fields
+/// unavailable, just like an unreadable repository.
+pub fn read(repo: &Path, cache: &mut Cache) -> Lookup {
+    read_with(repo, cache, |args| git(repo, args))
+}
+
+fn read_with(
+    repo: &Path,
+    cache: &mut Cache,
+    mut git: impl FnMut(&[&str]) -> Option<String>,
+) -> Lookup {
+    let unavailable = Lookup {
+        remote: None,
+        root_commit: None,
+    };
+    let Some(config) = git(&["config", "--null", "--show-origin", "--name-only", "--list"]) else {
+        cache.lookups.remove(repo);
+        return unavailable;
+    };
+    let head = git(&["rev-parse", "--verify", "HEAD"]).map(|text| text.trim().to_owned());
+    // Git supplies each included configuration file, including conditional
+    // includes, so changes outside the checkout invalidate the result too.
+    let mut paths: BTreeSet<PathBuf> = config
+        .split('\0')
+        .step_by(2)
+        .filter_map(|origin| origin.strip_prefix("file:").map(PathBuf::from))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                repo.join(path)
+            }
+        })
+        .collect();
+    let shallow = git(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "shallow",
+    ])
+    .map(|text| PathBuf::from(text.trim()));
+    paths.extend(shallow.iter().cloned());
+    let files = paths
+        .into_iter()
+        .map(|path| {
+            let facts = fs::metadata(&path)
+                .ok()
+                .and_then(|meta| Some((meta.modified().ok()?, meta.len())));
+            (path, facts)
+        })
+        .collect::<Vec<_>>();
+    if let Some(old) = cache.lookups.get(repo)
+        && old.head == head
+        && old.files == files
+        && old.lookup.root_commit.is_some()
+    {
+        return old.lookup.clone();
     }
+    let remote = git(&["remote", "get-url", "origin"])
+        .map(|text| without_credentials(text.strip_suffix('\n').unwrap_or(&text)));
+    let root_commit = head.as_ref().and_then(|_| {
+        let root = git(&["rev-list", "--first-parent", "--max-parents=0", "HEAD"])?
+            .lines()
+            .next()?
+            .to_owned();
+        (!shallow
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .is_some_and(|text| text.lines().any(|id| id == root)))
+        .then_some(root)
+    });
+    let lookup = Lookup {
+        remote,
+        root_commit,
+    };
+    cache.lookups.insert(
+        repo.to_path_buf(),
+        Cached {
+            head,
+            files,
+            lookup: lookup.clone(),
+        },
+    );
+    lookup
 }
 
 /// Writes the lookups for `cwds` into `dir`, one file per repository named
@@ -109,11 +178,7 @@ pub fn refresh(
 ) -> io::Result<usize> {
     let mut repos = BTreeSet::new();
     for cwd in cwds {
-        let repo = cache
-            .repos
-            .entry(cwd.clone())
-            .or_insert_with(|| repository_of(&cwd))
-            .clone();
+        let repo = repository_of(&cwd);
         repos.extend(repo);
     }
     let mut changed = 0;
@@ -140,9 +205,7 @@ pub fn refresh(
         });
         fs::create_dir_all(dir)?;
         let bytes = serde_json::to_vec(&doc)?;
-        atomicwrites::AtomicFile::new(&file, atomicwrites::AllowOverwrite)
-            .write(|output| output.write_all(&bytes))
-            .map_err(io::Error::from)?;
+        polylogue_model::atomic_write::write_atomic(&file, &bytes, None)?;
         changed += 1;
     }
     Ok(changed)

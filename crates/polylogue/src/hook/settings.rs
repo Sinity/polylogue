@@ -4,7 +4,7 @@
 
 use super::{EVENTS, Harness};
 use serde_json::{Value, json};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 mod parse;
@@ -177,7 +177,10 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
     let merged = merge_hooks(current, harness, install)?;
     let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
     text.push('\n');
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     use std::os::unix::fs::PermissionsExt;
     let permissions = match std::fs::metadata(path) {
@@ -187,10 +190,6 @@ pub fn install(path: &Path, harness: Harness, install: bool) -> std::io::Result<
         }
         Err(e) => return Err(e),
     };
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write(|file| {
-            file.set_permissions(permissions)?;
-            file.write_all(text.as_bytes())
-        })
-        .map_err(Into::into)
+    polylogue_model::atomic_write::write_atomic(path, text.as_bytes(), Some(permissions))?;
+    Ok(())
 }

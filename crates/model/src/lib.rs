@@ -1,9 +1,10 @@
-//! Types every Polylogue crate shares. No IO and no storage: values, their
-//! rules, and the export format's codec.
+//! Types every Polylogue crate shares, their rules, the export codec and
+//! durable file replacement.
 
 #[macro_use]
 mod stored_names;
 
+pub mod atomic_write;
 pub mod batch;
 mod block;
 pub mod capture_log;
