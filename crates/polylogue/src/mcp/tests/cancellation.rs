@@ -140,6 +140,12 @@ fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
         reads.recv_timeout(Duration::from_secs(5)).unwrap();
         line.clear();
         let answer = input.read_line(&mut line).map(|_| line);
+        // The transport timeout can win the race with daemon cleanup. Keep the
+        // archive blocked while allowing the daemon to release its reader.
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while daemon.daemon.reads.checked_out() != 1 && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
         let released = daemon.daemon.reads.checked_out() == 1;
         // Release fixture holds before assertions so a failing regression also joins.
         drop(lock);
