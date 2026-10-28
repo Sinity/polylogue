@@ -132,7 +132,11 @@ impl Imported {
 
     pub fn consume(&mut self, upto: u64) {
         let consumed = (upto - self.start) as usize;
-        self.pending.drain(..consumed);
+        if consumed > 0 {
+            // Plans can outlive their jobs' byte reservations. Keep only the
+            // incomplete suffix, not the allocation of a consumed chunk.
+            self.pending = self.pending.split_off(consumed);
+        }
         self.start = upto;
     }
 }
