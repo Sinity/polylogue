@@ -5,9 +5,18 @@ use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     if format == Format::Json || data.get("fields").is_some() {
-        serde_json::to_writer_pretty(&mut *out, data)?;
+        write!(out, "{}", crate::terminal::json(data, true))?;
         return writeln!(out);
     }
+    let mut text = Vec::new();
+    render_text(data, &mut text)?;
+    out.write_all(
+        crate::terminal::escape(std::str::from_utf8(&text).expect("rendered strings are UTF-8"))
+            .as_bytes(),
+    )
+}
+
+fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "Rule version: {}", data["rule_version"])?;
     for side in ["before", "after"] {
         let population = &data[side];

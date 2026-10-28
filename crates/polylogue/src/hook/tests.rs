@@ -244,3 +244,23 @@ fn gemini_context_output_matches_the_native_protocol() {
         json!({"hookSpecificOutput":{"hookEventName":"BeforeAgent","additionalContext":"takeover"}})
     );
 }
+
+#[test]
+fn decoded_hook_context_has_visible_terminal_controls() {
+    let text = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}\n\tcontext";
+    for harness in [
+        Harness::ClaudeCode,
+        Harness::Codex,
+        Harness::Hermes,
+        Harness::GeminiCli,
+    ] {
+        let mut bytes = Vec::new();
+        assert!(write_context(&mut bytes, harness, "SessionStart", text));
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let context = match harness {
+            Harness::Hermes => &value["context"],
+            _ => &value["hookSpecificOutput"]["additionalContext"],
+        };
+        assert_eq!(context, &polylogue_render::terminal::escape(text));
+    }
+}

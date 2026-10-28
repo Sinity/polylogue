@@ -6,7 +6,7 @@ use base64::Engine as _;
 pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     if !values.flag("reveal") {
         if json {
-            println!("{data}");
+            println!("{}", polylogue_render::terminal::json(data, false));
         } else {
             print!("{}", print::json(data));
         }

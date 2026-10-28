@@ -285,9 +285,14 @@ fn output_for(harness: Harness, event: &str, text: &str) -> Value {
 }
 
 fn emit(harness: Harness, event: &str, text: &str) -> bool {
-    let out = output_for(harness, event, text);
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "{out}").is_ok() && stdout.flush().is_ok()
+    write_context(&mut std::io::stdout().lock(), harness, event, text)
+}
+
+fn write_context(stdout: &mut impl Write, harness: Harness, event: &str, text: &str) -> bool {
+    let text = polylogue_render::terminal::escape(text);
+    let out = output_for(harness, event, &text);
+    writeln!(stdout, "{}", polylogue_render::terminal::json(&out, false)).is_ok()
+        && stdout.flush().is_ok()
 }
 
 /// The brief for a session starting in the payload's directory.
@@ -362,7 +367,12 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
     if let Err(e) = append_to_spool(&hook_spool_dir(), harness, event, &payload) {
         // The harness must not fail because the spool cannot be written.
-        eprintln!("polylogue hook: could not record {event}: {e}");
+        eprintln!(
+            "{}",
+            polylogue_render::terminal::escape(&format!(
+                "polylogue hook: could not record {event}: {e}"
+            ))
+        );
     }
     if let Some((deliveries, text)) = respond(harness, event, &payload)
         && emit(harness, event, &text)

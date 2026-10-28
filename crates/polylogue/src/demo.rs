@@ -42,10 +42,13 @@ pub fn tour(_: &Command, values: &Values, json: bool) -> ExitCode {
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&tour).expect("serialize tour")
+                    polylogue_render::terminal::json(
+                        &serde_json::to_value(&tour).expect("serialize tour"),
+                        true,
+                    )
                 );
             } else {
-                print!("{}", tour.transcript);
+                print!("{}", polylogue_render::terminal::escape(&tour.transcript));
             }
             ExitCode::SUCCESS
         }
@@ -124,7 +127,11 @@ fn run(directory: &Path) -> Result<Tour, String> {
             let result = invoke(command, arguments.clone())?;
             let seconds = started.elapsed().as_secs_f64();
             let declaration = commands::command(command).ok_or("missing command")?;
-            let text = (declaration.print)(&result);
+            let text = if command == "query" {
+                crate::cli::print::query_plain(&result)
+            } else {
+                (declaration.print)(&result)
+            };
             steps.push(Step {
                 title: title.into(),
                 description: description.into(),

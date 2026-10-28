@@ -513,3 +513,6 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
 mod query_surfaces;
 
 mod agent_guidance;
+
+#[cfg(target_os = "linux")]
+mod terminal;

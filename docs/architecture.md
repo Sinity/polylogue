@@ -57,6 +57,13 @@ the transaction being written.
 | [`embeddings.db`](../crates/store/src/schema/embeddings.sql) | Purchased vectors and provider failures, kept apart so a rebuild does not buy them again. |
 | [`blobs/`](../crates/store/src/blobs.rs) | Stored bytes by BLAKE3 hash. A blob counts once its row says `present`. |
 
+`Archive::scanner_key()` creates `scanner.key` beside `archive.db` on first
+use: 32 random bytes, mode 0600, kept across index rebuilds and archive
+backups. An existing key is never replaced; an invalid key is refused.
+Credential fingerprints are comparable only within that archive. Scanned
+findings must record the shared `SCANNER_VERSION` and recompute when it
+changes.
+
 A rebuild parses the stored inputs, including imports whose original files
 are gone; notes live in `archive.db` and survive it. A
 message seen in several inputs is stored once. [The writer](../crates/store/src/writer/rows.rs)
@@ -367,3 +374,17 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+Shell completion help and decoded hook context use the same visible escapes.
+Completion values containing control or direction characters are omitted.
+
+Terminal output treats archived text as data. Render's `terminal::escape`
+shows C0 (except newline and tab), DEL and C1 as lowercase `\xNN` escapes,
+and Unicode direction controls as `\u{NNNN}`. Escaping happens before
+styling or table layout, including titles, paths, snippets and error text.
+The daemon's terminal reads are plain text; the displaying CLI adds its own
+heading and match styles only when stdout is a terminal and `NO_COLOR` is
+unset. JSON uses JSON Unicode escapes and round trips the original values.
+HTML and Markdown retain their format encoding; displaying them through the
+CLI read printer escapes terminal controls, while file and pipe exports keep
+the requested format.
