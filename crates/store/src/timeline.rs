@@ -26,11 +26,9 @@ fn bind(params: &mut Vec<SqlValue>, value: SqlValue) -> String {
     format!("?{}", params.len())
 }
 
-fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
+fn sources(selection: &Selection<'_>, session: Option<i64>) -> (Vec<String>, Vec<SqlValue>) {
     if let Some(responses) = selection.responses {
-        // A page walks the time index and tests session membership on each
-        // row. A session-index scan would sort the whole selection first.
-        let (condition, values) = responses.condition_with_session_column("+m.session_pk");
+        let (condition, values) = responses.condition();
         let mut params = values
             .into_iter()
             .map(|value| match value {
@@ -40,12 +38,20 @@ fn sources(selection: &Selection<'_>) -> (Vec<String>, Vec<SqlValue>) {
             })
             .collect::<Vec<_>>();
         let mut condition = format!("{} AND {condition}", crate::measure::RESPONSE_ROWS);
+        if let Some(session) = session {
+            condition.push_str(&format!(
+                " AND m.session_pk = {}",
+                bind(&mut params, SqlValue::Int(session))
+            ));
+        }
+        // A session range supplies the ordering even for a common model.
+        let model_column = if session.is_some() { "+m.model" } else { "m.model" };
         if selection.unknown_model {
-            condition.push_str(" AND m.model IS NULL");
+            condition.push_str(&format!(" AND {model_column} IS NULL"));
         }
         if let Some(model) = selection.model {
             condition.push_str(&format!(
-                " AND m.model = {}",
+                " AND {model_column} = {}",
                 bind(&mut params, SqlValue::Text(model.to_owned()))
             ));
         }
@@ -108,19 +114,71 @@ fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> R
     Ok(years.into_iter().collect())
 }
 
-fn rows(
+/// Session selections read one ordered range per session and merge their
+/// bounded pages. Selecting every session uses the global time order instead.
+fn page_sources(
+    reader: &Reader<'_>,
+    selection: &Selection<'_>,
+) -> Result<Vec<(&'static str, String, Vec<SqlValue>)>> {
+    if let Some(responses) = selection.responses
+        && (responses.sessions.is_some() || responses.origins.is_some())
+    {
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+        if let Some(sessions) = &responses.sessions {
+            clauses.push(format!(
+                "pk IN (SELECT value FROM json_each({}))",
+                bind(&mut params, SqlValue::Text(json!(sessions).to_string()))
+            ));
+        }
+        if let Some(origins) = &responses.origins {
+            clauses.push(format!(
+                "origin IN (SELECT value FROM json_each({}))",
+                bind(&mut params, SqlValue::Text(json!(origins).to_string()))
+            ));
+        }
+        let sessions = reader.query(
+            &format!("SELECT pk FROM session WHERE {}", clauses.join(" AND ")),
+            &params,
+        )?;
+        let total = reader.query("SELECT count(*) AS n FROM session", &[])?;
+        let keys = if sessions.len() as u64 == total[0]["n"].as_u64().unwrap() {
+            vec![None]
+        } else {
+            sessions.into_iter().map(|session| Some(session["pk"].as_i64().unwrap())).collect()
+        };
+        let responses = crate::measure::Selection {
+            sessions: None,
+            origins: None,
+            ..responses.clone()
+        };
+        let selection = Selection {
+            responses: Some(&responses),
+            ..*selection
+        };
+        return Ok(keys.into_iter().map(|key| {
+            let (sources, params) = sources(&selection, key);
+            ("message", sources.into_iter().next().unwrap(), params)
+        }).collect());
+    }
+
+    let (sources, params) = sources(selection, None);
+    Ok(sources.into_iter().enumerate().map(|(index, sql)| {
+        (["message", "event", "note"][index], sql, params.clone())
+    }).collect())
+}
+
+fn row_queries(
     reader: &Reader<'_>,
     selection: &Selection<'_>,
     bounds: Option<(i64, i64)>,
     after: Option<&Position>,
     limit: i64,
     undated: bool,
-) -> Result<Vec<Value>> {
-    let (sources, params) = sources(selection);
-    let mut found = Vec::new();
-    for (index, source) in sources.into_iter().enumerate() {
-        let kind = ["message", "event", "note"][index];
-        let mut params = params.clone();
+) -> Result<Vec<(String, Vec<SqlValue>)>> {
+    let sources = page_sources(reader, selection)?;
+    let mut queries = Vec::new();
+    for (kind, source, mut params) in sources {
         let mut conditions = Vec::new();
         if undated {
             conditions.push(representable("at", true));
@@ -139,9 +197,13 @@ fn rows(
             // or continuation, rather than choosing the representable minimum.
             let min = jiff::Timestamp::MIN.as_millisecond();
             let max = jiff::Timestamp::MAX.as_millisecond();
-            let (since, through) = bounds.map_or((min, max), |(since, until)| {
+            let (mut since, mut through) = bounds.map_or((min, max), |(since, until)| {
                 (since.max(min), until.saturating_sub(1).min(max))
             });
+            if let Some(responses) = selection.responses {
+                since = since.max(responses.since.unwrap_or(min));
+                through = through.min(responses.until.map_or(max, |until| until.saturating_sub(1)));
+            }
             if since > through || after.is_some_and(|p| p.undated || p.at.is_none()) {
                 continue;
             }
@@ -165,15 +227,18 @@ fn rows(
         }
         let order = if undated { "kind,id" } else { "at,id" };
         let limit = bind(&mut params, SqlValue::Int(limit));
-        found.extend(reader.query(
-            &format!(
+        queries.push((
+            format!(
                 "SELECT * FROM ({source}) WHERE {} ORDER BY {order} LIMIT {limit}",
                 conditions.join(" AND ")
             ),
-            &params,
-        )?);
+            params,
+        ));
     }
-    found.sort_by(|a, b| {
+    Ok(queries)
+}
+
+fn compare_rows(a: &Value, b: &Value, undated: bool) -> std::cmp::Ordering {
         let time = if undated {
             std::cmp::Ordering::Equal
         } else {
@@ -181,8 +246,22 @@ fn rows(
         };
         time.then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
             .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
-    });
-    found.truncate(limit as usize);
+ }
+
+fn rows(
+    reader: &Reader<'_>,
+    selection: &Selection<'_>,
+    bounds: Option<(i64, i64)>,
+    after: Option<&Position>,
+    limit: i64,
+    undated: bool,
+) -> Result<Vec<Value>> {
+    let mut found = Vec::new();
+    for (sql, params) in row_queries(reader, selection, bounds, after, limit, undated)? {
+        found.extend(reader.query(&sql, &params)?);
+        found.sort_by(|a, b| compare_rows(a, b, undated));
+        found.truncate(limit as usize);
+    }
     Ok(found)
 }
 
@@ -314,7 +393,7 @@ pub fn costs_by_day(
         responses: Some(selected),
         model: None,
         unknown_model: false,
-    });
+    }, None);
     let source = &sources[0];
     let (since, until) = day.month(month);
     if until <= since {
@@ -348,7 +427,7 @@ pub fn undated_responses(
         responses: Some(&selection),
         model: None,
         unknown_model: false,
-    });
+    }, None);
     let source = &sources[0];
     let rows = reader.query(
         &format!("SELECT count(*) AS records FROM ({source})"),

@@ -178,6 +178,8 @@ const ROWS_PER_TRANSACTION: usize = 50_000;
 /// (2026-10-19).
 const READ_ONLY_INDEXES: &[&str] = &[
     "message_at",
+    "message_session_at",
+    "message_model_at",
     "event_at",
     "session_activity",
     "session_started",

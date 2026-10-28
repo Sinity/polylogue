@@ -170,6 +170,7 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
 }
 
 mod measurements;
+mod plans;
 
 #[test]
 fn mixed_kinds_and_models_page_once_across_equal_times_and_undated_records() {

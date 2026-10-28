@@ -15,6 +15,8 @@ pub const INDEX: &str = include_str!("schema/index.sql");
 /// Read indexes added in place when an existing index opens.
 pub(crate) const READ_INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS message_at ON message(at, id);
+CREATE INDEX IF NOT EXISTS message_session_at ON message(session_pk, at, id);
+CREATE INDEX IF NOT EXISTS message_model_at ON message(model, at, id);
 CREATE INDEX IF NOT EXISTS event_at ON event(at, id);
 ";
 
@@ -162,13 +164,18 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(INDEX)?;
+    let base = shape(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
     let expected = shape(&expected)?;
+    let read_indexes: HashSet<_> = expected
+        .iter()
+        .filter(|item| item.0 == "index" && !base.contains(item))
+        .map(|item| item.1.clone())
+        .collect();
     let found = shape(conn)?;
     Ok(found.iter().all(|item| expected.contains(item))
         && expected.iter().all(|item| {
-            (item.0 == "index" && matches!(item.1.as_str(), "message_at" | "event_at"))
-                || found.contains(item)
+            (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
         }))
 }
 

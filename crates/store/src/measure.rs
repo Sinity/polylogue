@@ -45,13 +45,6 @@ impl Selection {
     /// The SQL condition on `m` (message) and `s` (session), with its
     /// parameters.
     pub(crate) fn condition(&self) -> (String, Vec<rusqlite::types::Value>) {
-        self.condition_with_session_column("m.session_pk")
-    }
-
-    pub(crate) fn condition_with_session_column(
-        &self,
-        column: &str,
-    ) -> (String, Vec<rusqlite::types::Value>) {
         let mut clauses = vec!["1".to_owned()];
         let mut params: Vec<rusqlite::types::Value> = vec![];
         if let Some(since) = self.since {
@@ -69,7 +62,7 @@ impl Selection {
                 jiff::Timestamp::MAX.as_millisecond()
             ));
         }
-        self.session_clauses(column, &mut clauses, &mut params);
+        self.session_clauses("m.session_pk", &mut clauses, &mut params);
         (clauses.join(" AND "), params)
     }
 

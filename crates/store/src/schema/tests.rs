@@ -323,7 +323,7 @@ fn index_format_changes_require_a_version_and_digest_update() {
 }
 
 #[test]
-fn time_indexes_are_added_in_place_and_survive_reopen() {
+fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(INDEX).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
@@ -331,9 +331,19 @@ fn time_indexes_are_added_in_place_and_survive_reopen() {
         .unwrap();
     assert!(same_index_schema(&conn).unwrap());
     ensure_index(&conn).unwrap();
-    conn.execute_batch("DROP INDEX event_at").unwrap();
-    assert!(same_index_schema(&conn).unwrap());
-    ensure_index(&conn).unwrap();
+    let base = Connection::open_in_memory().unwrap();
+    base.execute_batch(INDEX).unwrap();
+    let base = shape(&base).unwrap();
+    let read_indexes: Vec<_> = shape(&conn).unwrap().into_iter()
+        .filter(|item| item.0 == "index" && !base.contains(item))
+        .map(|item| item.1).collect();
+    assert!(!read_indexes.is_empty());
+    for name in read_indexes {
+        conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
+        assert!(same_index_schema(&conn).unwrap(), "missing {name}");
+        ensure_index(&conn).unwrap();
+        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    }
     assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
