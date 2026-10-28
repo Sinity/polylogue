@@ -3,7 +3,7 @@
 use super::*;
 use serde::Deserialize;
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 pub(super) const STRUCTURES: &[&str] = &[
     "ChatGPT export",
@@ -20,9 +20,58 @@ pub(super) const STRUCTURES: &[&str] = &[
     "explicit format",
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Object,
+    Array,
+    String,
+    Other,
+}
+impl<'de> Deserialize<'de> for Kind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ValueKind;
+        impl<'de> Visitor<'de> for ValueKind {
+            type Value = Kind;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a JSON value")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Kind, M::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(Kind::Object)
+            }
+            fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Kind, S::Error> {
+                while seq.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(Kind::Array)
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Kind, E> {
+                Ok(Kind::String)
+            }
+            fn visit_string<E: serde::de::Error>(self, _: String) -> Result<Kind, E> {
+                Ok(Kind::String)
+            }
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Kind, E> {
+                Ok(Kind::Other)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Kind, E> {
+                Ok(Kind::Other)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Kind, E> {
+                Ok(Kind::Other)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Kind, E> {
+                Ok(Kind::Other)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Kind, E> {
+                Ok(Kind::Other)
+            }
+        }
+        d.deserialize_any(ValueKind)
+    }
+}
+
 #[derive(Default)]
 struct Shape {
-    keys: BTreeSet<String>,
+    keys: BTreeMap<String, Kind>,
 }
 impl<'de> Deserialize<'de> for Shape {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -52,9 +101,10 @@ impl<'de> Deserialize<'de> for Shape {
                     ]
                     .contains(&key.as_str())
                     {
-                        shape.keys.insert(key);
+                        shape.keys.insert(key, map.next_value::<Kind>()?);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
                     }
-                    map.next_value::<IgnoredAny>()?;
                 }
                 Ok(shape)
             }
@@ -94,17 +144,26 @@ pub(super) fn declared(
     let has = |keys: &[&str]| {
         shape
             .as_ref()
-            .is_some_and(|s| keys.iter().all(|k| s.keys.contains(*k)))
+            .is_some_and(|s| keys.iter().all(|k| s.keys.contains_key(*k)))
     };
-    let name = if has(&["mapping", "current_node"]) && (has(&["conversation_id"]) || has(&["id"])) {
+    let kind = |key: &str, kind: Kind| {
+        shape
+            .as_ref()
+            .is_some_and(|s| s.keys.get(key) == Some(&kind))
+    };
+    let name = if kind("mapping", Kind::Object)
+        && has(&["current_node"])
+        && (kind("conversation_id", Kind::String) || kind("id", Kind::String))
+    {
         Some("chatgpt")
-    } else if has(&["uuid", "chat_messages"]) {
+    } else if kind("uuid", Kind::String) && kind("chat_messages", Kind::Array) {
         Some("claude-ai")
-    } else if has(&["chunkedPrompt"]) {
+    } else if kind("chunkedPrompt", Kind::Object) {
         Some("ai-studio")
-    } else if has(&["resourceSpans"]) {
+    } else if kind("resourceSpans", Kind::Array) {
         Some("otel-genai")
-    } else if has(&["version", "messages"])
+    } else if has(&["version"])
+        && kind("messages", Kind::Object)
         && (has(&["id"])
             || has(&["characters"])
             || path
@@ -115,7 +174,7 @@ pub(super) fn declared(
     } else if path
         .file_name()
         .is_some_and(|n| n == "prod-grok-backend.json")
-        && has(&["conversations"])
+        && kind("conversations", Kind::Array)
     {
         Some("grok")
     } else {

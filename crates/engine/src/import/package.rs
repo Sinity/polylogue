@@ -168,6 +168,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         chatgpt: bool,
         claude: bool,
         takeout: bool,
+        recognized: bool,
         conversations: bool,
         user: bool,
         users: bool,
@@ -190,6 +191,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         let package = packages.entry(member.parent.map(|p| p.0)).or_default();
         let path = member.path.to_string_lossy();
         package.takeout |= path.contains("Takeout/");
+        package.recognized |= member.origin.is_some();
         let name = member
             .path
             .file_name()
@@ -222,9 +224,24 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         let path = member.path.to_string_lossy();
         if package.takeout {
             let route = if path.contains("My Activity/Gemini Apps/") {
-                Some("gemini-app")
+                if member
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name == "MyActivity.html")
+                {
+                    Some("gemini-app")
+                } else {
+                    Some(KEPT)
+                }
             } else if path.contains("Drive/Google AI Studio/") {
-                Some("ai-studio")
+                if member
+                    .origin
+                    .is_some_and(|origin| origin.name == "ai-studio")
+                {
+                    Some("ai-studio")
+                } else {
+                    Some(KEPT)
+                }
             } else if path.contains("Gemini/") || path.contains("NotebookLM/") {
                 Some(KEPT)
             } else {
@@ -261,6 +278,8 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
                 KEPT
             };
             member.origin = polylogue_sources::origin::by_name(name);
+        } else if member.origin.is_none() && package.recognized {
+            member.origin = polylogue_sources::origin::by_name(KEPT);
         }
     }
     // Select a container only when its own children are selected. This is

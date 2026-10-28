@@ -102,3 +102,42 @@ fn takeout_routes_only_declared_products() {
     assert_eq!(members[1].origin.unwrap().name, "export-file");
     assert!(members[2].origin.is_none());
 }
+
+#[test]
+fn structure_checks_field_types_and_reads_past_long_values() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("one.json");
+    std::fs::write(
+        &source,
+        br#"{"mapping":"not a tree","current_node":"one","conversation_id":"one"}"#,
+    )
+    .unwrap();
+    assert!(
+        stage(&source, scratch.path(), None).unwrap()[0]
+            .origin
+            .is_none()
+    );
+    std::fs::write(
+        &source,
+        format!(
+            r#"{{"title":"{}","mapping":{{}},"current_node":null,"conversation_id":"one"}}"#,
+            "a".repeat(128 * 1024)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        stage(&source, scratch.path(), None).unwrap()[0]
+            .origin
+            .unwrap()
+            .name,
+        "chatgpt"
+    );
+    std::fs::write(&source, br#"{"uuid":"one","chat_messages":[]}"#).unwrap();
+    assert_eq!(
+        stage(&source, scratch.path(), None).unwrap()[0]
+            .origin
+            .unwrap()
+            .name,
+        "claude-ai"
+    );
+}
