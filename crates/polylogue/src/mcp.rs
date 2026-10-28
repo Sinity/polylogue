@@ -34,12 +34,10 @@ fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> 
     polylogue_render::terminal::escape(&text)
 }
 
-/// One tool call: the answer's text, or the refusal.
-pub fn call(
-    archive: &Archive,
+fn build_request(
     name: &str,
     arguments: serde_json::Map<String, serde_json::Value>,
-) -> Result<String, String> {
+) -> Result<Request, String> {
     let command = tool_commands()
         .find(|c| c.mcp_name() == name)
         .ok_or_else(|| {
@@ -57,8 +55,11 @@ pub fn call(
         cwd: std::env::current_dir().ok(),
         json: true,
     };
-    let request = build(command, &values, &caller).map_err(bad)?;
-    match crate::cli::send_when_ready(archive, &request) {
+    build(command, &values, &caller).map_err(bad)
+}
+
+fn format_answer(request: &Request, response: std::io::Result<Response>) -> Result<String, String> {
+    match response {
         Ok(Response::Ok { data, .. }) if matches!(request, Request::Context { .. }) => {
             Ok(polylogue_render::terminal::escape(
                 data["prepared"]["text"].as_str().unwrap_or_default(),
@@ -74,6 +75,29 @@ pub fn call(
             "error (daemon_required): no Polylogue daemon answered ({e}); start it with `polylogue daemon`"
         ))),
     }
+}
+
+fn call_with_limit(
+    archive: &Archive,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+    deadline_ms: Option<i64>,
+    cancelled: &tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
+    let request = build_request(name, arguments)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    format_answer(
+        &request,
+        runtime.block_on(crate::client::send_ready(
+            archive,
+            &request,
+            deadline_ms,
+            cancelled,
+        )),
+    )
 }
 
 const VERSIONS: &[&str] = &[
@@ -97,6 +121,7 @@ enum Reply {
         name: String,
         arguments: serde_json::Map<String, Value>,
         with_result_type: bool,
+        deadline_ms: Option<i64>,
     },
     None,
 }
@@ -227,6 +252,7 @@ impl Session {
                     name: name.to_owned(),
                     arguments,
                     with_result_type,
+                    deadline_ms: meta["deadline_ms"].as_i64(),
                 }
             }
             _ => invalid(-32601, "Method not found"),
@@ -236,6 +262,14 @@ impl Session {
 
 impl Reply {
     fn answer(self, archive: &Archive) -> Option<Value> {
+        self.answer_with_limit(archive, &tokio_util::sync::CancellationToken::new())
+    }
+
+    fn answer_with_limit(
+        self,
+        archive: &Archive,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Option<Value> {
         match self {
             Self::None => None,
             Self::Message(message) => Some(message),
@@ -244,11 +278,13 @@ impl Reply {
                 name,
                 arguments,
                 with_result_type,
+                deadline_ms,
             } => {
-                let (text, failed) = match call(archive, &name, arguments) {
-                    Ok(text) => (text, false),
-                    Err(text) => (text, true),
-                };
+                let (text, failed) =
+                    match call_with_limit(archive, &name, arguments, deadline_ms, cancelled) {
+                        Ok(text) => (text, false),
+                        Err(text) => (text, true),
+                    };
                 let mut result =
                     json!({"content": [{"type": "text", "text": text}], "isError": failed});
                 if with_result_type {
@@ -259,6 +295,12 @@ impl Reply {
         }
     }
 }
+
+type Worker<'scope> = (
+    Value,
+    tokio_util::sync::CancellationToken,
+    std::thread::ScopedJoinHandle<'scope, io::Result<()>>,
+);
 
 fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> io::Result<()> {
     let output = std::sync::Mutex::new(output);
@@ -272,45 +314,68 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
     };
     std::thread::scope(|scope| {
         let mut session = Session::default();
-        let mut workers: Vec<std::thread::ScopedJoinHandle<'_, io::Result<()>>> = Vec::new();
-        for line in input.lines() {
-            let mut index = 0;
-            while index < workers.len() {
-                if workers[index].is_finished() {
-                    workers
-                        .swap_remove(index)
-                        .join()
-                        .map_err(|_| io::Error::other("MCP tool thread failed"))??;
-                } else {
-                    index += 1;
+        let mut workers: Vec<Worker<'_>> = Vec::new();
+        let result = (|| {
+            for line in input.lines() {
+                let mut index = 0;
+                while index < workers.len() {
+                    if workers[index].2.is_finished() {
+                        workers
+                            .swap_remove(index)
+                            .2
+                            .join()
+                            .map_err(|_| io::Error::other("MCP tool thread failed"))??;
+                    } else {
+                        index += 1;
+                    }
+                }
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let reply = match serde_json::from_str::<Value>(&line) {
+                    Ok(request) => {
+                        if request["method"] == "notifications/cancelled"
+                            && request.get("id").is_none()
+                        {
+                            for (id, cancelled, _) in &workers {
+                                if id == &request["params"]["requestId"] {
+                                    cancelled.cancel();
+                                }
+                            }
+                            continue;
+                        }
+                        session.prepare(request)
+                    }
+                    Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
+                };
+                if let Reply::Tool { ref id, .. } = reply {
+                    let id = id.clone();
+                    let cancelled = tokio_util::sync::CancellationToken::new();
+                    let worker_cancelled = cancelled.clone();
+                    let write = &write;
+                    let worker = scope.spawn(move || {
+                        if let Some(message) = reply.answer_with_limit(archive, &worker_cancelled) {
+                            write(message)?;
+                        }
+                        Ok(())
+                    });
+                    workers.push((id, cancelled, worker));
+                } else if let Some(message) = reply.answer(archive) {
+                    write(message)?;
                 }
             }
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let reply = match serde_json::from_str(&line) {
-                Ok(request) => session.prepare(request),
-                Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
-            };
-            if matches!(reply, Reply::Tool { .. }) {
-                let write = &write;
-                workers.push(scope.spawn(move || {
-                    if let Some(message) = reply.answer(archive) {
-                        write(message)?;
-                    }
-                    Ok::<_, io::Error>(())
-                }));
-            } else if let Some(message) = reply.answer(archive) {
-                write(message)?;
-            }
+            Ok(())
+        })();
+        for (_, cancelled, _) in &workers {
+            cancelled.cancel();
         }
-        for worker in workers {
+        for (_, _, worker) in workers {
             worker
                 .join()
                 .map_err(|_| io::Error::other("MCP tool thread failed"))??;
         }
-        Ok(())
+        result
     })
 }
 
@@ -323,4 +388,4 @@ pub fn serve_stdio() -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

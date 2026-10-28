@@ -4,6 +4,20 @@ use super::*;
 use crate::test_daemon;
 use serde_json::json;
 
+pub(crate) fn call(
+    archive: &Archive,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    call_with_limit(
+        archive,
+        name,
+        arguments,
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+}
+
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
 }
@@ -85,13 +99,28 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         json!({"jsonrpc":"2.0", "id":6, "method":"tools/call", "params":{"name":"status", "arguments":[]}}).to_string(),
         json!({"jsonrpc":"2.0", "id":7, "method":"ping"}).to_string(),
     ].join("\n");
-    let mut output = Vec::new();
-    serve(requests.as_bytes(), &mut output, &archive).unwrap();
-    let replies: Vec<Value> = String::from_utf8(output)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let replies: Vec<Value> = std::thread::scope(|scope| {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let output = server.try_clone().unwrap();
+        let worker = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        writeln!(client, "{requests}").unwrap();
+        let mut input = BufReader::new(client.try_clone().unwrap());
+        let replies = (0..8)
+            .map(|_| {
+                let mut line = String::new();
+                input.read_line(&mut line).unwrap();
+                serde_json::from_str(&line).unwrap()
+            })
+            .collect();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        worker.join().unwrap().unwrap();
+        replies
+    });
     assert_eq!(replies.len(), 8);
     let reply = |id: Value| replies.iter().find(|reply| reply["id"] == id).unwrap();
     assert_eq!(
@@ -245,4 +274,41 @@ fn tool_annotations_follow_the_command_table() {
     }
     let write = tools.iter().find(|t| t["name"] == "note_add").unwrap();
     assert_eq!(write["annotations"]["readOnlyHint"], false);
+}
+
+mod cancellation;
+
+#[test]
+fn tool_requests_and_answers_keep_terminal_controls_visible() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let escaped = polylogue_render::terminal::escape(hostile);
+    let error = call(&archive, hostile, args(json!({}))).unwrap_err();
+    assert!(error.contains(&escaped), "{error}");
+    for response in [
+        json!({"result":"ok", "data":{"value":hostile}}),
+        json!({"result":"error", "kind":"cancelled", "message":hostile, "detail":{"suggestion":hostile}}),
+    ] {
+        let listener = UnixListener::bind(archive.socket()).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            writeln!(stream, "{response}").unwrap();
+        });
+        let answer = call(&archive, "status", args(json!({})));
+        let text = answer.unwrap_or_else(|error| error);
+        assert!(
+            !text
+                .chars()
+                .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{202e}'),
+            "{text}"
+        );
+        assert!(text.contains("\\x1b") || text.contains("\\u001b"), "{text}");
+        server.join().unwrap();
+        std::fs::remove_file(archive.socket()).unwrap();
+    }
 }

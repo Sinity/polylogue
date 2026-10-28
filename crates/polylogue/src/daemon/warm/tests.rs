@@ -67,6 +67,33 @@ fn values_with_spaces_are_quoted() {
 }
 
 #[test]
+fn count_failures_are_visible_and_a_success_clears_them() {
+    let daemon = crate::test_daemon::start("count worker failure");
+    let warm = Warm::default();
+    warm.refresh_counts(&daemon.daemon.reads);
+    assert!(warm.count_error().is_none());
+    let before = warm.archive_counts.lock().unwrap().clone().unwrap();
+    let closed = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
+    closed.close();
+    warm.refresh_counts(&closed);
+    assert!(warm.count_error().is_some());
+    assert_eq!(
+        warm.archive_counts.lock().unwrap().as_ref().unwrap().status,
+        before.status
+    );
+    warm.archive_counts.lock().unwrap().as_mut().unwrap().took = Duration::ZERO;
+    warm.recount_wanted.store(false, Ordering::Release);
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let cached = warm.counts(&reader, "later position").unwrap();
+    assert_eq!(cached.position, before.position);
+    assert!(warm.count_error().is_some());
+    assert!(warm.recount_wanted.load(Ordering::Acquire));
+    drop(reader);
+    warm.refresh_counts(&daemon.daemon.reads);
+    assert!(warm.count_error().is_none());
+}
+
+#[test]
 fn completions_escape_help_and_omit_values_with_controls() {
     let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
     let mut values = vec!["tag:ordinary".into(), format!("query:{hostile}")];

@@ -96,8 +96,13 @@ it.
 | `schema infer ORIGIN --input ID`, `schema diff BEFORE AFTER` | Offline structure/count inference over explicit stored revisions and recursive schema comparison ([schema tools](docs/schema-tools.md)). |
 | `completions SHELL` | Completion for bash, elvish, fish, PowerShell or zsh: commands and options, and while you type a query, its units, fields, values seen and recent session IDs, which the shell asks of the daemon through `complete WORD`. |
 
+Read-only daemon requests default to a 30-second timeout. Set `POLYLOGUE_READ_TIMEOUT_MS`
+to change the global default, or pass `--timeout SECONDS` for one command, for
+example `polylogue --timeout 120 'sessions | count'`. Export waits until done
+unless `--timeout` is supplied. Write commands run without a read deadline.
+
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
-invalid request, 6 no daemon running.
+invalid request, 3 cancelled, 6 no daemon running, 7 read deadline exceeded.
 
 ## Try Morrow and discover the grammar
 

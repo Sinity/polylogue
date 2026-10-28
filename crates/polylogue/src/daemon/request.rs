@@ -371,6 +371,12 @@ impl Request {
             | Self::Excise { .. } => false,
         }
     }
+
+    /// A context has bounded read preparation even when it also records a receipt.
+    /// Write authorization still follows read_only, independently of this phase.
+    pub(crate) fn has_read_phase(&self) -> bool {
+        self.read_only() || matches!(self, Self::Context { .. })
+    }
 }
 
 /// What `read` and `export` name: `document:ID`, `event:ID`, or a session

@@ -64,7 +64,7 @@ fn mcp_answer(w: &test_daemon::TestDaemon, c: &Command, values: &Values) -> Answ
         .filter(|(k, _)| names.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    match crate::mcp::call(&w.daemon.archive, &c.mcp_name(), arguments) {
+    match crate::mcp::tests::call(&w.daemon.archive, &c.mcp_name(), arguments) {
         Ok(text) => Ok(serde_json::from_str(&text).unwrap()),
         // `error (kind): message`, with the corrected query on a last line
         // of its own when there is one.

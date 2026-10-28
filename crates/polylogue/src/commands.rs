@@ -120,7 +120,7 @@ pub enum Action {
     Stream {
         build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
         prepare: StreamHandler,
-        cli: fn(&Request) -> ExitCode,
+        cli: fn(&Request, Option<std::time::Duration>) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),

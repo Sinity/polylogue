@@ -32,6 +32,8 @@ pub struct Daemon {
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
     stopping: AtomicBool,
+    #[cfg(test)]
+    pub(crate) read_limits: Mutex<Option<Sender<polylogue_store::read::limit::ReadLimit>>>,
 }
 
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
@@ -46,6 +48,8 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
 pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
         StoreError::Conflict(_) => error("conflict", e),
+        StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
+        StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
@@ -95,11 +99,24 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        match briefing::prepare(&reader, ask, &request_id, user_writes::now(), near) {
+        let result = briefing::prepare(&reader, ask, &request_id, user_writes::now(), near);
+        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+            && let Err(error) = limit.check()
+        {
+            let info = serde_json::to_value(ask).unwrap_or_default();
+            let info = serde_json::json!({"op": "context", "text": info["text"]});
+            return super::execution::refusal(&error, &info, &limit);
+        }
+        match result {
             Ok(p) => p,
             Err(e) => return store_error(&e),
         }
     };
+    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+        && let Err(error) = limit.check()
+    {
+        return store_error(&error);
+    }
     let mut delivery = None;
     if let Some(sender) = sender
         && !prepared.empty
@@ -123,8 +140,13 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Ok(writes) => writes,
             Err(response) => return response,
         };
+        if let Err(error) = polylogue_store::read::limit::ReadLimit::finish_scope("record delivery")
+        {
+            return store_error(&error);
+        }
         let _invalidation = d.page_ends.mutation();
-        match writes.user(UserRequest::now(request_id, write)) {
+        let result = writes.user(UserRequest::now(request_id, write));
+        match result {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
         }
@@ -208,7 +230,20 @@ pub(crate) fn change_feed(
 /// Answers one request. Reads use the read pool; imports go to the loop
 /// thread, which owns the writer.
 pub fn handle(request: Request, d: &Daemon) -> Response {
-    handle_inner(request, d).masked()
+    let limit = super::execution::limit_for(&request, None, Default::default());
+    handle_with_limit(request, d, &limit)
+}
+
+pub fn handle_with_limit(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+) -> Response {
+    #[cfg(test)]
+    if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
+        let _ = sender.send(limit.clone());
+    }
+    super::execution::run(request, limit, |request| handle_inner(request, d).masked())
 }
 
 fn handle_inner(request: Request, d: &Daemon) -> Response {
@@ -224,7 +259,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(StoreError::ReadPoolClosed) => {
             return error("daemon_stopping", StoreError::ReadPoolClosed);
         }
-        Err(e) => return error("store", e),
+        Err(e) => return store_error(&e),
     };
     match request {
         Request::Attachment {
@@ -394,6 +429,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "pid": std::process::id(),
                 "uptime_seconds": d.started.elapsed().as_secs(),
                 "store": counted.as_ref().map(|c| &c.status),
+                "count_error": d.warm.count_error(),
                 "counted": counted.as_ref().map_or_else(
                     || serde_json::json!({ "state": "counting" }),
                     |c| serde_json::json!({
@@ -761,7 +797,10 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok { mut data, references } => {
+                Response::Ok {
+                    mut data,
+                    references,
+                } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });
@@ -1082,6 +1121,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn stop_count_worker(&mut self) {
+        if let Some(stop) = self.counts_stop.take() {
+            let _ = stop.send(());
+            self.daemon.warm.clear();
+        }
+        if let Some(counts) = self.counts.take() {
+            counts.join().unwrap();
+        }
+    }
+
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.
@@ -1291,6 +1341,8 @@ pub fn start(
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         stopping: AtomicBool::new(false),
+        #[cfg(test)]
+        read_limits: Mutex::new(None),
     });
     let mut runtime = Runtime {
         daemon,
