@@ -363,8 +363,16 @@ pub struct Excision {
 /// Kind references are independent of the configured producer identity.
 pub(crate) fn kind_reference(name: &str) -> crate::Result<sinex_model::KindRef> {
     static REFERENCES: std::sync::OnceLock<Vec<sinex_model::KindRef>> = std::sync::OnceLock::new();
-    REFERENCES.get_or_init(|| declarations("polylogue").into_iter().map(|declaration| declaration.kind).collect())
-        .iter().find(|kind| kind.name == name).cloned()
+    REFERENCES
+        .get_or_init(|| {
+            declarations("polylogue")
+                .into_iter()
+                .map(|declaration| declaration.kind)
+                .collect()
+        })
+        .iter()
+        .find(|kind| kind.name == name)
+        .cloned()
         .ok_or_else(|| crate::Error::Invalid(format!("undeclared Polylogue event type {name}")))
 }
 

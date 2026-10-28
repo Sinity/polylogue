@@ -190,7 +190,10 @@ fn parity<P: EventPayload>() {
         )
         .unwrap();
         assert_eq!(event.kind_ref(), declaration.kind);
-        assert_eq!(super::kind_reference(P::EVENT_TYPE).unwrap(), declaration.kind);
+        assert_eq!(
+            super::kind_reference(P::EVENT_TYPE).unwrap(),
+            declaration.kind
+        );
         let evaluated = declaration.evaluate(&event.payload, Class::Open).unwrap();
         assert_eq!(evaluated.equivalence_key, event.equivalence_key);
         assert_eq!(evaluated.ts_orig, event.ts_orig);
@@ -217,5 +220,8 @@ fn all_ten_producer_declarations_preserve_typed_keys_clocks_and_classes() {
 
 #[test]
 fn undeclared_producer_kind_has_no_wire_reference() {
-    assert!(matches!(super::kind_reference("polylogue.unknown"), Err(crate::Error::Invalid(_))));
+    assert!(matches!(
+        super::kind_reference("polylogue.unknown"),
+        Err(crate::Error::Invalid(_))
+    ));
 }
