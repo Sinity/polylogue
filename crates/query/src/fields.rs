@@ -1307,8 +1307,8 @@ pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
         return Some(derived::SESSION_COUNTS);
     }
     match field.name {
-        "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "tool_untimed" | "ends_with"
-        | "last_stop_reason" | "time_source" => Some(derived::SESSION_SPAN),
+        "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "tool_untimed"
+        | "ends_with" | "last_stop_reason" | "time_source" => Some(derived::SESSION_SPAN),
         "waiting_model" | "waiting_human" => Some(derived::SESSION_TIME),
         _ => None,
     }

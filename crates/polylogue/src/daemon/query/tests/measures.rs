@@ -316,7 +316,7 @@ fn unknown_session_endings_and_clock_sources_match_unknown_conditions() {
     archive.fx.session(SessionFacts{id:"codex:untimed",..Default::default()}).unwrap();
     archive.fx.derive().unwrap();
     for field in ["ends_with","time_source"] {
-        let result=q(&archive,&format!("sessions where id:"codex:untimed" {field}:unknown"));
+        let result=q(&archive,&format!(r#"sessions where id:"codex:untimed" {field}:unknown"#));
         assert_eq!(result["count"],1);
     }
 }

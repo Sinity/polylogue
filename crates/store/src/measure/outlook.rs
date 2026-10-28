@@ -253,8 +253,11 @@ pub fn outlook(
     while let Some(row) = rows.next()? {
         let n = row.get::<_, u64>(3)?;
         let Some(i) = row.get::<_, Option<usize>>(0)? else {
-            if row.get::<_,bool>(2)? { answer.untimed_responses += n; }
-            else { answer.untimed_boundary_items += n; }
+            if row.get::<_, bool>(2)? {
+                answer.untimed_responses += n;
+            } else {
+                answer.untimed_boundary_items += n;
+            }
             continue;
         };
         let day = window.start + row.get::<_, i64>(1)? * DAY;
@@ -534,7 +537,7 @@ fn pressure(
         .transpose()?;
     Ok(Pressure {
         label: "your budget",
-        lower_bound: projection.is_some_and(|p|p.lower_bound),
+        lower_bound: projection.is_some_and(|p| p.lower_bound),
         population: budget.population,
         unit: budget.unit.clone(),
         budget: budget.amount,

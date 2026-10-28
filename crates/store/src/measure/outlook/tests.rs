@@ -399,19 +399,29 @@ fn known_usage_is_a_lower_bound_when_response_boundaries_are_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     setting_at(&mut f, START, &plan("pro", None));
-    let s = f.session(SessionFacts { id: "codex:boundaries", ..Default::default() }).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "codex:boundaries",
+            ..Default::default()
+        })
+        .unwrap();
     observed(&mut f, s, "known", Some(START), Some(1));
-    observed(&mut f, s, "unknown-boundary", Some(START+1), Some(100));
+    observed(&mut f, s, "unknown-boundary", Some(START + 1), Some(100));
     observed(&mut f, s, "untimed-boundary", None, Some(100));
-    let conn=crate::archive::open_write(&f.archive.index_db(),64).unwrap();
-    conn.execute("UPDATE message SET attrs_json=?1 WHERE id IN ('unknown-boundary','untimed-boundary')",[r#"{"production":{"response_boundary_unknown":true}}"#]).unwrap();
-    let pool=f.reads().unwrap(); let reader=pool.reader().unwrap();
-    let outlook=outlook(&reader,&Selection::default(),START+DAY,"example","x").unwrap();
-    let segment=&outlook.segments[0];
-    assert_eq!(segment.unknown_boundary_items,1);
-    assert_eq!(outlook.untimed_boundary_items,1);
-    assert_eq!(outlook.untimed_responses,0);
-    assert_eq!(segment.responses["api_nusd"].used,Some(1));
-    assert_eq!(segment.responses["api_nusd"].unknown_items,0);
+    let conn = crate::archive::open_write(&f.archive.index_db(), 64).unwrap();
+    conn.execute(
+        "UPDATE message SET attrs_json=?1 WHERE id IN ('unknown-boundary','untimed-boundary')",
+        [r#"{"production":{"response_boundary_unknown":true}}"#],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let outlook = outlook(&reader, &Selection::default(), START + DAY, "example", "x").unwrap();
+    let segment = &outlook.segments[0];
+    assert_eq!(segment.unknown_boundary_items, 1);
+    assert_eq!(outlook.untimed_boundary_items, 1);
+    assert_eq!(outlook.untimed_responses, 0);
+    assert_eq!(segment.responses["api_nusd"].used, Some(1));
+    assert_eq!(segment.responses["api_nusd"].unknown_items, 0);
     assert!(segment.responses["api_nusd"].lower_bound);
 }
