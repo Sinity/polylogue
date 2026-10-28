@@ -213,6 +213,9 @@ the same change.
   storing observed values; dynamic map keys share the `*` path.
 - **schema diff**: added and removed paths, changed types and changed
   requiredness between explicit schema artifacts.
+- **discovery names**: the distinct member names remembered at an object path
+  to decide whether to group its unforced fields under `*`. At most 51 names
+  establish whether the path exceeds 50 names; they are discarded when grouped.
 - **named field**: a field name forced into schema paths even when the dynamic-key
   heuristic would group it under `*`.
 - **sample**: explicit inputs and revisions selected for schema observation,

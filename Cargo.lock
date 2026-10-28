@@ -1789,6 +1789,7 @@ name = "polylogue-sources"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "blake3",
  "polylogue-model",
  "serde",
  "serde_json",
