@@ -2,7 +2,7 @@
 # Prepares a cloud VM (Claude Code on the web, Codex cloud) to build and test
 # this repository: the Nix development shell for every later command, Cargo's
 # sources, and the link to a sibling polylogue-sinex-common checkout when the
-# session has one. It runs as root from the environment's setup script while
+# session has one. It requires root permissions during environment setup while
 # the network is open, and is safe to run again. Claude Code clones the
 # repository to /home/user/polylogue; Codex starts in the checkout:
 #

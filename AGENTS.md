@@ -94,7 +94,7 @@ real files on this machine for development and measurement is fine.
 
 ## Cloud sessions and changes to polylogue-sinex-common
 
-Cloud sessions (Claude Code on the web, Codex cloud) run as root on a fresh
+Cloud sessions (Claude Code on the web, Codex cloud) run on a fresh
 VM without AgentCTL, `/realm` or the operator's services; run `cargo xtask`
 commands there directly. The environment's setup script runs
 `bash dev/cloud/setup.sh`, after which every shell is in the development
