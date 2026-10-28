@@ -7,9 +7,30 @@ impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?
             .execute(params![pk,self.counter])?;
-        let winner = VersionKind::Event.select(self.tx, pk,
+        let winner = if let Some(choices) = self.choices {
+            choices
+                .events
+                .get(&pk)
+                .ok_or_else(|| StoreError::Invalid("unresolved event version".into()))?
+                .as_ref()
+                .map(|c| {
+                    (
+                        c.input,
+                        c.chain,
+                        c.session,
+                        c.seq,
+                        c.start,
+                        c.end,
+                        c.after.clone(),
+                        c.at,
+                        c.body.clone(),
+                    )
+                })
+        } else {
+            VersionKind::Event.select(self.tx, pk,
             "s.input_pk,s.chain,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,v.body",
-            |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<i64>>(7)?,r.get::<_,Vec<u8>>(8)?)))?;
+            |r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<i64>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,Option<i64>>(7)?,r.get::<_,Vec<u8>>(8)?)))?
+        };
         let Some((input, chain, session, seq, start, end, after_id, at, data)) = winner else {
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
@@ -60,26 +81,44 @@ impl RowWriter<'_, '_> {
 
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
         self.mark_link_sessions(pk)?;
-        let winner = VersionKind::Link.select(self.tx, pk, "s.input_pk,s.chain,v.body", |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
-            ))
-        })?;
-        let Some((input, chain, body)) = winner else {
-            self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
-            return Ok(());
+        let resolved = self
+            .choices
+            .map(|choices| {
+                choices
+                    .links
+                    .get(&pk)
+                    .ok_or_else(|| StoreError::Invalid("unresolved link version".into()))
+            })
+            .transpose()?;
+        let (input, chain, mut link) = if let Some(choice) = resolved {
+            let Some(choice) = choice else {
+                self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                return Ok(());
+            };
+            (choice.input, choice.chain, choice.link.clone())
+        } else {
+            let winner =
+                VersionKind::Link.select(self.tx, pk, "s.input_pk,s.chain,v.body", |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                    ))
+                })?;
+            let Some((input, chain, body)) = winner else {
+                self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                return Ok(());
+            };
+            let link: Link = crate::encoding::unpack_json(&body)?;
+            (input, chain, link)
         };
-        let mut link: Link = crate::encoding::unpack_json(&body)?;
-        let mut statement = self.tx.prepare_cached(
-            "SELECT DISTINCT v.pk,v.body FROM link_source s JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1",
-        )?;
-        let values = statement.query_map([pk], |r| r.get::<_, Vec<u8>>(1))?;
-        for body in values {
-            let other: Link = crate::encoding::unpack_json(&body?)?;
-            link.at = link.at.into_iter().chain(other.at).min();
-            link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+        if resolved.is_none() {
+            let mut statement=self.tx.prepare_cached("SELECT DISTINCT v.pk,v.body FROM link_source s JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1")?;
+            for body in statement.query_map([pk], |r| r.get::<_, Vec<u8>>(1))? {
+                let other: Link = crate::encoding::unpack_json(&body?)?;
+                link.at = link.at.into_iter().chain(other.at).min();
+                link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+            }
         }
         self.tx.prepare_cached("UPDATE link SET branch_point=?2,spawning_call=?3,evidence=?4,input_pk=?5,source_chain=?6 WHERE pk=?1")?
             .execute(params![pk,link.at.as_ref().map(ToString::to_string),link.call_id,link.evidence,input,chain])?;
@@ -97,7 +136,22 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn store_link(&self, link: &Link) -> Result<()> {
+    pub(super) fn store_link(&self, link: &Link, index: usize) -> Result<()> {
+        if let (Some(keys), Some(choices)) = (self.keys, self.choices) {
+            let pk = keys.get(resolve::Kind::Link, &resolve::link_key(link)?)?.pk;
+            let child = keys
+                .get(resolve::Kind::Session, link.child.to_string().as_bytes())?
+                .pk;
+            let (kind, how) = link.kind.columns();
+            self.tx.execute("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9)",params![pk,link.parent.to_string(),link.child.to_string(),child,kind,how,link.evidence,self.input_pk,self.chain])?;
+            let value = &choices.link_values[index];
+            self.tx.execute(
+                "INSERT OR IGNORE INTO link_value(pk,hash,body) VALUES (?1,?2,?3)",
+                params![value.key.pk, value.hash.as_slice(), value.body],
+            )?;
+            self.tx.execute("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(link_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank",params![pk,self.input_pk,self.chain,value.key.pk,self.rank])?;
+            return Ok(());
+        }
         let (kind, how) = link.kind.columns();
         let child = link.child.to_string();
         self.tx.prepare_cached("INSERT OR IGNORE INTO link(parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain)
@@ -171,7 +225,25 @@ impl RowWriter<'_, '_> {
         event: &Event,
         data: &[u8],
         seq: Option<i64>,
+        index: usize,
     ) -> Result<()> {
+        if let (Some(keys), Some(choices)) = (self.keys, self.choices) {
+            let value = &choices.event_values[index];
+            let session = event
+                .session
+                .as_ref()
+                .map(|id| {
+                    keys.get(resolve::Kind::Session, id.to_string().as_bytes())
+                        .map(|row| row.pk)
+                })
+                .transpose()?;
+            self.tx.execute(
+                "INSERT OR IGNORE INTO event_value(pk,hash,body) VALUES (?1,?2,?3)",
+                params![value.key.pk, value.hash.as_slice(), value.body],
+            )?;
+            self.tx.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at",params![pk,self.input_pk,self.chain,value.key.pk,self.rank,session,seq,event.range.map(|r|r.0 as i64),event.range.map(|r|r.1 as i64),event.after.as_ref().map(ToString::to_string),ms(event.at)])?;
+            return Ok(());
+        }
         let mut value: Json = crate::encoding::unpack_json(data)?;
         value.sort_all_objects();
         let hash = blake3::hash(&serde_json::to_vec(&value)?);

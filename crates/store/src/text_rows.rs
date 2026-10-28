@@ -16,14 +16,23 @@ pub(crate) fn intern(
     bit: i64,
     prepared: Option<&HashMap<[u8; 32], Vec<u8>>>,
     first_build: Option<&FirstBuild>,
+    keys: Option<&crate::writer::resolve::ResolvedKeys>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
-    let id = match first_build {
-        Some(first_build) => first_build.text(conn, hash.as_bytes())?,
-        None => conn
-            .prepare_cached("SELECT id FROM text WHERE hash = ?1")?
-            .query_row([&hash.as_bytes()[..]], |r| r.get(0))
-            .optional()?,
+    let reserved = keys
+        .map(|keys| keys.get(crate::writer::resolve::Kind::Text, hash.as_bytes()))
+        .transpose()?;
+    let id = if let Some(key) = reserved {
+        conn.query_row("SELECT id FROM text WHERE id=?1", [key.pk], |r| r.get(0))
+            .optional()?
+    } else {
+        match first_build {
+            Some(first_build) => first_build.text(conn, hash.as_bytes())?,
+            None => conn
+                .prepare_cached("SELECT id FROM text WHERE hash = ?1")?
+                .query_row([&hash.as_bytes()[..]], |r| r.get(0))
+                .optional()?,
+        }
     };
     let bulk = first_build.is_some();
     let (id, indexed) = match id {
@@ -40,8 +49,13 @@ pub(crate) fn intern(
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
             let claimed = if bulk { bit } else { 0 };
-            conn.prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
-                .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
+            conn.prepare_cached("INSERT INTO text(hash, body, indexed,id) VALUES (?1, ?2, ?3,?4)")?
+                .execute(params![
+                    &hash.as_bytes()[..],
+                    &*packed,
+                    claimed,
+                    reserved.map(|row| row.pk)
+                ])?;
             let id = conn.last_insert_rowid();
             if let Some(first_build) = first_build {
                 first_build.add_text(hash.as_bytes(), id);

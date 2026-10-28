@@ -31,6 +31,9 @@ impl RowWriter<'_, '_> {
             "DELETE FROM repo_lookup WHERE input_pk=?1 AND chain=?2",
             params![self.input_pk, self.chain],
         )?;
+        if self.choices.is_some() {
+            return Ok(());
+        }
         for (kind, rows) in touched {
             for pk in rows {
                 match kind {
@@ -98,6 +101,8 @@ pub(crate) fn retract_input(
             counter,
             packed: &packed,
             first_build: None,
+            keys: None,
+            choices: None,
         }
         .retract()?;
         prune_sessions(tx, input_id, chain)?;

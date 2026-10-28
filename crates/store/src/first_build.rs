@@ -13,15 +13,15 @@
 use crate::Result;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::RwLock;
 
 #[derive(Default)]
 pub(crate) struct FirstBuild {
-    messages: RefCell<Rows>,
-    events: RefCell<Rows>,
-    texts: RefCell<Rows>,
+    messages: RwLock<Rows>,
+    events: RwLock<Rows>,
+    texts: RwLock<Rows>,
 }
 
 /// The rows a table's keys were written as, by key hash.
@@ -115,14 +115,14 @@ impl FirstBuild {
                     let value: String = row.get(0)?;
                     hash_of(value.as_bytes())
                 };
-                rows.borrow_mut().add(hash, row.get(1)?);
+                rows.write().expect("key map lock").add(hash, row.get(1)?);
             }
         }
         Ok(keys)
     }
 
     pub(crate) fn message(&self, conn: &Connection, id: &str) -> Result<Option<i64>> {
-        self.messages.borrow().find(
+        self.messages.read().expect("key map lock").find(
             conn,
             "SELECT id FROM message WHERE pk = ?1",
             hash_of(id.as_bytes()),
@@ -131,11 +131,14 @@ impl FirstBuild {
     }
 
     pub(crate) fn add_message(&self, id: &str, pk: i64) {
-        self.messages.borrow_mut().add(hash_of(id.as_bytes()), pk);
+        self.messages
+            .write()
+            .expect("key map lock")
+            .add(hash_of(id.as_bytes()), pk);
     }
 
     pub(crate) fn event(&self, conn: &Connection, id: &str) -> Result<Option<i64>> {
-        self.events.borrow().find(
+        self.events.read().expect("key map lock").find(
             conn,
             "SELECT id FROM event WHERE pk = ?1",
             hash_of(id.as_bytes()),
@@ -144,12 +147,15 @@ impl FirstBuild {
     }
 
     pub(crate) fn add_event(&self, id: &str, pk: i64) {
-        self.events.borrow_mut().add(hash_of(id.as_bytes()), pk);
+        self.events
+            .write()
+            .expect("key map lock")
+            .add(hash_of(id.as_bytes()), pk);
     }
 
     /// A text by its BLAKE3 hash, whose first bytes are already spread.
     pub(crate) fn text(&self, conn: &Connection, hash: &[u8; 32]) -> Result<Option<i64>> {
-        self.texts.borrow().find(
+        self.texts.read().expect("key map lock").find(
             conn,
             "SELECT hash FROM text WHERE id = ?1",
             text_key(hash),
@@ -158,7 +164,10 @@ impl FirstBuild {
     }
 
     pub(crate) fn add_text(&self, hash: &[u8; 32], id: i64) {
-        self.texts.borrow_mut().add(text_key(hash), id);
+        self.texts
+            .write()
+            .expect("key map lock")
+            .add(text_key(hash), id);
     }
 }
 

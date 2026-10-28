@@ -18,6 +18,8 @@ pub(crate) struct Source<'a> {
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
+    pub keys: Option<&'a crate::writer::resolve::ResolvedKeys>,
+    pub resolved: bool,
 }
 
 pub(crate) fn write(
@@ -33,14 +35,29 @@ pub(crate) fn write(
     }
     let doc = &row.document;
     let time = doc.source_time.map(|t| t.unix_ms());
-    let existing: Option<i64> = tx
-        .query_row(
+    let reserved = source
+        .keys
+        .map(|keys| {
+            keys.get(
+                crate::writer::resolve::Kind::Document,
+                doc.id.to_string().as_bytes(),
+            )
+        })
+        .transpose()?;
+    let existing: Option<i64> = if let Some(key) = reserved {
+        tx.query_row("SELECT pk FROM document WHERE pk=?1", [key.pk], |r| {
+            r.get(0)
+        })
+        .optional()?
+    } else {
+        tx.query_row(
             "SELECT pk FROM document WHERE id=?1",
             [doc.id.to_string()],
             |r| r.get(0),
         )
-        .optional()?;
-    if let Some(pk) = existing {
+        .optional()?
+    };
+    if let Some(pk) = existing.filter(|_| !source.resolved) {
         let earlier:Option<(Option<i64>,i64,Vec<u8>)>=tx.query_row(
             "SELECT source_time,arrival_rank,version_hash FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
             params![pk,source.input_pk,source.chain],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -62,17 +79,22 @@ pub(crate) fn write(
         &doc.blocks,
         source.packed,
         source.first_build,
+        source.keys,
     )?;
     let pk = match existing {
         Some(pk) => pk,
         None => {
-            tx.execute("INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
-                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
+            tx.execute("INSERT INTO document(pk,id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
+                VALUES (?15,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields,reserved.map(|row|row.pk)])?;
             tx.last_insert_rowid()
         }
     };
     set_source(tx, pk, source, row, time, &prepared.hash, false)?;
-    refresh(tx, pk, source.counter, source.first_build)
+    if source.resolved {
+        Ok(())
+    } else {
+        refresh(tx, pk, source.counter, source.first_build)
+    }
 }
 
 pub(crate) fn refresh(
@@ -121,6 +143,8 @@ pub(crate) fn refresh(
         counter,
         packed: &packed,
         first_build,
+        keys: None,
+        resolved: false,
     };
     let row = DocumentRow {
         offset: start as u64,
@@ -131,6 +155,45 @@ pub(crate) fn refresh(
     tx.execute(
         "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
         params![pk, input_pk, chain],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn apply_choice(
+    tx: &Transaction<'_>,
+    pk: i64,
+    choice: Option<&crate::writer::resolve::versions::DocumentChoice>,
+    counter: i64,
+    first_build: Option<&crate::first_build::FirstBuild>,
+) -> Result<()> {
+    let Some(choice) = choice else {
+        let texts=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
+        for text in texts {
+            crate::text_rows::unindex_unused(tx, text, first_build.is_some())?;
+        }
+        return Ok(());
+    };
+    let packed = HashMap::new();
+    let source = Source {
+        input_pk: choice.input,
+        chain: choice.chain,
+        rank: choice.rank,
+        counter,
+        packed: &packed,
+        first_build,
+        keys: None,
+        resolved: true,
+    };
+    let row = DocumentRow {
+        offset: choice.start as u64,
+        end: choice.end as u64,
+        document: choice.document.clone(),
+    };
+    show(tx, pk, &source, &row, &choice.prepared)?;
+    tx.execute(
+        "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
+        params![pk, choice.input, choice.chain],
     )?;
     Ok(())
 }

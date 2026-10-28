@@ -12,9 +12,9 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "walrus", 1, None, None).unwrap();
-    assert_eq!(intern(&tx, "walrus", 1, None, None).unwrap(), id);
-    assert_eq!(intern(&tx, "walrus", 2, None, None).unwrap(), id);
+    let id = intern(&tx, "walrus", 1, None, None, None).unwrap();
+    assert_eq!(intern(&tx, "walrus", 1, None, None, None).unwrap(), id);
+    assert_eq!(intern(&tx, "walrus", 2, None, None, None).unwrap(), id);
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -33,7 +33,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         ),
         1
     );
-    assert_eq!(intern(&conn, "walrus", 1, None, None).unwrap(), id);
+    assert_eq!(intern(&conn, "walrus", 1, None, None, None).unwrap(), id);
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
 }
 
@@ -44,12 +44,12 @@ fn removal_and_rollback_do_not_leave_search_work() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        intern(&tx, "rolled back", 1, None, None).unwrap();
+        intern(&tx, "rolled back", 1, None, None, None).unwrap();
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "removed", 1, None, None).unwrap();
+    let id = intern(&tx, "removed", 1, None, None, None).unwrap();
     remove(&tx, id, 1).unwrap();
     tx.commit().unwrap();
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
@@ -64,7 +64,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let mut prepared = HashMap::new();
     prepared.insert(*blake3::hash(b"walrus").as_bytes(), b"damaged".to_vec());
-    intern(&conn, "walrus", 1, Some(&prepared), None).unwrap();
+    intern(&conn, "walrus", 1, Some(&prepared), None, None).unwrap();
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
@@ -75,9 +75,9 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let first = intern(&conn, "walrus", 1, None, None).unwrap();
-    let second = intern(&conn, "narwhal", 2, None, None).unwrap();
-    intern(&conn, "dolphin", 1, None, None).unwrap();
+    let first = intern(&conn, "walrus", 1, None, None, None).unwrap();
+    let second = intern(&conn, "narwhal", 2, None, None, None).unwrap();
+    intern(&conn, "dolphin", 1, None, None, None).unwrap();
     conn.execute("UPDATE text SET body = X'00' WHERE id = ?1", [second])
         .unwrap();
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
@@ -110,8 +110,8 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-        intern(&conn, "walrus", 1, None, first_build.as_ref()).unwrap();
-        let second = intern(&conn, "narwhal", 1, None, first_build.as_ref()).unwrap();
+        intern(&conn, "walrus", 1, None, first_build.as_ref(), None).unwrap();
+        let second = intern(&conn, "narwhal", 1, None, first_build.as_ref(), None).unwrap();
         conn.execute("UPDATE text SET body = X'00' WHERE id = ?1", [second])
             .unwrap();
         if bulk {
@@ -133,15 +133,23 @@ fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
         let tx = conn.transaction().unwrap();
         for n in 0..SEARCH_ROWS + 3 {
-            intern(&tx, &format!("walrus{n}"), 1, None, first_build.as_ref()).unwrap();
+            intern(
+                &tx,
+                &format!("walrus{n}"),
+                1,
+                None,
+                first_build.as_ref(),
+                None,
+            )
+            .unwrap();
         }
         let shared = "Łódź Straße Øresund";
-        let id = intern(&tx, shared, 1, None, first_build.as_ref()).unwrap();
+        let id = intern(&tx, shared, 1, None, first_build.as_ref(), None).unwrap();
         assert_eq!(
-            intern(&tx, shared, 2, None, first_build.as_ref()).unwrap(),
+            intern(&tx, shared, 2, None, first_build.as_ref(), None).unwrap(),
             id
         );
-        intern(&tx, "notindexed", 0, None, first_build.as_ref()).unwrap();
+        intern(&tx, "notindexed", 0, None, first_build.as_ref(), None).unwrap();
         tx.commit().unwrap();
         if bulk {
             index_marked(&conn).unwrap();

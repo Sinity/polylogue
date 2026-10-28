@@ -93,6 +93,7 @@ pub(crate) fn store(
     blocks: &[Block],
     packed: &HashMap<[u8; 32], Vec<u8>>,
     first_build: Option<&FirstBuild>,
+    keys: Option<&crate::writer::resolve::ResolvedKeys>,
 ) -> Result<()> {
     let kind = kind.name();
     let inserted = conn
@@ -105,7 +106,7 @@ pub(crate) fn store(
     }
     for (idx, block) in blocks.iter().enumerate() {
         if let Some(text) = encoding::block_text(block) {
-            let id = crate::text_rows::intern(conn, text, 0, Some(packed), first_build)?;
+            let id = crate::text_rows::intern(conn, text, 0, Some(packed), first_build, keys)?;
             conn.prepare_cached(&format!(
                 "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
             ))?
