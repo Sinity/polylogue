@@ -72,7 +72,7 @@ fn search_writes_are_available_through_the_command_table() {
         }
         assert_eq!(data(&r, "query:parser", None)["rows"].as_array().unwrap().len(), 1);
         assert_eq!(data(&r, "result:kept-search", None)["rows"].as_array().unwrap().len(), 1);
-        let kept = crate::mcp::call(
+        let kept = crate::mcp::tests::call(
             &polylogue_store::Archive::at(&r.web.daemon.archive.root), "keep",
             json!({"request_id":"mcp-kept","query":"sessions where parser"}).as_object().unwrap().clone(),
         ).unwrap();
@@ -117,7 +117,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
                 .unwrap()
                 .clone();
             let mcp: Value = serde_json::from_str(
-                &crate::mcp::call(
+                &crate::mcp::tests::call(
                     &polylogue_store::Archive::at(&r.web.daemon.archive.root),
                     "query",
                     args,
@@ -183,14 +183,14 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             .await;
             let api: Value = serde_json::from_str(&raw).unwrap();
             match socket {
-                Response::Ok { data: answer } => {
+                Response::Ok { data: answer, .. } => {
                     assert_eq!(status, StatusCode::OK, "{raw}");
                     assert_eq!(api["rows"], answer["rows"], "{text}");
                     let args = json!({"query":text,"limit":50,"why":true})
                         .as_object()
                         .unwrap()
                         .clone();
-                    let mcp = crate::mcp::call(
+                    let mcp = crate::mcp::tests::call(
                         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
                         "query",
                         args,

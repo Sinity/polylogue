@@ -35,7 +35,9 @@ fn the_manual_gives_working_example_queries() {
         "brief", "recall", "takeover", "query", "read", "note_add", "status",
     ] {
         assert!(
-            crate::mcp::tools().iter().any(|entry| entry.name == tool),
+            crate::mcp::tools()
+                .iter()
+                .any(|entry| entry["name"] == tool),
             "no tool {tool}"
         );
         assert!(

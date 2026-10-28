@@ -68,7 +68,8 @@ fn expired_requests_never_start_any_read_operation() {
             with_parents: false,
             budget: None,
             cursor: None,
-            start: None,
+            selection: None,
+            slices: false,
         },
         Request::Context {
             request_id: "synthetic-recall".into(),

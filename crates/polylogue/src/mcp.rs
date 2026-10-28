@@ -388,4 +388,4 @@ pub fn serve_stdio() -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
