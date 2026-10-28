@@ -477,12 +477,7 @@ impl Engine {
         }
         let never_parsed = parsed && !st.parsed;
         let (stored_upto, parse_pos, parser_state, priority) = match &change {
-            Change::First | Change::Rewritten => {
-                st.stored = 0;
-                st.parsed_upto = 0;
-                st.chain = None;
-                (0, 0, None, Priority::Bulk)
-            }
+            Change::First | Change::Rewritten => (0, 0, None, Priority::Bulk),
             Change::Appended { .. } => {
                 let resumable = st.parser_state.is_some()
                     || st.parsed_upto == 0
@@ -896,13 +891,30 @@ impl Engine {
             return;
         }
         if let Some(st) = self.inputs.get_mut(&plan.path) {
-            st.stored = plan.stored_upto.max(st.stored);
+            let new_chain = matches!(plan.change, Change::First | Change::Rewritten);
+            if new_chain && plan.failed && !plan.storing_started {
+                // Planning a rewrite does not replace the committed checkpoint.
+                // A failed first read leaves its facts, tail and parser intact.
+                st.failed = plan.facts;
+                return;
+            }
+            if new_chain {
+                st.stored = plan.stored_upto;
+                st.parsed_upto = 0;
+                st.parsed = false;
+                st.chain = None;
+            } else {
+                st.stored = plan.stored_upto.max(st.stored);
+            }
             if plan.failed {
                 // Tried again when the bytes change; the facts stay old, so
                 // a change is still seen as one.
                 st.parser_state = None;
                 st.waiting = false;
                 st.failed = plan.facts;
+                if plan.tail.is_some() {
+                    st.tail = plan.tail;
+                }
                 return;
             }
             st.failed = None;
@@ -1039,3 +1051,6 @@ fn record_turn(
         Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
     }
 }
+
+#[cfg(test)]
+mod tests;

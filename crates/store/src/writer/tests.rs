@@ -4,6 +4,7 @@ use polylogue_model::{
     Json, LinkKind, MessageId, PromptKind, RecordOutcome, SessionKind, TitleSource, Usage,
 };
 
+mod extent_checkpoint;
 mod input_events;
 
 struct TestArchive {
