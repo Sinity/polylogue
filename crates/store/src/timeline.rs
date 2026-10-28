@@ -156,10 +156,7 @@ fn rows(
                     std::cmp::Ordering::Greater => format!("at >= {at}"),
                 });
             } else {
-                conditions.push(format!(
-                    "at >= {}",
-                    bind(&mut params, SqlValue::Int(since))
-                ));
+                conditions.push(format!("at >= {}", bind(&mut params, SqlValue::Int(since))));
             }
             conditions.push(format!(
                 "at <= {}",

@@ -126,8 +126,16 @@ fn million_message_measurements() {
             ).unwrap()
         })
         .collect::<Vec<_>>();
-    assert!(serde_json::to_string(&day_plans[0]).unwrap().contains("message_at"));
-    assert!(serde_json::to_string(&day_plans[1]).unwrap().contains("event_at"));
+    assert!(
+        serde_json::to_string(&day_plans[0])
+            .unwrap()
+            .contains("message_at")
+    );
+    assert!(
+        serde_json::to_string(&day_plans[1])
+            .unwrap()
+            .contains("event_at")
+    );
     let after = json!({"day":sample("after day",||page(&r,&day,&all(Some(date),false,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"across_years":sample("after across years",||page(&r,&day,&all(Some(date),true,false),None,50).unwrap()["rows"].as_array().unwrap().len()),"calendar":sample("after calendar",||calendar(&r,&day,date).unwrap().len()),"cost_page":sample("after cost page",||page(&r,&day,&cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"selected_cost_page":sample("after selected cost page",||page(&r,&day,&selected_cost,None,50).unwrap()["rows"].as_array().unwrap().len()),"plans":{"selected_cost_page":response_plan,"day_sources":day_plans,"message":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM message WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap(),"event":r.query("EXPLAIN QUERY PLAN SELECT at,id FROM event WHERE at>=?1 AND at<?2 ORDER BY at,id LIMIT 51",&[SqlValue::Int(day.day(date).0),SqlValue::Int(day.day(date).1)]).unwrap()}});
     let report = json!({"messages":1000000,"events":100000,"sessions":1000,"years":16,"page_size":50,"samples_per_action":5,"setup_ms":setup_ms,"index_ms":index_ms,"before":baseline,"after":after,"load":std::fs::read_to_string("/proc/loadavg").ok(),"memory":std::fs::read_to_string("/proc/self/status").ok().map(|s|s.lines().filter(|l|l.starts_with("VmRSS:")||l.starts_with("VmHWM:")).collect::<Vec<_>>().join("; "))});
     let path = std::env::var_os("POLYLOGUE_TIMELINE_REPORT")
