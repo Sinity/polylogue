@@ -243,7 +243,7 @@ A subagent's live state is its parent's process plus its own `SubagentStart`/`Su
 
 **Peers** are other sessions whose live state is `working`, `waiting` or `idle` in the same repository (same Git common directory) or worktree. Peers are a query, symmetric at any `now`.
 
-**Task.** A session's live task is the latest task-tracker claim it made and did not close or release, recognised from the tracker's own documented claim and close commands, declared as data per tracker (for Beads: `bd update <id> --claim`, `bd update <id> --status in_progress`, `bd close <id>`). A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text, never as a task. With no tracker in use, sessions have no task.
+**Task.** A session's live task is the latest claim established by explicit structured task evidence that names the tracker item and the claiming session, with no later explicit close or release. The linkage records the evidence and the field that established it. A command's name or arguments, including a tracker's exact claim command, establish no task state. A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text, never as a task. Without explicit task evidence, the session has no live task.
 
 **Surfaces.**
 - The live list is the shipped saved query `query:running` (short ID, state, since, repository and worktree, model, open tool or todo, cost so far, task), waiting first.
@@ -347,7 +347,7 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **process-identity-not-reused**: a process line with the same pid but a different start time or boot ID never attaches to the earlier session.
 - **child-linked-by-interval**: a child process whose start falls between a tool call's pre and post hook events links to it; one outside stays unlinked.
 - **peers-symmetric**: peers are symmetric at a given `now`.
-- **task-from-claim-command**: a prompt mentioning a tracker ID creates no task; a `bd update X --claim` tool call does.
+- **task-from-explicit-evidence**: a tracker ID in a prompt or an exact tracker claim command creates no task; explicit structured evidence naming the item and claiming session does, and later explicit close or release evidence clears it.
 - **ping-to-working-at-next-hook**: a ping to a working fixture session is injected at its next `PostToolUse` and never earlier.
 - **ping-resumes-once**: a ping to an ended session runs the declared resume command once in the recorded cwd through the fixture harness and records the delivery; re-ingesting the message that held the `@[address]` sends nothing.
 - **ping-to-missing-session**: a ping to a session whose file is gone, with a role, starts a new session of that role recorded as new and linked `reference`; without a role, `not_sent:session_missing`.
