@@ -158,7 +158,8 @@ the source in full. Every source read compares complete rows. Comparison waits
 for quiet files, with an hourly read during continuous writes. Unchanged files
 need no scheduled read.
 The parse workers enqueue byte groups and keep working; an acknowledgment
-reader delivers their committed progress to the loop.
+reader delivers their committed progress to the loop. Capture progress reads
+committed positions by database input ID.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An

@@ -94,8 +94,7 @@ impl Engine {
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
             total.errors.extend(completed.errors);
-            self.loaded = false;
-            self.load()?;
+            self.refresh_database_progress()?;
             if completed.finished && self.capture_checked.is_some() {
                 self.capture_checked = Some(Instant::now());
             }

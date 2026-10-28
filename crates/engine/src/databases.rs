@@ -332,6 +332,40 @@ impl<'a> InputWriter<'a> {
 }
 
 impl Engine {
+    pub(super) fn refresh_database_progress(&mut self) -> Result<(), EngineError> {
+        let reader = self.reads.reader()?;
+        for (path, name) in &self.databases {
+            if self.refused.contains(path) {
+                continue;
+            }
+            let origin = polylogue_sources::origin::by_name(name).ok_or_else(|| {
+                polylogue_store::StoreError::Invalid(format!("unknown database origin {name}"))
+            })?;
+            let input_id = self.inputs.get(path)
+                .filter(|state| state.origin.name == *name)
+                .map(|state| state.input_id.clone())
+                .unwrap_or_else(|| self.location_id(path));
+            let Some(progress) = reader.input_progress(&input_id)? else {
+                continue;
+            };
+            self.inputs.insert(path.clone(), InputState {
+                input_id,
+                origin,
+                facts: None,
+                stored: progress.length,
+                parsed_upto: progress.parsed_upto,
+                parsed: progress.parsed,
+                waiting: progress.waiting,
+                parser_state: None,
+                tail: None,
+                chain: Some(progress.chain),
+                failed: None,
+                failed_history: HashMap::new(),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn capture_databases(
         &mut self,
         found: &[collect::Found],
@@ -353,8 +387,7 @@ impl Engine {
             self.capture_checked = Some(Instant::now());
         }
         if completed.changed {
-            self.loaded = false;
-            self.load()?;
+            self.refresh_database_progress()?;
         }
         let capture_due = force
             || new_database
