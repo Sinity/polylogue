@@ -63,8 +63,13 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         assert_eq!(reader.user_request(&request.id).unwrap(), Some(request));
     }
     assert_eq!(
-        reader.query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[]).unwrap()[0]["rows_json"],
+        reader
+            .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
+            .unwrap()[0]["rows_json"],
         "[]"
     );
-    assert_eq!(reader.note("saved").unwrap().unwrap().value.as_deref(), Some("sessions"));
+    assert_eq!(
+        reader.note("saved").unwrap().unwrap().value.as_deref(),
+        Some("sessions")
+    );
 }
