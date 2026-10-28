@@ -90,11 +90,20 @@ async fn stream(
 ) -> HttpResponse {
     let web = Arc::clone(web);
     let worker = Arc::clone(&web);
+    let limit = super::request_limit();
+    let mut cancel = super::CancelRead(Some(limit.cancellation.clone()));
     let result = tokio::task::spawn_blocking(move || {
-        prepare(&request, &worker.daemon, Some(super::access::scrub))
-            .expect("command owns its request")
+        limit.scope(|| {
+            let result = prepare(&request, &worker.daemon, Some(super::access::scrub))
+                .expect("command owns its request");
+            limit.check().map_err(|e| {
+                crate::daemon::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
+            })?;
+            result
+        })
     })
     .await;
+    cancel.0.take();
     match result {
         Ok(Ok(file)) => {
             let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));

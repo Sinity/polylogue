@@ -49,7 +49,7 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
     };
     let request = build(c, &values, &caller).map_err(|e| format!("bad_request: {e}"))?;
     match crate::client::send(&w.daemon.archive.socket(), &request).unwrap() {
-        Response::Ok { data } => Ok(data),
+        Response::Ok { data, .. } => Ok(data),
         Response::Error { kind, message, .. } => Err(format!("{kind}: {message}")),
     }
 }

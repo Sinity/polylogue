@@ -408,7 +408,7 @@ fn tool_advice(
         },
         sender: None,
     };
-    let Some(Response::Ok { data }) = send(&request, ADVICE_BUDGET) else {
+    let Some(Response::Ok { data, .. }) = send(&request, ADVICE_BUDGET) else {
         return;
     };
     if data["prepared"]["empty"].as_bool() != Some(false) {

@@ -14,7 +14,7 @@ fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value 
         sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
     };
     match handle(request, &d.daemon) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -29,7 +29,7 @@ fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
         fields: vec![],
     };
     match handle(request, &d.daemon) {
-        Response::Ok { data } => data["count"].as_u64().unwrap(),
+        Response::Ok { data, .. } => data["count"].as_u64().unwrap(),
         other => panic!("{other:?}"),
     }
 }

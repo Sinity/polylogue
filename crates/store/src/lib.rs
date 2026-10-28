@@ -72,7 +72,7 @@ pub enum StoreError {
     #[error("input {input} has bytes still being written: {reason}")]
     InputPending { input: String, reason: String },
     #[error(transparent)]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(rusqlite::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -102,6 +102,10 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    #[error("the read deadline was exceeded")]
+    ReadDeadlineExceeded,
+    #[error("the read was cancelled")]
+    ReadCancelled,
     #[error("the read pool has closed")]
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
@@ -133,6 +137,20 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        if matches!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::OperationInterrupted | rusqlite::ErrorCode::DatabaseBusy)
+        ) && let Some(limit) = read::limit::ReadLimit::current()
+            && let Err(stopped) = limit.check()
+        {
+            return stopped;
+        }
+        Self::Sqlite(error)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

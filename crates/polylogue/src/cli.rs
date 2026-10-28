@@ -30,6 +30,16 @@ pub fn command() -> clap::Command {
                 .action(ArgAction::SetTrue)
                 .help("Machine-readable output"),
         );
+    root = root.arg(
+        clap::Arg::new("timeout")
+            .long("timeout")
+            .global(true)
+            .value_name("SECONDS")
+            .value_parser(clap::value_parser!(u64).range(1..))
+            .help(
+                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export: none)",
+            ),
+    );
     let mut globals: Vec<&str> = Vec::new();
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
         if !globals.contains(&a.name) {
@@ -160,6 +170,9 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             out.insert(a.name.to_owned(), v);
         }
     }
+    if let Some(seconds) = m.get_one::<u64>("timeout") {
+        out.insert("timeout".into(), Value::from(*seconds));
+    }
     Values(out)
 }
 
@@ -192,11 +205,15 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Ok(r) => r,
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
+    let timeout = matches
+        .get_one::<u64>("timeout")
+        .copied()
+        .map(std::time::Duration::from_secs);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&request);
+        return cli(&request, timeout);
     }
     let root = Archive::default_root();
-    let response = match send_when_ready(&Archive::at(&root), &request) {
+    let response = match send_with_timeout(&Archive::at(&root), &request, timeout) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -208,6 +225,14 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 ),
                 crate::EXIT_DAEMON_REQUIRED,
             );
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            return fail(json, "deadline_exceeded", &e.to_string(), 7);
         }
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
@@ -232,7 +257,10 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
             kind,
             message,
             detail,
-        } => fail_detail(json, &kind, &message, detail, 1),
+        } => {
+            let code = crate::daemon::execution::exit_code(&kind);
+            fail_detail(json, &kind, &message, detail, code)
+        }
     }
 }
 
@@ -323,23 +351,58 @@ fn is_down(e: &std::io::Error) -> bool {
 /// large archive takes seconds). With no daemon at all, the error is
 /// returned at once.
 pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<Response> {
-    when_ready(archive, || crate::client::send(&archive.socket(), request))
+    send_with_timeout(archive, request, None)
 }
 
-fn when_ready<T>(
+fn send_with_timeout(
     archive: &Archive,
+    request: &Request,
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<Response> {
+    let deadline_ms = crate::daemon::execution::request_deadline(
+        request,
+        timeout.map(crate::daemon::execution::deadline),
+    );
+    crate::client::send_when_ready(archive, request, deadline_ms)
+}
+
+fn wait_for_ready<T>(
+    archive: &Archive,
+    deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?
+        .block_on(when_ready(archive, deadline_ms, || {
+            std::future::ready(call())
+        }))
+}
+
+pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Result<T>>>(
+    archive: &Archive,
+    deadline_ms: Option<i64>,
+    mut call: impl FnMut() -> F,
 ) -> std::io::Result<T> {
     let mut pause = std::time::Duration::from_millis(50);
     let mut told = false;
+    let started = std::time::Instant::now();
+    let duration =
+        deadline_ms.map(|deadline_ms| crate::daemon::execution::remaining(Some(deadline_ms)));
     loop {
-        match call() {
+        match call().await {
             Err(e) if is_down(&e) && archive.lock_held() => {
+                if duration.is_some_and(|duration| started.elapsed() >= duration) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the daemon did not start before the deadline",
+                    ));
+                }
                 if !told {
                     eprintln!("polylogue: waiting for the daemon to finish opening the archive");
                     told = true;
                 }
-                std::thread::sleep(pause);
+                tokio::time::sleep(pause).await;
                 pause = (pause * 2).min(std::time::Duration::from_millis(500));
             }
             other => return other,
