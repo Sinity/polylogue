@@ -33,7 +33,7 @@ pub struct Daemon {
     pub(crate) signals: Mutex<serde_json::Value>,
     stopping: AtomicBool,
     #[cfg(test)]
-    pub(crate) read_limits: Mutex<Option<Sender<polylogue_store::read::limit::ReadLimit>>>,
+    pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
 
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
@@ -241,7 +241,10 @@ pub fn handle_with_limit(
 ) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
-        let _ = sender.send(limit.clone());
+        let _ = sender.send(crate::test_daemon::ReadObservation {
+            limit: limit.clone(),
+            owner: std::thread::current().id(),
+        });
     }
     super::execution::run(request, limit, |request| handle_inner(request, d).masked())
 }
@@ -1121,17 +1124,6 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    #[cfg(test)]
-    pub(crate) fn stop_count_worker(&mut self) {
-        if let Some(stop) = self.counts_stop.take() {
-            let _ = stop.send(());
-            self.daemon.warm.clear();
-        }
-        if let Some(counts) = self.counts.take() {
-            counts.join().unwrap();
-        }
-    }
-
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.

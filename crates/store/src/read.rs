@@ -177,6 +177,17 @@ impl ReadPool {
         self.state.lock().unwrap().owners.values().sum()
     }
 
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn checked_out_by(&self, owner: ThreadId) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .owners
+            .get(&owner)
+            .copied()
+            .unwrap_or(0)
+    }
+
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
         let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());

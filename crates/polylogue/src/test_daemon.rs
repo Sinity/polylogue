@@ -12,6 +12,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) struct ReadObservation {
+    pub limit: polylogue_store::read::limit::ReadLimit,
+    pub owner: std::thread::ThreadId,
+}
+
+impl std::ops::Deref for ReadObservation {
+    type Target = polylogue_store::read::limit::ReadLimit;
+
+    fn deref(&self) -> &Self::Target {
+        &self.limit
+    }
+}
+
 pub struct TestDaemon {
     pub home: PathBuf,
     /// The loop's settings the daemon was started with.
@@ -26,6 +39,10 @@ pub struct TestDaemon {
 /// A daemon whose loop has parsed one Claude Code session, `claude-code:s1`,
 /// holding `text`, with its first derivation pass finished and socket served.
 pub fn start(text: &str) -> TestDaemon {
+    start_with_workers(text, 2)
+}
+
+pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let project = home.join(".claude/projects/-p");
@@ -38,7 +55,7 @@ pub fn start(text: &str) -> TestDaemon {
     let mut config = Config::from_env();
     config.home = home.clone();
     config.tool_dirs.clear();
-    config.workers = 2;
+    config.workers = workers;
     let runtime = service::start(
         &dir.path().join("archive"),
         config.clone(),
@@ -63,11 +80,6 @@ pub fn start(text: &str) -> TestDaemon {
 }
 
 impl TestDaemon {
-    /// Keeps archive-lock fixtures from trapping an unrelated background read.
-    pub(crate) fn stop_count_worker(&mut self) {
-        self.runtime.stop_count_worker();
-    }
-
     /// Waits until `status` satisfies `ok` and then until the loop is idle,
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
@@ -98,9 +110,7 @@ impl TestDaemon {
         self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
     }
 
-    pub(crate) fn watch_reads(
-        &self,
-    ) -> std::sync::mpsc::Receiver<polylogue_store::read::limit::ReadLimit> {
+    pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
         let (sender, receiver) = std::sync::mpsc::channel();
         *self.daemon.read_limits.lock().unwrap() = Some(sender);
         receiver
