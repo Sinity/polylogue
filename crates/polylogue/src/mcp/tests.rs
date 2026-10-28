@@ -94,3 +94,38 @@ fn errors_show_archived_controls_as_text() {
     );
     assert!(text.contains("\\x1b]52;c;YQ==\\x07"));
 }
+
+#[test]
+fn tool_requests_and_answers_keep_terminal_controls_visible() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let escaped = polylogue_render::terminal::escape(hostile);
+    let error = call(&archive, hostile, args(json!({}))).unwrap_err();
+    assert!(error.contains(&escaped), "{error}");
+    for response in [
+        json!({"result":"ok", "data":{"value":hostile}}),
+        json!({"result":"error", "kind":"cancelled", "message":hostile, "detail":{"suggestion":hostile}}),
+    ] {
+        let listener = UnixListener::bind(archive.socket()).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            writeln!(stream, "{response}").unwrap();
+        });
+        let answer = call(&archive, "status", args(json!({})));
+        let text = answer.unwrap_or_else(|error| error);
+        assert!(
+            !text
+                .chars()
+                .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{202e}'),
+            "{text}"
+        );
+        assert!(text.contains("\\x1b") || text.contains("\\u001b"), "{text}");
+        server.join().unwrap();
+        std::fs::remove_file(archive.socket()).unwrap();
+    }
+}
