@@ -53,8 +53,9 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     use polylogue_store::read::limit::ReadLimit;
     use std::time::{Duration, Instant};
     let d = test_daemon::start("receipt handoff");
-    let blocker = rusqlite::Connection::open(d.daemon.archive.archive_db()).unwrap();
-    blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let blocker = std::fs::File::open(d.daemon.archive.archive_db()).unwrap();
+    // Readers may start; the writer waits only at the register commit boundary.
+    blocker.lock_shared().unwrap();
     let id = polylogue_store::user_writes::new_request_id();
     let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
     let request = Request::Context {
@@ -80,7 +81,7 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
                 std::thread::yield_now();
             }
         }
-        blocker.execute_batch("ROLLBACK").unwrap();
+        drop(blocker);
         (worker.join().unwrap(), handed_off)
     });
     assert!(
