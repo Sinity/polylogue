@@ -183,6 +183,37 @@ fn malformed_request_ids_are_not_echoed_in_error_responses() {
 }
 
 #[test]
+fn server_instructions_include_guidance_and_current_command_names() {
+    let server = Polylogue {
+        archive: std::path::PathBuf::from("/synthetic/archive"),
+    };
+    let info = server.get_info();
+    let text = info.instructions.unwrap();
+    assert!(text.contains("Continue pages"));
+    for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
+        assert!(text.contains(&format!("`{}`", command.mcp_name())));
+    }
+    assert_eq!(text, crate::manual::text());
+}
+
+#[test]
+fn manual_query_examples_compile_through_the_public_command() {
+    let w = test_daemon::start("manual query examples");
+    let archive = Archive::at(&w.daemon.archive.root);
+    for query in crate::manual::text()
+        .split('`')
+        .filter(|text| text.starts_with("sessions where ") || text.starts_with("messages where "))
+    {
+        call(
+            &archive,
+            "explain",
+            args(json!({"subject":"query", "expression":query})),
+        )
+        .unwrap_or_else(|e| panic!("{query}: {e}"));
+    }
+}
+
+#[test]
 fn errors_show_archived_controls_as_text() {
     let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
     let text = super::error_text(

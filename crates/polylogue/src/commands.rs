@@ -261,14 +261,14 @@ const HOOKS_ARGS: &[Arg] = &[
         default: Some("claude-code"),
         ..opt(
             "harness",
-            Kind::Choice(&["claude-code", "codex"]),
+            Kind::Choice(crate::hook::Harness::NAMES),
             "Whose settings",
         )
     },
     opt(
         "settings",
         Kind::Text,
-        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
 
@@ -310,7 +310,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
     },
     Group {
         name: "chat",
@@ -467,6 +467,12 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::explain),
         mcp: true,
         http: true,
+        ..CLI
+    },
+    Command {
+        name: "manual",
+        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        action: Action::Local(local::manual),
         ..CLI
     },
     Command {
@@ -1187,7 +1193,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {

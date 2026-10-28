@@ -83,7 +83,6 @@ const VERSIONS: &[&str] = &[
     "2025-11-25",
     "2026-07-28",
 ];
-const INSTRUCTIONS: &str = "Polylogue: the archive of your past AI sessions. Use brief at the start of work, recall to find earlier work, takeover to continue another session.";
 
 #[derive(Default)]
 struct Session {
@@ -155,7 +154,7 @@ impl Session {
                 json!({
                     "protocolVersion": version, "capabilities": {"tools": {}},
                     "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": INSTRUCTIONS,
+                    "instructions": crate::manual::text(),
                 }),
             ));
         }
@@ -199,7 +198,7 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}}, "instructions": INSTRUCTIONS,
+                    "capabilities": {"tools": {}}, "instructions": crate::manual::text(),
                     "ttlMs": 0, "cacheScope": "private",
                     "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
                 }),

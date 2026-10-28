@@ -163,9 +163,97 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
 mod settings;
 
 #[test]
+fn web_links_resolve_to_the_same_sessions_as_captures() {
+    let links = [
+        ("https://chatgpt.com/c/demo?model=x", "chatgpt:demo"),
+        ("https://chat.openai.com/c/demo", "chatgpt:demo"),
+        (
+            "https://chatgpt.com/g/g-project/c/demo#turn",
+            "chatgpt:demo",
+        ),
+        ("https://gemini.google.com/u/0/app/demo", "gemini-app:demo"),
+        (
+            "https://aistudio.google.com/u/2/prompts/demo",
+            "ai-studio:demo",
+        ),
+        ("https://claude.ai/chat/demo", "claude-ai:demo"),
+        ("https://gemini.google.com/app/demo", "gemini-app:demo"),
+        ("https://aistudio.google.com/prompts/demo", "ai-studio:demo"),
+        ("https://grok.com/c/demo", "grok:demo"),
+    ];
+    for (url, expected) in links {
+        assert_eq!(
+            pasted_session_ids(&format!("continue [{url}]({url}).")),
+            vec![SessionId::parse(expected).unwrap()]
+        );
+    }
+    for url in [
+        "https://chatgpt.com.evil.invalid/c/demo",
+        "http://chatgpt.com/c/demo",
+        "https://u@chatgpt.com/c/demo",
+        "https://chatgpt.com/c/demo/extra",
+        "https://chatgpt.com/share/demo",
+        "https://claude.ai/g/project/chat/demo",
+        "https://grok.com/u/0/c/demo",
+        "https://gemini.google.com/u/account/app/demo",
+        "https://aistudio.google.com/g/project/prompts/demo",
+        "https://chatgpt.com/u/0/c/demo",
+    ] {
+        assert!(pasted_session_ids(url).is_empty(), "{url}");
+    }
+}
+
+#[test]
+fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
+    let settings =
+        json!({"hooks":{"BeforeAgent":[{"hooks":[{"type":"command", "command":"other"}]}]}});
+    let once = merge_hooks(settings.clone(), Harness::GeminiCli, true).unwrap();
+    assert_eq!(
+        merge_hooks(once.clone(), Harness::GeminiCli, true).unwrap(),
+        once
+    );
+    assert_eq!(
+        once["hooks"]["SessionStart"][0]["hooks"][0]["timeout"],
+        10000
+    );
+    assert_eq!(once["hooks"]["BeforeTool"][0]["hooks"][0]["timeout"], 2000);
+    assert_eq!(
+        once["hooks"]["BeforeAgent"][1]["hooks"][0]["command"],
+        "polylogue hook BeforeAgent --harness gemini-cli"
+    );
+    assert_eq!(
+        merge_hooks(once, Harness::GeminiCli, false).unwrap(),
+        settings
+    );
+    assert_eq!(
+        session_of(Harness::GeminiCli, &json!({"session_id":"test"}))
+            .unwrap()
+            .to_string(),
+        "gemini-cli:test"
+    );
+}
+
+#[test]
+fn gemini_context_output_matches_the_native_protocol() {
+    assert_eq!(
+        output_for(Harness::GeminiCli, "SessionStart", "brief"),
+        json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"brief"}})
+    );
+    assert_eq!(
+        output_for(Harness::GeminiCli, "BeforeAgent", "takeover"),
+        json!({"hookSpecificOutput":{"hookEventName":"BeforeAgent","additionalContext":"takeover"}})
+    );
+}
+
+#[test]
 fn decoded_hook_context_has_visible_terminal_controls() {
     let text = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}\n\tcontext";
-    for harness in [Harness::ClaudeCode, Harness::Codex, Harness::Hermes] {
+    for harness in [
+        Harness::ClaudeCode,
+        Harness::Codex,
+        Harness::Hermes,
+        Harness::GeminiCli,
+    ] {
         let mut bytes = Vec::new();
         assert!(write_context(&mut bytes, harness, "SessionStart", text));
         let value: Value = serde_json::from_slice(&bytes).unwrap();

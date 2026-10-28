@@ -111,14 +111,22 @@ pub struct OriginSpec {
     pub collector: Option<Collector>,
 }
 
-/// Fetches an origin's files into its spool, each pass while its setting
-/// is `on`. The files it writes change a watched location, so the loop
-/// collects them like any other.
+/// Fetches an origin's files into its spool before the loop reads it.
 pub struct Collector {
-    pub setting: &'static str,
-    /// Writes what is new into the spool (second argument); the state
-    /// directory (first) holds the credentials the operator gave it.
-    pub sync: fn(&Path, &Path) -> Result<(), String>,
+    /// None runs every pass; Some runs only when this setting is `on`.
+    pub setting: Option<&'static str>,
+    /// Run outside the loop thread when requests can wait on another process.
+    pub background: bool,
+    /// Writes new inputs into the spool and returns the errors for the pass.
+    /// Background collectors check the stop flag between files.
+    pub sync: fn(&CollectorPaths<'_>, &std::sync::atomic::AtomicBool) -> Vec<String>,
+}
+
+/// Configured directories a collector reads from and writes to.
+pub struct CollectorPaths<'a> {
+    pub home: &'a Path,
+    pub state_dir: &'a Path,
+    pub spool: &'a Path,
 }
 
 /// An export's asset files: the member files that hold attachment bytes,
@@ -149,18 +157,26 @@ pub struct AssetMetadata {
 }
 
 /// A web chat: the page that shows one conversation is
-/// `https://<host>/<path>/<conversation id>`.
+/// `https://<host>/<path>/<conversation id>`, with an optional declared prefix.
 pub struct WebChat {
     /// The names the browser extension gives this provider.
     pub extension_names: &'static [&'static str],
     /// The hosts that serve conversation pages, the current one first.
     pub hosts: &'static [&'static str],
     pub path: &'static str,
+    /// Optional two-segment prefixes before the conversation path.
+    pub prefixes: &'static [LinkPrefix],
     /// Whether the extension can draft and submit turns on its pages.
     pub actions: bool,
     /// Whether the extension can page through the provider's conversation
     /// list to capture older conversations.
     pub backfill: bool,
+}
+
+/// A provider's optional account or project prefix on a conversation link.
+pub struct LinkPrefix {
+    pub path: &'static str,
+    pub numeric: bool,
 }
 
 impl OriginSpec {
@@ -196,31 +212,6 @@ fn never(_: &Path, _: &[u8]) -> bool {
 
 fn none(_: &Path) -> Option<Parse> {
     None
-}
-
-macro_rules! declared {
-    ($name:literal, $arrival:ident, [$($loc:literal),*]) => {
-        declared!($name, $arrival, Root::HOME, [$($loc),*])
-    };
-    ($name:literal, $arrival:ident, $root:expr, [$($loc:literal),*]) => {
-        OriginSpec {
-            name: $name,
-            support: Support::Declared,
-            arrival: Arrival::$arrival,
-            root: $root,
-            locations: &[$($loc),*],
-            capture: Capture::Bytes,
-            recognize: never,
-            open: none,
-            resume: None,
-            bare_uuid_ids: false,
-            quota: None,
-            agent_env: &[],
-            web: None,
-            assets: None,
-            collector: None,
-        }
-    };
 }
 
 pub static ORIGINS: &[OriginSpec] = &[
@@ -326,7 +317,40 @@ pub static ORIGINS: &[OriginSpec] = &[
         assets: None,
         collector: None,
     },
-    declared!("antigravity", Live, [".gemini/antigravity/**"]),
+    OriginSpec {
+        name: "antigravity",
+        support: Support::Parsed,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: crate::antigravity::LOCATIONS,
+        capture: Capture::Bytes,
+        recognize: crate::antigravity::recognize,
+        open: crate::antigravity::open,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "antigravity-exports",
+        support: Support::Parsed,
+        arrival: Arrival::Spool,
+        root: Root::STATE,
+        locations: &["polylogue/antigravity/*.json"],
+        capture: Capture::Bytes,
+        recognize: crate::antigravity::recognize,
+        open: crate::antigravity::open,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: Some(crate::antigravity::server::COLLECTOR),
+    },
     OriginSpec {
         name: "hermes",
         support: Support::Parsed,
@@ -463,6 +487,10 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["chatgpt"],
             hosts: &["chatgpt.com", "chat.openai.com"],
             path: "c",
+            prefixes: &[LinkPrefix {
+                path: "g",
+                numeric: false,
+            }],
             actions: true,
             backfill: true,
         }),
@@ -486,6 +514,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["claude-ai", "claude"],
             hosts: &["claude.ai"],
             path: "chat",
+            prefixes: &[],
             actions: false,
             backfill: true,
         }),
@@ -526,6 +555,10 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &[],
             hosts: &["aistudio.google.com"],
             path: "prompts",
+            prefixes: &[LinkPrefix {
+                path: "u",
+                numeric: true,
+            }],
             actions: false,
             backfill: false,
         }),
@@ -549,6 +582,10 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["gemini"],
             hosts: &["gemini.google.com"],
             path: "app",
+            prefixes: &[LinkPrefix {
+                path: "u",
+                numeric: true,
+            }],
             actions: false,
             backfill: false,
         }),
@@ -572,6 +609,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             extension_names: &["grok"],
             hosts: &["grok.com"],
             path: "c",
+            prefixes: &[],
             actions: false,
             backfill: true,
         }),

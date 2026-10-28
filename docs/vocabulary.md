@@ -59,11 +59,16 @@ the same change.
   **tool database**.
 - **native ID**: the ID an origin itself gives a session or message. Chrome's
   **native messaging** is the only other use of "native".
+- **link prefix**: an optional account or project path before a web chat's
+  conversation path, declared by its origin.
 - **web chat**: a provider's chat pages, which the browser extension captures
   from. **Chat action**: a turn the operator asks the extension to draft or
   submit in one.
 - **collector**: code that fetches an origin's files into its spool (the AI
-  Studio Drive collector).
+  Studio Drive and Antigravity language-server collectors).
+- **conversation file**: Antigravity's opaque `.pb` file for one conversation.
+- **conversion state**: the small JSON file recording a conversation file's
+  size, mtime, conversion outcome and language-server PID.
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
 - **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
