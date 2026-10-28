@@ -1,4 +1,4 @@
-# `cargo xtask link-common` writes this file, which Git ignores, to build
+# `cargo xtask link-common` writes the included, Git-ignored file to build
 # against a local checkout of polylogue-sinex-common.
 include = [{ path = "local.toml", optional = true }]
 
