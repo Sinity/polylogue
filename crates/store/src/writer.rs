@@ -236,10 +236,8 @@ pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs because its rows can be
-    /// recomputed. The first derive builds deferred indexes and syncs the
-    /// index. An interrupted build resumes its committed rows on the same
-    /// boot; opening it after another boot refuses.
+    /// A first build defers search and secondary indexes. Each group commits
+    /// durably, and an interrupted build resumes its saved rows and positions.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -262,21 +260,11 @@ impl Writer {
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
-        let building = empty || crate::schema::unsynced(&index)?;
+        let building = crate::schema::building(&index)?;
         if building {
-            // Make the rebuild marker durable before unsynchronized writes.
-            // Keep WAL throughout: an open read transaction must not prevent the
-            // first build from finishing or the writer from stopping.
+            // Parsed rows and their positions survive a lost process or boot.
             index.pragma_update(None, "synchronous", "full")?;
-            let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-            let tx = index.unchecked_transaction()?;
-            tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1'),('build_boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot.trim()])?;
-            tx.commit()?;
-            index.pragma_update(None, "synchronous", "off")?;
-            // The log is not copied into the database file until the rows
-            // are written: each copy read every page back from the log and
-            // wrote it again, which cost more than writing the rows.
-            index.pragma_update(None, "wal_autocheckpoint", 0)?;
+            index.execute("INSERT INTO meta(key,value) VALUES ('building','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
         }
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
@@ -286,6 +274,7 @@ impl Writer {
         let deferred_indexes = if building {
             let expected = Connection::open_in_memory()?;
             expected.execute_batch(crate::schema::INDEX)?;
+            expected.execute_batch(crate::schema::READ_INDEXES)?;
             let mut defs = Vec::new();
             for name in deferred_index_names() {
                 let sql: Option<String> = expected
@@ -865,37 +854,15 @@ impl Inner {
         Ok(derived)
     }
 
-    /// Ends an unsynced build: makes the index durable, then clears the mark
-    /// and returns to normal syncing.
+    /// Clears the build marker only after every deferred index has committed.
     fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() {
             return Ok(());
         }
-        // The rows' log is copied into the database file once, before the
-        // scans that build the deferred indexes: read through a log of tens
-        // of GB, every page costs a search of the whole log's index. The
-        // usual checkpoints resume for what those builds write.
-        let copied = std::time::Instant::now();
-        self.index
-            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        self.index.pragma_update(
-            None,
-            "wal_autocheckpoint",
-            crate::archive::WAL_AUTOCHECKPOINT,
-        )?;
-        crate::timing::add(crate::timing::Stage::Sync, copied.elapsed());
         self.build_deferred()?;
-        let synced = std::time::Instant::now();
-        let i = &self.index;
-        i.pragma_update(None, "synchronous", "full")?;
-        // A FULL checkpoint syncs the database file, with every page the
-        // unsynced checkpoints wrote, then the FULL commit syncs the log
-        // with the marker's removal. No journal-mode switch can wait on old
-        // readers.
-        i.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
-        i.pragma_update(None, "synchronous", "normal")?;
-        crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
+        self.index
+            .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
+        self.index.pragma_update(None, "synchronous", "normal")?;
         self.first_build = None;
         self.search.ready();
         Ok(())
@@ -919,9 +886,18 @@ impl Inner {
         )?;
         add(Stage::TrigramIndex, started.elapsed());
         let started = std::time::Instant::now();
-        for sql in std::mem::take(&mut self.deferred_indexes) {
+        for sql in &self.deferred_indexes {
+            let sql = sql
+                .replacen(
+                    "CREATE UNIQUE INDEX ",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ",
+                    1,
+                )
+                .replacen("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1);
             self.index.execute(&sql, [])?;
+            crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
         }
+        self.deferred_indexes.clear();
         add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
     }

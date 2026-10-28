@@ -24,15 +24,14 @@ fn a_same_boot_build_keeps_its_rows_and_resumes() {
     // A stop in the middle of a first build leaves the mark set.
     open_write(&archive.index_db(), cache::SETUP)
         .unwrap()
-        .execute("UPDATE meta SET value = '1' WHERE key = 'unsynced'", [])
+        .execute("UPDATE meta SET value = '1' WHERE key = 'building'", [])
         .unwrap();
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(!root.join("index.db.unsynced").exists());
-    assert!(schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
+    assert!(schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
     let writer = crate::Writer::start(&archive).unwrap();
     writer.derive().unwrap();
-    assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
+    assert!(!schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
 }
 
 #[test]
@@ -90,12 +89,8 @@ fn an_incompatible_index_is_refused_without_removing_its_rows() {
     for change in [
         "PRAGMA user_version = 26".to_owned(),
         "CREATE TABLE synthetic_older(value)".to_owned(),
-        format!(
-            "INSERT INTO meta VALUES ('unsynced','1'),('build_boot_id','{}'); CREATE TABLE synthetic_older(value)",
-            std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .unwrap()
-                .trim(),
-        ),
+        "UPDATE meta SET value='1' WHERE key='building'; CREATE TABLE synthetic_older(value)"
+            .to_owned(),
     ] {
         refused_index_keeps_the_archive(&change);
     }
@@ -116,7 +111,16 @@ fn refused_index_keeps_the_archive(change: &str) {
     let archive_conn = open_archive_writer(&archive).unwrap();
     let value = "archive note value independent of row dictionary";
     archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
+    archive_conn
+        .execute(
+            "INSERT INTO input(id,format) VALUES ('kept-input','synthetic')",
+            [],
+        )
+        .unwrap();
     drop(archive_conn);
+    let embeddings = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
+    embeddings.execute("INSERT INTO embedded(text_hash,model,dims,vector,embedded_at) VALUES (x'0102','paid/synthetic',1,x'0000803f',1)", []).unwrap();
+    drop(embeddings);
     drop(lock);
     let error = Archive::open_or_create(dir.path()).unwrap_err();
     assert!(
@@ -148,6 +152,25 @@ fn refused_index_keeps_the_archive(change: &str) {
                 .get::<_, String>(0))
             .unwrap(),
         value
+    );
+    assert_eq!(
+        archive_conn
+            .query_row("SELECT format FROM input WHERE id='kept-input'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        "synthetic"
+    );
+    let embeddings = open_read(&archive.embeddings_db()).unwrap();
+    assert_eq!(
+        embeddings
+            .query_row(
+                "SELECT vector FROM embedded WHERE model='paid/synthetic'",
+                [],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        [0, 0, 128, 63]
     );
 }
 
@@ -297,17 +320,21 @@ fn opening_finishes_every_blob_row_left_writing() {
 }
 
 #[test]
-fn a_build_from_another_boot_is_refused_without_removing_rows() {
+fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = crate::Writer::start(&archive).unwrap();
     drop(writer);
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    conn.execute_batch("UPDATE meta SET value='1' WHERE key='unsynced'; UPDATE meta SET value='another-boot' WHERE key='build_boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
+    let before: String = conn
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.execute_batch("UPDATE meta SET value='1' WHERE key='building'; UPDATE meta SET value='another-boot' WHERE key='boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
     drop(conn);
     drop(lock);
-    let error = Archive::open_or_create(dir.path()).unwrap_err();
-    assert!(error.to_string().contains("another boot"), "{error}");
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let conn = open_read(&archive.index_db()).unwrap();
     assert_eq!(
         conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| {
@@ -316,6 +343,28 @@ fn a_build_from_another_boot_is_refused_without_removing_rows() {
         .unwrap(),
         "present"
     );
+    let after: String = conn
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_ne!(after, before);
+    assert!(schema::building(&conn).unwrap());
+    drop(conn);
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    drop(lock);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        after
+    );
+    assert!(!schema::building(&conn).unwrap());
 }
 
 #[test]
@@ -373,7 +422,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
     assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
-    assert!(!schema::unsynced(&index).unwrap());
+    assert!(!schema::building(&index).unwrap());
 }
 
 #[test]

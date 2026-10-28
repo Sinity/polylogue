@@ -239,31 +239,6 @@ impl Archive {
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
-        let building = schema::unsynced(&index)?;
-        if building {
-            let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-            let previous: Option<String> = index
-                .query_row(
-                    "SELECT value FROM meta WHERE key='build_boot_id'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if previous.as_deref() != Some(boot.trim()) {
-                return Err(StoreError::IndexBuildBoot);
-            }
-        }
-        let matches = if building {
-            schema::same_build_schema(&index)?
-        } else {
-            schema::same_index_schema(&index)?
-        };
-        if !matches {
-            return Err(StoreError::NoMigration {
-                database: "index",
-                found: schema::version(&index)?,
-            });
-        }
         crate::fault::check("index.after_creation", "")?;
         if fresh {
             crate::excise::mark_applied(&archive, &index)?;

@@ -136,6 +136,12 @@ Writes reach disk in one order:
 4. Source cursors (how far a growing file has been read) are saved only for
    committed rows.
 
+The first build commits its parsed rows and positions durably in each group. A
+saved `building` marker defers search and secondary indexes; reopening resumes
+the committed build, including an interrupted index finish. The same boot
+retains the index generation and read cursors. A changed boot rotates the
+generation and its cursor secret while keeping rows and parse positions.
+
 A crash therefore leaves at most these states, and ordinary code resumes from
 each: a segment tail past the last committed extent, which is truncated when
 the segment opens; `index.db` behind its saved position, which catches up; a

@@ -14,23 +14,13 @@ pub const INDEX: &str = include_str!("schema/index.sql");
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// The index schema and row encoding version. Incompatible indexes refuse
-/// without removing their rows.
-pub const INDEX_VERSION: u32 = 52;
+/// Numbered in-place steps after the version 1 format baseline.
+pub(crate) const INDEX_MIGRATIONS: &[&str] = &[];
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 
-/// The steps that bring `archive.db` forward: the first takes version 1 to
-/// version 2, and so on. A change to `archive.sql` appends one step, which
-/// must leave exactly the tables `archive.sql` creates (where `ALTER TABLE`
-/// cannot, the step creates the new table, copies the rows and renames it).
-/// The schema tests check that version 1 and these steps give `archive.sql`.
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
-    // 2: backfill jobs.
-    include_str!("schema/archive_2.sql"),
-    // 3: requests kept whole.
-    include_str!("schema/archive_3.sql"),
-    // 4: row counts kept by triggers.
-    include_str!("schema/archive_4.sql"),
-];
+/// The index schema and row encoding version. Parser changes carry their
+/// own reading versions and never advance this value.
+pub const INDEX_VERSION: u32 = 1 + INDEX_MIGRATIONS.len() as u32;
 
 /// The version `archive.sql` creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
@@ -48,35 +38,54 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     conn.execute_batch(READ_INDEXES)?;
+    conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
     crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
 }
 
-/// Creates the index in an empty file; refuses an incompatible version.
+/// Applies numbered index migrations without replacing committed rows.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
-    match version(conn)? {
-        0 => create_index(conn),
-        v if v == INDEX_VERSION => {
-            conn.execute_batch(READ_INDEXES)?;
-            Ok(())
-        }
-        found => Err(StoreError::IndexVersion {
+    let found = version(conn)?;
+    if found > INDEX_VERSION {
+        return Err(StoreError::IndexVersion {
             found,
             wanted: INDEX_VERSION,
-        }),
+        });
     }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if found == 0 {
+        create_index(&tx)?;
+    } else {
+        for step in &INDEX_MIGRATIONS[found as usize - 1..] {
+            tx.execute_batch(step)?;
+        }
+        tx.execute_batch(READ_INDEXES)?;
+        let matches = if building(&tx)? {
+            same_build_schema(&tx)?
+        } else {
+            same_index_schema(&tx)?
+        };
+        if !matches {
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found,
+            });
+        }
+        set_version(&tx, INDEX_VERSION)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
-/// Whether the first build has not finished (`meta.unsynced = 1`). Its
-/// saved build boot decides whether its committed rows can be resumed.
-pub fn unsynced(conn: &Connection) -> Result<bool> {
-    let v: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
-            r.get(0)
+/// Whether the first build still has search and secondary indexes to finish.
+pub fn building(conn: &Connection) -> Result<bool> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'building'", [], |row| {
+            row.get(0)
         })
         .optional()?;
-    Ok(v.as_deref() == Some("1"))
+    Ok(value.as_deref() == Some("1"))
 }
 
 /// Creates `archive.db` in an empty file and brings an older one forward.

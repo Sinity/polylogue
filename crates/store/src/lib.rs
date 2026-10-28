@@ -97,8 +97,6 @@ pub enum StoreError {
     NoMigration { database: &'static str, found: u32 },
     #[error("index format {found} is not {wanted}; an explicit schema change is required")]
     IndexVersion { found: u32, wanted: u32 },
-    #[error("the interrupted index build is from another boot; an explicit rebuild is required")]
-    IndexBuildBoot,
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),
     #[error("parse step refused: {0}")]

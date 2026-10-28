@@ -28,6 +28,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 ## Evolution
 
+- **The segment format starts at version 1.** The initial format baseline collapses the earlier archive migrations. It applies to newly created stores; an older store is preserved and refused until the operator deliberately prepares its transition. Inputs, authored rows and purchased vectors are never reset by opening it. Subsequent changes use numbered migrations.
 - **Stored formats evolve in place.** Schema changes are numbered in-place migrations, each with a test that an archive at the previous version keeps every row; a reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
 - **No code path deletes the index.** An index whose schema does not match is migrated, or refused with an error naming the rebuild command. A full rebuild from the archive is a rare, deliberate act of the user ([operations.md](operations.md)).
 

@@ -924,7 +924,7 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     );
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -949,14 +949,14 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     let current = reader_pool.reader().unwrap();
     assert_eq!(
         current
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "0"
     );
     assert_eq!(current.status().unwrap().messages, 1);
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -1089,7 +1089,7 @@ fn an_excision_does_not_finish_unrelated_first_build_work() {
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -1100,3 +1100,128 @@ fn an_excision_does_not_finish_unrelated_first_build_work() {
 }
 
 mod segments;
+#[test]
+fn parse_positions_and_rows_commit_atomically_during_first_build() {
+    let w = test_archive();
+    let index =
+        crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_position BEFORE INSERT ON parse_state BEGIN SELECT RAISE(ABORT,'position write failed'); END;").unwrap();
+    let parsed = || {
+        batch(
+            "atomic-position",
+            0,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message(
+                    "atomic-message",
+                    "atomic-session",
+                    Role::User,
+                    "committed text",
+                    None,
+                ),
+            }],
+            &["atomic-session"],
+        )
+    };
+    w.writer.send(parsed()).unwrap();
+    assert!(!w.writer.flush().unwrap().errors.is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 0);
+    let progress = reader.input_progress("atomic-position").unwrap().unwrap();
+    assert!(!progress.parsed);
+    assert_eq!(progress.parsed_upto, 0);
+    drop(reader);
+    index.execute_batch("DROP TRIGGER refuse_position").unwrap();
+    w.writer.send(parsed()).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(
+        reader
+            .input_progress("atomic-position")
+            .unwrap()
+            .unwrap()
+            .parsed_upto,
+        100
+    );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn interrupted_secondary_index_finish_retries_ordinary_build() {
+    let w = test_archive();
+    w.writer
+        .send(batch(
+            "finish-input",
+            0,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message(
+                    "finish-message",
+                    "finish-session",
+                    Role::User,
+                    "searchableword",
+                    None,
+                ),
+            }],
+            &["finish-session"],
+        ))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    crate::fault::arm(
+        "index.deferred",
+        &w.archive.root.to_string_lossy(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    assert!(w.writer.derive().is_err());
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    assert!(crate::schema::building(&index).unwrap());
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='message_id'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    w.writer.derive().unwrap();
+    assert!(!crate::schema::building(&index).unwrap());
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'searchableword'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn a_completed_empty_index_does_not_begin_another_first_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    drop(lock);
+    let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    assert!(!crate::schema::building(&index).unwrap());
+    assert!(
+        crate::schema::same_schema(&index, &[crate::schema::INDEX, crate::schema::READ_INDEXES])
+            .unwrap()
+    );
+    drop(writer);
+}

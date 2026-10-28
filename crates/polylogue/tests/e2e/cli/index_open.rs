@@ -10,10 +10,9 @@ fn the_daemon_refuses_an_incompatible_index_without_deleting_its_rows() {
             ),
             "index format",
         ),
-        ("CREATE TABLE synthetic_schema(value)".into(), "no migration"),
         (
-            "INSERT INTO meta(key,value) VALUES ('unsynced','1'),('build_boot_id','different-boot') ON CONFLICT(key) DO UPDATE SET value=excluded.value".into(),
-            "another boot",
+            "CREATE TABLE synthetic_schema(value)".into(),
+            "no migration",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();

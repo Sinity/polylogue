@@ -23,7 +23,6 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
                         polylogue_store::StoreError::NewerSchema { .. }
                             | polylogue_store::StoreError::NoMigration { .. }
                             | polylogue_store::StoreError::IndexVersion { .. }
-                            | polylogue_store::StoreError::IndexBuildBoot
                     )
                 });
             if refused {
