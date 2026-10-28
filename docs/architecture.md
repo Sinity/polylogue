@@ -129,7 +129,12 @@ conversation or decoded output.
 A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
-is done in turns, so other inputs are served between them.
+is done in turns, so other inputs are served between them. A comparison
+catalog beside the capture records its completed prefix and the source file's
+facts. A restart reuses that catalog and skips a source whose facts have not
+changed. Appends hash only the new segment; if the capture's facts change,
+the complete segment chain is checked before any incomplete tail is removed.
+A missing or stale catalog is rebuilt from the verified capture.
 
 [Browser captures](../crates/polylogue/src/browser/captures.rs) are appended
 to a capture log and synced before the extension is told they are stored. An
@@ -207,7 +212,9 @@ holding either, and those holding a block that leaves a key open. A page
 starts at its cursor's message, seeking to it by its key: masking starts
 afresh there when no earlier message leaves a key open, and otherwise from
 the state reached by masking only the marked messages from the first that
-does. Cursors are sealed with a secret of the index
+does. For the session's own messages, the cursor key bounds that lookup;
+the marked blocks are read directly, without scanning ordinary message
+metadata. Cursors are sealed with a secret of the index
 generation, so a changed one is refused and one from an earlier index is
 stale.
 Budgeted reads return both text and structured masked block slices. The web

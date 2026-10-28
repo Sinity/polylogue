@@ -51,16 +51,24 @@ pub(super) fn fit(points: &[Point], input_mb: f64) -> Result<Value, String> {
     if sizes.len() < 2 {
         return Err("a fit needs runs of one build at two or more sample sizes".into());
     }
-    let predict = |pairs: Vec<(f64, f64)>| -> Value {
-        match line(&pairs) {
-            Some((fixed, per_mb)) => json!({
-                "seconds": fixed + per_mb * input_mb,
-                "fixed_seconds": fixed,
-                "seconds_per_gb": per_mb * 1000.0,
-                "observed": pairs.iter().map(|(x, y)| json!([x, y])).collect::<Vec<_>>(),
-            }),
-            None => Value::Null,
+    if !input_mb.is_finite() || input_mb <= 0.0 {
+        return Err("the corpus input size must be positive and finite".into());
+    }
+    let predict = |name: &str, pairs: Vec<(f64, f64)>| -> Result<Value, String> {
+        let (fixed, per_mb) = line(&pairs)
+            .ok_or_else(|| format!("the sampled {name} times do not support a corpus estimate"))?;
+        let seconds = fixed + per_mb * input_mb;
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(format!(
+                "the sampled {name} times predict a negative or non-finite duration; these runs do not support a corpus estimate"
+            ));
         }
+        Ok(json!({
+            "seconds": seconds,
+            "fixed_seconds": fixed,
+            "seconds_per_gb": per_mb * 1000.0,
+            "observed": pairs.iter().map(|(x, y)| json!([x, y])).collect::<Vec<_>>(),
+        }))
     };
     let names: std::collections::BTreeSet<&String> =
         points.iter().flat_map(|p| p.stages.keys()).collect();
@@ -71,14 +79,14 @@ pub(super) fn fit(points: &[Point], input_mb: f64) -> Result<Value, String> {
                 .iter()
                 .map(|p| (p.input_mb, p.stages.get(name).copied().unwrap_or(0.0)))
                 .collect();
-            (name.clone(), predict(pairs))
+            predict(name, pairs).map(|prediction| (name.clone(), prediction))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     Ok(json!({
         "method": "fixed_plus_per_mb_least_squares",
         "input_mb": input_mb,
         "sample_input_mb": sizes,
-        "seconds": predict(points.iter().map(|p| (p.input_mb, p.seconds)).collect()),
+        "seconds": predict("wall time", points.iter().map(|p| (p.input_mb, p.seconds)).collect())?,
         "stages": stages,
         "assumptions": [
             "Each stage's time is fixed seconds plus seconds per input MB over the sampled sizes and up to the whole corpus.",

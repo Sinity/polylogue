@@ -74,8 +74,13 @@ impl MessageMasker {
     /// most of a large message.
     pub fn message_text(&mut self, message: &mut crate::Message) {
         for block in &mut message.blocks {
-            self.block_with(block, false);
+            self.block_text(block);
         }
+    }
+
+    /// As [`Self::message_text`] for one source block.
+    pub fn block_text(&mut self, block: &mut crate::Block) {
+        self.block_with(block, false);
     }
 
     pub fn block(&mut self, block: &mut crate::Block) {

@@ -38,3 +38,74 @@ fn a_pair_needs_two_labelled_builds() {
         assert!(labelled(bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_drawn_sample_keeps_its_bytes_when_the_source_grows() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("session.jsonl");
+    fs::write(&source, "first\n").unwrap();
+    let chosen = [SampleFile {
+        path: source.clone(),
+        rel: ".claude/projects/session.jsonl".into(),
+        stratum: "claude/main@2026".into(),
+        size: 6,
+        grows: true,
+    }];
+    let copied = copy_sample(&directory.path().join("copies"), &chosen).unwrap();
+    fs::write(&source, "first\nnext\n").unwrap();
+    let manifest = Manifest::build("polylogue", &chosen, &copied, 6, 1, 1.0).unwrap();
+    let home = directory.path().join("home");
+    manifest.materialize(&home).unwrap();
+    assert_eq!(
+        fs::read_to_string(home.join(&chosen[0].rel)).unwrap(),
+        "first\n"
+    );
+    assert_eq!(copied[0].size, 6);
+    assert_eq!(copied[0].stratum, chosen[0].stratum);
+    assert!(copied[0].grows);
+}
+
+#[test]
+fn a_database_sample_includes_committed_wal_rows_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.sqlite");
+    let writer = rusqlite::Connection::open(&source).unwrap();
+    writer
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; CREATE TABLE item(value); INSERT INTO item VALUES (1);",
+        )
+        .unwrap();
+    writer
+        .execute_batch("BEGIN; INSERT INTO item VALUES (2);")
+        .unwrap();
+    let chosen = [SampleFile {
+        path: source,
+        rel: ".codex/thread's.sqlite".into(),
+        stratum: "codex/database".into(),
+        size: 0,
+        grows: false,
+    }];
+    let copied = copy_sample(&directory.path().join("copies"), &chosen).unwrap();
+    let snapshot = rusqlite::Connection::open(&copied[0].path).unwrap();
+    assert_eq!(
+        snapshot
+            .query_row("SELECT sum(value) FROM item", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    writer.execute_batch("COMMIT").unwrap();
+    assert_eq!(
+        snapshot
+            .query_row("SELECT sum(value) FROM item", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

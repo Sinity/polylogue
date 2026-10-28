@@ -19,7 +19,9 @@
 //! the export. Values keep their SQLite types; blobs are base64.
 //!
 //! Exports wait for quiet files, with an hourly capture during continuous
-//! writes. Comparison state is a disposable disk-backed SQLite catalog.
+//! writes. Comparison state is a SQLite catalog beside each capture,
+//! stamped with the capture prefix it describes; a restart reuses it, and the
+//! marker's facts let it trust an unchanged capture without reading it.
 //! Changed rows are staged privately, then a synced marker naming the
 //! completed prefix commits them, every 64 MB of rows and at the end, so a
 //! large database's capture becomes input while it is read. Bytes beyond
@@ -45,6 +47,7 @@ mod synced_prefix;
 mod turns;
 use catalog::Catalog;
 use synced_prefix::SyncedPrefix;
+pub use synced_prefix::completed_facts;
 pub use turns::{CaptureTurn, Captures};
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +68,44 @@ struct DbFacts {
 }
 
 impl DbFacts {
+    /// As the catalog's stamp keeps them.
+    fn encode(self) -> String {
+        let one = |f: Option<FileFacts>| {
+            f.map(|f| {
+                format!(
+                    "{},{},{},{},{}",
+                    f.device, f.inode, f.size, f.mtime_ns, f.ctime_ns
+                )
+            })
+            .unwrap_or_default()
+        };
+        format!("{};{}", one(self.db), one(self.wal))
+    }
+
+    fn decode(text: &str) -> Option<Self> {
+        let one = |part: &str| -> Option<Option<FileFacts>> {
+            if part.is_empty() {
+                return Some(None);
+            }
+            let n: Vec<&str> = part.split(',').collect();
+            let [device, inode, size, mtime_ns, ctime_ns] = n.as_slice() else {
+                return None;
+            };
+            Some(Some(FileFacts {
+                device: device.parse().ok()?,
+                inode: inode.parse().ok()?,
+                size: size.parse().ok()?,
+                mtime_ns: mtime_ns.parse().ok()?,
+                ctime_ns: ctime_ns.parse().ok()?,
+            }))
+        };
+        let (db, wal) = text.split_once(';')?;
+        Some(Self {
+            db: one(db)?,
+            wal: one(wal)?,
+        })
+    }
+
     fn of(db: &Path) -> Self {
         let facts = |p: &Path| fs::metadata(p).ok().map(|m| FileFacts::of(&m));
         let mut wal = db.as_os_str().to_owned();
@@ -127,9 +168,12 @@ impl Exporter {
             st.synced = None;
             st.exported = None;
             let mut synced = SyncedPrefix::open(out, checkpoint)?;
-            let mut catalog = Catalog::load(out, checkpoint)?;
+            let mut catalog = Catalog::open(out, synced.stamp(), checkpoint)?;
             catalog.bind(requested.clone())?;
             synced.establish(out)?;
+            // A source unchanged since the export the catalog was stamped
+            // at, before this process started, is not exported again.
+            st.exported = catalog.exported;
             st.synced = Some(synced);
             st.catalog = Some(catalog);
         }
@@ -146,7 +190,7 @@ impl Exporter {
         if !(changed && (first || quiet || overdue)) {
             return Ok(None);
         }
-        let done = match write_export(db, out, st, checkpoint) {
+        let done = match write_export(db, out, st, checkpoint, now) {
             Ok(done) => done,
             Err(e) => {
                 // The marker may have been written before a local cache failure.
@@ -269,6 +313,7 @@ fn write_export(
     out: &Path,
     st: &mut DbState,
     checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
+    now: DbFacts,
 ) -> Result<Exported, ExportError> {
     let sql_err = |e| ExportError::Sqlite(db.to_path_buf(), e);
     let conn = Connection::open_with_flags(
@@ -284,9 +329,7 @@ fn write_export(
     let tables = tables(&conn).map_err(sql_err)?;
     let catalog = st.catalog.as_mut().expect("loaded catalog");
     let transaction = catalog.conn.transaction().map_err(sql_err)?;
-    transaction
-        .execute("UPDATE row_state SET seen=0", [])
-        .map_err(sql_err)?;
+    catalog::start(&transaction).map_err(sql_err)?;
     let mut w = BufWriter::new(tempfile::tempfile()?);
     let schema: Map<String, Value> = tables
         .iter()
@@ -306,6 +349,7 @@ fn write_export(
         serde_json::to_writer(&mut w, &header).map_err(std::io::Error::from)?;
         w.write_all(b"\n")?;
     }
+    let header_written = catalog.schema != Some(schema_digest);
     let mut done = Exported::default();
     let mut staged_bytes = 0;
     for t in &tables {
@@ -361,9 +405,7 @@ fn write_export(
     }
     // All tables were scanned successfully. This also finds dropped tables.
     {
-        let mut query = transaction
-            .prepare("SELECT t,k,kh FROM row_state WHERE seen=0 ORDER BY t,k")
-            .map_err(sql_err)?;
+        let mut query = transaction.prepare(catalog::GONE).map_err(sql_err)?;
         let mut gone = query.query([]).map_err(sql_err)?;
         while let Some(row) = gone.next().map_err(sql_err)? {
             let table: String = row.get(0).map_err(sql_err)?;
@@ -379,13 +421,31 @@ fn write_export(
         }
     }
     transaction
-        .execute("DELETE FROM row_state WHERE seen=0", [])
+        .execute(
+            "DELETE FROM row_state WHERE NOT EXISTS
+               (SELECT 1 FROM temp.seen s WHERE s.t = row_state.t AND s.k = row_state.k)",
+            [],
+        )
         .map_err(sql_err)?;
     conn.execute_batch("COMMIT").map_err(sql_err)?;
     append_staged(&mut w, st.synced.as_mut(), out)?;
     crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
+    // As replaying these lines would record: written without a source
+    // binding, the capture stays unbound.
+    if header_written || done.rows > 0 || done.gone > 0 {
+        catalog.unbound |= catalog.binding.is_none();
+    }
+    let stamp = catalog::StampValues {
+        schema: Some(schema_digest),
+        binding: catalog.binding.clone(),
+        unbound: catalog.unbound,
+        exported: Some(now),
+    };
+    let prefix = st.synced.as_ref().expect("verified synced prefix").stamp();
+    catalog::write_stamp(&transaction, prefix, &stamp).map_err(sql_err)?;
     transaction.commit().map_err(sql_err)?;
     catalog.schema = Some(schema_digest);
+    catalog.exported = Some(now);
     Ok(done)
 }
 

@@ -90,10 +90,10 @@ impl Drawn {
     }
 
     fn manifest(&self) -> PathBuf {
-        PathBuf::from(format!(
-            "/realm/project/polylogue/analysis/bench/polylogue-{}.json",
-            self.name
-        ))
+        env::var_os("POLYLOGUE_BENCH_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/realm/project/polylogue/analysis/bench"))
+            .join(format!("polylogue-{}.json", self.name))
     }
 }
 
@@ -384,6 +384,9 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         Target::Sample => bench::select(&all, bytes, seed),
         Target::Largest => largest(&all),
     };
+    // Hash copies, so a session that keeps growing cannot invalidate the
+    // sample between drawing it and starting the measured build.
+    let chosen = copy_sample(&drawn.dir().join("source"), &chosen)?;
     let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed, cut)
         .map_err(|e| format!("hash the sample: {e}"))?;
     let path = drawn.manifest();
@@ -400,6 +403,55 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         }))
         .unwrap_or_default()
     );
+    Ok(())
+}
+
+/// Copies the selected files before the manifest hashes them. Its source
+/// paths then name these fixed bytes, rather than files writers still change.
+fn copy_sample(directory: &Path, chosen: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
+    chosen
+        .iter()
+        .map(|file| {
+            let path = directory.join(&file.rel);
+            fs::create_dir_all(path.parent().unwrap_or(directory)).map_err(|e| e.to_string())?;
+            copy_input(&file.path, &path, file.stratum == "codex/database")?;
+            let mut file = file.clone();
+            file.size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+            file.path = path;
+            Ok(file)
+        })
+        .collect()
+}
+
+/// A database copy must include committed WAL rows from one read transaction.
+fn copy_input(source: &Path, destination: &Path, database: bool) -> Result<(), String> {
+    let copied = if database {
+        match fs::remove_file(destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        let destination_sql = destination.to_string_lossy().replace('\'', "''");
+        Command::new("sqlite3")
+            .arg("-readonly")
+            .arg(source)
+            .arg(format!("VACUUM INTO '{destination_sql}'"))
+            .output()
+    } else {
+        Command::new("cp")
+            .args(["--reflink=auto", "--preserve=timestamps"])
+            .arg(source)
+            .arg(destination)
+            .output()
+    }
+    .map_err(|error| error.to_string())?;
+    if !copied.status.success() {
+        return Err(format!(
+            "copy {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&copied.stderr)
+        ));
+    }
     Ok(())
 }
 
