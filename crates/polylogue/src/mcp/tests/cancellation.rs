@@ -105,3 +105,69 @@ fn stdio_tool_metadata_preserves_the_explicit_daemon_deadline() {
         service.join().unwrap().unwrap();
     });
 }
+
+#[test]
+fn mcp_takeover_deadline_releases_blocked_read_without_a_prepared_delivery() {
+    let daemon = test_daemon::start("MCP context deadline");
+    let held = daemon.daemon.reads.reader().unwrap();
+    let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
+    lock.lock().unwrap();
+    let reads = daemon.watch_reads();
+    let (mut client, server) = UnixStream::pair().unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut input = BufReader::new(client.try_clone().unwrap());
+    let archive = Archive::at(&daemon.daemon.archive.root);
+    let (answer, released) = std::thread::scope(|scope| {
+        let output = server.try_clone().unwrap();
+        let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        writeln!(client, "{}", super::initialize()).unwrap();
+        let mut line = String::new();
+        input.read_line(&mut line).unwrap();
+        let deadline = crate::daemon::execution::deadline(Duration::from_millis(50));
+        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"context", "method":"tools/call", "params":{"name":"takeover", "arguments":{"session":"claude-code:s1"}, "_meta":{"deadline_ms":deadline}}})).unwrap();
+        reads.recv_timeout(Duration::from_secs(5)).unwrap();
+        line.clear();
+        let answer = input.read_line(&mut line).map(|_| line);
+        let released = daemon.daemon.reads.checked_out() == 1;
+        // Release fixture holds before assertions so a failing regression also joins.
+        drop(lock);
+        drop(held);
+        client.shutdown(Shutdown::Both).unwrap();
+        let _ = service.join().unwrap();
+        (answer, released)
+    });
+    assert!(
+        released,
+        "MCP context retained its daemon reader after the deadline"
+    );
+    let answer = answer.expect("MCP context did not answer its explicit deadline");
+    let reply: Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    assert!(
+        reply["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("deadline_exceeded"),
+        "{reply}"
+    );
+    let response = crate::daemon::service::handle(
+        crate::daemon::Request::Query {
+            text: "deliveries".into(),
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            fields: vec![],
+        },
+        &daemon.daemon,
+    );
+    let crate::daemon::Response::Ok { data, .. } = response else {
+        panic!("{response:?}");
+    };
+    assert_eq!(
+        data["count"], 0,
+        "a refused context must not record prepared delivery"
+    );
+}
