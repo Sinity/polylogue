@@ -9,6 +9,7 @@ use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -101,6 +102,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
     let mut delivery = None;
     if let Some(sender) = sender
         && !prepared.empty
+        && !matches!(ask, Ask::ToolUse { .. })
     {
         let write = UserWrite::Deliver(Delivery {
             recipient_kind: if ask.recipient().is_some() {
@@ -126,6 +128,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             Err(e) => return store_error(&e),
         }
     }
+    let delivery = prepared.advice_id.as_ref().or(delivery.as_ref());
     ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
 }
 
@@ -163,6 +166,18 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     match serde_json::to_value(data) {
         Ok(data) => Response::Ok { data },
         Err(e) => error("internal", e),
+    }
+}
+
+fn repeated_request(
+    reader: &polylogue_store::Reader<'_>,
+    id: &str,
+    intended: &UserWrite,
+) -> Result<Option<UserWrite>, Response> {
+    match reader.user_request(id).map_err(|e| store_error(&e))? {
+        Some(previous) if intended.intent() == previous.write.intent() => Ok(Some(previous.write)),
+        Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
+        None => Ok(None),
     }
 }
 
@@ -249,7 +264,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         | Request::BackfillCancel { .. }
         | Request::BackfillClaim { .. }
         | Request::BackfillReport { .. }
-        | Request::Conversations { .. } => browser::handle(request, d, reader),
+        | Request::Conversations { .. }
+        | Request::StoredFiles { .. } => browser::handle(request, d, reader),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",
@@ -272,26 +288,23 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
                     return error("bad_request", "expression is required for query");
                 };
-                let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                    .ok()
-                    .flatten();
-                let embeddings =
-                    crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-                super::query::explain(
-                    &reader,
-                    super::query::Ask {
-                        text,
-                        cursor: None,
-                        page_size: None,
-                        why: false,
-                        session,
-                        now: now_ms(),
-                        day: None,
-                        embeddings,
-                        near: None,
-                        fields: &[],
-                    },
-                )
+                super::query::with_ranking(&reader, &d.warm, |embeddings, _near| {
+                    super::query::explain(
+                        &reader,
+                        super::query::Ask {
+                            text,
+                            cursor: None,
+                            page_size: None,
+                            why: false,
+                            session,
+                            now: now_ms(),
+                            day: None,
+                            embeddings,
+                            near: None,
+                            fields: &[],
+                        },
+                    )
+                })
             } else {
                 crate::explain::answer(
                     &subject,
@@ -310,6 +323,66 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 },
             }
         }
+        Request::Timeline {
+            date,
+            across_years,
+            undated,
+            cursor,
+            page_size,
+        } => {
+            match super::calendar::timeline(
+                &reader,
+                super::calendar::Timeline {
+                    date: date.as_deref(),
+                    across_years,
+                    undated,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
+        Request::Cost {
+            month,
+            undated,
+            unknown_model,
+            query,
+            date,
+            model,
+            cursor,
+            page_size,
+        } => super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+            match super::calendar::cost(
+                &reader,
+                super::calendar::Cost {
+                    embeddings,
+                    near: Some(near),
+                    month: month.as_deref(),
+                    query: &query,
+                    date: date.as_deref(),
+                    model: model.as_deref(),
+                    undated,
+                    unknown_model,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                },
+                now_ms(),
+            ) {
+                Ok(data) => ok(data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }),
         Request::Status => {
             let position = match reader.change_position() {
                 Ok(p) => p.to_string(),
@@ -359,37 +432,31 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             if let Some(data) = d.warm.answer(&key, &position) {
                 return Response::Ok { data };
             }
-            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-                .ok()
-                .flatten();
-            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
-            let near = |q: &str| match &provider {
-                Some(p) => d.warm.similarity(&reader, p, q),
-                None => Err("embeddings are off".into()),
-            };
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: cursor.as_deref(),
-                page_size,
-                why,
-                session,
-                now: now_ms(),
-                day: None,
-                embeddings,
-                near: Some(&near),
-                fields: &fields,
-            };
-            match super::query::run(&reader, ask) {
-                Ok(data) => {
-                    d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                    Response::Ok { data }
+            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                    why,
+                    session,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &fields,
+                };
+                match super::query::run(&reader, ask) {
+                    Ok(data) => {
+                        d.warm.keep_answer(key, position, cursor.is_none(), &data);
+                        Response::Ok { data }
+                    }
+                    Err(f) => Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    },
                 }
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
-            }
+            })
         }
         Request::Complete { word } => {
             let position = match reader.change_position() {
@@ -522,19 +589,36 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             name,
         } => {
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: None,
-                page_size: None,
-                why: false,
-                session: None,
-                now: now_ms(),
-                day: None,
-                embeddings: false,
-                near: None,
-                fields: &[],
+            let intended = UserWrite::KeepResult {
+                name: name.clone(),
+                query: text.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
             };
-            let kept = match super::query::keep(&reader, ask) {
+            match repeated_request(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
+            let kept = super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: None,
+                    page_size: None,
+                    why: false,
+                    session: None,
+                    now: now_ms(),
+                    day: None,
+                    embeddings,
+                    near: Some(near),
+                    fields: &[],
+                };
+                super::query::keep(&reader, ask)
+            });
+            let kept = match kept {
                 Ok(k) => k,
                 Err(f) => {
                     return Response::Error {
@@ -563,22 +647,35 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             text,
             author,
         } => {
+            let mut note = NewNote {
+                kind: NoteKind::SavedQuery,
+                key: Some(name.clone()),
+                value: Some(text.clone()),
+                author,
+                targets: vec![],
+                relations: vec![],
+                revises: None,
+                valid_until: None,
+            };
+            match repeated_request(
+                &reader,
+                &request_id,
+                &UserWrite::SaveQuery { note: note.clone() },
+            ) {
+                Ok(Some(previous)) => {
+                    drop(reader);
+                    return write(d, request_id, previous);
+                }
+                Err(response) => return response,
+                Ok(None) => {}
+            }
             let revises = match saved_revision(&reader, &name, &text) {
                 Ok(revises) => revises,
                 Err(response) => return response,
             };
             drop(reader);
-            let note = NewNote {
-                kind: NoteKind::SavedQuery,
-                key: Some(name),
-                value: Some(text),
-                author,
-                targets: vec![],
-                relations: vec![],
-                revises,
-                valid_until: None,
-            };
-            write(d, request_id, UserWrite::AddNote { note })
+            note.revises = revises;
+            write(d, request_id, UserWrite::SaveQuery { note })
         }
         Request::Watch {
             request_id,
@@ -648,20 +745,38 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             query,
             mut note,
         } => {
-            note.targets = match query_targets(&reader, &query) {
-                Ok(targets) => targets,
+            let intended = UserWrite::AnnotateQuery {
+                query: query.clone(),
+                note: note.clone(),
+            };
+            let resolved = match repeated_request(&reader, &request_id, &intended) {
+                Ok(Some(previous)) => previous,
+                Ok(None) => {
+                    note.targets = match query_targets(d, &reader, &query) {
+                        Ok(targets) => targets,
+                        Err(response) => return response,
+                    };
+                    UserWrite::AnnotateQuery { query, note }
+                }
                 Err(response) => return response,
             };
             drop(reader);
-            let count = note.targets.len();
-            match write(d, request_id, UserWrite::AddNote { note }) {
+            match write(d, request_id, resolved) {
                 Response::Ok { mut data } => {
-                    data["targets"] = serde_json::json!(count);
+                    let committed = d.reads.reader().and_then(|reader| {
+                        reader.note(data["id"].as_str().expect("write result ID"))
+                    });
+                    match committed {
+                        Ok(Some(note)) => data["targets"] = serde_json::json!(note.targets.len()),
+                        Ok(None) => return error("not_found", "the committed note is absent"),
+                        Err(e) => return store_error(&e),
+                    }
                     Response::Ok { data }
                 }
                 other => other,
             }
         }
+
         Request::Judge {
             request_id,
             note,
@@ -716,6 +831,33 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         } => {
             drop(reader);
             context(d, request_id, &ask, sender)
+        }
+        Request::AdviceDelivered {
+            request_id,
+            session,
+            cwd,
+            text,
+        } => {
+            drop(reader);
+            write(
+                d,
+                request_id,
+                UserWrite::DeliveredAdvice(Delivery {
+                    recipient_kind: if session.is_some() {
+                        "session"
+                    } else {
+                        "operator"
+                    }
+                    .into(),
+                    recipient_id: session.map(|s| s.to_string()),
+                    sender: "hook".into(),
+                    event: "advice".into(),
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                    text,
+                    refs: vec![],
+                    left_out: vec![],
+                }),
+            )
         }
         Request::DeliveryEvent {
             delivery,
@@ -779,73 +921,80 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
 /// The references of every row `query` returns, for a note on all of
 /// them: sessions, messages, documents and notes.
 fn query_targets(
+    d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
 ) -> Result<Vec<polylogue_model::Target>, Response> {
     use polylogue_model::Target;
-    let mut targets = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let ask = super::query::Ask {
-            text: query,
-            cursor: cursor.as_deref(),
-            page_size: Some(1_000),
-            why: false,
-            session: None,
-            now: now_ms(),
-            day: None,
-            embeddings: false,
-            near: None,
-            fields: &[],
-        };
-        let page = super::query::run(reader, ask).map_err(|f| Response::Error {
-            kind: f.kind,
-            message: f.message,
-            detail: f.detail,
-        })?;
-        let unit = page["unit"].as_str().unwrap_or("");
-        if !matches!(unit, "sessions" | "messages" | "documents" | "notes") {
-            return Err(error(
-                "bad_request",
-                format!(
-                    "a note applies to the rows of a sessions, messages, documents or notes query, not {unit}"
-                ),
-            ));
-        }
-        for row in page["rows"].as_array().into_iter().flatten() {
-            let Some(id) = row["id"].as_str() else {
-                continue;
+    super::query::with_ranking(reader, &d.warm, |embeddings, near| {
+        let now = now_ms();
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let ask = super::query::Ask {
+                text: query,
+                cursor: cursor.as_deref(),
+                page_size: Some(1_000),
+                why: false,
+                session: None,
+                now,
+                day: None,
+                embeddings,
+                near: Some(near),
+                fields: &[],
             };
-            let target = match unit {
-                "sessions" => polylogue_model::SessionId::parse(id)
-                    .map(Target::Session)
-                    .ok(),
-                "messages" => polylogue_model::MessageId::parse(id)
-                    .map(Target::Message)
-                    .ok(),
-                "documents" => polylogue_model::DocumentId::parse(id)
-                    .map(Target::Document)
-                    .ok(),
-                _ => Some(Target::Note(id.to_owned())),
-            };
-            if let Some(t) = target
-                && !targets.contains(&t)
+            let page = super::query::run(reader, ask).map_err(|f| Response::Error {
+                kind: f.kind,
+                message: f.message,
+                detail: f.detail,
+            })?;
+            let unit = page["unit"].as_str().unwrap_or("");
+            if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
+                || page["shape"] != "rows"
             {
-                targets.push(t);
+                return Err(error(
+                    "bad_request",
+                    format!(
+                        "a note needs session, message, document or note rows; the query returned {unit} in another form"
+                    ),
+                ));
+            }
+            for row in page["rows"].as_array().into_iter().flatten() {
+                let Some(id) = row["id"].as_str() else {
+                    continue;
+                };
+                let target = match unit {
+                    "sessions" => polylogue_model::SessionId::parse(id)
+                        .map(Target::Session)
+                        .ok(),
+                    "messages" => polylogue_model::MessageId::parse(id)
+                        .map(Target::Message)
+                        .ok(),
+                    "documents" => polylogue_model::DocumentId::parse(id)
+                        .map(Target::Document)
+                        .ok(),
+                    _ => Some(Target::Note(id.to_owned())),
+                };
+                if let Some(target) = target
+                    && seen.insert(target.clone())
+                {
+                    targets.push(target);
+                }
+            }
+            match page["next"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
             }
         }
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => break,
+        if targets.is_empty() {
+            return Err(error(
+                "empty",
+                "the query returns no rows; nothing was noted",
+            ));
         }
-    }
-    if targets.is_empty() {
-        return Err(error(
-            "empty",
-            "the query returns no rows; nothing was noted",
-        ));
-    }
-    Ok(targets)
+        Ok(targets)
+    })
 }
 
 /// Whole sessions in the structured export format (`json`, read back by

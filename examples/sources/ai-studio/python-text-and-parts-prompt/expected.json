@@ -39,7 +39,7 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:text_and_parts_prompt#0",
+          "id": "ai-studio:21:text_and_parts_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
           "session": "ai-studio:text_and_parts_prompt"
@@ -57,9 +57,9 @@
               "type": "thinking"
             }
           ],
-          "id": "ai-studio:text_and_parts_prompt#1",
+          "id": "ai-studio:21:text_and_parts_prompt#position:1:1",
           "model": "gemini-fixture-pro",
-          "parent": "ai-studio:text_and_parts_prompt#0",
+          "parent": "ai-studio:21:text_and_parts_prompt#position:1:0",
           "role": "assistant",
           "session": "ai-studio:text_and_parts_prompt"
         },
@@ -75,9 +75,9 @@
               "type": "text"
             }
           ],
-          "id": "ai-studio:text_and_parts_prompt#2",
+          "id": "ai-studio:21:text_and_parts_prompt#position:1:2",
           "model": "gemini-fixture-pro",
-          "parent": "ai-studio:text_and_parts_prompt#1",
+          "parent": "ai-studio:21:text_and_parts_prompt#position:1:1",
           "role": "assistant",
           "session": "ai-studio:text_and_parts_prompt",
           "stop_reason": "STOP",

@@ -168,3 +168,192 @@ fn unsupported_note_metadata_returns_an_error_instead_of_an_empty_or_invented_no
         ));
     }
 }
+
+#[test]
+fn annotation_retries_and_replay_keep_the_original_targets() {
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    let original = note(NoteKind::Note, Author::Operator, "repo:morrow", "reviewed");
+    let request = UserRequest::now(
+        "annotated".into(),
+        UserWrite::AnnotateQuery {
+            query: "sessions".into(),
+            note: original.clone(),
+        },
+    );
+    writer.user(request.clone()).unwrap();
+    assert_eq!(
+        reads.reader().unwrap().user_request("annotated").unwrap(),
+        Some(request.clone())
+    );
+    let mut changed = original.clone();
+    changed.targets = vec![Target::parse("repo:other").unwrap()];
+    assert!(
+        writer
+            .user(UserRequest::now(
+                "annotated".into(),
+                UserWrite::AnnotateQuery {
+                    query: "sessions".into(),
+                    note: changed
+                }
+            ))
+            .unwrap()
+            .repeat
+    );
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .note("annotated")
+            .unwrap()
+            .unwrap()
+            .targets,
+        original.targets
+    );
+    let mut changed_query = request.clone();
+    if let UserWrite::AnnotateQuery { query, .. } = &mut changed_query.write {
+        *query = "messages".into();
+    }
+    assert!(matches!(
+        writer.user(changed_query),
+        Err(StoreError::Conflict(_))
+    ));
+    let (_replay_dir, _replay_archive, _replay_lock, replay_writer, replay_reads) = setup();
+    replay_writer.user(request).unwrap();
+    assert_eq!(
+        replay_reads.reader().unwrap().note("annotated").unwrap(),
+        reads.reader().unwrap().note("annotated").unwrap()
+    );
+}
+
+#[test]
+fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    let request = UserRequest::now(
+        "kept".into(),
+        UserWrite::KeepResult {
+            name: Some("before".into()),
+            query: "notes".into(),
+            rows_json: "[]".into(),
+            read_at: "{\"now\":1}".into(),
+        },
+    );
+    writer.user(request.clone()).unwrap();
+    let mut changed = request.clone();
+    if let UserWrite::KeepResult {
+        rows_json, read_at, ..
+    } = &mut changed.write
+    {
+        *rows_json = "[{\"id\":\"new\"}]".into();
+        *read_at = "{\"now\":2}".into();
+    }
+    assert!(writer.user(changed.clone()).unwrap().repeat);
+    assert_eq!(
+        reads.reader().unwrap().user_request("kept").unwrap(),
+        Some(request)
+    );
+    if let UserWrite::KeepResult { query, .. } = &mut changed.write {
+        *query = "sessions".into();
+    }
+    assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
+}
+
+#[test]
+fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    let mut saved = note(
+        NoteKind::SavedQuery,
+        Author::Operator,
+        "repo:morrow",
+        "sessions",
+    );
+    saved.key = Some("everything".into());
+    saved.targets.clear();
+    writer
+        .user(UserRequest::now(
+            "first".into(),
+            UserWrite::SaveQuery {
+                note: saved.clone(),
+            },
+        ))
+        .unwrap();
+    saved.revises = Some("first".into());
+    let resolved = UserRequest::now(
+        "resolved".into(),
+        UserWrite::SaveQuery {
+            note: saved.clone(),
+        },
+    );
+    writer.user(resolved.clone()).unwrap();
+    let explicit = UserRequest::now(
+        "explicit".into(),
+        UserWrite::AddNote {
+            note: saved.clone(),
+        },
+    );
+    writer.user(explicit.clone()).unwrap();
+    saved.revises = Some("resolved".into());
+    assert!(
+        writer
+            .user(UserRequest::now(
+                "resolved".into(),
+                UserWrite::SaveQuery {
+                    note: saved.clone()
+                }
+            ))
+            .unwrap()
+            .repeat
+    );
+    assert!(matches!(
+        writer.user(UserRequest::now(
+            "explicit".into(),
+            UserWrite::AddNote { note: saved }
+        )),
+        Err(StoreError::Conflict(_))
+    ));
+    assert_eq!(
+        reads.reader().unwrap().user_request("resolved").unwrap(),
+        Some(resolved.clone())
+    );
+    assert_eq!(
+        reads.reader().unwrap().user_request("explicit").unwrap(),
+        Some(explicit)
+    );
+    let (_dir2, _archive2, _lock2, replay, replay_reads) = setup();
+    for change in reads.reader().unwrap().user_state().unwrap() {
+        if let crate::primary::RegisterChange::Request { request, .. } = change {
+            replay.user(*request).unwrap();
+        }
+    }
+    assert_eq!(
+        replay_reads.reader().unwrap().note("resolved").unwrap(),
+        reads.reader().unwrap().note("resolved").unwrap()
+    );
+}
+
+#[test]
+fn a_missing_request_is_absent_and_removed_request_content_refuses_retries() {
+    let (_dir, archive, _lock, writer, reads) = setup();
+    assert_eq!(
+        reads.reader().unwrap().user_request("missing").unwrap(),
+        None
+    );
+    writer
+        .user(UserRequest::now(
+            "removed".into(),
+            UserWrite::AddNote {
+                note: note(NoteKind::Note, Author::Operator, "repo:morrow", "body"),
+            },
+        ))
+        .unwrap();
+    rusqlite::Connection::open(archive.archive_db())
+        .unwrap()
+        .execute(
+            "UPDATE client_request SET request = NULL WHERE id = 'removed'",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        reads.reader().unwrap().user_request("removed"),
+        Err(StoreError::Conflict(_))
+    ));
+}

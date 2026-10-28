@@ -1032,3 +1032,5 @@ fn a_user_write_goes_ahead_of_queued_batches() {
         "the setting committed at {setting}, the queued batches from {batches}"
     );
 }
+
+mod attachments;

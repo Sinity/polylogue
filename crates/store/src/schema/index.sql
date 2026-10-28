@@ -412,6 +412,7 @@ CREATE TABLE work_node (
 ) STRICT;
 CREATE INDEX work_node_session ON work_node(session_pk);
 CREATE INDEX work_node_kind ON work_node(kind, at);
+CREATE INDEX work_node_verification ON work_node(kind, title, at);   -- one verification's runs, for advice before a command runs
 CREATE INDEX work_node_call ON work_node(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
 CREATE TABLE work_edge (

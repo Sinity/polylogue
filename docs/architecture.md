@@ -13,13 +13,13 @@ which reads through Store and presents through Query and Render.
 
 | Crate | What it owns |
 |---|---|
-| [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates; no I/O. |
+| [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates, plus durable file replacement. |
 | [Sources](../crates/sources/src/lib.rs) | Reading each origin's formats. An [origin declaration](../crates/sources/src/origin.rs) holds everything known about an origin: its locations, how to recognize its files and split them into records, its parser and its tool facts. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) turn records into model values with byte ranges and record counts. |
 | [Engine](../crates/engine/src/lib.rs) | The loop: find changed files, store their bytes, schedule parsing and derivations. The [parse pool](../crates/engine/src/pool.rs) feeds Store's writer; it holds no SQL. |
 | [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
 | [Query](../crates/query/src/lib.rs) | The query language and its compiler to parameterized SQL. The application's [query operation](../crates/polylogue/src/daemon/query.rs) runs it on a Store reader. |
 | [Render](../crates/render/src/lib.rs) | Views of typed content as terminal text, Markdown, HTML and JSON, and pages sized for models. |
-| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. |
+| [Application](../crates/polylogue/src/daemon/service.rs) | Typed requests, configuration and worker lifetime. The [command table](../crates/polylogue/src/commands.rs) declares every command once for the CLI, MCP and HTTP; the [socket server](../crates/polylogue/src/daemon/server.rs) owns framing and listeners. The [socket client](../crates/polylogue/src/client.rs) sends ordinary requests for the CLI, MCP, browser host and hooks, with whole-exchange deadlines for hooks and completion. |
 | [Sinex client](../crates/sinex/src/lib.rs) | Primary mode: inputs, records and parsed sessions sent to Sinex, and the local copy rebuilt from what Sinex holds. |
 | [Testkit](../crates/testkit/src/lib.rs) | Synthetic archives built through the real loop. Store's own row fixtures sit behind its [fixture feature](../crates/store/src/fixture.rs). |
 
@@ -35,6 +35,12 @@ A new origin is an origin declaration and a parser, a new command is a
 command-table entry, and a new measure is an entry in the
 [measure table](../crates/polylogue/src/daemon/measure.rs). Crate dependency
 rules are checked by [xtask](../xtask/src/main.rs).
+
+An origin's collector receives the configured home, state and spool directories.
+It runs automatically or when its declared setting is on. Antigravity's
+loopback collector runs in an engine-owned worker; the loop reads its spool on
+subsequent passes and joins the worker at shutdown. The optional AI Studio
+Drive import runs before the pass. Both are declared in the origin table.
 
 ## Databases
 
@@ -107,7 +113,9 @@ is deleted with its file. The rest are listed in `status` as
 can finish them. A provider file that changed meanwhile starts a new chain. [Stored-byte tests](../crates/engine/src/import/tests/stored_bytes.rs)
 cover imports, watched files and parse-pool groups. Bytes a parser decodes
 from inside a record, such as inline images, are stored as blobs of that
-input.
+input. Attachments name only present blobs. An unknown hash leaves the file
+without stored bytes and keeps its conversation; a known hash supplies its
+stored size. The captured bytes stay unchanged.
 
 A ZIP import stores the ZIP itself and each file in it as inputs, linked by
 `observation_zip`. Export [attachments](attachments.md) are found
@@ -126,6 +134,18 @@ each item's commit before decoding the next; a retry reads the stored bytes
 again and skips what was committed. Memory holds the largest single record,
 conversation or decoded output.
 
+AI Studio keeps one message per usable chunk, including adjacent chunks of
+one role. A native chunk ID names its message; otherwise its position in the
+original chunk array does. Message IDs include the file name, the kind
+(`id`, `position` or `system`) and the value, with byte lengths before the
+file name and value. Native IDs, positions and the system header cannot
+collide, even when names contain separators. Thoughts and answers keep their separate token
+counts, code results name their preceding call, and each message cites its
+chunk's byte range. Unknown roles are counted as unreadable and empty chunks
+as skipped; they still occupy their original positions. A header, settings or
+system instruction without a usable chunk creates no session. Keeping chunks separate
+preserves native IDs and exact ranges even when the role does not change.
+
 A [tool database](../crates/store/src/tool_databases.rs) is stored as a row
 dump (JSON lines) from one SQLite read of the tool's file; complete changes are written before its
 checkpoint moves. Its identity is the machine and the file's path. Reading
@@ -138,7 +158,11 @@ different one refused. Each capture repeats the whole conversation, so the lates
 capture's version of a message is shown, and a message missing from a later
 capture stays.
 
-The extension keeps nothing but captures the host has not yet acknowledged.
+The extension keeps captures the host has not yet acknowledged in its outbox.
+The daemon reports attachments marked `not_fetched: "downloading"` in the latest
+capture, so backfill and unchanged page captures resume their downloads after a
+browser restart. Conversation fingerprints survive browser restarts in extension storage. An unchanged
+conversation is recaptured unless the daemon reports an archived or spooled copy.
 [Chat actions](../crates/store/src/chat_actions.rs) and
 [backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
 writer changes: the operator queues or starts them through the CLI, MCP or the
@@ -359,6 +383,14 @@ something an excision removed (its provider file was still there), the
 import stops at that excision and names it: excise it in the primary
 archive and import the file again.
 
+## Hook advice
+
+Hook advice is prepared read-only within 20 milliseconds. After printing it,
+the hook has another 20 milliseconds to record one delivery with its delivered
+outcome. A session receives advice about a verification once until its failures
+change. Advice names sessions in its text; its references contain no session
+text that would prevent excision.
+
 ## Offline schema tools
 
 [Schema tools](schema-tools.md) use a pure Sources observer and recursive diff,
@@ -382,3 +414,12 @@ unset. JSON uses JSON Unicode escapes and round trips the original values.
 HTML and Markdown retain their format encoding; displaying them through the
 CLI read printer escapes terminal controls, while file and pipe exports keep
 the requested format.
+
+## Python client
+
+The standard-library client in `clients/python/polylogue/client.py` invokes the
+installed CLI with an argument list, so command validation, daemon access,
+masking and feed validation have the same implementation as other clients.
+`polylogue.models.Answer` freezes the complete JSON answer recursively; `json()`
+returns an independent ordinary JSON value. No query or read is redirected to a
+local database. A write is submitted once; the caller owns its retry ID.

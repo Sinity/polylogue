@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_missing_daemon_is_daemon_required() {
     let dir = tempfile::tempdir().unwrap();
-    let err = send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
+    let err = crate::client::send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
     assert!(is_down(&err));
     assert!(!Archive::at(dir.path()).lock_held());
     let err = send_when_ready(&Archive::at(dir.path()), &Request::Status).unwrap_err();
@@ -34,6 +34,16 @@ fn a_starting_daemon_is_waited_for() {
     let response = send_when_ready(&archive, &Request::Status).unwrap();
     assert!(matches!(response, Response::Ok { .. }));
     server.join().unwrap();
+}
+
+#[test]
+fn manual_is_an_offline_topic() {
+    let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
+    assert!(matches!(manual.action, Action::Local(_)));
+    let matches = command()
+        .try_get_matches_from(["polylogue", "manual"])
+        .unwrap();
+    assert_eq!(run(&matches), std::process::ExitCode::SUCCESS);
 }
 
 #[test]

@@ -92,7 +92,7 @@ fn the_command_line_has_nothing_outside_the_table() {
 fn mcp_offers_exactly_the_table_commands_marked_for_it() {
     let tools: Vec<String> = crate::mcp::tools()
         .into_iter()
-        .map(|t| t.name.into_owned())
+        .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     let declared: Vec<String> = COMMANDS
         .iter()
@@ -394,4 +394,31 @@ fn chat_send_reads_attached_files_on_the_command_line() {
             .args_for(Surface::Mcp)
             .all(|a| a.name != "attach")
     );
+}
+
+mod client_answers;
+
+#[test]
+fn request_id_is_declared_for_all_write_surfaces() {
+    let (command, values) = crate::cli::parse(&[
+        "polylogue",
+        "note",
+        "add",
+        "repo:x",
+        "--body",
+        "b",
+        "--request-id",
+        "retry-one",
+    ])
+    .unwrap();
+    assert_eq!(values.request_id(), "retry-one");
+    for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
+        assert_eq!(
+            command
+                .args_for(surface)
+                .filter(|a| a.name == "request_id")
+                .count(),
+            1
+        );
+    }
 }

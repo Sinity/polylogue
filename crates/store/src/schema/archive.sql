@@ -206,7 +206,7 @@ CREATE TABLE delivery (
   recipient_kind    TEXT NOT NULL,          -- session | operator
   recipient_id      TEXT,                   -- session id when recipient_kind = session (the session may arrive later)
   sender            TEXT NOT NULL,          -- hook | mcp | signal (model DeliverySender)
-  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | signal
+  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | signal | advice
   cwd               TEXT,                   -- where the recipient was working, when known
   at                INTEGER NOT NULL,       -- prepared at
   content_hash      BLOB NOT NULL,          -- BLAKE3 of the delivered text

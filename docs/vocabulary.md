@@ -59,11 +59,16 @@ the same change.
   **tool database**.
 - **native ID**: the ID an origin itself gives a session or message. Chrome's
   **native messaging** is the only other use of "native".
+- **link prefix**: an optional account or project path before a web chat's
+  conversation path, declared by its origin.
 - **web chat**: a provider's chat pages, which the browser extension captures
   from. **Chat action**: a turn the operator asks the extension to draft or
   submit in one.
 - **collector**: code that fetches an origin's files into its spool (the AI
-  Studio Drive collector).
+  Studio Drive and Antigravity language-server collectors).
+- **conversation file**: Antigravity's opaque `.pb` file for one conversation.
+- **conversion state**: the small JSON file recording a conversation file's
+  size, mtime, conversion outcome and language-server PID.
 - **spool**: a directory Polylogue's own writers fill and the loop reads:
   the hook spool, the browser capture spool, the collectors' spools.
 - **tool database**: a tool's own SQLite file. Polylogue stores its rows as a
@@ -136,10 +141,14 @@ the same change.
   briefing can cite them.
 - **setting**: a value the operator or an agent sets, kept with its history.
 - **delivery**: exactly what was put into a model's context.
+- **verification**: a test, build or lint command in the work graph.
 - **check run**: one `xtask` check or test run, as devkit's machine-wide
   run history records it with its checkout and outcome.
 - **brief**: the session-start context for a directory; it fits its
   **budget** (`briefing.budget`, tokens).
+- **advice**: a delivery just before a command runs, given only when the
+  command is a verification that failed in that checkout more than once since it
+  last passed.
 - **judgment**: the operator's `accepted` or `rejected` on one revision of
   an agent's note, itself a note of kind `judgment`.
 - **notice**: a delivery a signal rule fired; an interrupting one is also

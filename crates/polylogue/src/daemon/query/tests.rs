@@ -1279,3 +1279,5 @@ fn work_queries_distinguish_unknown_check_totals_from_failures() {
 }
 
 mod composition;
+
+mod language;

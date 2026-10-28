@@ -69,6 +69,12 @@ const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     }
 }
 
+const REQUEST_ID: Arg = opt(
+    "request_id",
+    Kind::Text,
+    "Reuse this ID when retrying the same write",
+);
+
 /// A required positional argument.
 const fn pos(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     Arg {
@@ -145,6 +151,7 @@ impl Command {
     pub fn args_for(&self, surface: Surface) -> impl Iterator<Item = &'static Arg> {
         let args: &'static [Arg] = self.args;
         args.iter()
+            .chain(self.writes.then_some(&REQUEST_ID))
             .filter(move |a| surface == Surface::Cli || !a.cli_only)
     }
 }
@@ -261,14 +268,14 @@ const HOOKS_ARGS: &[Arg] = &[
         default: Some("claude-code"),
         ..opt(
             "harness",
-            Kind::Choice(&["claude-code", "codex"]),
+            Kind::Choice(crate::hook::Harness::NAMES),
             "Whose settings",
         )
     },
     opt(
         "settings",
         Kind::Text,
-        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`)",
+        "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
 
@@ -310,7 +317,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's or Codex's settings",
+        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
     },
     Group {
         name: "chat",
@@ -467,6 +474,12 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::explain),
         mcp: true,
         http: true,
+        ..CLI
+    },
+    Command {
+        name: "manual",
+        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        action: Action::Local(local::manual),
         ..CLI
     },
     Command {
@@ -684,6 +697,17 @@ const WRITTEN: &[Command] = &[
                     "note, lesson, handoff, decision, blocker, goal, question, finding, outcome, correction, judgment, title, claim, problem, forecast",
                 )
             },
+            opt("key", Kind::Text, "The note kind's key, such as a tag name"),
+            opt(
+                "relations",
+                Kind::Text,
+                "Relations as JSON pairs of relation and note ID",
+            ),
+            opt(
+                "valid_until",
+                Kind::Text,
+                "Expiry time with a UTC offset (RFC 3339)",
+            ),
             opt(
                 "revises",
                 Kind::Text,
@@ -982,6 +1006,8 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::keep),
+        mcp: true,
+        http: true,
         writes: true,
         ..CLI
     },
@@ -1174,7 +1200,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link, advice before a verification that keeps failing",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {
@@ -1215,6 +1241,71 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Local(local::completions),
+        ..CLI
+    },
+    Command {
+        name: "timeline",
+        help: "Paged recorded activity, calendar counts and usage in the configured logical day",
+        args: &[
+            opt(
+                "date",
+                Kind::Text,
+                "Logical date YYYY-MM-DD (default today)",
+            ),
+            opt(
+                "across_years",
+                Kind::Bool,
+                "This month and day in recorded years through the chosen date",
+            ),
+            opt(
+                "undated",
+                Kind::Bool,
+                "Records with unknown or unrepresentable time",
+            ),
+            CURSOR,
+            LIMIT,
+        ],
+        action: Action::Request(requests::timeline),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "cost",
+        help: "Usage of selected sessions, optionally during one logical day, and paged physical response records",
+        args: &[
+            opt("query", Kind::Text, "Session query (default sessions)"),
+            opt(
+                "date",
+                Kind::Text,
+                "Restrict source record times to this logical date",
+            ),
+            opt(
+                "model",
+                Kind::Text,
+                "Show response details for this model; totals include all selected models",
+            ),
+            opt(
+                "undated",
+                Kind::Bool,
+                "Only source records with unknown or unrepresentable times",
+            ),
+            opt(
+                "unknown_model",
+                Kind::Bool,
+                "Response details with no recorded model name",
+            ),
+            opt(
+                "month",
+                Kind::Text,
+                "Calendar month for daily response subtotals, as YYYY-MM-DD (default selected day or today)",
+            ),
+            CURSOR,
+            LIMIT,
+        ],
+        action: Action::Request(requests::cost),
+        mcp: true,
+        http: true,
         ..CLI
     },
     Command {
@@ -1298,12 +1389,6 @@ impl Values {
     ) -> Result<Values, String> {
         let name = command.name;
         for (key, value) in &object {
-            if key == "request_id" && command.writes {
-                if !value.is_string() {
-                    return Err(format!("`{name}`: `request_id` is text"));
-                }
-                continue;
-            }
             let Some(arg) = command.args_for(surface).find(|a| a.name == key) else {
                 let known: Vec<&str> = command.args_for(surface).map(|a| a.name).collect();
                 return Err(format!(
@@ -1429,12 +1514,6 @@ pub fn schema(command: &Command) -> Map<String, Value> {
             };
         }
         properties.insert(a.name.to_owned(), p);
-    }
-    if command.writes {
-        properties.insert(
-            "request_id".into(),
-            json!({ "type": "string", "description": "Makes a resent call apply once" }),
-        );
     }
     let required: Vec<&str> = command
         .args_for(Surface::Mcp)

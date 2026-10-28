@@ -10,7 +10,7 @@ is kept for reference; the rewrite uses its own archive.
 
 [docs/architecture.md](docs/architecture.md) describes current module boundaries.
 
-- `crates/model`: identity, value and outcome types; no I/O.
+- `crates/model`: identity, value and outcome types; shared durable file replacement.
 - `crates/sources`: one declaration and one parser per origin on the shared
   framework (`origin.rs`, `parse.rs`, `document.rs`).
 - `crates/store`: every SQLite connection and write; the blob store.
@@ -37,9 +37,9 @@ Optimize for fast integration. See `docs/development.md`.
   the rest of the machine's work: `agentctl job start polylogue <operation>
   --workspace <worktree>`. `compile -- -p <crate>` checks that code builds,
   `focused -- -p <crate> [-E <filterset>] [<name>]` runs selected tests,
-  `fmt` formats, and `check` runs formatting, boundaries, clippy and every
-  test. All test runs share one build of the whole workspace, so `focused`
-  and `check` reuse each other's artifacts.
+  `fmt` formats, and `check` always runs formatting, boundaries, both clippy
+  configurations and both test configurations. Iteration operations select
+  affected tests through Cargo dependencies. See `docs/development.md`.
 - Start a job, then wait for it in the background with `agentctl job wait
   <id>` and keep working. A failed wait prints the failing tests and the
   `xtask history` pointer.

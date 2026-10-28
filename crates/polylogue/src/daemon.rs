@@ -4,6 +4,7 @@
 //! data), and serves every client over one request shape.
 
 pub(crate) mod attachment;
+pub mod calendar;
 pub mod measure;
 pub mod query;
 pub mod request;
