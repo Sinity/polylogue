@@ -1,4 +1,5 @@
 //! Search operations use the same answers on the socket, HTTP and MCP.
+//! Blocking surfaces run outside the runtime used for HTTP exchanges.
 use super::*;
 use polylogue_render::html::encode_path_segment as enc;
 use serde_json::{Value, json};
@@ -15,7 +16,7 @@ fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
         },
         &r.web.daemon,
     ) {
-        Response::Ok { data } => data,
+        Response::Ok { data, .. } => data,
         other => panic!("{text}: {other:?}"),
     }
 }
@@ -70,15 +71,32 @@ fn search_writes_are_available_through_the_command_table() {
                 assert_eq!(value["repeat"], repeat);
             }
         }
-        assert_eq!(data(&r, "query:parser", None)["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(data(&r, "result:kept-search", None)["rows"].as_array().unwrap().len(), 1);
-        let kept = crate::mcp::call(
-            &polylogue_store::Archive::at(&r.web.daemon.archive.root), "keep",
-            json!({"request_id":"mcp-kept","query":"sessions where parser"}).as_object().unwrap().clone(),
-        ).unwrap();
-        let outcome: Value = serde_json::from_str(&kept).unwrap();
-        assert_eq!(outcome["id"], "mcp-kept");
     });
+    assert_eq!(
+        data(&r, "query:parser", None)["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        data(&r, "result:kept-search", None)["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let kept = crate::mcp::call(
+        &polylogue_store::Archive::at(&r.web.daemon.archive.root),
+        "keep",
+        json!({"request_id":"mcp-kept","query":"sessions where parser"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    let outcome: Value = serde_json::from_str(&kept).unwrap();
+    assert_eq!(outcome["id"], "mcp-kept");
 }
 
 #[test]
@@ -91,119 +109,114 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
     .unwrap();
     r.w.wait_for(|s| s["store"]["messages"] == 2 && s["store"]["search_pending"] == 0);
     let provider = r.w.local_embeddings();
-    rt().block_on(async {
-        for source in [
-            "sessions where -id:claude-code:s1 near:\"parser\"",
-            "sessions where -id:claude-code:s1 parser near:\"parser\"",
-        ] {
-            let text = format!("{source} origin:claude-code");
-            let answer = data(&r, &text, None);
-            assert_eq!(answer["rows"].as_array().unwrap().len(), 1, "{answer}");
-            assert_eq!(answer["rows"][0]["id"], "claude-code:other");
-            let (_, _, raw) = send(
-                &r,
-                authed(get(&format!(
-                    "/api/v1/query?query={}&limit=50&why=true",
-                    enc(&text)
-                )))
-                .body(Body::empty())
+    let http = rt();
+    for source in [
+        "sessions where -id:claude-code:s1 near:\"parser\"",
+        "sessions where -id:claude-code:s1 parser near:\"parser\"",
+    ] {
+        let text = format!("{source} origin:claude-code");
+        let answer = data(&r, &text, None);
+        assert_eq!(answer["rows"].as_array().unwrap().len(), 1, "{answer}");
+        assert_eq!(answer["rows"][0]["id"], "claude-code:other");
+        let (_, _, raw) = http.block_on(send(
+            &r,
+            authed(get(&format!(
+                "/api/v1/query?query={}&limit=50&why=true",
+                enc(&text)
+            )))
+            .body(Body::empty())
+            .unwrap(),
+        ));
+        let api: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(api["rows"], answer["rows"]);
+        let args = json!({"query":text,"limit":50,"why":true})
+            .as_object()
+            .unwrap()
+            .clone();
+        let mcp: Value = serde_json::from_str(
+            &crate::mcp::call(
+                &polylogue_store::Archive::at(&r.web.daemon.archive.root),
+                "query",
+                args,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(api["rows"], mcp["rows"]);
+        let (status, _, raw) = http.block_on(send(
+            &r,
+            own_origin(authed(post("/api/v1/keep")))
+                .body(Body::from(
+                    json!({"request_id":format!("keep-{source}"),"query":text}).to_string(),
+                ))
                 .unwrap(),
-            )
-            .await;
-            let api: Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(api["rows"], answer["rows"]);
-            let args = json!({"query":text,"limit":50,"why":true})
-                .as_object()
-                .unwrap()
-                .clone();
-            let mcp: Value = serde_json::from_str(
-                &crate::mcp::call(
-                    &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-                    "query",
-                    args,
-                )
-                .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(api["rows"], mcp["rows"]);
-            let (status, _, raw) = send(
-                &r,
-                own_origin(authed(post("/api/v1/keep")))
-                    .body(Body::from(
-                        json!({"request_id":format!("keep-{source}"),"query":text}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await;
-            assert_eq!(status, StatusCode::OK, "{raw}");
-            let outcome: Value = serde_json::from_str(&raw).unwrap();
-            let kept = data(
-                &r,
-                &format!(
-                    "result:{}",
-                    serde_json::to_string(outcome["id"].as_str().unwrap()).unwrap()
-                ),
-                None,
-            );
-            assert_eq!(kept["rows"].as_array().unwrap().len(), 1, "{kept}");
-            assert_eq!(kept["rows"][0]["id"], "claude-code:other");
-        }
-    });
+        ));
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let outcome: Value = serde_json::from_str(&raw).unwrap();
+        let kept = data(
+            &r,
+            &format!(
+                "result:{}",
+                serde_json::to_string(outcome["id"].as_str().unwrap()).unwrap()
+            ),
+            None,
+        );
+        assert_eq!(kept["rows"].as_array().unwrap().len(), 1, "{kept}");
+        assert_eq!(kept["rows"][0]["id"], "claude-code:other");
+    }
     provider.join().unwrap();
 }
 
 #[test]
 fn filtered_search_has_the_same_rows_on_every_surface() {
     let r = reader();
-    rt().block_on(async {
-        for text in [
-            "messages where (parser OR absent) -role:assistant",
-            "sessions where origin:claude-code parser",
-            "messages where origin:claude-code near:\"parser\"",
-            "messages where origin:claude-code parser near:\"parser\"",
-        ] {
-            let request = Request::Query {
-                text: text.into(),
-                cursor: None,
-                page_size: Some(50),
-                why: true,
-                session: None,
-                fields: vec![],
-            };
-            let socket = crate::cli::send(&r.web.daemon.archive.socket(), &request).unwrap();
-            let (status, _, raw) = send(
-                &r,
-                authed(get(&format!(
-                    "/api/v1/query?query={}&limit=50&why=true",
-                    enc(text)
-                )))
-                .body(Body::empty())
-                .unwrap(),
-            )
-            .await;
-            let api: Value = serde_json::from_str(&raw).unwrap();
-            match socket {
-                Response::Ok { data: answer } => {
-                    assert_eq!(status, StatusCode::OK, "{raw}");
-                    assert_eq!(api["rows"], answer["rows"], "{text}");
-                    let args = json!({"query":text,"limit":50,"why":true})
-                        .as_object()
-                        .unwrap()
-                        .clone();
-                    let mcp = crate::mcp::call(
-                        &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-                        "query",
-                        args,
-                    )
-                    .unwrap();
-                    let mcp: Value = serde_json::from_str(&mcp).unwrap();
-                    assert_eq!(api["rows"], mcp["rows"]);
-                }
-                Response::Error { kind, .. } => {
-                    assert_ne!(status, StatusCode::OK, "{raw}");
-                    assert_eq!(api["error"], kind);
-                }
+    let http = rt();
+    for text in [
+        "messages where (parser OR absent) -role:assistant",
+        "sessions where origin:claude-code parser",
+        "messages where origin:claude-code near:\"parser\"",
+        "messages where origin:claude-code parser near:\"parser\"",
+    ] {
+        let request = Request::Query {
+            text: text.into(),
+            cursor: None,
+            page_size: Some(50),
+            why: true,
+            session: None,
+            fields: vec![],
+        };
+        let socket = crate::client::send(&r.web.daemon.archive.socket(), &request).unwrap();
+        let (status, _, raw) = http.block_on(send(
+            &r,
+            authed(get(&format!(
+                "/api/v1/query?query={}&limit=50&why=true",
+                enc(text)
+            )))
+            .body(Body::empty())
+            .unwrap(),
+        ));
+        let api: Value = serde_json::from_str(&raw).unwrap();
+        match socket {
+            Response::Ok { data: answer, .. } => {
+                assert_eq!(status, StatusCode::OK, "{raw}");
+                assert_eq!(api["rows"], answer["rows"], "{text}");
+                let args = json!({"query":text,"limit":50,"why":true})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+                let mcp = crate::mcp::call(
+                    &polylogue_store::Archive::at(&r.web.daemon.archive.root),
+                    "query",
+                    args,
+                )
+                .unwrap();
+                let mcp: Value = serde_json::from_str(&mcp).unwrap();
+                assert_eq!(api["rows"], mcp["rows"]);
+            }
+            Response::Error { kind, .. } => {
+                assert_ne!(status, StatusCode::OK, "{raw}");
+                assert_eq!(api["error"], kind);
             }
         }
-    });
+    }
 }
