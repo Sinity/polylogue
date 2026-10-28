@@ -63,6 +63,10 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
         "sessions where exists tool_call(action:shell) | matches | limit 2",
         "messages where parser | union (messages where done)",
         "messages where parser | union (messages where done) | limit 2",
+        "messages where parser | union (messages where done | limit 2)",
+        "messages where parser | union (messages where done | union (messages where chrono))",
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow) | limit 2",
     ] {
         let request = ask(query);
         let opts = options(&reader, &request, request.now, 1).unwrap();

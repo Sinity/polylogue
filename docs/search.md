@@ -36,7 +36,7 @@ All three return the same rows in the same order. Rows are joined to blocks, mes
 
 `count` is the exact number of matching rows, computed by a separate count plan in the same read transaction and cached by question hash and read position. When counting would pass the deadline, `count` is `null` and `notes` give the query that counts with the deadline lifted; the rest of the answer is unaffected. A count is never estimated.
 
-Counting ordinary rows applies the query's filters and stage selections without evaluating presentation fields or the final order. Ranking still runs when a selection such as `limit` depends on it, and missing semantic similarities are counted over the same selected rows.
+Counting ordinary rows applies the query's filters and stage selections without evaluating presentation fields or the final order. Fusion counts the union of selected keys; a list that only changes order adds no members. Ranking still runs when a selection such as `limit` depends on it, and missing semantic similarities are counted over the same selected rows.
 
 ## Index maintenance
 

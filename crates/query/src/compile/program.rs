@@ -378,6 +378,30 @@ impl<'a> Compiler<'a> {
             self.setup_near(true);
         }
 
+        // Final ranking cannot change membership. Keep this relation before
+        // constructing fusion's window functions; earlier ordered selections
+        // remain in its predicates. A pending selection still needs ranking.
+        let count_relation = if rows_answer && !distinct && selection.is_none() {
+            let from = self.from(&scope)?;
+            let wh = and_all(&where_sql);
+            if pending.is_empty() {
+                Some((from, wh))
+            } else {
+                let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+                let mut members = vec![format!("SELECT {pk} AS _pk FROM {from} WHERE {wh}")];
+                for other in &pending.unions {
+                    let relation = other.row_membership_sql.as_ref().unwrap_or(&other.sql);
+                    members.push(format!("SELECT _pk FROM ({relation})"));
+                }
+                Some((
+                    self.from_without_fusion(&scope),
+                    format!("{pk} IN ({})", members.join(" UNION ")),
+                ))
+            }
+        } else {
+            None
+        };
+
         self.fuse_pending(
             std::mem::take(&mut pending),
             &scope,
@@ -398,6 +422,7 @@ impl<'a> Compiler<'a> {
         let unit = scope.unit;
 
         let mut row_count = None;
+        let mut row_membership = None;
         let (sql, shape, columns, order) = if let Some(rel) = matched {
             let limit = |sql: String| match selection {
                 Some((lim, off)) => format!(
@@ -602,8 +627,15 @@ impl<'a> Compiler<'a> {
                     || "0".to_owned(),
                     |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
                 );
+                let (count_from, count_where) = count_relation
+                    .as_ref()
+                    .map(|(from, wh)| (from.as_str(), wh.as_str()))
+                    .unwrap_or((&from, &wh));
                 row_count = Some(format!(
-                    "{ctes}SELECT count(*), {without} FROM {from} WHERE {wh}"
+                    "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
+                ));
+                row_membership = Some(format!(
+                    "{ctes}SELECT {pk} AS _pk FROM {count_from} WHERE {count_where}"
                 ));
                 let (hidden, keys) = hidden_order(&order, "_o");
                 select.extend(hidden);
@@ -685,6 +717,7 @@ impl<'a> Compiler<'a> {
             shape,
             sql,
             row_count_sql: row_count,
+            row_membership_sql: row_membership,
             params: self.params,
             columns,
             ranked,
@@ -776,13 +809,21 @@ impl<'a> Compiler<'a> {
 
     /// The FROM clause of a unit, joining the rows its fields read.
     pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
+        let mut from = self.from_without_fusion(scope);
+        if let Some(fusion) = &self.fusion {
+            from.push(' ');
+            from.push_str(&fusion.join);
+        }
+        Ok(from)
+    }
+
+    fn from_without_fusion(&self, scope: &RowContext) -> String {
         let mut from = base_from(scope.unit, &scope.a);
-        let fused = self.fusion.as_ref().map(|f| &f.join);
-        for join in [self.near_join.as_ref(), fused].into_iter().flatten() {
+        if let Some(join) = &self.near_join {
             from.push(' ');
             from.push_str(join);
         }
-        Ok(from)
+        from
     }
 
     /// The default filters a unit binds, dropped by a top-level condition

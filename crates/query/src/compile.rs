@@ -202,6 +202,9 @@ pub struct Program {
     /// Exact cardinality and missing similarities, without presentation work
     /// that does not affect which rows the query selects.
     pub row_count_sql: Option<String>,
+    /// Selected ordinary-row keys without presentation order. Combining
+    /// queries uses these keys when only membership matters.
+    pub row_membership_sql: Option<String>,
     pub params: Vec<Param>,
     /// Every output column but `_pk` (each row unit's key).
     pub columns: Vec<Column>,
