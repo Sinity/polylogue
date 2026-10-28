@@ -13,6 +13,10 @@
 //!   carries every prompt the operator typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   or supported web link pasted into it brings that session's takeover context.
+//! - a shell command about to run (`PreToolUse`, Claude Code and Codex):
+//!   advice, only when the command is a verification that failed here repeatedly
+//!   since it last passed. Read-only preparation has [`ADVICE_BUDGET`];
+//!   recording printed advice has [`ADVICE_DELIVERY_BUDGET`].
 //!
 //! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -27,8 +31,7 @@ use polylogue_sources::origin::by_name;
 use polylogue_sources::{ORIGINS, Support};
 use polylogue_store::Archive;
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -37,6 +40,11 @@ use std::time::Duration;
 /// during a first build over a large archive takes a few seconds. The
 /// harnesses' hook timeouts are longer.
 const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
+
+/// How long a hook waits for read-only advice preparation.
+const ADVICE_BUDGET: Duration = Duration::from_millis(20);
+/// Recording printed advice has an independent short budget.
+const ADVICE_DELIVERY_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +120,7 @@ pub fn append_to_spool(
         extra.remove("conversation_history");
     }
     let mut line = json!({
+        "event_id": uuid::Uuid::now_v7().to_string(),
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
@@ -135,16 +144,15 @@ pub fn append_to_spool(
 
 /// Sends one request with a time budget for the whole exchange.
 fn ask_daemon(request: &Request, budget: Duration) -> Option<Response> {
-    let socket = Archive::at(&Archive::default_root()).socket();
-    let mut stream = UnixStream::connect(socket).ok()?;
-    stream.set_read_timeout(Some(budget)).ok()?;
-    stream.set_write_timeout(Some(budget)).ok()?;
-    let mut line = serde_json::to_string(request).ok()?;
-    line.push('\n');
-    stream.write_all(line.as_bytes()).ok()?;
-    let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply).ok()?;
-    serde_json::from_str(&reply).ok()
+    exchange(
+        &Archive::at(&Archive::default_root()).socket(),
+        request,
+        budget,
+    )
+}
+
+fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Response> {
+    crate::client::send_with_budget(socket, request, budget).ok()
 }
 
 /// The session a hook payload names, as Polylogue names it.
@@ -260,14 +268,14 @@ fn context(ask: Ask) -> Option<(String, String)> {
     Some((delivery, text))
 }
 
-fn delivered(delivery: &str) {
+fn delivered(delivery: &str, budget: Duration) {
     let _ = ask_daemon(
         &Request::DeliveryEvent {
             delivery: delivery.to_owned(),
             what: DeliveryOutcome::Delivered,
             detail: Some("written to the harness hook output".into()),
         },
-        CONTEXT_BUDGET,
+        budget,
     );
 }
 
@@ -305,6 +313,20 @@ fn start(harness: Harness, payload: &Value, source: StartSource) -> Option<(Stri
     })
 }
 
+/// The shell command a pre-tool payload is about to run: Claude Code's
+/// `tool_input.command`, or a command given as its words.
+fn shell_command(payload: &Value) -> Option<String> {
+    match &payload["tool_input"]["command"] {
+        Value::String(command) => Some(command.clone()),
+        Value::Array(words) => {
+            let words: Option<Vec<&str>> = words.iter().map(Value::as_str).collect();
+            Some(words?.join(" "))
+        }
+        _ => None,
+    }
+    .filter(|command| !command.trim().is_empty())
+}
+
 /// Takeover context for each session pasted into a prompt.
 fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String, String)> {
     let me = session_of(harness, payload);
@@ -328,8 +350,7 @@ fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String,
     Some((deliveries.join(","), texts.join("\n\n")))
 }
 
-/// What the hook does for one event, given its payload. Returns the
-/// deliveries and the context to emit, if any.
+/// Session-start and takeover context for an event, with its deliveries.
 pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String, String)> {
     match (harness, event) {
         (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => start(
@@ -361,6 +382,55 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
     }
 }
 
+/// Prepares read-only advice, prints it, then records the delivered text.
+fn tool_advice(
+    harness: Harness,
+    payload: &Value,
+    mut send: impl FnMut(&Request, Duration) -> Option<Response>,
+    output: impl FnOnce(Harness, &str, &str) -> bool,
+) {
+    if !matches!(harness, Harness::ClaudeCode | Harness::Codex) {
+        return;
+    }
+    let Some(cwd) = payload["cwd"].as_str().map(PathBuf::from) else {
+        return;
+    };
+    let Some(command) = shell_command(payload) else {
+        return;
+    };
+    let session = session_of(harness, payload);
+    let request = Request::Context {
+        request_id: polylogue_store::user_writes::new_request_id(),
+        ask: Ask::ToolUse {
+            cwd: cwd.clone(),
+            session: session.clone(),
+            command,
+        },
+        sender: None,
+    };
+    let Some(Response::Ok { data }) = send(&request, ADVICE_BUDGET) else {
+        return;
+    };
+    if data["prepared"]["empty"].as_bool() != Some(false) {
+        return;
+    }
+    let (Some(id), Some(text)) = (data["delivery"].as_str(), data["prepared"]["text"].as_str())
+    else {
+        return;
+    };
+    if output(harness, "PreToolUse", text) {
+        let _ = send(
+            &Request::AdviceDelivered {
+                request_id: id.to_owned(),
+                session,
+                cwd,
+                text: text.to_owned(),
+            },
+            ADVICE_DELIVERY_BUDGET,
+        );
+    }
+}
+
 pub fn run(harness: Harness, event: &str) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -374,11 +444,13 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
             ))
         );
     }
-    if let Some((deliveries, text)) = respond(harness, event, &payload)
+    if event == "PreToolUse" {
+        tool_advice(harness, &payload, ask_daemon, emit);
+    } else if let Some((deliveries, text)) = respond(harness, event, &payload)
         && emit(harness, event, &text)
     {
         for d in deliveries.split(',') {
-            delivered(d);
+            delivered(d, CONTEXT_BUDGET);
         }
     }
     ExitCode::SUCCESS

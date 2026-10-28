@@ -89,7 +89,7 @@ it.
 | `web` | Open the web reader. |
 | `mcp` | Serve MCP over stdio with the standing agent manual. |
 | `manual` | Print agent guidance and the current MCP command reference without a daemon. |
-| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`), Gemini CLI (`--harness gemini-cli`) and Hermes: live state, the session-start brief and takeovers. |
+| `hooks install\|uninstall`, `hook EVENT` | Harness hooks for Claude Code, Codex (`--harness codex`), Gemini CLI (`--harness gemini-cli`) and Hermes: live state, the session-start brief, takeovers and advice before a verification that keeps failing. |
 | `chat send PROVIDER TEXT`, `chat list\|approve\|decline` | Have the browser extension draft a turn in a web chat, or send it with `--submit`; list chat actions; approve or decline a held send ([extension](extension/README.md)). |
 | `backfill start PROVIDER`, `backfill list\|cancel` | Have the browser extension capture a web chat's older conversations; follow or stop the job. |
 | `install-agent chrome` | Register the browser extension's native messaging host ([extension](extension/README.md)). |
@@ -146,7 +146,13 @@ records for the checkout, which AgentCTL's jobs run, and test, build and
 lint commands sessions ran), and the last day's signal notices.
 It stays within `briefing.budget` tokens (default 2000) and names what it
 left out with the command that shows it. A session ID or supported conversation link pasted into a prompt
-brings that session's takeover context.
+brings that session's takeover context. Before Claude Code or Codex runs a
+shell command that is a verification (a test, build or lint) that failed
+in this checkout more than once in the last week with no pass since, the
+agent is told so, with the session of the last failure. Advice is given once
+per session and verification until its failures change. The hook waits up
+to 20 ms for read-only preparation, prints the advice, then has a separate
+20 ms budget to record it as delivered.
 
 | Harness | Hook entries |
 |---|---|
@@ -275,6 +281,12 @@ configuration path and the error, reads and queries work, and archive writes
 return `sinex_unavailable`. Fix the cause and restart the daemon.
 [docs/architecture.md](docs/architecture.md#sinex-primary-mode) describes
 how primary mode stores the archive and how a standalone archive moves to it.
+
+## Python client
+
+The [Python client](clients/python/README.md) runs the declared commands through
+CLI JSON and the daemon. Its answers keep unknown values, complete refusals and
+opaque IDs, and its change feed streams one finite batch at a time.
 
 ## Antigravity and agent guidance
 

@@ -625,7 +625,13 @@ fn tag_name(line: &str) -> Option<&str> {
 /// The check a call ran, as its stage's normalized form: the last stage
 /// that is not a directory change or an output filter.
 fn check_of(call: &Call) -> Option<String> {
-    effective_stages(call.command.as_deref()?)
+    verification_title(call.command.as_deref()?)
+}
+
+/// The verification a shell command runs (a test, build or lint), as the work
+/// graph names it; `None` for a command that runs no verification.
+pub fn verification_title(command: &str) -> Option<String> {
+    effective_stages(command)
         .iter()
         .rev()
         .find(|s| {

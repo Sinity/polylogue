@@ -69,6 +69,12 @@ const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     }
 }
 
+const REQUEST_ID: Arg = opt(
+    "request_id",
+    Kind::Text,
+    "Reuse this ID when retrying the same write",
+);
+
 /// A required positional argument.
 const fn pos(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     Arg {
@@ -145,6 +151,7 @@ impl Command {
     pub fn args_for(&self, surface: Surface) -> impl Iterator<Item = &'static Arg> {
         let args: &'static [Arg] = self.args;
         args.iter()
+            .chain(self.writes.then_some(&REQUEST_ID))
             .filter(move |a| surface == Surface::Cli || !a.cli_only)
     }
 }
@@ -1193,7 +1200,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link, advice before a verification that keeps failing",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {
@@ -1382,12 +1389,6 @@ impl Values {
     ) -> Result<Values, String> {
         let name = command.name;
         for (key, value) in &object {
-            if key == "request_id" && command.writes {
-                if !value.is_string() {
-                    return Err(format!("`{name}`: `request_id` is text"));
-                }
-                continue;
-            }
             let Some(arg) = command.args_for(surface).find(|a| a.name == key) else {
                 let known: Vec<&str> = command.args_for(surface).map(|a| a.name).collect();
                 return Err(format!(
@@ -1513,12 +1514,6 @@ pub fn schema(command: &Command) -> Map<String, Value> {
             };
         }
         properties.insert(a.name.to_owned(), p);
-    }
-    if command.writes {
-        properties.insert(
-            "request_id".into(),
-            json!({ "type": "string", "description": "Makes a resent call apply once" }),
-        );
     }
     let required: Vec<&str> = command
         .args_for(Surface::Mcp)

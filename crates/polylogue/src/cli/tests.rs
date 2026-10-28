@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_missing_daemon_is_daemon_required() {
     let dir = tempfile::tempdir().unwrap();
-    let err = send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
+    let err = crate::client::send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
     assert!(is_down(&err));
     assert!(!Archive::at(dir.path()).lock_held());
     let err = send_when_ready(&Archive::at(dir.path()), &Request::Status).unwrap_err();

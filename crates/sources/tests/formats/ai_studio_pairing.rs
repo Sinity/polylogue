@@ -35,7 +35,11 @@ fn run_chunks(chunks: &[Value]) -> Value {
         assert_eq!(row["message"]["session"], "ai-studio:pairing");
         assert_eq!(
             row["message"]["id"],
-            format!("ai-studio:pairing#{}", chunk["id"].as_str().unwrap())
+            format!(
+                "ai-studio:7:pairing#id:{}:{}",
+                chunk["id"].as_str().unwrap().len(),
+                chunk["id"].as_str().unwrap()
+            )
         );
     }
     parsed
@@ -73,14 +77,14 @@ fn a_result_before_code_cannot_borrow_that_future_call_identity() {
         {"fileData": {"mimeType": "text/plain", "fileUri": "drive://synthetic-output"}}]}));
     check_results(
         &parsed,
-        &[(&before, None), (&owned, Some("pairing#turn:code1"))],
+        &[(&before, None), (&owned, Some("7:pairing#id:4:turn:code1"))],
     );
     let calls: Vec<_> = blocks(&parsed)
         .into_iter()
         .filter(|b| b["type"] == "tool_call")
         .collect();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["call_id"], "pairing#turn:code1");
+    assert_eq!(calls[0]["call_id"], "7:pairing#id:4:turn:code1");
     let file = blocks(&parsed)
         .into_iter()
         .find(|b| b["type"] == "file")
@@ -98,9 +102,9 @@ fn an_answered_execution_cannot_lend_its_identity_to_an_extra_result() {
     check_results(
         &parsed,
         &[
-            (&first, Some("pairing#turn:code1")),
+            (&first, Some("7:pairing#id:4:turn:code1")),
             (&stray, None),
-            (&second, Some("pairing#turn:code2")),
+            (&second, Some("7:pairing#id:4:turn:code2")),
         ],
     );
     let calls: Vec<_> = blocks(&parsed)
@@ -108,8 +112,8 @@ fn an_answered_execution_cannot_lend_its_identity_to_an_extra_result() {
         .filter(|b| b["type"] == "tool_call")
         .collect();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0]["call_id"], "pairing#turn:code1");
-    assert_eq!(calls[1]["call_id"], "pairing#turn:code2");
+    assert_eq!(calls[0]["call_id"], "7:pairing#id:4:turn:code1");
+    assert_eq!(calls[1]["call_id"], "7:pairing#id:4:turn:code2");
 }
 
 #[test]
@@ -123,7 +127,7 @@ fn multiple_unanswered_executions_do_not_establish_a_unique_result_owner() {
         &[
             (&ambiguous, None),
             (&stray, None),
-            (&fresh, Some("pairing#turn:code3")),
+            (&fresh, Some("7:pairing#id:4:turn:code3")),
         ],
     );
     let calls: Vec<_> = blocks(&parsed)
@@ -131,9 +135,9 @@ fn multiple_unanswered_executions_do_not_establish_a_unique_result_owner() {
         .filter(|b| b["type"] == "tool_call")
         .collect();
     assert_eq!(calls.len(), 3);
-    assert_eq!(calls[0]["call_id"], "pairing#turn:code1");
-    assert_eq!(calls[1]["call_id"], "pairing#turn:code2");
-    assert_eq!(calls[2]["call_id"], "pairing#turn:code3");
+    assert_eq!(calls[0]["call_id"], "7:pairing#id:4:turn:code1");
+    assert_eq!(calls[1]["call_id"], "7:pairing#id:4:turn:code2");
+    assert_eq!(calls[2]["call_id"], "7:pairing#id:4:turn:code3");
 }
 
 #[test]
@@ -144,7 +148,7 @@ fn consecutive_model_chunks_keep_the_actual_preceding_call_identity() {
         json!({"id": "explanation", "role": "model", "text": "Continuing explanation"}),
         json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
     ]);
-    check_results(&parsed, &[(&native, Some("pairing#call:code1"))]);
+    check_results(&parsed, &[(&native, Some("7:pairing#id:4:call:code1"))]);
     let rows = parsed["output"]["messages"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1]["message"]["parent"], rows[0]["message"]["id"]);

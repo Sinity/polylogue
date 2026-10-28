@@ -80,10 +80,10 @@ fn ai_studio_uses_the_chunk_role_for_every_attachment_shape() {
         ".local/state/polylogue/drive/ai-studio/1abc.json",
         prompt.to_string().as_bytes(),
     );
-    let user = message(&p, "#user-turn");
+    let user = message(&p, "#id:9:user-turn");
     assert_eq!(directions(user), ["input"]);
     assert_eq!(attachments(user)[0]["source_id"], "user-drive-file");
-    let model = message(&p, "#model-turn");
+    let model = message(&p, "#id:10:model-turn");
     assert_eq!(directions(model), ["output", "output"]);
     assert!(
         attachments(model)[0]["blob"].is_string(),

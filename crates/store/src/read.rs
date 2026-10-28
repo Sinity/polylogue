@@ -21,7 +21,7 @@ mod captured;
 mod parents;
 mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
-pub use captured::CapturedSession;
+pub use captured::{CapturedSession, StoredFile};
 mod rows;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};

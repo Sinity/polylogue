@@ -164,21 +164,63 @@ async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
 
 /// The conversation a capture holds and the files it names, read with the
 /// same parser the loop uses, so the extension can fetch their bytes before
-/// it stores the capture.
-async fn capture_files(body: Bytes) -> HttpResponse {
-    match blocking(move || polylogue_sources::browser_capture::files(&body)).await {
-        Some(Ok(result)) => Json(result).into_response(),
-        Some(Err(error)) => refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "capture_unreadable",
-            &error,
-        ),
-        None => refuse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "capture_unreadable",
-            "reading the capture did not finish",
-        ),
+/// it stores the capture. Each file the archive already holds bytes for
+/// names them in `stored` (`{blob, size}`), so the extension refers to them
+/// instead of downloading them again; while the daemon does not answer,
+/// `stored` is null and the extension downloads.
+async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> HttpResponse {
+    let mut listed = match blocking(move || polylogue_sources::browser_capture::files(&body)).await
+    {
+        Some(Ok(listed)) => listed,
+        Some(Err(error)) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "capture_unreadable",
+                &error,
+            );
+        }
+        None => {
+            return refuse(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "capture_unreadable",
+                "reading the capture did not finish",
+            );
+        }
+    };
+    let provider = listed["conversation"]["provider"]
+        .as_str()
+        .map(str::to_owned);
+    let conversation = listed["conversation"]["id"].as_str().map(str::to_owned);
+    let stored = match provider.zip(conversation) {
+        Some((provider, conversation)) => ask(
+            host,
+            Request::StoredFiles {
+                provider,
+                conversation,
+            },
+        )
+        .await
+        .ok(),
+        None => None,
+    };
+    listed["downloading"] = stored
+        .as_ref()
+        .map_or(Value::Bool(false), |data| data["downloading"].clone());
+    let stored = stored.as_ref().map_or(&[][..], |data| {
+        data["files"].as_array().map_or(&[][..], Vec::as_slice)
+    });
+    if let Some(files) = listed["files"].as_array_mut() {
+        for file in files {
+            let found = file["file_id"]
+                .as_str()
+                .and_then(|id| stored.iter().find(|s| s["id"] == id));
+            file["stored"] = match found {
+                Some(s) => json!({ "blob": s["blob"], "size": s["size"] }),
+                None => Value::Null,
+            };
+        }
     }
+    Json(listed).into_response()
 }
 
 #[derive(Deserialize)]
@@ -226,6 +268,7 @@ async fn conversations(
                 "session": row["session"],
                 "messages": messages,
                 "last_captured_at": row["last_captured_at"],
+                "downloading": row["downloading"],
             })
         })
         .collect();

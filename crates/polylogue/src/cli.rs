@@ -14,8 +14,6 @@ use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
 use polylogue_store::Archive;
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -42,7 +40,7 @@ pub fn command() -> clap::Command {
     for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
-                for a in c.args.iter().filter(|a| !a.global) {
+                for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
                     root = root.arg(clap_arg(a));
                 }
             }
@@ -83,7 +81,7 @@ fn subcommand(c: &Command) -> clap::Command {
     let mut sub = clap::Command::new(word)
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
-    for a in c.args.iter().filter(|a| !a.global) {
+    for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
         sub = sub.arg(clap_arg(a));
     }
     sub
@@ -140,7 +138,7 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
 /// A command's values from its matches.
 fn values(c: &Command, m: &ArgMatches) -> Values {
     let mut out = serde_json::Map::new();
-    for a in c.args {
+    for a in c.args_for(Surface::Cli) {
         let value = match a.kind {
             Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
             Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),
@@ -325,7 +323,7 @@ fn is_down(e: &std::io::Error) -> bool {
 /// large archive takes seconds). With no daemon at all, the error is
 /// returned at once.
 pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<Response> {
-    when_ready(archive, || send(&archive.socket(), request))
+    when_ready(archive, || crate::client::send(&archive.socket(), request))
 }
 
 fn when_ready<T>(
@@ -356,26 +354,12 @@ fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandida
         return Vec::new();
     };
     let socket = Archive::at(&Archive::default_root()).socket();
-    let Ok(mut stream) = UnixStream::connect(socket) else {
-        return Vec::new();
-    };
-    let wait = Some(std::time::Duration::from_millis(500));
-    let _ = stream.set_read_timeout(wait);
-    let _ = stream.set_write_timeout(wait);
     let request = Request::Complete {
         word: word.to_owned(),
     };
-    let Ok(mut line) = serde_json::to_string(&request) else {
-        return Vec::new();
-    };
-    line.push('\n');
-    let mut reply = String::new();
-    if stream.write_all(line.as_bytes()).is_err()
-        || BufReader::new(stream).read_line(&mut reply).is_err()
-    {
-        return Vec::new();
-    }
-    let Ok(Response::Ok { data }) = serde_json::from_str::<Response>(&reply) else {
+    let Ok(Response::Ok { data }) =
+        crate::client::send_with_budget(&socket, &request, std::time::Duration::from_millis(500))
+    else {
         return Vec::new();
     };
     completion_candidates(&data)
@@ -399,17 +383,6 @@ fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate
             )
         })
         .collect()
-}
-
-/// Sends one request and reads its response.
-pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
-    let mut stream = UnixStream::connect(socket)?;
-    let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
-    line.push('\n');
-    stream.write_all(line.as_bytes())?;
-    let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply)?;
-    serde_json::from_str(&reply).map_err(std::io::Error::other)
 }
 
 pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {

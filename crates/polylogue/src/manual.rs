@@ -14,3 +14,6 @@ pub fn text() -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests;

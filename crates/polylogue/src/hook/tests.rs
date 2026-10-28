@@ -27,6 +27,8 @@ fn hook_spool_files_get_one_line_per_event() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(lines.len(), 2);
+    assert!(lines[0]["event_id"].is_string());
+    assert_ne!(lines[0]["event_id"], lines[1]["event_id"]);
     assert_eq!(lines[0]["provider"], "claude-code");
     assert_eq!(lines[0]["session_id"], "a");
     assert_eq!(lines[1]["event"], "SessionEnd");
@@ -161,6 +163,75 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
 }
 
 mod settings;
+
+#[test]
+fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Stay silent until the hook closes its end. Only its deadline
+        // can finish the exchange while this connection is open.
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).unwrap();
+        assert!(!request.is_empty());
+    });
+    assert!(exchange(&socket, &Request::Status, ADVICE_BUDGET).is_none());
+    peer.join().unwrap();
+}
+
+#[test]
+fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
+    use std::cell::Cell;
+    for printed in [false, true] {
+        let output_called = Cell::new(false);
+        let mut calls = 0;
+        tool_advice(
+            Harness::ClaudeCode,
+            &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
+            |request, budget| {
+                calls += 1;
+                match request {
+                    Request::Context { sender, .. } => {
+                        assert!(sender.is_none());
+                        assert_eq!(budget, ADVICE_BUDGET);
+                        Some(Response::Ok {
+                            data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
+                        })
+                    }
+                    Request::AdviceDelivered {
+                        request_id, text, ..
+                    } => {
+                        assert!(output_called.get());
+                        assert_eq!(budget, ADVICE_DELIVERY_BUDGET);
+                        assert_eq!(request_id, "advice:one");
+                        assert_eq!(text, "try this");
+                        None
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            },
+            |_, _, text| {
+                assert_eq!(text, "try this");
+                output_called.set(true);
+                printed
+            },
+        );
+        assert_eq!(calls, if printed { 2 } else { 1 });
+    }
+}
+
+#[test]
+fn hermes_tool_events_do_not_request_or_print_advice() {
+    tool_advice(
+        Harness::Hermes,
+        &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
+        |_, _| panic!("a Hermes tool event requested advice"),
+        |_, _, _| panic!("a Hermes tool event printed advice"),
+    );
+}
 
 #[test]
 fn web_links_resolve_to_the_same_sessions_as_captures() {
