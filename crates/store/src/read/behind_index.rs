@@ -13,9 +13,6 @@ pub struct BehindChain {
     pub progress: ChainProgress,
 }
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportedAs {
     pub format: String,
@@ -29,12 +26,15 @@ impl Reader<'_> {
     /// parser is waiting on is not behind.
     pub fn chains_behind_index(&self) -> Result<Vec<BehindChain>> {
         let mut stmt = self.conn()?.prepare(
-            "WITH chains AS (
-                SELECT input, chain, max(length) AS length, max(produced = 'imported') AS imported
+            "WITH inputs AS MATERIALIZED (
+                SELECT input, max(number) AS number, max(produced = 'imported') AS imported
+                FROM a.revision GROUP BY input
+            ), chains AS (
+                SELECT input, chain, max(length) AS length
                 FROM a.revision GROUP BY input, chain
-            ), latest AS (
-                SELECT r.input, r.chain FROM a.revision r
-                WHERE r.number = (SELECT max(number) FROM a.revision x WHERE x.input = r.input)
+            ), first_paths AS MATERIALIZED (
+                SELECT input, min(rowid) AS observation
+                FROM a.observation WHERE class <> 'excised' GROUP BY input
             ), formats AS (
                 SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input
@@ -44,14 +44,16 @@ impl Reader<'_> {
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
-                (SELECT max(produced = 'imported') FROM a.revision x WHERE x.input = c.input),
+                s.imported,
                 COALESCE(f.format, i.format),
-                COALESCE(f.path, (SELECT o.path FROM a.observation o
-                    WHERE o.input = c.input AND o.class <> 'excised' ORDER BY o.rowid LIMIT 1)),
+                COALESCE(f.path, o.path),
                 COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting', 0)
             FROM chains c JOIN a.input i ON i.id = c.input
-            JOIN latest l ON l.input = c.input
+            JOIN inputs s ON s.input = c.input
+            JOIN a.revision l ON l.input = c.input AND l.number = s.number
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
+            LEFT JOIN first_paths fp ON fp.input = c.input
+            LEFT JOIN a.observation o ON o.rowid = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE c.length > 0
@@ -85,3 +87,6 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 }
+
+#[cfg(test)]
+mod tests;
