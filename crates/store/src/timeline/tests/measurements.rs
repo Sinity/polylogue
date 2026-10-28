@@ -107,8 +107,8 @@ fn million_message_measurements() {
         model: Some("rare"),
         ..all(None, false, false)
     };
-    // The reviewed narrow reads already had global time indexes, but still
-    // walked them from the earliest response to find sparse matches.
+    // The sparse baseline keeps the global time and model completion indexes.
+    // Session filters use time order; model filters can find and sort matches.
     let global_index_clock = Instant::now();
     conn.execute_batch(
         "CREATE INDEX message_at ON message(at,id); CREATE INDEX event_at ON event(at,id);",
