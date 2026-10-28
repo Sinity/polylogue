@@ -318,7 +318,9 @@ queries always read `index.db`.
   password, and Sinex's store root. Credentials in the `nats` URL are
   refused, so no password sits in the configuration file. Polylogue
   writes the bytes it sends under the store root, so the account it runs
-  as needs the store's group.
+  as needs the store's group. Before registering its owned kinds or writing
+  frame bytes, Polylogue sends the producer protocol hello and checks Sinex's
+  welcome. A refused hello returns the daemon's reason.
 
 ### Moving to primary mode
 

@@ -7,8 +7,8 @@ use crate::{Config, Error, Result};
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use sinex_protocol::{
-    Acknowledgment, Excise, ExciseReply, Ingress, Materials, ProducerMaterial, RecordedQuery,
-    Subjects,
+    Acknowledgment, Excise, ExciseReply, Ingress, Materials, ProducerHello, ProducerMaterial,
+    ProducerWelcome, RecordedQuery, Subjects,
 };
 use sinex_transport::frame_bytes;
 use std::collections::HashMap;
@@ -84,6 +84,20 @@ impl Client {
             .flush()
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
+        let welcome = client
+            .request(
+                subjects.connect(&config.producer),
+                serde_json::to_vec(&ProducerHello::default())?.into(),
+            )
+            .await
+            .map_err(|e| Error::Unreachable(e.to_string()))?;
+        let welcome: ProducerWelcome = serde_json::from_slice(&welcome.payload)?;
+        if let Some(reason) = welcome.refusal {
+            return Err(Error::Refused {
+                name: "connect".into(),
+                reason,
+            });
+        }
         let max_message = client.server_info().max_payload;
         let mut connected = Self {
             client,

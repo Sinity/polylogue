@@ -62,8 +62,24 @@ fn the_producer_connects_with_the_password_from_its_file() {
                 .await
                 .unwrap();
             let mut incoming = client.subscribe("auth.ingress.polylogue").await.unwrap();
+            let mut connections = client.subscribe("auth.connect.polylogue").await.unwrap();
             client.flush().await.unwrap();
             ready.send(()).unwrap();
+            let message = connections.next().await.unwrap();
+            let hello: sinex_protocol::ProducerHello =
+                serde_json::from_slice(&message.payload).unwrap();
+            assert_eq!(hello.version, sinex_protocol::PRODUCER_VERSION);
+            assert!(hello.event_types.is_empty());
+            assert_eq!(hello.class, sinex_model::Class::Open);
+            client
+                .publish(
+                    message.reply.unwrap(),
+                    serde_json::to_vec(&sinex_protocol::ProducerWelcome { refusal: None })
+                        .unwrap()
+                        .into(),
+                )
+                .await
+                .unwrap();
             let message = incoming.next().await.unwrap();
             let sinex_protocol::Ingress::RegisterKinds {
                 frame,
@@ -138,4 +154,63 @@ fn an_unreadable_password_file_is_named() {
         matches!(&error, Error::Invalid(m) if m.contains("password file") && m.contains("absent")),
         "{error}"
     );
+}
+
+#[test]
+fn a_connect_refusal_precedes_kind_registration_and_frame_bytes() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("password");
+    std::fs::write(&file, PASSWORD).unwrap();
+    let url = server.url().to_string();
+    let (ready, started) = std::sync::mpsc::channel();
+    let responder = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use futures_util::StreamExt;
+            let client = async_nats::ConnectOptions::with_user_and_password(
+                "daemon".into(),
+                "synthetic-daemon-password".into(),
+            )
+            .connect(&url)
+            .await
+            .unwrap();
+            let mut connections = client.subscribe("auth.connect.polylogue").await.unwrap();
+            client.flush().await.unwrap();
+            ready.send(()).unwrap();
+            let message = connections.next().await.unwrap();
+            let hello: sinex_protocol::ProducerHello =
+                serde_json::from_slice(&message.payload).unwrap();
+            assert!(hello.event_types.is_empty());
+            client
+                .publish(
+                    message.reply.unwrap(),
+                    serde_json::to_vec(&sinex_protocol::ProducerWelcome {
+                        refusal: Some("producer bytes cannot be stored sealed".into()),
+                    })
+                    .unwrap()
+                    .into(),
+                )
+                .await
+                .unwrap();
+            client.flush().await.unwrap();
+        });
+    });
+    started.recv().unwrap();
+    let mut config = config(&server, Some(&file));
+    config.store = dir.path().join("store");
+    std::fs::create_dir(&config.store).unwrap();
+    let error = Sinex::connect(&config, dir.path())
+        .err()
+        .expect("connect refused");
+    assert!(
+        matches!(&error, Error::Refused { name, reason }
+        if name == "connect" && reason == "producer bytes cannot be stored sealed"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_dir(&config.store).unwrap().count(), 0);
+    responder.join().unwrap();
 }
