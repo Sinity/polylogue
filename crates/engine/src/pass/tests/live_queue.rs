@@ -18,7 +18,7 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
             "polylogue_capture_kind":"browser_llm_session", "schema_version":1,
             "provenance":{"captured_at":"2026-10-01T00:00:00Z"},
             "session":{"provider":"gemini", "provider_session_id":native,
-                "turns":[{"provider_turn_id":"m1", "role":"user", "text":text}]}
+                "turns":[{"provider_turn_id":format!("m1-{native}"), "role":"user", "text":text}]}
         }))
         .unwrap();
         let mut bytes = capture_log::MAGIC.to_vec();

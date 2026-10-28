@@ -396,14 +396,18 @@ impl Engine {
                 }),
         );
         let mut plans = Vec::new();
-        for f in found {
-            if self.refused.contains(&f.path) || busy.contains(f.path.as_path()) {
+        let mut seen = HashSet::new();
+        for f in &found {
+            if self.refused.contains(&f.path)
+                || busy.contains(f.path.as_path())
+                || !seen.insert(f.path.as_path())
+            {
                 continue;
             }
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
             };
-            if !self.track(&f) {
+            if !self.track(f) {
                 continue;
             }
             let now = FileFacts::of(&meta);
