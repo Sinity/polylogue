@@ -92,9 +92,12 @@ modules.
 store touches SQLite.
 
 The shared crates (`hashed-blobs`, `devkit`, `query-language`,
-`command-surface`, `web-shell`) come from polylogue-sinex-common at a pinned
-tag. Code is shared only where the mechanics are identical; Polylogue's
-concepts stay its own.
+`command-surface`, `web-shell`) follow polylogue-sinex-common's `master`
+branch, with the exact commit pinned in `Cargo.lock`. Its
+[dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
+describes lock updates and local development with `cargo xtask link-common`.
+Code is shared only where the mechanics are identical; Polylogue's concepts
+stay its own.
 
 ## Building, testing and measuring
 
