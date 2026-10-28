@@ -549,6 +549,14 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(response) => return response,
                 Ok(None) => {}
             }
+            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+                .ok()
+                .flatten();
+            let embeddings = crate::embeddings::ranking_key(&reader, provider.as_ref()).is_some();
+            let near = |q: &str| match &provider {
+                Some(p) => d.warm.similarity(&reader, p, q),
+                None => Err("embeddings are off".into()),
+            };
             let ask = super::query::Ask {
                 text: &text,
                 cursor: None,
@@ -557,8 +565,8 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 session: None,
                 now: now_ms(),
                 day: None,
-                embeddings: false,
-                near: None,
+                embeddings,
+                near: Some(&near),
                 fields: &[],
             };
             let kept = match super::query::keep(&reader, ask) {

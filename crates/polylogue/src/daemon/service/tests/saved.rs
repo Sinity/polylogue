@@ -48,9 +48,10 @@ fn a_saved_query_runs_by_name_and_saving_again_revises_it() {
 
 #[test]
 fn save_retries_keep_the_first_revision_after_the_definition_changes() {
-    let d = test_daemon::start("first prompt");
+    let mut d = test_daemon::start("first prompt");
     ok(&d, save("first", "everything", "sessions"));
     ok(&d, save("second", "everything", "messages"));
+    d.restart();
     for (id, text) in [("first", "sessions"), ("second", "messages")] {
         let repeated = ok(&d, save(id, "everything", text));
         assert_eq!(repeated["id"], id);
@@ -69,7 +70,7 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
 
 #[test]
 fn keep_retries_return_the_original_rows_after_membership_changes() {
-    let d = test_daemon::start("first prompt");
+    let mut d = test_daemon::start("first prompt");
     let keep = |id: &str, text: &str, name: &str| Request::Keep {
         request_id: id.into(),
         text: text.into(),
@@ -77,6 +78,7 @@ fn keep_retries_return_the_original_rows_after_membership_changes() {
     };
     ok(&d, keep("kept", "notes", "before"));
     ok(&d, save("saved", "everything", "sessions"));
+    d.restart();
     let repeated = ok(&d, keep("kept", "notes", "before"));
     assert_eq!(repeated["repeat"], true);
     let rows = ok(&d, query("result:kept"));
@@ -135,4 +137,18 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
             other => panic!("{other:?}"),
         }
     }
+}
+
+#[test]
+fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
+    let d = test_daemon::start("synthetic|prompt");
+    ok(
+        &d,
+        Request::Keep {
+            request_id: "quoted-pipe".into(),
+            text: "sessions where exists message(\"synthetic|prompt\")".into(),
+            name: None,
+        },
+    );
+    assert_eq!(ok(&d, query("result:quoted-pipe.matches"))["count"], 1);
 }
