@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claims and annotation passes</title>
+<style>
+body{margin:0}
+a{color:#1F5FA0}a:hover{color:#163F6B}
+</style>
+</head>
+<body>
+<div style="min-height: 1240px; background: #F4F5F2; color: #1B1D1F; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+<header style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; padding: 12px 24px; border-bottom: 1px solid #DDE1DE; background: #FFFFFF">
+<span style="font-weight: 600; font-size: 15px">Polylogue</span>
+<a href="home.html" style="color: #4A5155; text-decoration: none">Home</a>
+<a href="pages.html" style="color: #4A5155; text-decoration: none">Pages</a>
+<span style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #4A5155">notes where kind:claim</span>
+</header>
+<main style="max-width: 1200px; margin: 0 auto; padding: 24px; display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+<section style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline">
+<h1 style="margin: 0; font-size: 20px; font-weight: 600">Claims</h1>
+<span style="font-size: 12px; color: #4A5155">checks evaluated now, at read time · never stored · never a verdict</span>
+</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><span style="padding: 1px 9px; border-radius: 10px; background: #D9EDE9; color: #0A403C; font-size: 12px; font-weight: 600">holds</span><span style="font-weight: 500">"the edit to src/parse.rs made the tests pass"</span></div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #4A5155">id:claude-code:7f3a2c10-0002 | seq(command:"cargo test" outcome:error → command:"cargo test" outcome:ok) · expects rows · got 1</div>
+<div style="font-size: 12px; color: #4A5155">on claude-code:7f3a2c10-0002 · by agent session [ID] · not judged</div>
+</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><span style="padding: 1px 9px; border-radius: 10px; background: #F3DCDA; color: #7A1F17; font-size: 12px; font-weight: 600">fails</span><span style="font-weight: 500">"every test run in this session passed"</span></div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #4A5155">id:claude-code:7f3a2c10-0002 | tool_calls where command:"cargo test" outcome:error · expects no rows · got 1:</div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 6px 10px; border-left: 2px solid #7A1F17">10:37  Bash  cargo test  error · exit 101 · 3m 43s  <a href="#">open</a></div>
+<div style="font-size: 12px; color: #4A5155">on claude-code:7f3a2c10-0002 · by agent session [ID] · accepted earlier: status counts it as an accepted claim the archive now contradicts</div>
+</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><span style="padding: 1px 9px; border-radius: 10px; background: #EEF0EC; color: #4A5155; font-size: 12px; font-weight: 600">unknown</span><span style="font-weight: 500">"clippy is clean after the fix"</span></div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #4A5155">id:claude-code:7f3a2c10-0004 | seq(command:"cargo clippy" outcome:error → command:"cargo clippy" outcome:ok) · expects rows</div>
+<div style="font-size: 12px; color: #4A5155">neither holds nor fails: the session's latest input is still waiting to be parsed (up_to_date: false)</div>
+</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center"><span style="padding: 1px 9px; border-radius: 10px; border: 1px solid #DDE1DE; color: #6B7378; font-size: 12px; font-weight: 600">unchecked</span><span style="font-weight: 500">"parse_relative ignores DST"</span></div>
+<div style="font-size: 12px; color: #4A5155">no check given · shown as free text with its anchor</div>
+</div>
+</section>
+<section style="flex: 1 1 380px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<h2 style="margin: 0; font-size: 20px; font-weight: 600">Judge a pass</h2>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #4A5155">polylogue judge --blind --sample 5 'notes where rubric:outcomes@r2'</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-weight: 600">Rubric outcomes @ r2</div>
+<div>may write: <span style="font-family: 'IBM Plex Mono', monospace">outcome</span> = solved | partial | abandoned</div>
+<div>covers: <span style="font-family: 'IBM Plex Mono', monospace">sessions where repo:morrow</span></div>
+<div style="color: #4A5155">anything else is refused by the writer</div>
+</div>
+<div style="border: 2px solid #1F5FA0; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; font-size: 12px; color: #4A5155"><span>item 4 of 5 · order shuffled</span><span>author hidden until the verdict</span></div>
+<div style="font-weight: 600">outcome: <span style="font-family: 'IBM Plex Mono', monospace">solved</span></div>
+<div style="font-size: 13px">on <a href="#">codex:01a20000-0006</a> "Review parser (try strict mode)"</div>
+<div style="font-size: 12.5px; color: #4A5155">last messages: strict mode rejects "next friday" on a Friday · cargo test ok</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 16px; border: 1px solid #DDE1DE; background: #D9EDE9; color: #1B1D1F; border-radius: 4px; font-size: 14px"><b>a</b> accept</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; border: 1px solid #DDE1DE; background: #F3DCDA; color: #1B1D1F; border-radius: 4px; font-size: 14px"><b>r</b> reject</button>
+<button type="button" style="min-height: 44px; padding: 0 16px; border: 1px solid #DDE1DE; background: #F4F5F2; color: #1B1D1F; border-radius: 4px; font-size: 14px"><b>d</b> defer</button>
+</div>
+</div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px; font-size: 13px; display: flex; flex-direction: column; gap: 4px">
+<div style="font-weight: 600">This pass so far</div>
+<div>agrees with the operator on <b>2 of 3</b> judged · 1 deferred · 1 left</div>
+<div style="color: #4A5155; font-size: 12px">reference: operator judgments · same rubric revision · excluded 0</div>
+<div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px"><a href="#">withdraw the whole pass</a><a href="#">revise the rubric and re-run</a></div>
+</div>
+</section>
+</main>
+</div>
+</body>
+</html>

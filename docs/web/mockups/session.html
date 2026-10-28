@@ -1,0 +1,119 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Date parsing · polylogue</title><style>
+:root{--bg:#fbfbfa;--fg:#1d1d1b;--dim:#6b6b66;--faint:#e7e6e1;--panel:#f2f1ec;--link:#1f5fa8;--ok:#2d7a3a;--err:#b3261e;--warn:#8a6100;--note:#6b3fa0;--hl:#fff1a8;--hlfg:inherit;color-scheme:light dark}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#e6e5e0;--dim:#9a9993;--faint:#2c2c2a;--panel:#1f1f1d;--link:#7fb0ec;--ok:#6cc27b;--err:#f08a80;--warn:#e0b450;--note:#c3a0f0;--hl:#5a4d00;--hlfg:#fff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+code,.mono,.id,pre,kbd{font-family:ui-monospace,"JetBrains Mono","Cascadia Code",Menlo,monospace;font-size:12.5px}
+header.top{display:flex;gap:16px;align-items:center;padding:8px 20px;border-bottom:1px solid var(--faint);flex-wrap:wrap}
+header.top .brand{font-weight:600;letter-spacing:.02em}
+header.top nav a{margin-right:12px;color:var(--dim)}header.top nav a.on{color:var(--fg);font-weight:600}
+header.top form{flex:1;min-width:240px;display:flex;gap:6px}
+input[type=search],input[type=text],textarea,select{background:var(--bg);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:5px 8px;font:inherit}
+input[type=search]{flex:1;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--faint);border-radius:4px;padding:4px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+main{max-width:1180px;margin:0 auto;padding:16px 20px 48px}
+h1{font-size:18px;margin:4px 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:22px 0 6px;font-weight:600}
+.meta{color:var(--dim)}.dim{color:var(--dim)}
+table{border-collapse:collapse;width:100%}
+th{font-weight:600;text-align:left;color:var(--dim);font-size:12px;border-bottom:1px solid var(--faint);padding:4px 8px}
+td{padding:3px 8px;border-bottom:1px solid var(--faint);vertical-align:top}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.unk{color:var(--dim);font-style:italic}
+.ok{color:var(--ok)}.err{color:var(--err);font-weight:600}.warn{color:var(--warn)}
+.tag{display:inline-block;border:1px solid var(--faint);border-radius:3px;padding:0 5px;font-size:11.5px;color:var(--dim);margin-right:3px}
+.note{color:var(--note)}
+mark{background:var(--hl);color:var(--hlfg);padding:0 1px}
+.cli{display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--dim)}
+.cli code{background:var(--panel);padding:2px 6px;border-radius:3px;color:var(--fg)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}
+@media (max-width:860px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--panel);border-radius:6px;padding:10px 12px}
+.panel dl{display:grid;grid-template-columns:76px 1fr;gap:3px 8px;margin:0}
+.panel dt{color:var(--dim)}.panel dd{margin:0}
+.footnote{margin-top:30px;color:var(--dim);font-size:12px;border-top:1px solid var(--faint);padding-top:8px}
+.msg{padding:6px 0 8px;border-bottom:1px solid var(--faint)}
+.msg.human .mb p{font-weight:500}
+.mh{display:flex;gap:8px;align-items:baseline;color:var(--dim);font-size:12.5px}
+.mh .t{font-variant-numeric:tabular-nums;width:40px}.msg.human .who{color:var(--fg);font-weight:600}
+.mnote{margin-left:auto;color:var(--note);font-size:12.5px;background:var(--panel);padding:1px 8px;border-radius:3px}
+.mb{padding-left:48px}.mb p{margin:2px 0}
+.tool{font-size:13px}.tool summary{cursor:pointer;list-style:none}.tool summary::-webkit-details-marker{display:none}
+.tool summary,.tool.plain{display:grid;grid-template-columns:78px minmax(0,260px) 48px auto;gap:8px;align-items:baseline;padding:1px 0}
+.tool .tn{color:var(--dim)}.tool .tx{color:var(--dim)}
+.tool pre{background:var(--panel);margin:3px 0 6px;padding:6px 10px;border-radius:4px;overflow-x:auto;white-space:pre-wrap}
+.errline{color:var(--err);padding-left:86px;font-size:12px}
+.thinking{color:var(--dim);font-size:12.5px}
+.cont{margin:10px 0;color:var(--dim)}
+.viewbar{font-size:12.5px;color:var(--dim)}.viewbar label{margin-left:8px}
+.ind{background:var(--bg);border:1px dashed var(--faint);padding:2px 6px;border-radius:3px;margin-bottom:2px}
+.lineage{line-height:1.7;font-size:12px}</style></head><body>
+<header class="top"><span class="brand">polylogue</span><nav><a href="index.html" class="">Overview</a><a href="search.html" class="">Search</a><a href="cost.html" class="">Cost</a><a href="page.html" class="">Pages</a></nav>
+<form action="search.html"><input type="search" name="q" value="" placeholder="query — e.g. chrono · origin:codex since:7d · tool_calls where outcome:error" aria-label="query"><button>Search</button></form>
+<span class="meta mono" title="daemon state">● up to date</span></header>
+<main>
+<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline">
+<div><h1>Date parsing</h1>
+<div class="meta">claude-code · Oct 02 10:00–11:15 (1h 15m) · <span class="mono">/home/op/morrow</span> · branch main</div>
+<div class="meta">claude-fable-5-1 · 18 messages · 3 prompts · 13 tool calls (<span class="err">1 error</span>) · $2.85 · <span class="tag">project:morrow</span></div></div>
+<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end"><span class="cli"><code>polylogue claude-code:7f3a2c10-0002 read</code><button data-cli="polylogue claude-code:7f3a2c10-0002 read">copy as CLI command</button></span>
+<div class="viewbar"><b>transcript</b> · <a href="#">dialogue</a> · <a href="#">summary</a> · <a href="#">context</a> · <a href="#">lineage</a> · <a href="#">changes</a> · <a href="#">raw</a></div>
+<div class="viewbar"><label><input type="checkbox"> expand all tools</label> <label><input type="checkbox"> thinking in full</label> <label><input type="checkbox"> harness messages</label></div></div>
+</div>
+<div class="grid" style="margin-top:12px">
+<div class="transcript">
+<section class="msg human"><div class="mh"><span class="t">10:00</span> <span class="who">you</span></div><div class="mb"><p>Add parse_relative() for phrases like "tomorrow at noon" and "in 3 days".</p></div></section><section class="msg "><div class="mh"><span class="t">10:06</span> <span class="who">model</span></div><div class="mb"><p>Let me look at the current code first.</p><div class="tool plain"><span class="tn">▸ Read</span><span class="tt mono">src/lib.rs</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">6m 30s</span></div><div class="tool plain"><span class="tn">▸ Read</span><span class="tt mono">Cargo.toml</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">6m 30s</span></div></div></section><section class="msg "><div class="mh"><span class="t">10:19</span> <span class="who">model</span></div><div class="mb"><details class="tool"><summary><span class="tn">▸ Agent</span><span class="tt mono">Explore: Survey date crates</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span> <span class="dim">→ <a class="id" href="#">claude-code:7f3a2c10-0002-4000-8000-000000000002/a7f3a2c1000000003 (6 msgs)</a></span></summary><pre>prompt: Compare the chrono and time crates for relative date arithmetic. Report which APIs we would use.
+
+result (from the subagent's final answer, 10:26):
+chrono offers NaiveDateTime plus Duration and weekday helpers; time is leaner but lacks weekday arithmetic helpers we need.</pre></details></div></section><section class="msg "><div class="mh"><span class="t">10:30</span> <span class="who">model</span></div><div class="mb"><details class="tool"><summary><span class="tn">▸ Edit</span><span class="tt mono">src/parse.rs</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span></summary><pre>+ pub fn parse_relative(input: &amp;str, now: NaiveDateTime) -&gt; Option&lt;NaiveDateTime&gt; { todo!() }</pre></details><details class="tool"><summary><span class="tn">▸ Edit</span><span class="tt mono">src/lib.rs</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span></summary><pre> pub mod parse;
++pub use parse::parse_relative;</pre></details></div></section><section class="msg " id="m-1037"><div class="mh"><span class="t">10:37</span> <span class="who">model</span></div><div class="mb"><details class="tool"><summary><span class="tn">▸ Bash</span><span class="tt mono">cargo test</span><span class="to"><span class="err">error</span></span><span class="tx mono">exit 101 · 3m 43s</span></summary><pre>$ cargo test
+running 6 tests
+test parse_dates::tomorrow_at_noon ... FAILED
+
+failures:
+    parse_dates::tomorrow_at_noon
+
+test result: FAILED. 5 passed; 1 failed
+error: test failed, to rerun pass `--lib`
+exit code: 101</pre></details><div class="errline mono">test parse_dates::tomorrow_at_noon ... FAILED</div></div></section><section class="msg "><div class="mh"><span class="t">10:45</span> <span class="who">model</span></div><div class="mb"><div class="thinking">thinking (10 words) — <i>Noon is applied before adding the day; swap the order.</i></div><details class="tool"><summary><span class="tn">▸ Edit</span><span class="tt mono">src/parse.rs</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span></summary><pre>- at_noon(now) + Duration::days(1)
++ at_noon(now + Duration::days(1))</pre></details><details class="tool"><summary><span class="tn">▸ Bash</span><span class="tt mono">cargo test</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">3m 44s</span></summary><pre>running 6 tests
+test result: ok. 6 passed; 0 failed</pre></details></div></section><section class="msg "><div class="mh"><span class="t">10:52</span> <span class="who">model</span></div><div class="mb"><p>All 6 tests pass. parse_relative handles "tomorrow at noon" and "in N days" using the time crate.</p></div></section><section class="msg human" id="m-1056"><div class="mh"><span class="t">10:56</span> <span class="who">you</span><span class="mnote">◆ decision: chrono, not time <span class="dim">· operator</span></span></div><div class="mb"><p>let's use chrono, not time</p></div></section><section class="msg "><div class="mh"><span class="t">11:00</span> <span class="who">model</span></div><div class="mb"><details class="tool"><summary><span class="tn">▸ Edit</span><span class="tt mono">Cargo.toml</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span></summary><pre> [dependencies]
++chrono = "0.4"</pre></details><div class="tool plain"><span class="tn">▸ Read</span><span class="tt mono">src/parse.rs</span><span class="to"><span class="ok">ok</span></span><span class="tx mono"></span></div><div class="tool plain"><span class="tn">▸ Bash</span><span class="tt mono">cargo test</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">3m 43s</span></div><div class="tool plain"><span class="tn">▸ Bash</span><span class="tt mono">cargo clippy</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">3m 43s</span></div><div class="tool plain"><span class="tn">▸ Bash</span><span class="tt mono">cargo build</span><span class="to"><span class="ok">ok</span></span><span class="tx mono">3m 43s</span></div></div></section><section class="msg "><div class="mh"><span class="t">11:07</span> <span class="who">model</span></div><div class="mb"><p>Switched to chrono. Tests, clippy and build are clean.</p></div></section><section class="msg human"><div class="mh"><span class="t">11:11</span> <span class="who">you</span></div><div class="mb"><p>Which crate does parse_absolute need?</p></div></section><section class="msg "><div class="mh"><span class="t">11:15</span> <span class="who">model</span></div><div class="mb"><p>chrono covers it too: NaiveDate::parse_from_str for ISO dates. I'll add it next session.</p></div></section>
+<div class="cont">↪ continued by <a class="id" href="#">claude-code:7f3a2c10-0004</a> (Oct 03 14:00, resume — repeats these 18 messages, adds 10)</div>
+<p class="dim" style="font-size:12px">13 of 18 messages shown: the 5 tool-result messages written by the harness are folded into their call lines. Click a tool line to expand it.</p>
+</div>
+<aside>
+<div class="panel"><dl>
+<dt>id</dt><dd class="id" style="word-break:break-all">claude-code:7f3a2c10-0002-4000-8000-000000000002</dd>
+<dt>model</dt><dd>claude-fable-5-1</dd>
+<dt>tools</dt><dd>Bash 5 (<span class="err">1 error</span>) · Edit 4 · Read 3 · Agent 1</dd>
+<dt>tokens</dt><dd>input 2,000 · output 21,100 · cache read 900,000 · cache write 70,000</dd>
+<dt>cost</dt><dd>$2.85 <span class="dim">(+ $0.16 in 1 subagent)</span></dd>
+</dl></div>
+<h2>Lineage</h2>
+<div class="panel lineage mono">
+claude-code:7f3a2c10-0002 <span class="dim">(this)</span><br>
+├─ subagent <a href="#">a7f3a2c1000000003</a> <span class="dim">Explore · 6 msgs · $0.16</span><br>
+└─ continued by <a href="#">7f3a2c10-0004</a> <span class="dim">Oct 03 · 10 own msgs</span>
+</div>
+<h2>Notes</h2>
+<div class="panel">
+<div><span class="note">◆ decision</span> “decided: chrono, not time” <a href="#m-1056" class="dim">10:56</a> <span class="dim">· operator</span></div>
+<div><span class="tag">project:morrow</span> <span class="dim">tag · operator</span></div>
+<div style="margin-top:8px;display:flex;gap:6px"><input type="text" placeholder="add a note to this session…" style="flex:1"><button>note</button></div>
+</div>
+<h2>Elsewhere, for comparison</h2>
+<div class="panel" style="font-size:12.5px">
+<p style="margin:0 0 6px">This session has no compaction and no branches. In sessions that do, the reader shows one line in place:</p>
+<div class="ind mono">⟲ compacted (182k → 14.5k tokens) <span class="dim">· 14:40 · manual</span> <a href="#">show summary</a></div>
+<div class="dim" style="font-size:11.5px;margin-bottom:6px">claude-code:7f3a2c10-0004, Oct 03</div>
+<div class="ind mono">⑂ 2 other versions of this reply <a href="#">show</a></div>
+<div class="dim" style="font-size:11.5px;margin-bottom:6px">chatgpt:68f0a1b2, at 21:04 (prompt 2 was edited)</div>
+<div class="ind mono">↳ continues claude-code:7f3a2c10-0002 (18 earlier messages; <a href="#">show</a>)</div>
+<div class="dim" style="font-size:11.5px">top of claude-code:7f3a2c10-0004</div>
+</div>
+<p class="dim" style="font-size:12px;margin-top:10px"><a href="#">raw source records</a> · <a href="#">read as JSON</a> · <a href="#">open in pager</a></p>
+</aside></div>
+<p class="footnote">Mockup on the Morrow example archive (examples/morrow/FACTS.md). Clock fixed at 2026-10-08 12:00 Europe/Warsaw.</p></main><script>document.querySelectorAll('[data-cli]').forEach(b=>b.addEventListener('click',()=>{navigator.clipboard&&navigator.clipboard.writeText(b.dataset.cli);const t=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=t,1200)}))</script></body></html>

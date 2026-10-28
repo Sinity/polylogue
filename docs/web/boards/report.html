@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session report: Date parsing</title>
+<style>
+body{margin:0}
+a{color:#1F5FA0}a:hover{color:#163F6B}
+</style>
+</head>
+<body>
+<div style="min-height: 1320px; background: #F4F5F2; color: #1B1D1F; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.45">
+<header style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; padding: 12px 24px; border-bottom: 1px solid #DDE1DE; background: #FFFFFF">
+<nav style="display: flex; flex-wrap: wrap; gap: 20px; align-items: center">
+<span style="font-weight: 600; font-size: 15px">Polylogue</span>
+<a href="home.html" style="color: #4A5155; text-decoration: none">Home</a>
+<a href="running.html" style="color: #4A5155; text-decoration: none">Running</a>
+<a href="cost.html" style="color: #4A5155; text-decoration: none">Cost</a>
+<a href="pages.html" style="color: #4A5155; text-decoration: none">Pages</a>
+</nav>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<a href="reader.html" style="min-height: 36px; display: inline-flex; align-items: center; padding: 0 12px; border: 1px solid #DDE1DE; border-radius: 4px; font-size: 13px; text-decoration: none">Open transcript</a>
+<a href="share.html" style="min-height: 36px; display: inline-flex; align-items: center; padding: 0 12px; border: 1px solid #DDE1DE; border-radius: 4px; font-size: 13px; text-decoration: none">Share an excerpt</a>
+</div>
+</header>
+<main style="max-width: 1200px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12px; color: #4A5155">Session report · computed from stored facts</div>
+<h1 style="margin: 0; font-size: 22px; font-weight: 600">Date parsing</h1>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #4A5155">claude-code:7f3a2c10-0002 · Oct 02 10:00–11:15 (1h 15m) · /home/op/morrow · branch main · claude-fable-5-1</div>
+</div>
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px">
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px"><div style="font-size: 12px; color: #4A5155">Cost</div><div style="font-size: 20px; font-weight: 600">$2.85</div><div style="font-size: 12px; color: #4A5155">+ $0.16 in 1 subagent</div></div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px"><div style="font-size: 12px; color: #4A5155">Turns</div><div style="font-size: 20px; font-weight: 600">3</div><div style="font-size: 12px; color: #4A5155">3 prompts · 18 messages</div></div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px"><div style="font-size: 12px; color: #4A5155">Tool calls</div><div style="font-size: 20px; font-weight: 600">13</div><div style="font-size: 12px; color: #B42318">1 error, fixed later</div></div>
+<div style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 12px 14px"><div style="font-size: 12px; color: #4A5155">Files touched</div><div style="font-size: 20px; font-weight: 600">3</div><div style="font-size: 12px; color: #4A5155">all edits known</div></div>
+</section>
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 16px; display: flex; flex-direction: column; gap: 10px">
+<h2 style="margin: 0; font-size: 14px; font-weight: 600">Timeline</h2>
+<div style="overflow-x: auto">
+<div style="position: relative; min-width: 900px; height: 132px">
+<div style="position: absolute; left: 0; right: 0; top: 18px; display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #4A5155"><span>10:00</span><span>10:15</span><span>10:30</span><span>10:45</span><span>11:00</span><span>11:15</span></div>
+<div style="position: absolute; left: 0; width: 74.7%; top: 40px; height: 18px; background: #EEF0EC; border: 1px solid #DDE1DE; font-size: 11px; padding-left: 6px; box-sizing: border-box">turn 1 · "Add parse_relative() …"</div>
+<div style="position: absolute; left: 74.7%; width: 14.6%; top: 40px; height: 18px; background: #F7F1E8; border: 1px solid #DDE1DE; font-size: 11px; padding-left: 6px; box-sizing: border-box">turn 2 · chrono</div>
+<div style="position: absolute; left: 89.3%; width: 10.7%; top: 40px; height: 18px; background: #EEF0EC; border: 1px solid #DDE1DE; font-size: 11px; padding-left: 4px; box-sizing: border-box">3</div>
+<div style="position: absolute; left: 25.3%; width: 14.7%; top: 66px; height: 14px; background: #EEF0EC; font-size: 10.5px; padding-left: 4px; box-sizing: border-box">subagent Explore</div>
+<div style="position: absolute; left: 49.3%; width: 5%; top: 88px; height: 14px; background: #B42318" title="cargo test, error, exit 101, 3m 43s"></div>
+<div style="position: absolute; left: 49.3%; top: 106px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #B42318">cargo test · exit 101 · 3m 43s</div>
+<div style="position: absolute; left: 60%; width: 1.2%; top: 88px; height: 14px; background: #1F5FA0" title="Edit src/parse.rs"></div>
+<div style="position: absolute; left: 61.5%; width: 5%; top: 88px; height: 14px; background: #0A403C" title="cargo test, ok, 3m 44s"></div>
+<div style="position: absolute; left: 61.5%; top: 66px; font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #0A403C">◆ claim · holds</div>
+<div style="position: absolute; left: 80%; width: 15%; top: 88px; height: 14px; background: #0A403C; opacity: 0.6" title="cargo test, clippy, build: ok"></div>
+</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: #4A5155"><span><span style="display: inline-block; width: 10px; height: 10px; background: #0A403C"></span> ok</span><span><span style="display: inline-block; width: 10px; height: 10px; background: #B42318"></span> error</span><span><span style="display: inline-block; width: 10px; height: 10px; background: #1F5FA0"></span> edit</span><span><span style="display: inline-block; width: 10px; height: 10px; background: #EEF0EC"></span> subagent</span></div>
+</section>
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+<section style="flex: 999 1 560px; min-width: 0; border: 1px solid #DDE1DE; background: #FFFFFF; padding: 16px; display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0 0 4px; font-size: 14px; font-weight: 600">Tool calls</h2>
+<div style="overflow-x: auto">
+<table style="width: 100%; border-collapse: collapse; font-size: 12.5px">
+<thead><tr style="text-align: left; color: #4A5155"><th style="padding: 6px 8px; font-weight: 500">time</th><th style="padding: 6px 8px; font-weight: 500">tool</th><th style="padding: 6px 8px; font-weight: 500">target</th><th style="padding: 6px 8px; font-weight: 500">outcome</th><th style="padding: 6px 8px; font-weight: 500">duration</th></tr></thead>
+<tbody style="font-family: 'IBM Plex Mono', monospace">
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">10:06</td><td style="padding: 6px 8px">Read ×2</td><td style="padding: 6px 8px">src/lib.rs, Cargo.toml</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px"></td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">10:19</td><td style="padding: 6px 8px">Agent</td><td style="padding: 6px 8px">Explore: Survey date crates</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px">7m</td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">10:30</td><td style="padding: 6px 8px">Edit ×2</td><td style="padding: 6px 8px">src/parse.rs, src/lib.rs</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px"></td></tr>
+<tr style="border-top: 1px solid #DDE1DE; background: #F3DCDA"><td style="padding: 6px 8px">10:37</td><td style="padding: 6px 8px">Bash</td><td style="padding: 6px 8px">cargo test</td><td style="padding: 6px 8px; color: #B42318">error · exit 101</td><td style="padding: 6px 8px">3m 43s</td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">10:45</td><td style="padding: 6px 8px">Edit</td><td style="padding: 6px 8px">src/parse.rs</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px"></td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">10:45</td><td style="padding: 6px 8px">Bash</td><td style="padding: 6px 8px">cargo test</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px">3m 44s</td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">11:00</td><td style="padding: 6px 8px">Edit, Read</td><td style="padding: 6px 8px">Cargo.toml, src/parse.rs</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px"></td></tr>
+<tr style="border-top: 1px solid #DDE1DE"><td style="padding: 6px 8px">11:00</td><td style="padding: 6px 8px">Bash ×3</td><td style="padding: 6px 8px">cargo test, clippy, build</td><td style="padding: 6px 8px; color: #0A403C">ok</td><td style="padding: 6px 8px">3m 43s each</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+<aside style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 14px; font-weight: 600">Files touched</h2>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px">src/parse.rs <span style="color: #4A5155">2 edits</span></div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px">src/lib.rs <span style="color: #4A5155">1 edit</span></div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 12.5px">Cargo.toml <span style="color: #4A5155">1 edit</span></div>
+</section>
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px">
+<h2 style="margin: 0; font-size: 14px; font-weight: 600">Agent notes, checked</h2>
+<div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px">
+<div><span style="display: inline-block; padding: 1px 8px; border-radius: 10px; background: #D9EDE9; color: #0A403C; font-size: 12px; font-weight: 600">holds</span> ◆ claim</div>
+<div style="font-weight: 500">"the edit to src/parse.rs made the tests pass"</div>
+<div style="font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #4A5155">check: seq(command:"cargo test" outcome:error → command:"cargo test" outcome:ok) expects rows</div>
+<div style="font-size: 12px; color: #4A5155">anchored on the 10:45 cargo test · by agent session [ID] · <a href="#">read why it said so</a></div>
+</div>
+</section>
+<section style="border: 1px solid #DDE1DE; background: #FFFFFF; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 14px; font-weight: 600">Lineage and notes</h2>
+<div style="font-size: 13px">↳ subagent <a href="#">claude-code:a7f3a2c1</a> <span style="color: #4A5155">$0.16</span></div>
+<div style="font-size: 13px">→ continued by <a href="#">…0004</a> <span style="color: #4A5155">Oct 03, resume</span></div>
+<div style="font-size: 13px">◆ decision · decided: chrono, not time</div>
+</section>
+</aside>
+</div>
+</main>
+</div>
+</body>
+</html>
