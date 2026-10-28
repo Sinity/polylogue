@@ -25,7 +25,6 @@ serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
 thiserror = "2"
 blake3 = "1"
 memchr = "2"
-gix = { version = "0.89", default-features = false, features = ["sha1"] }
 zstd = "0.13"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
@@ -38,11 +37,9 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs", "net", "process"] }
 proptest = "1"
 tempfile = "3"
-atomicwrites = "0.4.4"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v7"] }
-rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt"] }
 unicode-normalization = "0.1"
 strsim = "0.11"
@@ -61,13 +58,16 @@ unimplemented = "deny"
 
 # Tests spend most of their CPU in SQLite, JSON and the credential masker.
 # Optimizing them cuts suite CPU by about three quarters; level 1 for the
-# workspace keeps incremental rebuilds about as cheap as unoptimized ones.
+# workspace keeps rebuilds about as cheap as unoptimized ones.
 # Line tables keep backtraces readable. Full debug info made each worktree's
 # target directory 12-19 GB and every test link a heavy disk write.
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
+incremental = false
+codegen-units = 256
 
 [profile.dev.package."*"]
+codegen-units = 16
 opt-level = 2
 debug = false

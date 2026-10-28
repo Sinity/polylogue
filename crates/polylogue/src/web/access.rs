@@ -9,9 +9,9 @@
 
 use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// The default port of an archive's daemon.
@@ -53,11 +53,7 @@ pub fn write_access_files(dir: &Path, token: &str, port: u16) -> io::Result<()> 
 }
 
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true).mode(0o600);
-    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
-        .write_with_options(|file| file.write_all(text.as_bytes()), options)
-        .map_err(Into::into)
+    polylogue_model::atomic_write::write_atomic(path, text.as_bytes(), None)
 }
 
 /// The running reader's authenticated entry point, as written by that
