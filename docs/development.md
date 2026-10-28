@@ -10,7 +10,8 @@ work and keeps its log.
 | Formatting | `agentctl job start polylogue fmt --workspace <worktree>` | before committing |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing |
 | Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing |
-| Full suite | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
+| Landing check (both modes) | `agentctl job start polylogue check --workspace <worktree>` | on a PR's rebased head, before merging |
+| Sinex client | `agentctl job start polylogue sinex_client --workspace <worktree>` | after client or primary-mode feature changes |
 | End-to-end scenarios | `agentctl job start polylogue scenarios --workspace <worktree>` | after daemon, CLI or MCP changes |
 | Package build | `agentctl job start polylogue package --workspace <worktree>` | after dependency or packaging changes |
 | Extension | `agentctl job start polylogue extension --workspace <worktree> -- ci`, then `-- test` | after extension changes |
@@ -24,17 +25,10 @@ suite) on each new master head in the reserved checkout
 (`agentctl job list --project polylogue`) to see whether a failure is already
 on master.
 
-- **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
-  Clippy over every target, tests included, with warnings denied: once with
-  `polylogue/sinex`, so the Sinex code compiles too, and once over the
-  `polylogue` package without it.
-- **Full suite:** the fast check, then `cargo nextest run --workspace
-  --features polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
-  (configuration in `.config/nextest.toml`). Each test runs in its own
-  process; one still running after two minutes fails. `focused` and
-  `scenarios` build exactly the same: `xtask test` always selects the whole
-  workspace with these features and turns `-p` and `-E` into one filterset
-  that chooses which tests run. It refuses feature flags.
+- **Fast check:** formatting, crate boundaries (`xtask boundaries`) and Clippy over every target, tests included, with warnings denied. Cargo's dependency graph and devkit's changed-package selection choose whether primary mode and the standalone application need separate passes.
+- **Landing check:** formatting, boundaries, Clippy with `polylogue/sinex`, Clippy for the standalone application, standalone workspace tests, and Sinex client and primary-mode application tests. Every run checks both configurations, including the master baseline. Each test runs in its own process; one still running after two minutes fails (configuration in `.config/nextest.toml`).
+- **Focused tests:** `xtask test` builds the standalone workspace with `polylogue-engine/faults,polylogue-store/faults` and excludes `polylogue-sinex`. `-p`, `-E` and test names choose which tests run. `test --changed` uses devkit's selection from the merge base with `origin/master`; when the Cargo dependency graph selects the Sinex client, it builds with `polylogue/sinex` too. Explicitly selecting `-p polylogue-sinex` also enables that configuration. Feature flags are refused so iteration checks reuse these two builds.
+- **Sinex client:** `xtask sinex-client`, exposed as the `sinex_client` operation, builds and tests `polylogue-sinex` and the primary-mode application. The landing check always runs it. The real-server rebuild test remains ignored unless run in the Sinex environment described below.
 - **Fault tests:** the `faults` features add a fault registry that starts
   empty; only a test's own `polylogue_store::fault::arm` call activates a
   point, in that process. They stop work between an excision's database
@@ -65,8 +59,10 @@ Tests that need realistic data use `polylogue-testkit`:
 `Morrow::build(Set::Main)` lays out the Morrow example archive
 (`examples/morrow/`, facts in its `FACTS.md`) where each tool writes, runs the
 loop over it and imports its exports. `view()` and `stored_bytes()` give what
-laws compare. Query examples run against it in
-`crates/polylogue/src/daemon/query/tests/spec_examples.rs`.
+laws compare. Query-language invariants, application examples, paging and saved results live
+in `crates/polylogue/src/daemon/query/tests/`. The language invariants compile
+queries and run them through a Store reader, using the real origin and command
+declarations.
 
 Tests do not assert on elapsed time. A test that checks a deadline makes the
 peer stay silent until the client gives up, so only the deadline can end the
@@ -102,21 +98,30 @@ agentctl job start sinex exec --workspace <sinex> --wait -- \
 
 The dev profile builds dependencies at `opt-level = 2` and workspace crates
 at `opt-level = 1`, because tests spend most of their CPU in SQLite, JSON and
-the credential masker. Every test run builds the whole workspace with one
-feature set, so `focused`, `scenarios` and `check` reuse each other's
-artifacts whatever packages or filters they select. The first test run in a
+the credential masker. Default test runs build the workspace without the Sinex client and use one
+feature set, so `focused`, `scenarios` and `check` reuse each other's artifacts
+whatever packages or filters they select. The client operation builds the
+Sinex transport stack separately. The first test run in a
 checkout builds every test binary; a new checkout's target starts as a
 reflink copy of the master baseline's warm target, so that build compiles
 only what differs from master.
+
+Incremental compilation is disabled. Workspace crates use 256 codegen units;
+external packages use 16. Optimization and debug settings stay unchanged.
+
+Repository lookups use Git for configuration, remotes and root commits.
+Results are cached by HEAD and the modification times of configuration files,
+including conditional includes. Git is included in the dev shell and the
+packaged binary's path.
 
 The dev shell links with mold (`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS`):
 on a cold test build the workspace's test binaries spent 169 s linking with
 the default linker and 37 s with mold. The Nix package build keeps the default.
 
-Every operation that runs Cargo holds a place under the host's `cargo` cap:
-at most three Cargo builds run at once across the normal and bulk queues,
-each with an 8 GiB `MemoryHigh`. A job that waits for a place logs it, and
-the wait does not count against its timeout. `check` stops after 20 minutes.
+Operations that declare the `cargo` cap share build slots across queues. The
+host configuration owns its width; `.agentctl/project.toml` owns each operation's
+resource limits. A job that waits for a place logs it, and the wait does not
+count against its timeout. `check` stops after 20 minutes.
 
 AgentCTL takes `CARGO_TARGET_DIR` from the caller when it queues a job. Give
 each target directory one building job at a time.

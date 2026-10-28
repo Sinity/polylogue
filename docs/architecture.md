@@ -13,7 +13,7 @@ which reads through Store and presents through Query and Render.
 
 | Crate | What it owns |
 |---|---|
-| [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates; no I/O. |
+| [Model](../crates/model/src/lib.rs) | Identities, messages, blocks, documents, events and outcomes shared by the other crates, plus durable file replacement. |
 | [Sources](../crates/sources/src/lib.rs) | Reading each origin's formats. An [origin declaration](../crates/sources/src/origin.rs) holds everything known about an origin: its locations, how to recognize its files and split them into records, its parser and its tool facts. [Parse](../crates/sources/src/parse.rs) and [Records](../crates/sources/src/records.rs) turn records into model values with byte ranges and record counts. |
 | [Engine](../crates/engine/src/lib.rs) | The loop: find changed files, store their bytes, schedule parsing and derivations. The [parse pool](../crates/engine/src/pool.rs) feeds Store's writer; it holds no SQL. |
 | [Store](../crates/store/src/lib.rs) | Every SQLite connection and write, the blob store, derivations and excision, behind the typed `Writer`, `ReadPool` and `Reader`. |
