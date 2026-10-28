@@ -184,11 +184,10 @@ fn malformed_request_ids_are_not_echoed_in_error_responses() {
 
 #[test]
 fn server_instructions_include_guidance_and_current_command_names() {
-    let server = Polylogue {
-        archive: std::path::PathBuf::from("/synthetic/archive"),
+    let Reply::Message(info) = Session::default().prepare(initialize()) else {
+        panic!("initialize must return server information");
     };
-    let info = server.get_info();
-    let text = info.instructions.unwrap();
+    let text = info["result"]["instructions"].as_str().unwrap();
     assert!(text.contains("Continue pages"));
     for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
         assert!(text.contains(&format!("`{}`", command.mcp_name())));

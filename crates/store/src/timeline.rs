@@ -163,6 +163,7 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
         let responses = crate::measure::Selection {
             sessions: None,
             origins: None,
+            population: responses.population.clone(),
             since: responses.since,
             until: responses.until,
             undated: responses.undated,
