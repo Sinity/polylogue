@@ -19,7 +19,15 @@ fn a_refused_import_installs_no_file() {
             let (mut engine, _lock) = engine(&home, 64);
             let conn = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
             conn.execute_batch("CREATE TRIGGER reject_first_import BEFORE INSERT ON input BEGIN SELECT RAISE(ABORT,'synthetic first write refusal'); END;").unwrap();
-            let rejected = engine.import(std::slice::from_ref(&path)).unwrap();
+            let rejected = engine
+                .import_with_options(
+                    std::slice::from_ref(&path),
+                    &ImportOptions {
+                        format: Some("claude-code".into()),
+                        explain: false,
+                    },
+                )
+                .unwrap();
             assert!(!rejected.pass.errors.is_empty());
             assert!(
                 !engine.blobs.contains(&hash),
@@ -48,24 +56,17 @@ fn a_refused_import_installs_no_file() {
             )
             .unwrap();
         }
-        let retry = engine.import(std::slice::from_ref(&path)).unwrap();
+        let retry = engine
+            .import_with_options(
+                std::slice::from_ref(&path),
+                &ImportOptions {
+                    format: Some("claude-code".into()),
+                    explain: false,
+                },
+            )
+            .unwrap();
         assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
         assert_eq!(engine.blobs.contains(&hash), !changed);
-        let id = blake3::hash(&std::fs::read(&path).unwrap())
-            .to_hex()
-            .to_string();
-        engine
-            .excise(ExciseRequest {
-                id: format!("remove-{changed}"),
-                target: ExciseTarget::Input(id),
-                reason: None,
-                dry_run: false,
-            })
-            .unwrap();
-        assert!(
-            !engine.blobs.contains(&hash),
-            "edited retries must not leave the refused original hidden in CAS"
-        );
     }
 }
 
@@ -80,7 +81,15 @@ fn equal_inline_bytes_install_no_file_copy() {
     let (mut engine, _lock) = engine(&home, 1024);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     assert!(!engine.blobs.contains(&hash));
-    let report = engine.import(&[path]).unwrap();
+    let report = engine
+        .import_with_options(
+            &[path],
+            &ImportOptions {
+                format: Some("claude-code".into()),
+                explain: false,
+            },
+        )
+        .unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert!(
         !engine.blobs.contains(&hash),

@@ -26,6 +26,7 @@ pub mod grok_cli;
 pub mod hermes;
 pub mod hook_spool;
 pub mod lines;
+pub mod locations;
 pub mod openai_chat;
 pub mod openrouter;
 pub mod origin;

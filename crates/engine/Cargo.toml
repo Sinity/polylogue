@@ -18,13 +18,16 @@ serde_json.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 uuid.workspace = true
+zstd.workspace = true
+tempfile.workspace = true
+flate2 = "1"
+tar = "0.4"
 
 [features]
 # Test support: arm the store's fault points.
 faults = ["polylogue-store/faults"]
 
 [dev-dependencies]
-tempfile.workspace = true
 mimalloc.workspace = true
 polylogue-store = { workspace = true, features = ["fixture"] }
 proptest.workspace = true

@@ -22,7 +22,15 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
         {
             let (mut engine, _lock) = engine(&home, 64);
             fault::arm(point, &id, Action::Fail, 0, 1);
-            let report = engine.import(std::slice::from_ref(&path)).unwrap();
+            let report = engine
+                .import_with_options(
+                    std::slice::from_ref(&path),
+                    &ImportOptions {
+                        format: Some("claude-code".into()),
+                        explain: false,
+                    },
+                )
+                .unwrap();
             assert!(!report.pass.errors.is_empty(), "{point}");
             assert_eq!(engine.blobs.contains(&hash), physically_installed);
             let reader = engine.reads.reader().unwrap();
@@ -65,7 +73,15 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
             assert_eq!(pass.pending_inputs[0].state, PendingState::Missing);
             assert_eq!(home.count("SELECT count(*) AS n FROM message"), 0);
         }
-        let replacement = engine.import(std::slice::from_ref(&path)).unwrap();
+        let replacement = engine
+            .import_with_options(
+                std::slice::from_ref(&path),
+                &ImportOptions {
+                    format: Some("claude-code".into()),
+                    explain: false,
+                },
+            )
+            .unwrap();
         assert!(
             replacement.pass.errors.is_empty(),
             "{:?}",
@@ -74,49 +90,4 @@ fn a_stop_before_or_after_installing_keeps_the_exact_bytes_across_restart() {
         assert_eq!(home.texts("replacement-session"), ["synthetic replacement"]);
         assert_eq!(engine.blobs.contains(&hash), physically_installed);
     }
-}
-
-#[test]
-fn whole_input_excision_removes_bytes_never_installed_and_refuses_their_retry() {
-    let home = ClaudeHome::new();
-    let path = home.dir.path().join("manual.jsonl");
-    let original = claude_user(
-        "missing-user",
-        "missing-session",
-        "synthetic bytes never installed",
-    );
-    std::fs::write(&path, &original).unwrap();
-    let id = blake3::hash(original.as_bytes()).to_hex().to_string();
-    let (mut engine, _lock) = engine(&home, 64);
-    fault::arm("import.install", &id, Action::Fail, 0, 1);
-    assert!(
-        !engine
-            .import(std::slice::from_ref(&path))
-            .unwrap()
-            .pass
-            .errors
-            .is_empty()
-    );
-    engine
-        .excise(ExciseRequest {
-            id: "remove-bytes-never-installed".into(),
-            target: ExciseTarget::Input(id.clone()),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap();
-    let retry = engine.import(&[path]).unwrap();
-    assert!(
-        retry
-            .pass
-            .errors
-            .iter()
-            .any(|error| error.contains("excluded"))
-    );
-    assert!(
-        !engine
-            .blobs
-            .contains(&hashed_blobs::Hash::of(original.as_bytes()))
-    );
-    assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 0);
 }

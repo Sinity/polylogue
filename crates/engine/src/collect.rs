@@ -29,18 +29,39 @@ pub(crate) fn requires_scan(event: &notify::Event) -> bool {
     )
 }
 
-/// Origins the loop collects from fixed locations.
+/// Collection is independent of parser availability.
 fn collected() -> impl Iterator<Item = &'static OriginSpec> {
-    ORIGINS
-        .iter()
-        .filter(|o| o.support == Support::Parsed && o.arrival != Arrival::Import)
+    ORIGINS.iter().filter(|o| o.arrival != Arrival::Import)
 }
 
-/// Every file matching a live or spool location, and the directories that
-/// exist but could not be read. Recognition is separate ([`recognize`]),
-/// so known paths are not reopened every pass.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Class {
+    Collected,
+    Ignored,
+    Unrecognized,
+}
+
+/// Aggregated during the discovery walk, without reopening source trees.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Coverage {
+    pub root: PathBuf,
+    pub class: Class,
+    pub pattern: String,
+    pub files: u64,
+    pub bytes: u64,
+    pub newest_mtime_ms: Option<u64>,
+}
+
+pub struct Scan {
+    pub found: Vec<Found>,
+    pub unreadable: Vec<PathBuf>,
+    pub coverage: Vec<Coverage>,
+}
+
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
-    scan_origins(config, collected())
+    let scan = scan_with_coverage(config);
+    (scan.found, scan.unreadable)
 }
 
 /// Changed files and the contents of newly created or moved directories.
@@ -58,6 +79,39 @@ pub fn scan_paths(
             let mut matched = Vec::new();
             walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
             found.extend(matched.into_iter().map(|path| Found { path, origin }));
+        }
+    }
+    for tool in polylogue_sources::locations::TOOLS {
+        let base = config.root(tool.root);
+        let mut roots = vec![base.clone()];
+        if tool.name == "hermes" {
+            roots.extend(
+                entries(&base.join("profiles"), &mut unreadable)
+                    .into_iter()
+                    .filter(|p| p.is_dir()),
+            );
+        }
+        for root in roots {
+            for pattern in tool.locations {
+                let mut matched = Vec::new();
+                let segs: Vec<_> = pattern.split('/').collect();
+                walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
+                for path in matched {
+                    let relative = path.strip_prefix(&root).expect("location under root");
+                    if relative.components().any(|p| p.as_os_str() == ".git")
+                        || tool
+                            .ignored
+                            .iter()
+                            .any(|(pattern, _)| matches_path(relative, pattern))
+                    {
+                        continue;
+                    }
+                    let origin = context_origin(tool, &path);
+                    if !found.iter().any(|f| f.path == path) {
+                        found.push(Found { path, origin });
+                    }
+                }
+            }
         }
     }
     found.sort_by(|a, b| a.path.cmp(&b.path));
@@ -161,27 +215,215 @@ pub(crate) fn database_path(config: &Config, path: &Path) -> Option<PathBuf> {
 /// collectors' output): small directories, read again while a long pass
 /// runs so what arrives there is not left behind it.
 pub fn scan_spools(config: &Config) -> Vec<Found> {
-    scan_origins(config, collected().filter(|o| o.arrival == Arrival::Spool)).0
-}
-
-fn scan_origins(
-    config: &Config,
-    origins: impl Iterator<Item = &'static OriginSpec>,
-) -> (Vec<Found>, Vec<PathBuf>) {
     let mut found = Vec::new();
     let mut unreadable = Vec::new();
-    for origin in origins {
-        let root = config.root(origin.root);
+    for origin in collected().filter(|o| o.arrival == Arrival::Spool) {
         for pattern in origin.locations {
-            let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            let segs: Vec<_> = pattern.split('/').collect();
             let mut paths = Vec::new();
-            walk(&root, &segs, &mut paths, &mut unreadable);
+            walk(
+                &config.root(origin.root),
+                &segs,
+                &mut paths,
+                &mut unreadable,
+            );
             found.extend(paths.into_iter().map(|path| Found { path, origin }));
         }
     }
-    found.sort_by(|a, b| a.path.cmp(&b.path));
-    found.dedup_by(|a, b| a.path == b.path);
-    (found, unreadable)
+    found
+}
+
+pub fn scan_with_coverage(config: &Config) -> Scan {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut areas = BTreeMap::new();
+    for tool in polylogue_sources::locations::TOOLS {
+        let root = config.root(tool.root);
+        areas.insert(root.clone(), Some(tool));
+        if tool.name == "hermes" {
+            for profile in entries(&root.join("profiles"), &mut Vec::new()) {
+                if fs::symlink_metadata(&profile).is_ok_and(|m| m.is_dir()) {
+                    areas.insert(profile, Some(tool));
+                }
+            }
+        }
+    }
+    for origin in collected() {
+        for pattern in origin.locations {
+            let base = config.root(origin.root);
+            let root = if origin.root == polylogue_sources::Root::HOME
+                || origin.root == polylogue_sources::Root::STATE
+            {
+                let first = pattern.split('/').next().unwrap_or("");
+                if first.contains('*') {
+                    continue;
+                }
+                base.join(first)
+            } else {
+                base
+            };
+            if !areas.keys().any(|area| root.starts_with(area)) {
+                areas.entry(root).or_insert(None);
+            }
+        }
+    }
+    let roots: BTreeSet<_> = areas.keys().cloned().collect();
+    let mut scan = Scan {
+        found: Vec::new(),
+        unreadable: Vec::new(),
+        coverage: Vec::new(),
+    };
+    let mut rows = BTreeMap::new();
+    for (root, tool) in areas {
+        let mut files = Vec::new();
+        all_files(&root, &root, &roots, &mut files, &mut scan.unreadable);
+        for path in files {
+            let relative = path.strip_prefix(&root).unwrap_or(&path);
+            let ignored = relative
+                .components()
+                .any(|p| p.as_os_str() == ".git")
+                .then_some("git metadata")
+                .or_else(|| {
+                    tool.and_then(|tool| {
+                        tool.ignored
+                            .iter()
+                            .find(|(p, _)| matches_path(relative, p))
+                            .map(|(_, reason)| *reason)
+                    })
+                });
+            let matched = if ignored.is_none() {
+                collected()
+                    .find_map(|origin| {
+                        let relative = path.strip_prefix(config.root(origin.root)).ok()?;
+                        origin
+                            .locations
+                            .iter()
+                            .find(|p| matches_path(relative, p))
+                            .map(|pattern| (origin, *pattern))
+                    })
+                    .or_else(|| {
+                        tool.and_then(|tool| {
+                            tool.locations
+                                .iter()
+                                .find(|p| matches_path(relative, p))
+                                .map(|pattern| (context_origin(tool, &path), *pattern))
+                        })
+                    })
+            } else {
+                None
+            };
+            let (class, pattern) = if let Some(reason) = ignored {
+                (Class::Ignored, reason.to_owned())
+            } else if let Some((origin, pattern)) = matched {
+                scan.found.push(Found {
+                    path: path.clone(),
+                    origin,
+                });
+                (Class::Collected, pattern.to_owned())
+            } else {
+                (
+                    Class::Unrecognized,
+                    format!(
+                        "{}/*.{}",
+                        relative.parent().unwrap_or(Path::new("")).display(),
+                        relative.extension().and_then(|e| e.to_str()).unwrap_or("")
+                    ),
+                )
+            };
+            match fs::metadata(&path) {
+                Ok(meta) => {
+                    let row = rows
+                        .entry((root.clone(), class.clone(), pattern.clone()))
+                        .or_insert(Coverage {
+                            root: root.clone(),
+                            class,
+                            pattern,
+                            files: 0,
+                            bytes: 0,
+                            newest_mtime_ms: None,
+                        });
+                    row.files += 1;
+                    row.bytes += meta.len();
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .and_then(|duration| duration.as_millis().try_into().ok());
+                    row.newest_mtime_ms = row.newest_mtime_ms.max(mtime);
+                }
+                Err(_) => scan.unreadable.push(path),
+            }
+        }
+    }
+    scan.found.sort_by(|a, b| a.path.cmp(&b.path));
+    scan.found.dedup_by(|a, b| a.path == b.path);
+    scan.unreadable.sort();
+    scan.unreadable.dedup();
+    scan.coverage = rows.into_values().collect();
+    scan
+}
+
+fn context_origin(tool: &polylogue_sources::locations::Tool, path: &Path) -> &'static OriginSpec {
+    let database = path
+        .extension()
+        .is_some_and(|e| e == "db" || e == "sqlite" || e == "vscdb");
+    let name = if tool.name == "hermes" && polylogue_sources::hermes::open(path).is_some() {
+        "hermes"
+    } else if tool.name == "codex" && path.extension().is_some_and(|e| e == "zst") {
+        "codex-compressed"
+    } else if database {
+        "tool-database"
+    } else {
+        "tool-context"
+    };
+    polylogue_sources::origin::by_name(name).expect("collection origin")
+}
+
+fn all_files(
+    root: &Path,
+    path: &Path,
+    roots: &std::collections::BTreeSet<PathBuf>,
+    files: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<PathBuf>,
+) {
+    if path != root && roots.contains(path) {
+        return;
+    }
+    let metadata = if path == root {
+        fs::metadata(path)
+    } else {
+        fs::symlink_metadata(path)
+    };
+    match metadata {
+        Ok(meta) if meta.is_dir() => {
+            for child in entries(path, unreadable) {
+                all_files(root, &child, roots, files, unreadable);
+            }
+        }
+        Ok(meta) if meta.is_file() => files.push(path.to_path_buf()),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => unreadable.push(path.to_path_buf()),
+    }
+}
+
+/// A location matches the complete relative path, never a suffix guessed
+/// from another tool's directory.
+pub fn matches_path(path: &Path, pattern: &str) -> bool {
+    fn matches(names: &[&str], segs: &[&str]) -> bool {
+        match segs.split_first() {
+            None => names.is_empty(),
+            Some((&"**", rest)) => (0..=names.len()).any(|n| matches(&names[n..], rest)),
+            Some((seg, rest)) => names
+                .split_first()
+                .is_some_and(|(name, names)| wildcard(seg, name) && matches(names, rest)),
+        }
+    }
+    let names: Vec<_> = path
+        .components()
+        .filter_map(|p| p.as_os_str().to_str())
+        .collect();
+    let segs: Vec<_> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+    matches(&names, &segs)
 }
 
 /// Whether `found.origin` claims the file, from its path and first bytes.
@@ -224,6 +466,19 @@ pub fn roots(config: &Config) -> Vec<WatchRoot> {
             }
         }
     }
+    for tool in polylogue_sources::locations::TOOLS {
+        let target = config.root(tool.root);
+        let mut path = target.as_path();
+        while !path.is_dir() {
+            let Some(parent) = path.parent() else {
+                break;
+            };
+            path = parent;
+        }
+        if path.is_dir() {
+            *watches.entry(path.to_path_buf()).or_insert(false) |= path == target;
+        }
+    }
     watches
         .into_iter()
         .map(|(path, recursive)| WatchRoot { path, recursive })
@@ -237,7 +492,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
     if *seg == "**" {
         walk(dir, rest, out, unreadable);
         for sub in entries(dir, unreadable) {
-            if sub.is_dir() {
+            if fs::symlink_metadata(&sub).is_ok_and(|m| m.is_dir()) {
                 walk(&sub, segs, out, unreadable);
             }
         }
@@ -250,7 +505,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
             if p.is_file() {
                 out.push(p);
             }
-        } else if p.is_dir() {
+        } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
             walk(&p, rest, out, unreadable);
         }
         return;
@@ -266,7 +521,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
             if p.is_file() {
                 out.push(p);
             }
-        } else if p.is_dir() {
+        } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
             walk(&p, rest, out, unreadable);
         }
     }
@@ -316,6 +571,9 @@ fn ends_with(names: &[&str], segs: &[&str]) -> bool {
 }
 
 fn wildcard(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == name;
+    }
     let parts: Vec<&str> = pattern.split('*').collect();
     let (first, last) = (parts[0], parts[parts.len() - 1]);
     if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {

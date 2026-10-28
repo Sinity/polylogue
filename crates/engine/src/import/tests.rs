@@ -1,17 +1,6 @@
 use super::*;
 
 #[test]
-fn an_imported_file_keeps_the_origin_whose_layout_it_sits_in() {
-    // Claude Code accepts any JSON-lines file on import; a Grok CLI history
-    // copied with its directories still reads as Grok CLI.
-    let head = br#"{"type":"system","content":"You are a CLI."}"#;
-    let grok = Path::new("/backup/.grok/sessions/%2Fhome/01a0/chat_history.jsonl");
-    assert_eq!(recognize_import(grok, head).unwrap().name, "grok-cli");
-    let loose = Path::new("/backup/s1.jsonl");
-    assert_eq!(recognize_import(loose, head).unwrap().name, "claude-code");
-}
-
-#[test]
 fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     for delete in [false, true] {
@@ -27,7 +16,7 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         } else {
             std::fs::write(&path, claude_user("u1", "s1", "replacement")).unwrap();
         }
-        let origin = recognize_import(&path, &captured.head).unwrap();
+        let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         let mut report = ImportReport::default();
         engine
             .import_captured(&path, origin, captured, None, &mut report)
@@ -57,7 +46,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
         let (mut engine, _lock) = engine(&w, 64);
         let captured =
             Captured::stream(&engine.archive, std::fs::File::open(&path).unwrap()).unwrap();
-        let origin = recognize_import(&path, &captured.head).unwrap();
+        let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         let mut report = ImportReport::default();
         // Simulate a stop after committing the source and before the parse job.
         let plan = engine
@@ -67,7 +56,15 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
         assert_eq!(plan.stored_upto, original.len() as u64);
     }
     let (mut engine, _lock) = engine(&w, 64);
-    let retry = engine.import(std::slice::from_ref(&path)).unwrap();
+    let retry = engine
+        .import_with_options(
+            std::slice::from_ref(&path),
+            &ImportOptions {
+                format: Some("claude-code".into()),
+                explain: false,
+            },
+        )
+        .unwrap();
     assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
     assert_eq!(retry.already_stored, [path]);
     assert_eq!(retry.pass.bytes_stored, 0);
@@ -159,6 +156,13 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
             .unwrap();
         zip.write_all(&bytes).unwrap();
     }
+    zip.start_file(
+        "conversations.json",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(br#"[{"conversation_id":"empty","mapping":{},"current_node":null}]"#)
+        .unwrap();
     zip.finish().unwrap();
     let (mut engine, _lock) = engine(&w, 1024);
     let report = engine.import(std::slice::from_ref(&path)).unwrap();
@@ -167,7 +171,8 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
         report.imported,
         [
             path.clone(),
-            PathBuf::from(format!("{}!/one.bin", path.display()))
+            PathBuf::from(format!("{}!/one.bin", path.display())),
+            PathBuf::from(format!("{}!/conversations.json", path.display()))
         ]
     );
     assert_eq!(
@@ -186,9 +191,9 @@ fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
             .length,
         bytes.len() as u64
     );
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 2);
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 2);
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 2);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 3);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 3);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 3);
 }
 
 #[test]
@@ -231,7 +236,7 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
         let (mut engine, _lock) = engine(&w, 64);
         let captured =
             Captured::stream(&engine.archive, std::fs::File::open(&path).unwrap()).unwrap();
-        let origin = recognize_import(&path, &captured.head).unwrap();
+        let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         engine
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap();
@@ -259,7 +264,7 @@ fn replayed_import_does_not_replace_the_native_winner() {
         engine.run_pass().unwrap();
         let captured =
             Captured::stream(&engine.archive, std::fs::File::open(&path).unwrap()).unwrap();
-        let origin = recognize_import(&path, &captured.head).unwrap();
+        let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         engine
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap();
@@ -274,39 +279,6 @@ fn replayed_import_does_not_replace_the_native_winner() {
 
 mod documents;
 
-#[test]
-fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
-    let head = br#"{"resourceSpans":[{"scopeSpans":[{"spans":[]}"#;
-    for name in ["/backup/traces.jsonl", "/backup/traces.json"] {
-        assert_eq!(
-            recognize_import(Path::new(name), head).unwrap().name,
-            "otel-genai"
-        );
-    }
-    for (name, head) in [
-        (
-            "/backup/synthetic.atof.jsonl",
-            br#"{"atof_version":"0.1","kind":"mark"}"#.as_slice(),
-        ),
-        (
-            "/backup/verification_evidence.db.jsonl",
-            br#"{"schema":{}}"#.as_slice(),
-        ),
-    ] {
-        assert_eq!(
-            recognize_import(Path::new(name), head).unwrap().name,
-            "hermes"
-        );
-    }
-    let claude = br#"{"type":"user","sessionId":"s1"}"#;
-    assert_eq!(
-        recognize_import(Path::new("/backup/s1.jsonl"), claude)
-            .unwrap()
-            .name,
-        "claude-code"
-    );
-}
-
 mod browser_files;
 mod replay;
 
@@ -314,3 +286,5 @@ mod assets;
 mod stored_bytes;
 
 mod zip_members;
+
+mod strict;

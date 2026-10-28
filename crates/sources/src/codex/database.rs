@@ -23,15 +23,14 @@ use std::path::Path;
 pub const ROOT: Root = super::ROOT;
 
 /// The databases captured, by file name prefix (`state_5.sqlite`). The
-/// `logs` database is Codex's own diagnostic log and `queue` its pending
-/// submissions; neither holds session content.
-const DATABASES: &[&str] = &["state_", "goals_", "memories_", "thread_history_"];
+/// Diagnostic logs and thread-history projections are outside this declaration.
+const DATABASES: &[&str] = &["state_", "goals_", "memories_", "queue_"];
 
 pub const LOCATIONS: &[&str] = &[
     "state_*.sqlite",
     "goals_*.sqlite",
     "memories_*.sqlite",
-    "thread_history_*.sqlite",
+    "queue_*.sqlite",
 ];
 
 /// The database a file is, or the database its export is of.

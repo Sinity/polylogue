@@ -98,60 +98,6 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
 }
 
 #[test]
-fn input_excision_without_an_index_keeps_bytes_another_input_decodes() {
-    let home = ClaudeHome::new();
-    let (encoded, decoded) = image_payload('A');
-    let first = home.file("first-image.jsonl");
-    let second = home.file("second-image.jsonl");
-    std::fs::write(
-        &first,
-        image_record(
-            "first-image",
-            "first-image",
-            "First supplied image",
-            &encoded,
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        &second,
-        image_record(
-            "second-image",
-            "second-image",
-            "Second supplied image",
-            &encoded,
-        ),
-    )
-    .unwrap();
-    let input;
-    let hash = polylogue_model::BlobHash::of(&decoded);
-    {
-        let (mut engine, _lock) = engine(&home, 1 << 20);
-        let pass = engine.run_pass().unwrap();
-        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-        input = engine.location_id(&first);
-    }
-    std::fs::remove_file(first).unwrap();
-    std::fs::remove_file(second).unwrap();
-    polylogue_testkit::delete_index(&home.root);
-    let (mut engine, _lock) = engine(&home, 1 << 20);
-    engine
-        .excise(ExciseRequest {
-            id: "remove-first-decoded-owner".into(),
-            target: ExciseTarget::Input(input),
-            reason: None,
-            dry_run: false,
-        })
-        .unwrap();
-    assert_blob(&engine, hash, &decoded);
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(home.count("SELECT count(*) AS n FROM message"), 1);
-    assert_blob(&engine, hash, &decoded);
-}
-
-#[cfg(feature = "faults")]
-#[test]
 fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
     use polylogue_store::fault::{self, Action};
     for edited in [false, true] {

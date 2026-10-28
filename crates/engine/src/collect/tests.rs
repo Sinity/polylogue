@@ -163,3 +163,87 @@ fn a_tool_directory_variable_moves_the_root() {
         recursive: true
     }));
 }
+
+#[test]
+fn classes_partition_files_and_rename_moves_class() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join(".codex");
+    fs::create_dir_all(root.join("memories")).unwrap();
+    fs::write(root.join("memories/guide.md"), "memory").unwrap();
+    fs::write(root.join("auth.json"), "secret").unwrap();
+    fs::write(root.join("novel.xyz"), "unknown").unwrap();
+    let c = config(home.path());
+    let first = scan_with_coverage(&c);
+    let totals = |scan: &Scan, class| {
+        scan.coverage
+            .iter()
+            .filter(|row| row.root == root && row.class == class)
+            .map(|row| row.files)
+            .sum::<u64>()
+    };
+    assert_eq!(
+        (
+            totals(&first, Class::Collected),
+            totals(&first, Class::Ignored),
+            totals(&first, Class::Unrecognized)
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(first.coverage.iter().map(|row| row.bytes).sum::<u64>(), 19);
+    assert!(
+        first
+            .coverage
+            .iter()
+            .all(|row| row.newest_mtime_ms.is_some())
+    );
+    fs::rename(
+        root.join("memories/guide.md"),
+        root.join("memories/guide.xyz"),
+    )
+    .unwrap();
+    let second = scan_with_coverage(&c);
+    assert_eq!(
+        (
+            totals(&second, Class::Collected),
+            totals(&second, Class::Ignored),
+            totals(&second, Class::Unrecognized)
+        ),
+        (0, 1, 2)
+    );
+}
+
+#[test]
+fn root_follows_tool_variable_and_hermes_profiles_are_full_homes() {
+    let home = tempfile::tempdir().unwrap();
+    let own = home.path().join("custom-hermes");
+    fs::create_dir_all(own.join("profiles/research/memories")).unwrap();
+    fs::write(own.join("SOUL.md"), "context").unwrap();
+    fs::write(own.join("profiles/research/memories/MEMORY.md"), "memory").unwrap();
+    let mut c = config(home.path());
+    c.tool_dirs.insert("HERMES_HOME".into(), own.clone());
+    let scan = scan_with_coverage(&c);
+    assert_eq!(scan.found.len(), 2);
+    assert!(scan.found.iter().all(|file| file.path.starts_with(&own)));
+    assert_eq!(scan.coverage.iter().map(|row| row.files).sum::<u64>(), 2);
+}
+
+#[test]
+fn known_locations_fully_recognized() {
+    let home = tempfile::tempdir().unwrap();
+    let c = config(home.path());
+    for tool in polylogue_sources::locations::TOOLS {
+        for pattern in tool.locations {
+            let relative = pattern.replace("**", "nested").replace('*', "one");
+            let path = c.root(tool.root).join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "{}").unwrap();
+        }
+    }
+    let scan = scan_with_coverage(&c);
+    let unknown: Vec<_> = scan
+        .coverage
+        .iter()
+        .filter(|row| row.class == Class::Unrecognized)
+        .collect();
+    assert!(unknown.is_empty(), "{unknown:?}");
+}

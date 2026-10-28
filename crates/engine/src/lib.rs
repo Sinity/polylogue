@@ -221,13 +221,43 @@ pub struct LoopStatus {
     pub last_pass: Pass,
 }
 
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
+pub struct ImportOptions {
+    pub format: Option<String>,
+    pub explain: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportRefusal {
+    pub path: PathBuf,
+    pub reason: String,
+    pub structures_tried: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportClassification {
+    pub path: PathBuf,
+    pub origin: Option<String>,
+    pub class: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ImportPackage {
+    pub path: PathBuf,
+    pub sessions: u64,
+    pub documents: u64,
+    pub assets: u64,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ImportReport {
+    pub packages: Vec<ImportPackage>,
+    pub refused: Vec<ImportRefusal>,
+    pub members: Vec<ImportClassification>,
     pub imported: Vec<PathBuf>,
     /// Files whose exact bytes are already in the archive.
     pub already_stored: Vec<PathBuf>,
-    /// Files no parsed origin recognizes; their bytes may also be imported or already stored.
-    pub unrecognized: Vec<PathBuf>,
     /// The user state Polylogue exports carried.
     pub user_state: UserStateReport,
     pub pass: Pass,
