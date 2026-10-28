@@ -25,6 +25,29 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
 }
 
 #[test]
+fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask(
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
+    );
+    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let params = values(&program.params);
+    let count_sql = program.count_sql();
+    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+    let rows = reader.query(&program.sql, &params).unwrap();
+    assert!(!rows.is_empty());
+    assert_eq!(count, rows.len() as u64);
+    assert_eq!(without, 0);
+    let operations = reader
+        .query(&format!("EXPLAIN {count_sql}"), &params)
+        .unwrap();
+    assert!(operations.iter().all(|op| op["opcode"] != "SorterOpen"));
+}
+
+#[test]
 fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();

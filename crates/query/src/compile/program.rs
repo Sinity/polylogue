@@ -659,16 +659,6 @@ impl<'a> Compiler<'a> {
         );
         let ranked = self.ranking().is_some();
         let counts_near = shape == Shape::Rows && self.near_rank.is_some();
-        let count_sql = row_count.unwrap_or_else(|| {
-            format!(
-                "SELECT count(*), {} FROM ({sql})",
-                if counts_near {
-                    "count(*) FILTER (WHERE _near IS NULL)"
-                } else {
-                    "0"
-                }
-            )
-        });
         let page_size =
             self.opts
                 .page_size
@@ -694,7 +684,7 @@ impl<'a> Compiler<'a> {
             unit,
             shape,
             sql,
-            count_sql,
+            row_count_sql: row_count,
             params: self.params,
             columns,
             ranked,
