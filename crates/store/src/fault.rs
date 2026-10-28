@@ -10,6 +10,8 @@ pub enum Action {
     /// Panic, as a bug would, or as the process dying at that step would
     /// look to the transaction it leaves open.
     Panic,
+    /// Stop a subprocess at the boundary so its test parent can kill it.
+    StopProcess,
 }
 
 #[cfg(feature = "faults")]
@@ -69,6 +71,12 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
             )));
         }
         Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
+        Some(Action::StopProcess) => {
+            // The harness kills the stopped process; no Rust destructor runs.
+            unsafe {
+                libc::raise(libc::SIGSTOP);
+            }
+        }
         None => {}
     }
     let _ = (point, subject);

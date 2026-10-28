@@ -197,7 +197,7 @@ struct InputWriter<'a> {
     archive: &'a Archive,
     writer: &'a polylogue_store::WriterSender,
     source: &'a DatabaseInput,
-    blobs: Arc<hashed_blobs::Store>,
+    blobs: Arc<polylogue_store::blobs::Blobs>,
     length: u64,
     exists: bool,
     waiting: VecDeque<(u64, Acknowledgment)>,

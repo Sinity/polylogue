@@ -88,7 +88,7 @@ fn linked(archive: &Archive, import_id: &str, duplicates: bool) -> Vec<PreparedB
 
 fn remove(
     writer: &Writer,
-    store: Arc<hashed_blobs::Store>,
+    store: Arc<crate::blobs::Blobs>,
     id: &str,
 ) -> Result<crate::excise::Excised> {
     writer.excise(
@@ -107,7 +107,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
             .sender()
@@ -150,7 +150,7 @@ fn prepared_linked_writes_and_member_exclusion_serialize_without_hidden_copies()
         let dir = tempfile::tempdir().unwrap();
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
         let writer = Arc::new(Writer::start(&archive).unwrap());
-        let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+        let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
         let initial = stage(&archive, MEMBER, "initial", "initial.dat", None);
         writer
             .sender()
@@ -220,7 +220,7 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
     let inner = BlobHash::of(ORIGINAL).to_string();
     let outer = b"synthetic outer container representation";
     let outer_id = BlobHash::of(outer).to_string();

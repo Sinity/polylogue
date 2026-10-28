@@ -57,10 +57,10 @@ enum Decoder {
     Unopened(
         Box<(
             polylogue_store::blobs::StoredChain,
-            std::sync::Arc<hashed_blobs::Store>,
+            std::sync::Arc<polylogue_store::blobs::Blobs>,
         )>,
     ),
-    Plain(Box<hashed_blobs::PlainReader>),
+    Plain(Box<hashed_blobs::BlobReader>),
     Chain(Box<polylogue_store::blobs::ChainReader>),
 }
 
@@ -87,10 +87,10 @@ impl Read for Decoder {
 
 impl Imported {
     pub fn open(
-        store: &hashed_blobs::Store,
+        store: &polylogue_store::blobs::Blobs,
         hash: polylogue_model::BlobHash,
         length: u64,
-    ) -> hashed_blobs::Result<Self> {
+    ) -> polylogue_store::Result<Self> {
         Ok(Self {
             reader: Decoder::Plain(Box::new(store.read_plain(
                 &hashed_blobs::Hash(hash.0),
@@ -105,7 +105,7 @@ impl Imported {
     /// A chain's stored bytes, opened when they are first read.
     pub fn from_chain(
         chain: polylogue_store::blobs::StoredChain,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<polylogue_store::blobs::Blobs>,
     ) -> Self {
         Self {
             reader: Decoder::Unopened(Box::new((chain, store))),

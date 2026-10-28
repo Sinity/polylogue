@@ -2,10 +2,10 @@
 //! database files and a blob directory:
 //!
 //! - `archive.db`: what cannot be recomputed (inputs, revisions, notes,
-//!   excisions, deliveries, settings);
+//!   deliveries, settings);
 //! - `index.db`: everything parsed and derived, rebuilt by the loop;
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
-//! - `blobs/`: input bytes of 128 KiB and over.
+//! - `segments/`: every input blob, in append-only shared frame segments.
 
 pub mod archive;
 pub mod assets;

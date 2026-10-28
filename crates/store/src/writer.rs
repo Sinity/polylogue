@@ -12,7 +12,7 @@
 //! upsert, so that changes nothing.
 
 use crate::archive::{Archive, bump_counter, open_write};
-use crate::blobs::{Change, FileFacts, NewBlob, Stored};
+use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
 use polylogue_model::{
     BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, RecordCounts,
@@ -56,12 +56,8 @@ enum Msg {
     ),
     StoreGroup(
         Vec<crate::staging::PreparedBatch>,
-        std::sync::Arc<hashed_blobs::Store>,
+        std::sync::Arc<crate::blobs::Blobs>,
         SyncSender<Vec<Result<crate::staging::StoredInput>>>,
-    ),
-    FinishWriting(
-        std::sync::Arc<hashed_blobs::Store>,
-        SyncSender<Result<crate::staging::Finished>>,
     ),
     Assets(
         Box<crate::export_items::ExportItems>,
@@ -81,7 +77,7 @@ enum Msg {
     /// An excision, with the blob store whose files it changes.
     Excise(
         Box<crate::excise::ExciseRequest>,
-        std::sync::Arc<hashed_blobs::Store>,
+        std::sync::Arc<crate::blobs::Blobs>,
         SyncSender<Result<crate::excise::Excised>>,
     ),
     /// Run the derive step over sessions whose derived rows are stale;
@@ -313,7 +309,27 @@ impl Writer {
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index))
             .transpose()?;
+        let segment = if sinex.is_none() {
+            let end: u64 = archive_conn
+                .query_row(
+                    "SELECT committed_end FROM segment WHERE name=?1",
+                    ["segments/current.hb"],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            Some(hashed_blobs::SegmentWriter::open(
+                &archive.root,
+                "segments/current.hb",
+                end,
+                &[],
+                0o600,
+            )?)
+        } else {
+            None
+        };
         let mut inner = Inner {
+            segment,
             archive: archive_conn,
             index,
             report: WriteReport::default(),
@@ -379,7 +395,7 @@ impl Writer {
     pub fn excise(
         &self,
         request: crate::excise::ExciseRequest,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<crate::excise::Excised> {
         let (reply, wait) = sync_channel(1);
         self.tx
@@ -442,30 +458,6 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Completes blobs a stop left `writing` ([`Inner::finish_writing`]).
-    pub fn finish_writing(
-        &self,
-        store: std::sync::Arc<hashed_blobs::Store>,
-    ) -> Result<crate::staging::Finished> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::FinishWriting(store, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
-    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Assets(Box::new(staged), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
     /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
     /// Outside a first build what it reports is also derived and searchable;
@@ -509,7 +501,7 @@ impl WriterSender {
     pub fn store_group(
         &self,
         group: Vec<crate::staging::PreparedBatch>,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
         self.enqueue_group(group, store)?
             .recv()
@@ -520,7 +512,7 @@ impl WriterSender {
     pub fn enqueue_group(
         &self,
         group: Vec<crate::staging::PreparedBatch>,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
         let (reply, wait) = sync_channel(1);
         self.0
@@ -615,6 +607,7 @@ fn user_via(
 }
 
 struct Inner {
+    segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
     index: Connection,
     report: WriteReport,
@@ -659,7 +652,6 @@ impl Inner {
         let mut derives = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
-        let mut finish_writing = Vec::new();
         let mut assets = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
@@ -705,10 +697,6 @@ impl Inner {
                         }
                         file_groups.push((items, store, reply));
                         true
-                    }
-                    Msg::FinishWriting(store, reply) => {
-                        finish_writing.push((store, reply));
-                        false
                     }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
@@ -763,7 +751,6 @@ impl Inner {
                     }
                 }
             }
-            group.retain(|b| !self.report.failed_inputs.contains(&b.input.id));
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
             }
@@ -780,9 +767,6 @@ impl Inner {
                 }));
                 crate::timing::reading_commit_queue(-1);
                 self.serve_users(users);
-            }
-            for (store, reply) in finish_writing.drain(..) {
-                let _ = reply.send(self.finish_writing(&store));
             }
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
@@ -953,7 +937,7 @@ impl Inner {
     fn write_excision(
         &mut self,
         request: &crate::excise::ExciseRequest,
-        store: &hashed_blobs::Store,
+        store: &crate::blobs::Blobs,
     ) -> Result<crate::excise::Excised> {
         if request.dry_run {
             let _lock = crate::write_lock::hold(&self.archive)?;
@@ -1142,7 +1126,6 @@ impl Inner {
                 Ok(refused) => refused,
                 Err(error) => {
                     for b in group {
-                        self.report.failed_inputs.insert(b.input.id.clone());
                         self.report
                             .errors
                             .push(format!("input {}: {error}", b.input.id));
@@ -1169,11 +1152,7 @@ impl Inner {
             return;
         }
         for b in group {
-            if self.report.failed_inputs.contains(&b.input.id) {
-                continue;
-            }
             if let Err(e) = self.write(std::iter::once(&**b)) {
-                self.report.failed_inputs.insert(b.input.id.clone());
                 self.report
                     .errors
                     .push(format!("input {}: {e}", b.input.id));
@@ -1181,51 +1160,67 @@ impl Inner {
         }
     }
 
-    /// One user request in its own `archive.db` transaction.
-    /// A blob row, then its file, then `present`: a stop between them
-    /// leaves a `writing` row nothing refers to, which opening the archive
-    /// finishes.
+    /// Standalone bytes without an input, such as a chat attachment, follow
+    /// the same append, sync and catalog commit order as captured inputs.
     fn store_blob(
         &mut self,
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
-        let _write = crate::write_lock::hold(&self.archive)?;
-        let Some(file) = file else {
-            let tx = self.archive.transaction()?;
-            bytes::insert_blob(&tx, &new_blob)?;
-            tx.commit()?;
+        if crate::blobs::load_extent(&self.archive, "", &hashed_blobs::Hash(new_blob.hash.0))?
+            .is_some()
+        {
             return Ok(new_blob.hash);
-        };
-        if file.owner != self.location.root || file.hash() != new_blob.hash {
+        }
+        let file =
+            file.ok_or_else(|| StoreError::Invalid("new blob has no prepared bytes".into()))?;
+        if file.owner != self.location.root
+            || file.hash() != new_blob.hash
+            || file.len() != new_blob.size
+        {
             return Err(StoreError::Invalid(
-                "a blob's file is a private file of this archive with its bytes".into(),
+                "prepared bytes do not match the new blob".into(),
             ));
         }
-        self.archive.execute(
-            "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-             VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
-            params![&new_blob.hash.0[..], new_blob.size as i64],
-        )?;
-        let present: bool = self.archive.query_row(
-            "SELECT state = 'present' FROM blob WHERE hash = ?1",
-            [&new_blob.hash.0[..]],
-            |r| r.get(0),
-        )?;
-        if !present {
-            let crate::staging::Prepared::Local { store, prepared } = file.file else {
+        if let Some(sinex) = &self.sinex {
+            let crate::staging::Prepared::Part { file, .. } = file.file else {
                 return Err(StoreError::Invalid(
-                    "bytes for Sinex reached the blob store".into(),
+                    "local frames reached Sinex writer".into(),
                 ));
             };
-            prepared.install_checked::<StoreError>(|| Ok(()))?;
-            let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(new_blob.hash.0))?)
-                .map_err(|_| StoreError::Invalid("blob exceeds archive address space".into()))?;
-            self.archive.execute(
-                "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
-                params![&new_blob.hash.0[..], size],
-            )?;
+            let confirmed = sinex.send_blob(new_blob.hash, new_blob.size, &mut file.reopen()?)?;
+            let tx = self.archive.transaction()?;
+            crate::blobs::insert_extent(&tx, confirmed.extent(new_blob.hash, new_blob.size)?)?;
+            crate::write_lock::commit(tx)?;
+            return Ok(new_blob.hash);
         }
+        let crate::staging::Prepared::Local { prepared } = file.file else {
+            return Err(StoreError::Invalid(
+                "Sinex bytes reached local segment writer".into(),
+            ));
+        };
+        let writer = self.segment.as_mut().ok_or_else(|| {
+            StoreError::Invalid("segment writer requires reopen after failed commit".into())
+        })?;
+        let synced = writer.append_group(vec![*prepared], |_| Ok(None))?.wait()?;
+        let result = (|| {
+            let tx = self.archive.transaction()?;
+            for extent in &synced.extents {
+                crate::blobs::insert_extent(&tx, extent)?;
+            }
+            tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
+                params!["segments/current.hb",synced.end as i64])?;
+            crate::write_lock::commit(tx)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.segment.take();
+            return Err(error);
+        }
+        self.segment
+            .as_mut()
+            .expect("appended writer")
+            .acknowledge(&synced)?;
         Ok(new_blob.hash)
     }
 
@@ -1319,19 +1314,40 @@ impl Inner {
                 p.counts.check()?;
             }
         }
-        let atx = self.archive.transaction()?;
-        let seq = bump_counter(&atx)?;
+        let parsed_only = batches.clone().all(|batch| {
+            matches!(batch.change, Change::Reparse { .. })
+                && batch.new_blob.is_none()
+                && batch.blobs.is_empty()
+                && batch.observation.is_none()
+        });
         let mut chains = Vec::new();
-        for b in batches.clone() {
-            let (chain, rows) = write_bytes(&atx, b, seq)?;
-            if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
-                staging::send_to_sinex(sinex.as_ref(), &atx, rows, None, b.new_blob.as_ref())?;
+        if parsed_only {
+            for batch in batches.clone() {
+                let Change::Reparse { chain } = batch.change else {
+                    unreachable!()
+                };
+                chains.push(Some(chain));
             }
-            chains.push(chain);
+        } else {
+            let atx = self.archive.transaction()?;
+            let seq = bump_counter(&atx)?;
+            for batch in batches.clone() {
+                let (chain, rows) = write_bytes(&atx, batch, seq)?;
+                if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
+                    staging::send_to_sinex(
+                        sinex.as_ref(),
+                        &atx,
+                        rows,
+                        None,
+                        batch.new_blob.as_ref(),
+                    )?;
+                }
+                chains.push(chain);
+            }
+            crate::fault::check("write.archive_commit", "")?;
+            crate::write_lock::commit(atx)?;
+            crate::fault::check("write.between_commits", "")?;
         }
-        crate::fault::check("write.archive_commit", "")?;
-        crate::write_lock::commit(atx)?;
-        crate::fault::check("write.between_commits", "")?;
 
         let indexed = batches
             .map(|b| attachments::with_stored_blobs(b, &self.archive))

@@ -283,7 +283,7 @@ pub(crate) struct ExportStep {
 pub(crate) fn parse_export(
     plan: &Plan,
     parser: &mut dyn ExportParser,
-    blobs: &Arc<hashed_blobs::Store>,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
     mut emit: impl FnMut(ExportStep) -> Result<(), EngineError>,
 ) -> Result<u64, EngineError> {
     let mut scratch = ExportItems::new()?;

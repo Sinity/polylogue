@@ -1,7 +1,7 @@
 //! Copy a plain archived blob with bounded buffers and verify its whole identity.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, MAIN_DB};
+use rusqlite::Connection;
 use std::io::{Read, Write};
 
 /// Decode a catalogued plain blob using the private-destination rule of
@@ -12,35 +12,14 @@ pub(crate) fn copy_plain(
     hash: BlobHash,
     output: impl Write,
 ) -> Result<()> {
-    let (rowid, place, encoding, size): (i64, String, String, i64) = archive.query_row(
-        "SELECT rowid,place,encoding,size FROM blob WHERE hash=?1",
-        [&hash.0[..]],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    )?;
-    if encoding != "plain" {
-        return Err(StoreError::Invalid(format!(
-            "blob {hash} has {encoding} encoding, not plain"
-        )));
-    }
+    let size: i64 =
+        archive.query_row("SELECT size FROM blob WHERE hash=?1", [&hash.0[..]], |r| {
+            r.get(0)
+        })?;
     let size = u64::try_from(size).map_err(|_| StoreError::BlobCorrupt(hash))?;
-    match place.as_str() {
-        "inline" => {
-            let blob = archive.blob_open(MAIN_DB, "blob", "data", rowid, true)?;
-            copy_verified(
-                zstd::stream::read::Decoder::new(blob)?,
-                output,
-                hash,
-                Some(size),
-            )?;
-            Ok(())
-        }
-        "file" => {
-            let mut reader = store.open_plain(&hashed_blobs::Hash(hash.0), size)?;
-            copy_verified(&mut reader, output, hash, Some(size))?;
-            Ok(())
-        }
-        _ => Err(StoreError::Invalid(format!("unknown blob place {place}"))),
-    }
+    let mut reader = store.open_plain(&hashed_blobs::Hash(hash.0), size)?;
+    copy_verified(&mut reader, output, hash, Some(size))?;
+    Ok(())
 }
 
 /// Use the copied bytes only after this returns successfully. An error can

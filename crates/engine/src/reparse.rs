@@ -310,7 +310,7 @@ fn release_path(busy: &mut HashMap<PathBuf, usize>, path: &Path) {
 fn prepare(
     plan: &mut Plan,
     archive: &Archive,
-    blobs: &Arc<hashed_blobs::Store>,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
     read_memory: u64,
     memory: &Memory,
     bytes_read: &mut u64,

@@ -89,6 +89,7 @@ pub struct Done {
     pub stored: u64,
     pub error: Option<String>,
     pub refused: bool,
+    pub write_failed: bool,
 }
 
 struct Queue {
@@ -116,7 +117,7 @@ impl Pool {
         workers: usize,
         bytes_in_flight: u64,
         writer: WriterSender,
-        blobs: Arc<hashed_blobs::Store>,
+        blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
         done: Sender<Done>,
     ) -> Self {
@@ -214,7 +215,7 @@ fn release(shared: &Shared, bytes: u64) {
 fn work(
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     archive: &polylogue_store::Archive,
     acknowledge: &Sender<PendingGroup>,
 ) {
@@ -285,9 +286,17 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                                 result.refused = true;
                                 result.stored = 0;
                             }
-                            Some(Err(error)) => result.error = Some(error.to_string()),
+                            Some(Err(error)) => {
+                                result.error = Some(error.to_string());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
                             Some(Ok(_)) => {}
-                            None => result.error = Some("the writer returned no result".into()),
+                            None => {
+                                result.error = Some("the writer returned no result".into());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
                         }
                     }
                 }
@@ -295,6 +304,8 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
             Err(error) => {
                 for result in &mut group.waiting {
                     result.error.get_or_insert_with(|| error.to_string());
+                    result.write_failed = true;
+                    result.stored = 0;
                 }
             }
         }
@@ -311,7 +322,7 @@ fn flush(
     group: &mut Group,
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     acknowledge: &Sender<PendingGroup>,
 ) -> bool {
     let mut waiting = std::mem::take(&mut group.waiting);
@@ -345,7 +356,7 @@ fn flush(
 pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    store: &hashed_blobs::Store,
+    store: &polylogue_store::blobs::Blobs,
     prepare: bool,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
@@ -359,6 +370,7 @@ pub(crate) fn run(
         stored: 0,
         error: None,
         refused: false,
+        write_failed: false,
     };
     let started = std::time::Instant::now();
     let read = match &job.source {

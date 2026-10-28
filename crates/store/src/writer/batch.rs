@@ -198,10 +198,11 @@ pub struct WriteReport {
     pub batches: u64,
     pub messages: u64,
     pub transactions: u64,
+    pub blob_syncs: u64,
+    pub blob_bytes_written: u64,
+    pub blobs_appended: u64,
+    pub blobs_deduplicated: u64,
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,
-    /// Inputs whose progress must be reloaded from committed checkpoints.
-    /// Later batches for these inputs are held out until this report is taken.
-    pub failed_inputs: std::collections::BTreeSet<String>,
 }

@@ -39,7 +39,7 @@ fn a_same_boot_build_keeps_its_rows_and_resumes() {
 fn an_index_applies_missing_excisions_and_marked_blobs_go_on_open() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    let store = crate::blobs::Blobs::open(archive.root.clone(), vec![], 0o600).unwrap();
     let bytes = vec![7u8; crate::blobs::INLINE_LIMIT + 1];
     let hash = store.put(bytes.as_slice(), 1).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
@@ -235,7 +235,7 @@ fn opening_clears_blob_files_a_stop_left_before_their_move() {
 fn opening_finishes_every_blob_row_left_writing() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    let store = crate::blobs::Blobs::open(archive.root.clone(), vec![], 0o600).unwrap();
     let bytes = |fill: u8| vec![fill; crate::blobs::INLINE_LIMIT + 1];
     let put = |fill: u8| polylogue_model::BlobHash(store.put(bytes(fill).as_slice(), 1).unwrap().0);
     let absent = |fill: u8| polylogue_model::BlobHash::of(&bytes(fill));

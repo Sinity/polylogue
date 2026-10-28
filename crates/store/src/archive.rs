@@ -63,20 +63,15 @@ impl Archive {
         self.sinex_store.is_some()
     }
 
-    /// The content store the inputs' bytes are read from: this directory's
-    /// `blobs/` (standalone), or Sinex's content store (primary), which
-    /// Polylogue only reads.
-    pub fn blobs(&self) -> Result<hashed_blobs::Store> {
-        Ok(match &self.sinex_store {
-            None => hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)?,
-            Some(store) => hashed_blobs::Store::open(store.clone(), vec![], 0o600)?,
-        })
+    /// Resolve content hashes in Polylogue's committed catalog and read the
+    /// immutable segment extents with the shared reader.
+    pub fn blobs(&self) -> Result<crate::blobs::Blobs> {
+        Ok(self.blob_reader())
     }
 
-    /// Read existing bytes without creating directories or opening a writer.
-    pub fn blob_reader(&self) -> hashed_blobs::Reader {
+    pub fn blob_reader(&self) -> crate::blobs::Blobs {
         let root = self.sinex_store.as_ref().unwrap_or(&self.root);
-        hashed_blobs::Reader::new(root.clone(), vec![])
+        crate::blobs::Blobs::new(root.clone(), self.archive_db())
     }
 
     pub fn index_db(&self) -> PathBuf {
@@ -88,7 +83,7 @@ impl Archive {
     }
 
     pub fn blobs_dir(&self) -> PathBuf {
-        self.root.join("blobs")
+        self.root.join("segments")
     }
 
     /// The daemon's socket. Clients find the daemon of an archive here.
@@ -151,13 +146,6 @@ impl Archive {
         let schema_lock = crate::write_lock::hold(&a)?;
         schema::ensure_archive(&a)?;
         drop(schema_lock);
-        // Whatever a stop left of blob writes: files not yet moved under
-        // their content names, rows still `writing` or `deleting`.
-        let store = archive.blobs()?;
-        let blob_lock = crate::write_lock::hold(&a)?;
-        clear_directory(&archive.blobs_dir().join("tmp"))?;
-        crate::blobs::finish_pending(&a, &store)?;
-        drop(blob_lock);
         archive.finish_open()?;
         Ok((archive, lock))
     }
@@ -193,7 +181,7 @@ impl Archive {
             remove_database(&building)?;
             let mut a = open_write(&building, cache::SETUP)?;
             schema::ensure_sinex(&a)?;
-            crate::primary::load(&mut a, sinex, &archive.blobs()?)?;
+            crate::primary::load(&mut a, sinex, &hashed_blobs::Reader::new(store))?;
             drop(a);
             fs::rename(&building, archive.archive_db())?;
             File::open(root)?.sync_all()?;
@@ -383,6 +371,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
 /// The writer's `archive.db` connection; its temporary tables spill to disk.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
     let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    conn.pragma_update(None, "synchronous", "full")?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)

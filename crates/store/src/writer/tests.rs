@@ -1098,3 +1098,5 @@ fn an_excision_does_not_finish_unrelated_first_build_work() {
     w.writer.derive().unwrap();
     assert_eq!(pool.reader().unwrap().status().unwrap().messages, 1);
 }
+
+mod segments;

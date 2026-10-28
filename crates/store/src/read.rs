@@ -117,7 +117,6 @@ pub struct ChainProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
-    pub pending_inputs: Vec<crate::staging::PendingBlob>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -393,7 +392,7 @@ impl Reader<'_> {
     pub fn tool_database_source(
         &self,
         input: &str,
-        blobs: &hashed_blobs::Store,
+        blobs: &crate::blobs::Blobs,
     ) -> Result<Option<(String, String)>> {
         let Some(progress) = self.input_progress(input)? else {
             return Ok(None);
@@ -861,6 +860,12 @@ impl Reader<'_> {
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
                 duration_ms: n(duration),
+                attrs: attrs
+                    .as_ref()
+                    .and_then(|value| value.get("attrs"))
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default(),
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))
@@ -895,7 +900,6 @@ impl Reader<'_> {
             unused.push((w, n as u64));
         }
         Ok(Status {
-            pending_inputs: crate::staging::pending_blobs(c, "a.")?,
             sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
@@ -942,7 +946,7 @@ impl Reader<'_> {
         chain: i64,
         start: u64,
         end: u64,
-        store: &hashed_blobs::Store,
+        store: &crate::blobs::Blobs,
     ) -> Result<Vec<u8>> {
         self.check_bytes_present(input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
@@ -966,12 +970,12 @@ impl Reader<'_> {
     }
 
     /// The content store the archive's bytes are read from.
-    pub fn blob_store(&self) -> Result<hashed_blobs::Store> {
+    pub fn blob_store(&self) -> Result<crate::blobs::Blobs> {
         self.pool.archive.blobs()
     }
 
     /// Existing content, with no writable handle or directory setup.
-    pub fn blob_reader(&self) -> hashed_blobs::Reader {
+    pub fn blob_reader(&self) -> crate::blobs::Blobs {
         self.pool.archive.blob_reader()
     }
 

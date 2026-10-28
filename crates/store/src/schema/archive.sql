@@ -12,15 +12,19 @@ CREATE TABLE machine (
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
--- Bytes by content. Small blobs inline, large ones as files under blobs/.
+-- The committed end of each append-only segment. Bytes after it are an
+-- uncommitted tail, removed by the ordinary writer-open path.
+CREATE TABLE segment (
+  name          TEXT PRIMARY KEY,
+  committed_end INTEGER NOT NULL CHECK(committed_end >= 0)
+) STRICT, WITHOUT ROWID;
+
+-- The complete shared extent descriptor is the hash index's byte authority.
 CREATE TABLE blob (
-  hash          BLOB PRIMARY KEY,        -- BLAKE3 of the uncompressed bytes
-  size          INTEGER NOT NULL,        -- uncompressed bytes
-  stored_size   INTEGER NOT NULL,        -- compressed bytes
-  place         TEXT NOT NULL,           -- inline | file
-  encoding      TEXT NOT NULL,           -- plain (seekable zstd)
-  state         TEXT NOT NULL,           -- writing | present | deleting
-  data          BLOB                     -- zstd bytes, when place = 'inline'
+  hash          BLOB PRIMARY KEY,
+  size          INTEGER NOT NULL,
+  stored_size   INTEGER NOT NULL,
+  storage       BLOB NOT NULL
 ) STRICT;
 
 -- One file as Polylogue tracks it: one location's history, or one imported file.
@@ -340,10 +344,5 @@ CREATE TRIGGER input_added AFTER INSERT ON input BEGIN UPDATE row_count SET n = 
 CREATE TRIGGER input_removed AFTER DELETE ON input BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'input'; END;
 CREATE TRIGGER revision_added AFTER INSERT ON revision BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'revision'; END;
 CREATE TRIGGER revision_removed AFTER DELETE ON revision BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'revision'; END;
-CREATE TRIGGER blob_added AFTER INSERT ON blob WHEN new.state = 'present' BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
-CREATE TRIGGER blob_changed AFTER UPDATE OF state, size ON blob BEGIN
-  UPDATE row_count SET n = n + (CASE WHEN new.state = 'present' THEN new.size ELSE 0 END)
-    - (CASE WHEN old.state = 'present' THEN old.size ELSE 0 END)
-  WHERE name = 'stored_bytes';
-END;
-CREATE TRIGGER blob_removed AFTER DELETE ON blob WHEN old.state = 'present' BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_added AFTER INSERT ON blob BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_removed AFTER DELETE ON blob BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;

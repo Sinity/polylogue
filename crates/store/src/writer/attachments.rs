@@ -59,7 +59,7 @@ fn stored_blocks(blocks: &[Block], archive: &Connection) -> Result<Option<Vec<Bl
             };
             let size: Option<u64> = archive
                 .query_row(
-                    "SELECT size FROM blob WHERE hash = ?1 AND state = 'present'",
+                    "SELECT size FROM blob WHERE hash = ?1",
                     [&hash.0[..]],
                     |row| row.get::<_, i64>(0),
                 )

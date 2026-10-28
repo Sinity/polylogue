@@ -185,8 +185,6 @@ impl Config {
 pub struct Pass {
     /// Whole-location scans, excluding changed paths and live-file checks.
     pub full_scans: u64,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
     /// Input visits, summed across turns by run_pass.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -194,6 +192,10 @@ pub struct Pass {
     pub bytes_read: u64,
     /// New bytes stored.
     pub bytes_stored: u64,
+    pub blob_syncs: u64,
+    pub blob_bytes_written: u64,
+    pub blobs_appended: u64,
+    pub blobs_deduplicated: u64,
     pub messages_written: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
@@ -261,10 +263,9 @@ pub struct Engine {
     pub archive: Archive,
     writer: Writer,
     reads: ReadPool,
-    blobs: Arc<hashed_blobs::Store>,
+    blobs: Arc<polylogue_store::blobs::Blobs>,
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
-    failed_writes: HashSet<String>,
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
     loaded: bool,
@@ -274,7 +275,6 @@ pub struct Engine {
     databases: BTreeMap<PathBuf, &'static str>,
     live_checked: Instant,
     pass_open: bool,
-    pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
     /// Paths on this machine an excision removed: never collected again.
@@ -333,7 +333,6 @@ impl Engine {
             reads,
             blobs,
             inputs: HashMap::new(),
-            failed_writes: HashSet::new(),
             reparsing: HashMap::new(),
             loaded: false,
             captures: Databases::default(),
@@ -342,7 +341,6 @@ impl Engine {
             databases: BTreeMap::new(),
             live_checked: Instant::now(),
             pass_open: false,
-            pending_inputs: Vec::new(),
             collectors_at: None,
             capture_checked: None,
             refused: HashSet::new(),

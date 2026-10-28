@@ -549,7 +549,7 @@ impl MessageSelection<'_, '_> {
             }
         }
         let mut hash = blake3::Hasher::new();
-        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.state,
+        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.storage,
             metadata.ordinal,metadata.source_id,metadata.name,metadata.media_type,metadata.size,s.version,s.error
             FROM import_member m
             LEFT JOIN a.revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM a.revision latest WHERE latest.input=m.input)

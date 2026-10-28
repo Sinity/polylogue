@@ -5,7 +5,7 @@ use std::io::Read;
 
 struct Fixture {
     conn: Connection,
-    store: Arc<hashed_blobs::Store>,
+    store: Arc<crate::blobs::Blobs>,
     _dir: tempfile::TempDir,
 }
 impl Fixture {
@@ -19,7 +19,7 @@ impl Fixture {
         .unwrap();
         conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,?1,1)", [length as i64]).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+        let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
         Self {
             conn,
             store,

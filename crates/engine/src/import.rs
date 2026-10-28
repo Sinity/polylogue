@@ -19,11 +19,6 @@ impl Engine {
         use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
-        report.pass.pending_inputs = finished.pending;
-        if finished.completed > 0 {
-            self.reparse_behind(None, &mut report.pass)?;
-        }
         let mut files = Vec::new();
         for path in paths {
             let mut selected = Vec::new();
@@ -82,17 +77,6 @@ impl Engine {
                 if polylogue_export {
                     self.import_user_state(path, &mut report)?;
                 }
-            }
-        }
-        self.restore_failed_writes()?;
-        for pending in self.reads.reader()?.status()?.pending_inputs {
-            if !report
-                .pass
-                .pending_inputs
-                .iter()
-                .any(|known| known.input == pending.input && known.blob == pending.blob)
-            {
-                report.pass.pending_inputs.push(pending);
             }
         }
         self.refresh_import_assets(&mut report.pass)?;

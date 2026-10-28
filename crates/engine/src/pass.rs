@@ -109,11 +109,14 @@ impl Engine {
             total.inputs_changed += next.inputs_changed;
             total.bytes_read += next.bytes_read;
             total.bytes_stored += next.bytes_stored;
+            total.blob_syncs += next.blob_syncs;
+            total.blob_bytes_written += next.blob_bytes_written;
+            total.blobs_appended += next.blobs_appended;
+            total.blobs_deduplicated += next.blobs_deduplicated;
             total.messages_written += next.messages_written;
             total.sessions_derived += next.sessions_derived;
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
-            total.pending_inputs = next.pending_inputs;
             total.errors.extend(next.errors);
             total.capture_pending = next.capture_pending;
         }
@@ -204,11 +207,6 @@ impl Engine {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok(pass);
         }
-        if !continuing {
-            self.pending_inputs = self.writer.finish_writing(Arc::clone(&self.blobs))?.pending;
-            self.restore_failed_writes()?;
-        }
-        pass.pending_inputs = self.pending_inputs.clone();
         // The asset lookup comes from stored observations and sidecars, so
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
@@ -286,7 +284,6 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
-        self.restore_failed_writes()?;
         if deferred_database && !pass.errors.is_empty() {
             pass.capture_pending = self.captures.pending();
         }
@@ -319,11 +316,7 @@ impl Engine {
             if !self.track(&f) {
                 continue;
             }
-            let pending = pass
-                .pending_inputs
-                .iter()
-                .any(|u| u.input == self.inputs[&f.path].input_id);
-            if let Some(plan) = self.plan(&f.path, now, pending)? {
+            if let Some(plan) = self.plan(&f.path, now)? {
                 plans.push(plan);
             }
         }
@@ -431,7 +424,7 @@ impl Engine {
             if self.inputs[&f.path].facts == Some(now) {
                 continue;
             }
-            if let Some(mut plan) = self.plan(&f.path, now, false)? {
+            if let Some(mut plan) = self.plan(&f.path, now)? {
                 plan.priority = Priority::Live;
                 plans.push(plan);
             }
@@ -454,12 +447,7 @@ impl Engine {
     }
 
     /// Decides what to read for one tracked path.
-    fn plan(
-        &mut self,
-        path: &Path,
-        now: FileFacts,
-        pending: bool,
-    ) -> Result<Option<Plan>, EngineError> {
+    fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
         if st.failed == Some(now) {
@@ -470,22 +458,6 @@ impl Engine {
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
-        }
-        if pending && let Some(chain) = st.chain {
-            match self
-                .reads
-                .reader()?
-                .check_bytes_present(&st.input_id, chain, 0..st.stored)
-            {
-                Ok(()) => {}
-                Err(polylogue_store::StoreError::InputPending { .. }) => {
-                    // Bytes still being written are never replaced by what the
-                    // file holds now: equal bytes are stored again under the
-                    // same hash, edited bytes start a new chain.
-                    change = Change::Rewritten;
-                }
-                Err(error) => return Err(error.into()),
-            }
         }
         if let Change::Appended { from } = &mut change {
             // The source observation may describe a larger file than the
@@ -869,7 +841,7 @@ impl Engine {
         }
         self.execute_pool(ordinary, pass)?;
         self.replace_readings(replacements, pass)?;
-        self.restore_failed_writes()
+        Ok(())
     }
 
     fn execute_pool(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
@@ -950,6 +922,29 @@ impl Engine {
                 self.refused.insert(d.path);
                 continue;
             }
+            if d.write_failed {
+                if let Some(error) = d.error {
+                    pass.errors.push(error);
+                }
+                if plan.tracked {
+                    let known = self.reads.reader()?.known_watched_input_at(
+                        &self.config.machine,
+                        &plan.path.to_string_lossy(),
+                    )?;
+                    if let Some(state) = self.inputs.get_mut(&plan.path) {
+                        state.facts = known.as_ref().and_then(|known| known.facts);
+                        state.chain = known.as_ref().and_then(|known| known.chain);
+                        state.stored = known.as_ref().map_or(0, |known| known.stored);
+                        state.parsed_upto = known.as_ref().map_or(0, |known| known.parsed_upto);
+                        state.parsed = known.as_ref().is_some_and(|known| known.parsed);
+                        state.waiting = known.as_ref().is_some_and(|known| known.waiting);
+                        state.parser_state = None;
+                        state.tail = None;
+                        state.failed = None;
+                    }
+                }
+                continue;
+            }
             pass.bytes_stored += d.stored;
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
@@ -966,6 +961,10 @@ impl Engine {
         drop(pool);
         let report: WriteReport = self.flush_writes()?;
         pass.messages_written += report.messages;
+        pass.blob_syncs += report.blob_syncs;
+        pass.blob_bytes_written += report.blob_bytes_written;
+        pass.blobs_appended += report.blobs_appended;
+        pass.blobs_deduplicated += report.blobs_deduplicated;
         pass.errors.extend(report.errors);
         Ok(())
     }

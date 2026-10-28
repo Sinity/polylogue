@@ -1,18 +1,15 @@
-//! Bytes into the archive in one order: the blob's row first, in state
-//! `writing`, then the file under its content name, then the row `present`.
-//! A stop between them leaves `writing` rows, which [`Inner::finish_writing`]
-//! finishes. In primary mode the bytes go to Sinex before the transaction
-//! that writes their rows commits, and those rows are `present` at once.
+//! Groups append prepared frames and sync them once before extents and
+//! the rows that cite them commit. The index then saves its parsed position.
 use super::*;
-use crate::staging::{Finished, PreparedBatch, PreparedBytes, StoredInput};
+use crate::staging::{PreparedBatch, PreparedBytes, StoredInput};
 use polylogue_model::BlobHash;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// A parse-pool group waiting for the writer, with the store its files go
 /// to and where its results are answered.
 pub(super) type WaitingGroup = (
     Vec<PreparedBatch>,
-    Arc<hashed_blobs::Store>,
+    Arc<crate::blobs::Blobs>,
     SyncSender<Vec<Result<StoredInput>>>,
 );
 
@@ -38,7 +35,6 @@ impl Inner {
         batch.new_blob = Some(NewBlob {
             hash: file.hash(),
             size: file.len(),
-            stored: Stored::File { stored_size: 0 },
         });
         let store = std::sync::Arc::new(self.location.blobs()?);
         self.store_group(
@@ -87,140 +83,100 @@ impl Inner {
     pub(super) fn store_group(
         &mut self,
         mut group: Vec<PreparedBatch>,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        _store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Vec<Result<StoredInput>> {
         if group.is_empty() {
             return Vec::new();
         }
-        let previous: i64 = match self
-            .archive
-            .pragma_query_value(None, "synchronous", |r| r.get(0))
-        {
-            Ok(value) => value,
-            Err(error) => return errors(&group, error.into()),
-        };
-        if let Err(error) = self.archive.pragma_update(None, "synchronous", "full") {
-            return errors(&group, error.into());
+        for item in &group {
+            if let Err(error) = self.check_staged(item) {
+                return errors(&group, error);
+            }
         }
-        let stored = match self.write_rows_first(&mut group) {
+        let mut prepared = Vec::new();
+        if self.sinex.is_none() {
+            for item in &mut group {
+                for file in item.files.drain(..) {
+                    let crate::staging::Prepared::Local { prepared: file } = file.file else {
+                        return errors(
+                            &group,
+                            StoreError::Invalid("Sinex bytes reached the segment writer".into()),
+                        );
+                    };
+                    prepared.push(*file);
+                }
+            }
+        }
+        let synced = if self.sinex.is_none() && !prepared.is_empty() {
+            let Some(writer) = self.segment.as_mut() else {
+                return errors(
+                    &group,
+                    StoreError::Invalid(
+                        "segment writer requires reopen after failed commit".into(),
+                    ),
+                );
+            };
+            let appended = writer.append_group(prepared, |hash| {
+                crate::blobs::load_extent(&self.archive, "", hash)
+                    .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
+            });
+            let pending = match appended {
+                Ok(pending) => pending,
+                Err(error) => {
+                    self.segment.take();
+                    return errors(&group, error.into());
+                }
+            };
+            if let Err(error) = crate::fault::check("segment.after_append", "") {
+                self.segment.take();
+                return errors(&group, error);
+            }
+            let synced = match pending.wait() {
+                Ok(synced) => synced,
+                Err(error) => {
+                    self.segment.take();
+                    return errors(&group, error.into());
+                }
+            };
+            if let Err(error) = crate::fault::check("segment.after_sync", "") {
+                self.segment.take();
+                return errors(&group, error);
+            }
+            Some(synced)
+        } else {
+            None
+        };
+        let stored = match self.write_rows_first(&mut group, synced.as_ref()) {
             Ok(stored) => stored,
             Err(error) => {
-                let _ = self.archive.pragma_update(None, "synchronous", previous);
-                if group.len() > 1
-                    && !group
-                        .iter()
-                        .any(|item| crate::zip_members::zip_of(&item.batch).is_some())
-                {
-                    return group
-                        .into_iter()
-                        .flat_map(|item| {
-                            self.store_group(vec![item], std::sync::Arc::clone(&store))
-                        })
-                        .collect();
+                if synced.is_some() {
+                    self.segment.take();
                 }
                 return errors(&group, error);
             }
         };
-        let mut installed = BTreeSet::new();
-        let mut failed = BTreeMap::<BlobHash, String>::new();
-        // In primary mode Sinex holds the bytes already: the rows committed
-        // after it acknowledged them.
-        if self.sinex.is_some() {
-            for item in &mut group {
-                item.files.clear();
+        if let Some(synced) = synced {
+            if let Err(error) = crate::fault::check("segment.after_commit", "") {
+                self.segment.take();
+                return errors(&group, error);
             }
-        }
-        // The files were synced where they were prepared; one batch links
-        // them and syncs each directory it touched once.
-        let mut files = store.batch(hashed_blobs::Durability::PerFile);
-        let mut adding = BTreeSet::new();
-        for item in &mut group {
-            let subject = item.batch.input.id.clone();
-            for file in item.files.drain(..) {
-                let hash = file.hash();
-                if adding.contains(&hash) || failed.contains_key(&hash) {
-                    continue;
-                }
-                // Bytes stored before need no second copy.
-                let present: bool = match self.archive.query_row(
-                    "SELECT state = 'present' FROM blob WHERE hash = ?1",
-                    [&hash.0[..]],
-                    |r| r.get(0),
-                ) {
-                    Ok(present) => present,
-                    Err(error) => {
-                        failed.insert(hash, error.to_string());
-                        continue;
-                    }
-                };
-                if present {
-                    continue;
-                }
-                let crate::staging::Prepared::Local { prepared, .. } = file.file else {
-                    failed.insert(hash, "bytes to send to Sinex reached the blob store".into());
-                    continue;
-                };
-                let added = crate::fault::check("import.install", &subject)
-                    .and_then(|()| files.add(*prepared).map_err(StoreError::from));
-                match added {
-                    Ok(_) => {
-                        adding.insert(hash);
-                    }
-                    Err(error) => {
-                        failed.insert(hash, error.to_string());
-                    }
-                }
-            }
-        }
-        match crate::timing::time(crate::timing::Stage::Sync, || files.commit()) {
-            Ok(_) => installed = adding,
-            Err(error) => {
-                for hash in adding {
-                    failed.insert(hash, error.to_string());
-                }
-            }
-        }
-        let mut outcomes: Vec<Option<String>> = group
-            .iter()
-            .map(|item| {
-                item.batch
-                    .new_blob
-                    .iter()
-                    .chain(&item.batch.blobs)
-                    .find_map(|new_blob| failed.get(&new_blob.hash).cloned())
-            })
-            .collect();
-        let finished: Result<()> = (|| {
-            let tx = self.archive.transaction()?;
-            for hash in &installed {
-                let size = i64::try_from(store.stored_size(&hashed_blobs::Hash(hash.0))?).map_err(
-                    |_| StoreError::Invalid("blob exceeds archive address space".into()),
-                )?;
-                tx.execute(
-                    "UPDATE blob SET state = 'present', stored_size = ?2 WHERE hash = ?1",
-                    params![&hash.0[..], size],
-                )?;
-            }
-            for item in &group {
-                crate::fault::check("import.installed", &item.batch.input.id)?;
-            }
-            crate::write_lock::commit(tx)?;
-            self.report.transactions += 1;
-            Ok(())
-        })();
-        if let Err(error) = finished {
-            for outcome in outcomes.iter_mut().filter(|o| o.is_none()) {
-                *outcome = Some(error.to_string());
-            }
-        }
-        if let Err(error) = self.archive.pragma_update(None, "synchronous", previous) {
-            for outcome in outcomes.iter_mut().filter(|o| o.is_none()) {
-                *outcome = Some(error.to_string());
+            self.report.blob_syncs += synced.metrics.syncs;
+            self.report.blob_bytes_written += synced.metrics.appended_bytes;
+            self.report.blobs_appended += synced.metrics.appended_materials;
+            self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
+            if let Err(error) = self
+                .segment
+                .as_mut()
+                .expect("appended writer")
+                .acknowledge(&synced)
+            {
+                self.segment.take();
+                return errors(&group, error.into());
             }
         }
         let mut parsed = Vec::new();
-        for ((mut item, stored), outcome) in group.into_iter().zip(&stored).zip(&outcomes) {
-            if outcome.is_none() && !item.batch.parse.is_empty() {
+        for (mut item, stored) in group.into_iter().zip(&stored) {
+            if !item.batch.parse.is_empty() {
                 item.batch.change = Change::Reparse {
                     chain: stored.chain,
                 };
@@ -228,41 +184,29 @@ impl Inner {
                 item.batch.new_blob = None;
                 item.batch.observation = None;
                 item.batch.blobs.clear();
-                parsed.push(Box::new(item.batch));
+                parsed.push(item.batch);
             }
         }
         if !parsed.is_empty() {
-            crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&parsed));
+            if let Err(error) = self.write(parsed.iter()) {
+                let reason = error.to_string();
+                return stored
+                    .into_iter()
+                    .map(|_| Err(StoreError::Invalid(reason.clone())))
+                    .collect();
+            }
         }
-        drop(parsed);
-        stored
-            .into_iter()
-            .zip(outcomes)
-            .map(|(stored, error)| {
-                if let Some(reason) = error {
-                    Err(StoreError::InputPending {
-                        input: stored.input,
-                        reason,
-                    })
-                } else if self.report.failed_inputs.contains(&stored.input) {
-                    Err(StoreError::Invalid(format!(
-                        "input {}: parsed rows were refused",
-                        stored.input
-                    )))
-                } else {
-                    Ok(stored)
-                }
-            })
-            .collect()
+        stored.into_iter().map(Ok).collect()
     }
 
     /// Checks every batch, then in one transaction writes the rows of its
     /// bytes: a `writing` row for each private file, and the revision,
     /// extents and observation that use them.
-    fn write_rows_first(&mut self, group: &mut [PreparedBatch]) -> Result<Vec<StoredInput>> {
-        for item in group.iter() {
-            self.check_staged(item)?;
-        }
+    fn write_rows_first(
+        &mut self,
+        group: &mut [PreparedBatch],
+        synced: Option<&hashed_blobs::SyncedGroup>,
+    ) -> Result<Vec<StoredInput>> {
         // A member read from a ZIP needs its ZIP stored, earlier in this group
         // or before.
         let staged: BTreeSet<&str> = group
@@ -277,17 +221,14 @@ impl Inner {
             }
         }
         let tx = self.archive.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
         let seq = bump_counter(&tx)?;
-        if self.sinex.is_none() {
-            for item in group.iter() {
-                for file in &item.files {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-                         VALUES (?1, ?2, 0, 'file', 'plain', 'writing')",
-                        params![&file.hash().0[..], file.len() as i64],
-                    )?;
-                }
+        if let Some(synced) = synced {
+            for extent in &synced.extents {
+                crate::blobs::insert_extent(&tx, extent)?;
             }
+            tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
+                params!["segments/current.hb",synced.end as i64])?;
         }
         let mut stored = Vec::new();
         let mut seen = BTreeSet::new();
@@ -329,13 +270,7 @@ impl Inner {
                 send_to_sinex(sinex.as_ref(), &tx, rows, file, b.new_blob.as_ref())?;
             }
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored = again
-                || (matches!(b.change, Change::Unchanged)
-                    && match crate::staging::require_present(&tx, "", &b.input.id, Some(chain)) {
-                        Ok(()) => true,
-                        Err(StoreError::InputPending { .. }) => false,
-                        Err(error) => return Err(error),
-                    });
+            let already_stored = again || matches!(b.change, Change::Unchanged);
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -363,11 +298,10 @@ impl Inner {
             b.observation.as_ref().and_then(|o| o.import.as_ref()),
         )?;
         for new_blob in b.new_blob.iter().chain(&b.blobs) {
-            if matches!(new_blob.stored, Stored::File { .. })
-                && !item
-                    .files
-                    .iter()
-                    .any(|file| file.hash() == new_blob.hash && file.len() == new_blob.size)
+            if !item
+                .files
+                .iter()
+                .any(|file| file.hash() == new_blob.hash && file.len() == new_blob.size)
             {
                 return Err(StoreError::Invalid(
                     "a file new_blob has no private file".into(),
@@ -399,40 +333,7 @@ impl Inner {
                 "an import must be named by its complete bytes".into(),
             ));
         }
-        if self.excisions
-            && let Some(observation) = &b.observation
-        {
-            for new_blob in b.new_blob.iter().chain(&b.blobs) {
-                if crate::excise::raw_import(
-                    &self.archive,
-                    &b.input.id,
-                    &new_blob.hash,
-                    observation,
-                )? {
-                    return Err(StoreError::InputRefused {
-                        input: b.input.id.clone(),
-                    });
-                }
-            }
-        }
         Ok(())
-    }
-
-    /// Finishes the blob rows a stop or a failed install left behind
-    /// ([`crate::blobs::finish_pending`]) and reports the inputs whose bytes are
-    /// still `writing` without a file; the loop reads them again.
-    pub(super) fn finish_writing(&mut self, store: &hashed_blobs::Store) -> Result<Finished> {
-        let write = crate::write_lock::hold(&self.archive)?;
-        let completed = crate::blobs::finish_pending(&self.archive, store)?;
-        drop(write);
-        if completed > 0 {
-            self.report.transactions += 1;
-        }
-        let mut pending = crate::staging::pending_blobs(&self.archive, "")?;
-        for item in &mut pending {
-            item.state = crate::staging::PendingState::Missing;
-        }
-        Ok(Finished { completed, pending })
     }
 }
 
@@ -454,7 +355,7 @@ pub(super) fn send_to_sinex(
     tx: &Connection,
     rows: &crate::input_rows::InputRows,
     file: Option<&PreparedBytes>,
-    new_blob: Option<&NewBlob>,
+    _new_blob: Option<&NewBlob>,
 ) -> Result<()> {
     let input = input_name(tx, rows)?;
     let Some(extent) = &rows.extent else {
@@ -469,22 +370,14 @@ pub(super) fn send_to_sinex(
         return Ok(());
     };
     let (index, previous) = crate::primary::next_part(tx, &rows.input, extent.chain)?;
-    let mut bytes: Box<dyn std::io::Read> =
-        match (file.map(|f| &f.file), new_blob.map(|p| &p.stored)) {
-            (Some(crate::staging::Prepared::Part { file, .. }), _) => Box::new(file.reopen()?),
-            (_, Some(Stored::Inline(data))) => {
-                Box::new(std::io::Cursor::new(zstd::bulk::decompress(
-                    data,
-                    usize::try_from(extent.length)
-                        .map_err(|_| StoreError::Invalid("a new blob exceeds memory".into()))?,
-                )?))
-            }
-            _ => {
-                return Err(StoreError::Invalid(
-                    "Sinex input has no bytes to send".into(),
-                ));
-            }
-        };
+    let mut bytes: Box<dyn std::io::Read> = match file.map(|f| &f.file) {
+        Some(crate::staging::Prepared::Part { file, .. }) => Box::new(file.reopen()?),
+        _ => {
+            return Err(StoreError::Invalid(
+                "Sinex input has no bytes to send".into(),
+            ));
+        }
+    };
     let material = sinex.send_part(
         &crate::primary::Part {
             input,
@@ -496,7 +389,9 @@ pub(super) fn send_to_sinex(
         },
         &mut bytes,
     )?;
-    crate::primary::part_material(tx, rows, index, &material)
+    let extent = material.extent(extent.blob, extent.length as u64)?;
+    crate::blobs::insert_extent(tx, extent)?;
+    crate::primary::part_material(tx, rows, index, &material.id)
 }
 
 /// The input's origin, its latest path and the host it was seen on.
