@@ -11,8 +11,20 @@ fn the_manual_gives_working_example_queries() {
         .collect();
     assert!(!examples.is_empty());
     let options = polylogue_query::Options {
+        clock: polylogue_query::Clock::new(
+            1_790_000_000_000,
+            polylogue_model::LogicalDay::named("UTC", 240).unwrap(),
+        ),
+        origins: Vec::new(),
+        command_words: Vec::new(),
+        page_size: None,
+        random_seed: None,
         embeddings: true,
-        ..polylogue_query::Options::default()
+        self_session: None,
+        saved: Default::default(),
+        fields: Vec::new(),
+        kept: Default::default(),
+        chat_pages: Vec::new(),
     };
     for query in examples {
         let answer = polylogue_query::compile(query, &options);
