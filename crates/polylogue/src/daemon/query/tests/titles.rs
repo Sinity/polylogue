@@ -76,7 +76,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             _ => None,
         };
         assert_eq!(
-            source.title.as_ref().map(|title| title.value.as_str()),
+            source.title.as_ref().map(|title| title.text.as_str()),
             expected
         );
     }
