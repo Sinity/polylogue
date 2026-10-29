@@ -46,7 +46,7 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
     assert_eq!(texts(&w, "unrelated"), ["other"]);
     let reader = ReadPool::open(&w.archive).unwrap();
     let r = reader.reader().unwrap();
-    let checkpoint = r.known_input_at("m", "/p/input").unwrap().unwrap();
+    let checkpoint = r.known_input_at("m", b"/p/input").unwrap().unwrap();
     assert_eq!(checkpoint.parsed_upto, 100);
     drop(r);
     drop(reader);

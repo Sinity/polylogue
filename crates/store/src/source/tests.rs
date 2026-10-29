@@ -1,3 +1,4 @@
+mod native_paths;
 use super::*;
 
 #[test]
@@ -126,6 +127,7 @@ fn later_chunks_keep_their_actual_admission_when_one_revision_grows() {
         )
         .unwrap();
         let mut row = crate::input_rows::InputRows {
+            acquisition: None,
             input: "input".into(),
             format: "synthetic".into(),
             observation: None,
@@ -226,6 +228,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
     let mut ledger = Connection::open(archive.archive_db()).unwrap();
     let tx = ledger.transaction().unwrap();
     crate::input_rows::InputRows {
+        acquisition: None,
         input: "native".into(),
         format: "synthetic".into(),
         revision: None,
@@ -280,7 +283,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
     let known = reads
         .reader()
         .unwrap()
-        .known_watched_input_at("machine", "/home/op/session")
+        .known_watched_input_at("machine", b"/home/op/session")
         .unwrap()
         .unwrap();
     assert_eq!((known.chain, known.stored), (Some(1), 8));

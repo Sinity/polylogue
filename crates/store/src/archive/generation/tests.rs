@@ -170,6 +170,7 @@ fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
     let (archive, _lock) = crate::Archive::open_or_create(root.path()).unwrap();
     let source = super::super::open_write(&archive.archive_db(), cache::SETUP).unwrap();
     crate::input_rows::InputRows {
+        acquisition: None,
         input: "retained-source".into(),
         format: "synthetic".into(),
         revision: None,

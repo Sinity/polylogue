@@ -212,6 +212,42 @@ impl crate::primary::Sinex for OfflineProducer {
             identity: "offline-capture".into(),
         })
     }
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        source: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        let head = self.pending_captures()?.into_iter().find(|pending| {
+            let Capture::Input(captured) = &pending.captured else {
+                return false;
+            };
+            captured.rows.format == source.origin
+                && captured
+                    .rows
+                    .observation
+                    .as_ref()
+                    .is_some_and(|observation| {
+                        observation.machine == source.machine
+                            && observation.path_bytes.as_ref() == Some(&source.path_bytes)
+                    })
+        });
+        Ok(crate::primary::PendingSource {
+            status: crate::primary::SourceStatus::Ready,
+            raw: head.clone().filter(|pending| matches!(&pending.captured,Capture::Input(captured) if captured.raw_range.is_some())),
+            head,
+            ..Default::default()
+        })
+    }
     fn capture(&self, _: &str) -> Result<Capture> {
         Ok(Capture::Input(Box::new(self.captured())))
     }
@@ -350,6 +386,23 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert!(
             matches!(results.remove(0),Err(StoreError::PrimaryPending {identity}) if identity == "offline-capture")
         );
+        let snapshot = writer
+            .source_snapshot(
+                crate::primary::SourceSelector {
+                    origin: "codex".into(),
+                    machine: "machine".into(),
+                    path_bytes: b"/home/op/session".to_vec(),
+                },
+                "synthetic:1",
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot.basis.status,
+            crate::primary::SourceStatus::MissingEvidence
+        );
+        assert_eq!(snapshot.basis.confirmed, None);
+        assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
+        assert!(snapshot.pending.raw.is_some());
         let index = crate::archive::open_read(&archive.index_db()).unwrap();
         assert_eq!(
             index

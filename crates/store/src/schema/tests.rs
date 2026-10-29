@@ -15,12 +15,12 @@ fn every_schema_applies_to_an_empty_database() {
 }
 
 #[test]
-fn archive_and_embedding_baselines_stay_at_one_while_the_index_migrates() {
-    assert_eq!(ARCHIVE_VERSION, 1);
-    assert_eq!(INDEX_VERSION, 5);
+fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
+    assert_eq!(ARCHIVE_VERSION, 2);
+    assert_eq!(INDEX_VERSION, 6);
     for (create, expected) in [
-        (ensure_archive as fn(&Connection) -> Result<()>, 1),
-        (ensure_index, 5),
+        (ensure_archive as fn(&Connection) -> Result<()>, 2),
+        (ensure_index, 6),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();
@@ -310,5 +310,5 @@ fn cursor_checkpoint_migration_keeps_prior_cursor_without_manufacturing_state() 
     ensure_index(&conn).unwrap();
     let prior:(String,i64,i64,Option<Vec<u8>>)=conn.query_row("SELECT reading_version,parsed_upto,commit_seq,checkpoint FROM parse_state WHERE input_pk=1 AND chain=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
     assert_eq!(prior, ("prior-reading".into(), 2, 17, None));
-    assert_eq!(version(&conn).unwrap(), 5);
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
 }
