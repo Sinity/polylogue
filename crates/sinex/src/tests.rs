@@ -118,6 +118,7 @@ fn a_chat_action_request_makes_no_event() {
 #[test]
 fn a_held_part_carries_the_rows_that_place_it() {
     let rows = InputRows {
+        acquisition: None,
         input: "input".into(),
         format: "claude-code".into(),
         revision: None,

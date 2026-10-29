@@ -19,6 +19,10 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
            ('facts','watched','m','/home/op/renamed.jsonl','back',9,10,20,11,12,'test',40),
            ('other','other','other-machine','/home/op/session.jsonl','first',13,14,99,15,16,'test',500);"
     ).unwrap();
+    // These fixture paths are explicitly synthetic UTF-8 native observations.
+    archive
+        .execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
         .execute_batch(
@@ -42,7 +46,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
     assert_eq!(gone.parsed_upto, 17);
     assert!(gone.parsed && gone.waiting);
     let renamed = reader
-        .known_watched_input_at("m", "/home/op/renamed.jsonl")
+        .known_watched_input_at("m", b"/home/op/renamed.jsonl")
         .unwrap()
         .unwrap();
     let facts = renamed.facts.unwrap();
@@ -63,7 +67,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
     );
     assert!(
         reader
-            .known_watched_input_at("m", "/home/op/missing")
+            .known_watched_input_at("m", b"/home/op/missing")
             .unwrap()
             .is_none()
     );
@@ -100,6 +104,8 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
             .unwrap();
         }
     }
+    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     tx.commit().unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -115,7 +121,7 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
         .unwrap();
     let found = if point {
         reader
-            .known_watched_input_at("m", "/home/op/session.jsonl")
+            .known_watched_input_at("m", b"/home/op/session.jsonl")
             .map(|found| found.into_iter().collect::<Vec<_>>())
     } else {
         reader.known_watched_inputs("m")

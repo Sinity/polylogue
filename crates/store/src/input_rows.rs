@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputRows {
+    /// Receiver-owned evidence for the acquired body, independent of overlap trimming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
     pub input: String,
     /// The origin that parses it (`claude-code`).
     pub format: String,
@@ -88,6 +91,7 @@ impl InputRows {
     }
 
     fn insert_rows(&self, tx: &Connection, seq: i64, prove_prefix: bool) -> Result<()> {
+        self.validate_acquisition()?;
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
             &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
@@ -105,10 +109,11 @@ impl InputRows {
         }
         if let Some(e) = &self.extent {
             tx.prepare_cached(
-                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, acquisition)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(input,chain,offset) DO UPDATE SET
                      commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
+                     acquisition=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(acquisition,excluded.acquisition) ELSE excluded.acquisition END,
                      length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"),
             )?
             .execute(params![
@@ -116,10 +121,12 @@ impl InputRows {
                 e.chain,
                 e.offset,
                 e.length,
-                &e.blob.0[..],e.blob_offset,seq
+                &e.blob.0[..],e.blob_offset,seq,
+                self.acquisition.as_ref().map(crate::encoding::pack_json).transpose()?
             ])?;
         }
         if let Some(o) = &self.observation {
+            let details = self.observation_details(o)?;
             if let Some(chain) = o.chain {
                 let length = o
                     .length
@@ -148,8 +155,8 @@ impl InputRows {
             tx.prepare_cached(
                 &source.sql("INSERT OR IGNORE INTO @source.observation(id, input, machine, path, class, revision, length,
                      device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq,
-                     details_json, chain)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"),
+                     details_json, chain, path_bytes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"),
             )?
             .execute(params![
                 o.id,
@@ -167,8 +174,9 @@ impl InputRows {
                 o.polylogue_version,
                 o.seen_at,
                 seq,
-                o.details_json,
+                details,
                 o.chain,
+                o.path_bytes,
             ])?;
             if let Some(c) = &o.container {
                 tx.prepare_cached(
@@ -184,5 +192,73 @@ impl InputRows {
             }
         }
         Ok(())
+    }
+    fn validate_acquisition(&self) -> Result<()> {
+        let Some(receipt) = &self.acquisition else {
+            return Ok(());
+        };
+        let length = receipt.range.length()?;
+        let invalid = || {
+            crate::StoreError::Invalid(
+                "acquisition evidence does not describe these source rows".into(),
+            )
+        };
+        if receipt.version != crate::primary::AcquisitionReceipt::VERSION
+            || receipt.source.origin != self.format
+            || receipt.source.machine.is_empty()
+        {
+            return Err(invalid());
+        }
+        if let Some(observation) = &self.observation {
+            if observation.machine != receipt.source.machine
+                || observation.path_bytes.as_ref() != Some(&receipt.source.path_bytes)
+            {
+                return Err(invalid());
+            }
+        }
+        if let Some(extent) = &self.extent {
+            let start = u64::try_from(extent.offset).map_err(|_| invalid())?;
+            let size = u64::try_from(extent.length).map_err(|_| invalid())?;
+            let offset = u64::try_from(extent.blob_offset).map_err(|_| invalid())?;
+            if extent.blob != receipt.hash
+                || start < receipt.range.start
+                || start
+                    .checked_add(size)
+                    .is_none_or(|end| end > receipt.range.end)
+                || offset != start - receipt.range.start
+                || offset.checked_add(size).is_none_or(|end| end > length)
+            {
+                return Err(invalid());
+            }
+        } else if self.observation.is_none() {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn observation_details(&self, observation: &ObservationRow) -> Result<Option<String>> {
+        let Some(receipt) = self.acquisition.as_ref().filter(|_| self.extent.is_none()) else {
+            return Ok(observation.details_json.clone());
+        };
+        let mut details = observation
+            .details_json
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()?
+            .unwrap_or_else(|| serde_json::json!({}));
+        let object = details.as_object_mut().ok_or_else(|| {
+            crate::StoreError::Invalid("observation details must be an object".into())
+        })?;
+        let receipt = serde_json::to_value(receipt)?;
+        if object
+            .get("acquisition")
+            .is_some_and(|prior| prior != &receipt)
+        {
+            return Err(crate::StoreError::Invalid(
+                "observation acquisition evidence conflicts".into(),
+            ));
+        }
+        object.insert("acquisition".into(), receipt);
+        Ok(Some(serde_json::to_string(&details)?))
     }
 }

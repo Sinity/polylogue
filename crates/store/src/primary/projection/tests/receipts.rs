@@ -87,6 +87,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
             &format!("input-{input}"),
             Product::Input {
                 rows: crate::input_rows::InputRows {
+                    acquisition: None,
                     input: input.into(),
                     format: "synthetic".into(),
                     revision: Some(crate::input_rows::Revision {

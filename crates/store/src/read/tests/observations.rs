@@ -32,6 +32,9 @@ fn history(count: i64) -> (tempfile::TempDir, Fixture) {
         .unwrap();
     }
     tx.execute_batch("INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('import','imported','synthetic','/source','imported','test',1), ('gone','gone','synthetic','/gone','deleted','test',3), ('other','other','elsewhere','/source','first','test',4)").unwrap();
+    // Synthetic fixture paths have explicit UTF-8 acquisition bytes.
+    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     tx.commit().unwrap();
     (dir, fixture)
 }
@@ -56,7 +59,7 @@ fn current_source_positions_use_commit_order_and_exclude_imports() {
             .is_none()
     );
     let at = reader
-        .known_watched_input_at("synthetic", "/source")
+        .known_watched_input_at("synthetic", b"/source")
         .unwrap()
         .unwrap();
     assert_eq!((at.input_id.as_str(), at.stored), ("source", 80));
