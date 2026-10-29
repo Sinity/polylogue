@@ -102,3 +102,21 @@ fn zero_transfer_size_is_a_typed_refusal() {
     let error = reader.query_page(&program, None).err().unwrap();
     assert_eq!(error.kind(), "bad_request");
 }
+
+#[test]
+fn native_run_namespace_never_falls_back_to_a_provider_origin() {
+    let mut options = options();
+    options.origins.push("run".into());
+    assert_eq!(
+        crate::query::compile("run:not-a-run", &options)
+            .unwrap_err()
+            .kind(),
+        "invalid_query"
+    );
+    assert_eq!(
+        crate::query::compile("run:019a2f20-1234-7000-8000-0123456789ab", &options)
+            .unwrap_err()
+            .kind(),
+        "not_built"
+    );
+}

@@ -62,7 +62,7 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
             }
             // These reference atoms are compiled at the product identity seam.
             for name in origins.iter().map(String::as_str).chain([
-                "session", "message", "block", "note", "query", "result", "similar",
+                "session", "message", "block", "note", "query", "result", "run", "similar",
             ]) {
                 if !declarations.iter().any(|f| f.name == name) {
                     declarations.push(Field {

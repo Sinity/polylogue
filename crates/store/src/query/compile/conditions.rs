@@ -10,7 +10,7 @@ impl<'a> Compiler<'a> {
             ConditionKind::Match { field, .. } => {
                 let f = field.to_ascii_lowercase();
                 self.opts.origins.contains(&f)
-                    || matches!(f.as_str(), "session" | "message" | "block" | "note")
+                    || matches!(f.as_str(), "session" | "message" | "block" | "note" | "run")
             }
             ConditionKind::Text {
                 text,
@@ -442,6 +442,15 @@ impl<'a> Compiler<'a> {
         let lower = field.to_ascii_lowercase();
         // A known origin or a reference prefix before `:` is a reference.
         if let FieldOp::Match(Value::Scalar { text, .. }) = &op {
+            if lower == "run" {
+                polylogue_model::RunId::parse(text).map_err(|error| QueryError::Invalid {
+                    message: error.to_string(),
+                    position: span.start,
+                })?;
+                return Err(not_built(
+                    "run references require their acknowledged execution binding",
+                ));
+            }
             if self.opts.origins.contains(&lower) {
                 return self.session_ref(&format!("{lower}:{text}"), scope, span);
             }
