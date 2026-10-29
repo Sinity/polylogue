@@ -2,7 +2,6 @@
 //! the rows that cite them commit. The index then saves its parsed position.
 use super::*;
 use crate::staging::{PreparedBatch, PreparedBytes, StoredInput};
-use polylogue_model::BlobHash;
 use std::collections::BTreeSet;
 
 /// A parse-pool group waiting for the writer, with the store its files go

@@ -41,7 +41,6 @@ use crate::encoding::{block_text, unpack_block};
 pub use batch::{
     Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
 };
-pub(crate) use bytes::observation_id;
 use bytes::*;
 use rows::*;
 use search::*;

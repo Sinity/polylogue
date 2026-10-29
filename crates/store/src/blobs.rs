@@ -8,9 +8,6 @@ use std::os::unix::fs::MetadataExt;
 mod chain;
 pub use chain::{ChainReader, StoredChain};
 
-mod copy;
-pub(crate) use copy::copy_plain;
-
 mod segments;
 pub use segments::{Blobs, BlobCatalog};
 pub(crate) use segments::{insert_extent, load_extent, open_writer};
