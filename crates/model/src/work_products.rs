@@ -674,7 +674,10 @@ pub fn derive_with_background(
         .map(|(index, mut turn)| {
             turn.product.abandoned = turn.product.answer.is_none()
                 && active
-                    .get(&turn.product.session)
+                    .get(&(
+                        turn.product.session.clone(),
+                        turn.product.physical_session.clone(),
+                    ))
                     .is_some_and(|(last, _)| *last == index);
             turn.parents.sort();
             turn.parents.dedup();
