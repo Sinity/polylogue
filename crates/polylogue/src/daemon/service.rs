@@ -383,14 +383,14 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    _operation: &Arc<crate::operation::Context>,
+    operation: &Arc<crate::operation::Context>,
     output: &mut dyn std::io::Write,
 ) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
     Some(accepting(d).and_then(|()| {
-        let mut file = d.feeds.read(d, since.as_deref())?;
+        let mut file = d.feeds.read(d, since.as_deref(), operation)?;
         std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
         Ok(())
     }))
