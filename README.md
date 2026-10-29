@@ -80,5 +80,5 @@ MCP and HTTP too.
 
 See [LICENSE](LICENSE).
 
-Cloud setup, including the explicit rootless native backend, is described in
+Cloud setup and shell startup, including the explicit native backend, are described in
 [the shared setup guide](https://github.com/Sinity/polylogue-sinex-common/blob/master/dev/cloud/README.md).
