@@ -6,7 +6,7 @@ What Polylogue stores and how it reads it: stored inputs and their chains, why n
 
 - **`input → chain → extent → blob`.** An *input* is one source object: a file, a capture log, a container member, or a row-dump stream. Each read of it that adds bytes extends its *chain* (a revision that appends to the previous one continues the chain; a rewritten file starts a new one). *Extents* name byte ranges in *blobs*.
 - **Blobs** are content-addressed and live in the shared segment container: one sync per write group, extents committed in the same transaction as the rows that cite them, a torn tail truncated on open. The blob store is the durable record of every acquired input, not a cache of bytes that still exist at the source, because tools prune and rewrite their own files. Ruling, 2026-10-11: "blob store is supposed to hold session logs … this is THE REASAON TO HAVE BLOBSTOER" (cc-queued:56c7f026-fd50-4480-b484-72f1299a534c@2026-10-11T12:58:04.056Z).
-- **Observations** record each time an input was seen, with the machine and path: `seen`, `changed`, `renamed`, `gone`, `back`. **A file that disappears is an observation, never a deletion.**
+- **Observations** record each time an input was seen, with the machine and path: `seen`, `changed`, `renamed`, `gone`, `back`. **A file that disappears is an observation, never a deletion.** An observation names a revision only when the observed bytes end at that recorded revision endpoint. An exact prefix with another length records its proven chain and observed byte length without claiming a revision or creating one. Its original raw snapshot remains stored, while the input's latest revision and parse progress remain unchanged.
 - **Currency is local receipt order** (`commit_seq`), never wall-clock time.
 - **Export containers are kept whole.** A ZIP or tar import stores the container exactly as given as one input and each member as its own input, addressed `container!/member`; identical member bytes are stored once with every observation kept.
 - **Tool databases** are inputs of row dumps ([capture.md](capture.md#tool-databases)).
@@ -23,6 +23,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Every version of a parsed row is stored**, and the shown versions form a total order. A growing file read again adds versions in receipt order.
 - **Reading the same bytes again changes nothing**: a row version's hash is a function of the bytes and the reading version.
+- A sparse message reading keeps the complete source version's hash, its original block count and the original positions of the blocks it carries. Missing blocks are unknown. Compatible observations of one version union their known blocks; a partial observation cannot replace known complete content, and conflicting facts under one source hash are refused.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).
 

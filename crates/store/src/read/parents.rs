@@ -289,6 +289,14 @@ impl MessageSelection<'_, '_> {
         self.visit_from(VisitStart::default(), visit).map(drop)
     }
 
+    pub fn visit_with_projection(
+        &self,
+        visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_from_with_projection(VisitStart::default(), visit)
+            .map(drop)
+    }
+
     /// Skip source messages before hydrating their blocks. Rendering callers must
     /// restore masking state checked against this exact selection. With the
     /// start message's key, a session's own messages before it are not read
@@ -297,6 +305,35 @@ impl MessageSelection<'_, '_> {
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        self.visit_from_rows(start, |message, _| visit(message))
+    }
+
+    pub fn visit_from_with_projection(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut missing = false;
+        let last = self.visit_from_rows(start, |message, projection| match projection {
+            Some(projection) => visit(message, projection),
+            None => {
+                missing = true;
+                ControlFlow::Break(())
+            }
+        })?;
+        if missing {
+            return Err(StoreError::Invalid(
+                "the message has no canonical source reading".into(),
+            ));
+        }
+        Ok(last)
+    }
+
+    fn visit_from_rows(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, Option<MessageProjection>) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         if let Some(keys) = &self.with_parents {
             let mut last = None;
@@ -311,9 +348,9 @@ impl MessageSelection<'_, '_> {
                         visibility: self.visibility.as_ref(),
                     },
                     |pk| pk == key.message_pk,
-                    &mut |pk, message| {
+                    &mut |pk, message, projection| {
                         last = Some(pk);
-                        flow = visit(message);
+                        flow = visit(message, projection);
                         ControlFlow::Break(())
                     },
                 )?;
@@ -333,8 +370,8 @@ impl MessageSelection<'_, '_> {
             }
         };
         match (start.key, &self.with_parents) {
-            (Some(key), None) => self.visit_kept(Some(key), 0, |_| true, visit),
-            _ => self.visit_kept(None, 0, after_prefix, visit),
+            (Some(key), None) => self.visit_kept_projection(Some(key), 0, |_| true, visit),
+            _ => self.visit_kept_projection(None, 0, after_prefix, visit),
         }
     }
 
@@ -345,13 +382,23 @@ impl MessageSelection<'_, '_> {
         &self,
         from: Option<i64>,
         skip: usize,
-        mut keep: impl FnMut(i64) -> bool,
+        keep: impl FnMut(i64) -> bool,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
+        self.visit_kept_projection(from, skip, keep, |message, _| visit(message))
+    }
+
+    fn visit_kept_projection(
+        &self,
+        from: Option<i64>,
+        skip: usize,
+        mut keep: impl FnMut(i64) -> bool,
+        mut visit: impl FnMut(Message, Option<MessageProjection>) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
         let mut last = None;
-        let mut visit = |pk, message| {
+        let mut visit = |pk, message, projection| {
             last = Some(pk);
-            visit(message)
+            visit(message, projection)
         };
         if let Some(keys) = &self.with_parents {
             let mut start = skip;

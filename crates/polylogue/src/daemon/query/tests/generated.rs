@@ -315,6 +315,10 @@ fn keys(unit: Unit, v: &Value) -> Vec<String> {
                 r["command"].as_str(),
                 r["outcome"].as_str().unwrap_or_default(),
                 r["exit_code"].as_i64(),
+                r["at"]
+                    .as_str()
+                    .and_then(polylogue_model::Timestamp::parse_rfc3339)
+                    .map(polylogue_model::Timestamp::unix_ms),
             ),
         })
         .collect()
@@ -322,6 +326,44 @@ fn keys(unit: Unit, v: &Value) -> Vec<String> {
 
 fn key_set(unit: Unit, v: &Value) -> BTreeSet<String> {
     keys(unit, v).into_iter().collect()
+}
+
+#[test]
+fn generated_call_keys_preserve_distinct_time_conditions() {
+    let mut w = morrow();
+    let session =
+        w.fx.session(SessionFacts {
+            id: "claude-code:call-times",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    let message =
+        w.fx.message(session, msg("call-times", "assistant", "model", "", None))
+            .unwrap();
+    for at in [None, Some(FIRST_DAY)] {
+        w.fx.tool_call(
+            session,
+            message,
+            CallFacts {
+                tool: "Read",
+                action: "file_read",
+                outcome: "unknown",
+                at,
+                ..CallFacts::default()
+            },
+        )
+        .unwrap();
+    }
+    let query = "tool_calls where session:claude-code:call-times";
+    assert_eq!(all(&w, query)["count"], 2);
+    let unknown = key_set(Unit::ToolCalls, &all(&w, &format!("{query} at:unknown")));
+    let known = key_set(
+        Unit::ToolCalls,
+        &all(&w, &format!("{query} NOT at:unknown")),
+    );
+    assert_eq!(unknown.len(), 1);
+    assert_eq!(known.len(), 1);
+    assert!(unknown.is_disjoint(&known));
 }
 
 fn reference_keys(rows: &Rows, found: &[Row]) -> Vec<String> {

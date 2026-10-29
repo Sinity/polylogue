@@ -31,7 +31,10 @@ fn current_blocks_reuse_stored_text_identities() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    assert_eq!(write_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(), 32);
+    assert_eq!(
+        write_rows(&tx, &b, &b.parse[0], 1, 1, None, Some(&fixture_receipt())).unwrap(),
+        32
+    );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     assert_eq!(
