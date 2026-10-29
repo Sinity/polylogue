@@ -407,9 +407,7 @@ impl Reader<'_> {
                     .unwrap_or_else(|| {
                         serde_json::to_string(&order).expect("order position is JSON")
                     });
-                if let Some(object) = row.as_object_mut() {
-                    object.retain(|key, _| !key.starts_with('_'));
-                }
+                crate::query::execute::present(program, &mut row).map_err(VisitError::Selection)?;
                 match visit(SelectionRow {
                     reference,
                     values: row,
@@ -463,15 +461,8 @@ impl Reader<'_> {
         }
         self.validate_selection(&selection.program)
             .map_err(E::from)?;
-        self.with_clock(&selection.program.clock, || {
-            let result = if let Some(request) = &selection.program.near {
-                let near =
-                    near.ok_or_else(|| E::from(invalid("embed", "semantic search unavailable")))?;
-                let similarity = near(&request.text).map_err(|e| E::from(invalid("embed", e)))?;
-                self.with_similarity(similarity, run)
-            } else {
-                run()
-            };
+        self.with_query_context(&selection.program, near, || {
+            let result = run();
             selection
                 .scope
                 .check()
@@ -618,23 +609,37 @@ impl Reader<'_> {
             .iter()
             .any(|generation| generation != &position.generation)
         {
-            return Err(invalid("resync_required", "the index generation changed"));
+            return Err(SelectionError::Invalid {
+                kind: "resync_required",
+                message: "the index generation changed; read the current state again".into(),
+                detail: Some(
+                    serde_json::json!({"generation":position.generation,"reason":"generation_changed"}),
+                ),
+            });
         }
         for check in &program.id_checks {
             let found = self.query(&check.sql, &values(&check.params))?;
-            match found.len() {
+            let ids = found
+                .iter()
+                .filter_map(|row| row["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            match ids.len() {
                 1 => {}
                 0 => {
-                    return Err(invalid(
-                        "not_found",
-                        format!("no session or message starts {:?}", check.word),
-                    ));
+                    return Err(SelectionError::Invalid {
+                        kind: "not_found",
+                        message: format!(
+                            "no session or message has an ID starting {:?}",
+                            check.word
+                        ),
+                        detail: Some(serde_json::json!({"word":check.word})),
+                    });
                 }
                 _ => {
                     return Err(SelectionError::Invalid {
                         kind: "ambiguous",
-                        message: format!("several sessions or messages start {:?}", check.word),
-                        detail: Some(serde_json::json!({"matches":found})),
+                        message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
+                        detail: Some(serde_json::json!({"word":check.word,"ids":ids})),
                     });
                 }
             }
@@ -778,9 +783,10 @@ pub fn values(params: &[Param]) -> Vec<SqlValue> {
         })
         .collect()
 }
-fn sql_value(value: &Value) -> SqlValue {
+pub fn sql_value(value: &Value) -> SqlValue {
     match value {
         Value::Null => SqlValue::Null,
+        Value::Bool(value) => SqlValue::Int(i64::from(*value)),
         Value::Number(n) => n
             .as_i64()
             .map(SqlValue::Int)
