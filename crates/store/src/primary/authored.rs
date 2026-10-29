@@ -150,7 +150,8 @@ pub fn prepare(
         .ok_or_else(|| StoreError::Invalid("prepared request was not recorded".into()))
 }
 
-fn validate(prepared: &PreparedRequest) -> Result<()> {
+/// Checks internal frozen history consistency without applying or executing it.
+pub fn validate(prepared: &PreparedRequest) -> Result<()> {
     fn events<T: PartialEq>(
         all: &[T],
         added: &[T],
