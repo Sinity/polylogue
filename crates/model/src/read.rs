@@ -1,10 +1,12 @@
 //! The read contract shared by selection, view projection, layout and delivery.
 //! Canonical source records stay separate from presentation substitutions.
+mod delivery;
 mod evidence;
 mod items;
 mod options;
 mod projection;
 mod tokens;
+pub use delivery::*;
 pub use evidence::*;
 pub use items::*;
 pub use options::*;
