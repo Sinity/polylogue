@@ -176,6 +176,12 @@ async fn exchange_message<T: serde::de::DeserializeOwned>(
     stream.write_all(&line).await?;
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply).await?;
+    if !reply.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the operation answer ended before its line boundary",
+        ));
+    }
     serde_json::from_str(&reply).map_err(io::Error::other)
 }
 

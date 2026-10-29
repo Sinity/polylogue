@@ -294,3 +294,35 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     assert_eq!(error.code.as_deref(), Some("shutting_down"));
     assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
 }
+
+#[test]
+fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
+    struct ResetWhileSerializing<'a>(&'a Archive);
+    impl serde::Serialize for ResetWhileSerializing<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0
+                .advance_generation_for_test()
+                .map_err(<S::Error as serde::ser::Error>::custom)?;
+            serde::Serialize::serialize(
+                &serde_json::json!({"stale":"synthetic-old-scope-value"}),
+                serializer,
+            )
+        }
+    }
+    let daemon = crate::test_daemon::start("native JSON publication fence");
+    let scope = daemon.daemon.reads.scope_token().unwrap();
+    let (mut output, input) = UnixStream::pair().unwrap();
+    input
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let answer = command_surface::Answer::ok(ResetWhileSerializing(&daemon.daemon.archive));
+    write_scoped_json(&mut output, &answer, Some(&scope)).unwrap();
+    let mut line = String::new();
+    BufReader::new(input).read_line(&mut line).unwrap();
+    assert!(!line.contains("synthetic-old-scope-value"));
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("old scope must not publish a value");
+    };
+    assert_eq!(error.code.as_deref(), Some("scope_changed"));
+}

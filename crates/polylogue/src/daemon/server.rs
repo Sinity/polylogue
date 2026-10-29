@@ -12,6 +12,51 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Serialize before entering the native epoch fence; fence only each bounded write.
+fn write_scoped_json(
+    output: &mut UnixStream,
+    answer: &impl serde::Serialize,
+    scope: Option<&polylogue_store::ReadScopeToken>,
+) -> std::io::Result<()> {
+    let mut bytes = serde_json::to_vec(answer).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    output.set_write_timeout(Some(Duration::from_millis(10)))?;
+    let until = std::time::Instant::now() + Duration::from_secs(1);
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let end = bytes.len().min(offset + 64 * 1024);
+        let published = match scope {
+            Some(scope) => scope.with_current(|| Ok(output.write(&bytes[offset..end]))),
+            None => Ok(output.write(&bytes[offset..end])),
+        };
+        let published = match published {
+            Ok(result) => result,
+            Err(error) if offset == 0 => {
+                // No old response bytes escaped; publish the safe failure without its old scope.
+                let mut error = serde_json::to_vec(&service::store_error(&error).answer())
+                    .map_err(std::io::Error::other)?;
+                error.push(b'\n');
+                return output.write_all(&error);
+            }
+            // A truncated JSON line cannot be accepted as a completed response.
+            Err(error) => return Err(std::io::Error::other(error)),
+        };
+        match published {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => offset += written,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) && std::time::Instant::now() < until => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
     if stream
         .set_write_timeout(Some(Duration::from_secs(1)))
@@ -180,13 +225,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 }
             };
             let answer = crate::protocol::scope_answer(answer, read_scope.as_ref());
-            if writeln!(
-                out,
-                "{}",
-                serde_json::to_string(&answer).expect("answer serializes")
-            )
-            .is_err()
-            {
+            if write_scoped_json(&mut out, &answer, read_scope.as_ref()).is_err() {
                 return;
             }
             continue;
@@ -303,11 +342,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
         let answer = crate::protocol::scope_answer(response.answer(), read_scope.as_ref());
-        let Ok(mut text) = serde_json::to_string(&answer) else {
-            return;
-        };
-        text.push('\n');
-        if out.write_all(text.as_bytes()).is_err() {
+        if write_scoped_json(&mut out, &answer, read_scope.as_ref()).is_err() {
             return;
         }
     }
